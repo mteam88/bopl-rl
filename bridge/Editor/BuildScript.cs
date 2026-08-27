@@ -1,9 +1,6 @@
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
-#if UNITY_EDITOR_OSX
-using UnityEditor.OSXStandalone;
-#endif
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -34,7 +31,7 @@ public static class BuildScript
 	{
 		PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneOSX, new[] { GraphicsDeviceType.Metal });
 #if UNITY_EDITOR_OSX
-		PlayerSettings.SetArchitecture(NamedBuildTarget.OSXStandalone, (int)OSArchitecture.arm64);
+		UnityEditor.OSXStandalone.UserBuildSettings.architecture = OSArchitecture.ARM64;
 #endif
 		BuildPlayerOptions options = new BuildPlayerOptions
 		{
