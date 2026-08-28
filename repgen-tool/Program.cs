@@ -19,6 +19,14 @@ public static class Program
 
 	private const byte AngleDown = 192;
 
+	// ~15 degrees below horizontal, facing right: 1 + 345*256/360.
+	// Shallow enough that the shot's 1.7-unit spawn offset clears the
+	// caster's own platform edge, steep enough to hit the far wall.
+	private const byte AngleShallowDR = 246;
+
+	// 240 degrees: down-left diagonal (dash aiming).
+	private const byte AngleDownLeft = 171;
+
 	private const byte GrowthRay = 8;
 
 	public static int Main(string[] args)
@@ -57,7 +65,9 @@ public static class Program
 		sr.p1_team = 0;
 		sr.p2_team = 1;
 		sr.p1_ability1 = p1Ability1;
-		sr.p1_ability2 = Dash;
+		// Portal demo also throws a poke ball through the portals to show
+		// object teleportation.
+		sr.p1_ability2 = mode == "portal" ? (byte)33 : Dash;
 		sr.p1_ability3 = 0;
 		sr.p2_ability1 = Dash;
 		sr.p2_ability2 = 3;
@@ -73,7 +83,7 @@ public static class Program
 
 		List<InputPacketQuad> replay = new List<InputPacketQuad>();
 		uint seq = 0;
-		void Tick(byte p1angle = 0, bool ab1 = false, bool ab2 = false, bool jump = false, byte p2angle = 0)
+		void Tick(byte p1angle = 0, bool ab1 = false, bool ab2 = false, bool jump = false, byte p2angle = 0, bool p2jump = false, bool p2ab1 = false)
 		{
 			seq++;
 			InputPacketQuad q = default(InputPacketQuad);
@@ -86,6 +96,8 @@ public static class Program
 			q.p1.ab2 = ab2;
 			q.p1.jump = jump;
 			q.p2.joystickAngle = p2angle;
+			q.p2.jump = p2jump;
+			q.p2.ab1 = p2ab1;
 			replay.Add(q);
 		}
 
@@ -112,107 +124,130 @@ public static class Program
 
 		if (mode == "pokeball")
 		{
-			// P2 walks left toward the middle while P1 lobs a poke ball at
-			// them; then everyone waits out the capture + pop.
-			// Level1: both players walk to their platform's inner edge
-			// (wrapping around it, below the floating capsule), then P1
-			// fires a flat shot across the gap.
+			// Both players walk to their platform's inner edge; P1 charges
+			// the ball grenade-style (hold ~1.1s = full power) and releases a
+			// flat max-power shot across the gap. Then the capture + pop.
 			for (int i = 0; i < 480; i++) Tick();              // cooldown
 			for (int i = 0; i < 55; i++) Tick(AngleRight, false, false, false, AngleLeft);
-			for (int i = 0; i < 5; i++) Tick(AngleRight, true); // throw!
-			for (int i = 0; i < 580; i++) Tick();              // capture + pop
+			for (int i = 0; i < 70; i++) Tick(0, true);        // hold: charge up
+			for (int i = 0; i < 5; i++) Tick();                // release: throw!
+			for (int i = 0; i < 510; i++) Tick();              // capture + pop
 			return Write();
 		}
 
 		if (mode == "freeze")
 		{
-			// Like the pokeball demo: both players walk to their platform's
-			// inner edge, P1 fires a flat bolt across the gap. P2 freezes
-			// solid mid-edge, thaws, and tumbles back out.
+			// Both players walk to their platform's inner edge. P1 transforms
+			// into the ray gun (hold), aims right, and the instant beam fires
+			// on release. P2 freezes solid mid-edge, thaws, and tumbles out.
 			for (int i = 0; i < 480; i++) Tick();              // cooldown
 			for (int i = 0; i < 55; i++) Tick(AngleRight, false, false, false, AngleLeft);
-			for (int i = 0; i < 5; i++) Tick(AngleRight, true); // fire!
-			for (int i = 0; i < 20; i++) Tick();               // bolt flight
+			for (int i = 0; i < 35; i++) Tick(AngleRight, true); // gun form, aim right
+			for (int i = 0; i < 5; i++) Tick(AngleRight);      // release -> ZAP
 			for (int i = 0; i < 200; i++) Tick(0, false, false, false, AngleLeft); // P2 mashes left (frozen = no effect)
-			for (int i = 0; i < 296; i++) Tick();              // thaw + aftermath
+			for (int i = 0; i < 281; i++) Tick();              // thaw + aftermath
 			return Write();
 		}
 
 		if (mode == "portal")
 		{
-			// P1 walks to the inner edge, fires the blue portal up-right
-			// (lands on/above the centre island), then the orange portal
-			// flat-left onto their own island, walks left into the orange
-			// and pops out across the map.
-			const byte AngleUpRight = 33;
+			// Portal-2-style loop. From the edge of P1's platform a shallow
+			// down-right shot crosses the gap and plants BLUE upright on the
+			// LEFT wall of P2's platform, facing the gap. P1 then simply
+			// walks off the edge (jumping would land him on the overhanging
+			// top-center platform) and fires straight down mid-fall to plant
+			// ORANGE flat on the bottom island, landing beside it. A
+			// short-charge ball lobbed LEFT drops onto orange and comes
+			// flying out of the wall portal; then P1 strolls onto the plane
+			// himself and rides the loop.
 			for (int i = 0; i < 480; i++) Tick();               // cooldown
-			for (int i = 0; i < 55; i++) Tick(AngleRight);      // walk to edge
-			for (int i = 0; i < 5; i++) Tick(AngleUpRight, true); // blue!
-			for (int i = 0; i < 95; i++) Tick();                // flight + place
-			for (int i = 0; i < 5; i++) Tick(AngleLeft, true);  // orange!
-			for (int i = 0; i < 75; i++) Tick();                // place + link
-			for (int i = 0; i < 90; i++) Tick(AngleLeft);       // walk into orange
-			for (int i = 0; i < 283; i++) Tick();               // pop out + settle
+			for (int i = 0; i < 15; i++) Tick(AngleRight);      // walk to the edge
+			for (int i = 0; i < 5; i++) Tick(AngleShallowDR, true); // blue -> P2's gap wall!
+			for (int i = 0; i < 90; i++) Tick();                // plant + gun cooldown
+			for (int i = 0; i < 14; i++) Tick(AngleRight);      // walk straight off the edge...
+			for (int i = 0; i < 5; i++) Tick(AngleDown, true);  // ...orange -> island floor, mid-fall!
+			for (int i = 0; i < 130; i++) Tick();               // P1 drops onto orange: blue flings him home!
+			for (int i = 0; i < 35; i++) Tick(AngleRight);      // back toward the edge
+			for (int i = 0; i < 20; i++) Tick(AngleRight, false, true); // short-charge ball...
+			for (int i = 0; i < 5; i++) Tick();                 // ...release: lob into the gap onto orange!
+			for (int i = 0; i < 110; i++) Tick();               // ball boomerangs out of the wall portal
+			for (int i = 0; i < 30; i++) Tick(AngleRight);      // P1 walks off the edge once more
+			for (int i = 0; i < 200; i++) Tick();               // second ride + settle
 			return Write();
 		}
 
 		if (mode == "mjolnir")
 		{
-			// Both players walk to their platform's inner edge; P1 hurls the
-			// hammer flat across the gap. It smites P2, embeds in their
-			// island, then boomerangs home and P1 catches it.
+			// Both players walk to their platform's inner edge; P1 charges
+			// the hammer (spinning overhead) and releases a full-power flat
+			// throw across the gap. It kills P2 on contact, bleeds speed
+			// Boomerang-Fu style, swings around and P1 catches it.
 			for (int i = 0; i < 480; i++) Tick();              // cooldown
 			for (int i = 0; i < 55; i++) Tick(AngleRight, false, false, false, AngleLeft);
-			for (int i = 0; i < 5; i++) Tick(AngleRight, true); // throw!
-			for (int i = 0; i < 548; i++) Tick();              // smite + return + catch
+			for (int i = 0; i < 66; i++) Tick(0, true);        // hold: charge up
+			for (int i = 0; i < 5; i++) Tick();                // release: throw!
+			for (int i = 0; i < 480; i++) Tick();              // kill + return + catch
 			return Write();
 		}
 
 		if (mode == "banana")
 		{
-			// P1 tosses a peel ahead on their own platform, steps away to
-			// clear the thrower immunity, then walks back into it and eats
-			// the slip. Self-inflicted slapstick.
+			// Measured Level1 geometry: side platforms are capsules 13 wide
+			// (surface y~5.5, inner tips at x=-7.4 / +6.1), the center
+			// platform (-0.43, 9.96) roofs the whole inner gap (belly 7.4),
+			// island surface y~-4.15. Aim is angle-smoothed, so P1 holds
+			// right ~30 ticks (aim settles, drifts to x~-8.3, safely short
+			// of the tip so he doesn't wrap around it) and tosses: the arc
+			// peaks ~7.0, slips under the belly, and sticks mid-island
+			// (x~2.2). P2 walks left until he wraps a step down his inner
+			// tip face, releases - gravity drops him to the island ~3.7
+			// units right of the tack - then strolls left into it. Dead.
 			for (int i = 0; i < 480; i++) Tick();              // cooldown
-			for (int i = 0; i < 5; i++) Tick(AngleRight, true); // toss!
-			for (int i = 0; i < 60; i++) Tick();               // settle + arm
-			for (int i = 0; i < 30; i++) Tick(AngleLeft);      // step clear (immunity)
-			for (int i = 0; i < 15; i++) Tick();               // beat
-			for (int i = 0; i < 70; i++) Tick(AngleRight);     // walk back into it
-			for (int i = 0; i < 384; i++) Tick();              // tumble + aftermath
+			for (int i = 0; i < 30; i++) Tick(AngleRight);     // P1: settle aim right
+			for (int i = 0; i < 5; i++) Tick(AngleRight, true); // toss: under the belly, onto the island
+			for (int i = 0; i < 150; i++) Tick();              // flight + settle + arm
+			// Slimes CLING to edges even with no input, so P2 can't just
+			// walk off - he DASHES down-left off his inner edge instead
+			// (a flat dash is ~28 u/s and overshoots the whole gap),
+			// dropping into the gap and sliding into the tack.
+			for (int i = 0; i < 32; i++) Tick(0, false, false, false, AngleLeft); // P2 toward his inner edge
+			for (int i = 0; i < 5; i++) Tick(0, false, false, false, AngleDownLeft, false, true); // DASH down-left!
+			for (int i = 0; i < 10; i++) Tick(0, false, false, false, AngleDownLeft); // carry the launch
+			for (int i = 0; i < 488; i++) Tick();              // fall, slide into the tack: dead
 			return Write();
 		}
 
 		if (mode == "superstar")
 		{
 			// Both players walk to their platform's inner edge; P1 pops the
-			// star, jumps off the inner face and air-strafes across the gap
-			// at star speed; the touch kills P2.
+			// star and uses the infinite air jumps to bounce across the gap
+			// while swelling up, timing the detonation right next to P2.
+			// Growth runs 180 ticks (3s) from cast.
 			for (int i = 0; i < 480; i++) Tick();              // cooldown
 			for (int i = 0; i < 55; i++) Tick(AngleRight);     // walk to inner edge
-			for (int i = 0; i < 30; i++) Tick(AngleRight, true); // star!
-			for (int i = 0; i < 4; i++) Tick(AngleRight, false, false, true); // launch off the wall face
-			for (int i = 0; i < 56; i++) Tick(AngleRight);     // fly across onto the capsule
-			for (int i = 0; i < 6; i++) Tick(AngleRight, false, false, true); // fling off it
-			for (int i = 0; i < 6; i++) Tick(AngleRight);      // brief strafe...
-			for (int i = 0; i < 55; i++) Tick();               // ...drop onto P2's platform
-			for (int i = 0; i < 45; i++) Tick(AngleLeft);      // walk into P2
-			for (int i = 0; i < 264; i++) Tick();              // aftermath
-
+			for (int i = 0; i < 3; i++) Tick(0, true);         // star!
+			for (int i = 0; i < 5; i++) Tick(AngleRight, false, false, true); // hop off the edge
+			for (int i = 0; i < 25; i++) Tick(AngleRight);     // drift across
+			for (int i = 0; i < 5; i++) Tick(AngleRight, false, false, true); // AIR JUMP 1
+			for (int i = 0; i < 25; i++) Tick(AngleRight);
+			for (int i = 0; i < 5; i++) Tick(AngleRight, false, false, true); // AIR JUMP 2
+			for (int i = 0; i < 5; i++) Tick(AngleRight);      // last nudge over the platform
+			for (int i = 0; i < 112; i++) Tick();              // drop next to P2, swell... BOOM
+			for (int i = 0; i < 320; i++) Tick();              // aftermath
 			return Write();
 		}
 
 		if (mode == "webswing")
 		{
-			// P1 walks right, webs up-forward, pumps the swing, then releases
-			// with a jump fling.
-			const byte AngleUpRight = 33; // ~45 degrees
+			// P1 runs right and HOLDS the ability button: the web fires at
+			// the fixed 35-degree up-forward angle and stays attached while
+			// held. Air-strafe pumps the swing; releasing the button lets go
+			// with the fling boost.
 			for (int i = 0; i < 500; i++) Tick();              // cooldown
 			for (int i = 0; i < 50; i++) Tick(AngleRight);     // run right
-			for (int i = 0; i < 5; i++) Tick(AngleUpRight, true); // web!
-			for (int i = 0; i < 110; i++) Tick(AngleRight);    // swing + pump
-			for (int i = 0; i < 6; i++) Tick(AngleRight, false, false, true); // jump release
-			for (int i = 0; i < 240; i++) Tick();              // fly + land
+			for (int i = 0; i < 115; i++) Tick(AngleRight, true); // press + HOLD: swing
+			for (int i = 0; i < 240; i++) Tick(AngleRight);    // release -> fling + land
+			for (int i = 0; i < 60; i++) Tick();               // settle
 			return Write();
 		}
 
