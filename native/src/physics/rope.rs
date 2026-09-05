@@ -1,6 +1,11 @@
 //! Fixed rope integration and endpoint operations from RopeBody/DetPhysics.
 //! Scene broad-phase registration and grappling ability behavior remain separate.
-use crate::{fixed::Fix, geometry::RoundedRect, vector::Vec2, world::DT};
+use crate::{
+    fixed::{Fix, MathError},
+    geometry::RoundedRect,
+    vector::Vec2,
+    world::DT,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,8 +91,17 @@ impl Rope {
         true
     }
     pub fn step(&mut self, config: RopeConfig, rectangles: &[RoundedRect]) {
+        self.try_step(config, rectangles)
+            .expect("fixed division by zero");
+    }
+    /// Preserve mutations preceding a source arithmetic error for replay checks.
+    pub fn try_step(
+        &mut self,
+        config: RopeConfig,
+        rectangles: &[RoundedRect],
+    ) -> Result<(), MathError> {
         if !self.enabled {
-            return;
+            return Ok(());
         }
         let dt = if config.dt == Fix::ZERO {
             DT * Fix::from_f64(0.1)
@@ -108,8 +122,6 @@ impl Rope {
         let half = Fix::from_f32(0.5);
         let gravity = (-Vec2::UP) * config.gravity * if config.space { half } else { Fix::ONE };
         let last = self.count - 1;
-        // Keep even the source's unused division: a one-segment rope errors.
-        let _unused = Fix::ONE / Fix::from_int(last as i64);
         for i in 0..=last {
             let before = self.segment[i];
             let force = if i == 0 {
@@ -121,6 +133,11 @@ impl Rope {
             };
             self.segment[i] = Fix::from_int(2) * before - self.previous[i] + dt * force;
             self.previous[i] = before;
+            if i == 0 {
+                // The source updates the first endpoint before this unused
+                // division fails for a one-segment rope.
+                let _unused = Fix::ONE.checked_div(Fix::from_int(last as i64))?;
+            }
         }
         for _ in 0..config.iterations {
             let delta = self.segment[1] - self.segment[0];
@@ -152,7 +169,9 @@ impl Rope {
                 self.segment[last] -= correction * direction * (Fix::ONE - end_mass);
             }
         }
-        let stretch = config.stretchiness / (self.separation * self.separation);
+        let stretch = config
+            .stretchiness
+            .checked_div(self.separation * self.separation)?;
         for &r in &self.colliding_rects[..self.collision_count] {
             let rectangle = rectangles[r];
             for i in 1..last {
@@ -171,5 +190,6 @@ impl Rope {
             }
         }
         self.collision_count = 0;
+        Ok(())
     }
 }

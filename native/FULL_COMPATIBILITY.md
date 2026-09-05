@@ -351,7 +351,7 @@ completed gameplay captures. `beam_gameplay_cases.py --stocks 0` reproduces the
 no-stocks setup. Raw evidence is in `artifacts/player-life/` and
 `artifacts/player-life-gameplay/`.
 
-Ability exits, rope detachment on death, body and ability destruction, clone
+Ability exits, wiring rope detachment into death, body and ability destruction, clone
 creation, stock choice and revival remain unported as
 native lifecycle stages. This checkpoint supplies shared accounting for those
 handlers; it does not turn the public movement/dash environment into full combat.
@@ -427,3 +427,52 @@ Rendering and optional jump sounds are outside the comparison. The return value
 supplies a pending notification; arbitrary listener effects, moving-platform
 updates, rope-driven ungrounding, and full death/revival handlers still require
 integration and validation in the full native world.
+
+
+## Player body and rope transitions
+
+`player_body::State` ports `PlayerBody.Init`, `AddForce`, `AttachRope`,
+`EnterAbilityClearRope`, `UpdateSim` and `LateUpdateSim`. Its live `BodyRope`
+objects reuse the physics solver and endpoint operations, adding owner identity
+and endpoint airtime. The methods preserve velocity history, time-scaled motion,
+airborne/grounded rope coupling, overstretch detachment, jump-release momentum,
+extra swing force and velocity decay.
+
+Replacing a rope modifies the old rope using the incoming endpoint flag before
+storing the new reference. Entering an ability clears that reference without
+detaching the rope. Movement uses player-scaled delta time; rope airtime uses the
+raw simulation delta; release momentum divides by the fixed base step. External
+velocity still decays on zero-time updates. These are source behaviors, including
+their unusual interaction with time manipulation.
+
+Actual Unity methods match **600 generated scenarios / 8,666 completed actions**,
+including 1,731 body updates, 2,309 late updates, 1,709 coupled rope-solver steps,
+1,318 attachment changes, 399 ability-entry clears and 93 release-sound requests.
+The 391 complete sequences and 209 first-error boundaries retain state throughout:
+187 missing-player/holder null references and 22 rope division-by-zero errors.
+The component oracle calls each original rope solver serially to preserve a
+deterministic first-error boundary; it does not test parallel exception scheduling.
+`Rope::try_step` now preserves mutations before an arithmetic error for callers
+that need a recoverable result, including the first endpoint movement before
+the source fails on a one-segment rope.
+
+A real six-player grappling replay matches **4,405 body calls** (2,198 updates and
+2,207 late updates). Of these, 773 start with a rope reference, 769 with an enabled
+rope and 439 with an arrived hook. The same replay's **600 physics stages / 3,834
+callbacks** match, with 268 active-rope stages and up to six active ropes. This
+reuses the existing grappling input with new capture instrumentation; it is not a
+new independent input scenario. There are no jump-release sounds in this replay;
+that branch is covered by the generated cases.
+
+Both body fixtures run under `just verify`. Regenerate with
+`just verify-player-body`; use `verify_player_body.py --traces TRACE...` for
+actual update captures. All captured calls with an initial rope reference are
+retained in the gameplay fixture, along with a sample of unroped calls. Raw
+artifacts and hashes are under `artifacts/player-body/` and
+`artifacts/player-body-gameplay/`.
+
+This verifies the body/rope methods and their interaction. The gameplay check
+imports Unity state before each method. Full-world component identity, scheduler
+enablement, physics/body update ordering across an independent episode, ability
+controllers, and death/revival orchestration still need integration. The public
+C environment remains the movement/dash slice.

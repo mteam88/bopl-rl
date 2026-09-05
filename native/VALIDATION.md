@@ -352,3 +352,38 @@ The movement world uses the shared code for attachment and jump detachment;
 existing independent C-ABI episodes remain exact. The fixture is included in
 `just verify`. Full component-reference lifecycle, arbitrary event listeners,
 rope-driven detachment and death/revival execution remain outside this check.
+
+
+## PlayerBody motion and rope lifecycle
+
+All 600 generated scenarios match, with 391 complete sequences, 8,666 completed
+actions and 209 first-error snapshots (187 null references / 22 division errors).
+The actions include 1,731 body updates, 2,309 late updates, 1,709 original rope
+solver calls, 1,318 attachment transitions and 399 ability-entry clears; 93
+release-sound requests match. There are 1,890 body calls with enabled ropes and
+1,285 with arrived hooks. The oracle executes original component and solver
+methods, with serial rope dispatch for deterministic error snapshots.
+
+Assembly:
+`881b7707d4df94faea974a1884b81c5f43e413695535aa250a1ef5287e1f49c8`.
+Input SHA:
+`81715ecb202c48c605c814b8376248d0667cce96549de7715bceda496ff87397`.
+Output SHA:
+`1112cfef2e9580eaaa371b78a91315a343a5afbfa674c457281eb0cfc949d1d1`.
+
+Actual six-player gameplay matches 4,405 body calls: 2,198 updates and 2,207 late
+updates. Of these, 773 begin with a rope reference, 769 with an enabled rope and
+439 with an arrived hook. No release sounds occur in this trace. All 600 physics
+stages / 3,834 callbacks also match, including 268 stages with active ropes and
+up to six active ropes. Unity supplies each method's pre-state; this is not an
+independent native grappling episode. The input repeats the existing six-hook
+scenario with body capture enabled.
+
+Replay SHA:
+`545be94ee333638e63be2756d9fa21b817dc42d40444c65709a439ff9075ac67`.
+Trace SHA:
+`95a80354c79754306e1fe20727aef02f6ffc5c4bbbf2f15f4f5a5c71d3316c89`.
+The gameplay assembly is the same as the direct oracle. Reports and raw evidence
+are in `artifacts/player-body/` and `artifacts/player-body-gameplay/`. Both body
+fixtures run under `just verify`. Global scheduler/component identity and full
+ability/death/revival orchestration remain outside this check.

@@ -114,7 +114,8 @@ physics stage, beam graph, hitbox pool and target force/charge components are
 verified together in the source physics update order. Shared death accounting and
 collision-effect selection have separate Unity checks. Ground attachment and
 detachment are shared with the movement world; the remaining death/revival
-handlers still need integration. Independent player-input
+handlers still need integration. Player-body motion and rope transitions have
+coupled component tests and actual replay checks. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

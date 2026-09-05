@@ -12,6 +12,71 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_body" => {
+            let mut state: bopl_sim::player_body::State = read(&q, "state");
+            let context: bopl_sim::player_body::Context = read(&q, "context");
+            let mut ropes: Vec<bopl_sim::player_body::BodyRope> = read(&q, "ropes");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut released = false;
+                let result = match action["op"].as_str().unwrap() {
+                    "init" => {
+                        state.init();
+                        Ok(())
+                    }
+                    "force" => {
+                        state.add_force(read(action, "force"));
+                        Ok(())
+                    }
+                    "attach" => {
+                        state.attach(
+                            read(action, "rope"),
+                            read(action, "top"),
+                            &mut ropes,
+                            &context,
+                        );
+                        Ok(())
+                    }
+                    "clear" => {
+                        state.clear_for_ability();
+                        Ok(())
+                    }
+                    "update" => state
+                        .update(read(action, "dt"), &mut ropes, &context)
+                        .map(|value| released = value),
+                    "late" => state.late_update(&mut ropes, &context),
+                    "rope_step" => {
+                        let mut result = Ok(());
+                        for rope in &mut ropes {
+                            result = rope
+                                .physics
+                                .try_step(
+                                    bopl_sim::physics::rope::RopeConfig {
+                                        dt: read(action, "dt"),
+                                        gravity: context.rope_gravity,
+                                        space: false,
+                                        iterations: 3,
+                                        stretchiness: bopl_sim::fixed::Fix::from_f64(0.1),
+                                    },
+                                    &[],
+                                )
+                                .map_err(|_| "division_by_zero");
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                        result
+                    }
+                    _ => panic!("unknown player body action"),
+                };
+                let frame = json!({"state":state,"ropes":ropes,"released":released});
+                if let Err(error) = result {
+                    return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_player_ground" => {
             let mut state: bopl_sim::player_ground::State = read(&q, "state");
             let surfaces: Vec<bopl_sim::surface::Surface> = read(&q, "surfaces");
