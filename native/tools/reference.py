@@ -111,6 +111,9 @@ def capture(args):
         raise ValueError(f"refusing to overwrite {output}")
     binary = ROOT / "Builds/Linux/BoplBattle.x86_64"
     env = dict(os.environ, BOPL_TRACE=str(output), BOPL_TRACE_TICKS=str(args.ticks), BOPL_TRACE_BATCH=str(args.batch))
+    physics = getattr(args, "physics", False)
+    if physics: env["BOPL_TRACE_PHYSICS"] = "1"
+    else: env.pop("BOPL_TRACE_PHYSICS", None)
     for name in ("BOPL_KERNEL_INPUT", "BOPL_KERNEL_OUTPUT"):
         env.pop(name, None)
     sources = {"replay_sha256": args.replay,
@@ -129,7 +132,7 @@ def capture(args):
     if before != after:
         raise ValueError("reference inputs changed while capture was running")
     provenance = {
-        "command": command, "batch": args.batch, "ticks": ticks,
+        "command": command, "batch": args.batch, "ticks": ticks, "physics_stages": physics,
         "elapsed_seconds": time.monotonic() - started,
         **before,
         "trace_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
@@ -148,6 +151,7 @@ def main():
     run.add_argument("--ticks", type=int, default=600)
     run.add_argument("--batch", type=int, default=1)
     run.add_argument("--timeout", type=int, default=180)
+    run.add_argument("--physics", action="store_true", help="capture full rigid-body stages before gameplay callbacks")
     diff = sub.add_parser("compare")
     diff.add_argument("left", type=Path)
     diff.add_argument("right", type=Path)

@@ -9,6 +9,15 @@ pub struct Transform {
     pub position: Vec2,
     pub rotation: Fix,
     pub offset: Vec2,
+    // FixTransform can cache a direction assigned directly by gameplay. Its
+    // angle roundtrip need not reproduce those exact raw components.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<Vec2>,
+}
+impl Transform {
+    fn basis(self) -> Vec2 {
+        self.right.unwrap_or_else(|| Vec2::angle(self.rotation))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,8 +103,7 @@ impl Scene {
                 let center = if kind == 2 {
                     o.transform.position
                 } else {
-                    o.transform.position
-                        + Vec2::angle(o.transform.rotation).complex_mul(o.transform.offset)
+                    o.transform.position + o.transform.basis().complex_mul(o.transform.offset)
                 };
                 o.collider.set_center(center);
                 o.body.orientation = o.transform.rotation;
@@ -125,9 +133,8 @@ impl Scene {
         for id in children {
             let i = self.index(id);
             let o = &mut self.objects[i];
-            o.collider.set_center(
-                transform.position + o.relative_pos.complex_mul(Vec2::angle(transform.rotation)),
-            );
+            o.collider
+                .set_center(transform.position + o.relative_pos.complex_mul(transform.basis()));
             o.body.orientation = transform.rotation + o.relative_orientation;
             o.collider.rotate(o.body.orientation);
         }
@@ -328,8 +335,11 @@ impl Scene {
                     continue;
                 }
                 o.transform.rotation = o.body.orientation;
-                o.transform.position = o.collider.center()
-                    - Vec2::angle(o.transform.rotation).complex_mul(o.transform.offset);
+                if o.transform.right.is_some() {
+                    o.transform.right = Some(Vec2::angle(o.body.orientation));
+                }
+                o.transform.position =
+                    o.collider.center() - o.transform.basis().complex_mul(o.transform.offset);
             }
         }
         report

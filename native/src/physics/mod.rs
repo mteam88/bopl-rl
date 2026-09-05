@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod composite;
 pub mod contact;
+pub mod rope;
 pub mod scene;
 pub mod shape;
 mod sweep;

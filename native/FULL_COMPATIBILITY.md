@@ -107,3 +107,34 @@ python3 native/tools/verify_dynamics.py
 Pending: actual local recording versus replay, full state-capture audit, full
 physics integration with gameplay, all abilities and map/round lifecycle in Rust, broad
 interaction verification and final API/adapter integration. The goal stays active.
+
+## Physics stages from actual gameplay
+
+The recorder can capture a complete rigid/composite scene immediately before
+`DetPhysics.Simulate` and its result before gameplay callbacks run:
+
+```sh
+python3 native/tools/reference.py capture game.rep native/artifacts/stages.jsonl.gz --physics --ticks 900 --batch 16 --timeout 600
+python3 native/tools/verify_physics_capture.py native/artifacts/stages.jsonl.gz
+```
+
+Each comparison supplies the recorded pre-physics state to Rust. This tests the
+physics stage on states produced by real abilities; it is separate from the
+independent native movement episodes and does not certify native ability logic.
+Rope/beam ticks are counted explicitly and remain outside this stage comparison.
+The capture preserves collision queues, composite membership and the cached
+`FixTransform.right` vector, whose raw components can differ from recomputing its
+angle. Gameplay found this missing state after synthetic scenes passed; the
+original failing traces are retained in `artifacts/physics-gameplay/`.
+
+The three six-player ability-loadout captures now pass all 2,700 physics stages
+and 16,930 queued callbacks, with no state exclusions. No active rope or beam
+was present at these captured physics stages; their implementations are still
+required. This result is deliberately narrower than ability compatibility.
+
+The rope kernel also matches 2,000 actual Unity cases: 15,808 successful
+actions and 24 matching source arithmetic errors. It includes relaxation,
+platform contact, normal/space gravity, zero timestep, detached endpoints,
+40-segment capacity, spawning and both reeling directions. 197 cases are retained
+as standalone regressions. Rope broad-phase integration and the grappling
+ability lifecycle remain separate work.

@@ -12,6 +12,35 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_rope" => {
+            let mut rope: physics::rope::Rope = read(&q, "rope");
+            let config = read(&q, "config");
+            let rectangles: Vec<RoundedRect> = read(&q, "rectangles");
+            let mut output = Vec::new();
+            for a in q["actions"].as_array().unwrap() {
+                let result = match a["op"].as_str().unwrap() {
+                    "step" => {
+                        rope.step(config, &rectangles);
+                        Value::Null
+                    }
+                    "bounds" => json!(rope.bounds()),
+                    "spawn" => json!(rope.spawn(read(a, "point"))),
+                    "reel" => json!(rope.reel(read(a, "minimum"), false)),
+                    "reverse_reel" => json!(rope.reel(read(a, "minimum"), true)),
+                    "mass" => {
+                        rope.set_mass(read(a, "value"), read(a, "top"), read(a, "scale"));
+                        Value::Null
+                    }
+                    "detach" => {
+                        rope.detach(read(a, "top"));
+                        Value::Null
+                    }
+                    _ => panic!("unknown rope action"),
+                };
+                output.push(json!({"rope":rope,"result":result}));
+            }
+            return json!(output);
+        }
         "dynamics_scene" => {
             let mut scene: physics::scene::Scene = read(&q, "scene");
             let mut steps = Vec::new();

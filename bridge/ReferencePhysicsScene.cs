@@ -20,7 +20,7 @@ public static class ReferencePhysicsScene
     private static readonly BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
     public static void SweepAxes(bool x, bool roundedX) { if (Capturing) { sweepX=x;roundedSweepX=roundedX; } }
     private static JObject BoxJson(Box b) => new JObject { ["center"]=V(b.center),["right"]=V(b.right),["up"]=V(b.up),["inverse_extents"]=V(b.inverseExtents) };
-    private static JObject ShapeJson(IShape shape)
+    internal static JObject ShapeJson(IShape shape)
     {
         if (shape is Circle c) return new JObject { ["kind"]="circle",["shape"]=new JObject {["center"]=V(c.center),["radius"]=c.radius.m_rawValue} };
         if (shape is Box b) return new JObject { ["kind"]="box",["shape"]=BoxJson(b) };
@@ -91,6 +91,7 @@ public static class ReferencePhysicsScene
                 var go=new GameObject("Reference collider");
                 var ft=go.AddComponent<FixTransform>();
                 ft.position=V(v["transform"]["position"]);ft.rotation=F(v["transform"]["rotation"]);ft.offset=V(v["transform"]["offset"]);
+                if(v["transform"]["right"]!=null)typeof(FixTransform).GetField("rightInner",flags).SetValue(ft,V(v["transform"]["right"]));
                 go.SetActive((bool)v["active"]);
                 var a=new Adapter { transform=ft, IsDestroyed=(bool)v["destroyed"], callbackDestroyed=(bool)v["callback_destroyed"], shape=(string)v["collider"]["kind"]=="circle"?Shape.Circle:(string)v["collider"]["kind"]=="box"?Shape.Box:Shape.RoundedRect };
                 a.parent=new PhysicsParent { instanceId=(int)v["id"],fixTrans=ft,monobehaviourCollider=a,collisionCallback=(bool)v["callback"]?a:null,hierarchyNumber=adapters.Count };
@@ -119,6 +120,7 @@ public static class ReferencePhysicsScene
                     o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
                     o["relative_pos"]=V(body.relativePos);o["relative_orientation"]=body.relativeOrientation.m_rawValue;
                     o["transform"]=new JObject {["position"]=V(a.transform.position),["rotation"]=a.transform.rotation.m_rawValue,["offset"]=V(a.transform.offset)};
+                    if(objects[i]["transform"]["right"]!=null)o["transform"]["right"]=V(a.transform.right);
                     states.Add(o);
                 }
                 snapshot["objects"]=states;

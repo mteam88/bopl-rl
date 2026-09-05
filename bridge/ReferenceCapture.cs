@@ -71,6 +71,7 @@ public static class ReferenceCapture
             var encoder = new Encoder();
             var state = new JObject();
             state["tick"] = Updater.SimulationTicks;
+            if (ReferencePhysicsCapture.Enabled) state["physicsStage"] = ReferencePhysicsCapture.Take();
             state["events"] = events;
             events = new JArray();
             state["scene"] = SceneManager.GetActiveScene().name;

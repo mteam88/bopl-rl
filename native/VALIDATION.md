@@ -132,3 +132,19 @@ hashes. `fixtures/physics-scene.jsonl.gz` retains 60 scenes and 720 steps;
 represented scene field without presentation exclusions. The Unity adapter
 records callbacks without executing abilities; ropes and beams are absent.
 This verifies the shared physics stage, not full combat or native match parity.
+
+The same solver also matches 2,700 individually initialized physics stages from
+three actual six-player ability-loadout replays, including 16,930 callbacks.
+These exposed a missing cached transform direction: converting its angle back
+to a vector changed offset collider contacts. Capturing and using the actual
+`FixTransform.right` fixed the divergence. Original failures remain in
+`artifacts/physics-gameplay/`; corrected traces/reports are in
+`artifacts/physics-gameplay-v2/`. There were no active ropes or beams in these
+stages. This is stage-level evidence with Unity state supplied before each step,
+not an independent native combat rollout.
+
+Rope primitives match 2,000 reference cases, with 15,808 successful actions and
+24 matching division-by-zero outcomes. The probe invokes the actual
+`SimulateRopes_parallel` and `RopeBody` methods. A 197-case fixture covers
+integration, collisions with platforms, endpoint mass/attachment state,
+segment spawning and reeling; full grappling gameplay is not yet implemented.
