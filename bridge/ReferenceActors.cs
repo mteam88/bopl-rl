@@ -56,7 +56,7 @@ internal static class ReferenceActors
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             if(runtime["combat"]?["death_effects"]!=null)deathEffects=new ReferenceDeathEffects(runtime["combat"]["death_effects"],initial);
             if(runtime["combat"]!=null)combat=new ReferenceActorCombat(runtime["combat"],players);
-            var entityObjects=actorData.Select(a=>a["entity"]!=null?ReferenceActorEntity.Create(a["entity"],adapters.Find(v=>v.sourceId==(int)a["object"]),a["ordinary"],a["collision"]):null).ToList();
+            var entityObjects=actorData.Select(a=>a["entity"]!=null?ReferenceActorEntity.Create(a["entity"],adapters.Find(v=>v.sourceId==(int)a["object"]),a["ordinary"],a["collision"],a["bounds"]):null).ToList();
             for(int i=0;i<entityObjects.Count;i++)if(entityObjects[i]!=null)
             {
                 var parent=initial["nodes"][(int)actorData[i]["entity"]["node"]]["parent"];
@@ -119,6 +119,7 @@ internal static class ReferenceActors
             var ordinary=new Dictionary<int,ReferenceOrdinaryAbilities.Instance>();
             for(int i=0;i<actorData.Count;i++)if(actorData[i]["ordinary"]!=null)ordinary.Add(i,ReferenceOrdinaryAbilities.Bind(actorData[i]["ordinary"],entityObjects[i],slimes));
             if(deathEffects!=null)for(int i=0;i<bodies.Count;i++){var collision=bodies[i].GetComponent<PlayerCollision>();if(collision!=null)Set(collision,"playerIdHolder",slimes[i]!=null?(IPlayerIdHolder)slimes[i].Slime:ordinary[i].Ability);}
+            for(int i=0;i<bodies.Count;i++)if(actorData[i]["bounds"]!=null)ReferenceActorBounds.Bind(actorData[i]["bounds"],bodies[i],physics[i],slimes[i]!=null?(IPlayerIdHolder)slimes[i].Slime:ordinary[i].Ability,deathEffects);
             ReferencePlayerPosition.Bind(initial["players"],players,slimes);
             var drivers=new List<ReferenceActorDriver>();
             ReferencePlayerController.SoundCapture=name=>Event(currentActor,name.StartsWith("slimeJump")?"jump_sound":"sound",name);
@@ -159,6 +160,7 @@ internal static class ReferenceActors
                 d.Step=dt=>{
                     Phase("update",id);currentActor=actor;Constants.GROUNDALIGNMENTDEADZONE=F(actorData[actor]["config"]["alignment_deadzone"]);
                     if(role=="collision")bodies[actor].GetComponent<PlayerCollision>().UpdateSim(dt);
+                    else if(role=="bounds")bodies[actor].GetComponent<DestroyIfOutsideSceneBounds>().UpdateSim(dt);
                     else if(role=="rewind")bodies[actor].GetComponent<RewindRecorder>().UpdateSim(dt);
                     else if(role=="dash")ordinary[actor].Ability.GetComponent<Dash>().UpdateSim(dt);
                     else if(role=="ability")ordinary[actor].Ability.UpdateSim(dt);
@@ -170,7 +172,7 @@ internal static class ReferenceActors
                 };
                 d.Late=dt=>{Phase("late",id);currentActor=actor;scene.groundedPlayerRopeStr=F(actorData[actor]["config"]["physics"]["rope_strength"]);if(role=="physics")physics[actor].LateUpdateSim(dt);else if(role=="body")bodies[actor].LateUpdateSim(dt);};
             }
-            if(deathEffects!=null){deathEffects.ActorId=body=>bodies.IndexOf(body);deathEffects.MaterialId=material=>{int id=slimes.FindIndex(s=>s!=null&&s.Animation.Animator.spriteRen.sharedMaterial==material);if(id<0)throw new ArgumentException("Unbound death material");return id;};ReferenceDeathEffects.ComponentPhase=(kind,component)=>{var id=deathEffects.Id(component);if(id.HasValue){currentActor=deathEffects.Actor(component);Phase(kind,id);}};}
+            if(deathEffects!=null){deathEffects.ActorId=body=>bodies.IndexOf(body);deathEffects.MaterialId=material=>{int id=slimes.FindIndex(s=>s!=null&&s.Animation.Animator.spriteRen!=null&&s.Animation.Animator.spriteRen.sharedMaterial==material);if(id<0)throw new ArgumentException("Unbound death material");return id;};ReferenceDeathEffects.ComponentPhase=(kind,component)=>{var id=deathEffects.Id(component);if(id.HasValue){currentActor=deathEffects.Actor(component);Phase(kind,id);}};}
             Static("addedUpdatables",(int)initial["added"]);Static("prefabsAdded",(int)initial["prefabs_added"]);Static("registeringAPrefab",(bool)initial["registering_prefab"]);Static("hitStopFrames",(int)initial["hitstop"]);
             Static("toBeAddedUpdatables",initial["pending"]["items"].Take((int)initial["pending"]["length"]).Select(id=>(MonoUpdatable)drivers[(int)id]).ToList());
             Updater.updatables=initial["live"].Select(id=>(MonoUpdatable)drivers[(int)id]).ToList();

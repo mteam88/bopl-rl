@@ -9,7 +9,7 @@ using static ReferenceDynamics;
 // Awake runs once, before the supplied simulation state is bound.
 internal static class ReferenceActorEntity
 {
-    internal static GameObject Create(JToken state,ReferencePhysicsScene.Adapter adapter,JToken ordinary=null,JToken collision=null)
+    internal static GameObject Create(JToken state,ReferencePhysicsScene.Adapter adapter,JToken ordinary=null,JToken collision=null,JToken bounds=null)
     {
         var go=adapter.transform.gameObject;go.SetActive(false);
         if(ordinary!=null)go.AddComponent<Ability>();else go.AddComponent<Hitbox>();
@@ -17,6 +17,7 @@ internal static class ReferenceActorEntity
         if(ordinary==null){var slime=go.AddComponent<SlimeController>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();}
         if(ordinary?["dash"]!=null)ReferenceDashAbility.Create(go);
         if(collision!=null)go.AddComponent<PlayerCollision>();
+        if(bounds!=null)go.AddComponent<DestroyIfOutsideSceneBounds>();
         go.SetActive(true);
         if(collision!=null)ReferenceActorCombat.Bind(go.GetComponent<PlayerCollision>(),collision);
         Set(physics,"OnAttachedToGround",null);Set(physics,"OnNoLongerGrounded",null);

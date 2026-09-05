@@ -30,6 +30,8 @@ pub struct Actor {
     pub collision: Option<crate::actor_combat::Collision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rewind: Option<crate::rewind::State>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<crate::actor_bounds::State>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +44,7 @@ pub enum Role {
     Dash,
     Collision,
     Rewind,
+    Bounds,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Component {
@@ -610,6 +613,26 @@ impl Runtime {
                 }
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
                     let component = components[phase.id.unwrap()];
+                    if matches!(phase.kind, scheduler::Phase::Update)
+                        && matches!(component.role, Role::Bounds)
+                    {
+                        let result = Self::update_bounds(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                scene,
+                                actor_ropes,
+                                combat,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                            report,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
                     if matches!(phase.kind, scheduler::Phase::Update)
                         && matches!(component.role, Role::Rewind)
                     {

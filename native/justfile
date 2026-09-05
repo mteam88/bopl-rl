@@ -81,6 +81,9 @@ verify: build check
     python3 native/tools/verify_actor_spawn.py --golden
     python3 native/tools/verify_actor_spawn.py --initial --golden
     python3 native/tools/verify_actor_rewind.py --golden
+    python3 native/tools/verify_actor_bounds.py --golden
+    python3 native/tools/verify_actor_bounds.py --faults --golden
+    python3 native/tools/verify_actor_bounds.py --interactions --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -228,3 +231,8 @@ verify-actor-spawn: build
 
 verify-actor-rewind: build
     python3 native/tools/verify_actor_rewind.py
+
+verify-actor-bounds: build
+    python3 native/tools/verify_actor_bounds.py
+    python3 native/tools/verify_actor_bounds.py --faults
+    python3 native/tools/verify_actor_bounds.py --interactions

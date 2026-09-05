@@ -1169,3 +1169,42 @@ command without `--golden`. Raw evidence and exact source/input/output hashes ar
 in `artifacts/actor-rewind/report.json`. Existing spawn and death regressions,
 Rust tests/lints, Python checks and the C smoke test pass. Rewind casting/playback,
 clone allocation and the complete match environment remain outstanding.
+
+## Scheduled map-boundary deaths
+
+`actor_bounds.rs` runs the player's DestroyIfOutsideSceneBounds behavior inside
+the actor scheduler: strict grass/space limits, axis priority and enable flags,
+water and ordinary death effects, player material selection, and the distinct
+dash/PlayerCollision/no-collision-component exit paths. The existing effect
+registry now also runs the actual water prefab's PlayAnimation lifecycle. Water
+effects scale with the body; side/upper effects keep their prefab scale. Effects
+remain observable when a later renderer or camera access fails.
+
+The three retained corpora contain 198 exact source comparisons, with every
+one-through-six-player roster represented: 174 complete episodes, 33,300 ticks,
+and 24 null-reference failure prefixes. The basic set has 150 cases; renderer/
+camera failures add 24; dash and permanent-revival interactions add 24. All 24
+interaction cases actually create their intended boundary effect. Across the
+corpora, 126 effects are created: 108 are deleted and 18 remain only in aborted
+source frames. The traces compare 96 accounted body deaths and 90 final-player
+death events; the difference includes bodies that still have a surviving clone
+in the player ledger. This verifies ledger behavior, not clone allocation.
+
+Two binding details are checked against the real source. The loaded water
+prefab's nonserialized FixTransform.position is zero even though its saved
+position is -1.47. Components on inactive ability objects must run Awake before
+the supplied scheduler state is installed; otherwise activation registers an
+unmapped second boundary checker. Registration capture now rejects unknown
+components. Dash cases start airborne so SyncPhysicsTo does not move them back
+to a platform before the boundary check.
+
+Run `python3 native/tools/verify_actor_bounds.py --golden`, adding `--faults` or
+`--interactions` for the other sets. Full traces are in
+`fixtures/actor-bounds*.jsonl.xz`; raw evidence and assembly/input/output hashes
+are under `artifacts/actor-bounds`, `actor-bounds-failures`, and
+`actor-bounds-interactions-exits`. Earlier diagnostic/incomplete interaction runs
+are kept separately and are not the retained regression corpus. Existing death
+effect and spawn fixtures, Rust checks, Python tests and the C smoke test pass.
+Render-frame-only water rings/audio are outside these Updater traces. Projectile/
+item boundary paths, clone allocation and the full match environment remain
+outstanding; the public C environment retains its documented movement/dash scope.

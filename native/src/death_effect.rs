@@ -2,6 +2,24 @@
 //! deferred deletion. Unity's visual-only splash randomness is not gameplay RNG.
 use crate::{animator, fixed::Fix, physics::scene::Scene, scheduler, vector::Vec2};
 use serde::{Deserialize, Serialize};
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Death,
+    Water,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WaterPrefab {
+    pub frames: Vec<animator::Frame>,
+    pub initial_sprite: Option<u32>,
+}
+pub struct Spawn {
+    pub position: Vec2,
+    pub actor: usize,
+    pub scale: f32,
+    pub material: Option<u32>,
+    pub kind: Kind,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Prefab {
     pub anticipation: Vec<animator::Frame>,
@@ -14,6 +32,8 @@ pub struct Prefab {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Effect {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<Kind>,
     pub actor: usize,
     pub node: usize,
     pub components: [usize; 3],
@@ -28,6 +48,8 @@ pub struct Effect {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Effects {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_prefab: Option<WaterPrefab>,
     pub prefab: Prefab,
     pub instances: Vec<Effect>,
 }
@@ -40,6 +62,38 @@ impl Effects {
         scale: f32,
         material: Option<u32>,
     ) -> scheduler::Result<()> {
+        self.spawn_kind(
+            schedule,
+            Spawn {
+                position,
+                actor,
+                scale,
+                material,
+                kind: Kind::Death,
+            },
+        )
+    }
+    pub fn spawn_kind(
+        &mut self,
+        schedule: &mut scheduler::State,
+        request: Spawn,
+    ) -> scheduler::Result<()> {
+        let Spawn {
+            position,
+            actor,
+            scale,
+            material,
+            kind,
+        } = request;
+        let water = kind == Kind::Water;
+        let initial_sprite = if water {
+            self.water_prefab
+                .as_ref()
+                .ok_or("water_effect_not_bound")?
+                .initial_sprite
+        } else {
+            self.prefab.initial_sprite
+        };
         let node = schedule.nodes.len();
         schedule.nodes.push(scheduler::Node {
             parent: None,
@@ -60,8 +114,12 @@ impl Effects {
                 },
                 present: true,
                 destroyed: false,
-                hierarchy: (i + 1) as i32,
-                enabled: true,
+                hierarchy: if water && i < 2 {
+                    2 - i as i32
+                } else {
+                    (i + 1) as i32
+                },
+                enabled: !water || i != 0,
                 ignore_activity: false,
                 execution_gate: None,
             });
@@ -71,6 +129,7 @@ impl Effects {
         }
         schedule.end_prefab()?;
         self.instances.push(Effect {
+            kind: water.then_some(kind),
             actor,
             node,
             components,
@@ -80,7 +139,7 @@ impl Effects {
             vibrate: false,
             present: true,
             destroyed: false,
-            animator: animator::State::idle(self.prefab.initial_sprite),
+            animator: animator::State::idle(initial_sprite),
             splashes: vec![],
         });
         Ok(())
@@ -121,6 +180,19 @@ impl Effects {
             )
         };
         if matches!(phase.kind, scheduler::Phase::Init) && id == e.components[0] {
+            if e.kind == Some(Kind::Water) {
+                begin(
+                    &mut e.animator,
+                    &self
+                        .water_prefab
+                        .as_ref()
+                        .ok_or("water_effect_not_bound")?
+                        .frames,
+                    3,
+                )?;
+                e.animator.child_suffix = Some(String::new());
+                return Ok(true);
+            }
             report.events.push(crate::actors::Event {
                 actor: e.actor,
                 event: crate::player_controller::Event::Sound("slimeDeath".into()),
