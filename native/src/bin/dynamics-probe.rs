@@ -826,31 +826,59 @@ fn evaluate(q: Value) -> Value {
     };
     json!(contact)
 }
+fn panic_result(panic: Box<dyn std::any::Any + Send>) -> Value {
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic");
+    if message.contains("division by zero") {
+        json!({"error":"division_by_zero"})
+    } else if matches!(
+        message,
+        "negative squared length: Domain"
+            | "normalized vector outside cosine domain: Domain"
+            | "negative black hole mass magnitude: Domain"
+    ) {
+        json!({"error":"domain"})
+    } else {
+        json!({"error":"rust_panic", "message":message})
+    }
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::panic::set_hook(Box::new(|_| {}));
     let mut out = BufWriter::new(io::stdout().lock());
-    for line in io::stdin().lock().lines() {
-        let query = serde_json::from_str(&line?)?;
-        let result = std::panic::catch_unwind(|| evaluate(query)).unwrap_or_else(|panic| {
-            let message = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown panic");
-            if message.contains("division by zero") {
-                json!({"error":"division_by_zero"})
-            } else if matches!(
-                message,
-                "negative squared length: Domain"
-                    | "normalized vector outside cosine domain: Domain"
-                    | "negative black hole mass magnitude: Domain"
-            ) {
-                json!({"error":"domain"})
+    for (case, line) in io::stdin().lock().lines().enumerate() {
+        let query: Value = serde_json::from_str(&line?)?;
+        let streaming = query["stream_frames"].as_bool() == Some(true);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if streaming {
+                assert!(
+                    matches!(
+                        query["operation"].as_str(),
+                        Some("dynamics_actors" | "dynamics_slime_actors")
+                    ),
+                    "unsupported frame stream operation"
+                );
+                actors_probe::evaluate_streamed(&query, &mut |action, state| {
+                    writeln!(
+                        out,
+                        "{}",
+                        json!({"case":case,"action":action,"state":state})
+                    )
+                    .expect("write actor frame");
+                })
             } else {
-                json!({"error":"rust_panic", "message":message})
+                evaluate(query)
             }
-        });
-        writeln!(out, "{result}")?;
+        }))
+        .unwrap_or_else(panic_result);
+        let value = if streaming {
+            json!({"case":case,"result":result})
+        } else {
+            result
+        };
+        writeln!(out, "{value}")?;
     }
     Ok(())
 }

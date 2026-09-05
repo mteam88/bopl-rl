@@ -1,6 +1,6 @@
-//! SlimeController's locomotion and animation transitions. This instance currently
-//! accepts an empty ability list; ability selection, swallowing and the
-//! rest of the controller are separate integration work, not silent no-ops.
+//! SlimeController locomotion, animation and ability routing. Executable handlers
+//! are explicit; unsupported selected abilities return an error. Swallowing,
+//! general ability handoff and the remaining lifecycle are integration work.
 use crate::{
     animator::{self, Frame, Speed, Start, VelocityFrame},
     fixed::Fix,
@@ -52,6 +52,16 @@ pub struct Instance {
     pub ragdoll: Option<Ragdoll>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abilities: Option<crate::ability_routing::State>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<crate::ability::SlimeEntry>,
+}
+pub struct Update<'a> {
+    pub dt: Fix,
+    pub input: Vec2,
+    pub jump: bool,
+    pub actor: usize,
+    pub body: &'a mut crate::player_body::State,
+    pub player: &'a mut crate::scheduler::Player,
 }
 fn frames(data: &BTreeMap<String, Vec<Frame>>, name: &str) -> Result<Vec<Frame>> {
     data.get(name).cloned().ok_or("animation_missing")
@@ -323,41 +333,15 @@ impl Instance {
             self.state.facing_right = true;
         }
     }
-    pub fn update(
+    fn old_update(
         &mut self,
         controller: &mut player_controller::State,
-        dt: Fix,
-        input: Vec2,
-        jump: bool,
+        update: &mut Update,
         context: &mut player_controller::Context,
         emit: &mut impl FnMut(Event),
     ) -> Result<()> {
         let id = context.holder.ok_or("null_reference")?;
-        if self.state.mode == 10 {
-            let ragdoll = self.ragdoll.as_mut().ok_or("missing_ragdoll_state")?;
-            ragdoll.time += context.dt(dt);
-            if ragdoll.time > ragdoll.duration {
-                ragdoll.magnet_holder = None;
-                controller.physics.motion.external_velocity += controller.physics.motion.velocity;
-                controller.physics.motion.velocity = Vec2::ZERO;
-                self.enter_fall(controller, context, emit)?;
-            }
-        }
-        let motion = &mut controller.physics.motion;
-        let ground = motion
-            .ground
-            .and_then(|i| context.bindings.get(i as usize))
-            .and_then(|b| b.platform.as_ref());
-        if motion.grounded && ground.is_none_or(|p| p.destroyed) {
-            motion.rotation = Fix::ZERO;
-            motion.right = Vec2::angle(Fix::ZERO);
-            motion.up = motion.right.perp();
-            let angle = motion.unground(ground.map(|p| &p.surface), false);
-            let event = Event::Detached(angle);
-            self.physics_event(controller, &event, context.bindings, id, emit)?;
-            emit(event);
-            emit(Event::JumpSound(format!("slimeJump{id}")));
-        }
+        let (dt, input, jump) = (update.dt, update.input, update.jump);
         if self.state.mode != 8
             && let Some(abilities) = &mut self.abilities
         {
@@ -390,12 +374,21 @@ impl Instance {
             self.state.input = Vec2::ZERO;
             alignment = Fix::ZERO;
         }
-        if let Some(abilities) = &mut self.abilities
-            && abilities
-                .select(controller.physics.motion.grounded, self.state.suppress)?
-                .is_some()
-        {
-            return Err("ability_entry_not_implemented");
+        let selected = self
+            .abilities
+            .as_mut()
+            .map(|abilities| {
+                abilities.select_for_player(
+                    controller.physics.motion.grounded,
+                    self.state.suppress,
+                    update.player.invisible,
+                )
+            })
+            .transpose()?
+            .flatten();
+        if let Some(slot) = selected {
+            self.enter_ability(slot, controller, update, context, emit)?;
+            return Ok(());
         }
         match self.state.mode {
             4 => {
@@ -437,7 +430,45 @@ impl Instance {
         if !controller.physics.motion.grounded {
             self.align_air();
         }
-        if !self.state.has_spawned {
+        Ok(())
+    }
+    pub fn update(
+        &mut self,
+        controller: &mut player_controller::State,
+        mut update: Update,
+        context: &mut player_controller::Context,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<()> {
+        let id = context.holder.ok_or("null_reference")?;
+        let dt = update.dt;
+        if self.state.mode == 10 {
+            let ragdoll = self.ragdoll.as_mut().ok_or("missing_ragdoll_state")?;
+            ragdoll.time += context.dt(dt);
+            if ragdoll.time > ragdoll.duration {
+                ragdoll.magnet_holder = None;
+                controller.physics.motion.external_velocity += controller.physics.motion.velocity;
+                controller.physics.motion.velocity = Vec2::ZERO;
+                self.enter_fall(controller, context, emit)?;
+            }
+        }
+        let motion = &mut controller.physics.motion;
+        let ground = motion
+            .ground
+            .and_then(|i| context.bindings.get(i as usize))
+            .and_then(|b| b.platform.as_ref());
+        if motion.grounded && ground.is_none_or(|p| p.destroyed) {
+            motion.rotation = Fix::ZERO;
+            motion.right = Vec2::angle(Fix::ZERO);
+            motion.up = motion.right.perp();
+            let angle = motion.unground(ground.map(|p| &p.surface), false);
+            let event = Event::Detached(angle);
+            self.physics_event(controller, &event, context.bindings, id, emit)?;
+            emit(event);
+            emit(Event::JumpSound(format!("slimeJump{id}")));
+        }
+        self.old_update(controller, &mut update, context, emit)?;
+        self.finish_invisibility(update.player.invisible)?;
+        if matches!(self.state.mode, 8..=10) || !self.state.has_spawned {
             return Ok(());
         }
         let bindings = context.bindings;

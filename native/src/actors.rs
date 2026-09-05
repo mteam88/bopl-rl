@@ -1,5 +1,5 @@
 //! Composed player-controller/body simulation driven by Updater's scheduler.
-//! Motor entries are scripted inputs, not SlimeController's ability/animation FSM.
+//! Motors use scripted movement or an installed SlimeController instance.
 //! Actor transforms alias scene objects; controller and body projections are
 //! reconciled after every call, including a call that fails partway through.
 use crate::{
@@ -316,9 +316,18 @@ impl Runtime {
                             if let Some(slime) = &mut actor.slime {
                                 slime.update(
                                     &mut actor.controller,
-                                    dt,
-                                    actor.input,
-                                    jump,
+                                    crate::slime::Update {
+                                        dt,
+                                        input: actor.input,
+                                        jump,
+                                        actor: component.actor,
+                                        player: schedule
+                                            .players
+                                            .iter_mut()
+                                            .find(|p| Some(p.id) == actor.body.holder)
+                                            .ok_or("null_reference")?,
+                                        body: &mut actor.body,
+                                    },
                                     &mut context,
                                     &mut emit,
                                 )

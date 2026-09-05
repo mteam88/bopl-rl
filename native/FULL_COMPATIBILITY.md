@@ -872,3 +872,44 @@ completed ticks and 20 matching partial source failures. Casts are blocked using
 released buttons or CanUseAbilities; separate calls to Unity's actual readiness
 and castability methods exercise true and false predicates. These checks do not
 yet prove successful selection/entry or any complete ability implementation.
+
+
+## Executable Invisibility and streamed actor verification
+
+The composed runner now executes the original Invisibility behavior from player
+input through InstantAbility entry, the effect, expiration and cooldown recovery.
+`ability.rs` supplies the complete PlayerInfo handoff shape and shared player
+flags. `slime_ability.rs` writes the entry package in source order, preserves the
+instant ability's original-body rope reference, updates its own transform and
+shared player clocks, requests audio, deactivates the instant object and resets
+the selected timer. Missing renderer/transform/effect links retain the exact
+partial state reached before the exception. Unbound handlers still fail explicitly.
+
+The asset's initial cooldown is 2 seconds; its restored cooldown is 6 seconds.
+A cast sets the live cooldown to 10,000 seconds and resets both invisibility
+clocks. At expiration SlimeController restores each sentinel cooldown, then resets
+the first minimum-age Invisibility slot's timer. Aliased slots, strict ties and
+managed-destroyed components are preserved. Multiple distinct Invisibility slots
+can chain casts before the slime observes a visible frame, delaying restoration.
+The reference uses the original InstantAbility/Invisibility methods and UnityEvent
+callback, with values checked against the exported prefab.
+
+All 24 long scenarios match: four per player count 1..6, 23 complete 1,800-tick
+sequences, 41,400 completed ticks, 339 Invisibility audio requests and 203 observed
+expirations. The remaining case matches a source division-by-zero partial failure.
+Seven targeted entry/expiry cases also match, including four first-tick failures.
+
+Full frame state can now be written and compared incrementally. The streamed
+protocol retains every state field while bounding memory to the current frame;
+it requires ordered case/action IDs and a complete success or partial-failure end
+record. It rejects missing, duplicate and excess records. A fresh 13-case check
+reproduces the earlier buffered Invisibility and failure outputs exactly. The
+long buffered attempt was incomplete and is not evidence of parity.
+
+This is the first executable ability in the composed runner, with supplied initial
+actor state. It does not certify full matches: death/revival/stocks, actor rope
+integration, map/prefab initialization, other ability interactions, position-setter
+arbitration, collider Scale bookkeeping and presentation still require work.
+Indicator renderers are absent in this corpus. Physically destroyed instant-object
+binding is explicitly unsupported in this reference setup. The public C environment
+still uses the earlier Level1 movement/dash slice.

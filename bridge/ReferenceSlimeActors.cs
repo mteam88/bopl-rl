@@ -20,7 +20,11 @@ internal static class ReferenceSlimeActors
         internal Fix TurnInput;
         internal Dictionary<uint,MagnetGun> Magnets=new Dictionary<uint,MagnetGun>();
         internal List<GameObject> Objects;
-        internal ReferenceRoutingAbility[] RoutingPool;
+        internal AbilityMonoBehaviour[] RoutingPool;
+        internal int Actor;
+        internal List<StickyRoundedRectangle> Platforms;
+        internal List<ReferencePhysicsScene.Adapter> Adapters;
+        internal Dictionary<int,ReferenceInstantAbilities.Instance> Instants=new Dictionary<int,ReferenceInstantAbilities.Instance>();
         internal void RoutingInputs(JToken value)
         {
             var player=PlayerHandler.Get().GetPlayer(Slime.playerNumber);player.CanUseAbilities=(bool)value["can_use"];
@@ -79,8 +83,10 @@ internal static class ReferenceSlimeActors
                 var player=PlayerHandler.Get().GetPlayer(Slime.playerNumber);routing["can_use"]=player.CanUseAbilities;
                 var inputs=Get<Player.InputProfile>(player,"Inputs");var buttons=routing["buttons"];
                 for(int i=0;i<buttons.Count();i++)buttons[i]=i==0?inputs.firstAbilityButton_IS_DOWN:i==1?inputs.secondAbilityButton_IS_DOWN:i==2?inputs.thirdAbilityButton_IS_DOWN:(bool)buttons[i];
+                foreach(var pair in Instants){var metadata=routing["pool"][pair.Key];metadata["cooldown"]=pair.Value.Ability.GetCooldown().m_rawValue;metadata["handler"]=pair.Value.Snapshot(metadata["handler"]);}
                 routing["indicators"]=new JArray(Slime.AbilityReadyIndicators.Select(i=>i==null?(JToken)JValue.CreateNull():new JObject{["seconds_since_reset"]=Get<float>(i,"SecondsSinceReset")}));
             }
+            if(value["entry"]!=null){var entry=value["entry"];entry["info"]=ReferenceInstantAbilities.Info(Get<PlayerInfo>(Slime,"playerAbilityInfoPackage"),this);entry["was_invisible"]=Get<bool>(Slime,"wasInvisible");entry["rope_target"]=ReferenceInstantAbilities.Target(Get<PhysicsParent>(Slime,"ropeCastBuffer"),this);}
             value["animator"]=Animation.Snapshot();value["speed"]=new JObject{["velocity"]=V(Animation.Bodies[0].velocity),["rotation"]=Animation.Bodies[0].rotation.m_rawValue};return value;
         }
     }
@@ -97,7 +103,7 @@ internal static class ReferenceSlimeActors
         }
         return Next(0);
     }
-    internal static Context Bind(JToken value,SlimeController slime,PlayerBody body,PlayerPhysics physics,IPhysicsCollider hurtbox,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets)
+    internal static Context Bind(JToken value,SlimeController slime,PlayerBody body,PlayerPhysics physics,IPhysicsCollider hurtbox,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets,int actor,List<StickyRoundedRectangle> platforms,List<ReferencePhysicsScene.Adapter> adapters)
     {
         var s=value["state"];slime.abilities=new List<AbilityMonoBehaviour>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();
         slime.suppressInput=(bool)s["suppress"];Set(slime,"currentState",(SlimeController.State)(int)s["mode"]);Set(slime,"hasSpawned",(bool)s["has_spawned"]);
@@ -110,7 +116,7 @@ internal static class ReferenceSlimeActors
         var flags=BindingFlags.NonPublic|BindingFlags.Instance;
         physics.OnNoLongerGrounded+=(Action<Fix>)Delegate.CreateDelegate(typeof(Action<Fix>),slime,typeof(SlimeController).GetMethod("OnNoLongerGrounded",flags));
         physics.OnAttachedToGround+=(Action<RaycastInformation>)Delegate.CreateDelegate(typeof(Action<RaycastInformation>),slime,typeof(SlimeController).GetMethod("attachToGround",flags,null,new[]{typeof(RaycastInformation)},null));
-        var context=new Context{Slime=slime,Animation=animation,Flip=flip,TurnInput=F(s["turn_input"]),Objects=objects};
+        var context=new Context{Slime=slime,Animation=animation,Flip=flip,TurnInput=F(s["turn_input"]),Objects=objects,Actor=actor,Platforms=platforms,Adapters=adapters};
         if(value["ragdoll"]!=null)
         {
             var r=value["ragdoll"];Set(slime,"ragdollDuration",F(r["duration"]));Set(slime,"timeInRagdoll",F(r["time"]));Set(slime,"ragDollSpeed",V(r["speed"]));Set(slime,"magnetHolder",context.Magnet(r["magnet_holder"]));
@@ -118,16 +124,18 @@ internal static class ReferenceSlimeActors
         if(value["abilities"]!=null)
         {
             var routing=value["abilities"];
-            context.RoutingPool=routing["pool"].Select(a=>{
+            context.RoutingPool=routing["pool"].Select((a,index)=>{
+                if(a["handler"]!=null){var instant=ReferenceInstantAbilities.Bind(a,context);context.Instants.Add(index,instant);return (AbilityMonoBehaviour)instant.Ability;}
                 var obj=new GameObject("routing ability");obj.SetActive(false);objects.Add(obj);var ability=obj.AddComponent<ReferenceRoutingAbility>();
                 ability.IsDestroyed=(bool)a["destroyed"];ability.Cooldown=F(a["cooldown"]);ability.cooldownStoppedDuringTimeStop=(bool)a["stopped_during_time_stop"];ability.OnlyCastableOnGround=(bool)a["ground_only"];ability.isCastable=(bool)a["castable"];ability.IgnoreCooldown=(bool)a["ignore_next_cooldown"];
-                if(!(bool)a["present"])UnityEngine.Object.DestroyImmediate(obj);return ability;
+                if(!(bool)a["present"])UnityEngine.Object.DestroyImmediate(obj);return (AbilityMonoBehaviour)ability;
             }).ToArray();
             slime.abilities=routing["slots"].Select(id=>id.Type==JTokenType.Null?null:(AbilityMonoBehaviour)context.RoutingPool[(int)id]).ToList();
             Set(slime,"abilityCooldownTimers",routing["timers"].Select(F).ToArray());Set(slime,"isInAbility",(bool)routing["in_ability"]);
             slime.AbilityReadyIndicators=routing["indicators"].Select(i=>{if(i.Type==JTokenType.Null)return null;var obj=new GameObject("headless routing indicator");obj.SetActive(false);objects.Add(obj);var indicator=obj.AddComponent<AbilityReadyIndicator>();Set(indicator,"SecondsSinceReset",(float)i["seconds_since_reset"]);return indicator;}).ToArray();
             context.RoutingInputs(routing);
         }
+        if(value["entry"]!=null){var entry=value["entry"];Set(slime,"playerAbilityInfoPackage",ReferenceInstantAbilities.Info(entry["info"],context));Set(slime,"wasInvisible",(bool)entry["was_invisible"]);Set(slime,"ropeCastBuffer",ReferenceInstantAbilities.Target(entry["rope_target"],context));}
         return context;
     }
 }

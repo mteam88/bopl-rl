@@ -4,7 +4,15 @@ use bopl_sim::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+type FrameSink<'a> = &'a mut dyn FnMut(usize, &Value);
 pub fn evaluate(q: &Value) -> Value {
+    evaluate_with(q, None)
+}
+pub fn evaluate_streamed(q: &Value, sink: FrameSink<'_>) -> Value {
+    evaluate_with(q, Some(sink))
+}
+fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
+    let mut completed = 0;
     let mut runtime: Runtime = serde_json::from_value(q["runtime"].clone()).unwrap();
     runtime.synchronize();
     let mut frames = Vec::new();
@@ -79,16 +87,28 @@ pub fn evaluate(q: &Value) -> Value {
             frame["routing_checks"] = json!(runtime.actors.iter().map(|actor| {
                 let state = actor.slime.as_ref().unwrap().abilities.as_ref().unwrap();
                 let value = |r: Result<bool, &'static str>| match r { Ok(v) => json!(v), Err(e) => json!({"error":e}) };
-                (0..=state.slots.len()).map(|i| json!({"ready":value(state.ready(i)),"castable":value(state.castable(i,actor.controller.physics.motion.grounded))})).collect::<Vec<_>>()
+                (0..=state.slots.len()).map(|i| json!({"ready":value(state.ready(i)),"castable":value(state.castable_for_player(i,actor.controller.physics.motion.grounded,runtime.scheduler.players.iter().find(|p|Some(p.id)==actor.body.holder).is_some_and(|p|p.invisible)))})).collect::<Vec<_>>()
             }).collect::<Vec<_>>());
+        }
+        if q["player_state"].as_bool() == Some(true) {
+            frame["players"] = json!(runtime.scheduler.players);
         }
         if scripted {
             frame["effects"] = json!(effects);
         }
         if let Err(error) = result {
-            return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+            return json!({"error":error,"action":completed,"completed":if sink.is_some(){json!(completed)}else{json!(frames)},"failed":frame});
         }
-        frames.push(frame);
+        if let Some(sink) = &mut sink {
+            sink(completed, &frame);
+        } else {
+            frames.push(frame);
+        }
+        completed += 1;
     }
-    json!(frames)
+    if sink.is_some() {
+        json!({"completed":completed})
+    } else {
+        json!(frames)
+    }
 }

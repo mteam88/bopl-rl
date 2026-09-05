@@ -56,6 +56,11 @@ verify: build check
     python3 native/tools/verify_player_body.py --golden
     python3 native/tools/verify_player_body.py --golden --gameplay
     python3 native/tools/test_python.py
+    python3 native/tools/test_actor_stream.py
+    python3 native/tools/verify_invisibility.py --golden
+    python3 native/tools/verify_invisibility.py --faults --golden
+    python3 native/tools/verify_invisibility_stream.py --golden
+    python3 native/tools/verify_invisibility_stream.py --faults --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -159,3 +164,6 @@ verify-ragdoll: build
 
 verify-ability-routing: build
     python3 native/tools/verify_ability_routing.py --cases 120 --steps 120
+
+verify-invisibility: build
+    python3 native/tools/verify_invisibility_stream.py --cases 24 --steps 1800

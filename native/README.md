@@ -131,8 +131,9 @@ from keyboard input, compared with the original UpdateSim using empty ability
 lists and the exported slime animations. Ragdoll impulses, timed recovery and
 invalid-ground detachment now run in this same simulation, with commands applied
 between scheduled components to test interactions. Ordinary ability cooldowns
-and readiness gates now run there too; a selected ability stops with an explicit
-unimplemented-entry error until its handler is connected. It is not yet driving this C environment. Full player-input
+and readiness gates now run there too. Invisibility has an executable instant
+handler, including expiration and cooldown recovery; other selected abilities
+stop with an explicit unimplemented-entry error until their handlers are connected. It is not yet driving this C environment. Full player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

@@ -67,6 +67,8 @@ pub struct Player {
     pub time_invisible: Fix,
     pub time_ability: Fix,
     pub input: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flags: Option<crate::ability::PlayerFlags>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Input {

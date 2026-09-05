@@ -19,6 +19,8 @@ internal static class ReferenceAnimator
         internal Func<JToken,SpriteFrame[]> Frames;
         internal Func<JToken,VelocityFrame[]> Map;
         internal Action<Action,uint> RegisterCallback;
+        internal Func<JToken,Sprite> Sprite;
+        internal Func<Sprite,JToken> SpriteId;
     }
     internal static JToken Evaluate(JObject query, Func<Context,JToken> operation=null)
     {
@@ -104,7 +106,7 @@ internal static class ReferenceAnimator
                 }
             }
             Set(animator,"animationSwappedCallBack",Callback(state["callback"]));
-            if(operation!=null)return operation(new Context{GameObject=go,Animator=animator,Bodies=bodies,Snapshot=Snapshot,Frames=Frames,Map=Map,
+            if(operation!=null)return operation(new Context{GameObject=go,Animator=animator,Bodies=bodies,Snapshot=Snapshot,Frames=Frames,Map=Map,Sprite=Sprite,SpriteId=Id,
                 RegisterCallback=(callback,id)=>{
                     var current=Get<Action>(animator,"animationSwappedCallBack");
                     if(current!=null&&callbackIds.TryGetValue(current,out uint previousId)&&previousId==id)Set(animator,"animationSwappedCallBack",callback);

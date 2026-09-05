@@ -1,8 +1,10 @@
+pub mod ability;
 pub mod ability_routing;
 pub mod beam;
 pub mod curve;
 pub mod fixed;
 pub mod geometry;
+mod slime_ability;
 pub mod surface;
 pub mod vector;
 

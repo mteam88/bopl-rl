@@ -139,7 +139,8 @@
       "name": "Invisibility",
       "prefab": "Assets/GameObject/Invisibility.prefab",
       "prefab_guid": "98dc74d37d856a44794621d205de7e72",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Independent composed actor episodes: Invisibility entry, shared player clocks, expiration and cooldown restoration. Full lifecycle, actor ropes, presentation and C environment integration remain required."
     },
     {
       "id": 20,

@@ -13,6 +13,8 @@ pub struct Ability {
     pub ground_only: bool,
     pub castable: bool,
     pub ignore_next_cooldown: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<crate::ability::Handler>,
 }
 /// Headless indicators retain the reset clock. Sprite/material presentation is
 /// not represented; a missing indicator itself still throws at the source call.
@@ -39,7 +41,7 @@ impl State {
             .and_then(|id| self.pool.get(id))
             .ok_or("null_reference")
     }
-    fn timer(&mut self, slot: usize) -> Result<&mut Fix> {
+    pub(crate) fn timer(&mut self, slot: usize) -> Result<&mut Fix> {
         self.timers.get_mut(slot).ok_or("index_out_of_range")
     }
     fn indicator(&mut self, slot: usize) -> Result<&mut Indicator> {
@@ -57,8 +59,24 @@ impl State {
         Ok(*timer > self.ability(slot)?.cooldown)
     }
     pub fn castable(&self, slot: usize, grounded: bool) -> Result<bool> {
+        self.castable_for_player(slot, grounded, false)
+    }
+    pub fn castable_for_player(
+        &self,
+        slot: usize,
+        grounded: bool,
+        invisible: bool,
+    ) -> Result<bool> {
         let ability = self.ability(slot)?;
-        Ok((!ability.ground_only || grounded) && self.can_use && ability.castable)
+        if (ability.ground_only && !grounded) || !self.can_use {
+            return Ok(false);
+        }
+        Ok(match &ability.handler {
+            Some(crate::ability::Handler::Invisibility(instant)) => {
+                !(instant.gate_invisible && invisible)
+            }
+            None => ability.castable,
+        })
     }
     /// This path handles ordinary Ability components. Rope implementations must
     /// supply their spatial query and dynamic cooldown update before integration.
@@ -100,15 +118,58 @@ impl State {
     /// Returns the first cast, before EnterAbility and before the movement FSM.
     /// The source selection loop does not skip null/destroyed slots.
     pub fn select(&mut self, grounded: bool, suppress: bool) -> Result<Option<usize>> {
+        self.select_for_player(grounded, suppress, false)
+    }
+    pub fn select_for_player(
+        &mut self,
+        grounded: bool,
+        suppress: bool,
+        invisible: bool,
+    ) -> Result<Option<usize>> {
         for i in 0..self.slots.len() {
             if self.ability(i)?.ignore_next_cooldown && !self.button(i) {
                 *self.timer(i)? = self.ability(i)?.cooldown;
             }
-            if self.button(i) && self.ready(i)? && self.castable(i, grounded)? && !suppress {
+            if self.button(i)
+                && self.ready(i)?
+                && self.castable_for_player(i, grounded, invisible)?
+                && !suppress
+            {
                 return Ok(Some(i));
             }
         }
         Ok(None)
+    }
+    /// Restore every live invisibility cooldown, then reset the timer of the
+    /// first minimum-age invisibility slot. Aliases and strict ties matter.
+    pub fn invisibility_ended(&mut self) -> Result<()> {
+        let mut youngest = None;
+        let mut minimum = Fix(i64::MAX);
+        for i in 0..self.slots.len() {
+            let ability = self.ability(i)?;
+            let Some(crate::ability::Handler::Invisibility(instant)) = &ability.handler else {
+                continue;
+            };
+            if !ability.present {
+                return Err("missing_reference");
+            }
+            if !instant.component_present {
+                continue;
+            }
+            let timer = *self.timers.get(i).ok_or("index_out_of_range")?;
+            if timer < minimum {
+                minimum = timer;
+                youngest = Some(i);
+            }
+            if ability.cooldown == Fix::from_int(10000) && instant.linked && !ability.destroyed {
+                let cooldown = instant.restore_cooldown;
+                self.pool[self.slots[i].unwrap()].cooldown = cooldown;
+            }
+        }
+        if let Some(i) = youngest {
+            *self.timer(i)? = Fix::ZERO;
+        }
+        Ok(())
     }
     /// The normal input path calls GetSpriteRen on every indicator, even when
     /// the corresponding ability is null. All renderers are absent here.

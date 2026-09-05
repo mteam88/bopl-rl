@@ -34,6 +34,7 @@ internal static class ReferenceActors
             }
             var inputs=initial["inputs"].Select(p=>new Player.InputProfile{jumpButton_IS_DOWN=(bool)p["jump"],jumpButton_DOWN_THIS_FRAME=(bool)p["pressed"],jumpButton_DOWN_LAST_FRAME=(bool)p["previous"]}).ToList();
             var players=initial["players"].Select(p=>{var player=new Player((int)p["id"],0){isProtectedFromTimeStop=(bool)p["protected"],isInvisible=(bool)p["invisible"],timeSpentInvisible=F(p["time_invisible"]),timeSinceEnteredAbility=F(p["time_ability"])};Set(player,"Inputs",inputs[(int)p["input"]]);return player;}).ToList();
+            for(int i=0;i<players.Count;i++)if(initial["players"][i]["flags"]!=null){var f=initial["players"][i]["flags"];players[i].InSparkShot=(bool)f["spark"];players[i].InMachoThrow=(bool)f["macho"];players[i].InPlatformTransform=(bool)f["platform"];}
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             var bodies=new List<PlayerBody>();var physics=new List<PlayerPhysics>();var transforms=new List<FixTransform>();
             JArray events=null,phases=null,pushes=null,effects=null;bool simulated=false;
@@ -62,7 +63,7 @@ internal static class ReferenceActors
                 int colliderIndex=scene.boxes.ColliderIndex(adapter.parent.instanceId);scene.boxes.physicsParents[colliderIndex]=adapter.parent;
                 SlimeController slime=null;
                 if(animations!=null||a["push_strength"].Type!=JTokenType.Null){slime=go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
-                if(animations!=null)slimes.Add(ReferenceSlimeActors.Bind(a["slime"],slime,body,p,adapter,animations[i],objects,assets));
+                if(animations!=null)slimes.Add(ReferenceSlimeActors.Bind(a["slime"],slime,body,p,adapter,animations[i],objects,assets,i,platforms,adapters));
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
                     // All actors have equal scale in this corpus. The bite gate
@@ -128,11 +129,12 @@ internal static class ReferenceActors
                 var frame=new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
                     ["inputs"]=new JArray(inputs.Select(p=>new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME}))};
+                if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
                 if(query["scripts"]!=null)frame["effects"]=effects;
                 if((bool?)query["routing_checks"]==true)frame["routing_checks"]=new JArray(slimes.Select(s=>s.RoutingChecks()));
                 return frame;
             }
-            var frames=new JArray();foreach(var a in query["actions"])
+            var frames=new JArray();int completed=0;bool streaming=ReferenceKernel.ActorFrameSink!=null;foreach(var a in query["actions"])
             {
                 events=new JArray();phases=new JArray();pushes=new JArray();effects=new JArray();simulated=false;
                 for(int i=0;i<actorData.Count;i++){actorData[i]["input"]=a["inputs"][i]["direction"].DeepClone();inputs[i].jumpButton_IS_DOWN=(bool)a["inputs"][i]["jump"];}
@@ -140,11 +142,11 @@ internal static class ReferenceActors
                 if(a["routing_inputs"]!=null)for(int i=0;i<slimes.Count;i++)slimes[i].RoutingInputs(a["routing_inputs"][i]);
                 GameTime.PlayerTimeScale=F(a["scale"]);for(int i=0;i<drivers.Count;i++)drivers[i].EnabledFlag=(bool)a["enabled"][i];
                 string error=null;try{if(a["commands"]!=null)foreach(var command in a["commands"])Command(command);typeof(Updater).GetMethod("TickSimulationInner",Statics).Invoke(null,new object[]{F(a["dt"])});}
-                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}
-                if(error!=null)return new JObject{["error"]=error,["action"]=frames.Count,["completed"]=frames,["failed"]=Snapshot()};
-                frames.Add(Snapshot());
+                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is MissingReferenceException)error="missing_reference";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}
+                if(error!=null)return new JObject{["error"]=error,["action"]=completed,["completed"]=streaming?(JToken)new JValue(completed):frames,["failed"]=Snapshot()};
+                var frame=Snapshot();if(streaming)ReferenceKernel.ActorFrameSink(completed,frame);else frames.Add(frame);completed++;
             }
-            return frames;
+            return streaming?(JToken)new JObject{["completed"]=completed}:frames;
         }
         finally
         {

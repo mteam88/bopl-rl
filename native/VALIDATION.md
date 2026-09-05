@@ -875,3 +875,61 @@ retained ragdoll/failure cases through the extended harness exactly reproduces
 their previous source outputs and matches Rust; evidence is under
 `artifacts/ability-routing-ragdoll-regression/`. The pinned 5,199-file manifest
 also verifies unchanged.
+
+
+## Executable Invisibility episodes
+
+The 24 streamed scenarios match all 41,424 records: 41,400 successful frames and
+24 end records. Each player count 1..6 has four scenarios; 23 complete all 1,800
+ticks and one matches a zero-previous-scale division-by-zero failure before its
+first completed tick. There are 41,395 physics stages, 56,462 collision callbacks,
+748 shoves, 536,585 component updates and 536,510 late updates. Both player phases
+run 142,200 times.
+
+The original prefab's Invisibility audio is requested 339 times. There are 243
+observed transitions to invisible and 203 to visible, with 115,299 invisible and
+26,901 visible player snapshots. These transition counts differ from casts because
+a different Invisibility slot can recast within the same frame that the previous
+effect expires. Pool snapshots include 161,700 sentinel cooldown values and
+62,752 restored cooldown values. Counts exclude events in the failed tick.
+
+Every frame compares actors, scene, ordered events, all PlayerInfo fields, instant
+object transform/active state, ability cooldown state, the slime's cached visibility,
+and the shared player clock/flag projection. Material, slime, sprite and platform
+references use canonical identities. The source setup primes Awake before supplying
+state, then runs the real SlimeController, InstantAbility and Invisibility methods.
+No Unity state is injected into Rust after initialization. This corpus has static
+terrain and equal-scale shoves; full death/lifecycle/rope interactions and position
+arbitration are not claimed by these tests.
+
+Assembly: `e58e6c7675a8f4a0afe2971149e74ae2c0a6995e1a64706d9a52adceb5bf9173`.
+
+Input SHA: `9ac9624dce2c2fe6fd8b23db1fe5d4871d4b1a8bdf38a84ade42efeeb8fed920`.
+
+Output SHA: `27b876df67c33957ef99712ff7174fbb788cb19408996a3af911972913bfa0bd`.
+
+Evidence: `artifacts/invisibility-stream/`. The standalone fixture retains complete
+selected scenarios, including the source failure. The older six-case buffered
+pilot remains a regression: 2,520 ticks, 35 cast audio requests and nine observed
+expirations, with its own recorded assembly/input/output hashes in the fixture.
+
+Seven targeted cases match: missing renderer, missing InstantAbility transform,
+missing Invisibility link, missing effect component, a null slot during expiry,
+managed-destroyed expiry and aliased minimum-age ties. The renderer/transform/link/
+null-slot cases fail on the first tick in scheduled motor component 1, preserving
+all partial state. The other three complete their tick. Both buffered and streamed
+failure fixtures are retained.
+
+Streaming was checked against all 13 buffered pilot/failure cases; every successful
+and failed source frame reproduces the previous expected values and matches Rust.
+The new protocol also has rejection tests for truncation, ordering, duplicate/excess
+records, incorrect counts and missing partial state.
+
+Streaming regression input SHA: `62d33c5549938915e1cf3ea3a48640ba970b6e576a8cbfefa342ef12dbd77e68`.
+
+Streaming regression output SHA: `8ac66cc08bfd943c71f2d2ab04fcf3dcad69fdef5bfe82ad4e7fdfa3aef7e403`.
+
+Evidence: `artifacts/invisibility-stream-regression/`. The earlier long buffered
+attempt under `artifacts/invisibility/` did not finish and is excluded from the
+results. Streaming reduced observed Unity memory from roughly 11 GB to 1.3 GB
+while allowing the full 1,800-tick scenarios to complete.

@@ -10,6 +10,7 @@ public static class ReferenceKernel
 {
     public static bool Enabled => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BOPL_KERNEL_INPUT"));
     private static bool completed;
+    internal static Action<int,JObject> ActorFrameSink;
     public static void Run()
     {
         if (completed) return;
@@ -21,14 +22,25 @@ public static class ReferenceKernel
         {
             using (var writer = new StreamWriter(output))
             {
+                int caseIndex=0;
+                void Write(JToken value)
+                {
+                    using(var json=new JsonTextWriter(writer){CloseOutput=false,Formatting=Formatting.None})value.WriteTo(json);
+                    writer.WriteLine();
+                }
                 foreach (string line in File.ReadLines(input))
                 {
                     JObject query = JObject.Parse(line);
+                    bool streaming=(bool?)query["stream_frames"]==true;
+                    if(streaming && (string)query["operation"]!="dynamics_actors" && (string)query["operation"]!="dynamics_slime_actors")throw new ArgumentException("Unsupported frame stream operation");
+                    ActorFrameSink=streaming?(Action<int,JObject>)((action,state)=>Write(new JObject{["case"]=caseIndex,["action"]=action,["state"]=state})):null;
                     JToken result;
                     try { result = Evaluate(query); }
                     catch (DivideByZeroException) { result = new JObject { ["error"] = "division_by_zero" }; }
                     catch (ArgumentOutOfRangeException) { result = new JObject { ["error"] = "domain" }; }
-                    writer.WriteLine(result.ToString(Formatting.None));
+                    finally { ActorFrameSink=null; }
+                    Write(streaming?new JObject{["case"]=caseIndex,["result"]=result}:result);
+                    caseIndex++;
                 }
             }
             Debug.Log("REFERENCE_KERNEL_COMPLETE");
