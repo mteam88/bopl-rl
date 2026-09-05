@@ -1,3 +1,5 @@
+#[path = "support/scheduler.rs"]
+mod scheduler_probe;
 use bopl_sim::{
     fixed::Fix,
     geometry::RoundedRect,
@@ -118,6 +120,7 @@ fn evaluate_spawn(q: &Value) -> Value {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_scheduler" => return scheduler_probe::evaluate(&q),
         "dynamics_spawn" => return evaluate_spawn(&q),
         "dynamics_animator" => {
             let mut state: bopl_sim::animator::State = read(&q, "state");

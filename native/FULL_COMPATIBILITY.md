@@ -702,3 +702,36 @@ The 250-case fixture runs in `just verify`; `just verify-spawn` regenerates it
 against Unity. The C movement API still resets from its tick-240 snapshot.
 Full prefab creation, stock choice, revive travel effects, death selection,
 ability drops and the world scheduler remain outside this component stage.
+
+
+## Registration and deferred destruction
+
+`scheduler.rs` ports Updater's registration and prefab priority offsets, pending
+initialization, update/late-update dispatch, destruction queues, level-reset
+methods and tick counters. Callbacks may register or remove entries while a
+loop is running. Mono's exact introsort is used for pending initialization,
+including equal-priority ordering, wrapping comparisons and backing-array
+capacity in partial error states. Physical presence is separate from the
+IsDestroyed marker; deleted managed references can still receive
+OnDestroyUpdatable through the source's CLR null check.
+
+All 1,002 lifecycle scenarios match: 29,538 completed calls, 8,394 ticks and
+224,574 component callbacks. One-through-six-player setups include shared input
+profiles, jump-edge updates, invisibility clocks and time-stop protection.
+The additional 24 stress cases all complete, with up to 4,096 components and
+26,199 initialization/update/late/destruction callbacks in each category.
+The largest exported map has 171 updatables before players and spawned objects.
+
+The tests invoke the actual Updater with callback components and an empty
+physics scene. Typed phase events mark duplication, magnet, physics and rope
+boundaries. The rope-mesh boundary is retained because the source also updates
+its cached level type there. The fixtures retain 392 lifecycle and all 24 stress
+cases and run under `just verify`.
+
+This does not yet connect the gameplay kernels to that dispatcher. Player
+position-setter rollover, gameplay-specific Unity OnDestroy handlers, real
+prefab construction, outer frame/hit-stop pacing and full map loading remain
+outside these tests. The C movement environment still uses its existing loop.
+A fresh Unity replay with the new optional recording hooks matches 473
+independent C steps through first death; that is an instrumentation regression,
+not evidence that the new scheduler already drives the C environment.

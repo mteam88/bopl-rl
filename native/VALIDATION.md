@@ -627,3 +627,64 @@ effects and the full world scheduler remain separate completion requirements.
 
 The reusable animator harness also passes a fresh 100-case / 11,219-call Unity
 regression (215 callbacks), retained under `artifacts/spawn-animator-regression/`.
+
+
+## Registration, scheduling and deferred destruction
+
+The actual Updater matches all 1,002 scenarios: 554 complete sequences,
+29,538 completed calls and 8,394 ticks. Component events comprise 33,455 Init,
+103,261 UpdateSim, 73,025 LateUpdateSim and 14,833 OnDestroyUpdatable calls.
+Both player input and player update phases execute 30,422 times. The cases use
+one through six players with shared input-profile references, jump-edge state,
+invisibility expiry and time-stop protection. Position-setter fields remain
+null in these tests; their arbitration/rollover is not covered.
+
+There are 1,000 randomized scenarios plus two targeted activation cases. The
+latter cover active/inactive transitions, null MonoBehaviour deletion and the
+Linux player's null-reference error when activating an already deleted object.
+
+Coverage includes nested inactive hierarchies, separate physical presence and
+IsDestroyed markers, deleted managed references, duplicate queue entries,
+nulls, prefab priority wrapping, registrations during Init and later callbacks,
+loaded-level early return, mutations during backwards removal, and queued
+objects retained across reset methods. Pending-sort backing capacity and all
+partial failures are compared. The 448 errors are 72 comparator failures,
+321 null references and 55 invalid list indices. The checked fixture retains
+392 cases (1,543,021 compressed bytes).
+
+Assembly: `a800a3f8516a4d30767881e985197847f4d1dc2b832e5d18f211e511e7f15d67`.
+
+Input SHA: `5324158e565690bc054f939b120420505cd2836b989b897df0be4262faedea9b`.
+
+Output SHA: `8318fc0fe7d0c3c4701451cea9275d99629911ac4c6007953c13a2278792d1f9`.
+
+All 24 larger cases complete, covering queue lengths 171, 256, 512, 1,024 and
+4,096 with equal, ascending, descending, organ-pipe, repeated and extreme
+integer priorities. Across 72 ticks, each of Init, UpdateSim, LateUpdateSim and
+OnDestroyUpdatable executes 26,199 times. All 24 cases are retained in the
+2,079,514-byte stress fixture. Export inspection found a maximum of 171 static
+updatables on map 58; this count excludes players and later spawns.
+
+Stress input SHA: `1449687e7fa301917da332db6a2327353cd941832bf7825e0968d0b6cc01c63f`.
+
+Stress output SHA: `d1072b2f2ebc83a2f515c643325ac40371f08f907c9297777b59e4a3da376947`.
+
+Raw evidence is under `artifacts/scheduler/` and `artifacts/scheduler-stress/`.
+The Mono sort implementation was checked against the bundled mscorlib's
+ArraySortHelper, not replaced with the Rust library's unstable sort. The oracle
+uses the actual tick implementation, callback components and an empty physics
+scene. Gameplay callback implementations, Unity OnDestroy handlers, non-null
+player position setters, outer frame/hit-stop pacing and full map construction
+remain integration requirements.
+
+A fresh 1,200-tick movement replay verifies the optional Updater recording hooks
+in normal gameplay. Its projection matches 473 independent C steps through
+first death. It reuses the existing movement input and is not an additional
+independent scenario or proof of scheduler integration into the C environment.
+
+Replay SHA: `813fda56cec79199cb3930c12c081352c7f80d8f15483983d9ff8f1e7595e7eb`.
+
+Trace SHA: `53be761dc33bf979c0292caadbd5984a53c0989d32498adbe2d84e68c22e9b65`.
+
+This evidence is retained under `artifacts/scheduler-gameplay/`. The complete
+standalone regression suite passes with both scheduler fixtures included.

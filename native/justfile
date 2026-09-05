@@ -44,6 +44,8 @@ verify: build check
     python3 native/tools/verify_animator.py --golden
     python3 native/tools/verify_animator.py --assets --golden
     python3 native/tools/verify_spawn.py --golden
+    python3 native/tools/verify_scheduler.py --golden
+    python3 native/tools/verify_scheduler.py --stress --golden
     python3 native/tools/physics_scene_golden.py verify --fixture native/fixtures/disabled-colliders.jsonl.gz
     python3 native/tools/verify_player_body.py --golden
     python3 native/tools/verify_player_body.py --golden --gameplay
@@ -133,3 +135,7 @@ verify-animator: build
 
 verify-spawn: build
     python3 native/tools/verify_spawn.py --cases 600
+
+verify-scheduler: build
+    python3 native/tools/verify_scheduler.py --cases 1000
+    python3 native/tools/verify_scheduler.py --stress

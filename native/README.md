@@ -121,7 +121,9 @@ shared with this C environment. Animation clocks and callback boundaries now
 have exact component tests, including the real spawn frame sequences and fast
 respawn conversion. Spawn/revival transitions now have coupled tests with the real ground-loss
 handler and animator. Connecting them to deaths, stocks, clones and the full
-world scheduler remains in progress. Independent player-input
+world scheduler remains in progress. Registration, initialization and deferred
+destruction order now have exact Unity checks, including callbacks that mutate
+the update queues. The scheduler is not yet driving this C environment. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the
