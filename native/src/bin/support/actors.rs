@@ -42,6 +42,52 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                            command: &Value| {
             effects.push(command.clone());
             match command["op"].as_str().unwrap() {
+                "actor_active" | "body_simulated" => {
+                    let entity = actors[command["actor"].as_u64().unwrap() as usize]
+                        .entity
+                        .as_mut()
+                        .ok_or("missing_actor_entity")?;
+                    let value = command["value"].as_bool().unwrap();
+                    if command["op"] == "actor_active" {
+                        entity.active = value;
+                        schedule.nodes[entity.node].active = value;
+                        let object = actors[command["actor"].as_u64().unwrap() as usize].object;
+                        scene
+                            .objects
+                            .iter_mut()
+                            .find(|o| o.id == object)
+                            .ok_or("missing_actor_object")?
+                            .active = value;
+                    } else {
+                        entity.body_simulated = value;
+                    }
+                    return Ok(());
+                }
+                "player_scale" => {
+                    let value: Fix = serde_json::from_value(command["value"].clone()).unwrap();
+                    schedule.players[command["player"].as_u64().unwrap() as usize].scale =
+                        Some(value.max(Fix::from_f64(0.3)).min(Fix::from_int(3)));
+                    return Ok(());
+                }
+                "box_enabled" => {
+                    let object = actors[command["actor"].as_u64().unwrap() as usize].object;
+                    scene
+                        .objects
+                        .iter_mut()
+                        .find(|o| o.id == object)
+                        .ok_or("missing_actor_object")?
+                        .enabled = command["value"].as_bool().unwrap();
+                    return Ok(());
+                }
+                "box_scale" => {
+                    return actors[command["actor"].as_u64().unwrap() as usize].set_box_scale(
+                        serde_json::from_value(command["value"].clone()).unwrap(),
+                        scene,
+                    );
+                }
+                "box_sync" => {
+                    return actors[command["actor"].as_u64().unwrap() as usize].sync_box(scene);
+                }
                 "set_position" => {
                     let priorities = Runtime::position_priorities(actors);
                     let candidate = command["controller"].as_u64().map(|i| i as usize);

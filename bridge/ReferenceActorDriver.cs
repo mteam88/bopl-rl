@@ -6,10 +6,11 @@ using BoplFixedMath;
 public sealed class ReferenceActorDriver : MonoUpdatable
 {
     public bool EnabledFlag = true;
+    public Func<bool> Activity;
     public Action Initialize;
     public Action<Fix> Step;
     public Action<Fix> Late;
-    public override bool IsEnabled() => EnabledFlag;
+    public override bool IsEnabled() => EnabledFlag&&(Activity==null||Activity());
     public override void Init() => Initialize();
     public override void UpdateSim(Fix dt) => Step(dt);
     public override void LateUpdateSim(Fix dt) => Late(dt);

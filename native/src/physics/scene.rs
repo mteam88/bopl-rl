@@ -15,7 +15,7 @@ pub struct Transform {
     pub right: Option<Vec2>,
 }
 impl Transform {
-    fn basis(self) -> Vec2 {
+    pub(crate) fn basis(self) -> Vec2 {
         self.right.unwrap_or_else(|| Vec2::angle(self.rotation))
     }
 }
@@ -129,7 +129,7 @@ impl Scene {
             self.synchronize_composite(c);
         }
     }
-    pub(super) fn synchronize_composite(&mut self, c: usize) {
+    pub(crate) fn synchronize_composite(&mut self, c: usize) {
         if self.composites[c].destroyed || self.composites[c].rounded_rects.is_empty() {
             return;
         }

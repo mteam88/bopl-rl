@@ -808,9 +808,9 @@ equal, and there are no attached ropes or ragdolls. Achievement flags are false
 and reference players are nonlocal, allowing the moonwalk timer to be compared
 without awards. Player position-setter state and collider Scale bookkeeping are
 not compared here. Ragdoll recovery is covered in the extension below.
-Full ability selection/cooldowns, swallowing,
-invisibility, position arbitration, prefab initialization and round lifecycle
-remain required. The public C environment still uses its existing movement slice.
+The extensions below cover cooldown routing, Invisibility, position arbitration
+and collider scale. Swallowing, other abilities, prefab initialization and round
+lifecycle remain required. The public C environment still uses its existing movement slice.
 
 
 ## Ragdoll in the composed runner
@@ -908,8 +908,8 @@ long buffered attempt was incomplete and is not evidence of parity.
 
 This is the first executable ability in the composed runner, with supplied initial
 actor state. It does not certify full matches: death/revival/stocks, actor rope
-integration, map/prefab initialization, other ability interactions, position-setter
-arbitration, collider Scale bookkeeping and presentation still require work.
+integration, map/prefab initialization, other ability interactions and presentation
+still require work. Position arbitration and collider scale are covered below.
 Indicator renderers are absent in this corpus. Physically destroyed instant-object
 binding is explicitly unsupported in this reference setup. The public C environment
 still uses the earlier Level1 movement/dash slice.
@@ -929,3 +929,30 @@ original `Player.SetPosition`, including calls before player updates and between
 component/physics phases. Shared controller ownership and managed destruction are
 covered. This does not establish clone spawning, physical destruction of bound
 controllers, or ability object activation/exit parity.
+
+### Actual actor object activity and DPhysicsBox
+
+Actors can now own a real Unity component graph on the collider's GameObject in
+the reference runner. Original Awake methods run once before supplied state is
+bound. GameObject activation, PlayerBody.simulated, collider enablement and scale
+are connected to scheduled updates and the shared physics scene. This retains
+supplied-state initialization; it does not invoke prefab Init/spawn or enable all
+components registered by Awake.
+
+The native entity tracks collider scale separately from the fixed transform and
+Player.Scale. SlimeController writes the player's scale after OldUpdate and
+invisibility cleanup and before Move, even in nothing/biting/ragdoll states.
+DPhysicsBox scaling mutates its cached scale, transform offset/scale and geometry
+in source order, retaining each successful prefix on division errors. Explicit
+physics synchronization rotates the collider and updates its center/body angle.
+
+The original callback gates are also implemented: detach always changes the
+slime's fall state, sprite flip and speed cache, but only changes animation when
+body simulation is enabled. Attach callbacks require both body simulation and
+the hurtbox to be enabled. Actor activity controls later component calls in the
+same update. The reference driver continues to call original components in the
+scheduler order; callback recording still uses the scene adapter.
+
+48 independent 300-tick episodes and eight scale/synchronization edge cases are
+retained as evidence. Ordinary ability entry/exit, actual clone/prefab spawning,
+body death/rope interaction and the full environment remain unimplemented here.

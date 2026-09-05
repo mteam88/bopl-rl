@@ -56,6 +56,11 @@ pub struct Instance {
     pub entry: Option<crate::ability::SlimeEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_destroyed: Option<bool>,
+    #[serde(skip, default = "default_callback_gates")]
+    pub(crate) callback_gates: (bool, bool),
+}
+fn default_callback_gates() -> (bool, bool) {
+    (true, true)
 }
 pub struct Update<'a> {
     pub dt: Fix,
@@ -65,6 +70,8 @@ pub struct Update<'a> {
     pub body: &'a mut crate::player_body::State,
     pub player: &'a mut crate::scheduler::Player,
     pub position_priorities: &'a [Option<i32>],
+    pub entity: Option<&'a mut crate::actor_entity::Entity>,
+    pub object: u32,
 }
 fn frames(data: &BTreeMap<String, Vec<Frame>>, name: &str) -> Result<Vec<Frame>> {
     data.get(name).cloned().ok_or("animation_missing")
@@ -281,6 +288,9 @@ impl Instance {
                     velocity: m.velocity,
                     rotation: m.rotation,
                 };
+                if !self.callback_gates.0 {
+                    return Ok(());
+                }
                 let looping = frames(&self.animations, "fallLeftLoop")?;
                 let anticipation = self
                     .animator
@@ -300,6 +310,9 @@ impl Instance {
                 )?;
             }
             Event::Attached(_) => {
+                if !self.callback_gates.0 || !self.callback_gates.1 {
+                    return Ok(());
+                }
                 self.state.mode = 4;
                 start(
                     &mut self.animator,
@@ -478,6 +491,14 @@ impl Instance {
         }
         self.old_update(controller, &mut update, context, emit)?;
         self.finish_invisibility(update.player.invisible)?;
+        if let Some(entity) = &mut update.entity {
+            entity.collider.set_scale(
+                update.player.scale.unwrap_or(Fix::ONE),
+                &mut controller.physics.scale,
+                update.object,
+                context.scene,
+            )?;
+        }
         if matches!(self.state.mode, 8..=10) || !self.state.has_spawned {
             return Ok(());
         }

@@ -22,6 +22,8 @@ pub struct Actor {
     pub collision_hierarchy: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slime: Option<crate::slime::Instance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<crate::actor_entity::Entity>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,11 +67,25 @@ pub struct Report {
     pub pushes: Vec<Push>,
 }
 impl Actor {
+    fn refresh_callback_gates(&mut self, scene: &Scene) {
+        if let Some(slime) = &mut self.slime {
+            slime.callback_gates = (
+                self.entity.as_ref().is_none_or(|e| e.body_simulated),
+                scene
+                    .objects
+                    .iter()
+                    .find(|o| o.id == self.object)
+                    .expect("actor scene object")
+                    .enabled,
+            );
+        }
+    }
     pub fn apply_ragdoll(
         &mut self,
         request: &crate::slime::RagdollImpulse,
         scene: &mut Scene,
     ) -> scheduler::Result<()> {
+        self.refresh_callback_gates(scene);
         let slime = self.slime.as_mut().ok_or("missing_slime_controller")?;
         let result = slime.apply_ragdoll(&mut self.controller, request);
         slime.sync_callback();
@@ -130,6 +146,32 @@ impl Actor {
     }
 }
 impl Runtime {
+    pub fn refresh_entities(
+        schedule: &mut scheduler::State,
+        components: &[Component],
+        actors: &[Actor],
+        scene: &mut Scene,
+    ) {
+        for actor in actors {
+            if let Some(entity) = &actor.entity {
+                schedule.nodes[entity.node].active = entity.active;
+                scene
+                    .objects
+                    .iter_mut()
+                    .find(|o| o.id == actor.object)
+                    .expect("actor scene object")
+                    .active = entity.active;
+            }
+        }
+        for (i, component) in components.iter().enumerate() {
+            if let Some(entity) = &actors[component.actor].entity {
+                schedule.components[i].execution_gate = Some(
+                    entity.active
+                        && (!matches!(component.role, Role::Body) || entity.body_simulated),
+                );
+            }
+        }
+    }
     pub fn position_priorities(actors: &[Actor]) -> Vec<Option<i32>> {
         actors
             .iter()
@@ -162,6 +204,12 @@ impl Runtime {
             scheduler::Event,
         ) -> scheduler::Result<()>,
     ) -> scheduler::Result<()> {
+        Self::refresh_entities(
+            &mut self.scheduler,
+            &self.components,
+            &self.actors,
+            &mut self.scene,
+        );
         if self.scene.rope_system.is_some() || self.actors.iter().any(|a| a.body.rope.is_some()) {
             return Err("actor_rope_integration_not_implemented");
         }
@@ -196,6 +244,7 @@ impl Runtime {
         scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
             before(schedule, actors, scene, phase)?;
+            Self::refresh_entities(schedule, components, actors, scene);
             match phase.kind {
                 scheduler::Phase::Physics => {
                     report.physics =
@@ -255,6 +304,7 @@ impl Runtime {
                     let component = components[phase.id.unwrap()];
                     let position_priorities = Self::position_priorities(actors);
                     let actor = &mut actors[component.actor];
+                    actor.refresh_callback_gates(scene);
                     let protected = actor
                         .body
                         .holder
@@ -339,6 +389,8 @@ impl Runtime {
                                             .find(|p| Some(p.id) == actor.body.holder)
                                             .ok_or("null_reference")?,
                                         position_priorities: &position_priorities,
+                                        entity: actor.entity.as_mut(),
+                                        object: actor.object,
                                         body: &mut actor.body,
                                     },
                                     &mut context,

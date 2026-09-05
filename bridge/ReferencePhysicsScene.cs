@@ -67,7 +67,7 @@ public static class ReferencePhysicsScene
         for(int i=0;i<adapters.Count;i++)
         {
             var a=adapters[i];if(!Contains(a))continue;
-            var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();
+            var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();o["active"]=a.transform.gameObject.activeInHierarchy;
             if(a.parent.monobehaviourCollider.enabled)o.Remove("enabled");else o["enabled"]=false;
             o["body"]=Body(body);o["collider"]=ShapeJson(shape);
             o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
@@ -182,7 +182,7 @@ public static class ReferencePhysicsScene
             }
             return result;
         }
-        finally {Capturing=false;physics.ropes.ropeBodies=originalRopes;foreach(var a in adapters)UnityEngine.Object.DestroyImmediate(a.transform.gameObject);}
+        finally {Capturing=false;physics.ropes.ropeBodies=originalRopes;foreach(var a in adapters)if(a.transform!=null)UnityEngine.Object.DestroyImmediate(a.transform.gameObject);}
     }
     internal sealed class Adapter : IPhysicsCollider, ICollisionCallback
     {

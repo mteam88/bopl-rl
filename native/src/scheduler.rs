@@ -58,6 +58,8 @@ pub struct Component {
     pub hierarchy: i32,
     pub enabled: bool,
     pub ignore_activity: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_gate: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
@@ -71,6 +73,8 @@ pub struct Player {
     pub flags: Option<crate::ability::PlayerFlags>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<crate::player_position::State>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<Fix>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Input {
@@ -258,7 +262,7 @@ impl State {
     }
     fn enabled(&self, id: Id) -> bool {
         let c = &self.components[id];
-        c.enabled && (c.ignore_activity || self.active(c.owner))
+        c.enabled && c.execution_gate != Some(false) && (c.ignore_activity || self.active(c.owner))
     }
     pub fn sort_pending(&mut self) -> Result<()> {
         let components = &self.components;

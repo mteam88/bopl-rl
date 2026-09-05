@@ -961,3 +961,37 @@ directory for a live capture, or `python3 native/tools/verify_player_position.py
 --golden` to check the retained independent trajectories. Physical controller
 destruction, clone creation and ordinary ability entry/exit remain outside this
 capture.
+
+### Actor activity, body gates and real collider scale
+
+All 48 independent 300-tick actor episodes match Unity (14,400 ticks, eight cases
+each with one through six actors). The full state comparison covers actual
+GameObject activation, body simulation enablement, collider enablement, player
+scale clamping, DPhysicsBox scaling, transform offsets and explicit physics
+synchronization. The source runs 14,390 physics stages and 16,974 callbacks.
+Variable-size player bite/shove behavior is excluded.
+
+50,400 actor snapshots include 1,686 inactive objects, 24,486 bodies with simulation
+disabled and 33,862 non-unit collider scales. There are 417 detach events while
+body simulation is disabled. The source uses 15,744 activation commands, 2,064
+body simulation changes, 2,880 box scale writes, 864 player scale writes, 768
+collider enablement changes and 14,400 explicit box synchronizations.
+
+Eight targeted edge cases match: three complete a tick and five stop on original
+division errors. These cover zero old collider scale, zero old transform scale,
+zero resulting scale, initialized/uninitialized colliders, zero inverse extents
+on either axis, and nonzero transform offsets. Failed frames retain the exact
+partial scale, offset, basis and state mutations. No failed capture is promoted.
+
+- Unity assembly SHA-256: `19181b8cd02bb7fa2717027b137c6c30357d6f347742c1bab557a0f666f72a28`
+- Main input SHA-256: `0b5c8886087a861d2dc86fcf51aabb304d6ccb0b214ae3ddd610264ff889a2a5`
+- Main output SHA-256: `370fb7c8005c5de56a482c9bea60d3072f32fb75037b4a2523f22f3c2eeeda0e`
+- Edge input SHA-256: `bc1ba84d1f28814f10f96d1f929429be737572ad96701f34a8c13dd6bb3d8e4d`
+- Edge output SHA-256: `44218f4a90dd1b10406e2a640b5b58e6db6c109112c32dcfb376529efbde9067`
+
+A fresh 13-case Unity run also reproduces all 2,536 records from the prior
+Invisibility source corpus exactly (output SHA-256
+`8ac66cc08bfd943c71f2d2ab04fcf3dcad69fdef5bfe82ad4e7fdfa3aef7e403`).
+The retained actor-entity fixtures contain 12 complete 300-tick episodes and all
+eight edge cases. Original Awake runs, but prefab Init, the complete registered
+component graph, ordinary ability exit and full round lifecycle are not covered.
