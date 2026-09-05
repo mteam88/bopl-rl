@@ -15,6 +15,7 @@ public static class ReferencePhysicsScene
     private static bool sweepX, roundedSweepX;
     private static readonly JArray events = new JArray();
     private static DetPhysics physics;
+    private static RopeBody[] originalRopes;
     private static readonly string[] pairFields = { "potentialColliderIds_RR_RR", "potentialColliderIds_BoxRR", "potentialColliderIds_CircleRR", "potentialColliderIds_CircleCircle", "potentialColliderIds_CircleBox", "potentialColliderIds_BoxBox" };
     private static readonly Shape[,] pairShapes = { {Shape.RoundedRect,Shape.RoundedRect}, {Shape.Box,Shape.RoundedRect}, {Shape.Circle,Shape.RoundedRect}, {Shape.Circle,Shape.Circle}, {Shape.Circle,Shape.Box}, {Shape.Box,Shape.Box} };
     private static readonly BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -61,12 +62,22 @@ public static class ReferencePhysicsScene
     }
     public static JToken Evaluate(JObject query)
     {
-        if (physics==null) physics=new GameObject("Reference physics scene").AddComponent<DetPhysics>();
+        if (physics==null) {physics=new GameObject("Reference physics scene").AddComponent<DetPhysics>();originalRopes=physics.ropes.ropeBodies;}
         var scene=(JObject)query["scene"].DeepClone();
         var objects=(JArray)scene["objects"];
         var adapters=new List<Adapter>();
         physics.circles=new PhysicsBodyList<Circle>();physics.boxes=new PhysicsBodyList<Box>();physics.roundedRects=new PhysicsBodyList<RoundedRect>();
         physics.composites.Clear();
+        var ropeSystem=scene["rope_system"];
+        if(ropeSystem!=null)
+        {
+            var bodies=new List<RopeBody>();
+            foreach(var v in ropeSystem["bodies"]){var r=ReferenceRope.Read(v);r.indexInArray=bodies.Count;bodies.Add(r);}
+            physics.ropes.ropeBodies=bodies.ToArray();
+            physics.ropeGravity=F(ropeSystem["gravity"]);physics.ropeRelaxationIterations=(int)ropeSystem["iterations"];physics.platformStretchiness=F(ropeSystem["stretchiness"]);
+            typeof(DetPhysics).GetField("levelTypeThisFrame",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,(bool)ropeSystem["space"]?LevelType.space:LevelType.grass);
+        }
+        else physics.ropes.ropeBodies=Array.Empty<RopeBody>();
         typeof(DetPhysics).GetField("collisionCount",flags).SetValue(physics,0);
         Array.Clear((AABB[])typeof(DetPhysics).GetField("boundingBoxes",flags).GetValue(physics),0,4096);
         Array.Clear((AABB[])typeof(DetPhysics).GetField("bb_rope_rr",flags).GetValue(physics),0,1024);
@@ -124,6 +135,7 @@ public static class ReferencePhysicsScene
                     states.Add(o);
                 }
                 snapshot["objects"]=states;
+                if(ropeSystem!=null){var bodies=new JArray();foreach(var r in physics.ropes.ropeBodies)bodies.Add(ReferenceRope.State(r));snapshot["rope_system"]["bodies"]=bodies;}
                 var composites=new JArray();foreach(var c in physics.composites)composites.Add(CompositeJson(c));snapshot["composites"]=composites;
                 var groups=new JArray();
                 for(int g=0;g<pairFields.Length;g++)
@@ -137,7 +149,7 @@ public static class ReferencePhysicsScene
             }
             return result;
         }
-        finally {Capturing=false;foreach(var a in adapters)UnityEngine.Object.DestroyImmediate(a.transform.gameObject);}
+        finally {Capturing=false;physics.ropes.ropeBodies=originalRopes;foreach(var a in adapters)UnityEngine.Object.DestroyImmediate(a.transform.gameObject);}
     }
     private sealed class Adapter : IPhysicsCollider, ICollisionCallback
     {

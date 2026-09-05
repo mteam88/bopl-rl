@@ -148,3 +148,11 @@ Rope primitives match 2,000 reference cases, with 15,808 successful actions and
 `SimulateRopes_parallel` and `RopeBody` methods. A 197-case fixture covers
 integration, collisions with platforms, endpoint mass/attachment state,
 segment spawning and reeling; full grappling gameplay is not yet implemented.
+
+Combined rigid/composite/rope scenes pass 1,000/1,000 cases and 12,000 steps,
+including 45,168 enabled-rope updates and nine scenes that filled the 32-platform
+rope contact buffer. A 69-scene, 828-step fixture is checked in. The six-player
+hook replay passes 600/600 physics stages, with 268 stages containing active
+ropes (peak six), and 3,834 exact callbacks. Full evidence is in
+`artifacts/rope-scenes/` and `artifacts/rope-gameplay/`. The same pre-stage
+initialization limitation applies; grappling's ability state machine is unported.

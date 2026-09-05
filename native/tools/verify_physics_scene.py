@@ -67,13 +67,35 @@ def queries(count, seed):
                'steps':[0 if j%7==0 else rng.choice([71582788,71582788,35791394]) for j in range(12)],'commands':commands}
 
 
+def add_ropes(inputs,seed):
+    from verify_rope import queries as rope_queries
+    rng=random.Random(seed^91833);ropes=iter(rope_queries(len(inputs)*4,seed+1))
+    for case,query in enumerate(inputs):
+        samples=[next(ropes) for _ in range(4)]
+        bodies=[]
+        for sample in samples:
+            body=sample['rope'];body['separation']=max(body['separation'],ONE//20);body['collision_count']=0;bodies.append(body)
+        config=samples[0]['config'].copy();del config['dt'];config['bodies']=bodies;query['scene']['rope_system']=config
+        # Dense groups exercise the original 32-platform rope contact capacity.
+        if case%100==0:
+            source=next((o for o in query['scene']['objects'] if o['collider']['kind']=='rounded_rect'),None)
+            if source is None:continue
+            base=max(o['id'] for o in query['scene']['objects'])+1
+            for i in range(40):
+                o=copy.deepcopy(source);o['id']=base+i;o['composite']=None;o['active']=True;o['destroyed']=False
+                o['body']['inverse_mass']=-ONE;o['transform']['position']=vec(rng,-2,2);o['transform']['rotation']=rng.randrange(-3*ONE,3*ONE)
+                query['scene']['objects'].append(o)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cases',type=int,default=1000);parser.add_argument('--seed',type=int,default=943184)
-    parser.add_argument('--reuse-unity',action='store_true');parser.add_argument('--directory',type=Path,default=ROOT/'native/artifacts/physics-scene')
+    parser.add_argument('--ropes',action='store_true');parser.add_argument('--reuse-unity',action='store_true');parser.add_argument('--directory',type=Path,default=ROOT/'native/artifacts/physics-scene')
     args=parser.parse_args();d=args.directory.resolve();d.mkdir(parents=True,exist_ok=True)
     source=d/'input.jsonl';reference=d/'unity.jsonl';rust=d/'rust.jsonl'
-    inputs=list(queries(args.cases,args.seed));raw=''.join(json.dumps(q,separators=(',',':'))+'\n' for q in inputs)
+    inputs=list(queries(args.cases,args.seed))
+    if args.ropes:add_ropes(inputs,args.seed)
+    raw=''.join(json.dumps(q,separators=(',',':'))+'\n' for q in inputs)
     if args.reuse_unity:
         if source.read_text()!=raw:raise ValueError('Cannot reuse different input corpus')
     else:
@@ -89,17 +111,22 @@ def main():
     for key,p in [('input',source),('output',reference)]:
         if hashlib.sha256(p.read_bytes()).hexdigest()!=hashes[key]:raise ValueError('Reference provenance mismatch')
     with source.open('rb') as inp,rust.open('wb') as out:subprocess.run([str(ROOT/'native/target/release/dynamics-probe')],stdin=inp,stdout=out,check=True)
-    failures=[];steps=callbacks=pairs=errors=composite_scenes=0;lines=0
+    failures=[];steps=callbacks=pairs=errors=composite_scenes=rope_steps=capacity_scenes=0;lines=0
     with reference.open() as a,rust.open() as b:
         for i,(al,bl) in enumerate(zip(a,b,strict=True)):
             lines+=1;left=json.loads(al);right=json.loads(bl)
             if left!=right and len(failures)<10:failures.append({'case':i,'difference':first_difference(left,right)})
             if isinstance(left,dict):errors+=1;continue
             steps+=len(left);composite_scenes+=any(step['scene']['composites'] for step in left)
+            capacity=False
             for step in left:
+                bodies=step['scene'].get('rope_system',{}).get('bodies',[])
+                rope_steps+=sum(r['enabled'] for r in bodies)
+                capacity|=any(r['colliding_rects'][-1]!=0 for r in bodies)
                 callbacks+=len(step['report']['callbacks']);pairs+=sum(map(len,step['report']['pairs']))
+            capacity_scenes+=capacity
     if lines!=len(inputs):raise ValueError('Incomplete output corpus')
-    report={'match':not failures,'scenes':lines,'successful_steps':steps,'composite_scenes':composite_scenes,'callbacks':callbacks,'potential_pairs':pairs,'expected_errors':errors,'first_failures':failures,'provenance':hashes}
+    report={'match':not failures,'scenes':lines,'successful_steps':steps,'composite_scenes':composite_scenes,'callbacks':callbacks,'potential_pairs':pairs,'expected_errors':errors,'active_rope_steps':rope_steps,'rope_capacity_scenes':capacity_scenes,'first_failures':failures,'provenance':hashes}
     (d/'report.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report,indent=2))
     return int(bool(failures))
 if __name__=='__main__':raise SystemExit(main())

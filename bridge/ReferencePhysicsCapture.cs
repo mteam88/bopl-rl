@@ -46,7 +46,10 @@ public static class ReferencePhysicsCapture
             ["circles"]=Ids(c.circleIds),["boxes"]=Ids(c.boxIds),["rounded_rects"]=Ids(c.roundedRectIds)});
         var layers=new JArray();
         for(int i=0;i<32;i++){uint mask=0;for(int j=0;j<32;j++)if(!Physics2D.GetIgnoreLayerCollision(i,j))mask|=1u<<j;layers.Add(mask);}
-        return new JObject {["objects"]=objects,["composites"]=composites,["layers"]=layers,["gravity"]=p.gravityAccel.m_rawValue};
+        var ropes=new JArray();foreach(var r in p.ropes.ropeBodies)ropes.Add(ReferenceRope.State(r));
+        return new JObject {["objects"]=objects,["composites"]=composites,["layers"]=layers,["gravity"]=p.gravityAccel.m_rawValue,
+            ["rope_system"]=new JObject {["bodies"]=ropes,["gravity"]=p.ropeGravity.m_rawValue,["iterations"]=p.ropeRelaxationIterations,["stretchiness"]=p.platformStretchiness.m_rawValue,
+                ["space"]=(LevelType)typeof(DetPhysics).GetField("levelTypeThisFrame",BindingFlags.Static|BindingFlags.NonPublic).GetValue(null)==LevelType.space}};
     }
     private static void Append<T>(JArray result, PhysicsBodyList<T> list, DetPhysics p) where T:struct,IShape
     {

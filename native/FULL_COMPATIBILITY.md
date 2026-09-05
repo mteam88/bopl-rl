@@ -121,7 +121,9 @@ python3 native/tools/verify_physics_capture.py native/artifacts/stages.jsonl.gz
 Each comparison supplies the recorded pre-physics state to Rust. This tests the
 physics stage on states produced by real abilities; it is separate from the
 independent native movement episodes and does not certify native ability logic.
-Rope/beam ticks are counted explicitly and remain outside this stage comparison.
+Beam ticks and older rope captures without rope state are counted explicitly
+and remain outside the stage comparison. New captures include the full rope
+physics state.
 The capture preserves collision queues, composite membership and the cached
 `FixTransform.right` vector, whose raw components can differ from recomputing its
 angle. Gameplay found this missing state after synthetic scenes passed; the
@@ -136,5 +138,18 @@ The rope kernel also matches 2,000 actual Unity cases: 15,808 successful
 actions and 24 matching source arithmetic errors. It includes relaxation,
 platform contact, normal/space gravity, zero timestep, detached endpoints,
 40-segment capacity, spawning and both reeling directions. 197 cases are retained
-as standalone regressions. Rope broad-phase integration and the grappling
-ability lifecycle remain separate work.
+as standalone regressions. Rope broad-phase integration is now verified below. The grappling ability
+lifecycle remains separate work.
+
+The combined rigid/composite/rope solver matches another 1,000 Unity scenes
+and 12,000 steps, including 45,168 active rope updates. Nine scenes exercised
+the original 32-platform rope contact capacity. 69 scenes and 828 steps remain
+in `fixtures/rope-scenes.jsonl.gz`.
+
+A dedicated six-player grappling-hook replay matches all 600 physics stages and
+3,834 callbacks. Active ropes occurred in 268 stages, with six simultaneous ropes
+at the peak. The recorder includes all 128 rope slots, active segment counts,
+current/previous segments, endpoint forces/masses, contact buffers, gravity,
+relaxation settings and the physics subsystem's cached space-level flag.
+The native grappling ability still needs its own independent lifecycle port;
+these comparisons initialize the physics stage from Unity's recorded state.

@@ -1,5 +1,5 @@
 //! Ordered rigid/composite-body stage of DetPhysics.Simulate.
-//! Ropes, beams and gameplay callback effects are separate stages, still pending.
+//! Beam effects and gameplay callbacks remain separate stages, still pending.
 use super::{Body, Contact, positional_correction, resolve, shape::Collider};
 use crate::{fixed::Fix, vector::Vec2, world::DT};
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,8 @@ pub struct Scene {
     /// Bit j in row i means that layers i and j collide (Unity Physics2D matrix).
     pub layers: [u32; 32],
     pub gravity: Fix,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_system: Option<super::rope_system::RopeSystem>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CollisionEvent {
@@ -273,6 +275,14 @@ impl Scene {
             }
         }
         self.synchronize();
+        if self.objects.is_empty() {
+            return StepReport {
+                sweep_x: false,
+                rounded_sweep_x: false,
+                pairs: std::array::from_fn(|_| Vec::new()),
+                callbacks: Vec::new(),
+            };
+        }
         self.integrate(dt);
         let (sweep_x, rounded_sweep_x, groups) = super::sweep::pairs(self);
         let mut report = StepReport {
@@ -286,6 +296,9 @@ impl Scene {
             }),
             callbacks: Vec::new(),
         };
+        if let Some(ropes) = &mut self.rope_system {
+            ropes.step(&self.objects, rounded_sweep_x, dt);
+        }
         for group in groups {
             let contacts: Vec<_> = group
                 .into_iter()

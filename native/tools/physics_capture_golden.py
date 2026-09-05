@@ -19,14 +19,16 @@ def export(paths):
         report=json.loads(path.with_suffix('.physics-report.json').read_text())
         source=provenance(path)
         if not report['match'] or report['provenance']!=source:raise ValueError('Cannot promote unverified gameplay stages')
-        stages=[r['value']['physicsStage'] for r in read_trace(path) if r['kind']=='state' and r['value'].get('physicsStage') is not None]
-        stages=[s for s in stages if not s['ropes'] and not s['beams']]
-        # Preserve spawn-to-movement boundaries plus an even sample of later play.
-        indices=sorted({i for i,s in enumerate(stages) if s['tick'] in range(237,246)}|set(range(0,len(stages),max(1,len(stages)//40))))
-        for i in indices:
-            s=stages[i]
-            records.append({'source':len(sources),'tick':s['tick'],'query':{'operation':'dynamics_scene','scene':s['before'],'steps':[s['dt']]},
-                'expected':{'scene':s['after'],'callbacks':s['callbacks']}})
+        index=0;stride=max(1,report['compared_stages']//40)
+        for row in read_trace(path):
+            if row['kind']!='state':continue
+            s=row['value'].get('physicsStage')
+            if s is None or s['beams'] or (s['ropes'] and 'rope_system' not in s['before']):continue
+            if s['tick'] in range(237,246) or index%stride==0:
+                records.append({'source':len(sources),'tick':s['tick'],'query':{'operation':'dynamics_scene','scene':s['before'],'steps':[s['dt']]},
+                    'expected':{'scene':s['after'],'callbacks':s['callbacks']}})
+            index+=1
+        if index!=report['compared_stages']:raise ValueError('Coverage changed since verification')
         sources.append(source)
     header={'schema':'bopl-gameplay-physics-stage-v1','stages':len(records),'sources':sources,
         'scope':'Unity supplies the state before each independent physics stage; gameplay callback effects are excluded'}
