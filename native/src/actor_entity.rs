@@ -36,6 +36,7 @@ impl BoxComponent {
         transform_scale: &mut Fix,
         object_id: u32,
         scene: &mut Scene,
+        pending: Option<&mut crate::physics::scene::Object>,
     ) -> scheduler::Result<()> {
         let c = self;
         let inverse = Fix::ONE
@@ -46,21 +47,16 @@ impl BoxComponent {
             .scale
             .checked_div(*transform_scale)
             .map_err(|_| "division_by_zero")?;
-        scene
+        let object = scene
             .objects
             .iter_mut()
             .find(|o| o.id == object_id)
-            .ok_or("missing_actor_object")?
-            .transform
-            .offset *= offset_factor;
+            .or(pending)
+            .ok_or("missing_actor_object")?;
+        object.transform.offset *= offset_factor;
         *transform_scale = c.scale;
         let factor = inverse * c.scale;
         if c.initialized {
-            let object = scene
-                .objects
-                .iter_mut()
-                .find(|o| o.id == object_id)
-                .ok_or("missing_actor_object")?;
             let Collider::Box(shape) = &mut object.collider else {
                 return Err("actor_box_required");
             };
@@ -85,6 +81,48 @@ impl BoxComponent {
     }
 }
 impl Actor {
+    pub(crate) fn initialize_box(
+        &mut self,
+        scene: &mut Scene,
+        hierarchy: i32,
+    ) -> scheduler::Result<()> {
+        let Some(object) = self.pending_object.as_mut() else {
+            return Err("actor_collider_already_initialized");
+        };
+        let c = &mut self.entity.as_mut().ok_or("missing_actor_entity")?.collider;
+        if c.start_extents.x == Fix::ZERO {
+            c.start_extents.x = c.minimum_extents;
+        }
+        if c.start_extents.y == Fix::ZERO {
+            c.start_extents.y = c.minimum_extents;
+        }
+        let basis = object.transform.basis();
+        object.collider = Collider::Box(crate::geometry::OrientedBox {
+            center: object.transform.position + basis.complex_mul(object.transform.offset),
+            right: basis * c.start_extents.x,
+            up: basis.perp() * c.start_extents.y,
+            inverse_extents: Vec2::new(
+                Fix::ONE
+                    .checked_div(c.start_extents.x)
+                    .map_err(|_| "division_by_zero")?
+                    .abs(),
+                Fix::ONE
+                    .checked_div(c.start_extents.y)
+                    .map_err(|_| "division_by_zero")?
+                    .abs(),
+            ),
+        });
+        object.body = crate::physics::Body {
+            inverse_mass: -Fix::ONE,
+            orientation: object.transform.rotation,
+            ..Default::default()
+        };
+        c.initialized = true;
+        object.hierarchy = Some(hierarchy);
+        self.collision_hierarchy = hierarchy;
+        scene.objects.push(self.pending_object.take().unwrap());
+        Ok(())
+    }
     pub fn is_present(&self) -> bool {
         self.entity
             .as_ref()
@@ -100,6 +138,7 @@ impl Actor {
                 &mut self.controller.physics.scale,
                 self.object,
                 scene,
+                self.pending_object.as_mut(),
             )
     }
     pub fn sync_box(&self, scene: &mut Scene) -> scheduler::Result<()> {
@@ -184,6 +223,7 @@ impl crate::actors::Runtime {
                         .objects
                         .iter_mut()
                         .find(|o| o.id == actor.object)
+                        .or(actor.pending_object.as_mut())
                     {
                         object.destroyed = true;
                     }

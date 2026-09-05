@@ -43,6 +43,24 @@ class StreamCompleteness(unittest.TestCase):
         row = copy.deepcopy(self.row); del row['state']['report']['phases']
         with self.assertRaises(ValueError): Protocol([self.query]).accept(row)
 
+    def test_dynamic_actors_preserve_identity_and_inputs(self):
+        query = copy.deepcopy(self.query)
+        query.update(dynamic_actors=True, actions=[{}, {}])
+        query['runtime']['actors'] = [dict(object=10)]
+        row = copy.deepcopy(self.row)
+        row['state']['actors'] = [dict(object=10), dict(object=11)]
+        p = Protocol([query]); p.accept(row)
+        second = copy.deepcopy(row); second['action'] = 1
+        second['state']['actors'].append(dict(object=12))
+        p.accept(second); p.accept(dict(case=0, result=dict(completed=2)))
+        self.assertEqual(p.finish()['ticks'], 2)
+        for identities in [[10], [10, 10], [11, 10], [10, 12]]:
+            p = Protocol([query]); p.accept(row)
+            invalid = copy.deepcopy(second)
+            invalid['state']['actors'] = [dict(object=i) for i in identities]
+            with self.subTest(identities=identities), self.assertRaises(ValueError):
+                p.accept(invalid)
+
 
 if __name__ == '__main__':
     unittest.main()

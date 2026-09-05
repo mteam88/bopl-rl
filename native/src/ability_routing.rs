@@ -49,7 +49,7 @@ pub struct State {
     /// Slots alias the pool, including null and destroyed Unity references.
     pub slots: Vec<Option<usize>>,
     pub pool: Vec<Ability>,
-    pub timers: Vec<Fix>,
+    pub timers: Option<Vec<Fix>>,
     pub indicators: Vec<Option<Indicator>>,
     pub in_ability: bool,
     pub can_use: bool,
@@ -64,7 +64,11 @@ impl State {
             .ok_or("null_reference")
     }
     pub(crate) fn timer(&mut self, slot: usize) -> Result<&mut Fix> {
-        self.timers.get_mut(slot).ok_or("index_out_of_range")
+        self.timers
+            .as_mut()
+            .ok_or("null_reference")?
+            .get_mut(slot)
+            .ok_or("index_out_of_range")
     }
     pub(crate) fn indicator(&mut self, slot: usize) -> Result<&mut Indicator> {
         self.indicators
@@ -77,7 +81,12 @@ impl State {
         slot < 3 && self.buttons.get(slot).copied().unwrap_or(false)
     }
     pub fn ready(&self, slot: usize) -> Result<bool> {
-        let timer = self.timers.get(slot).ok_or("index_out_of_range")?;
+        let timer = self
+            .timers
+            .as_ref()
+            .ok_or("null_reference")?
+            .get(slot)
+            .ok_or("index_out_of_range")?;
         Ok(*timer > self.ability(slot)?.cooldown)
     }
     pub fn castable(&self, slot: usize, grounded: bool) -> Result<bool> {
@@ -178,7 +187,12 @@ impl State {
             if !instant.component_present {
                 continue;
             }
-            let timer = *self.timers.get(i).ok_or("index_out_of_range")?;
+            let timer = *self
+                .timers
+                .as_ref()
+                .ok_or("null_reference")?
+                .get(i)
+                .ok_or("index_out_of_range")?;
             if timer < minimum {
                 minimum = timer;
                 youngest = Some(i);

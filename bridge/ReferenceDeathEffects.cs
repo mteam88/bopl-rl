@@ -19,6 +19,10 @@ internal sealed class ReferenceDeathEffects : IDisposable
     private readonly List<Entry> entries=new List<Entry>();
     private int nextNode,nextComponent;
     internal Func<PlayerBody,int> ActorId;
+    internal Func<MonoUpdatable,int?> AdditionalId;
+    internal Func<JArray> AdditionalComponents;
+    internal int ReserveNodes(int count){int first=nextNode;nextNode+=count;return first;}
+    internal int ReserveComponents(int count){int first=nextComponent;nextComponent+=count;return first;}
     internal Func<Material,int> MaterialId;
     private readonly Dictionary<Material,int> defaultMaterials=new Dictionary<Material,int>();
     private sealed class Entry {internal GameObject Go;internal MonoUpdatable Effect;internal bool Water;internal SpriteAnimator Animator;internal int Node;internal int[] Components;internal int Actor;internal Material Material;internal int? MaterialIdentity;internal JArray Splashes=new JArray();internal JObject Removed;internal JArray Registration;}
@@ -122,9 +126,9 @@ internal sealed class ReferenceDeathEffects : IDisposable
     internal JObject Registration(List<ReferenceActorDriver> drivers)
     {
         object Field(string name)=>typeof(Updater).GetField(name,System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Public).GetValue(null);
-        JToken Ref(MonoUpdatable c){if(ReferenceEquals(c,null))return JValue.CreateNull();var id=Id(c);if(id.HasValue)return new JValue(id.Value);int index=drivers.FindIndex(d=>ReferenceEquals(d,c));if(index<0)throw new NotSupportedException("Unbound registered component "+c.GetType().Name+" on "+c.gameObject.name);return new JValue(index);}
+        JToken Ref(MonoUpdatable c){if(ReferenceEquals(c,null))return JValue.CreateNull();var id=Id(c);if(id.HasValue)return new JValue(id.Value);id=AdditionalId?.Invoke(c);if(id.HasValue)return new JValue(id.Value);int index=drivers.FindIndex(d=>ReferenceEquals(d,c));if(index<0)throw new NotSupportedException("Unbound registered component "+c.GetType().Name+" on "+c.gameObject.name);return new JValue(index);}
         JArray Refs(IEnumerable<MonoUpdatable> values)=>new JArray(values.Select(Ref));
-        return new JObject{["added"]=(int)Field("addedUpdatables"),["prefabs_added"]=(int)Field("prefabsAdded"),["registering_prefab"]=(bool)Field("registeringAPrefab"),["pending"]=Refs((List<MonoUpdatable>)Field("toBeAddedUpdatables")),["live"]=Refs(Updater.updatables),["hitstop"]=(int)Field("hitStopFrames"),["dynamic"]=new JArray(entries.SelectMany(e=>Components(e)))};
+        return new JObject{["added"]=(int)Field("addedUpdatables"),["prefabs_added"]=(int)Field("prefabsAdded"),["registering_prefab"]=(bool)Field("registeringAPrefab"),["pending"]=Refs((List<MonoUpdatable>)Field("toBeAddedUpdatables")),["live"]=Refs(Updater.updatables),["hitstop"]=(int)Field("hitStopFrames"),["dynamic"]=new JArray(entries.SelectMany(e=>Components(e)).Concat(AdditionalComponents?.Invoke()??new JArray()).OrderBy(c=>(int)c["id"]))};
     }
     internal JObject Snapshot(){var value=new JObject{["prefab"]=initial["prefab"].DeepClone(),["instances"]=new JArray(entries.Select(Snapshot))};if(initial["water_prefab"]!=null)value["water_prefab"]=initial["water_prefab"].DeepClone();return value;}
     public void Dispose(){ComponentPhase=null;Active=null;foreach(var e in entries)if(e.Go!=null)UnityEngine.Object.DestroyImmediate(e.Go);}

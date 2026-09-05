@@ -47,12 +47,22 @@ class Protocol:
         self.player_states = Counter()
         self.error_cases = []
         self.previous = None
+        self.actor_ids = None
 
     def frame(self, value, query):
         required = {'actors', 'scene', 'report', 'ticks', 'time', 'level_time', 'inputs'}
         if not isinstance(value, dict) or not required <= set(value):
             raise ValueError('Incomplete actor state')
-        if len(value['actors']) != len(query['runtime']['actors']) or len(value['inputs']) != len(query['runtime']['scheduler']['inputs']):
+        if query.get('dynamic_actors'):
+            previous = self.actor_ids if self.actor_ids is not None else [a['object'] for a in query['runtime']['actors']]
+            identities = [a.get('object') for a in value['actors']]
+            if (any(type(i) is not int for i in identities) or len(set(identities)) != len(identities)
+                    or identities[:len(previous)] != previous):
+                raise ValueError('Dynamic actors were removed, duplicated or remapped')
+            self.actor_ids = identities
+        elif len(value['actors']) != len(query['runtime']['actors']):
+            raise ValueError('Incorrect actor count')
+        if len(value['inputs']) != len(query['runtime']['scheduler']['inputs']):
             raise ValueError('Incorrect actor or input count')
         if not {'phases', 'events', 'pushes', 'physics'} <= set(value['report']):
             raise ValueError('Incomplete actor phase report')
@@ -116,6 +126,7 @@ class Protocol:
             self.case += 1
             self.action = 0
             self.previous = None
+            self.actor_ids = None
         else:
             raise ValueError('Unknown actor stream record')
 

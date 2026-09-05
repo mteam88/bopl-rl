@@ -84,6 +84,10 @@ verify: build check
     python3 native/tools/verify_actor_bounds.py --golden
     python3 native/tools/verify_actor_bounds.py --faults --golden
     python3 native/tools/verify_actor_bounds.py --interactions --golden
+    python3 native/tools/verify_actor_clones.py --golden
+    python3 native/tools/verify_actor_clones.py --saturation --golden
+    python3 native/tools/verify_actor_clones.py --interactions --golden
+    python3 native/tools/verify_actor_clones.py --orphan-inputs --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -236,3 +240,9 @@ verify-actor-bounds: build
     python3 native/tools/verify_actor_bounds.py
     python3 native/tools/verify_actor_bounds.py --faults
     python3 native/tools/verify_actor_bounds.py --interactions
+
+verify-actor-clones: build
+    python3 native/tools/verify_actor_clones.py
+    python3 native/tools/verify_actor_clones.py --saturation
+    python3 native/tools/verify_actor_clones.py --interactions
+    python3 native/tools/verify_actor_clones.py --orphan-inputs

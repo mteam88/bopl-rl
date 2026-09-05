@@ -232,7 +232,7 @@ The public C environment remains the movement/dash slice.
 First-spawn and respawn callbacks are now connected to the composed actor runner:
 84 source comparisons, including 54 complete episodes and 30 matching failure
 states. See [scheduled spawn coverage](FULL_COMPATIBILITY.md#scheduled-first-spawn-and-revival).
-Clone creation and stock selection remain outstanding.
+Stock selection remains outstanding; the clone factory is covered below.
 
 ## Rewind history recording
 
@@ -259,7 +259,7 @@ samples. The verifier uses Python's standard-library lzma support. Run
 command without `--golden`. Raw evidence and exact source/input/output hashes are
 in `artifacts/actor-rewind/report.json`. Existing spawn and death regressions,
 Rust tests/lints, Python checks and the C smoke test pass. Rewind casting/playback,
-clone allocation and the complete match environment remain outstanding.
+the complete match environment remain outstanding. Clone allocation is covered below.
 
 ## Scheduled map-boundary deaths
 
@@ -297,5 +297,57 @@ are under `artifacts/actor-bounds`, `actor-bounds-failures`, and
 are kept separately and are not the retained regression corpus. Existing death
 effect and spawn fixtures, Rust checks, Python tests and the C smoke test pass.
 Render-frame-only water rings/audio are outside these Updater traces. Projectile/
-item boundary paths, clone allocation and the full match environment remain
+item boundary paths and the full match environment remain
 outstanding; the public C environment retains its documented movement/dash scope.
+
+
+## Scheduled abilityless clone allocation
+
+`actor_clone.rs` now creates the pinned empty-player prefab in the composed actor
+runtime. Clones receive distinct actor, collider, hierarchy and scheduler IDs,
+share their owner's input and player ledger, and keep the prefab's real Awake,
+Init, preparation and animation behavior. Their initially null cooldown array
+remains null until SlimeController initialization. A clone deleted before Init
+never gains a collider. The source probe instantiates the original prefab and
+observes its components rather than constructing replacement controllers.
+
+The basic corpus covers creation before a tick and during Init, Update, physics
+and LateUpdate, two births in one callback, the body-count limit, a null prefab,
+and deletion before initialization. It contains 54 cases across one through six
+players: 48 complete episodes, 7,200 ticks and six matching null-reference
+prefixes. The source increments the body ledger before accessing a null prefab;
+the failed allocation therefore reserves a body without creating an actor.
+
+Six saturation cases create 336 clones across the six rosters and remove all of
+them. The six-player case reaches 102 simultaneous player bodies: each player
+has the original plus 16 clones. The 21 further calls return null without
+incrementing the ledger. This follows the original strict count guard.
+
+The 60 interaction cases complete 14,400 ticks, create and remove 90 clones,
+account for 96 body deaths, and create and finish 90 death effects. They
+exercise clone death and replacement, creation from a
+death-effect Init callback, cloning from a surviving clone after the original
+dies, water deaths, shared movement/buttons, time stop and protection, scale
+changes before Init, and inherited player scale. Water cases explicitly select
+the grass boundary; spawn invulnerability does not prevent boundary death.
+Coverage checks require the intended births, body deaths, spawn completions,
+removals and completed death effects before retaining the corpus. Full actor,
+physics, scheduler and shared-player state is compared after each tick.
+
+Six additional cases change shared buttons after the original body dies and
+create a replacement from a surviving clone. All 1,440 ticks match, including
+12 clone births/removals and 18 body deaths. New clones inherit current buttons
+from a surviving body; deleted originals retain their final observed snapshots.
+
+Run `python3 native/tools/verify_actor_clones.py --golden`, adding `--saturation`,
+`--interactions` or `--orphan-inputs` for the other sets. Full traces are retained in
+`fixtures/actor-clones*.jsonl.xz`; raw evidence and assembly/input/output hashes
+are under `artifacts/actor-clones-verified`, `actor-clones-saturation`, and
+`actor-clones-interactions-verified`, and `actor-clones-orphan-inputs`. The earlier interaction pilot matched
+state but missed two intended water deaths and is not the canonical corpus.
+
+This is the shared abilityless-clone factory, not the complete Duplicate or
+Revival ability. Their casting/placement, stock selection, enemy eating and the
+full match environment remain outstanding. Same-team unequal-scale contact is
+supported; a qualifying enemy bite still returns an explicit unsupported error.
+The public C environment retains its documented movement/dash scope.

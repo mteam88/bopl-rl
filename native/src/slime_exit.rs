@@ -31,6 +31,7 @@ impl Instance {
             &mut controller.physics.scale,
             update.object,
             context.scene,
+            None,
         )?;
         if let Some(flags) = &mut update.player.flags {
             flags.spark = false;

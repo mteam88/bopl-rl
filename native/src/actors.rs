@@ -14,11 +14,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Actor {
     pub object: u32,
+    /// Awake creates the transform/collider component before DPhysicsBox.Init
+    /// registers a physics body. Keep that state outside the collision scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_object: Option<crate::physics::scene::Object>,
     pub controller: player_controller::State,
     pub body: player_body::State,
     pub config: player_controller::Config,
     pub input: Vec2,
     pub push_strength: Option<Fix>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bite_threshold: Option<Fix>,
     pub collision_hierarchy: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slime: Option<crate::slime::Instance>,
@@ -36,6 +42,7 @@ pub struct Actor {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
+    Collider,
     Physics,
     Motor,
     Animation,
@@ -60,7 +67,7 @@ pub struct ActorRopes {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Runtime {
     pub scheduler: scheduler::State,
-    pub components: Vec<Component>,
+    pub components: Vec<Option<Component>>,
     pub actors: Vec<Actor>,
     pub scene: Scene,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +98,7 @@ pub struct Report {
 }
 pub struct Context<'a> {
     pub schedule: &'a mut scheduler::State,
+    pub components: &'a mut Vec<Option<Component>>,
     pub scene: &'a mut Scene,
     pub actor_ropes: &'a mut Option<ActorRopes>,
     pub combat: &'a mut Option<crate::actor_combat::Combat>,
@@ -150,6 +158,7 @@ impl Actor {
                     .objects
                     .iter()
                     .find(|o| o.id == self.object)
+                    .or(self.pending_object.as_ref())
                     .expect("actor scene object")
                     .enabled,
             );
@@ -169,8 +178,53 @@ impl Actor {
         result
     }
 
-    /// The equal-scale shove branch of SlimeController.OnCollide. Bite and
-    /// other collision effects must be supplied by the full gameplay controller.
+    fn check_bite(
+        &self,
+        other: &Actor,
+        schedule: &scheduler::State,
+        combat: &Option<crate::actor_combat::Combat>,
+    ) -> scheduler::Result<()> {
+        if self.push_strength.is_none()
+            || self.slime.as_ref().is_some_and(|s| s.state.mode == 9)
+            || !self.controller.physics.motion.grounded
+        {
+            return Ok(());
+        }
+        let holder = self.body.holder.ok_or("null_reference")?;
+        if holder != 1000
+            && schedule.time_scale < Fix::from_f32(0.01)
+            && !schedule
+                .players
+                .iter()
+                .find(|p| p.id == holder)
+                .ok_or("null_reference")?
+                .protected
+        {
+            return Ok(());
+        }
+        if self.controller.physics.scale - other.controller.physics.scale
+            < self.bite_threshold.unwrap_or(Fix::ONE)
+            || other.collision.is_none()
+        {
+            return Ok(());
+        }
+        let book = &combat.as_ref().ok_or("actor_bite_context_missing")?.book;
+        let mine = book
+            .players
+            .iter()
+            .find(|p| p.id == holder)
+            .ok_or("null_reference")?;
+        let theirs = book
+            .players
+            .iter()
+            .find(|p| Some(p.id) == other.body.holder)
+            .ok_or("null_reference")?;
+        if mine.team != theirs.team {
+            return Err("actor_bite_integration_not_implemented");
+        }
+        Ok(())
+    }
+    /// SlimeController's overlap shove, after checking the separate bite gate.
     fn shove(&mut self, other_position: Vec2, other_hierarchy: i32) -> Option<Vec2> {
         let strength = self.push_strength?;
         let m = &self.controller.physics.motion;
@@ -205,11 +259,16 @@ impl Actor {
         m.velocity = self.body.velocity;
         m.external_velocity = self.body.external_velocity;
     }
-    pub(crate) fn sync_transform(&self, scene: &mut Scene) {
+    pub(crate) fn sync_transform(&mut self, scene: &mut Scene) {
         // A ray query can prune a DestroyFix-marked collider before Unity
         // deletes the GameObject. The current component call still finishes
         // against its live body/transform, retained on the actor.
-        let Some(object) = scene.objects.iter_mut().find(|o| o.id == self.object) else {
+        let Some(object) = scene
+            .objects
+            .iter_mut()
+            .find(|o| o.id == self.object)
+            .or(self.pending_object.as_mut())
+        else {
             assert!(
                 self.entity
                     .as_ref()
@@ -378,7 +437,7 @@ impl Runtime {
     }
     pub fn refresh_entities(
         schedule: &mut scheduler::State,
-        components: &[Component],
+        components: &[Option<Component>],
         actors: &mut [Actor],
         scene: &mut Scene,
     ) {
@@ -407,21 +466,28 @@ impl Runtime {
                 schedule.nodes[entity.node].active = entity.active;
             }
         }
-        for actor in actors.iter() {
+        for actor in actors.iter_mut() {
             if let Some(entity) = &actor.entity {
                 if entity.present == Some(false) {
                     continue;
                 }
-                if let Some(object) = scene.objects.iter_mut().find(|o| o.id == actor.object) {
+                if let Some(object) = scene
+                    .objects
+                    .iter_mut()
+                    .find(|o| o.id == actor.object)
+                    .or(actor.pending_object.as_mut())
+                {
                     object.active = schedule.active(entity.node);
                 }
             }
         }
         for (i, component) in components.iter().enumerate() {
+            let Some(component) = component else { continue };
             if let Some(entity) = &actors[component.actor].entity {
                 schedule.components[i].execution_gate = Some(
                     entity.present != Some(false)
                         && entity.active
+                        && !matches!(component.role, Role::Collider)
                         && (!matches!(component.role, Role::Body) || entity.body_simulated)
                         && (!matches!(component.role, Role::Physics)
                             || actors[component.actor]
@@ -462,7 +528,7 @@ impl Runtime {
         dt: Fix,
         report: &mut Report,
         before: &mut impl FnMut(
-            &mut [Actor],
+            &mut Vec<Actor>,
             &mut Context,
             &mut Report,
             scheduler::Event,
@@ -483,16 +549,6 @@ impl Runtime {
                         .all(|a| a.body.rope.is_none_or(|i| i < system.bodies.len())) => {}
             (None, None) if self.actors.iter().all(|a| a.body.rope.is_none()) => {}
             _ => return Err("actor_rope_binding_invalid"),
-        }
-        if self.actors.iter().any(|a| a.push_strength.is_some()) {
-            let scale = self.actors[0].controller.physics.scale;
-            if self
-                .actors
-                .iter()
-                .any(|a| a.controller.physics.scale != scale)
-            {
-                return Err("actor_bite_integration_not_implemented");
-            }
         }
         if self
             .scene
@@ -520,6 +576,7 @@ impl Runtime {
                 actors,
                 &mut Context {
                     schedule,
+                    components,
                     scene,
                     actor_ropes,
                     combat,
@@ -560,7 +617,7 @@ impl Runtime {
                         a.controller_to_body();
                     }
                     // DetPhysics delivers queued callbacks only after synchronizing
-                    // collider transforms. The equal-size shove branch does not
+                    // collider transforms. The overlap shove does not
                     // alter colliders until the following physics step.
                     let callbacks = std::mem::take(&mut report.physics.as_mut().unwrap().callbacks);
                     for hit in callbacks {
@@ -577,11 +634,12 @@ impl Runtime {
                                 .expect("collision object");
                             // Player-layer colliders in this integration stage all
                             // belong to actors, which retain their collision priority.
-                            let other_hierarchy = actors
+                            let other_actor = actors
                                 .iter()
                                 .find(|a| a.object == hit.other)
-                                .expect("player actor collision")
-                                .collision_hierarchy;
+                                .expect("player actor collision");
+                            actors[index].check_bite(other_actor, schedule, combat)?;
+                            let other_hierarchy = other_actor.collision_hierarchy;
                             if let Some(external_delta) =
                                 actors[index].shove(other.transform.position, other_hierarchy)
                             {
@@ -596,6 +654,7 @@ impl Runtime {
                                 actors,
                                 &mut Context {
                                     schedule,
+                                    components,
                                     scene,
                                     actor_ropes,
                                     combat,
@@ -612,7 +671,19 @@ impl Runtime {
                     }
                 }
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
-                    let component = components[phase.id.unwrap()];
+                    let component = components
+                        .get(phase.id.unwrap())
+                        .copied()
+                        .flatten()
+                        .ok_or("unbound_actor_component")?;
+                    if matches!(phase.kind, scheduler::Phase::Init)
+                        && matches!(component.role, Role::Collider)
+                    {
+                        return actors[component.actor].initialize_box(
+                            scene,
+                            schedule.components[phase.id.unwrap()].hierarchy,
+                        );
+                    }
                     if matches!(phase.kind, scheduler::Phase::Update)
                         && matches!(component.role, Role::Bounds)
                     {
@@ -620,6 +691,7 @@ impl Runtime {
                             actors,
                             &mut Context {
                                 schedule,
+                                components,
                                 scene,
                                 actor_ropes,
                                 combat,
@@ -649,6 +721,7 @@ impl Runtime {
                             actors,
                             &mut Context {
                                 schedule,
+                                components,
                                 scene,
                                 actor_ropes,
                                 combat,
@@ -672,6 +745,7 @@ impl Runtime {
                             actors,
                             &mut Context {
                                 schedule,
+                                components,
                                 scene,
                                 actor_ropes,
                                 combat,
@@ -693,6 +767,7 @@ impl Runtime {
                             actors,
                             &mut Context {
                                 schedule,
+                                components,
                                 scene,
                                 actor_ropes,
                                 combat,
@@ -955,6 +1030,7 @@ impl Runtime {
                             actors,
                             &mut Context {
                                 schedule,
+                                components,
                                 scene,
                                 actor_ropes,
                                 combat,
@@ -974,6 +1050,7 @@ impl Runtime {
                     if let Some(request) = pending_entry {
                         let mut context = Context {
                             schedule,
+                            components,
                             scene,
                             actor_ropes,
                             combat,

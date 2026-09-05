@@ -1,6 +1,7 @@
 pub mod ability;
 pub mod ability_routing;
 pub mod actor_bounds;
+pub mod actor_clone;
 pub mod actor_entity;
 pub mod beam;
 pub mod curve;

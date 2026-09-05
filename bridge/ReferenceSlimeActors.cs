@@ -84,7 +84,7 @@ internal static class ReferenceSlimeActors
             }
             if(value["abilities"]!=null)
             {
-                var routing=value["abilities"];routing["slots"]=new JArray(Slime.abilities.Select(a=>ReferenceEquals(a,null)?(JToken)JValue.CreateNull():new JValue(Array.IndexOf(RoutingPool,a))));routing["timers"]=new JArray(Get<Fix[]>(Slime,"abilityCooldownTimers").Select(f=>f.m_rawValue));routing["in_ability"]=Get<bool>(Slime,"isInAbility");
+                var routing=value["abilities"];routing["slots"]=new JArray(Slime.abilities.Select(a=>ReferenceEquals(a,null)?(JToken)JValue.CreateNull():new JValue(Array.IndexOf(RoutingPool,a))));routing["timers"]=Get<Fix[]>(Slime,"abilityCooldownTimers")==null?JValue.CreateNull():new JArray(Get<Fix[]>(Slime,"abilityCooldownTimers").Select(f=>f.m_rawValue));routing["in_ability"]=Get<bool>(Slime,"isInAbility");
                 var player=PlayerHandler.Get().GetPlayer(Slime.playerNumber);routing["can_use"]=player.CanUseAbilities;
                 var inputs=Get<Player.InputProfile>(player,"Inputs");var buttons=routing["buttons"];
                 for(int i=0;i<buttons.Count();i++)buttons[i]=i==0?inputs.firstAbilityButton_IS_DOWN:i==1?inputs.secondAbilityButton_IS_DOWN:i==2?inputs.thirdAbilityButton_IS_DOWN:(bool)buttons[i];
@@ -140,7 +140,7 @@ internal static class ReferenceSlimeActors
                 if(!(bool)a["present"])UnityEngine.Object.DestroyImmediate(obj);return (AbilityMonoBehaviour)ability;
             }).ToArray();
             slime.abilities=routing["slots"].Select(id=>id.Type==JTokenType.Null?null:(AbilityMonoBehaviour)context.RoutingPool[(int)id]).ToList();
-            Set(slime,"abilityCooldownTimers",routing["timers"].Select(F).ToArray());Set(slime,"isInAbility",(bool)routing["in_ability"]);
+            Set(slime,"abilityCooldownTimers",routing["timers"].Type==JTokenType.Null?null:routing["timers"].Select(F).ToArray());Set(slime,"isInAbility",(bool)routing["in_ability"]);
             slime.AbilityReadyIndicators=routing["indicators"].Select(i=>ReferenceSlimeExit.Indicator(i,objects)).ToArray();
             context.RoutingInputs(routing);
         }

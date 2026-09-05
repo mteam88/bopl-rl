@@ -12,6 +12,7 @@ using static ReferenceDynamics;
 // it contains no integration, collision, ordering or resolution implementation.
 public static class ReferencePhysicsScene
 {
+    internal static Action<DPhysicsBox,CollisionInformation> BoxCollision;
     public static bool Capturing;
     private static bool sweepX, roundedSweepX;
     private static readonly JArray events = new JArray();
@@ -66,16 +67,17 @@ public static class ReferencePhysicsScene
         var snapshot=(JObject)scene.DeepClone();var states=new JArray();
         for(int i=0;i<adapters.Count;i++)
         {
-            var a=adapters[i];if(!Contains(a))continue;
+            var a=adapters[i];if(a.realBox!=null)a.parent=a.realBox.pp;if(!Contains(a))continue;
             if(a.transform==null){if(a.lastSnapshot!=null)states.Add(a.lastSnapshot.DeepClone());continue;}
-            var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();o["active"]=a.transform.gameObject.activeInHierarchy;
+            var (shape,body)=State(a);var template=a.template??objects[i];var o=(JObject)template.DeepClone();o["active"]=a.transform.gameObject.activeInHierarchy;
+            if(a.realBox!=null)o["hierarchy"]=a.parent.hierarchyNumber;
             if(a.parent.monobehaviourCollider.enabled)o.Remove("enabled");else o["enabled"]=false;
             o["destroyed"]=a.parent.monobehaviourCollider.IsDestroyed;
             o["body"]=Body(body);o["collider"]=ShapeJson(shape);
             o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
             o["relative_pos"]=V(body.relativePos);o["relative_orientation"]=body.relativeOrientation.m_rawValue;
             o["transform"]=new JObject {["position"]=V(a.transform.position),["rotation"]=a.transform.rotation.m_rawValue,["offset"]=V(a.transform.offset)};
-            if(objects[i]["transform"]["right"]!=null)o["transform"]["right"]=V(a.transform.right);
+            if(template["transform"]["right"]!=null)o["transform"]["right"]=V(a.transform.right);
             a.lastSnapshot=(JObject)o.DeepClone();states.Add(o);
         }
         snapshot["objects"]=states;
@@ -189,6 +191,8 @@ public static class ReferencePhysicsScene
     internal sealed class Adapter : IPhysicsCollider, ICollisionCallback
     {
         internal JObject lastSnapshot;
+        internal JObject template;
+        internal DPhysicsBox realBox;
         public int sourceId;public FixTransform transform;public PhysicsParent parent;public bool callbackDestroyed;
         bool ICollisionCallback.IsDestroyed {get=>callbackDestroyed;set=>callbackDestroyed=value;}
         public bool IsDestroyed {get;set;}
@@ -208,9 +212,10 @@ public static class ReferencePhysicsScene
         public PhysicsParent GetPhysicsParent()=>parent;
         public bool IsEnabled()=>true;
         public Action<CollisionInformation> Collision;
-        public void OnCollide(CollisionInformation c) { events.Add(new JObject {
+        internal void Observe(CollisionInformation c) { events.Add(new JObject {
             ["receiver"]=c.pp.instanceId,["other"]=c.colliderPP.instanceId,["layer"]=c.layer,["collider"]=ShapeJson(c.collider),["impact_velocity"]=V(c.colliderImpactVelocity),
-            ["contact"]=new JObject {["point"]=V(c.contactPoint),["normal"]=V(c.normal),["penetration"]=c.penetration.m_rawValue} }); Collision?.Invoke(c); }
+            ["contact"]=new JObject {["point"]=V(c.contactPoint),["normal"]=V(c.normal),["penetration"]=c.penetration.m_rawValue} }); }
+        public void OnCollide(CollisionInformation c) { Observe(c);Collision?.Invoke(c); }
         public void RegisterCollisionCallback(ICollisionCallback c)=>throw new NotSupportedException();
         public void UnRegisterCollisionCallback(ICollisionCallback c)=>throw new NotSupportedException();
         public void AddForceAtPosition(Vec2 f,Vec2 p,ForceMode2D mode=ForceMode2D.Force)=>throw new NotSupportedException();

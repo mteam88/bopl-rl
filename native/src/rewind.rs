@@ -42,7 +42,9 @@ impl Actor {
             .abilities
             .as_ref()
             .ok_or("missing_ability_routing")?
-            .timers;
+            .timers
+            .as_ref()
+            .ok_or("null_reference")?;
         let sample = Sample {
             position: self.body.position,
             velocity: self.body.velocity,

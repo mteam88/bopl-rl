@@ -530,6 +530,7 @@ impl Instance {
                 &mut controller.physics.scale,
                 update.object,
                 context.scene,
+                None,
             )?;
         }
         if matches!(self.state.mode, 8..=10) || !self.state.has_spawned {

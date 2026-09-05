@@ -48,6 +48,7 @@ impl Runtime {
             .objects
             .iter_mut()
             .find(|o| o.id == actor.object)
+            .or(actor.pending_object.as_mut())
             .ok_or("missing_actor_object")?;
         let combat = context.combat.as_mut().ok_or("missing_actor_combat")?;
         let mut players: Vec<_> = context
@@ -117,7 +118,7 @@ impl Runtime {
             abilities: Some(routing.slots.clone()),
             ability_pool: vec![false; routing.pool.len()],
             ability_present: Some(routing.pool.iter().map(|a| a.present).collect()),
-            cooldowns: Some(routing.timers.clone()),
+            cooldowns: routing.timers.clone(),
             indicator_refs: Some(
                 routing
                     .indicators
@@ -159,7 +160,7 @@ impl Runtime {
         slime.state.mode = state.mode;
         slime.state.suppress = state.suppress;
         slime.state.has_spawned = state.has_spawned;
-        routing.timers = state.cooldowns.unwrap();
+        routing.timers = state.cooldowns;
         for (i, indicator) in routing.indicators.iter_mut().enumerate() {
             if let Some(indicator) = indicator {
                 if !indicator_active[i]

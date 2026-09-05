@@ -15,6 +15,10 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
     let mut completed = 0;
     let mut runtime: Runtime = serde_json::from_value(q["runtime"].clone()).unwrap();
     runtime.synchronize();
+    let dynamic_actors = q["dynamic_actors"].as_bool() == Some(true);
+    let clone_prefab: Option<bopl_sim::actor_clone::Prefab> = q
+        .get("clone_prefab")
+        .map(|v| serde_json::from_value(v.clone()).unwrap());
     let mut frames = Vec::new();
     let mut calls = BTreeMap::<String, usize>::new();
     let scripted = q.get("scripts").is_some();
@@ -28,8 +32,38 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                 runtime.scheduler.inputs[i].angle = Some(angle.as_u64().unwrap() as u8);
             }
         }
+        if dynamic_actors {
+            for actor in &mut runtime.actors {
+                let input = runtime
+                    .scheduler
+                    .players
+                    .iter()
+                    .find(|p| Some(p.id) == actor.body.holder)
+                    .and_then(|p| p.input)
+                    .unwrap();
+                actor.input =
+                    serde_json::from_value(action["inputs"][input]["direction"].clone()).unwrap();
+            }
+        }
         if let Some(inputs) = action.get("routing_inputs") {
-            for (actor, input) in runtime.actors.iter_mut().zip(inputs.as_array().unwrap()) {
+            for (actor_index, actor) in runtime.actors.iter_mut().enumerate() {
+                if !actor.is_present() {
+                    continue;
+                }
+                let input_index = if dynamic_actors {
+                    runtime
+                        .scheduler
+                        .players
+                        .iter()
+                        .find(|p| Some(p.id) == actor.body.holder)
+                        .and_then(|p| p.input)
+                        .unwrap()
+                } else {
+                    actor_index
+                };
+                let Some(input) = inputs.get(input_index) else {
+                    continue;
+                };
                 let Some(slime) = actor.slime.as_mut() else {
                     continue;
                 };
@@ -42,11 +76,33 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         for (i, enabled) in action["enabled"].as_array().unwrap().iter().enumerate() {
             runtime.scheduler.components[i].enabled = enabled.as_bool().unwrap();
         }
-        let mut command = |actors: &mut [bopl_sim::actors::Actor],
+        let mut command = |actors: &mut Vec<bopl_sim::actors::Actor>,
                            context: &mut bopl_sim::actors::Context,
                            report: &mut Report,
                            command: &Value| {
             effects.push(command.clone());
+            if command["op"] == "clone_actor" {
+                let caller = actors
+                    .get(command["actor"].as_u64().unwrap() as usize)
+                    .ok_or("argument_out_of_range")?;
+                if !caller.is_present() {
+                    return Err("missing_reference");
+                }
+                caller.collision.as_ref().ok_or("null_reference")?;
+                Runtime::spawn_abilityless_clone(
+                    actors,
+                    context,
+                    command["player"].as_u64().unwrap() as usize,
+                    serde_json::from_value(command["position"].clone()).unwrap(),
+                    if command["null_prefab"].as_bool() == Some(true) {
+                        None
+                    } else {
+                        clone_prefab.as_ref()
+                    },
+                    report,
+                )?;
+                return Ok(());
+            }
             if command["op"] == "actor_spawn" {
                 return Runtime::spawn_actor(
                     actors,
@@ -110,6 +166,9 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                             .objects
                             .iter_mut()
                             .find(|o| o.id == object)
+                            .or(actors[command["actor"].as_u64().unwrap() as usize]
+                                .pending_object
+                                .as_mut())
                             .ok_or("missing_actor_object")?
                             .active = value;
                     } else {
@@ -129,6 +188,9 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                         .objects
                         .iter_mut()
                         .find(|o| o.id == object)
+                        .or(actors[command["actor"].as_u64().unwrap() as usize]
+                            .pending_object
+                            .as_mut())
                         .ok_or("missing_actor_object")?
                         .enabled = command["value"].as_bool().unwrap();
                     return Ok(());
@@ -179,6 +241,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                         &mut runtime.actors,
                         &mut bopl_sim::actors::Context {
                             schedule: &mut runtime.scheduler,
+                            components: &mut runtime.components,
                             scene: &mut runtime.scene,
                             actor_ropes: &mut runtime.actor_ropes,
                             combat: &mut runtime.combat,
@@ -224,7 +287,20 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
             "time":runtime.scheduler.time,"level_time":runtime.scheduler.level_time,"inputs":runtime.scheduler.inputs});
         if q["registration_state"].as_bool() == Some(true) {
             let s = &runtime.scheduler;
-            let dynamic:Vec<_>=runtime.combat.as_ref().and_then(|c|c.death_effects.as_ref()).into_iter().flat_map(|e|&e.instances).flat_map(|e|e.components[..2].iter()).map(|&id| {let c=&s.components[id];json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present})}).collect();
+            let mut dynamic:Vec<_>=runtime.combat.as_ref().and_then(|c|c.death_effects.as_ref()).into_iter().flat_map(|e|&e.instances).flat_map(|e|e.components[..2].iter()).map(|&id| {let c=&s.components[id];json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present})}).collect();
+            if dynamic_actors {
+                let initial = q["runtime"]["scheduler"]["components"]
+                    .as_array()
+                    .unwrap()
+                    .len();
+                for (id, binding) in runtime.components.iter().enumerate().skip(initial) {
+                    if binding.is_some() {
+                        let c = &s.components[id];
+                        dynamic.push(json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present}));
+                    }
+                }
+                dynamic.sort_by_key(|v| v["id"].as_u64().unwrap());
+            }
             frame["registration"] = json!({"added":s.added,"prefabs_added":s.prefabs_added,"registering_prefab":s.registering_prefab,"pending":s.pending.items[..s.pending.length],"live":s.live,"hitstop":s.hitstop,"dynamic":dynamic});
         }
         if let Some(combat) = &runtime.combat {
