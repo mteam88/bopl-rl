@@ -688,3 +688,43 @@ Trace SHA: `53be761dc33bf979c0292caadbd5984a53c0989d32498adbe2d84e68c22e9b65`.
 
 This evidence is retained under `artifacts/scheduler-gameplay/`. The complete
 standalone regression suite passes with both scheduler fixtures included.
+
+
+## Composed scheduler, players and collisions
+
+`verify_actors.py --cases 120 --steps 120` matches all 120 supplied-state
+scenarios: 115 complete sequences, 13,801 completed ticks, 13,778 physics
+stages and five matching division-by-zero partial failures. Each of the player
+counts 1 through 6 has 20 scenarios. Across completed ticks there are 132,527
+component updates, 132,302 late updates, 1,221 initializations, 29,440 collision
+callbacks, 682 applied shoves, 1,177 attachments, 1,417 detachments and 1,270
+jump-sound requests. Player input/update phases each run 48,602 times.
+
+The reference calls the actual Updater with dispatch adapters for original
+PlayerPhysics/PlayerBody methods and a scripted Jump/Move motor. Original
+SlimeController.OnCollide supplies the equal-scale shove effects. This is a
+composed component simulation, not a full SlimeController or gameplay episode.
+The raw inputs supply initial Level1 component state, static platform geometry
+and actor collider aliases. No per-tick Unity state is injected into Rust.
+Ropes, bite, abilities, spawn/map initialization and death lifecycle are excluded.
+
+The corpus covers shuffled/equal priorities, component disablement, loaded-level
+early return, fractional and stopped player clocks, zero dt, jumps and coincident
+players with extreme collision priorities. Native state and ordered events match
+at each completed tick and at the first error. The fixture retains 36 cases
+in 1,596,918 compressed bytes.
+
+Assembly: `eddff5f1176ed0d60c99a7a9147a82383c1db21303c4e357d544c0c9bb9f527a`.
+
+Input SHA: `4d3b68a2cbcadee52cf560ab90f16b40d57f250c68718705ce8ee321767c5911`.
+
+Output SHA: `627fc421cb531110925c2bf17753838e657914b1bb261d19b4d55bac19001566`.
+
+Evidence: `artifacts/actors/` and `artifacts/actors-verification.log`.
+A fresh shared-oracle regression also matches 100 rigid scenes, 1,200 steps,
+55 composite scenes and 14,898 callbacks after extracting its reporting helper;
+evidence is in `artifacts/actors-physics-regression/`. The public C movement
+world only shares the extracted shove direction; it does not yet use this runner.
+
+The complete `just verify` suite passes with the composed fixture and shared
+shove helper, including the existing independent C movement episodes.

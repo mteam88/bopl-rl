@@ -735,3 +735,43 @@ outside these tests. The C movement environment still uses its existing loop.
 A fresh Unity replay with the new optional recording hooks matches 473
 independent C steps through first death; that is an instrumentation regression,
 not evidence that the new scheduler already drives the C environment.
+
+
+## Composed player simulation
+
+`actors.rs` now connects the scheduler, PlayerPhysics controller, PlayerBody,
+and the ordered collision scene. It runs independent native ticks from supplied
+initial component state. Movement/jump inputs, time scales and component-enable
+flags are the only subsequent inputs; Unity state is not imported between ticks.
+Controller/body projections and collider transforms share updates after every
+component call, including partial failures. Collision callbacks run after the
+physics stage synchronizes transforms, before late updates.
+
+The scripted motor invokes Jump/Move directly. The Unity oracle invokes the
+original PlayerPhysics and PlayerBody methods through callback components in
+`Updater.TickSimulationInner`, and the original SlimeController.OnCollide for
+equal-scale shoves. It deliberately does not run SlimeController.UpdateSim.
+All actor colliders are player-layer boxes, and the terrain is the supplied
+Level1 geometry with static platform bindings. Actor collision priorities are
+separate from component update priorities.
+
+All 120 scenarios match: 20 for each player count, 115 complete 120-tick
+sequences and five matching division-by-zero failures from zero previous scale.
+There are 13,801 completed ticks, 13,778 physics stages, 29,440 collision
+callbacks and 682 applied shoves. The comparison includes controller/body state,
+scene state, pair/callback order, jump edges, simulation clocks and phase order.
+
+Cases permute component registration and priorities, including equal-priority
+sorts, disable components independently, skip physics on loaded-level ticks,
+exercise normal/fractional/zero/negative/doubled player time scales and the
+physics time-stop threshold, and include zero-dt and coincident-player ticks.
+Coincident shoves use wrapping collision-priority subtraction. The same shove
+direction helper now serves the existing C movement environment.
+
+The checked fixture retains 36 cases. This runner is not exposed as a full-game
+C environment. Full SlimeController input/animation/ability transitions, biting,
+ropes, spawning, deaths, stocks, clone identity, moving platform bindings and
+map construction remain integration requirements. Attached ropes and unequal
+actor scales with shove handlers are explicitly rejected by this runner until
+their full gameplay handlers are connected. Existing rope/scaling component
+checks do not establish their integration here.

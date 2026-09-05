@@ -83,6 +83,23 @@ public static class ReferencePhysicsScene
             c[field]=new JArray(c[field].Select(id => adapters.Find(a=>a.parent.instanceId==(int)id)?.sourceId ?? (int)id));
         return snapshot;
     }
+    internal static void BeginFrame() { events.Clear(); sweepX=false; roundedSweepX=false; }
+    internal static JObject Report(List<Adapter> adapters)
+    {
+        int Canonical(int id)=>adapters.Find(a=>a.parent.instanceId==id)?.sourceId ?? id;
+        var groups=new JArray();
+        for(int g=0;g<pairFields.Length;g++)
+        {
+            var pairs=new JArray();
+            if(physics.circles.Length+physics.boxes.Length+physics.roundedRects.Length>0)
+                foreach(IdPair pair in (List<IdPair>)typeof(DetPhysics).GetField(pairFields[g],flags).GetValue(physics))
+                    pairs.Add(new JArray(Canonical(Parent(pairShapes[g,0],pair.id1).instanceId),Canonical(Parent(pairShapes[g,1],pair.id2).instanceId)));
+            groups.Add(pairs);
+        }
+        var callbacks=(JArray)events.DeepClone();
+        foreach(var e in callbacks){e["receiver"]=Canonical((int)e["receiver"]);e["other"]=Canonical((int)e["other"]);}
+        return new JObject {["sweep_x"]=sweepX,["rounded_sweep_x"]=roundedSweepX,["pairs"]=groups,["callbacks"]=callbacks};
+    }
     public static JToken Evaluate(JObject query)
     {
         if (physics==null) {physics=new GameObject("Reference physics scene").AddComponent<DetPhysics>();originalRopes=physics.ropes.ropeBodies;}
@@ -139,6 +156,7 @@ public static class ReferencePhysicsScene
                 else if(a.shape==Shape.Box){var shape=Box(raw);shape.layer=layer;physics.boxes.AddBody(a.parent,shape,body);}
                 else {var shape=Rounded(raw);shape.layer=layer;physics.roundedRects.AddBody(a.parent,shape,body);}
             }
+            if ((string)query["operation"] == "dynamics_actors")return ReferenceActors.Evaluate(query,physics,adapters,()=>Snapshot(scene,objects,adapters));
             if ((string)query["operation"] == "dynamics_scheduler")return ReferenceScheduler.Evaluate(query);
             if ((string)query["operation"] == "dynamics_player_controller")
             {
@@ -159,15 +177,7 @@ public static class ReferencePhysicsScene
                 events.Clear();sweepX=false;roundedSweepX=false;
                 physics.Simulate(F(dt));
                 var snapshot=Snapshot(scene,objects,adapters);
-                var groups=new JArray();
-                for(int g=0;g<pairFields.Length;g++)
-                {
-                    var pairs=new JArray();
-                    if(physics.circles.Length+physics.boxes.Length+physics.roundedRects.Length>0)foreach(IdPair pair in (List<IdPair>)typeof(DetPhysics).GetField(pairFields[g],flags).GetValue(physics))
-                        pairs.Add(new JArray(Parent(pairShapes[g,0],pair.id1).instanceId,Parent(pairShapes[g,1],pair.id2).instanceId));
-                    groups.Add(pairs);
-                }
-                result.Add(new JObject {["scene"]=snapshot,["report"]=new JObject {["sweep_x"]=sweepX,["rounded_sweep_x"]=roundedSweepX,["pairs"]=groups,["callbacks"]=events.DeepClone()}});
+                result.Add(new JObject {["scene"]=snapshot,["report"]=Report(adapters)});
             }
             return result;
         }
@@ -193,9 +203,10 @@ public static class ReferencePhysicsScene
         public Fix Scale {get;set;}
         public PhysicsParent GetPhysicsParent()=>parent;
         public bool IsEnabled()=>true;
-        public void OnCollide(CollisionInformation c) => events.Add(new JObject {
+        public Action<CollisionInformation> Collision;
+        public void OnCollide(CollisionInformation c) { events.Add(new JObject {
             ["receiver"]=c.pp.instanceId,["other"]=c.colliderPP.instanceId,["layer"]=c.layer,["collider"]=ShapeJson(c.collider),["impact_velocity"]=V(c.colliderImpactVelocity),
-            ["contact"]=new JObject {["point"]=V(c.contactPoint),["normal"]=V(c.normal),["penetration"]=c.penetration.m_rawValue} });
+            ["contact"]=new JObject {["point"]=V(c.contactPoint),["normal"]=V(c.normal),["penetration"]=c.penetration.m_rawValue} }); Collision?.Invoke(c); }
         public void RegisterCollisionCallback(ICollisionCallback c)=>throw new NotSupportedException();
         public void UnRegisterCollisionCallback(ICollisionCallback c)=>throw new NotSupportedException();
         public void AddForceAtPosition(Vec2 f,Vec2 p,ForceMode2D mode=ForceMode2D.Force)=>throw new NotSupportedException();

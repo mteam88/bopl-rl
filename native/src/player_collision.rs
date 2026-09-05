@@ -295,3 +295,29 @@ impl Receiver {
         }))
     }
 }
+
+/// SlimeController.OnCollide's overlap shove direction, after the player-layer
+/// and bite checks. Priority subtraction is performed with C# i32 wrapping by
+/// the caller. Physics must establish an actual collider contact first.
+pub fn overlap_push_direction(
+    position: Vec2,
+    up: Vec2,
+    radius: Fix,
+    other: Vec2,
+    priority_difference: i32,
+) -> Option<Vec2> {
+    let offset = position - other;
+    let distance = offset.length();
+    if distance != Fix::ZERO && distance < radius {
+        Some(offset / distance)
+    } else if distance == Fix::ZERO {
+        let forward = up.perp() / Fix::from_int(10);
+        Some(if priority_difference < 0 {
+            forward
+        } else {
+            -forward
+        })
+    } else {
+        None
+    }
+}

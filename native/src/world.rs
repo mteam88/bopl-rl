@@ -368,14 +368,13 @@ impl Player {
             || self.position.x > Fix::from_f64(131.25)
     }
     fn push_from(&mut self, other: Vec2, lower_id: bool) {
-        let delta = self.position - other;
-        let distance = delta.length();
-        let direction = if distance != Fix::ZERO && distance < self.radius {
-            delta / distance
-        } else if distance == Fix::ZERO {
-            let direction = self.up.perp() / Fix::from_int(10);
-            if lower_id { direction } else { -direction }
-        } else {
+        let Some(direction) = crate::player_collision::overlap_push_direction(
+            self.position,
+            self.up,
+            self.radius,
+            other,
+            if lower_id { -1 } else { 0 },
+        ) else {
             return;
         };
         self.external_velocity += direction * Fix(21_474_836) * Fix::from_int(35);
