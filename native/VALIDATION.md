@@ -258,3 +258,38 @@ Both before/after beam state and scene state are compared, including retained
 history, target state, pool contents and canonical IDs. Fixtures retain 284 completed
 stages and one exception-boundary stage. All evidence and source-failure logs
 are retained under `artifacts/beam-gameplay/`.
+
+
+## Player.Kill accounting
+
+Direct calls to the actual Unity method match 1,200 scenarios / 38,400 actions.
+This includes 2,100 final-body deaths and notifications, 3,906 winner no-ops,
+11,223 self-kills and 16,841 calls without a registered killer. Inputs span all
+six player IDs, clone counts, all six cause enum values, and integer limits.
+The fixture retains 196 scenarios / 6,272 actions.
+
+Direct-oracle assembly:
+`ea65cc7c504a668f19fa1f0ec43cc39bdd9a343a02db60d8e0b9b2e77cce6f69`.
+Input SHA:
+`5c5fb6bf286b442596c4d53fe9f11ddfa9a819acbfe4896ce2be6f5b29ae1bec`.
+Output SHA:
+`4d6d3bd0a5795858e2f34fbd5c74d67ce17306399d9e79e988352edf6c98df00`.
+
+Actual six-player gameplay supplies six accounting calls across two 700-tick
+traces: three stock-replacement deaths and three final eliminations with stocks
+disabled. All six calls match, including the notification about to be dispatched.
+The capture boundary precedes `playerDied` listeners, so their effects are not
+part of this accounting check. Both physics traces also match: 700 stages / 6,898
+callbacks with stocks, and 700 stages / 6,932 callbacks without stocks. The former
+repeats the previous input scenario with the new accounting capture enabled.
+
+Gameplay assembly:
+`a6374cbb2a0ad82e33d9ac866752258855a320dc54090dee082f81d1ee8f65c6`.
+The no-stocks replay SHA is
+`08b44c2fbe3cf20febf4ea8cfdeaddbb1c29d9681fee7950e04ee053159ba49a`;
+its trace SHA is
+`02b7fcdf643ebca209d8f8353e8ee8c34ebd2b242e7e33238e5f48f4ae6d7d9e`.
+Reports under `artifacts/player-life-gameplay/` retain the other trace's hashes
+and the exact counts. All six gameplay accounting calls and 182 no-stocks physics
+stages are checked-in regressions. Body/ability lifecycle and collision damage
+remain separate, incomplete native work.

@@ -311,3 +311,47 @@ exception boundary; it never upgrades the failed tick to a successful rollout.
 
 Beam's player controller, animation-driven lifecycle and collision damage remain
 unported. The public C environment remains the movement/dash slice.
+
+
+## Player death accounting
+
+`player_life::Book::kill` ports the shared `Player.Kill` accounting stage for
+one through six registered players: body/clone counts, kills and deaths, rumble,
+final-death time and cause, per-frame achievement kill counts, and the pending
+elimination notification. The caller receives that notification after the state
+updates and can dispatch it immediately; the native simulation does not retain
+the test listener's event history as gameplay state.
+
+The implementation preserves source behavior: a round winner ignores the call;
+self-kills credit both a death and a kill; teams do not change kill credit; only
+an initial body count of exactly one updates final-death metadata and emits the
+elimination event. Repeated calls can drive body counts below zero, and integer
+counters wrap. The native method does not silently clamp or repair those inputs.
+
+The real Unity method matches **1,200 scenarios / 38,400 calls**, including 2,100
+final-body deaths/events, 3,906 winner no-ops, 11,223 self-kills and 16,841 calls
+with no registered killer. Some direct cases deliberately exercise counter limits
+and inconsistent initial state; they are method-level evidence, not legal matches.
+
+Two six-player, 700-tick gameplay captures also match all **six actual accounting
+calls**. With five stocks, Unity first creates a replacement body; the three
+deaths therefore leave another body alive and emit no elimination event. With
+stocks disabled, the three deaths are final and emit elimination notifications.
+These capture points stop immediately before `playerDied` listeners execute.
+Both traces' 1,400 physics stages match too (13,830 queued collision callbacks).
+The stocks-enabled replay repeats the previous Beam scenario; its 700 stages are
+revalidation, not a new independent input scenario.
+
+`fixtures/player-life.jsonl.gz` retains 196 direct scenarios / 6,272 calls;
+`player-life-gameplay.jsonl.gz` retains all six actual calls. The no-stocks trace
+adds 182 physics regressions in `elimination-physics.jsonl.gz`, including all 141
+emission stages. All run under `just verify`. Regenerate direct cases with
+`just verify-player-life`; use `verify_player_life.py --traces TRACE...` for
+completed gameplay captures. `beam_gameplay_cases.py --stocks 0` reproduces the
+no-stocks setup. Raw evidence is in `artifacts/player-life/` and
+`artifacts/player-life-gameplay/`.
+
+Collision lethality selection, ability exits, rope detachment on death, body and
+ability destruction, clone creation, stock choice and revival remain unported as
+native lifecycle stages. This checkpoint supplies shared accounting for those
+handlers; it does not turn the public movement/dash environment into full combat.

@@ -20,6 +20,7 @@ verify: build check
     python3 native/tools/physics_capture_golden.py verify
     python3 native/tools/physics_capture_golden.py verify --fixture native/fixtures/beam-gameplay.jsonl.gz
     python3 native/tools/physics_capture_golden.py verify --fixture native/fixtures/beam-failure.jsonl.gz
+    python3 native/tools/physics_capture_golden.py verify --fixture native/fixtures/elimination-physics.jsonl.gz
     python3 native/tools/verify_beam.py --golden
     python3 native/tools/verify_beam.py --graph --golden
     python3 native/tools/verify_beam.py --stress --golden
@@ -30,6 +31,8 @@ verify: build check
     python3 native/tools/verify_beam_scene.py --stress --golden
     python3 native/tools/verify_rope.py --golden
     python3 native/tools/verify_random.py --golden
+    python3 native/tools/verify_player_life.py --golden
+    python3 native/tools/verify_player_life.py --golden --gameplay
     python3 native/tools/test_python.py
 
 verify-math: build
@@ -84,3 +87,6 @@ verify-beam-components: build
 verify-beam-scenes: build
     python3 native/tools/verify_beam_scene.py --cases 1000
     python3 native/tools/verify_beam_scene.py --stress --cases 120
+
+verify-player-life: build
+    python3 native/tools/verify_player_life.py --cases 1200

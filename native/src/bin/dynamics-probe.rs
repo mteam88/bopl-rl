@@ -12,6 +12,23 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_life" => {
+            let mut state: bopl_sim::player_life::Book = read(&q, "state");
+            let mut events: Vec<bopl_sim::player_life::Death> = read(&q["state"], "events");
+            let mut frames = Vec::new();
+            for a in q["actions"].as_array().unwrap() {
+                if let Some(event) = state.kill(
+                    read(a, "victim"),
+                    read(a, "killer"),
+                    read(a, "timestamp"),
+                    read(a, "cause"),
+                ) {
+                    events.push(event);
+                }
+                frames.push(json!({"players": state.players, "registered_kills": state.registered_kills, "events": events}));
+            }
+            return json!(frames);
+        }
         "dynamics_curve" => {
             let curve: bopl_sim::curve::Curve = read(&q, "curve");
             return json!(

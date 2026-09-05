@@ -11,9 +11,9 @@ from pathlib import Path
 from generate_full_scenarios import scenario
 
 
-def generate(directory, ticks=900):
+def generate(directory, ticks=900, stocks=5):
     directory.mkdir(parents=True, exist_ok=True)
-    source=scenario(6, [[28]]*6, 83114, 0, stocks=5)
+    source=scenario(6, [[28]]*6, 83114, 0, stocks=stocks)
     for mode in ('tap','held','stationary','four-beams'):
         setup={k:v for k,v in source.items() if k!='frames'}
         setup['players']=[dict(p,abilities=[28]) for p in source['players']]
@@ -36,4 +36,5 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory',type=Path)
     parser.add_argument('--ticks',type=int,default=900)
-    args=parser.parse_args(); generate(args.directory,args.ticks)
+    parser.add_argument('--stocks',type=int,default=5)
+    args=parser.parse_args(); generate(args.directory,args.ticks,args.stocks)

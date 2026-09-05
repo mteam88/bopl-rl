@@ -21,6 +21,8 @@ public static class ReferenceCapture
     private static int captured;
     private static JToken lastInput;
     private static JArray events = new JArray();
+    private static JArray playerLifeStages = new JArray();
+    internal static void PlayerLifeStage(JObject stage) => playerLifeStages.Add(stage);
     private static readonly SortedDictionary<string, int> abilityEntries = new SortedDictionary<string, int>(StringComparer.Ordinal);
     private static readonly Dictionary<Type, FieldInfo[]> fields = new Dictionary<Type, FieldInfo[]>();
     private static readonly int limit = ReadPositive("BOPL_TRACE_TICKS", 600);
@@ -69,7 +71,7 @@ public static class ReferenceCapture
                 ["exception"] = failure.GetType().FullName, ["message"] = failure.Message,
                 ["stack"] = failure.StackTrace,
                 ["physics_stage_complete"] = stage != null && stage["after"] != null && stage["callbacks"] != null,
-                ["physicsStage"] = stage
+                ["physicsStage"] = stage, ["playerLifeStages"] = playerLifeStages
             };
             File.WriteAllText(output + ".failure.json", snapshot.ToString(Formatting.None));
             Finish("simulation-exception");
@@ -97,6 +99,8 @@ public static class ReferenceCapture
             var state = new JObject();
             state["tick"] = Updater.SimulationTicks;
             if (ReferencePhysicsCapture.Enabled) state["physicsStage"] = ReferencePhysicsCapture.Take();
+            state["playerLifeStages"] = playerLifeStages;
+            playerLifeStages = new JArray();
             state["events"] = events;
             events = new JArray();
             state["scene"] = SceneManager.GetActiveScene().name;
