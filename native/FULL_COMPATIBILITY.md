@@ -512,10 +512,9 @@ These are supplied component states, not 1,000 independent gameplay episodes.
 
 `fixtures/player-physics.jsonl.gz` retains 405 scenarios, including every source
 error; it runs under `just verify`. Regenerate with `just verify-player-physics`.
-Raw evidence is in `artifacts/player-physics/`. These handoff methods do not implement blocked perimeter movement/platform
-hopping, the whole PlayerPhysics update controller, arbitrary ability callbacks
-or full world scheduling. The rounded-rectangle raycast work below adds scene
-registration and hit selection. Rendering and jump audio are outside this fixed-point state
+Raw evidence is in `artifacts/player-physics/`. The raycast, traversal and player
+controller sections below cover movement built on these handoff methods. Arbitrary
+ability callback effects and full world scheduling still require integration. Rendering and jump audio are outside this fixed-point state
 comparison. Full independent ability episodes remain required.
 
 
@@ -548,8 +547,8 @@ distances, both side rays, inactive/destroyed objects and composites.
 `fixtures/player-rays.jsonl.gz` keeps 224 cases, including every source error.
 It runs under `just verify`; regenerate with `just verify-player-rays`. Raw
 evidence is in `artifacts/player-rays/`. This is a component oracle with supplied
-scene and platform caches. Full movement control, blocked surface traversal,
-platform hopping and independent full-world ability episodes remain required.
+scene and platform caches. The traversal and controller work below integrates
+these functions. Independent full-world ability episodes remain required.
 
 
 ## Blocked surface traversal and hop queries
@@ -586,9 +585,9 @@ steps, 11,052 callbacks and 9,024 enabled-rope updates; 110 scenes contain compo
 Both fixtures run under `just verify`; regenerate with `just verify-surface-motion`.
 Evidence is in `artifacts/surface-motion/` and `artifacts/disabled-colliders/`.
 This covers traversal primitives with supplied platform caches and non-null
-collider transforms. Recursive player platform changes, full Move/MachoMove and
-UpdateSim control, drop callbacks, scheduler integration and independent complete
-ability episodes remain required. The public C environment is still the verified
+collider transforms. The controller work below adds recursive platform changes,
+Move/MachoMove, UpdateSim and drop-callback boundaries. Scheduler integration and
+independent complete ability episodes remain required. The public C environment is still the verified
 movement/dash slice.
 
 
@@ -599,3 +598,48 @@ rope stages and up to six active ropes. This reuses the established six-hook inp
 it is not a new independent gameplay scenario. Unity still supplies each stage's
 pre-state. All stages with disabled colliders are retained in
 `fixtures/disabled-gameplay.jsonl.gz`, along with sampled remaining stages (316 stages total).
+
+
+## Player movement controller
+
+`player_controller::State` composes the verified physics state, ordered raycasts
+and platform traversal for `UpdateSim`, `Move`, `MachoMove`, `DropPlatformTest`,
+`MoveAlongCurrentPlatForm` and recursive `MoveAlongCurrentPlatFormSwapIfBlocked`.
+It also ports input alignment and the increment/acceleration helpers. The public
+C movement environment now shares the grounded increment helper; its independent
+trajectory fixtures remain exact.
+
+The implementation preserves double time scaling in airborne Move/MachoMove,
+per-call friction, speed mutation before invalid-platform detachment, skipped
+updates before scaling, and external-velocity clearing before a failing holder
+lookup. Drop callbacks run after detachment listeners have changed the body;
+the exit record captures the resulting position/velocity with the source's
+other default fields. Native listeners can modify controller state at these
+boundaries. The oracle runs the actual component methods, records sound requests,
+and checks those exit defaults rather than invoking complete ability controllers.
+
+Recursive hopping retains the source's repeated delta-time multiplication and
+signed remaining movement, without adding an attachment event that the source
+does not emit. The component oracle uses real GameObject IDs for registration
+and hop exclusions, then canonicalizes its results. All 1,000 scenarios
+match: 817 complete sequences, 32,976 completed
+calls, 169 platform transitions and up to four transitions
+in one hop call. Completed calls emit 601 attachment,
+1,233 detachment, 414 drop-exit and
+196 sound notifications. All 132 null-reference and 51
+division-by-zero boundaries retain exact partial state and completed prefixes.
+
+Inputs include one through six registered players, protected/missing players,
+zero/negative time, ice friction, dropped/destroyed/inactive platforms, scale
+changes, missing shapes, rotated caches and listeners that change velocity.
+There are 334 cases with Roll's five-slot hop buffer and 666 with 64 slots. The
+five-slot cases contain at most five platforms to keep recursion finite;
+exhausted buffers with additional cyclic/overlapping platforms remain unverified.
+These are supplied-state component sequences, not independent full-game episodes.
+
+`fixtures/player-controller.jsonl.gz` retains 315 scenarios, including
+all source errors, and runs under `just verify`. Regenerate with
+`just verify-player-controller`; raw evidence is in `artifacts/player-controller/`.
+World identity/lifecycle, scheduler enablement, full callback effects, ability
+controllers and independent full-round initialization still need integration.
+The C API remains the movement/dash slice until those episodes pass.

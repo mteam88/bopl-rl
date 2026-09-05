@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Linq;
 using BoplFixedMath;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -78,6 +79,8 @@ public static class ReferencePhysicsScene
         snapshot["objects"]=states;
         if(scene["rope_system"]!=null){var bodies=new JArray();foreach(var r in physics.ropes.ropeBodies)bodies.Add(ReferenceRope.State(r));snapshot["rope_system"]["bodies"]=bodies;}
         var composites=new JArray();foreach(var c in physics.composites)composites.Add(CompositeJson(c));snapshot["composites"]=composites;
+        foreach(var c in composites)foreach(string field in new[]{"circles","boxes","rounded_rects"})
+            c[field]=new JArray(c[field].Select(id => adapters.Find(a=>a.parent.instanceId==(int)id)?.sourceId ?? (int)id));
         return snapshot;
     }
     public static JToken Evaluate(JObject query)
@@ -125,7 +128,8 @@ public static class ReferencePhysicsScene
                 if(v["transform"]["right"]!=null)typeof(FixTransform).GetField("rightInner",flags).SetValue(ft,V(v["transform"]["right"]));
                 go.SetActive((bool)v["active"]);
                 var a=new Adapter { transform=ft, IsDestroyed=(bool)v["destroyed"], callbackDestroyed=(bool)v["callback_destroyed"], shape=(string)v["collider"]["kind"]=="circle"?Shape.Circle:(string)v["collider"]["kind"]=="box"?Shape.Box:Shape.RoundedRect };
-                a.parent=new PhysicsParent { instanceId=(int)v["id"],fixTrans=ft,monobehaviourCollider=a,collisionCallback=(bool)v["callback"]?a:null,hierarchyNumber=adapters.Count };
+                a.parent=new PhysicsParent { instanceId=(string)query["operation"]=="dynamics_player_controller"?go.GetInstanceID():(int)v["id"],fixTrans=ft,monobehaviourCollider=a,collisionCallback=(bool)v["callback"]?a:null,hierarchyNumber=adapters.Count };
+                a.sourceId=(int)v["id"];
                 a.enabled=(bool?)v["enabled"] ?? true;
                 adapters.Add(a);
                 var body=Body(v["body"]);body.relativePos=V(v["relative_pos"]);body.relativeOrientation=F(v["relative_orientation"]);
@@ -134,6 +138,12 @@ public static class ReferencePhysicsScene
                 if(a.shape==Shape.Circle){var shape=Circle(raw);shape.layer=layer;physics.circles.AddBody(a.parent,shape,body);}
                 else if(a.shape==Shape.Box){var shape=Box(raw);shape.layer=layer;physics.boxes.AddBody(a.parent,shape,body);}
                 else {var shape=Rounded(raw);shape.layer=layer;physics.roundedRects.AddBody(a.parent,shape,body);}
+            }
+            if ((string)query["operation"] == "dynamics_player_controller")
+            {
+                foreach(var c in physics.composites)foreach(var ids in new[]{c.circleIds,c.boxIds,c.roundedRectIds})
+                    for(int i=0;i<ids.Count;i++)ids[i]=adapters.Find(a=>a.sourceId==ids[i]).parent.instanceId;
+                return ReferencePlayerController.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
             }
             if ((string)query["operation"] == "dynamics_player_rays")
                 return ReferencePlayerRays.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
@@ -164,7 +174,7 @@ public static class ReferencePhysicsScene
     }
     internal sealed class Adapter : IPhysicsCollider, ICollisionCallback
     {
-        public FixTransform transform;public PhysicsParent parent;public bool callbackDestroyed;
+        public int sourceId;public FixTransform transform;public PhysicsParent parent;public bool callbackDestroyed;
         bool ICollisionCallback.IsDestroyed {get=>callbackDestroyed;set=>callbackDestroyed=value;}
         public bool IsDestroyed {get;set;}
         public bool enabled {get;set;}=true;

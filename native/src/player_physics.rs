@@ -77,17 +77,20 @@ impl State {
             .and_then(|i| platforms.get(i as usize))
             .ok_or("null_reference")
     }
-    fn align_rotation(&mut self, surface: &Surface) {
+    pub(crate) fn align_rotation(&mut self, surface: &Surface) {
         self.motion.up = surface.normal(self.motion.position);
         self.motion.right = self.motion.up.perp_cw();
         self.motion.rotation = self.motion.right.normalized_angle();
     }
     pub fn align(&mut self, platforms: &[Platform]) -> Result<(), &'static str> {
         if let Some(id) = self.motion.ground {
-            let platform = &platforms[id as usize];
-            self.motion.position = platform.position(self.motion.local, self.motion.radius)?;
-            self.align_rotation(&platform.surface);
+            self.align_platform(&platforms[id as usize])?;
         }
+        Ok(())
+    }
+    pub(crate) fn align_platform(&mut self, platform: &Platform) -> Result<(), &'static str> {
+        self.motion.position = platform.position(self.motion.local, self.motion.radius)?;
+        self.align_rotation(&platform.surface);
         Ok(())
     }
     pub fn gravity(&mut self, config: &Config, space: bool) -> Result<(), &'static str> {
@@ -331,9 +334,21 @@ impl State {
         location: Vec2,
         platforms: &[Platform],
     ) -> Result<(), &'static str> {
+        self.attach_platform(
+            ground,
+            ground.and_then(|id| platforms.get(id as usize)),
+            location,
+        )
+    }
+    pub(crate) fn attach_platform(
+        &mut self,
+        ground: Option<u32>,
+        platform: Option<&Platform>,
+        location: Vec2,
+    ) -> Result<(), &'static str> {
         self.motion.ground = ground;
         self.motion.grounded = true;
-        let platform = self.platform(platforms)?;
+        let platform = platform.ok_or("null_reference")?;
         if !platform.has_shape {
             self.motion.grounded_speed = self
                 .motion

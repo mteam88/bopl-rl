@@ -503,3 +503,43 @@ Trace SHA:
 `ff297da7d0e5330f8c2dcd009818681a64b2aae607efe3f7f18b4dac61aa94a1`.
 
 Raw evidence is in `artifacts/surface-motion-gameplay/`.
+
+
+## Player controller composition
+
+All 1,000 actual Unity component scenarios match: 817 complete
+sequences and 32,976 completed calls. Coverage includes
+4,223 UpdateSim calls, 4,149 Move calls,
+4,124 MachoMove calls, 4,105 external-force
+surface moves, 4,299 drop checks and 942 recursive
+hop calls. There are 169 platform transitions, with at
+most four in one call. Scalar increment/acceleration and alignment checks are
+also included. All callback payloads, controller/scene state, collider order,
+hop-buffer contents and partial failures compare exactly.
+
+Completed calls emit 601 attachment, 1233
+detachment, 414 drop-exit and 196 sound
+notifications. The 132 null references and 51 division errors compare their
+completed prefixes and partial failing state. Listeners modify position and
+velocity; other AbilityExitInfo fields are checked against their source defaults.
+
+The fixture retains 315 scenarios (1,327,990 compressed bytes).
+The five-slot buffer used by Roll is exercised in 334 cases with at most five
+platforms; 666 cases use 64 slots. Cyclic arrangements after exclusion-buffer
+exhaustion remain unverified. This does not certify independent ability episodes,
+full world scheduling or arbitrary ability callback side effects.
+
+Assembly:
+`270b7590040bcdd9db5acf071ed399e94eacb8e4bc7efdc8c340926583f7f5f1`.
+
+Input SHA:
+`7d20de68759fbe4cdf096b3b94d6e8c70c2360e2ce9038ec6b7d93ee5bebad0e`.
+
+Output SHA:
+`49752b24a621922a932defdc5a0475b4ad9d23676c0e2b1c780ee701786c8cae`.
+
+Raw evidence is in `artifacts/player-controller/`; the fixture runs under
+`just verify`. The shared platform setup/snapshot refactor also passes a fresh
+100-case / 3,387-call Unity traversal regression under
+`artifacts/controller-surface-regression/`. Grounded acceleration is shared with
+the C movement environment, whose independent trajectory fixtures remain exact.

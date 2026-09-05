@@ -40,6 +40,7 @@ verify: build check
     python3 native/tools/verify_player_physics.py --golden
     python3 native/tools/verify_player_rays.py --golden
     python3 native/tools/verify_surface_motion.py --golden
+    python3 native/tools/verify_player_controller.py --golden
     python3 native/tools/physics_scene_golden.py verify --fixture native/fixtures/disabled-colliders.jsonl.gz
     python3 native/tools/verify_player_body.py --golden
     python3 native/tools/verify_player_body.py --golden --gameplay
@@ -119,3 +120,6 @@ verify-player-rays: build
 verify-surface-motion: build
     python3 native/tools/verify_surface_motion.py --cases 1000
     python3 native/tools/verify_physics_scene.py --disabled --ropes --cases 200 --directory native/artifacts/disabled-colliders
+
+verify-player-controller: build
+    python3 native/tools/verify_player_controller.py --cases 1000

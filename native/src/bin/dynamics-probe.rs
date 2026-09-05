@@ -12,6 +12,132 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_controller" => {
+            use bopl_sim::player_controller::{self, Context, Event};
+            let mut state: player_controller::State = read(&q, "state");
+            let mut scene: physics::scene::Scene = read(&q, "scene");
+            let bindings: Vec<bopl_sim::platform_motion::Binding> = read(&q, "bindings");
+            let grounds: Vec<player_controller::Ground> = read(&q, "grounds");
+            let config: player_controller::Config = read(&q, "config");
+            let holder: Option<i32> = read(&q, "holder");
+            let protected = holder
+                .and_then(|id| {
+                    q["players"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|p| p["id"].as_i64() == Some(i64::from(id)))
+                })
+                .map(|p| p["protected"].as_bool().unwrap());
+            let mut hop_buffer: Vec<i32> = read(&q, "hop_buffer");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut context = Context {
+                    scene: &mut scene,
+                    bindings: &bindings,
+                    grounds: &grounds,
+                    config: &config,
+                    holder,
+                    protected,
+                    time_scale: read(&q, "time_scale"),
+                    space: read(&q, "space"),
+                    ability: read(&q, "ability"),
+                };
+                let mut events = Vec::new();
+                let mut notify = |s: &mut player_controller::State, event: Event| {
+                    match &event {
+                        Event::Attached(_) => {
+                            s.physics.motion.position += read::<Vec2>(&q, "attach_offset")
+                        }
+                        Event::Detached(_) => {
+                            s.physics.motion.position += read::<Vec2>(&q, "detach_offset");
+                            s.physics.motion.velocity += read::<Vec2>(&q, "detach_velocity");
+                        }
+                        Event::Exit(_) => {
+                            s.physics.motion.position += read::<Vec2>(&q, "exit_offset")
+                        }
+                        Event::JumpSound(_) => {}
+                    }
+                    events.push(event);
+                };
+                let result = match action["op"].as_str().unwrap() {
+                    "update" => state
+                        .update(read(action, "dt"), &mut context, &mut notify)
+                        .map(|_| Value::Null),
+                    "move" => state
+                        .move_player(
+                            read(action, "input"),
+                            read(action, "dt"),
+                            None,
+                            read(action, "surface"),
+                            &mut context,
+                            &mut notify,
+                        )
+                        .map(|_| Value::Null),
+                    "macho" => state
+                        .move_player(
+                            read(action, "input"),
+                            read(action, "dt"),
+                            Some(read(action, "multiplier")),
+                            true,
+                            &mut context,
+                            &mut notify,
+                        )
+                        .map(|_| Value::Null),
+                    "drop" => state
+                        .drop_platform(&context, &mut notify)
+                        .map(|_| Value::Null),
+                    "align" => state.align(&context).map(|_| Value::Null),
+                    "current" => state
+                        .move_current(read(action, "dt"), &mut context)
+                        .map(|_| Value::Null),
+                    "hop" => state
+                        .hop(
+                            read(action, "radius"),
+                            read(action, "speed"),
+                            read(action, "dt"),
+                            &mut hop_buffer,
+                            &mut context,
+                        )
+                        .map(|_| Value::Null),
+                    "alignment" => state
+                        .input_alignment(read(action, "input"), &context)
+                        .map(|v| json!(v)),
+                    "increment" => Ok(json!(player_controller::increment(
+                        read(action, "current"),
+                        read(action, "target"),
+                        read(action, "accel"),
+                        read(action, "dt")
+                    ))),
+                    "accelerate" => Ok(json!(player_controller::accelerate(
+                        read(action, "current"),
+                        read(action, "target"),
+                        read(action, "accel"),
+                        context.dt(read(action, "dt"))
+                    ))),
+                    _ => panic!("Unknown player controller action"),
+                };
+                let orders: Vec<Vec<u32>> = [2, 0, 1]
+                    .into_iter()
+                    .map(|kind| {
+                        scene
+                            .objects
+                            .iter()
+                            .filter(|o| o.collider.kind() == kind)
+                            .map(|o| o.id)
+                            .collect()
+                    })
+                    .collect();
+                let mut snapshot = scene.clone();
+                snapshot.objects.sort_by_key(|o| o.id);
+                let frame = json!({"state":state,"scene":snapshot,"orders":orders,"hop_buffer":hop_buffer,"events":events,"result":result.as_ref().cloned().unwrap_or(Value::Null)});
+                if let Err(error) = result {
+                    return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_surface_motion" => {
             let mut scene: physics::scene::Scene = read(&q, "scene");
             let bindings: Vec<bopl_sim::platform_motion::Binding> = read(&q, "bindings");

@@ -284,14 +284,12 @@ impl Player {
                 self.constants.friction
             };
         } else {
-            let target = sign * self.constants.max_speed;
-            if self.grounded_speed * target < Fix::ZERO {
-                self.grounded_speed = Fix::ZERO;
-            }
-            self.grounded_speed += DT * Fix::from_int(target.sign()) * self.constants.accel;
-            if self.grounded_speed.abs() > target.abs() {
-                self.grounded_speed = target;
-            }
+            self.grounded_speed = crate::player_controller::increment(
+                self.grounded_speed,
+                sign * self.constants.max_speed,
+                self.constants.accel,
+                DT,
+            );
         }
         self.align(platform);
         let speed = self.grounded_speed + self.external_velocity.dot(forward);
