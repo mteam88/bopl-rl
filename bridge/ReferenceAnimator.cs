@@ -107,7 +107,7 @@ internal static class ReferenceAnimator
             if(operation!=null)return operation(new Context{GameObject=go,Animator=animator,Bodies=bodies,Snapshot=Snapshot,Frames=Frames,Map=Map,
                 RegisterCallback=(callback,id)=>{
                     var current=Get<Action>(animator,"animationSwappedCallBack");
-                    if(current!=null&&callbackIds[current]==id)Set(animator,"animationSwappedCallBack",callback);
+                    if(current!=null&&callbackIds.TryGetValue(current,out uint previousId)&&previousId==id)Set(animator,"animationSwappedCallBack",callback);
                     callbackIds[callback]=id;callbacks[id]=callback;
                 }});
             JObject Frame(JToken result)=>new JObject{["state"]=Snapshot(),["bodies"]=new JArray(bodies.Select(b=>new JObject{["velocity"]=V(b.velocity),["rotation"]=b.rotation.m_rawValue})),["events"]=events,["result"]=result};

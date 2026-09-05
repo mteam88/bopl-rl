@@ -38,6 +38,7 @@ pub enum Event {
     /// Other AbilityExitInfo members have their default values in DropPlatformTest.
     Exit(Info),
     JumpSound(String),
+    Sound(String),
 }
 pub struct Context<'a> {
     pub scene: &'a mut Scene,
@@ -73,7 +74,7 @@ impl State {
         &mut self,
         dt: Fix,
         context: &mut Context,
-        notify: &mut impl FnMut(&mut Self, Event),
+        notify: &mut impl FnMut(&mut Self, Event) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         let m = &self.physics.motion;
         let hit = player_physics::collision_cast(
@@ -97,7 +98,7 @@ impl State {
                 index.and_then(|i| context.bindings[i as usize].platform.as_ref()),
                 position,
             )?;
-            notify(self, Event::Attached(hit));
+            notify(self, Event::Attached(hit))?;
         }
         Ok(())
     }
@@ -105,7 +106,7 @@ impl State {
         &mut self,
         dt: Fix,
         context: &mut Context,
-        notify: &mut impl FnMut(&mut Self, Event),
+        notify: &mut impl FnMut(&mut Self, Event) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         if self.skip_update {
             self.skip_update = false;
@@ -134,17 +135,17 @@ impl State {
         &mut self,
         context: &Context,
         sound: bool,
-        notify: &mut impl FnMut(&mut Self, Event),
+        notify: &mut impl FnMut(&mut Self, Event) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         let surface = self
             .ground()
             .map(|i| context.platform(Some(i)).map(|p| &p.surface))
             .transpose()?;
         let angle = self.physics.motion.unground(surface, true);
-        notify(self, Event::Detached(angle));
+        notify(self, Event::Detached(angle))?;
         if sound {
             let id = context.holder.ok_or("null_reference")?;
-            notify(self, Event::JumpSound(format!("slimeJump{id}")));
+            notify(self, Event::JumpSound(format!("slimeJump{id}")))?;
         }
         Ok(())
     }
@@ -155,7 +156,7 @@ impl State {
         multiplier: Option<Fix>,
         move_surface: bool,
         context: &mut Context,
-        notify: &mut impl FnMut(&mut Self, Event),
+        notify: &mut impl FnMut(&mut Self, Event) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         if !self.physics.motion.grounded {
             self.physics.air_move(input.x, &context.config.physics)?;
@@ -222,7 +223,7 @@ impl State {
     pub fn drop_platform(
         &mut self,
         context: &Context,
-        notify: &mut impl FnMut(&mut Self, Event),
+        notify: &mut impl FnMut(&mut Self, Event) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         let Some(index) = self.ground() else {
             return Ok(());
@@ -253,7 +254,7 @@ impl State {
                     velocity: self.physics.motion.velocity,
                     external_velocity: Vec2::ZERO,
                 }),
-            );
+            )?;
         }
         Ok(())
     }

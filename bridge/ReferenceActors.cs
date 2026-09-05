@@ -15,15 +15,16 @@ internal static class ReferenceActors
 {
     private const BindingFlags Statics=BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic;
     private static void Static(string name,object value)=>typeof(Updater).GetField(name,Statics).SetValue(null,value);
-    internal static JToken Evaluate(JObject query,DetPhysics scene,List<ReferencePhysicsScene.Adapter> adapters,Func<JObject> sceneSnapshot)
+    internal static JToken Evaluate(JObject query,DetPhysics scene,List<ReferencePhysicsScene.Adapter> adapters,Func<JObject> sceneSnapshot,List<ReferenceAnimator.Context> animations=null)
     {
         var saved=typeof(Updater).GetFields(Statics).Where(f=>!f.IsLiteral&&!f.IsInitOnly).ToDictionary(f=>f,f=>f.GetValue(null));
         var oldPlayers=PlayerHandler.Get().PlayerList();var oldScale=GameTime.PlayerTimeScale;var oldSpace=Constants.leveltype;
         var oldDeadzone=Constants.GROUNDALIGNMENTDEADZONE;var oldCapture=ReferenceScheduler.Capture;var oldSound=ReferencePlayerController.SoundCapture;var oldRecord=Host.recordReplay;
-        var objects=new List<GameObject>();
+        var objects=new List<GameObject>();var assets=new List<UnityEngine.Object>();var slimes=new List<ReferenceSlimeActors.Context>();
+        var achievedField=typeof(AchievementHandler).GetField("isAchieved",Statics);var oldAchieved=achievedField.GetValue(null);
         try
         {
-            var runtime=query["runtime"];if((int)runtime["player_layer"]!=LayerMask.NameToLayer("Player"))throw new ArgumentException("Incorrect player layer");var initial=runtime["scheduler"];var actorData=(JArray)runtime["actors"].DeepClone();
+            var runtime=query["runtime"];if(animations!=null)achievedField.SetValue(null,new bool[28]);if((int)runtime["player_layer"]!=LayerMask.NameToLayer("Player"))throw new ArgumentException("Incorrect player layer");var initial=runtime["scheduler"];var actorData=(JArray)runtime["actors"].DeepClone();
             var bound=ReferenceSurfaceMotion.BindPlatforms(runtime["bindings"],scene,adapters,objects);
             var platforms=runtime["bindings"].Select(b=>bound[(int)b["object"]]).ToList();
             for(int i=0;i<platforms.Count;i++)
@@ -33,7 +34,7 @@ internal static class ReferenceActors
             }
             var inputs=initial["inputs"].Select(p=>new Player.InputProfile{jumpButton_IS_DOWN=(bool)p["jump"],jumpButton_DOWN_THIS_FRAME=(bool)p["pressed"],jumpButton_DOWN_LAST_FRAME=(bool)p["previous"]}).ToList();
             var players=initial["players"].Select(p=>{var player=new Player((int)p["id"],0){isProtectedFromTimeStop=(bool)p["protected"],isInvisible=(bool)p["invisible"],timeSpentInvisible=F(p["time_invisible"]),timeSinceEnteredAbility=F(p["time_ability"])};Set(player,"Inputs",inputs[(int)p["input"]]);return player;}).ToList();
-            PlayerHandler.Get().SetPlayerList(players);Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
+            PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             var bodies=new List<PlayerBody>();var physics=new List<PlayerPhysics>();var transforms=new List<FixTransform>();
             JArray events=null,phases=null,pushes=null;bool simulated=false;
             void Event(int actor,string kind,JToken value)=>events.Add(new JObject{["actor"]=actor,["event"]=new JObject{["kind"]=kind,["value"]=value}});
@@ -59,9 +60,11 @@ internal static class ReferenceActors
                 Set(p,"PlatformSlipperyness01",F(config["friction"]));Set(p,"IcePlatformSlipperyness01",F(config["ice_friction"]));
                 var adapter=adapters.Find(v=>v.sourceId==(int)a["object"]);adapter.parent.hierarchyNumber=(int)a["collision_hierarchy"];
                 int colliderIndex=scene.boxes.ColliderIndex(adapter.parent.instanceId);scene.boxes.physicsParents[colliderIndex]=adapter.parent;
+                SlimeController slime=null;
+                if(animations!=null||a["push_strength"].Type!=JTokenType.Null){slime=go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
+                if(animations!=null)slimes.Add(ReferenceSlimeActors.Bind(a["slime"],slime,body,p,adapter,animations[i],objects,assets));
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
-                    var slime=go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];
                     // All actors have equal scale in this corpus. The bite gate
                     // is therefore false; this checks the original shove branch.
                     slime.scaleDiffBeforeNomNom=Fix.One;slime.pushOverlappingPlayersStr=F(a["push_strength"]);
@@ -74,7 +77,7 @@ internal static class ReferenceActors
                 p.OnAttachedToGround+=hit=>Event(actor,"attached",new JObject{["object"]=hit.pp.instanceId,["near_position"]=V(hit.nearPos),["far_position"]=V(hit.farPos),["near_distance"]=hit.nearDist.m_rawValue,["far_distance"]=hit.farDist.m_rawValue,["layer"]=hit.layer});
             }
             var drivers=new List<ReferenceActorDriver>();int currentActor=0;
-            ReferencePlayerController.SoundCapture=name=>Event(currentActor,"jump_sound",name);
+            ReferencePlayerController.SoundCapture=name=>Event(currentActor,name.StartsWith("slimeJump")?"jump_sound":"sound",name);
             void Phase(string kind,int? id)=>phases.Add(new JObject{["kind"]=kind,["id"]=id.HasValue?new JValue(id.Value):JValue.CreateNull()});
             for(int i=0;i<runtime["components"].Count();i++)
             {
@@ -86,6 +89,8 @@ internal static class ReferenceActors
                     Phase("update",id);currentActor=actor;Constants.GROUNDALIGNMENTDEADZONE=F(actorData[actor]["config"]["alignment_deadzone"]);
                     if(role=="physics")physics[actor].UpdateSim(dt);
                     else if(role=="body")bodies[actor].UpdateSim(dt);
+                    else if(role=="animation")slimes[actor].Animation.Animator.UpdateSim(dt);
+                    else if(animations!=null)slimes[actor].Slime.UpdateSim(dt);
                     else {if(players[actor].jumpButton_PressedThisFrame()&&physics[actor].IsGrounded())physics[actor].Jump();physics[actor].Move(V(actorData[actor]["input"]),dt);}
                 };
                 d.Late=dt=>{Phase("late",id);currentActor=actor;if(role=="physics")physics[actor].LateUpdateSim(dt);else if(role=="body")bodies[actor].LateUpdateSim(dt);};
@@ -104,6 +109,7 @@ internal static class ReferenceActors
                     var p=physics[i];var c=states[i]["controller"];c["skip_update"]=p.skipNextUpdate;
                     c["physics"]["motion"]=ReferencePlayerGround.Motion(p,bodies[i],platforms);
                     c["physics"]["previous_scale"]=Get<Fix>(p,"prevScal").m_rawValue;c["physics"]["jumped"]=p.jumpedThisFrame;
+                    if(animations!=null)states[i]["slime"]=slimes[i].Snapshot(actorData[i]["slime"]);
                     states[i]["body"]=ReferencePlayerBody.SnapshotBody(bodies[i],new List<RopeBody>(),false)["state"];
                 }
                 var world=sceneSnapshot();world["objects"]=new JArray(world["objects"].OrderBy(o=>(int)o["id"]));
@@ -115,9 +121,10 @@ internal static class ReferenceActors
             {
                 events=new JArray();phases=new JArray();pushes=new JArray();simulated=false;
                 for(int i=0;i<actorData.Count;i++){actorData[i]["input"]=a["inputs"][i]["direction"].DeepClone();inputs[i].jumpButton_IS_DOWN=(bool)a["inputs"][i]["jump"];}
+                if(animations!=null)for(int i=0;i<inputs.Count;i++){var dir=V(a["inputs"][i]["direction"]);inputs[i].UsesMouse=true;inputs[i].w_IS_DOWN=dir.y>Fix.Zero;inputs[i].s_IS_DOWN=dir.y<Fix.Zero;inputs[i].d_IS_DOWN=dir.x>Fix.Zero;inputs[i].a_IS_DOWN=dir.x<Fix.Zero;}
                 GameTime.PlayerTimeScale=F(a["scale"]);for(int i=0;i<drivers.Count;i++)drivers[i].EnabledFlag=(bool)a["enabled"][i];
                 string error=null;try{typeof(Updater).GetMethod("TickSimulationInner",Statics).Invoke(null,new object[]{F(a["dt"])});}
-                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is DivideByZeroException)error="division_by_zero";else throw;}
+                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}
                 if(error!=null)return new JObject{["error"]=error,["action"]=frames.Count,["completed"]=frames,["failed"]=Snapshot()};
                 frames.Add(Snapshot());
             }
@@ -125,7 +132,7 @@ internal static class ReferenceActors
         }
         finally
         {
-            ReferenceScheduler.Capture=null;foreach(var go in objects)if(go!=null)UnityEngine.Object.DestroyImmediate(go);
+            ReferenceScheduler.Capture=null;achievedField.SetValue(null,oldAchieved);foreach(var asset in assets)UnityEngine.Object.DestroyImmediate(asset);foreach(var go in objects)if(go!=null)UnityEngine.Object.DestroyImmediate(go);
             foreach(var pair in saved)pair.Key.SetValue(null,pair.Value);PlayerHandler.Get().SetPlayerList(oldPlayers);GameTime.PlayerTimeScale=oldScale;
             Constants.leveltype=oldSpace;Constants.GROUNDALIGNMENTDEADZONE=oldDeadzone;ReferenceScheduler.Capture=oldCapture;ReferencePlayerController.SoundCapture=oldSound;Host.recordReplay=oldRecord;
         }

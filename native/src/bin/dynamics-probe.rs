@@ -123,7 +123,7 @@ fn evaluate_spawn(q: &Value) -> Value {
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
         "dynamics_scheduler" => return scheduler_probe::evaluate(&q),
-        "dynamics_actors" => return actors_probe::evaluate(&q),
+        "dynamics_actors" | "dynamics_slime_actors" => return actors_probe::evaluate(&q),
         "dynamics_spawn" => return evaluate_spawn(&q),
         "dynamics_animator" => {
             let mut state: bopl_sim::animator::State = read(&q, "state");
@@ -228,9 +228,10 @@ fn evaluate(q: Value) -> Value {
                         Event::Exit(_) => {
                             s.physics.motion.position += read::<Vec2>(&q, "exit_offset")
                         }
-                        Event::JumpSound(_) => {}
+                        Event::JumpSound(_) | Event::Sound(_) => {}
                     }
                     events.push(event);
+                    Ok(())
                 };
                 let result = match action["op"].as_str().unwrap() {
                     "update" => state

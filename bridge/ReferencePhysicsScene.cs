@@ -156,6 +156,7 @@ public static class ReferencePhysicsScene
                 else if(a.shape==Shape.Box){var shape=Box(raw);shape.layer=layer;physics.boxes.AddBody(a.parent,shape,body);}
                 else {var shape=Rounded(raw);shape.layer=layer;physics.roundedRects.AddBody(a.parent,shape,body);}
             }
+            if ((string)query["operation"] == "dynamics_slime_actors")return ReferenceSlimeActors.Evaluate(query,physics,adapters,()=>Snapshot(scene,objects,adapters));
             if ((string)query["operation"] == "dynamics_actors")return ReferenceActors.Evaluate(query,physics,adapters,()=>Snapshot(scene,objects,adapters));
             if ((string)query["operation"] == "dynamics_scheduler")return ReferenceScheduler.Evaluate(query);
             if ((string)query["operation"] == "dynamics_player_controller")

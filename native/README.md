@@ -126,7 +126,9 @@ destruction order now have exact Unity checks, including callbacks that mutate
 the update queues. A composed Rust runner now connects the scheduler, player controller/body, shared
 collider transforms and equal-scale shove callbacks. It keeps native state between
 ticks and is checked against the original Unity methods with scripted movement
-inputs. It is not yet driving this C environment. Full player-input
+inputs. An optional SlimeController path now drives locomotion and animation
+from keyboard input, compared with the original UpdateSim using empty ability
+lists and the exported slime animations. It is not yet driving this C environment. Full player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

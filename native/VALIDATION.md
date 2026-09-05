@@ -728,3 +728,51 @@ world only shares the extracted shove direction; it does not yet use this runner
 
 The complete `just verify` suite passes with the composed fixture and shared
 shove helper, including the existing independent C movement episodes.
+
+
+## Scheduled SlimeController locomotion
+
+All 120 supplied-state scenarios match the original SlimeController.UpdateSim
+with empty abilities, including its SpriteAnimator, PlayerPhysics and PlayerBody
+updates. Each player count 1..6 has 20 cases. The 115 complete sequences contain
+13,800 ticks; a further tick completes before one of the five zero-previous-scale
+failures, giving 13,801 completed ticks overall. There are 13,778 physics stages,
+49,746 collision callbacks, 620 applied shoves, 898 attachments, 1,048 detachments,
+910 jump-sound requests and 942 walk/land sound requests. Component update/late
+counts are 179,286 and 178,993; both player phases run 48,602 times.
+
+The comparison includes the full existing actor/scene projection and ordered
+phase/collision events, plus locomotion state, facing, cached input, moonwalk
+time, animation arrays/clocks/callback identity and the installed turn callback's
+captured argument. Initial states cover modes 0..9. The six used MCAnimData frame
+arrays and fallLeft velocity map come from the same asset export used by the
+standalone animator tests. This corpus does not execute abilities, ragdoll,
+swallowing, invisibility changes, spawn or death; player-position arbitration
+and collider Scale writes are not included in its comparison.
+
+Assembly: `792d5b0116b01308d07bbb10c7a754a727d83a4ca3da6bc3908fc0d124d75b23`.
+
+Input SHA: `26d0f270484182a728b45b572cdb1482efbed0a67dfdf22ac02a9421e8fb04b1`.
+
+Output SHA: `ee1eddc8fb46867161676a596bb94985be4d7c998fd09a6245ef90c8770b71f9`.
+
+The retained fixture has 38 cases and 4,409,840 compressed bytes.
+Raw evidence is under `artifacts/slime-actors/`.
+
+All three targeted fault cases also match, including partial state at the failed
+call: an empty land animation fails inside PlayerPhysics's attachment listener;
+a missing fallLeftLoop fails inside the jump/ground-loss listener; a missing idle
+animation fails in the stop-animation completion callback. The last scheduled
+component is asserted to be physics, motor and animation respectively. The
+third case advances 21 ticks before failing; the other two fail on their first
+tick. All three are retained in the 18,457-byte failure fixture.
+
+Failure input SHA: `d558cfc84bbd5ec75b1beaeea24baa32d1ec5d7f1fe0068fb69cefccf828b3b0`.
+
+Failure output SHA: `1cc980ddb4229aec064cff0aa963e71818895dc02a10ae1af0c646496bc8b057`.
+
+Evidence: `artifacts/slime-actors-failures/`. A fresh 60-case spawn regression
+also matches after extending animator callback registration: 9,138 completed
+calls and 154 spawn callbacks, including 15 initially installed callbacks. Its
+evidence is in `artifacts/slime-spawn-regression/`. The complete `just verify`
+suite passes with both new fixtures and all existing C movement checks.

@@ -20,12 +20,15 @@ pub struct Actor {
     pub input: Vec2,
     pub push_strength: Option<Fix>,
     pub collision_hierarchy: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slime: Option<crate::slime::Instance>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Physics,
     Motor,
+    Animation,
     Body,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -217,11 +220,11 @@ impl Runtime {
                         .holder
                         .and_then(|id| schedule.players.iter().find(|p| p.id == id))
                         .map(|p| p.protected);
-                    let mut notify = |_: &mut player_controller::State, event| {
+                    let mut emit = |event| {
                         report.events.push(Event {
                             actor: component.actor,
                             event,
-                        })
+                        });
                     };
                     let mut context = player_controller::Context {
                         scene,
@@ -259,7 +262,21 @@ impl Runtime {
                             Ok(())
                         }
                         (scheduler::Phase::Update, Role::Physics) => {
-                            actor.controller.update(dt, &mut context, &mut notify)
+                            actor
+                                .controller
+                                .update(dt, &mut context, &mut |controller, event| {
+                                    if let Some(slime) = &mut actor.slime {
+                                        slime.physics_event(
+                                            controller,
+                                            &event,
+                                            bindings,
+                                            actor.body.holder.ok_or("null_reference")?,
+                                            &mut emit,
+                                        )?;
+                                    }
+                                    emit(event);
+                                    Ok(())
+                                })
                         }
                         (scheduler::Phase::Update, Role::Motor) => {
                             let jump = actor
@@ -268,39 +285,66 @@ impl Runtime {
                                 .and_then(|id| schedule.players.iter().find(|p| p.id == id))
                                 .and_then(|p| p.input)
                                 .is_some_and(|i| schedule.inputs[i].pressed);
-                            let jump_result = if jump && actor.controller.physics.motion.grounded {
-                                actor
-                                    .controller
-                                    .physics
-                                    .jump(&platforms, &actor.config.physics)
-                                    .map(|angle| {
-                                        notify(
-                                            &mut actor.controller,
-                                            player_controller::Event::Detached(angle),
-                                        );
-                                        if let Some(id) = actor.body.holder {
-                                            notify(
-                                                &mut actor.controller,
-                                                player_controller::Event::JumpSound(format!(
-                                                    "slimeJump{id}"
-                                                )),
-                                            );
-                                        }
-                                    })
-                            } else {
-                                Ok(())
-                            };
-                            jump_result.and_then(|()| {
-                                actor.controller.move_player(
-                                    actor.input,
+                            if let Some(slime) = &mut actor.slime {
+                                slime.update(
+                                    &mut actor.controller,
                                     dt,
-                                    None,
-                                    true,
+                                    actor.input,
+                                    jump,
                                     &mut context,
-                                    &mut notify,
+                                    &mut emit,
                                 )
-                            })
+                            } else {
+                                let mut notify = |_: &mut player_controller::State, event| {
+                                    emit(event);
+                                    Ok(())
+                                };
+                                let jump_result =
+                                    if jump && actor.controller.physics.motion.grounded {
+                                        actor
+                                            .controller
+                                            .physics
+                                            .jump(&platforms, &actor.config.physics)
+                                            .and_then(|angle| {
+                                                notify(
+                                                    &mut actor.controller,
+                                                    player_controller::Event::Detached(angle),
+                                                )?;
+                                                if let Some(id) = actor.body.holder {
+                                                    notify(
+                                                        &mut actor.controller,
+                                                        player_controller::Event::JumpSound(
+                                                            format!("slimeJump{id}"),
+                                                        ),
+                                                    )?;
+                                                }
+                                                Ok(())
+                                            })
+                                    } else {
+                                        Ok(())
+                                    };
+                                jump_result.and_then(|()| {
+                                    actor.controller.move_player(
+                                        actor.input,
+                                        dt,
+                                        None,
+                                        true,
+                                        &mut context,
+                                        &mut notify,
+                                    )
+                                })
+                            }
                         }
+                        (scheduler::Phase::Update, Role::Animation) => actor
+                            .slime
+                            .as_mut()
+                            .ok_or("missing_slime_animator")?
+                            .animate(
+                                Some(schedule.time_scale),
+                                protected,
+                                actor.body.holder.ok_or("null_reference")?,
+                                &mut emit,
+                            ),
                         (scheduler::Phase::Update, Role::Body) => {
                             let result = actor.body.update(dt, &mut [], &body_context).map(|_| ());
                             actor.body_to_controller();
@@ -315,6 +359,9 @@ impl Runtime {
                         }
                         _ => Ok(()),
                     };
+                    if let Some(slime) = &mut actor.slime {
+                        slime.sync_callback();
+                    }
                     actor.controller_to_body();
                     actor.sync_transform(scene);
                     result?;

@@ -38,3 +38,5 @@ mod mono_sort;
 pub mod scheduler;
 
 pub mod actors;
+
+pub mod slime;

@@ -775,3 +775,38 @@ map construction remain integration requirements. Attached ropes and unequal
 actor scales with shove handlers are explicitly rejected by this runner until
 their full gameplay handlers are connected. Existing rope/scaling component
 checks do not establish their integration here.
+
+
+## Slime locomotion in the composed runner
+
+`slime.rs` adds the locomotion part of SlimeController to `actors.rs`. The
+reference now calls the original SlimeController.UpdateSim with empty ability
+lists, and schedules its real SpriteAnimator alongside PlayerPhysics and
+PlayerBody. The native side implements idle/run/stop/turn/land transitions,
+input suppression, upside-down/air facing, jump's immediate animation advance,
+ground-loss and landing callbacks, and the final movement/speed-container update.
+The empty-ability path also preserves the nothing/biting movement gates.
+
+Animations use the exported MCAnimData idle, run, stop, runTurnAround, land and
+fallLeftLoop frames plus the fallLeft velocity map. Turn callbacks retain their
+captured input only while installed; cancellation and reentry are compared.
+Physics callbacks now return errors, so a failing animation listener stops the
+controller immediately and retains exactly the partial state Unity reached.
+
+All 120 scenarios match: 20 per player count, 115 complete 120-tick sequences,
+13,801 completed ticks and five matching zero-previous-scale failures. There
+are 13,778 physics stages, 49,746 collision callbacks, 620 applied shoves,
+179,286 component updates and 178,993 late updates. A further three fault
+scenarios match failures inside a landing listener, a jump's ground-loss
+listener and a stop animation's completion callback. Golden selection includes
+the first occurrence of each observed state transition, including rare completed
+turn callbacks, in addition to fixed/random samples and all failures.
+
+This is a supplied-state locomotion comparison, not full SlimeController parity.
+Ability lists are empty; swallowing and invisibility start false, scales remain
+equal, and there are no attached ropes or ragdolls. Achievement flags are false
+and reference players are nonlocal, allowing the moonwalk timer to be compared
+without awards. Player position-setter state and collider Scale bookkeeping are
+not compared here. Full ability selection/cooldowns, ragdoll recovery, swallowing,
+invisibility, position arbitration, prefab initialization and round lifecycle
+remain required. The public C environment still uses its existing movement slice.
