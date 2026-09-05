@@ -12,6 +12,34 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_beam_graph" => {
+            let mut graph = bopl_sim::beam::graph::Graph::new(read(&q, "config"));
+            let mut scene: physics::scene::Scene = read(&q, "scene");
+            let mut output = Vec::new();
+            for frame in read::<Vec<Vec<bopl_sim::beam::graph::Beam>>>(&q, "frames") {
+                output.push(graph.step(&frame, &mut |p, d, length, mask| {
+                    scene.raycast(p, d, length, mask)
+                }));
+            }
+            return json!(output);
+        }
+        "dynamics_beam_colors" => {
+            let a: bopl_sim::beam::color::Colors = read(&q, "a");
+            return json!(a.mix(read(&q, "b")));
+        }
+        "dynamics_beam_lines" => {
+            return json!(bopl_sim::beam::intersection::lines(
+                read(&q, "a"),
+                read(&q, "b")
+            ));
+        }
+        "dynamics_beam_intersection" => {
+            return json!(bopl_sim::beam::intersection::beams(
+                read(&q, "a"),
+                read(&q, "b"),
+                read(&q, "minimize_b")
+            ));
+        }
         "dynamics_rope" => {
             let mut rope: physics::rope::Rope = read(&q, "rope");
             let config = read(&q, "config");
@@ -124,6 +152,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or("unknown panic");
             if message.contains("division by zero") {
                 json!({"error":"division_by_zero"})
+            } else if matches!(
+                message,
+                "negative squared length: Domain"
+                    | "normalized vector outside cosine domain: Domain"
+            ) {
+                json!({"error":"domain"})
             } else {
                 json!({"error":"rust_panic", "message":message})
             }

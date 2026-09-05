@@ -153,3 +153,41 @@ current/previous segments, endpoint forces/masses, contact buffers, gravity,
 relaxation settings and the physics subsystem's cached space-level flag.
 The native grappling ability still needs its own independent lifecycle port;
 these comparisons initialize the physics stage from Unity's recorded state.
+
+
+## Beam geometry and persistent crossing graph
+
+`src/beam/` ports line/beam intersections, color mixing, water reflection,
+ordered scene raycasts and the persistent `DetPhysics.UpdateBeams` graph.
+The graph retains crossing ages, stable IDs, parent chains, accumulated strength,
+reflected segments and the source's branch/tie behavior across frames.
+
+Actual Unity comparisons pass:
+
+- 20,100 primitive queries: 15,000 intersection queries and 5,100 color mixes,
+  including grayscale, primary/secondary colors, zero alpha and HDR values.
+- 999 complete graph scenarios / 11,988 frames, plus one matching source
+  math-domain error. These include one through six initial beams, all six used
+  graph roles, 2,610 reflected segments and 2,961 crossing records.
+- 71 longer scenarios / 8,520 frames, plus one matching source math-domain error.
+  Each scenario runs 120 frames with three beams per player (up to 18 initial
+  beams across six owners), including 3,752 reflections and 10,385 crossings.
+
+The fixed-point source error is retained as an expected outcome, not hidden or
+counted as a complete frame sequence. The color comparison also found that the
+pinned Mono runtime uses double intermediates inside float expressions and
+rounds at float storage boundaries; the port matches those boundaries explicitly.
+
+995 primitive cases, 62 short graph scenarios and 51 longer scenarios are kept
+as standalone fixtures in `fixtures/beam*.jsonl.gz`; source errors and every
+observed graph role are retained. `just verify` runs all three corpora. Regenerate
+against the instrumented Unity build with `just verify-beams`.
+
+This is a **graph-stage** comparison. The probe captures immediately before
+`renderBeams`, which also creates gameplay hitboxes and applies damage/forces.
+Those effects, beam ability startup/shutdown, target component behavior, carried
+renderer/hitbox state, and independent native beam gameplay remain unported.
+Graph scenarios currently use null ground references and synthetic obstacles;
+they do not certify every live-game beam state or the entire Beam ability.
+Evidence and assembly/input/output hashes are in `artifacts/beam/`,
+`artifacts/beam-graph/` and `artifacts/beam-graph-stress/`.

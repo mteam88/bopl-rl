@@ -261,7 +261,7 @@ impl Scene {
             });
         }
     }
-    pub fn step(&mut self, dt: Fix) -> StepReport {
+    pub(super) fn remove_destroyed(&mut self) {
         // Unity removes circles, then rounded rectangles, then boxes. A removed
         // platform can also remove live attachments before their own scan runs.
         for kind in [0, 2, 1] {
@@ -274,6 +274,9 @@ impl Scene {
                 self.destroy(id);
             }
         }
+    }
+    pub fn step(&mut self, dt: Fix) -> StepReport {
+        self.remove_destroyed();
         self.synchronize();
         if self.objects.is_empty() {
             return StepReport {

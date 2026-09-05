@@ -110,8 +110,9 @@ Rust parity for abilities the port does not implement.
 Level1's platforms remain stationary in this slice. They have mass in the full
 game. The separate rigid/composite solver now has exact Unity scene tests;
 integrating it with movement and ability effects remains in progress. The rope
-physics stage is verified too; grappling abilities, beams, time manipulation, scaling, clones, all other abilities, stocks, and
-additional maps still require their ports and comparisons. Equal-size slime shoves use the source's distance condition; the
+physics stage and persistent beam crossing graph are verified too. Grappling and
+beam ability lifecycles, beam hitboxes/effects, time manipulation, scaling, clones,
+other abilities, stocks and additional maps still require their ports and comparisons. Equal-size slime shoves use the source's distance condition; the
 fixed hurtboxes guarantee overlap within that distance. This shortcut must be
 revisited when adding scaled or different player shapes.
 

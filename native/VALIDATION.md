@@ -82,9 +82,10 @@ ID, so replaying them in this reference cannot prove historical Mac behavior.
 ## Limits that matter next
 
 The native API supports one fixed map, one spawn seed, equal-size slimes, and
-dash. It stops at the first death. The complete rigid-body solver, moving/scaled
-platforms, damaging abilities, ropes, clones, time manipulation, match scoring,
-stocks, and respawn flow are not ported. Float conversions outside normal finite
+dash. It stops at the first death. The separately verified rigid/composite/rope solver and beam graph are not yet
+integrated into this API. Moving/scaled platforms, damaging abilities, clones,
+time manipulation, match scoring, stocks and respawn still require native gameplay
+integration. Float conversions outside normal finite
 game values are not part of the verified arithmetic contract; exported assets
 use raw integers. The Unity recorder has the serialization limits documented in
 README.md. No trained policy or PufferLib backend has been validated.
@@ -156,3 +157,24 @@ hook replay passes 600/600 physics stages, with 268 stages containing active
 ropes (peak six), and 3,834 exact callbacks. Full evidence is in
 `artifacts/rope-scenes/` and `artifacts/rope-gameplay/`. The same pre-stage
 initialization limitation applies; grappling's ability state machine is unported.
+
+
+## Beam graph checkpoint
+
+The actual Unity intersection and color methods match 20,100 primitive queries.
+The actual `UpdateBeams` graph, captured before `renderBeams`, matches 1,070
+complete scenarios and 20,508 frames across two corpora, plus two matching source
+math-domain errors. Short scenarios cover one through six initial beams; longer
+120-frame scenarios use up to 18 beams belonging to six players. The graph state
+comparison includes every represented field, including raw float color bits.
+
+The three standalone fixtures retain 995 primitive cases, 62 short scenarios and
+51 longer scenarios. All six graph roles observed in Unity and both source errors
+are retained. Regenerate with `just --justfile native/justfile verify-beams`.
+The final reference assembly is
+`18ee71f003e42ac9ce3c22b05c94e1d440462549168843e3d57988dec9a76d39`;
+full input/output hashes are in each beam artifact directory's report.
+
+This oracle intentionally stops before beam hitbox creation and target effects.
+Those effects and the beam ability lifecycle are required next; graph parity
+alone is not full combat parity. [Full scope](FULL_COMPATIBILITY.md) remains open.

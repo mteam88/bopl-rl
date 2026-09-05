@@ -21,6 +21,7 @@ public static class ReferenceDynamics
     public static JToken Evaluate(JObject q)
     {
         string op = (string)q["operation"];
+        if(op.StartsWith("dynamics_beam_",StringComparison.Ordinal))return ReferenceBeam.Evaluate(q);
         CollisionManifold contact = default;
         bool hit;
         switch (op)

@@ -151,7 +151,7 @@ public static class ReferencePhysicsScene
         }
         finally {Capturing=false;physics.ropes.ropeBodies=originalRopes;foreach(var a in adapters)UnityEngine.Object.DestroyImmediate(a.transform.gameObject);}
     }
-    private sealed class Adapter : IPhysicsCollider, ICollisionCallback
+    internal sealed class Adapter : IPhysicsCollider, ICollisionCallback
     {
         public FixTransform transform;public PhysicsParent parent;public bool callbackDestroyed;
         bool ICollisionCallback.IsDestroyed {get=>callbackDestroyed;set=>callbackDestroyed=value;}
