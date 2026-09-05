@@ -7,15 +7,15 @@ using UnityEngine;
 using static ReferenceDynamics;
 
 // Executes UpdateBeams through the point immediately before renderBeams, which
-// creates gameplay hitboxes and applies target-specific effects. Those effects
-// are a distinct unverified stage, not silently included in this graph oracle.
+// creates gameplay hitboxes and applies target-specific effects. This oracle
+// excludes those effects; ReferenceBeamScene covers the combined physics stage.
 public static class ReferenceBeamGraph
 {
     private static readonly BindingFlags flags=BindingFlags.NonPublic|BindingFlags.Instance;
     private static readonly Dictionary<FixTransform,int> identities=new Dictionary<FixTransform,int>();
     private static T Get<T>(DetPhysics p,string name)=>(T)typeof(DetPhysics).GetField(name,flags).GetValue(p);
     private static void Set(DetPhysics p,string name,object value)=>typeof(DetPhysics).GetField(name,flags).SetValue(p,value);
-    internal static JObject Snapshot(DetPhysics p,int reflectedCount)
+    internal static JObject Snapshot(DetPhysics p,int reflectedCount,Func<FixTransform,int> identify = null)
     {
         int count=Get<int>(p,"beamsThisFrame"),n=count+reflectedCount;
         var bodies=new JArray();var roles=new JArray();var parents=new JArray();var reflected=new JArray();var was=new JArray();var lengths=new JArray();var hits=new JArray();
@@ -24,7 +24,7 @@ public static class ReferenceBeamGraph
             var b=p.beamBodies[i];bodies.Add(new JObject {["id"]=b.id,["owner_id"]=b.ownerId,["position"]=V(b.position),["direction"]=V(b.direction),["time_passed"]=b.timePassed.m_rawValue,
                 ["scale"]=b.scale.m_rawValue,["distance"]=b.distance.m_rawValue,["colors"]=ReferenceBeam.ColorsJson(b.colors),["ground"]=JValue.CreateNull()});
             roles.Add(p.beamRoles[i].ToString());parents.Add(Get<short[]>(p,"beamParentInd")[i]);reflected.Add(Get<bool[]>(p,"beamIsReflected")[i]);was.Add(Get<bool[]>(p,"beamWasReflected")[i]);lengths.Add(Get<Fix[]>(p,"beamReflectionDistance")[i].m_rawValue);
-            var ft=Get<FixTransform[]>(p,"beamRaycastHitRRs")[i];hits.Add(ft==null?JValue.CreateNull():new JValue(identities[ft]));
+            var ft=Get<FixTransform[]>(p,"beamRaycastHitRRs")[i];hits.Add(ft==null?JValue.CreateNull():new JValue(identify == null ? identities[ft] : identify(ft)));
         }
         var crossings=new JArray();
         for(int i=0;i<Get<int>(p,"crossingsThisFrameCount");i++){var c=Get<DetPhysics.BeamCrossingRecord[]>(p,"crossingsLastFrame")[i];crossings.Add(new JObject {["a"]=c.idA,["b"]=c.idB,["age"]=c.ageTicks});}

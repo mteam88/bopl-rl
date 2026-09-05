@@ -1,5 +1,5 @@
 //! Ordered rigid/composite-body stage of DetPhysics.Simulate.
-//! Beam effects and gameplay callbacks remain separate stages, still pending.
+//! Beam updates are inserted after ropes; gameplay callbacks are returned to the caller.
 use super::{Body, Contact, positional_correction, resolve, shape::Collider};
 use crate::{fixed::Fix, vector::Vec2, world::DT};
 use serde::{Deserialize, Serialize};
@@ -275,7 +275,13 @@ impl Scene {
             }
         }
     }
+    /// Rigid/composite/rope step. Worlds with a beam pool use System::simulate.
     pub fn step(&mut self, dt: Fix) -> StepReport {
+        self.step_with_beams(dt, |_| {})
+    }
+    /// Unity updates beams after broad-phase/ropes, before narrow-phase contacts.
+    /// New bodies therefore enter the pair search on the following step.
+    pub fn step_with_beams(&mut self, dt: Fix, beams: impl FnOnce(&mut Self)) -> StepReport {
         self.remove_destroyed();
         self.synchronize();
         if self.objects.is_empty() {
@@ -302,6 +308,7 @@ impl Scene {
         if let Some(ropes) = &mut self.rope_system {
             ropes.step(&self.objects, rounded_sweep_x, dt);
         }
+        beams(self);
         for group in groups {
             let contacts: Vec<_> = group
                 .into_iter()

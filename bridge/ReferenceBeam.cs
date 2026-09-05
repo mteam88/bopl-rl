@@ -11,6 +11,7 @@ public static class ReferenceBeam
     internal static JObject GraphResult;
     internal static bool BeforeRender(DetPhysics p,int reflected)
     {
+        ReferenceBeamScene.BeforeRender(p,reflected);
         if(!GraphOnly)return false;
         GraphResult=ReferenceBeamGraph.Snapshot(p,reflected);return true;
     }
@@ -23,6 +24,7 @@ public static class ReferenceBeam
     public static JToken Evaluate(JObject q)
     {
         if((string)q["operation"]=="dynamics_beam_colors")return ColorsJson(ReadColors(q["a"]).Mix(ReadColors(q["b"])));
+        if((string)q["operation"]=="dynamics_beam_scene")return ReferenceBeamScene.Evaluate(q);
         if((string)q["operation"]=="dynamics_beam_effects")return ReferenceBeamEffects.Evaluate(q);
         if((string)q["operation"]=="dynamics_beam_hitbox")return ReferenceBeamHitbox.Evaluate(q);
         if((string)q["operation"]=="dynamics_beam_graph")return ReferenceBeamGraph.Evaluate(q);

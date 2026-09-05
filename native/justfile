@@ -24,6 +24,8 @@ verify: build check
     python3 native/tools/verify_beam_components.py --golden
     python3 native/tools/verify_beam_components.py --hitboxes --golden
     python3 native/tools/verify_beam_components.py --effects --golden
+    python3 native/tools/verify_beam_scene.py --golden
+    python3 native/tools/verify_beam_scene.py --stress --golden
     python3 native/tools/verify_rope.py --golden
     python3 native/tools/verify_random.py --golden
     python3 native/tools/test_python.py
@@ -76,3 +78,7 @@ verify-beam-components: build
     python3 native/tools/verify_beam_components.py --cases 2000
     python3 native/tools/verify_beam_components.py --hitboxes --cases 1000
     python3 native/tools/verify_beam_components.py --effects --cases 1000
+
+verify-beam-scenes: build
+    python3 native/tools/verify_beam_scene.py --cases 1000
+    python3 native/tools/verify_beam_scene.py --stress --cases 120

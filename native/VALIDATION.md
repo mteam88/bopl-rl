@@ -202,3 +202,26 @@ The reference assembly for all three corpora is
 Standalone fixtures retain 250 curve scenarios (9,119 values and 57 errors),
 196 hitbox sequences (2,744 states), and 214 target scenarios (1,552 frames and
 20 errors). They are included in `just verify`.
+
+
+## Combined beam / rigid / composite / rope scenes
+
+The combined stage matches 1,112 complete scenarios / 16,176 steps and 631,152
+ordered collision callbacks across two corpora, plus eight matching source
+arithmetic-error scenarios. The ordinary corpus uses one through six initial
+beams; the stress corpus uses up to 18 beams across six owners. Both retain state
+between steps, destroy/recreate pool objects and exercise the source's deactivation
+loop behavior. Scene, rope, graph, pool, force and orb state are compared exactly.
+
+The probe invokes actual `DetPhysics.Simulate` with real components and suppresses
+only the final dispatch of gameplay collision callbacks. Those queued callbacks
+are compared; their damage/death effects are not ported by this checkpoint.
+The native entry point is `beam::system::System::simulate`, not a replacement
+calculation implemented inside the test harness.
+
+Reference assembly:
+`8c397c6a720302d54261628cf28c07a04c3e7488c7704dd54858f3fadd3d318c`.
+`artifacts/beam-scene/report.json` and `artifacts/beam-scene-stress/report.json`
+retain input/output hashes and counts. Standalone fixtures retain 73 scenarios,
+1,236 successful steps and all eight source errors. Actual replay import and an
+independent native player-input episode with beam abilities remain required.

@@ -13,6 +13,7 @@ internal sealed class ReferenceBeamTargets
     internal readonly FixTransform transform;
     private readonly JObject source;
     private DPhysicsBox box;
+    private readonly IPhysicsCollider sceneCollider;
     private BoplBody body;
     private BlackHole blackHole;
     private Orb orb;
@@ -20,33 +21,38 @@ internal sealed class ReferenceBeamTargets
     internal static void Set(object obj, string name, object value) => obj.GetType().GetField(name, Fields).SetValue(obj, value);
     internal static T Get<T>(object obj, string name) => (T)obj.GetType().GetField(name, Fields).GetValue(obj);
 
-    internal ReferenceBeamTargets(JObject input)
+    internal ReferenceBeamTargets(JObject input, GameObject existing = null)
     {
         source = input;
-        gameObject = new GameObject("Beam effect target");
-        transform = gameObject.AddComponent<FixTransform>();
+        gameObject = existing != null ? existing : new GameObject("Beam effect target");
+        transform = existing != null ? existing.GetComponent<FixTransform>() : gameObject.AddComponent<FixTransform>();
+        sceneCollider = existing != null ? existing.GetComponent<IPhysicsCollider>() : null;
         var sprite = gameObject.AddComponent<SpriteRenderer>();
         string kind = (string)input["kind"];
         // Use DetPhysics's actual cached layer numbers for the effect branches.
-        gameObject.layer = kind == "wall" ? DetPhysics.wallLayer : kind == "terrain" ? DetPhysics.terrainLayer :
+        if(existing == null) gameObject.layer = kind == "wall" ? DetPhysics.wallLayer : kind == "terrain" ? DetPhysics.terrainLayer :
             kind == "lethal" ? DetPhysics.lethalterrainLayer : kind == "player" ? DetPhysics.playerLayer :
             kind == "affector" ? DetPhysics.affectorLayer : kind == "orb" ? DetPhysics.orbLayer : 0;
         if ((bool)input["component"])
         {
             if (kind == "wall" || kind == "terrain" || kind == "lethal" || kind == "player")
             {
-                box = gameObject.AddComponent<DPhysicsBox>();
-                box.SetExtents(new Vec2(Fix.One, Fix.One));
-                if (kind == "player") body = gameObject.AddComponent<BoplBody>();
-                box.ManualInit();
-                var p = DetPhysics.Get();
-                p.boxes.physicsBodies[p.boxes.ColliderIndex(box.GetPhysicsParent().instanceId)].force = V(input["force"]);
+                if (existing == null)
+                {
+                    box = gameObject.AddComponent<DPhysicsBox>();
+                    box.SetExtents(new Vec2(Fix.One, Fix.One));
+                    if (kind == "player") body = gameObject.AddComponent<BoplBody>();
+                    box.ManualInit();
+                    var p = DetPhysics.Get();
+                    p.boxes.physicsBodies[p.boxes.ColliderIndex(box.GetPhysicsParent().instanceId)].force = V(input["force"]);
+                }
+                else if (kind == "player") body = gameObject.AddComponent<BoplBody>();
                 if (body != null) body.IsDestroyed = (bool)input["component_destroyed"];
-                else box.IsDestroyed = (bool)input["component_destroyed"];
+                else (sceneCollider ?? box).IsDestroyed = (bool)input["component_destroyed"];
             }
             else if (kind == "affector" || kind == "orb")
             {
-                var circle = gameObject.AddComponent<DPhysicsCircle>();
+                if(existing == null) gameObject.AddComponent<DPhysicsCircle>();
                 if (kind == "affector")
                 {
                     blackHole = gameObject.AddComponent<BlackHole>();
@@ -77,6 +83,12 @@ internal sealed class ReferenceBeamTargets
         {
             var p = DetPhysics.Get();
             state["force"] = V(p.boxes.physicsBodies[p.boxes.ColliderIndex(box.GetPhysicsParent().instanceId)].force);
+        }
+        if (sceneCollider != null)
+        {
+            var p = DetPhysics.Get(); int id = sceneCollider.GetPhysicsParent().instanceId;
+            bool present = sceneCollider.shape == Shape.Circle ? p.circles.ContainsParent(id) : sceneCollider.shape == Shape.Box ? p.boxes.ContainsParent(id) : p.roundedRects.ContainsParent(id);
+            if(present) state["force"] = V(sceneCollider.GetBody().force);
         }
         if (blackHole != null) state["velocity"] = V(Get<Vec2>(blackHole, "velocity"));
         if (orb != null)

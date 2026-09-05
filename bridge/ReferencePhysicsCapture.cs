@@ -7,14 +7,15 @@ using UnityEngine;
 using static ReferenceDynamics;
 
 // Optional stage-level evidence taken from real gameplay, before ability callbacks.
-// Ropes and beams are recorded as explicit unsupported coverage, never discarded.
+// Includes rope physics. Beam subsystem state still needs a replay-stage adapter.
 public static class ReferencePhysicsCapture
 {
     public static bool Enabled => ReferenceCapture.Enabled && Environment.GetEnvironmentVariable("BOPL_TRACE_PHYSICS")=="1";
     public static JObject LastStep {get;private set;}
     private static readonly Dictionary<int,int> ids=new Dictionary<int,int>();
     private static readonly BindingFlags flags=BindingFlags.NonPublic|BindingFlags.Instance;
-    private static int Id(int instance) {if(!ids.TryGetValue(instance,out int id)){id=ids.Count+1;ids.Add(instance,id);}return id;}
+    internal static Func<int,int> IdentityOverride;
+    private static int Id(int instance) {if(IdentityOverride!=null)return IdentityOverride(instance);if(!ids.TryGetValue(instance,out int id)){id=ids.Count+1;ids.Add(instance,id);}return id;}
     private static JArray Ids(List<int> instances) {var result=new JArray();foreach(int id in instances)result.Add(Id(id));return result;}
     public static void Begin(DetPhysics p, Fix dt)
     {
@@ -37,7 +38,7 @@ public static class ReferencePhysicsCapture
         LastStep["callbacks"]=events;
     }
     public static JObject Take() {var result=LastStep;LastStep=null;return result;}
-    private static JObject Scene(DetPhysics p)
+    internal static JObject Scene(DetPhysics p)
     {
         var objects=new JArray();
         Append(objects,p.circles,p);Append(objects,p.boxes,p);Append(objects,p.roundedRects,p);

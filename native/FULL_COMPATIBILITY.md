@@ -221,8 +221,46 @@ All run under `just verify`; regenerate with `just verify-beam-components`.
 Hashes and raw evidence live in `artifacts/curves/`, `artifacts/beam-hitbox/` and
 `artifacts/beam-effects/`.
 
-These tests initialize the components directly. They do not yet verify their
-combined graph/pool/physics update order, composite target routing, explosion
-collision callbacks, deaths, ability startup/shutdown, or a native beam episode
-from player inputs. The public C environment is still the movement/dash slice;
+These component tests initialize the components directly. The combined-stage
+evidence below adds graph/pool/physics update order and composite target routing.
+Explosion collision callbacks, deaths, ability startup/shutdown and a native beam
+episode from player inputs remain required. The public C environment is still the movement/dash slice;
 Beam, Orb and BlackHole are not complete native abilities.
+
+
+## Combined beam and physics stage
+
+`beam::system::System::simulate` now connects the beam graph, hitbox pool and
+target effects to the rigid/composite/rope solver. It preserves the source order:
+integrate bodies, find potential collision pairs, update ropes, update beams and
+their hitboxes/forces, then test and resolve the previously selected pairs.
+A new beam hitbox enters the pair search on the following step; an existing
+hitbox can change geometry after its pairs have already been selected.
+
+The system retains its graph and pool across steps, accumulates queued beams
+when an empty physics scene returns early, routes forces to composite bodies,
+and handles DestroyFix flags and replacement of destroyed beam slots. The
+source's deactivation loop stops at a destroyed or inactive slot; later slots
+can remain active. The port preserves this behavior.
+
+The Unity oracle runs the actual `DetPhysics.Simulate`, real DPhysics components,
+beam prefabs and target components. It stops immediately before collision
+callbacks execute and compares their complete ordered queue along with scene,
+rope, graph, pool and target state.
+
+- Normal corpus: 994 complete scenarios / 11,928 steps and 457,090 callbacks,
+  plus six matching source arithmetic errors. It includes 44,736 rope updates,
+  3,312 steps with composite bodies and 990 destroyed-pool-slot observations.
+- Stress corpus: 118 complete scenarios / 4,248 steps and 174,062 callbacks,
+  plus two matching source errors. These use three beams per player (up to 18
+  initial beams across six owners), 36 steps and repeated pool destruction.
+- Standalone fixtures retain 52 normal scenarios (552 steps and six errors)
+  and 21 stress scenarios (684 steps and two errors). `just verify` runs both.
+
+Regenerate with `just verify-beam-scenes`. Raw queries, Unity/native states and
+hashes are in `artifacts/beam-scene/` and `artifacts/beam-scene-stress/`.
+
+This is independent multi-step physics-stage evidence from synthetic initial
+scenes, with supplied beam bodies. Actual replay-stage import still needs the
+persistent beam subsystem state. Ability callbacks, explosion damage, full
+player/ability lifecycle, map loading and the full C environment remain open.

@@ -1,5 +1,5 @@
 //! Rigid-body primitives and ordered scenes from DetPhysics and PhysTools.
-//! Full gameplay integration, ropes and beams are still in progress.
+//! Ability callbacks and the full match lifecycle remain outside this module.
 use crate::{fixed::Fix, vector::Vec2, world::DT};
 use serde::{Deserialize, Serialize};
 

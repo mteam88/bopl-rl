@@ -45,6 +45,29 @@ fn evaluate(q: Value) -> Value {
             }
             return json!(states);
         }
+        "dynamics_beam_scene" => {
+            let mut scene: physics::scene::Scene = read(&q, "scene");
+            let next_id = scene.objects.iter().map(|o| o.id).max().unwrap_or(0) + 1;
+            let mut beams = bopl_sim::beam::system::System::new(
+                read(&q, "config"),
+                read(&q, "targets"),
+                next_id,
+            );
+            let mut states = Vec::new();
+            for frame in q["frames"].as_array().unwrap() {
+                let input = read::<Vec<bopl_sim::beam::graph::Beam>>(frame, "beams");
+                if let Some(slots) = frame["destroy_slots"].as_array() {
+                    for slot in slots {
+                        beams.destroy_slot(&mut scene, slot.as_u64().unwrap() as usize);
+                    }
+                }
+                let step = beams.simulate(&mut scene, read(frame, "dt"), &input);
+                scene.objects.sort_by_key(|o| o.collider.kind());
+                states.push(json!({"scene": scene, "graph": step.graph, "pool": beams.pool, "targets": beams.targets,
+                    "callbacks": step.physics.callbacks}));
+            }
+            return json!(states);
+        }
         "dynamics_beam_graph" => {
             let mut graph = bopl_sim::beam::graph::Graph::new(read(&q, "config"));
             let mut scene: physics::scene::Scene = read(&q, "scene");
