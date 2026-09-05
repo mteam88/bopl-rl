@@ -212,6 +212,11 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         scene.objects.sort_by_key(|o| o.id);
         let mut frame = json!({"actors":runtime.actors,"scene":scene,"report":report,"ticks":runtime.scheduler.ticks,
             "time":runtime.scheduler.time,"level_time":runtime.scheduler.level_time,"inputs":runtime.scheduler.inputs});
+        if q["registration_state"].as_bool() == Some(true) {
+            let s = &runtime.scheduler;
+            let dynamic:Vec<_>=runtime.combat.as_ref().and_then(|c|c.death_effects.as_ref()).into_iter().flat_map(|e|&e.instances).flat_map(|e|e.components[..2].iter()).map(|&id| {let c=&s.components[id];json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present})}).collect();
+            frame["registration"] = json!({"added":s.added,"prefabs_added":s.prefabs_added,"registering_prefab":s.registering_prefab,"pending":s.pending.items[..s.pending.length],"live":s.live,"hitstop":s.hitstop,"dynamic":dynamic});
+        }
         if let Some(combat) = &runtime.combat {
             frame["combat"] = json!(combat);
         }

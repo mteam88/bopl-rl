@@ -114,6 +114,37 @@ fn abs(value: i32) -> Result<i32> {
     value.checked_abs().ok_or("overflow")
 }
 impl State {
+    /// Serialized defaults after SpriteAnimator.Awake on a new prefab.
+    pub fn idle(sprite: Option<u32>) -> Self {
+        Self {
+            render: Some(Render {
+                sprite,
+                flip_x: false,
+                flip_y: false,
+            }),
+            current: None,
+            next: None,
+            index: 0,
+            position: 0,
+            kind: 0,
+            swapped: false,
+            callback: None,
+            body: None,
+            velocity_maps: None,
+            tracks: None,
+            position_y: 0,
+            going_right: false,
+            target: 0,
+            x_speeds: None,
+            min_x: Fix::ZERO,
+            swap_timing: 0,
+            callback_last: false,
+            always_stop: false,
+            position_2d: 0,
+            animation_index: 0,
+            child_suffix: Some(String::new()),
+        }
+    }
     fn renderer(&mut self) -> Result<&mut Render> {
         self.render.as_mut().ok_or("null_reference")
     }

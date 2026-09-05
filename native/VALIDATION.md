@@ -1146,3 +1146,44 @@ The earlier datasets retain their actual build hashes; the final contact build
 also fixes GameObject layer binding for generic scene colliders. These checks do
 not certify the absent death-effect prefab, respawns/stocks/drops, other pooled
 abilities, or a complete public Rust/C match environment.
+
+## Spawned death effects in the actor runtime
+
+`death_effect.rs` connects the actual `deathEffect` prefab to composed actor
+kills. Two newly registered components follow the scheduler's pending/init/live
+queues and hierarchy offsets. The original anticipation/start/end animation
+callbacks drive vibration state, all 15 rounded-rectangle rays, splash positions,
+and deferred GameObject deletion. Normal NoRevive contact deaths can now finish.
+Dash death handoffs also create the effect before returning to and killing the
+owning slime. Material IDs preserve the source player's material lineage across
+Unity's renderer-local material clone; scale retains the original float cast.
+
+The source adapter instantiates the real loaded player prefab and observes its
+original DeathEffect2 and SpriteAnimator methods. It compares full animator state,
+raw fixed-point surface positions, registered component identities/hierarchies,
+pending/live queues, hitstop, actor state, death bookkeeping, and subsequent
+physics. Source sprite aliases and animation durations are checked against the
+pinned exported asset. The collision adapter binds the actual SlimeController or
+Ability holder for this path, avoiding its auxiliary Hitbox's null material.
+
+The retained corpus has 48 cases (eight each for one through six players), 42
+complete episodes and 5,160 completed ticks. Six missing-camera cases retain the
+source exception after prefab birth, before effect initialization or death
+accounting. Across the corpus there are 72 effect births, 66 effect removals, 593
+surface splash hits, 60 accounted body deaths and 60 final-death events. The six
+effects left alive belong to the aborted source cases. Normal collision deaths
+account for 21 of the body deaths. Tests include time stop, simultaneous deaths,
+Dash handoffs and blocked owner deaths; all raw callback and registration order
+is compared. Earlier lifecycle/death/Dash/rope fixtures still pass.
+
+Run `python3 native/tools/verify_death_effects.py --golden` for all 48 retained
+cases. Fresh capture defaults to `artifacts/death-effects`; select a new
+`--directory` when that path already contains evidence. The successful capture
+and checksums are in `artifacts/death-effects-full/report.json`.
+
+Unity render-frame vibration displacement, randomly oriented/scaled visual
+splashes, and audio sample selection are outside this gameplay comparison. The
+prefab's pinned hitstop is zero; nonzero hitstop in the outer host loop is not
+certified here. Stock/respawn/drop/clone creation and other ability handlers are
+still separate outstanding work. This does not expand the public C environment
+beyond its documented movement/dash slice.

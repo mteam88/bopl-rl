@@ -219,3 +219,11 @@ replay physics stages. The checked fixtures include 141 stages with emitted beam
 and a completed physics stage immediately before a six-player Unity exception.
 These tests supply Unity's pre-state each step; they do not run the full native
 Beam ability. See [coverage and source failures](FULL_COMPATIBILITY.md#beam-state-from-actual-gameplay).
+
+
+The composed actor runner now also verifies real death-prefab creation,
+registration, animation callbacks, surface rays and deletion: 48 cases across
+one through six players, 5,160 ticks, and 21 normal contact deaths. Run
+`python3 native/tools/verify_death_effects.py --golden`; see
+[scope and evidence](FULL_COMPATIBILITY.md#spawned-death-effects-in-the-actor-runtime).
+The public C environment remains the movement/dash slice.

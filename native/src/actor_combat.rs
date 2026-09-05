@@ -21,6 +21,8 @@ pub struct Revival {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Combat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub death_effects: Option<crate::death_effect::Effects>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collisions: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hitboxes: Option<Vec<Hitbox>>,
@@ -63,16 +65,24 @@ impl Runtime {
         {
             return Ok(false);
         }
-        let combat = context.combat.as_ref().ok_or("missing_actor_combat")?;
+        let combat = context.combat.as_mut().ok_or("missing_actor_combat")?;
         let victim = combat
             .book
             .players
             .iter()
             .position(|p| Some(p.id) == actor.body.holder);
-        // A missing death prefab fails at InstantiateFixed, before any exit or
-        // accounting. Visual death prefab simulation is a separate integration.
         if request.spawn_effect && victim.is_none_or(|i| combat.revival[i].status != 2) {
-            return Err("instantiate_null");
+            let effects = combat.death_effects.as_mut().ok_or("instantiate_null")?;
+            effects.spawn(
+                context.schedule,
+                actor.body.position,
+                id,
+                actor.controller.physics.scale.to_f64() as f32,
+                actor
+                    .ordinary
+                    .as_ref()
+                    .map_or(Some(id as u32), |a| a.info.material),
+            )?;
         }
         if actor.ordinary.as_ref().is_some_and(|a| a.dash.is_some()) {
             let info = crate::ability::ExitInfo {

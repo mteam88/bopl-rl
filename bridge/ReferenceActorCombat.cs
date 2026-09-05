@@ -42,7 +42,7 @@ internal sealed class ReferenceActorCombat : IDisposable
     }
     internal static void Bind(PlayerCollision collision,JToken value)
     {
-        collision.deathEffect=null;collision.SetInvulnerable(true,(uint)value["invulnerable"]);Set(collision,"wasKilledThisFrame",(bool)value["was_killed"]);collision.deathTrauma=(float)value["death_trauma"];
+        collision.deathEffect=ReferenceDeathEffects.Active?.Prefab;collision.SetInvulnerable(true,(uint)value["invulnerable"]);Set(collision,"wasKilledThisFrame",(bool)value["was_killed"]);collision.deathTrauma=(float)value["death_trauma"];
     }
     internal static JObject Collision(PlayerCollision collision)=>new JObject{["invulnerable"]=Get<uint>(collision,"isInvulnerableMask"),["was_killed"]=Get<bool>(collision,"wasKilledThisFrame"),["death_trauma"]=(double)collision.deathTrauma};
     internal JObject Snapshot()

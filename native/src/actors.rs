@@ -519,6 +519,11 @@ impl Runtime {
                 phase,
             )?;
             Self::refresh_entities(schedule, components, actors, scene);
+            if let Some(effects) = combat.as_mut().and_then(|c| c.death_effects.as_mut())
+                && effects.phase(schedule, scene, phase, report)?
+            {
+                return Ok(());
+            }
             match phase.kind {
                 scheduler::Phase::Physics => {
                     report.physics =
