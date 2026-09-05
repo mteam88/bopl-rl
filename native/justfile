@@ -68,6 +68,8 @@ verify: build check
     python3 native/tools/verify_slime_exit.py --golden --name slime-exit-failures
     python3 native/tools/verify_ordinary_ability.py --golden
     python3 native/tools/verify_ordinary_ability.py --golden --name ordinary-ability-failures
+    python3 native/tools/verify_dash_ability.py --golden
+    python3 native/tools/verify_dash_ability.py --golden --name dash-ability-edges
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -189,3 +191,7 @@ verify-slime-exit: build
 verify-ordinary-ability: build
     python3 native/tools/verify_ordinary_ability.py --faults --name ordinary-ability-failures
     python3 native/tools/verify_ordinary_ability.py --cases 48 --steps 300
+
+verify-dash-ability: build
+    python3 native/tools/verify_dash_ability.py --faults --name dash-ability-edges
+    python3 native/tools/verify_dash_ability.py --cases 48 --steps 300

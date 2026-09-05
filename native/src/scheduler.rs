@@ -78,6 +78,8 @@ pub struct Player {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Input {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<u8>,
     pub jump: bool,
     pub pressed: bool,
     pub previous: bool,

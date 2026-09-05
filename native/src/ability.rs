@@ -41,7 +41,7 @@ pub struct SlimeEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invisible_on_entry: Option<bool>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ExitInfo {
     pub dead: bool,
     pub killer: i32,
@@ -61,6 +61,20 @@ pub struct ExitInfo {
     pub enter_jump: bool,
     pub rope: Option<usize>,
     pub top: bool,
+}
+impl PlayerInfo {
+    pub fn physics(&self) -> crate::player_physics::Info {
+        crate::player_physics::Info {
+            grounded: self.grounded,
+            ground: self.ground,
+            local: self.local,
+            radius: self.radius,
+            grounded_speed: self.grounded_speed,
+            position: self.position,
+            velocity: self.velocity,
+            external_velocity: self.external_velocity,
+        }
+    }
 }
 impl ExitInfo {
     pub fn physics(&self) -> crate::player_physics::Info {

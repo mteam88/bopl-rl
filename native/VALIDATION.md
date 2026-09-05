@@ -1040,3 +1040,42 @@ the prior 13-case Invisibility corpus byte for byte (output SHA-256
 Each new main fixture retains twelve complete episodes; all edge cases are retained.
 Plain Ability contains no concrete effect component. Concrete ability lifecycle,
 rope transfer, successful death returns and complete matches are not established.
+
+
+## Concrete Dash with automatic returns
+
+All 14,345 source records match across 48 scenarios, eight at each player count
+from one through six. Forty-seven reach 300 ticks; case 3 stops at action 197 on
+an original division-by-zero error. The comparison includes 14,297 completed ticks
+and the complete failed state. That failure occurs when Dash actor 6, aiming
+exactly right, attempts its air return while below the grass water height.
+
+The completed frames contain 2,003 real entry events and 1,910 automatic returns.
+Because this corpus supplies no activity or exit commands, returns are counted
+from entry events and conserved ability activity, including possible same-frame
+return/reentry (none occurs here). There are 15,938 active windup snapshots and
+7,850 active dash snapshots. First raycast transitions include 1,515 air casts,
+405 wall casts and 57 casts with multiple hits. Exactly 105 automatic returns end
+at the relevant water height. The source executes 14,287 physics stages and
+20,576 collision callbacks. Later cases also change player scale.
+
+Ten boundary cases match: five complete twelve ticks each and five retain exact
+failure state. They cover zero aim, the exact pause threshold, water clipping,
+horizontal movement below water, a non-wall contact with missing PlayerCollision,
+a wall-layer object missing StickyRoundedRectangle, twenty tied-distance hits,
+twenty fully equal sort keys, stopped time, and a negative update-count threshold.
+The errors are one division-by-zero and four null references. Both twenty-hit
+cases compare the full sorted list before the expected first-contact failure.
+
+- Unity assembly SHA-256: `e382cb1d2434e5cf524d1ea64c96d62f0afc878cf1e991dabc68a946e1fd5880`
+- Main input SHA-256: `e3149af32ab90fdec0a5e91b40d9fcc676d8f2da7b927efd1ebcae9d08c71c92`
+- Main output SHA-256: `ba45e5853aae9ae5dd646497105ab520fce9f813e95085a479935107c6348a90`
+- Edge input SHA-256: `d1bf2a59fe8e3e2ee1144fbae99e8176ee845b730cf40908c69814c9c0954d61`
+- Edge output SHA-256: `cf4b3fd5ee642049a0a0b594c083018d80ef694c8b5ca208b99cd41671b928fa`
+
+A fresh combined 19-case source regression exactly matches the 3,142 prior
+Invisibility and plain Ability records after canonical case reindexing. Its output
+SHA-256 is `d4f12599f02b521d7c55a0b40bddede82f90afae4703306fb2abb40812481e34`.
+The retained main fixture contains eleven complete 300-tick episodes plus the
+197 completed ticks and failed state of case 3. All ten boundary cases are retained.
+Successful non-wall damage, rope transfer and full-match lifecycle are not covered.

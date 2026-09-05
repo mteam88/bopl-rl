@@ -118,6 +118,7 @@ impl System {
                 self.next_id += 1;
                 scene.objects.push(Object {
                     id,
+                    hierarchy: None,
                     collider: Collider::Box(hitbox.collider.unwrap()),
                     body: Body {
                         inverse_mass: -Fix::ONE,

@@ -9,12 +9,13 @@ using static ReferenceDynamics;
 // Awake runs once, before the supplied simulation state is bound.
 internal static class ReferenceActorEntity
 {
-    internal static GameObject Create(JToken state,ReferencePhysicsScene.Adapter adapter,bool ordinary=false)
+    internal static GameObject Create(JToken state,ReferencePhysicsScene.Adapter adapter,JToken ordinary=null)
     {
         var go=adapter.transform.gameObject;go.SetActive(false);
-        if(ordinary)go.AddComponent<Ability>();else go.AddComponent<Hitbox>();
+        if(ordinary!=null)go.AddComponent<Ability>();else go.AddComponent<Hitbox>();
         var body=go.AddComponent<PlayerBody>();var physics=go.AddComponent<PlayerPhysics>();var box=go.AddComponent<DPhysicsBox>();
-        if(!ordinary){var slime=go.AddComponent<SlimeController>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();}
+        if(ordinary==null){var slime=go.AddComponent<SlimeController>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();}
+        if(ordinary?["dash"]!=null)ReferenceDashAbility.Create(go);
         go.SetActive(true);
         Set(physics,"OnAttachedToGround",null);Set(physics,"OnNoLongerGrounded",null);
         box.enabled=adapter.enabled;var parent=adapter.parent;parent.monobehaviourCollider=box;adapter.parent=parent;box.pp=parent;box.initHasBeenCalled=(bool)state["box"]["initialized"];

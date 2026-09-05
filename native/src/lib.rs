@@ -3,6 +3,7 @@ pub mod ability_routing;
 pub mod actor_entity;
 pub mod beam;
 pub mod curve;
+pub mod dash_ability;
 pub mod fixed;
 pub mod geometry;
 pub mod ordinary_ability;

@@ -983,3 +983,35 @@ activation commands are supplied by the corpus; concrete abilities must still
 supply their own timing, effects and exit payloads. Rope transfers are explicitly
 unsupported, and complete prefab Init, clone ownership and full matches remain
 outstanding. The public C environment does not yet use this composed runtime.
+
+
+### Concrete Dash in the actor scheduler
+
+An ordinary ability actor can now install an original Dash component. Ability
+entry invokes its OnEnterAbility and the scheduler subsequently invokes UpdateSim.
+The native path keeps the same cached PlayerInfo/player, pause clock, aim, render
+flags, update counter, ray hit list, wall reference and local landing position.
+Returns occur inside Dash's own update, through Ability and the original slime
+callback; the main corpus supplies no exit or activity commands.
+
+Aim uses the player's quantized angle byte independently of keyboard movement.
+The existing exact input-vector implementation supplies native aim. RaycastAll
+appends rounded rectangles, circles and boxes, excludes the caster, applies the
+layer mask/activity gates and sorts with the game's Mono algorithm. Hits retain
+PhysicsParent hierarchy by value, including the source's wrapped subtraction tie
+breaker. Scene objects used by this query carry explicit hierarchy identities.
+
+Dash entry synchronizes its own physics/collider, detaches from ground and clears
+velocity. After windup it selects a ray result; after the configured number of
+updates it relocates to the wall or air endpoint and automatically returns. Exit
+uses space-level speed scaling and the original water clipping calculation.
+The source can divide by zero when a horizontal dash exits below water; the port
+matches that failure and its partial state.
+
+The long corpus uses a wall-only mask. Non-wall edge cases compare the actual
+failure prefix from the absent PlayerCollision component. They do not establish
+combat damage or successful non-wall traversal. Rope transfers, death/respawn,
+complete prefab spawning and full environment integration remain outstanding.
+Smear renderer geometry/material colors are presentation-only and are not in this
+projection. The existing C environment still uses its earlier restricted Dash
+implementation; this new component belongs to the separate composed runtime.

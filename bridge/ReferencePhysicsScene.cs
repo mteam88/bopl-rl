@@ -145,7 +145,7 @@ public static class ReferencePhysicsScene
                 if(v["transform"]["right"]!=null)typeof(FixTransform).GetField("rightInner",flags).SetValue(ft,V(v["transform"]["right"]));
                 go.SetActive((bool)v["active"]);
                 var a=new Adapter { transform=ft, IsDestroyed=(bool)v["destroyed"], callbackDestroyed=(bool)v["callback_destroyed"], shape=(string)v["collider"]["kind"]=="circle"?Shape.Circle:(string)v["collider"]["kind"]=="box"?Shape.Box:Shape.RoundedRect };
-                a.parent=new PhysicsParent { instanceId=(string)query["operation"]=="dynamics_player_controller"?go.GetInstanceID():(int)v["id"],fixTrans=ft,monobehaviourCollider=a,collisionCallback=(bool)v["callback"]?a:null,hierarchyNumber=adapters.Count };
+                a.parent=new PhysicsParent { instanceId=(string)query["operation"]=="dynamics_player_controller"?go.GetInstanceID():(int)v["id"],fixTrans=ft,monobehaviourCollider=a,collisionCallback=(bool)v["callback"]?a:null,hierarchyNumber=(int?)v["hierarchy"]??adapters.Count };
                 a.sourceId=(int)v["id"];
                 a.enabled=(bool?)v["enabled"] ?? true;
                 adapters.Add(a);

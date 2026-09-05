@@ -8,6 +8,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dash: Option<crate::dash_ability::Instance>,
     pub owner: usize,
     pub info: PlayerInfo,
     pub slime: Option<usize>,
@@ -23,6 +25,7 @@ impl Runtime {
         id: usize,
         info: PlayerInfo,
         owner: usize,
+        report: &mut Report,
     ) -> scheduler::Result<()> {
         let priorities = Self::position_priorities(actors);
         let actor = &mut actors[id];
@@ -71,9 +74,7 @@ impl Runtime {
                 position.set(actor.controller.physics.motion.position, slime, &priorities);
             }
         }
-        // No IAbilityComponent is installed for a plain Ability. Concrete
-        // abilities add their OnEnterAbility execution at this exact boundary.
-        Ok(())
+        Self::enter_dash(actors, context, id, report)
     }
     pub fn update_ordinary(
         actors: &mut [Actor],

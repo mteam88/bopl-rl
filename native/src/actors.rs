@@ -35,6 +35,7 @@ pub enum Role {
     Animation,
     Body,
     Ability,
+    Dash,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Component {
@@ -124,7 +125,7 @@ impl Actor {
         self.controller_to_body();
         (delta != Vec2::ZERO).then_some(delta)
     }
-    fn controller_to_body(&mut self) {
+    pub(crate) fn controller_to_body(&mut self) {
         let m = &self.controller.physics.motion;
         self.body.position = m.position;
         self.body.velocity = m.velocity;
@@ -140,7 +141,7 @@ impl Actor {
         m.velocity = self.body.velocity;
         m.external_velocity = self.body.external_velocity;
     }
-    fn sync_transform(&self, scene: &mut Scene) {
+    pub(crate) fn sync_transform(&self, scene: &mut Scene) {
         let t = &mut scene
             .objects
             .iter_mut()
@@ -449,6 +450,25 @@ impl Runtime {
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
                     let component = components[phase.id.unwrap()];
                     if matches!(phase.kind, scheduler::Phase::Update)
+                        && matches!(component.role, Role::Dash)
+                    {
+                        let result = Self::update_dash(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                scene,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                            dt,
+                            report,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
+                    if matches!(phase.kind, scheduler::Phase::Update)
                         && matches!(component.role, Role::Ability)
                     {
                         let result = Self::update_ordinary(
@@ -659,6 +679,7 @@ impl Runtime {
                             request.target,
                             request.info,
                             component.actor,
+                            report,
                         )?;
                         *actors[component.actor]
                             .slime

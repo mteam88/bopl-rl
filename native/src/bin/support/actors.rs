@@ -24,6 +24,9 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         for (i, input) in action["inputs"].as_array().unwrap().iter().enumerate() {
             runtime.actors[i].input = serde_json::from_value(input["direction"].clone()).unwrap();
             runtime.scheduler.inputs[i].jump = input["jump"].as_bool().unwrap();
+            if let Some(angle) = input.get("angle") {
+                runtime.scheduler.inputs[i].angle = Some(angle.as_u64().unwrap() as u8);
+            }
         }
         if let Some(inputs) = action.get("routing_inputs") {
             for (actor, input) in runtime.actors.iter_mut().zip(inputs.as_array().unwrap()) {

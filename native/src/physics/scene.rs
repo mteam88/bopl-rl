@@ -23,6 +23,8 @@ impl Transform {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Object {
     pub id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hierarchy: Option<i32>,
     pub collider: Collider,
     pub body: Body,
     pub transform: Transform,

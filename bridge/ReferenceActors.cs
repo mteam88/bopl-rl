@@ -32,12 +32,12 @@ internal static class ReferenceActors
                 var g=runtime["grounds"][i];var p=platforms[i];p.platformType=(bool)g["ice"]?PlatformType.ice:PlatformType.grass;
                 Set(p,"dropPlayersForFrames",(int)g["drop_frames"]);Set(p,"dontDropPlayerId",(int)g["dont_drop"]);Set(p,"dropForce",F(g["drop_force"]));
             }
-            var inputs=initial["inputs"].Select(p=>new Player.InputProfile{jumpButton_IS_DOWN=(bool)p["jump"],jumpButton_DOWN_THIS_FRAME=(bool)p["pressed"],jumpButton_DOWN_LAST_FRAME=(bool)p["previous"]}).ToList();
+            var inputs=initial["inputs"].Select(p=>new Player.InputProfile{jumpButton_IS_DOWN=(bool)p["jump"],jumpButton_DOWN_THIS_FRAME=(bool)p["pressed"],jumpButton_DOWN_LAST_FRAME=(bool)p["previous"],joystickAngleByte=(byte?)p["angle"]??0}).ToList();
             var players=initial["players"].Select(p=>{var player=new Player((int)p["id"],0){isProtectedFromTimeStop=(bool)p["protected"],isInvisible=(bool)p["invisible"],timeSpentInvisible=F(p["time_invisible"]),timeSinceEnteredAbility=F(p["time_ability"])};Set(player,"Inputs",inputs[(int)p["input"]]);return player;}).ToList();
             for(int i=0;i<players.Count;i++)if(initial["players"][i]["flags"]!=null){var f=initial["players"][i]["flags"];players[i].InSparkShot=(bool)f["spark"];players[i].InMachoThrow=(bool)f["macho"];players[i].InPlatformTransform=(bool)f["platform"];}
             for(int i=0;i<players.Count;i++)if(initial["players"][i]["scale"]!=null)Set(players[i],"scale",F(initial["players"][i]["scale"]));
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
-            var entityObjects=actorData.Select(a=>a["entity"]!=null?ReferenceActorEntity.Create(a["entity"],adapters.Find(v=>v.sourceId==(int)a["object"]),a["ordinary"]!=null):null).ToList();
+            var entityObjects=actorData.Select(a=>a["entity"]!=null?ReferenceActorEntity.Create(a["entity"],adapters.Find(v=>v.sourceId==(int)a["object"]),a["ordinary"]):null).ToList();
             var bodies=new List<PlayerBody>();var physics=new List<PlayerPhysics>();var transforms=new List<FixTransform>();
             JArray events=null,phases=null,pushes=null,effects=null;bool simulated=false;
             void Event(int actor,string kind,JToken value)=>events.Add(new JObject{["actor"]=actor,["event"]=new JObject{["kind"]=kind,["value"]=value}});
@@ -118,7 +118,8 @@ internal static class ReferenceActors
                 d.Initialize=()=>{Phase("init",id);if(role=="body")bodies[actor].Init();};
                 d.Step=dt=>{
                     Phase("update",id);currentActor=actor;Constants.GROUNDALIGNMENTDEADZONE=F(actorData[actor]["config"]["alignment_deadzone"]);
-                    if(role=="ability")ordinary[actor].Ability.UpdateSim(dt);
+                    if(role=="dash")ordinary[actor].Ability.GetComponent<Dash>().UpdateSim(dt);
+                    else if(role=="ability")ordinary[actor].Ability.UpdateSim(dt);
                     else if(role=="physics")physics[actor].UpdateSim(dt);
                     else if(role=="body")bodies[actor].UpdateSim(dt);
                     else if(role=="animation")slimes[actor].Animation.Animator.UpdateSim(dt);
@@ -148,7 +149,7 @@ internal static class ReferenceActors
                 var world=sceneSnapshot();world["objects"]=new JArray(world["objects"].OrderBy(o=>(int)o["id"]));
                 var frame=new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
-                    ["inputs"]=new JArray(inputs.Select(p=>new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME}))};
+                    ["inputs"]=new JArray(inputs.Select((p,i)=>{var v=new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME};if(initial["inputs"][i]["angle"]!=null)v["angle"]=p.joystickAngleByte;return v;}))};
                 if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["scale"]!=null)v["scale"]=player.Scale.m_rawValue;if(v["position"]!=null)v["position"]=ReferencePlayerPosition.Snapshot(player,slimes);if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
                 if(query["scripts"]!=null)frame["effects"]=effects;
                 if((bool?)query["routing_checks"]==true)frame["routing_checks"]=new JArray(slimes.Select(s=>s==null?(JToken)JValue.CreateNull():s.RoutingChecks()));
@@ -157,7 +158,7 @@ internal static class ReferenceActors
             var frames=new JArray();int completed=0;bool streaming=ReferenceKernel.ActorFrameSink!=null;foreach(var a in query["actions"])
             {
                 events=new JArray();phases=new JArray();pushes=new JArray();effects=new JArray();simulated=false;
-                for(int i=0;i<inputs.Count;i++){actorData[i]["input"]=a["inputs"][i]["direction"].DeepClone();inputs[i].jumpButton_IS_DOWN=(bool)a["inputs"][i]["jump"];}
+                for(int i=0;i<inputs.Count;i++){actorData[i]["input"]=a["inputs"][i]["direction"].DeepClone();inputs[i].jumpButton_IS_DOWN=(bool)a["inputs"][i]["jump"];if(a["inputs"][i]["angle"]!=null)inputs[i].joystickAngleByte=(byte)a["inputs"][i]["angle"];}
                 if(animations!=null)for(int i=0;i<inputs.Count;i++){var dir=V(a["inputs"][i]["direction"]);inputs[i].UsesMouse=true;inputs[i].w_IS_DOWN=dir.y>Fix.Zero;inputs[i].s_IS_DOWN=dir.y<Fix.Zero;inputs[i].d_IS_DOWN=dir.x>Fix.Zero;inputs[i].a_IS_DOWN=dir.x<Fix.Zero;}
                 if(a["routing_inputs"]!=null)for(int i=0;i<a["routing_inputs"].Count();i++)if(slimes[i]!=null)slimes[i].RoutingInputs(a["routing_inputs"][i]);
                 GameTime.PlayerTimeScale=F(a["scale"]);for(int i=0;i<drivers.Count;i++)drivers[i].EnabledFlag=(bool)a["enabled"][i];

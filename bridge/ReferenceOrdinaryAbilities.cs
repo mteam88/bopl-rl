@@ -28,6 +28,7 @@ internal static class ReferenceOrdinaryAbilities
             value["previous_scale"]=Get<Fix>(Ability,"prevScale").m_rawValue;
             value["body_linked"]=Get<PlayerBody>(Ability,"playerBody")!=null;
             value["collider_linked"]=Get<IPhysicsCollider>(Ability,"potentialCollider")!=null;
+            if(initial["dash"]!=null)value["dash"]=ReferenceDashAbility.Snapshot(initial["dash"],Ability.GetComponent<Dash>(),Context);
             return value;
         }
         internal void Exit(JToken info)=>Ability.ExitAbility(ReferenceSlimeExit.Info(info,Context));
@@ -50,6 +51,7 @@ internal static class ReferenceOrdinaryAbilities
         Set(ability,"onExitAbility",callback);Set(ability,"prevScale",F(state["previous_scale"]));
         if(!(bool)state["body_linked"])Set(ability,"playerBody",null);
         if(!(bool)state["collider_linked"])Set(ability,"potentialCollider",null);
+        if(state["dash"]!=null)ReferenceDashAbility.Bind(state["dash"],go.GetComponent<Dash>(),slimes[owner]);
         return new Instance{Ability=ability,Slimes=slimes,Owner=owner};
     }
 }
