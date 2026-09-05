@@ -10,8 +10,93 @@ use std::io::{self, BufRead, BufWriter, Write};
 fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
     serde_json::from_value(v[k].clone()).unwrap()
 }
+fn animator_start(
+    state: &mut bopl_sim::animator::State,
+    command: &Value,
+    bodies: &[bopl_sim::animator::Speed],
+    callbacks: &Value,
+    events: &mut Vec<Value>,
+) -> bopl_sim::animator::Result<()> {
+    state.start(
+        serde_json::from_value(command.clone()).unwrap(),
+        bodies,
+        &mut |state, id| animator_callback(state, id, bodies, callbacks, events),
+    )
+}
+fn animator_callback(
+    state: &mut bopl_sim::animator::State,
+    id: u32,
+    bodies: &[bopl_sim::animator::Speed],
+    callbacks: &Value,
+    events: &mut Vec<Value>,
+) -> bopl_sim::animator::Result<()> {
+    events.push(json!({"id":id,"state":state}));
+    for command in callbacks[id.to_string()].as_array().unwrap() {
+        animator_start(state, command, bodies, callbacks, events)?;
+    }
+    Ok(())
+}
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_animator" => {
+            let mut state: bopl_sim::animator::State = read(&q, "state");
+            let mut bodies: Vec<bopl_sim::animator::Speed> = read(&q, "bodies");
+            let holder: Option<i32> = read(&q, "holder");
+            let protected = holder
+                .and_then(|id| {
+                    q["players"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|p| p["id"].as_i64() == Some(i64::from(id)))
+                })
+                .map(|p| p["protected"].as_bool().unwrap());
+            let mut frames = Vec::new();
+            for a in q["actions"].as_array().unwrap() {
+                let mut events = Vec::new();
+                let mut callback = |state: &mut bopl_sim::animator::State, id| {
+                    animator_callback(state, id, &bodies, &q["callbacks"], &mut events)
+                };
+                let result = match a["op"].as_str().unwrap() {
+                    "speed_up" => {
+                        let frames: Option<Vec<bopl_sim::animator::Frame>> = read(a, "frames");
+                        frames
+                            .ok_or("null_reference")
+                            .and_then(|frames| {
+                                bopl_sim::animator::speed_up(&frames, read(a, "factor"))
+                            })
+                            .map(|v| json!(v))
+                    }
+                    "animate" => state.animate(&bodies, &mut callback).map(|_| Value::Null),
+                    "update" => state
+                        .update(read(a, "scale"), protected, &bodies, &mut callback)
+                        .map(|_| Value::Null),
+                    "speed" => {
+                        let index: usize = read(a, "index");
+                        if let Some(body) = bodies.get_mut(index) {
+                            body.velocity = read(a, "velocity");
+                            body.rotation = read(a, "rotation");
+                            Ok(Value::Null)
+                        } else {
+                            Err("index_out_of_range")
+                        }
+                    }
+                    "current_sprite" => state.current_sprite().map(|s| json!(s)),
+                    "passed" => Ok(json!(state.index.wrapping_add(1))),
+                    "current_index" => Ok(json!(state.index)),
+                    "current_animation" => Ok(json!(state.current)),
+                    "left" => state.left_of_midpoint().map(|v| json!(v)),
+                    _ => animator_start(&mut state, a, &bodies, &q["callbacks"], &mut events)
+                        .map(|_| Value::Null),
+                };
+                let frame = json!({"state":state,"bodies":bodies,"events":events,"result":result.as_ref().cloned().unwrap_or(Value::Null)});
+                if let Err(error) = result {
+                    return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_player_controller" => {
             use bopl_sim::player_controller::{self, Context, Event};
             let mut state: player_controller::State = read(&q, "state");

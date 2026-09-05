@@ -20,6 +20,7 @@ public static class ReferenceDynamics
     internal static CollisionManifold Contact(JToken v) => new CollisionManifold { penetration=F(v["penetration"]),normal=V(v["normal"]),contactPoint=V(v["point"]) };
     public static JToken Evaluate(JObject q)
     {
+        if((string)q["operation"]=="dynamics_animator")return ReferenceAnimator.Evaluate(q);
         if((string)q["operation"]=="dynamics_player_physics")return ReferencePlayerPhysics.Evaluate(q);
         if((string)q["operation"]=="dynamics_player_body")return ReferencePlayerBody.Evaluate(q);
         if((string)q["operation"]=="dynamics_player_ground")return ReferencePlayerGround.Evaluate(q);

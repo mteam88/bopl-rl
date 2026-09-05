@@ -643,3 +643,36 @@ all source errors, and runs under `just verify`. Regenerate with
 World identity/lifecycle, scheduler enablement, full callback effects, ability
 controllers and independent full-round initialization still need integration.
 The C API remains the movement/dash slice until those episodes pass.
+
+
+## Animation clocks and callbacks
+
+`animator.rs` ports the simulation portion of `SpriteAnimator`: looped animation,
+Y/XY velocity maps, rotation selection, both 2D entry methods, frame skips,
+time-stop filtering, all four callback entry methods and reentrant callbacks.
+The unused speedMapX mode keeps its source no-op behavior. Sprite identities,
+frame arrays, counters, flips, speed-container references and callback state are
+compared; there is no presentation exclusion in these component checks.
+`SlimeController.SpeedUpAnimation` supplies the fast respawn frame conversion.
+
+All 1,000 randomized scenarios match, including 115,372 completed calls and
+2,043 callbacks. Expected errors retain their completed prefix and partial state.
+An additional 1,237 cases exercise all 194 named animations from the 35 exported
+AnimationData assets, 1,042 sprite frames and the player's velocity map. These
+match 60,625 calls and 946 callbacks. Four empty/deprecated animations fail just
+as the source does. The exported fields were also checked against the current
+asset YAML. Long frame holds get boundary snapshots rather than millions of
+idle ticks. The player spawn frames invoke their completion callback at update
+106 normally, or 21 after the game's fast respawn conversion.
+
+Both checked fixtures run without Unity or the ignored asset export:
+
+```sh
+python3 native/tools/verify_animator.py --golden
+python3 native/tools/verify_animator.py --assets --golden
+```
+
+Fresh asset checks require `just export-assets`; `just verify-animator` runs both
+live corpora. This verifies the clock and callback boundaries, not complete
+SlimeController spawning, arbitrary ability callbacks, object registration or
+world scheduling. Those remain integration work.

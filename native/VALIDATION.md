@@ -543,3 +543,44 @@ Raw evidence is in `artifacts/player-controller/`; the fixture runs under
 100-case / 3,387-call Unity traversal regression under
 `artifacts/controller-surface-regression/`. Grounded acceleration is shared with
 the C movement environment, whose independent trajectory fixtures remain exact.
+
+
+## Sprite animator simulation
+
+The actual Unity component matches all 1,000 randomized cases: 368 complete
+sequences, 115,372 completed calls and 2,043 callbacks. The remaining cases match
+632 source errors (66 null references, 475 invalid indices, 71 integer overflows
+and 20 divisions by zero), including the failing action's partial state.
+Coverage includes all six enum modes and an unknown no-op mode, every animation
+entry method, positive/negative/zero frame durations, counter wrapping, nullable
+arrays/renderers, mutable velocity sources, time-stop protection for one through
+six players, persistent callbacks and callbacks that start another animation.
+The fixture retains 351 cases (695,159 compressed bytes).
+
+Assembly: `f0e68ff8d5a35338c53dd3eaaa934f1d4d29179b80ad47a210640acf07d93a01`.
+
+Random input SHA: `6d0a04a23c1574bf7900241b1103a88ae35154d22c0cc0d03807a8ea618921e1`.
+
+Random output SHA: `85b8d80f9ca8bfebe550556b5f48a526fc02bd6430e24da8f53951e0b69825f5`.
+
+The asset corpus matches 1,237 cases: 1,233 complete sequences, 60,625 calls and
+946 callbacks. All 35 exported AnimationData assets are included: 194 named
+animations, 1,042 frame records, one velocity map and 733 distinct sprite IDs.
+Every frame has a three-update duration-boundary case, including long holds.
+The four failures are empty animations: MCAnimData fall/jump and Revive
+deprecated/deprecated2. These are not failed playable episodes. The player spawn
+callback is reached at updates 106 and 21 for normal/fast frames respectively.
+The asset fixture retains every case (502,489 compressed bytes).
+
+Asset input SHA: `cdd0396e3b9e228675295f3fe1b73b2e08be037cca6e0f7c948044b708cd166d`.
+
+Asset output SHA: `f153fa7daea9902f191788e6af677dea4ce09409f78c14915c5b0a0c822528cb`.
+
+Export SHA: `dab5953ba916ef0e0ba78f07d5134f40ebb374d047521160050d9688a0a00f9f`.
+
+The exported animation names, sprites, durations and velocity-map values were
+cross-checked against all 35 current YAML assets. Raw evidence is under
+`artifacts/animator/` and `artifacts/animator-assets/`. Both fixtures run under
+`just verify`. Opaque sprite identities are compared exactly; this component
+check does not certify texture rendering, arbitrary callback side effects,
+complete spawning, ability lifecycles or independent world scheduling.

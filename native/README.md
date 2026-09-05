@@ -117,7 +117,10 @@ detachment are shared with the movement world; the remaining death/revival
 handlers still need integration. Player-body motion and rope transitions have
 coupled component tests and actual replay checks. Ability physics handoff and
 grounded rope updates have Unity component checks; gravity and air movement are
-shared with this C environment. Independent player-input
+shared with this C environment. Animation clocks and callback boundaries now
+have exact component tests, including the real spawn frame sequences and fast
+respawn conversion. Full spawning and ability callback effects still need
+integration. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

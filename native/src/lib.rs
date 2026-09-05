@@ -28,3 +28,5 @@ pub mod game_time;
 pub mod platform_motion;
 
 pub mod player_controller;
+
+pub mod animator;
