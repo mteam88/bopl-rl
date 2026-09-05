@@ -17,6 +17,13 @@ pub fn evaluate(q: &Value) -> Value {
             runtime.actors[i].input = serde_json::from_value(input["direction"].clone()).unwrap();
             runtime.scheduler.inputs[i].jump = input["jump"].as_bool().unwrap();
         }
+        if let Some(inputs) = action.get("routing_inputs") {
+            for (actor, input) in runtime.actors.iter_mut().zip(inputs.as_array().unwrap()) {
+                let state = actor.slime.as_mut().unwrap().abilities.as_mut().unwrap();
+                state.buttons = serde_json::from_value(input["buttons"].clone()).unwrap();
+                state.can_use = input["can_use"].as_bool().unwrap();
+            }
+        }
         runtime.scheduler.time_scale = serde_json::from_value(action["scale"].clone()).unwrap();
         for (i, enabled) in action["enabled"].as_array().unwrap().iter().enumerate() {
             runtime.scheduler.components[i].enabled = enabled.as_bool().unwrap();
@@ -68,6 +75,13 @@ pub fn evaluate(q: &Value) -> Value {
         scene.objects.sort_by_key(|o| o.id);
         let mut frame = json!({"actors":runtime.actors,"scene":scene,"report":report,"ticks":runtime.scheduler.ticks,
             "time":runtime.scheduler.time,"level_time":runtime.scheduler.level_time,"inputs":runtime.scheduler.inputs});
+        if q["routing_checks"].as_bool() == Some(true) {
+            frame["routing_checks"] = json!(runtime.actors.iter().map(|actor| {
+                let state = actor.slime.as_ref().unwrap().abilities.as_ref().unwrap();
+                let value = |r: Result<bool, &'static str>| match r { Ok(v) => json!(v), Err(e) => json!({"error":e}) };
+                (0..=state.slots.len()).map(|i| json!({"ready":value(state.ready(i)),"castable":value(state.castable(i,actor.controller.physics.motion.grounded))})).collect::<Vec<_>>()
+            }).collect::<Vec<_>>());
+        }
         if scripted {
             frame["effects"] = json!(effects);
         }

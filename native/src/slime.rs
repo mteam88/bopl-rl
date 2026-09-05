@@ -50,6 +50,8 @@ pub struct Instance {
     pub fall_map: Vec<VelocityFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ragdoll: Option<Ragdoll>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abilities: Option<crate::ability_routing::State>,
 }
 fn frames(data: &BTreeMap<String, Vec<Frame>>, name: &str) -> Result<Vec<Frame>> {
     data.get(name).cloned().ok_or("animation_missing")
@@ -356,6 +358,11 @@ impl Instance {
             emit(event);
             emit(Event::JumpSound(format!("slimeJump{id}")));
         }
+        if self.state.mode != 8
+            && let Some(abilities) = &mut self.abilities
+        {
+            abilities.cooldowns(context.dt(dt), context.time_scale < Fix::from_f32(0.01))?;
+        }
         if self.state.mode == 8 || self.state.mode == 9 || self.state.mode == 10 {
             return Ok(());
         }
@@ -382,6 +389,13 @@ impl Instance {
             jump = false;
             self.state.input = Vec2::ZERO;
             alignment = Fix::ZERO;
+        }
+        if let Some(abilities) = &mut self.abilities
+            && abilities
+                .select(controller.physics.motion.grounded, self.state.suppress)?
+                .is_some()
+        {
+            return Err("ability_entry_not_implemented");
         }
         match self.state.mode {
             4 => {
@@ -415,6 +429,9 @@ impl Instance {
             emit(Event::JumpSound(format!("slimeJump{id}")));
             // Jump advances animations immediately, even during time stop.
             self.animate(None, None, id, emit)?;
+        }
+        if let Some(abilities) = &mut self.abilities {
+            abilities.headless_indicator_alpha()?;
         }
         self.state.previous_input = alignment;
         if !controller.physics.motion.grounded {

@@ -828,3 +828,50 @@ A fresh capture of all 41 previously retained locomotion/failure cases through
 the updated Unity harness reproduces their earlier expected outputs exactly and
 matches Rust. Evidence is in `artifacts/ragdoll-slime-regression/`; this checks
 the shared oracle as well as native regression behavior.
+
+
+## Ordinary ability routing in scheduled actors
+
+`verify_ability_routing.py --cases 120 --steps 120` matches all 120 scenarios,
+20 at each player count 1..6. There are 100 complete sequences, 12,002 completed
+ticks, 11,982 physics stages, 34,510 collision callbacks, 252 shoves and 55,053
+timer changes. Partial source failures match in ten null-reference cases, five
+short-timer-array cases and five division-by-zero cases. Failed ticks retain
+and compare the full partial actor/scene projection.
+
+Across completed ticks, direct calls to the original private isAbilityReady and
+isAbilityCastable return 73,163 true/51,040 false readiness results and 14,630
+true/109,573 false castability results. Each predicate also produces 41,403
+expected out-of-range errors for the extra queried slot. The controller samples
+include 6,602 snapshots already inside an ability and 13,912 ragdoll snapshots.
+
+The original SlimeController.UpdateSim runs with real Ability cooldown and
+castability methods. A reference subclass supplies the custom IgnoreNextCooldown
+property. Slots include aliases, nulls, destroyed flags and physically destroyed
+objects. Timer/indicator array lengths vary independently, including missing
+indicators and readiness crossings. Ground/time-stop/protection, player permission
+and suppression vary within the existing actor and ragdoll scenarios.
+
+The reference deliberately prevents casts with released buttons or player
+permission; this verifies the no-cast selection path and predicate boundaries.
+Native successful selection currently reports `ability_entry_not_implemented`.
+That path is not compared to an invented source exception. Rope cooldown updates,
+ability entry/effects and indicator sprite/material presentation remain outside
+this corpus. Indicator renderers are absent on both sides; reset clocks and
+null-indicator exceptions are included.
+
+Assembly: `29617c7346a48c9eabe63847c65bbabe7161170244488c864bc19d068e874551`.
+
+Input SHA: `14f74805e68fa1b9ff47a30e32eeabf586be054c2224e7cd9d9a611ef49a060e`.
+
+Output SHA: `756521a394fbc6a58c8f1fcb619a6afc333596366a923ca52fecfe657cde18a4`.
+
+The retained fixture contains 48 cases in 4,898,777 compressed bytes, including
+all partial failures. Evidence is in `artifacts/ability-routing/` and
+`artifacts/ability-routing-verification.log`.
+
+The full `just verify` suite passes with this fixture. A fresh capture of all 42
+retained ragdoll/failure cases through the extended harness exactly reproduces
+their previous source outputs and matches Rust; evidence is under
+`artifacts/ability-routing-ragdoll-regression/`. The pinned 5,199-file manifest
+also verifies unchanged.

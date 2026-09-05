@@ -9,7 +9,7 @@ using static ReferenceDynamics;
 using static ReferenceBeamTargets;
 
 // Owns per-actor sprite identities and runs the original SlimeController with
-// empty abilities. The nested animator contexts only construct/reference data.
+// optional ordinary ability routing. Nested animator contexts construct/reference data.
 internal static class ReferenceSlimeActors
 {
     internal sealed class Context
@@ -20,6 +20,22 @@ internal static class ReferenceSlimeActors
         internal Fix TurnInput;
         internal Dictionary<uint,MagnetGun> Magnets=new Dictionary<uint,MagnetGun>();
         internal List<GameObject> Objects;
+        internal ReferenceRoutingAbility[] RoutingPool;
+        internal void RoutingInputs(JToken value)
+        {
+            var player=PlayerHandler.Get().GetPlayer(Slime.playerNumber);player.CanUseAbilities=(bool)value["can_use"];
+            var inputs=Get<Player.InputProfile>(player,"Inputs");var buttons=value["buttons"];
+            inputs.firstAbilityButton_IS_DOWN=buttons.Count()>0&&(bool)buttons[0];inputs.secondAbilityButton_IS_DOWN=buttons.Count()>1&&(bool)buttons[1];inputs.thirdAbilityButton_IS_DOWN=buttons.Count()>2&&(bool)buttons[2];
+        }
+        internal JArray RoutingChecks()
+        {
+            JToken Check(string method,int index)
+            {
+                try{return new JValue((bool)typeof(SlimeController).GetMethod(method,BindingFlags.Instance|BindingFlags.NonPublic).Invoke(Slime,new object[]{index}));}
+                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;return new JObject{["error"]=e is NullReferenceException?"null_reference":e is IndexOutOfRangeException?"index_out_of_range":e is ArgumentOutOfRangeException?"argument_out_of_range":throw e};}
+            }
+            return new JArray(Enumerable.Range(0,Slime.abilities.Count+1).Select(i=>new JObject{["ready"]=Check("isAbilityReady",i),["castable"]=Check("isAbilityCastable",i)}));
+        }
         internal MagnetGun Magnet(JToken id)
         {
             if(id.Type==JTokenType.Null)return null;uint key=(uint)id;
@@ -57,6 +73,14 @@ internal static class ReferenceSlimeActors
                 var holder=Get<MagnetGun>(Slime,"magnetHolder");
                 value["ragdoll"]=new JObject{["duration"]=Get<Fix>(Slime,"ragdollDuration").m_rawValue,["time"]=Get<Fix>(Slime,"timeInRagdoll").m_rawValue,["speed"]=V(Get<Vec2>(Slime,"ragDollSpeed")),["magnet_holder"]=holder==null?JValue.CreateNull():new JValue(Magnets.First(p=>p.Value==holder).Key)};
             }
+            if(value["abilities"]!=null)
+            {
+                var routing=value["abilities"];routing["timers"]=new JArray(Get<Fix[]>(Slime,"abilityCooldownTimers").Select(f=>f.m_rawValue));routing["in_ability"]=Get<bool>(Slime,"isInAbility");
+                var player=PlayerHandler.Get().GetPlayer(Slime.playerNumber);routing["can_use"]=player.CanUseAbilities;
+                var inputs=Get<Player.InputProfile>(player,"Inputs");var buttons=routing["buttons"];
+                for(int i=0;i<buttons.Count();i++)buttons[i]=i==0?inputs.firstAbilityButton_IS_DOWN:i==1?inputs.secondAbilityButton_IS_DOWN:i==2?inputs.thirdAbilityButton_IS_DOWN:(bool)buttons[i];
+                routing["indicators"]=new JArray(Slime.AbilityReadyIndicators.Select(i=>i==null?(JToken)JValue.CreateNull():new JObject{["seconds_since_reset"]=Get<float>(i,"SecondsSinceReset")}));
+            }
             value["animator"]=Animation.Snapshot();value["speed"]=new JObject{["velocity"]=V(Animation.Bodies[0].velocity),["rotation"]=Animation.Bodies[0].rotation.m_rawValue};return value;
         }
     }
@@ -90,6 +114,19 @@ internal static class ReferenceSlimeActors
         if(value["ragdoll"]!=null)
         {
             var r=value["ragdoll"];Set(slime,"ragdollDuration",F(r["duration"]));Set(slime,"timeInRagdoll",F(r["time"]));Set(slime,"ragDollSpeed",V(r["speed"]));Set(slime,"magnetHolder",context.Magnet(r["magnet_holder"]));
+        }
+        if(value["abilities"]!=null)
+        {
+            var routing=value["abilities"];
+            context.RoutingPool=routing["pool"].Select(a=>{
+                var obj=new GameObject("routing ability");obj.SetActive(false);objects.Add(obj);var ability=obj.AddComponent<ReferenceRoutingAbility>();
+                ability.IsDestroyed=(bool)a["destroyed"];ability.Cooldown=F(a["cooldown"]);ability.cooldownStoppedDuringTimeStop=(bool)a["stopped_during_time_stop"];ability.OnlyCastableOnGround=(bool)a["ground_only"];ability.isCastable=(bool)a["castable"];ability.IgnoreCooldown=(bool)a["ignore_next_cooldown"];
+                if(!(bool)a["present"])UnityEngine.Object.DestroyImmediate(obj);return ability;
+            }).ToArray();
+            slime.abilities=routing["slots"].Select(id=>id.Type==JTokenType.Null?null:(AbilityMonoBehaviour)context.RoutingPool[(int)id]).ToList();
+            Set(slime,"abilityCooldownTimers",routing["timers"].Select(F).ToArray());Set(slime,"isInAbility",(bool)routing["in_ability"]);
+            slime.AbilityReadyIndicators=routing["indicators"].Select(i=>{if(i.Type==JTokenType.Null)return null;var obj=new GameObject("headless routing indicator");obj.SetActive(false);objects.Add(obj);var indicator=obj.AddComponent<AbilityReadyIndicator>();Set(indicator,"SecondsSinceReset",(float)i["seconds_since_reset"]);return indicator;}).ToArray();
+            context.RoutingInputs(routing);
         }
         return context;
     }

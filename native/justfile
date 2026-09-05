@@ -49,6 +49,7 @@ verify: build check
     python3 native/tools/verify_actors.py --golden
     python3 native/tools/verify_slime_actors.py --golden
     python3 native/tools/verify_slime_actors.py --faults --golden
+    python3 native/tools/verify_ability_routing.py --golden
     python3 native/tools/verify_ragdoll.py --golden
     python3 native/tools/verify_ragdoll.py --faults --golden
     python3 native/tools/physics_scene_golden.py verify --fixture native/fixtures/disabled-colliders.jsonl.gz
@@ -155,3 +156,6 @@ verify-slime-actors: build
 verify-ragdoll: build
     python3 native/tools/verify_ragdoll.py --cases 120 --steps 120
     python3 native/tools/verify_ragdoll.py --faults
+
+verify-ability-routing: build
+    python3 native/tools/verify_ability_routing.py --cases 120 --steps 120

@@ -10,7 +10,7 @@ using static ReferenceBeamTargets;
 
 // Advances original components together through Updater.TickSimulationInner.
 // Supplied transforms alias the collision scene. The motor is an explicit
-// scripted Jump/Move driver; no SlimeController/ability FSM is simulated here.
+// scripted Jump/Move driver or the original SlimeController when contexts exist.
 internal static class ReferenceActors
 {
     private const BindingFlags Statics=BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic;
@@ -129,6 +129,7 @@ internal static class ReferenceActors
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
                     ["inputs"]=new JArray(inputs.Select(p=>new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME}))};
                 if(query["scripts"]!=null)frame["effects"]=effects;
+                if((bool?)query["routing_checks"]==true)frame["routing_checks"]=new JArray(slimes.Select(s=>s.RoutingChecks()));
                 return frame;
             }
             var frames=new JArray();foreach(var a in query["actions"])
@@ -136,6 +137,7 @@ internal static class ReferenceActors
                 events=new JArray();phases=new JArray();pushes=new JArray();effects=new JArray();simulated=false;
                 for(int i=0;i<actorData.Count;i++){actorData[i]["input"]=a["inputs"][i]["direction"].DeepClone();inputs[i].jumpButton_IS_DOWN=(bool)a["inputs"][i]["jump"];}
                 if(animations!=null)for(int i=0;i<inputs.Count;i++){var dir=V(a["inputs"][i]["direction"]);inputs[i].UsesMouse=true;inputs[i].w_IS_DOWN=dir.y>Fix.Zero;inputs[i].s_IS_DOWN=dir.y<Fix.Zero;inputs[i].d_IS_DOWN=dir.x>Fix.Zero;inputs[i].a_IS_DOWN=dir.x<Fix.Zero;}
+                if(a["routing_inputs"]!=null)for(int i=0;i<slimes.Count;i++)slimes[i].RoutingInputs(a["routing_inputs"][i]);
                 GameTime.PlayerTimeScale=F(a["scale"]);for(int i=0;i<drivers.Count;i++)drivers[i].EnabledFlag=(bool)a["enabled"][i];
                 string error=null;try{if(a["commands"]!=null)foreach(var command in a["commands"])Command(command);typeof(Updater).GetMethod("TickSimulationInner",Statics).Invoke(null,new object[]{F(a["dt"])});}
                 catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}

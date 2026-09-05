@@ -1,3 +1,4 @@
+pub mod ability_routing;
 pub mod beam;
 pub mod curve;
 pub mod fixed;

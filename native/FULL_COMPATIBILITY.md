@@ -840,3 +840,35 @@ This extends the supplied-state, empty-ability runner. It does not yet connect
 ragdoll to ability casts, MagnetSteal, swallowing, ropes, deaths or full prefab
 initialization. The full-game C environment and remaining integration are still
 required; this checkpoint does not certify complete ability behavior.
+
+
+## Ordinary ability cooldowns and readiness
+
+`ability_routing.rs` now supplies cooldown updates and cast gates to the scheduled
+SlimeController. Slots alias ability objects, including null references and
+managed-destroyed or physically absent Unity objects. Updates retain the source
+order: compare readiness, increment the timer if permitted, reset an indicator
+on a readiness crossing, then apply the zero-cooldown adjustment only when an
+indicator slot exists. Ragdoll/biting still update cooldowns; the nothing state
+and controllers already inside an ability skip them.
+
+The indicator threshold is `>=`, while casting requires `>`. The selection loop
+checks cooldown-ignore before buttons, then readiness, ground restrictions,
+player permission, ability castability and suppression. Unlike the cooldown
+loop, selection does not skip null or destroyed slots. Released cooldown-ignore
+slots reset to exactly the cooldown. Indices beyond the first three never have
+a pressed ability button in the pinned Player implementation.
+
+The current metadata models ordinary Ability behavior and the custom
+IgnoreNextCooldown property. Rope-specific spatial queries and dynamic cooldowns
+are not represented. Indicators are explicitly headless: reset clocks and null
+reference failures are compared, while renderer/material/sprite presentation is
+absent. Ability entry is still a required integration step: if selection returns
+a slot, the runner returns `ability_entry_not_implemented` before executing it.
+That is a capability boundary, not a claimed Unity failure or a successful cast.
+
+All 120 reference scenarios match, including 100 complete sequences, 12,002
+completed ticks and 20 matching partial source failures. Casts are blocked using
+released buttons or CanUseAbilities; separate calls to Unity's actual readiness
+and castability methods exercise true and false predicates. These checks do not
+yet prove successful selection/entry or any complete ability implementation.
