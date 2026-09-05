@@ -27,13 +27,27 @@ pub struct Object {
     pub body: Body,
     pub transform: Transform,
     pub layer: usize,
+    /// GameObject activity in the hierarchy, independent of collider enablement.
     pub active: bool,
+    #[serde(default = "collider_enabled", skip_serializing_if = "is_enabled")]
+    pub enabled: bool,
     pub callback: bool,
     pub callback_destroyed: bool,
     pub destroyed: bool,
     pub composite: Option<usize>,
     pub relative_pos: Vec2,
     pub relative_orientation: Fix,
+}
+fn collider_enabled() -> bool {
+    true
+}
+fn is_enabled(value: &bool) -> bool {
+    *value
+}
+impl Object {
+    pub fn is_active(&self) -> bool {
+        self.active && self.enabled
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Composite {
@@ -145,7 +159,7 @@ impl Scene {
     fn integrate(&mut self, dt: Fix) {
         for kind in ORDER {
             for i in self.indices(kind) {
-                if !self.objects[i].active
+                if !self.objects[i].is_active()
                     || self.objects[i].body.inverse_mass <= Fix::ZERO
                     || self.composite(i).is_some()
                 {
@@ -164,7 +178,8 @@ impl Scene {
                 continue;
             }
             let root = self.index(self.composites[c].rounded_rects[0]);
-            if !self.objects[root].active || self.objects[root].body.inverse_mass <= Fix::ZERO {
+            if !self.objects[root].is_active() || self.objects[root].body.inverse_mass <= Fix::ZERO
+            {
                 continue;
             }
             for id in self.composites[c].rounded_rects.clone() {

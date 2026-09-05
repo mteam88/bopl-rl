@@ -67,6 +67,7 @@ public static class ReferencePhysicsScene
         {
             var a=adapters[i];if(!Contains(a))continue;
             var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();
+            if(a.parent.monobehaviourCollider.enabled)o.Remove("enabled");else o["enabled"]=false;
             o["body"]=Body(body);o["collider"]=ShapeJson(shape);
             o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
             o["relative_pos"]=V(body.relativePos);o["relative_orientation"]=body.relativeOrientation.m_rawValue;
@@ -125,6 +126,7 @@ public static class ReferencePhysicsScene
                 go.SetActive((bool)v["active"]);
                 var a=new Adapter { transform=ft, IsDestroyed=(bool)v["destroyed"], callbackDestroyed=(bool)v["callback_destroyed"], shape=(string)v["collider"]["kind"]=="circle"?Shape.Circle:(string)v["collider"]["kind"]=="box"?Shape.Box:Shape.RoundedRect };
                 a.parent=new PhysicsParent { instanceId=(int)v["id"],fixTrans=ft,monobehaviourCollider=a,collisionCallback=(bool)v["callback"]?a:null,hierarchyNumber=adapters.Count };
+                a.enabled=(bool?)v["enabled"] ?? true;
                 adapters.Add(a);
                 var body=Body(v["body"]);body.relativePos=V(v["relative_pos"]);body.relativeOrientation=F(v["relative_orientation"]);
                 if(v["composite"].Type!=JTokenType.Null)body.compositeParent=physics.composites[(int)v["composite"]];
@@ -135,6 +137,8 @@ public static class ReferencePhysicsScene
             }
             if ((string)query["operation"] == "dynamics_player_rays")
                 return ReferencePlayerRays.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
+            if ((string)query["operation"] == "dynamics_surface_motion")
+                return ReferenceSurfaceMotion.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
             var result=new JArray();
             int tick=0;
             foreach(var dt in query["steps"])

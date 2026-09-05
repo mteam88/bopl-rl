@@ -60,14 +60,16 @@ public static class ReferencePhysicsCapture
         for(int i=0;i<list.Length;i++)
         {
             var parent=list.physicsParents[i];var ft=parent.fixTrans;var body=list.physicsBodies[i];
-            result.Add(new JObject {
+            var value = new JObject {
                 ["id"]=Id(parent.instanceId),["collider"]=ReferencePhysicsScene.ShapeJson(list.colliders[i]),["body"]=Body(body),["layer"]=list.colliders[i].Layer(),
                 ["transform"]=new JObject {["position"]=V(ft==null?Vec2.zero:ft.position),["rotation"]=ft==null?0:ft.rotation.m_rawValue,["offset"]=V(ft==null?Vec2.zero:ft.offset),["right"]=V(ft==null?Vec2.right:ft.right)},
-                ["active"]=DetPhysics.IsActive(parent),["destroyed"]=ft==null||parent.monobehaviourCollider.IsDestroyed,
+                ["active"]=ft!=null&&ft.gameObject.activeInHierarchy,["destroyed"]=ft==null||parent.monobehaviourCollider.IsDestroyed,
                 ["callback"]=parent.collisionCallback!=null,["callback_destroyed"]=parent.collisionCallback!=null&&parent.collisionCallback.IsDestroyed,
                 ["composite"]=body.compositeParent==null?JValue.CreateNull():new JValue(p.composites.IndexOf(body.compositeParent)),
                 ["relative_pos"]=V(body.relativePos),["relative_orientation"]=body.relativeOrientation.m_rawValue
-            });
+            };
+            if(!parent.monobehaviourCollider.enabled)value["enabled"]=false;
+            result.Add(value);
         }
     }
 }

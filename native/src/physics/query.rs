@@ -18,7 +18,7 @@ impl Scene {
         };
         for kind in [2, 0, 1] {
             for o in &self.objects {
-                if o.collider.kind() != kind || !o.active || mask & (1 << o.layer) == 0 {
+                if o.collider.kind() != kind || !o.is_active() || mask & (1 << o.layer) == 0 {
                     continue;
                 }
                 let hit = match o.collider {
@@ -72,7 +72,7 @@ impl Scene {
             let Collider::RoundedRect(shape) = object.collider else {
                 continue;
             };
-            if object.active
+            if object.is_active()
                 && let Some(hit) = shape.raycast(origin, direction)
                 && hit.near < result.near_distance
                 && hit.near <= distance

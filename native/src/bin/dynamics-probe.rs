@@ -12,6 +12,57 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_surface_motion" => {
+            let mut scene: physics::scene::Scene = read(&q, "scene");
+            let bindings: Vec<bopl_sim::platform_motion::Binding> = read(&q, "bindings");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut terrain = bopl_sim::platform_motion::Terrain {
+                    scene: &mut scene,
+                    bindings: &bindings,
+                };
+                let object = read(action, "object");
+                let request: bopl_sim::platform_motion::Movement = read(action, "request");
+                let result = match action["op"].as_str().unwrap() {
+                    "move" => terrain.move_along(object, request, None).map(|v| json!(v)),
+                    "multiple" => terrain
+                        .move_along(object, request, Some(read(action, "second")))
+                        .map(|v| json!(v)),
+                    "hop" => terrain
+                        .hop(object, request, &read::<Vec<i32>>(action, "disallowed"))
+                        .map(|v| json!(v)),
+                    "limit" => terrain
+                        .max_movement(
+                            object,
+                            request.position,
+                            request.radius,
+                            read(action, "velocity"),
+                            request.dt,
+                        )
+                        .map(|v| json!(v)),
+                    _ => panic!("Unknown surface motion action"),
+                };
+                let orders: Vec<Vec<u32>> = [2, 0, 1]
+                    .into_iter()
+                    .map(|kind| {
+                        scene
+                            .objects
+                            .iter()
+                            .filter(|o| o.collider.kind() == kind)
+                            .map(|o| o.id)
+                            .collect()
+                    })
+                    .collect();
+                let mut snapshot = scene.clone();
+                snapshot.objects.sort_by_key(|o| o.id);
+                let frame = json!({"scene": snapshot, "orders": orders, "result": result.as_ref().cloned().unwrap_or(Value::Null)});
+                if let Err(error) = result {
+                    return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_player_rays" => {
             let mut state: bopl_sim::player_physics::State = read(&q, "state");
             let mut scene: bopl_sim::physics::scene::Scene = read(&q, "scene");

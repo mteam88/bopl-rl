@@ -24,3 +24,5 @@ pub mod player_body;
 pub mod player_physics;
 
 pub mod game_time;
+
+pub mod platform_motion;

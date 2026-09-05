@@ -550,3 +550,52 @@ It runs under `just verify`; regenerate with `just verify-player-rays`. Raw
 evidence is in `artifacts/player-rays/`. This is a component oracle with supplied
 scene and platform caches. Full movement control, blocked surface traversal,
 platform hopping and independent full-world ability episodes remain required.
+
+
+## Blocked surface traversal and hop queries
+
+`platform_motion::Terrain` ports the blocked and unblocked `moveAlongSurface`
+methods, the multiple-body variant, `maxMovementAllowed` and `PlatformHopMove`.
+It uses the shared scene raycasts and platform perimeter coordinates. The C
+movement environment now shares its three-ray limit selection and checked
+perimeter calculation. Movement
+keeps the source's distance-versus-speed arithmetic and always re-enables the
+platform collider after a successful query, even if it started disabled. The
+multiple-body method runs both limit checks but uses the second result as the
+final limit. These behaviors are preserved from the developed game.
+
+Direct hopping uses a separate scan: it does not clean up destroyed colliders,
+ignores collider enablement, and checks transform destruction/object activity
+inside the disallowed-ID loop. An empty exclusion array therefore skips those
+validity checks. The scan retains registration ties and returns the source's
+signed remaining movement for the player controller to consume.
+
+Collider enablement is now separate from object activity in native scenes and
+new gameplay captures. Ordinary integration, broad-phase, ropes and raycasts use
+both flags; hop queries retain their source-specific behavior. Older captures
+with combined activity remain valid for their original physics-stage checks.
+
+The actual Unity methods match 1,000 supplied-state scenarios, including shifted,
+rotated and differently sized cached surfaces, missing shapes, duplicate hits,
+zero/negative time, disabled/inactive/destroyed objects and empty exclusion arrays.
+All 56 first-error boundaries retain completed prefixes and partial scene state.
+The fixture keeps 205 scenarios, including all source errors. A separate 200-scene
+rigid/composite/rope check verifies disabled colliders over 2,400 consecutive
+steps, 11,052 callbacks and 9,024 enabled-rope updates; 110 scenes contain composites.
+
+Both fixtures run under `just verify`; regenerate with `just verify-surface-motion`.
+Evidence is in `artifacts/surface-motion/` and `artifacts/disabled-colliders/`.
+This covers traversal primitives with supplied platform caches and non-null
+collider transforms. Recursive player platform changes, full Move/MachoMove and
+UpdateSim control, drop callbacks, scheduler integration and independent complete
+ability episodes remain required. The public C environment is still the verified
+movement/dash slice.
+
+
+A fresh six-player grappling replay verifies the updated capture representation:
+all 600 physics stages / 3,834 callbacks match, including 287 stages containing
+disabled colliders on active objects (1,255 collider states). There are 268 active
+rope stages and up to six active ropes. This reuses the established six-hook input;
+it is not a new independent gameplay scenario. Unity still supplies each stage's
+pre-state. All stages with disabled colliders are retained in
+`fixtures/disabled-gameplay.jsonl.gz`, along with sampled remaining stages (316 stages total).

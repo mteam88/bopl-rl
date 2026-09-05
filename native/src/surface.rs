@@ -178,11 +178,18 @@ impl Surface {
         distance.checked_div(self.circumference() + player_radius * Fix::TAU)
     }
     pub fn move_unblocked(&self, local: Fix, radius: Fix, speed: Fix, dt: Fix) -> Fix {
+        self.try_move_unblocked(local, radius, speed, dt).unwrap()
+    }
+    pub fn try_move_unblocked(
+        &self,
+        local: Fix,
+        radius: Fix,
+        speed: Fix,
+        dt: Fix,
+    ) -> Result<Fix, MathError> {
         let movement = speed * dt;
         let circumference = self.circumference() + radius * Fix::TAU;
-        (Fix::ONE + local + movement / circumference)
-            .checked_rem(Fix::ONE, true)
-            .unwrap()
+        (Fix::ONE + local + movement.checked_div(circumference)?).checked_rem(Fix::ONE, true)
     }
 }
 

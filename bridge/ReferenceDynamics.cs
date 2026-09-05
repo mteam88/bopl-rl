@@ -34,6 +34,7 @@ public static class ReferenceDynamics
         {
             case "dynamics_rope": return ReferenceRope.Evaluate(q);
             case "dynamics_scene": return ReferencePhysicsScene.Evaluate(q);
+            case "dynamics_surface_motion":
             case "dynamics_player_rays": return ReferencePhysicsScene.Evaluate(q);
             case "dynamics_circle_circle": hit=PhysTools.CollisionTest(Circle(q["a"]),Circle(q["b"]),ref contact);break;
             case "dynamics_circle_box": hit=PhysTools.CollisionTest(Circle(q["a"]),Box(q["b"]),ref contact);break;

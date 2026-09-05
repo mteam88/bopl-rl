@@ -7,7 +7,7 @@ pub(super) fn pairs(scene: &Scene) -> (bool, bool, Pairs) {
     let mut active = Vec::new();
     for kind in [2, 0, 1] {
         for (i, o) in scene.objects.iter().enumerate() {
-            if o.collider.kind() == kind && o.active {
+            if o.collider.kind() == kind && o.is_active() {
                 active.push(i);
                 mean += o.collider.center();
             }

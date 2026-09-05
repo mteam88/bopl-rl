@@ -90,11 +90,16 @@ def add_ropes(inputs,seed):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cases',type=int,default=1000);parser.add_argument('--seed',type=int,default=943184)
+    parser.add_argument('--disabled',action='store_true',help='Include disabled colliders independently of inactive objects')
     parser.add_argument('--ropes',action='store_true');parser.add_argument('--reuse-unity',action='store_true');parser.add_argument('--directory',type=Path,default=ROOT/'native/artifacts/physics-scene')
     args=parser.parse_args();d=args.directory.resolve();d.mkdir(parents=True,exist_ok=True)
     source=d/'input.jsonl';reference=d/'unity.jsonl';rust=d/'rust.jsonl'
     inputs=list(queries(args.cases,args.seed))
     if args.ropes:add_ropes(inputs,args.seed)
+    if args.disabled:
+        for case,query in enumerate(inputs):
+            for obj in query['scene']['objects']:
+                if (case+obj['id'])%3==0:obj['enabled']=False
     raw=''.join(json.dumps(q,separators=(',',':'))+'\n' for q in inputs)
     if args.reuse_unity:
         if source.read_text()!=raw:raise ValueError('Cannot reuse different input corpus')

@@ -29,7 +29,7 @@ impl RopeSystem {
         let mut bounds = Vec::new();
         for object in objects {
             if let Collider::RoundedRect(rectangle) = object.collider {
-                if object.active {
+                if object.is_active() {
                     bounds.push(Bounds {
                         bounds: object.collider.bounds(),
                         rope: false,

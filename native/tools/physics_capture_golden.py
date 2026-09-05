@@ -24,7 +24,8 @@ def export(paths, fixture):
             if row['kind']!='state':continue
             s=row['value'].get('physicsStage')
             if s is None or (s['beams'] and 'beams_before' not in s) or (s['ropes'] and 'rope_system' not in s['before']):continue
-            if s['beams'] or s['tick'] in range(237,246) or index%stride==0:
+            disabled=any(not o.get('enabled',True) for o in s['before']['objects'])
+            if disabled or s['beams'] or s['tick'] in range(237,246) or index%stride==0:
                 query={'operation':'dynamics_scene','scene':s['before'],'steps':[s['dt']]}
                 expected={'scene':s['after'],'callbacks':s['callbacks']}
                 if 'beams_before' in s:

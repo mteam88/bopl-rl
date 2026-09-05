@@ -10,7 +10,7 @@ pub struct Platform {
     pub has_shape: bool,
 }
 impl Platform {
-    fn position(&self, local: Fix, radius: Fix) -> Result<Vec2, &'static str> {
+    pub(crate) fn position(&self, local: Fix, radius: Fix) -> Result<Vec2, &'static str> {
         if !self.has_shape && self.surface.perimeter_zone(local, radius).is_some() {
             return Err("null_reference");
         }

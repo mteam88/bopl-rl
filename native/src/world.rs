@@ -296,21 +296,16 @@ impl Player {
         self.align(platform);
         let speed = self.grounded_speed + self.external_velocity.dot(forward);
         let velocity = forward * speed;
-        let direction = velocity.normalized_safe();
-        let offset = direction * self.radius;
-        let distance = velocity.length() * DT;
-        let mut allowed = Fix::from_int(10_000_000_000);
-        for origin in [
-            self.position + offset,
-            self.position + offset + offset.perp(),
-            self.position + offset + offset.perp_cw(),
-        ] {
-            if let Some((_, near, _)) =
+        let (allowed, _) = crate::platform_motion::movement_limit(
+            self.position,
+            self.radius,
+            velocity,
+            DT,
+            &mut |origin, direction, distance| {
                 closest(platforms, origin, direction, distance, Some(platform.id))
-            {
-                allowed = allowed.min(near);
-            }
-        }
+                    .map(|(_, near, _)| ((), near))
+            },
+        );
         let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
         self.local = platform
             .surface

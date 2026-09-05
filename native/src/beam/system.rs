@@ -127,6 +127,7 @@ impl System {
                     transform: transform(&hitbox),
                     layer: self.config.layer,
                     active: true,
+                    enabled: true,
                     callback: true,
                     callback_destroyed: false,
                     destroyed: false,

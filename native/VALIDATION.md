@@ -447,3 +447,59 @@ After extracting the shared scene snapshot helper, a fresh Unity rigid/composite
 regression also matches 100 scenes / 1,200 steps / 14,898 callbacks, including 55
 composite scenes. Evidence is in `artifacts/player-rays-scene-regression/`.
 The full standalone verification suite passes with the new raycast fixture.
+
+
+## Blocked platform movement and direct hopping
+
+All 1,000 Unity scenarios match: 944 complete sequences,
+34,016 completed actions, 10,416 surface moves,
+14,160 hop calls, 4,720 explicit limit queries
+and 4,720 multiple-body moves. There are 7,245
+hop results with a platform and 7,556 nonzero remainders.
+The 24 division-by-zero and 32 null-reference failures include partial state and
+completed prefixes. Scene state, collider order, enablement and return values
+are compared without tolerances. The 205-case fixture is 859,986 bytes.
+
+This includes rotated/translated surface caches, different platform/player radii,
+registration ties, independent collider enablement and object activity, destroyed
+colliders/transforms, missing shape components and empty/nonempty hop exclusions.
+It does not exercise null collider transforms or recursive PlayerPhysics hopping.
+
+Assembly:
+`c6acf8a0be043269b9fea641362e8b97a6f11445466cbe2884c94d583e35ff25`.
+
+Input SHA:
+`0036e15e9cbdadaed17f39b0a6cc41c5185b47386d634513bf87407fab98541e`.
+
+Output SHA:
+`d5ae901667822429a7bec1af4589f5c4aa579c396763ce2383ad83b02e5a9dec`.
+
+Disabled-collider integration also matches 200 generated rigid/composite/rope
+scenes, 2,400 steps, 11,052 callbacks and 9,024 enabled-rope updates, with 110
+composite scenes. Its fixture retains 56 scenes / 672 steps. Both fixtures run
+under `just verify`; raw evidence and provenance are under
+`artifacts/surface-motion/` and `artifacts/disabled-colliders/`.
+
+The independent C movement environment also shares the new limit-selection
+helper and perimeter calculation. Its full trajectory fixtures remain the
+regression gate for this integration.
+
+
+The updated gameplay capture preserves object activity and collider enablement
+separately. A repeated six-player grappling input matches all 600 physics stages
+and 3,834 callbacks, with 268 active-rope stages and up to six ropes. Of those
+stages, 287 contain disabled colliders on active objects: 1,255 such collider
+states are compared. This is supplied-pre-state physics verification and reuses
+the existing six-hook input. It does not prove an independent native ability
+rollout. The 316-stage gameplay fixture keeps every stage with a disabled collider.
+
+Gameplay assembly:
+`0ca9c7fc57d1a09818b334f3af717b64f6d6080423438cdc85a5cd3d2fdeae48`.
+
+Replay SHA:
+`545be94ee333638e63be2756d9fa21b817dc42d40444c65709a439ff9075ac67`.
+
+Trace SHA:
+`ff297da7d0e5330f8c2dcd009818681a64b2aae607efe3f7f18b4dac61aa94a1`.
+
+Raw evidence is in `artifacts/surface-motion-gameplay/`.
