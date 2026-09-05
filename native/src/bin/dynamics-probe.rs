@@ -12,6 +12,49 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_collision" => {
+            let mut receiver: bopl_sim::player_collision::Receiver = read(&q, "receiver");
+            let mut globals: bopl_sim::player_collision::Globals = read(&q, "globals");
+            let mut hits: Vec<bopl_sim::player_collision::Hit> = read(&q, "hits");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut effects = Vec::new();
+                let mut result = Value::Null;
+                match action["op"].as_str().unwrap() {
+                    "update" => receiver.update(),
+                    "invulnerable" => {
+                        receiver.set_invulnerable(read(action, "enabled"), read(action, "mask"))
+                    }
+                    "ignore_beam" => receiver.ignored_beam = read(action, "id"),
+                    "copy_ignored" => receiver.ignored = read(action, "ignored"),
+                    "collide" => {
+                        let callback = read(action, "callback");
+                        let outcome = receiver.collide(
+                            &mut hits[read::<usize>(action, "hit")],
+                            &mut globals,
+                            callback,
+                            &mut |effect| {
+                                effects.push(effect);
+                                read(action, "kill_result")
+                            },
+                        );
+                        match outcome {
+                            Ok(value) => {
+                                if !callback {
+                                    result = json!(value);
+                                }
+                            }
+                            Err(error) => {
+                                return json!({"error": error, "action": frames.len(), "completed": frames, "failed": {"receiver":receiver,"globals":globals,"hits":hits,"effects":effects,"result":Value::Null}});
+                            }
+                        }
+                    }
+                    _ => panic!("unknown collision policy action"),
+                }
+                frames.push(json!({"receiver":receiver,"globals":globals,"hits":hits,"effects":effects,"result":result}));
+            }
+            return json!(frames);
+        }
         "dynamics_player_life" => {
             let mut state: bopl_sim::player_life::Book = read(&q, "state");
             let mut events: Vec<bopl_sim::player_life::Death> = read(&q["state"], "events");

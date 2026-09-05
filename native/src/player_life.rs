@@ -2,6 +2,17 @@
 //! been selected. Body lifecycle and elimination listeners are separate stages.
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Cause {
+    Other = 0,
+    Squished = 1,
+    Accident = 2,
+    Eaten = 3,
+    Beamed = 4,
+    NotDeadYet = 5,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
     pub id: i32,

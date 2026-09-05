@@ -14,3 +14,5 @@ pub mod physics;
 pub mod random;
 
 pub mod player_life;
+
+pub mod player_collision;

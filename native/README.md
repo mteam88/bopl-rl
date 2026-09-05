@@ -111,7 +111,9 @@ Level1's platforms remain stationary in this slice. They have mass in the full
 game. The separate rigid/composite solver now has exact Unity scene tests;
 integrating it with movement and ability effects remains in progress. The rope
 physics stage, beam graph, hitbox pool and target force/charge components are
-verified together in the source physics update order. Independent player-input
+verified together in the source physics update order. Shared death accounting and
+collision-effect selection have separate Unity checks; their downstream lifecycle
+handlers still need integration. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

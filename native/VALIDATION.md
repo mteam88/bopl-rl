@@ -293,3 +293,40 @@ Reports under `artifacts/player-life-gameplay/` retain the other trace's hashes
 and the exact counts. All six gameplay accounting calls and 182 no-stocks physics
 stages are checked-in regressions. Body/ability lifecycle and collision damage
 remain separate, incomplete native work.
+
+
+## PlayerCollision selection
+
+All 600 component scenarios match: 12,551 completed actions and 177 first-error
+snapshots, including their partial mutations and completed prefixes. There are
+303 attachment requests, 2,926 kill requests and 171 lightning requests. Causes
+are Other 1,653, Squished 428, Accident 531 and Beamed 314. Errors are 111 null
+references and 66 integer absolute-value overflows. Tests use the actual Unity
+collision method with recording sinks for downstream kill/attachment handlers.
+
+Assembly:
+`60273bb8f3c14dd2b3fc8ffd95bd3f7a59368b789f36e40ac824915e467eebb2`.
+Input SHA:
+`9275c8a33ac7fce1460c5bd30f34df3271be634fff5d4d5ba00fe55e5815e77e`.
+Output SHA:
+`21e9be4c0f847cf1b9d3a50530dfee826eb37e5c73e085a0516be125247919f1`.
+
+The 700-tick six-player gameplay capture matches all 4,432 decisions and three
+Beamed kill requests. Four further decisions, including one Beamed request, match
+at the known source exception on input 561. Real downstream handlers execute in
+these captures; their changes are excluded from the decision projection. The
+700 physics stages / 6,898 callbacks and the failure's final physics stage / ten
+callbacks also match. These repeat existing input scenarios.
+
+Gameplay assembly:
+`a3b02610093e2e665c29aedc1ec43a9c36153bd46418e8e6f6f7332073a431e3`.
+Completed trace SHA:
+`93a17edda9f12866ded7bde4405f0cb71f82589c2481b5c061cdf4c004df17f4`.
+Failure snapshot SHA:
+`42ffafecdfaaa1afcb92953b26c451903de813a4a7ae62cc86ea9906f7bfe427`.
+The later assembly adds the position argument to attachment records; the gameplay
+corpus has no attachment requests and retains its original provenance. Full
+reports are under `artifacts/player-collision/` and
+`artifacts/player-collision-gameplay/`. Both fixture sets run in `just verify`.
+Persistent component references and downstream lifecycle execution remain outside
+this component's coverage and are not exposed as full combat through the C API.

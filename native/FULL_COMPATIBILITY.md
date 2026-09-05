@@ -351,7 +351,47 @@ completed gameplay captures. `beam_gameplay_cases.py --stocks 0` reproduces the
 no-stocks setup. Raw evidence is in `artifacts/player-life/` and
 `artifacts/player-life-gameplay/`.
 
-Collision lethality selection, ability exits, rope detachment on death, body and
-ability destruction, clone creation, stock choice and revival remain unported as
+Ability exits, rope detachment on death, body and ability destruction, clone
+creation, stock choice and revival remain unported as
 native lifecycle stages. This checkpoint supplies shared accounting for those
 handlers; it does not turn the public movement/dash environment into full combat.
+
+
+## Player collision decisions
+
+`player_collision::Receiver::collide` ports `KillPlayerOnCollision` and the
+`OnCollide` duplicate guard. It preserves invulnerability masks, ignored hierarchy
+and beam IDs, platform squish/pickup selection, projectile owner immunity, orb and
+contact-ability rules, achievement counters, and death-cause priority. Effects are
+issued in source order: attachment includes its target and exact position, then
+lightning sound or a kill request where applicable. The kill handler's return
+value remains the direct-call result, including false after the duplicate guard
+has already been set.
+
+The actual Unity method matches **600 generated scenarios**, with **12,551
+completed actions** and **177 failing actions**. Failure checks retain the first
+error's index, completed prefix and partially mutated state: 111 null-reference
+errors and 66 integer-absolute-value overflows. The corpus exercises all six
+ignored-collider slots, rotated squish points, identity aliases, mixed recorded
+and current layers, self-hits, parent abilities, counter limits and replay versus
+live achievement behavior. These are component tests, including deliberately
+inconsistent inputs; they are not 600 complete games.
+
+The normal six-player replay matches all **4,432 OnCollide decisions**, including
+three lethal beam contacts. The source's known six-Beam shutdown failure supplies
+another **four decisions**, including the kill request before its downstream
+handler throws. Its failed tick is not counted as a successful rollout. The normal
+trace's 700 physics stages and the failed tick's last completed physics stage also
+match. This reuses existing input scenarios with additional instrumentation.
+
+Both collision fixtures run under `just verify`. Regenerate with
+`just verify-player-collision`; use `verify_player_collision.py --traces TRACE...
+--failure SNAPSHOT` for captured decisions. Raw evidence and provenance are in
+`artifacts/player-collision/` and `artifacts/player-collision-gameplay/`.
+
+The component receives resolved metadata snapshots. Persistent entity references
+(including copied ignored colliders) still need resolution in the native world.
+Synthetic checks replace downstream kill/attach handlers with recording sinks;
+gameplay capture runs the real handlers and projects their changes out of this
+comparison. This does not implement ground attachment, body destruction, ability
+exits or a full combat episode through the C API.

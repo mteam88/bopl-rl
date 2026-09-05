@@ -22,6 +22,8 @@ public static class ReferenceCapture
     private static JToken lastInput;
     private static JArray events = new JArray();
     private static JArray playerLifeStages = new JArray();
+    private static JArray playerCollisionStages = new JArray();
+    internal static void PlayerCollisionStage(JObject stage) => playerCollisionStages.Add(stage);
     internal static void PlayerLifeStage(JObject stage) => playerLifeStages.Add(stage);
     private static readonly SortedDictionary<string, int> abilityEntries = new SortedDictionary<string, int>(StringComparer.Ordinal);
     private static readonly Dictionary<Type, FieldInfo[]> fields = new Dictionary<Type, FieldInfo[]>();
@@ -71,7 +73,7 @@ public static class ReferenceCapture
                 ["exception"] = failure.GetType().FullName, ["message"] = failure.Message,
                 ["stack"] = failure.StackTrace,
                 ["physics_stage_complete"] = stage != null && stage["after"] != null && stage["callbacks"] != null,
-                ["physicsStage"] = stage, ["playerLifeStages"] = playerLifeStages
+                ["physicsStage"] = stage, ["playerLifeStages"] = playerLifeStages, ["playerCollisionStages"] = playerCollisionStages
             };
             File.WriteAllText(output + ".failure.json", snapshot.ToString(Formatting.None));
             Finish("simulation-exception");
@@ -99,6 +101,8 @@ public static class ReferenceCapture
             var state = new JObject();
             state["tick"] = Updater.SimulationTicks;
             if (ReferencePhysicsCapture.Enabled) state["physicsStage"] = ReferencePhysicsCapture.Take();
+            state["playerCollisionStages"] = playerCollisionStages;
+            playerCollisionStages = new JArray();
             state["playerLifeStages"] = playerLifeStages;
             playerLifeStages = new JArray();
             state["events"] = events;
