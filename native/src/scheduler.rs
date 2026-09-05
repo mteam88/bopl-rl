@@ -69,6 +69,8 @@ pub struct Player {
     pub input: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flags: Option<crate::ability::PlayerFlags>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<crate::player_position::State>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Input {
@@ -321,6 +323,9 @@ impl State {
             } else {
                 p.time_invisible = Fix::ZERO;
                 p.time_ability = Fix::ZERO;
+            }
+            if let Some(position) = &mut p.position {
+                position.begin_frame();
             }
             i += 1;
         }

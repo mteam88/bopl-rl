@@ -933,3 +933,31 @@ Evidence: `artifacts/invisibility-stream-regression/`. The earlier long buffered
 attempt under `artifacts/invisibility/` did not finish and is excluded from the
 results. Streaming reduced observed Unity memory from roughly 11 GB to 1.3 GB
 while allowing the full 1,800-tick scenarios to complete.
+
+### Shared player position and clone priority
+
+48 independent cases (eight each with one through six actor identities) match
+13,800 completed ticks and two original division-by-zero failures at action zero.
+46 cases complete all 300 ticks. 32 cases assign multiple controllers to the same
+registered Player; the actor-count breakdown is not a distinct-owner breakdown.
+The comparison includes all actor, physics, scheduler, input and shared-player
+fields on every frame and the complete failed frame.
+
+The source produces 47,700 player snapshots, 25,583 with a current setter, 17,987
+with the previous setter retained, and 12,082 winner changes. There are 56,261
+explicit position/lifetime commands interleaved with real SlimeController updates.
+One third of cases omit explicit position writes and exercise natural motor
+arbitration. Managed destruction, null candidates, unequal slot counts, ties,
+update disablement and multiple time scales are included. The 14-case retained
+fixture includes both source failures. The full capture also records 24,284
+collision callbacks and 158 shoves.
+
+- Unity assembly SHA-256: `42aa4a7b0d3ae8f63dda59a0b985f2366ad5955dc8505c34200e3129e222894a`
+- Input SHA-256: `31fc1d81051f6251c30e488b5fbff36b0a9ff055153638a512ef2a20b4ab7be0`
+- Output SHA-256: `032cc0df055a32518d7232b82a6d8d3de98a8bf3c1d464272bc8249ca1ffd92e`
+
+Run `just --justfile native/justfile verify-player-position` with a fresh artifact
+directory for a live capture, or `python3 native/tools/verify_player_position.py
+--golden` to check the retained independent trajectories. Physical controller
+destruction, clone creation and ordinary ability entry/exit remain outside this
+capture.

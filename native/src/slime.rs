@@ -54,6 +54,8 @@ pub struct Instance {
     pub abilities: Option<crate::ability_routing::State>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<crate::ability::SlimeEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_destroyed: Option<bool>,
 }
 pub struct Update<'a> {
     pub dt: Fix,
@@ -62,6 +64,7 @@ pub struct Update<'a> {
     pub actor: usize,
     pub body: &'a mut crate::player_body::State,
     pub player: &'a mut crate::scheduler::Player,
+    pub position_priorities: &'a [Option<i32>],
 }
 fn frames(data: &BTreeMap<String, Vec<Frame>>, name: &str) -> Result<Vec<Frame>> {
     data.get(name).cloned().ok_or("animation_missing")
@@ -342,6 +345,13 @@ impl Instance {
     ) -> Result<()> {
         let id = context.holder.ok_or("null_reference")?;
         let (dt, input, jump) = (update.dt, update.input, update.jump);
+        if let Some(position) = &mut update.player.position {
+            position.set(
+                controller.physics.motion.position,
+                Some(update.actor),
+                update.position_priorities,
+            );
+        }
         if self.state.mode != 8
             && let Some(abilities) = &mut self.abilities
         {

@@ -61,6 +61,7 @@ verify: build check
     python3 native/tools/verify_invisibility.py --faults --golden
     python3 native/tools/verify_invisibility_stream.py --golden
     python3 native/tools/verify_invisibility_stream.py --faults --golden
+    python3 native/tools/verify_player_position.py --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -167,3 +168,6 @@ verify-ability-routing: build
 
 verify-invisibility: build
     python3 native/tools/verify_invisibility_stream.py --cases 24 --steps 1800
+
+verify-player-position: build
+    python3 native/tools/verify_player_position.py --cases 48 --steps 300

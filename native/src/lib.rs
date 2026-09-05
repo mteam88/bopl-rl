@@ -23,6 +23,7 @@ pub mod player_collision;
 pub mod player_ground;
 
 pub mod player_body;
+pub mod player_position;
 
 pub mod player_physics;
 

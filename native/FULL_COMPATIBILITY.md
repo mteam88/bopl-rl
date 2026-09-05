@@ -913,3 +913,19 @@ arbitration, collider Scale bookkeeping and presentation still require work.
 Indicator renderers are absent in this corpus. Physically destroyed instant-object
 binding is explicitly unsupported in this reference setup. The public C environment
 still uses the earlier Level1 movement/dash slice.
+
+### Shared player position arbitration
+
+`player_position::State` now runs from the scheduled Player update and original
+Slime motor order. Controller identity survives across frames. Valid controllers
+with more ability slots take precedence; equal-priority calls only replace the
+current value when their controller was the previous frame's winner. Destroyed
+controllers cannot claim the position. Empty frames retain the position value
+while advancing the setter references. Optional serialized state preserves the
+older fixture format.
+
+The Unity runner binds and snapshots actual private setter references and invokes
+original `Player.SetPosition`, including calls before player updates and between
+component/physics phases. Shared controller ownership and managed destruction are
+covered. This does not establish clone spawning, physical destruction of bound
+controllers, or ability object activation/exit parity.

@@ -69,6 +69,7 @@ internal static class ReferenceSlimeActors
         internal JObject Snapshot(JToken original)
         {
             TrackCallback();var value=(JObject)original.DeepClone();var s=value["state"];
+            if(value["managed_destroyed"]!=null)value["managed_destroyed"]=Slime.IsDestroyed;
             s["mode"]=(int)Slime.getCurrentState();s["facing_right"]=Flip.facingRight();s["was_upside_down"]=Get<bool>(Slime,"wasUpsideDown");
             s["input"]=V(Get<Vec2>(Slime,"inputVector"));s["previous_input"]=Get<Fix>(Slime,"prevInput").m_rawValue;s["suppress"]=Slime.suppressInput;s["has_spawned"]=Slime.HasSpawned;
             s["time_moonwalking"]=Get<Fix>(Slime,"timeSpentMoonwalking").m_rawValue;s["turn_input"]=TurnInput.m_rawValue;
@@ -106,6 +107,7 @@ internal static class ReferenceSlimeActors
     internal static Context Bind(JToken value,SlimeController slime,PlayerBody body,PlayerPhysics physics,IPhysicsCollider hurtbox,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets,int actor,List<StickyRoundedRectangle> platforms,List<ReferencePhysicsScene.Adapter> adapters)
     {
         var s=value["state"];slime.abilities=new List<AbilityMonoBehaviour>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();
+        if(value["managed_destroyed"]!=null)slime.IsDestroyed=(bool)value["managed_destroyed"];
         slime.suppressInput=(bool)s["suppress"];Set(slime,"currentState",(SlimeController.State)(int)s["mode"]);Set(slime,"hasSpawned",(bool)s["has_spawned"]);
         Set(slime,"wasUpsideDown",(bool)s["was_upside_down"]);Set(slime,"inputVector",V(s["input"]));Set(slime,"prevInput",F(s["previous_input"]));Set(slime,"timeSpentMoonwalking",F(s["time_moonwalking"]));
         Set(slime,"bodyAnimator",animation.Animator);Set(slime,"spriteRen",animation.Animator.spriteRen);Set(slime,"animationSpeedContainer",animation.Bodies[0]);Set(slime,"hurtBox",hurtbox);

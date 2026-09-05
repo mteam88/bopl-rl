@@ -36,10 +36,33 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         for (i, enabled) in action["enabled"].as_array().unwrap().iter().enumerate() {
             runtime.scheduler.components[i].enabled = enabled.as_bool().unwrap();
         }
-        let mut command = |actors: &mut [bopl_sim::actors::Actor],
+        let mut command = |schedule: &mut bopl_sim::scheduler::State,
+                           actors: &mut [bopl_sim::actors::Actor],
                            scene: &mut bopl_sim::physics::scene::Scene,
                            command: &Value| {
             effects.push(command.clone());
+            match command["op"].as_str().unwrap() {
+                "set_position" => {
+                    let priorities = Runtime::position_priorities(actors);
+                    let candidate = command["controller"].as_u64().map(|i| i as usize);
+                    let value = serde_json::from_value(command["value"].clone()).unwrap();
+                    schedule.players[command["player"].as_u64().unwrap() as usize]
+                        .position
+                        .as_mut()
+                        .ok_or("missing_player_position")?
+                        .set(value, candidate, &priorities);
+                    return Ok(());
+                }
+                "controller_destroyed" => {
+                    actors[command["actor"].as_u64().unwrap() as usize]
+                        .slime
+                        .as_mut()
+                        .ok_or("missing_slime_controller")?
+                        .managed_destroyed = Some(command["value"].as_bool().unwrap());
+                    return Ok(());
+                }
+                _ => {}
+            }
             if command["op"] != "ragdoll" {
                 return Err("unknown_actor_command");
             }
@@ -51,17 +74,20 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         let result = action
             .get("commands")
             .map_or(Ok(()), |commands| {
-                commands
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .try_for_each(|c| command(&mut runtime.actors, &mut runtime.scene, c))
+                commands.as_array().unwrap().iter().try_for_each(|c| {
+                    command(
+                        &mut runtime.scheduler,
+                        &mut runtime.actors,
+                        &mut runtime.scene,
+                        c,
+                    )
+                })
             })
             .and_then(|()| {
                 runtime.tick_with(
                     Fix(action["dt"].as_i64().unwrap()),
                     &mut report,
-                    &mut |_, actors, scene, phase| {
+                    &mut |schedule, actors, scene, phase| {
                         let key = format!(
                             "{}:{}",
                             phase.kind.as_str(),
@@ -72,7 +98,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                         *index += 1;
                         if let Some(commands) = q["scripts"][&key].get(invocation) {
                             for c in commands.as_array().unwrap() {
-                                command(actors, scene, c)?;
+                                command(schedule, actors, scene, c)?;
                             }
                         }
                         Ok(())

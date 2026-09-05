@@ -77,12 +77,14 @@ internal static class ReferenceActors
                 p.OnNoLongerGrounded+=angle=>Event(actor,"detached",angle.m_rawValue);
                 p.OnAttachedToGround+=hit=>Event(actor,"attached",new JObject{["object"]=hit.pp.instanceId,["near_position"]=V(hit.nearPos),["far_position"]=V(hit.farPos),["near_distance"]=hit.nearDist.m_rawValue,["far_distance"]=hit.farDist.m_rawValue,["layer"]=hit.layer});
             }
+            ReferencePlayerPosition.Bind(initial["players"],players,slimes);
             var drivers=new List<ReferenceActorDriver>();int currentActor=0;
             ReferencePlayerController.SoundCapture=name=>Event(currentActor,name.StartsWith("slimeJump")?"jump_sound":"sound",name);
             var calls=new Dictionary<string,int>();
             void Command(JToken command)
             {
                 effects.Add(command.DeepClone());
+                if(ReferencePlayerPosition.Command(command,players,slimes))return;
                 if((string)command["op"]!="ragdoll")throw new ArgumentException("Unknown actor command");
                 slimes[(int)command["actor"]].Apply(command["request"]);
             }
@@ -129,7 +131,7 @@ internal static class ReferenceActors
                 var frame=new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
                     ["inputs"]=new JArray(inputs.Select(p=>new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME}))};
-                if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
+                if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["position"]!=null)v["position"]=ReferencePlayerPosition.Snapshot(player,slimes);if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
                 if(query["scripts"]!=null)frame["effects"]=effects;
                 if((bool?)query["routing_checks"]==true)frame["routing_checks"]=new JArray(slimes.Select(s=>s.RoutingChecks()));
                 return frame;

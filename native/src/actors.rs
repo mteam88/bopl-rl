@@ -130,6 +130,17 @@ impl Actor {
     }
 }
 impl Runtime {
+    pub fn position_priorities(actors: &[Actor]) -> Vec<Option<i32>> {
+        actors
+            .iter()
+            .map(|a| {
+                a.slime.as_ref().and_then(|s| {
+                    (s.managed_destroyed != Some(true))
+                        .then(|| s.abilities.as_ref().map_or(0, |r| r.slots.len() as i32))
+                })
+            })
+            .collect()
+    }
     pub fn synchronize(&mut self) {
         for actor in &mut self.actors {
             actor.controller_to_body();
@@ -242,6 +253,7 @@ impl Runtime {
                 }
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
                     let component = components[phase.id.unwrap()];
+                    let position_priorities = Self::position_priorities(actors);
                     let actor = &mut actors[component.actor];
                     let protected = actor
                         .body
@@ -326,6 +338,7 @@ impl Runtime {
                                             .iter_mut()
                                             .find(|p| Some(p.id) == actor.body.holder)
                                             .ok_or("null_reference")?,
+                                        position_priorities: &position_priorities,
                                         body: &mut actor.body,
                                     },
                                     &mut context,
