@@ -16,6 +16,7 @@ internal static class ReferenceOrdinaryAbilities
         internal Ability Ability;
         internal List<ReferenceSlimeActors.Context> Slimes;
         internal int Owner;
+        internal ReferenceAnimator.Context Animation;
         private ReferenceSlimeActors.Context Context => Slimes[Owner];
         private JToken Id(SlimeController slime)=>slime==null?JValue.CreateNull():new JValue(Slimes.FindIndex(s=>s!=null&&s.Slime==slime));
         internal JObject Snapshot(JToken initial)
@@ -29,6 +30,7 @@ internal static class ReferenceOrdinaryAbilities
             value["body_linked"]=Get<PlayerBody>(Ability,"playerBody")!=null;
             value["collider_linked"]=Get<IPhysicsCollider>(Ability,"potentialCollider")!=null;
             if(initial["dash"]!=null)value["dash"]=ReferenceDashAbility.Snapshot(initial["dash"],Ability.GetComponent<Dash>(),Context);
+            if(initial["quick_spell"]!=null)value["quick_spell"]=ReferenceQuickSpell.Snapshot(initial["quick_spell"],Ability.GetComponent<QuickSpell>(),Context,Animation);
             return value;
         }
         internal void Exit(JToken info)=>Ability.ExitAbility(ReferenceSlimeExit.Info(info,Context));
@@ -41,7 +43,7 @@ internal static class ReferenceOrdinaryAbilities
         ability.OnlyCastableOnGround=(bool)metadata["ground_only"];ability.isCastable=(bool)metadata["castable"];ability.IsDestroyed=(bool)metadata["destroyed"];
         return ability;
     }
-    internal static Instance Bind(JToken state,GameObject go,List<ReferenceSlimeActors.Context> slimes)
+    internal static Instance Bind(JToken state,GameObject go,List<ReferenceSlimeActors.Context> slimes,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets)
     {
         var ability=go.GetComponent<Ability>();if(state["kill_players_on_contact"]!=null)ability.KillPlayersOnContact=(bool)state["kill_players_on_contact"];int owner=(int)state["owner"];
         Set(ability,"playerInfo",ReferenceInstantAbilities.Info(state["info"],slimes[owner]));
@@ -52,6 +54,7 @@ internal static class ReferenceOrdinaryAbilities
         if(!(bool)state["body_linked"])Set(ability,"playerBody",null);
         if(!(bool)state["collider_linked"])Set(ability,"potentialCollider",null);
         if(state["dash"]!=null)ReferenceDashAbility.Bind(state["dash"],go.GetComponent<Dash>(),slimes[owner]);
-        return new Instance{Ability=ability,Slimes=slimes,Owner=owner};
+        if(state["quick_spell"]!=null)ReferenceQuickSpell.Bind(state["quick_spell"],go.GetComponent<QuickSpell>(),slimes[owner],animation,objects,assets);
+        return new Instance{Ability=ability,Slimes=slimes,Owner=owner,Animation=animation};
     }
 }

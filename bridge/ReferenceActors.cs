@@ -101,8 +101,8 @@ internal static class ReferenceActors
                 if(adapter.shape==Shape.Circle)scene.circles.physicsParents[scene.circles.ColliderIndex(adapter.parent.instanceId)]=adapter.parent;
                 else scene.boxes.physicsParents[scene.boxes.ColliderIndex(adapter.parent.instanceId)]=adapter.parent;
                 SlimeController slime=null;
-                if((animations!=null&&animations[i]!=null)||a["push_strength"].Type!=JTokenType.Null){slime=go.GetComponent<SlimeController>()??go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
-                if(animations!=null)slimes.Add(animations[i]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?go.GetComponent<IPhysicsCollider>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects,ropes));
+                if((animations!=null&&a["slime"]!=null)||a["push_strength"].Type!=JTokenType.Null){slime=go.GetComponent<SlimeController>()??go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
+                if(animations!=null)slimes.Add(a["slime"]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?go.GetComponent<IPhysicsCollider>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects,ropes));
                 if(a["rewind"]!=null)ReferenceActorRewind.Bind(a["rewind"],slime);
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
@@ -129,7 +129,7 @@ internal static class ReferenceActors
                 slimes[i].Slime.scaleIncreaseOnNom=F(eating["scale_increase"]);Set(slimes[i].Slime,"swallowing",(bool)eating["swallowing"]);
                 Set(slimes[i].Slime,"playerToEat",eating["target"].Type==JTokenType.Null?null:slimes[(int)eating["target"]].Slime);
             }
-            for(int i=0;i<actorData.Count;i++)if(actorData[i]["ordinary"]!=null)ordinary.Add(i,ReferenceOrdinaryAbilities.Bind(actorData[i]["ordinary"],entityObjects[i],slimes));
+            for(int i=0;i<actorData.Count;i++)if(actorData[i]["ordinary"]!=null)ordinary.Add(i,ReferenceOrdinaryAbilities.Bind(actorData[i]["ordinary"],entityObjects[i],slimes,animations?[i],objects,assets));
             if(deathEffects!=null)for(int i=0;i<bodies.Count;i++){var collision=bodies[i].GetComponent<PlayerCollision>();if(collision!=null)Set(collision,"playerIdHolder",slimes[i]!=null?(IPlayerIdHolder)slimes[i].Slime:ordinary[i].Ability);}
             for(int i=0;i<bodies.Count;i++)if(actorData[i]["bounds"]!=null)ReferenceActorBounds.Bind(actorData[i]["bounds"],bodies[i],physics[i],slimes[i]!=null?(IPlayerIdHolder)slimes[i].Slime:ordinary[i].Ability,deathEffects);
             ReferencePlayerPosition.Bind(initial["players"],players,slimes);
@@ -159,6 +159,8 @@ internal static class ReferenceActors
                 if((string)command["op"]=="actor_spawn"){currentActor=(int)command["actor"];ReferenceActorSpawn.Apply((string)command["action"],command["position"],slimes[currentActor]);return;}
                 if((string)command["op"]=="kill_actor"){var request=command["request"];currentActor=(int)command["actor"];bodies[currentActor].GetComponent<PlayerCollision>().killPlayer((int)request["killer"],(bool)request["spawn_effect"],(bool)request["ignore_invulnerability"],(CauseOfDeath)(int)request["cause"]);return;}
                 if((string)command["op"]=="destroy_actor"){Updater.DestroyFix(bodies[(int)command["actor"]].gameObject);return;}
+                if((string)command["op"]=="quick_cast"){currentActor=(int)command["actor"];ReferenceQuickSpell.Cast(bodies[currentActor].GetComponent<QuickSpell>());return;}
+                if((string)command["op"]=="quick_exit"){currentActor=(int)command["actor"];bodies[currentActor].GetComponent<QuickSpell>().ExitAbility(ReferenceSlimeExit.Info(command["info"],slimes[ordinary[currentActor].Owner]));return;}
                 if((string)command["op"]=="ordinary_exit"){currentActor=(int)command["actor"];ordinary[currentActor].Exit(command["info"]);return;}
                 if((string)command["op"]=="slime_exit"){currentActor=(int)command["actor"];ReferenceSlimeExit.Apply(command["info"],slimes[currentActor]);return;}
                 if(ReferencePlayerPosition.Command(command,players,slimes))return;
@@ -195,7 +197,7 @@ internal static class ReferenceActors
                     else if(role=="ability")ordinary[actor].Ability.UpdateSim(dt);
                     else if(role=="physics")physics[actor].UpdateSim(dt);
                     else if(role=="body")bodies[actor].UpdateSim(dt);
-                    else if(role=="animation")slimes[actor].Animation.Animator.UpdateSim(dt);
+                    else if(role=="animation")animations[actor].Animator.UpdateSim(dt);
                     else if(animations!=null&&slimes[actor]!=null)slimes[actor].Slime.UpdateSim(dt);
                     else {if(players[actor].jumpButton_PressedThisFrame()&&physics[actor].IsGrounded())physics[actor].Jump();physics[actor].Move(V(actorData[actor]["input"]),dt);}
                 };

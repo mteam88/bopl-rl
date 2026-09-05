@@ -436,3 +436,29 @@ plain Ability components without a concrete spell effect. Fresh circle
 instantiation, manual initialization and BoplBody initialization are not covered
 by these corpora. This extends composed collider behavior; it does not complete
 the remaining spells or the public C environment's full-game integration.
+
+### QuickSpell animation and return path
+
+The composed runtime now invokes the original QuickSpell entry, cast and exit
+sequence: synchronize player physics, synchronize the circular collider, apply
+the entry offset, unground, clear velocity, play cast frames, create the cast
+particle, play exit frames and return through Ability to SlimeController.
+
+A retained 48-case corpus covers 4,800 ticks and 168 actual entries, first cast
+particles and automatic returns across one through six players. It includes
+Gust/Revival animation and offset settings, nonzero custom offsets, time stop,
+protected players, zero delta time, changing player scales and disabled
+animation components. A further 54 cases retain 144 completed ticks and exact
+failure prefixes for missing/null/empty animations, a missing renderer, a null
+particle prefab and casting without a bound player. All 102 cases and 29,726
+collision callbacks match Unity. The verifier requires an entry, cast and return
+for every player in every normal case, and the intended exception in every
+failure case.
+
+These corpora deliberately leave QuickSpell's optional spell reference empty;
+they do not validate Gust's shockwave or Revival's extra-life indicator. They
+retain the actual AirWave asset frames shared by those abilities. The particle's
+presence is observed, while its rendering and nondeterministic visual simulation
+are excluded. Full frames are in `fixtures/quick-spell*.jsonl.xz`, with raw
+captures and assembly/input/output hashes in `artifacts/quick-spell-verified`
+and `artifacts/quick-spell-faults`.

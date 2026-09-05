@@ -714,6 +714,31 @@ impl Runtime {
                     }
 
                     if matches!(phase.kind, scheduler::Phase::Update)
+                        && matches!(component.role, Role::Animation)
+                        && actors[component.actor]
+                            .ordinary
+                            .as_ref()
+                            .is_some_and(|a| a.quick_spell.is_some())
+                    {
+                        let result = Self::animate_quick_spell(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                components,
+                                scene,
+                                actor_ropes,
+                                combat,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                            report,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
+                    if matches!(phase.kind, scheduler::Phase::Update)
                         && matches!(component.role, Role::Dash)
                     {
                         let result = Self::update_dash(

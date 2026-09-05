@@ -12,6 +12,8 @@ pub struct Instance {
     pub kill_players_on_contact: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dash: Option<crate::dash_ability::Instance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_spell: Option<crate::quick_spell::Instance>,
     pub owner: usize,
     pub info: PlayerInfo,
     pub slime: Option<usize>,
@@ -76,7 +78,8 @@ impl Runtime {
                 position.set(actor.controller.physics.motion.position, slime, &priorities);
             }
         }
-        Self::enter_dash(actors, context, id, report)
+        Self::enter_dash(actors, context, id, report)?;
+        Self::enter_quick_spell(actors, context, id, report)
     }
     pub fn update_ordinary(
         actors: &mut [Actor],

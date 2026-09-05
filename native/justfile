@@ -98,6 +98,8 @@ verify: build check
     python3 native/tools/verify_actor_circles.py --faults --golden
     python3 native/tools/verify_actor_circles.py --handoffs --golden
     python3 native/tools/verify_actor_circles.py --lifecycle --golden
+    python3 native/tools/verify_quick_spell.py --golden
+    python3 native/tools/verify_quick_spell.py --faults --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -270,3 +272,7 @@ verify-actor-circles: build
     python3 native/tools/verify_actor_circles.py --faults
     python3 native/tools/verify_actor_circles.py --handoffs
     python3 native/tools/verify_actor_circles.py --lifecycle
+
+verify-quick-spell: build
+    python3 native/tools/verify_quick_spell.py
+    python3 native/tools/verify_quick_spell.py --faults --directory quick-spell-faults

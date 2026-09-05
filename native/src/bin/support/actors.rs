@@ -161,6 +161,23 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                     command["actor"].as_u64().unwrap() as usize,
                 );
             }
+            if command["op"] == "quick_cast" {
+                return Runtime::cast_quick_spell(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    report,
+                );
+            }
+            if command["op"] == "quick_exit" {
+                return Runtime::exit_quick_spell(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    serde_json::from_value(command["info"].clone()).unwrap(),
+                    report,
+                );
+            }
             if command["op"] == "ordinary_exit" {
                 return Runtime::exit_ordinary(
                     actors,

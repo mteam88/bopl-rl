@@ -111,9 +111,9 @@ internal static class ReferenceSlimeActors
         JToken Next(int index)
         {
             if(index==query["runtime"]["actors"].Count())return ReferenceActors.Evaluate(query,scene,adapters,snapshot,contexts);
-            var actor=query["runtime"]["actors"][index];var slime=actor["slime"];
+            var actor=query["runtime"]["actors"][index];var slime=actor["slime"]??actor["ordinary"]?["quick_spell"];
             if(slime==null||slime.Type==JTokenType.Null){contexts.Add(null);return Next(index+1);}
-            var q=new JObject{["state"]=slime["animator"].DeepClone(),["bodies"]=new JArray(slime["speed"].DeepClone()),["holder"]=actor["body"]["holder"].DeepClone(),
+            var q=new JObject{["state"]=slime["animator"].DeepClone(),["bodies"]=slime["speed"]==null?new JArray():new JArray(slime["speed"].DeepClone()),["holder"]=actor["body"]["holder"].DeepClone(),
                 ["players"]=query["runtime"]["scheduler"]["players"].DeepClone(),["callbacks"]=new JObject()};
             return ReferenceAnimator.Evaluate(q,context=>{contexts.Add(context);return Next(index+1);});
         }

@@ -11,6 +11,7 @@ pub mod dash_ability;
 pub mod fixed;
 pub mod geometry;
 pub mod ordinary_ability;
+pub mod quick_spell;
 mod slime_ability;
 mod slime_exit;
 pub mod surface;
