@@ -97,6 +97,7 @@ internal static class ReferenceActors
                 SlimeController slime=null;
                 if((animations!=null&&animations[i]!=null)||a["push_strength"].Type!=JTokenType.Null){slime=go.GetComponent<SlimeController>()??go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
                 if(animations!=null)slimes.Add(animations[i]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?(IPhysicsCollider)go.GetComponent<DPhysicsBox>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects,ropes));
+                if(a["rewind"]!=null)ReferenceActorRewind.Bind(a["rewind"],slime);
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
                     // All actors have equal scale in this corpus. The bite gate
@@ -158,6 +159,7 @@ internal static class ReferenceActors
                 d.Step=dt=>{
                     Phase("update",id);currentActor=actor;Constants.GROUNDALIGNMENTDEADZONE=F(actorData[actor]["config"]["alignment_deadzone"]);
                     if(role=="collision")bodies[actor].GetComponent<PlayerCollision>().UpdateSim(dt);
+                    else if(role=="rewind")bodies[actor].GetComponent<RewindRecorder>().UpdateSim(dt);
                     else if(role=="dash")ordinary[actor].Ability.GetComponent<Dash>().UpdateSim(dt);
                     else if(role=="ability")ordinary[actor].Ability.UpdateSim(dt);
                     else if(role=="physics")physics[actor].UpdateSim(dt);
@@ -189,6 +191,7 @@ internal static class ReferenceActors
                 c["physics"]["scale"]=bodies[i].fixtrans.Scale.m_rawValue;c["physics"]["previous_scale"]=Get<Fix>(p,"prevScal").m_rawValue;c["physics"]["jumped"]=p.jumpedThisFrame;
                 if(animations!=null&&slimes[i]!=null)state["slime"]=slimes[i].Snapshot(actorData[i]["slime"]);
                 if(ordinary.TryGetValue(i,out var ability))state["ordinary"]=ability.Snapshot(actorData[i]["ordinary"]);
+                if(state["rewind"]!=null)state["rewind"]=ReferenceActorRewind.Snapshot(bodies[i].GetComponent<RewindRecorder>());
                 state["body"]=ReferencePlayerBody.SnapshotBody(bodies[i],ropes,false)["state"];
                 return state;
             }

@@ -80,6 +80,7 @@ verify: build check
     python3 native/tools/verify_death_effects.py --golden
     python3 native/tools/verify_actor_spawn.py --golden
     python3 native/tools/verify_actor_spawn.py --initial --golden
+    python3 native/tools/verify_actor_rewind.py --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -224,3 +225,6 @@ verify-death-effects: build
 verify-actor-spawn: build
     python3 native/tools/verify_actor_spawn.py
     python3 native/tools/verify_actor_spawn.py --initial
+
+verify-actor-rewind: build
+    python3 native/tools/verify_actor_rewind.py

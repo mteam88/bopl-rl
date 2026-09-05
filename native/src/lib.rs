@@ -19,6 +19,7 @@ pub mod ffi;
 pub mod physics;
 
 pub mod random;
+pub mod rewind;
 
 pub mod player_life;
 

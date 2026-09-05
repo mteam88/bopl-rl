@@ -28,6 +28,8 @@ pub struct Actor {
     pub ordinary: Option<crate::ordinary_ability::Instance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collision: Option<crate::actor_combat::Collision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewind: Option<crate::rewind::State>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +41,7 @@ pub enum Role {
     Ability,
     Dash,
     Collision,
+    Rewind,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Component {
@@ -607,6 +610,11 @@ impl Runtime {
                 }
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
                     let component = components[phase.id.unwrap()];
+                    if matches!(phase.kind, scheduler::Phase::Update)
+                        && matches!(component.role, Role::Rewind)
+                    {
+                        return actors[component.actor].record_rewind();
+                    }
                     if matches!(phase.kind, scheduler::Phase::Init)
                         && matches!(component.role, Role::Motor)
                         && actors[component.actor]

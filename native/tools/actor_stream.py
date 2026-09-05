@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import io
 import json
+import lzma
 import os
 from pathlib import Path
 import subprocess
@@ -220,7 +221,7 @@ def promote(directory, fixture, queries, selected, hashes, scope):
     mapping = {original: i for i, original in enumerate(selected)}
     header = dict(schema=SCHEMA, queries=[queries[i] for i in selected], source_cases=selected,
                   provenance=hashes, scope=scope)
-    with Path(fixture).open('wb') as raw, gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0) as zipped, io.TextIOWrapper(zipped) as output:
+    with Path(fixture).open('wb') as raw, (lzma.LZMAFile(raw, mode='w', preset=3) if Path(fixture).suffix == '.xz' else gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0)) as zipped, io.TextIOWrapper(zipped) as output:
         output.write(encode(header))
         with (Path(directory) / 'unity.jsonl').open() as source:
             for row in records(source):
@@ -230,7 +231,8 @@ def promote(directory, fixture, queries, selected, hashes, scope):
 
 
 def golden(fixture):
-    with gzip.open(fixture, 'rt') as stream:
+    opener = lzma.open if Path(fixture).suffix == '.xz' else gzip.open
+    with opener(fixture, 'rt') as stream:
         header = json.loads(next(stream))
         queries = header['queries']
         if header['schema'] != SCHEMA or len(queries) != len(set(header['source_cases'])) or not all(q.get('stream_frames') is True for q in queries):

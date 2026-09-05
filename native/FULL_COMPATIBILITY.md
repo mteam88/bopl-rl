@@ -1142,3 +1142,30 @@ Existing standalone spawn, locomotion, death and death-effect fixtures pass.
 This integration uses explicitly bound actors and indicator lifecycle state.
 Clone allocation, Revival ability placement/travel, stock choice and full match
 initialization remain outstanding; the public C environment's scope is unchanged.
+
+## Rewind history recording
+
+`rewind.rs` connects the original RewindRecorder history-write behavior to the
+actor scheduler. It stores all 188 samples, including position, both velocities,
+rotation and three cooldown timers. Recording continues during time stop and
+while body simulation is disabled, and pauses when the owner is inactive or its
+controller is marked destroyed. Whole-object deletion retains the final history.
+Playback remains explicitly unsupported.
+
+The original Unity RewindRecorder.UpdateSim matches in all 48 comparisons, eight
+cases for each one-through-six-player roster: 36 complete 410-tick episodes
+(14,760 ticks) and 12 source index errors from short timer/history arrays. Every
+history slot is compared after every tick, along with the complete actor, scene
+and scheduler trace. Coverage includes 48,852 writes, 234 buffer wraparounds,
+15,090 writes while body simulation is disabled, 4,410 at zero time scale, and
+2,850 frames preserving the entire recorder state. Respawn, repeated recording
+pauses, controller destruction flags and deferred object removal are included.
+
+All cases are retained in `fixtures/actor-rewind.jsonl.xz`; XZ's larger compression
+window stores the repeated full history buffers efficiently without dropping any
+samples. The verifier uses Python's standard-library lzma support. Run
+`python3 native/tools/verify_actor_rewind.py --golden`; fresh captures use the same
+command without `--golden`. Raw evidence and exact source/input/output hashes are
+in `artifacts/actor-rewind/report.json`. Existing spawn and death regressions,
+Rust tests/lints, Python checks and the C smoke test pass. Rewind casting/playback,
+clone allocation and the complete match environment remain outstanding.
