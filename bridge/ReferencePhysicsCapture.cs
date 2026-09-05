@@ -10,7 +10,7 @@ using static ReferenceDynamics;
 // Includes rope physics and the persistent beam graph, pool and target effects.
 public static class ReferencePhysicsCapture
 {
-    public static bool Enabled => ReferenceCapture.Enabled && Environment.GetEnvironmentVariable("BOPL_TRACE_PHYSICS")=="1";
+    public static bool Enabled => ReferenceCapture.Recording && Environment.GetEnvironmentVariable("BOPL_TRACE_PHYSICS")=="1";
     public static JObject LastStep {get;private set;}
     private static readonly Dictionary<int,int> ids=new Dictionary<int,int>();
     private static readonly BindingFlags flags=BindingFlags.NonPublic|BindingFlags.Instance;

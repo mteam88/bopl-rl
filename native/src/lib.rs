@@ -5,7 +5,9 @@ pub mod beam;
 pub mod curve;
 pub mod fixed;
 pub mod geometry;
+pub mod ordinary_ability;
 mod slime_ability;
+mod slime_exit;
 pub mod surface;
 pub mod vector;
 

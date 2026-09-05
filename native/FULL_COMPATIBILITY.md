@@ -954,5 +954,32 @@ same update. The reference driver continues to call original components in the
 scheduler order; callback recording still uses the scene adapter.
 
 48 independent 300-tick episodes and eight scale/synchronization edge cases are
-retained as evidence. Ordinary ability entry/exit, actual clone/prefab spawning,
-body death/rope interaction and the full environment remain unimplemented here.
+retained as evidence. The following section extends this to ordinary ability
+entry/exit. Actual clone/prefab spawning, body death/rope interaction and the full
+environment remain unimplemented here.
+
+
+### Ordinary Ability actors and SlimeController return
+
+The composed runtime now supports separate ordinary ability entities, linked to
+primary slimes by their ability pools. Original Ability entry receives the full
+PlayerInfo, activates its object, binds the slime and callback, updates collider
+scale and arbitrates shared player position. Its scheduled UpdateSim applies
+scale changes and writes position. Exit deactivates the ability and synchronously
+calls the primary slime's original onExitAbility. Entity changes affect subsequent
+components within the same scheduler tick.
+
+Slime returns restore invisibility cooldowns when needed, scale the hurtbox,
+clear player flags, synchronize physics, select ground/air animation, run landing
+or jump behavior, synchronize the collider and reactivate readiness indicators.
+The native port preserves mutations before null-reference, index and division
+failures. The dead return branch currently reproduces the failure from the absent
+PlayerCollision component; successful death/respawn is not covered here.
+
+The source runner installs real Ability components with an empty IAbilityComponent
+array. Entry events come from the existing passive hook at the actual cast boundary.
+No substitute concrete ability callback is installed. Return calls and stress
+activation commands are supplied by the corpus; concrete abilities must still
+supply their own timing, effects and exit payloads. Rope transfers are explicitly
+unsupported, and complete prefab Init, clone ownership and full matches remain
+outstanding. The public C environment does not yet use this composed runtime.

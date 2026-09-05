@@ -20,7 +20,7 @@ public static class ReferencePlayerLife
     }
     internal static JObject Begin(Player victim, int killer, long timestamp, CauseOfDeath cause)
     {
-        if(!ReferenceCapture.Enabled)return null;
+        if(!ReferenceCapture.Recording)return null;
         var players=PlayerHandler.Get().PlayerList();int index=players.IndexOf(victim);
         if(index<0)throw new InvalidOperationException("Unregistered Player.Kill receiver in reference capture");
         return new JObject { ["operation"]="dynamics_player_life",["state"]=Snapshot(players,new JArray()),

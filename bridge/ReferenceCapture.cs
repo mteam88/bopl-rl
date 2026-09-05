@@ -30,7 +30,9 @@ public static class ReferenceCapture
     private static readonly SortedDictionary<string, int> abilityEntries = new SortedDictionary<string, int>(StringComparer.Ordinal);
     private static readonly Dictionary<Type, FieldInfo[]> fields = new Dictionary<Type, FieldInfo[]>();
     private static readonly int limit = ReadPositive("BOPL_TRACE_TICKS", 600);
-    public static bool Enabled => !string.IsNullOrEmpty(output);
+    internal static Action<int,int,AbilityMonoBehaviour> ActorAbilityCapture;
+    public static bool Recording => !string.IsNullOrEmpty(output);
+    public static bool Enabled => Recording || ActorAbilityCapture!=null;
     public static bool Completed { get; private set; }
     public static int Batch => ReadPositive("BOPL_TRACE_BATCH", 1);
 
@@ -45,7 +47,7 @@ public static class ReferenceCapture
 
     public static void BeforeReplayStep(InputPacketQuad input)
     {
-        if (!Enabled) return;
+        if (!Recording) return;
         EnsureWriter();
         lastInput = new Encoder().Value(input, "input");
         writer.WriteLine(new JObject { ["kind"] = "input", ["index"] = captured,
@@ -54,7 +56,7 @@ public static class ReferenceCapture
 
     public static void BeforeReplayStep(InputPacket[] input)
     {
-        if (!Enabled) return;
+        if (!Recording) return;
         EnsureWriter();
         lastInput = new Encoder().Value(input, "input");
         writer.WriteLine(new JObject { ["kind"] = "input", ["index"] = captured,
@@ -65,7 +67,7 @@ public static class ReferenceCapture
     // throws. This is separate evidence, never a successful full-tick state.
     public static void FailedTick(Exception failure)
     {
-        if (!Enabled) return;
+        if (!Recording) return;
         try
         {
             var stage = ReferencePhysicsCapture.LastStep;
@@ -85,7 +87,8 @@ public static class ReferenceCapture
 
     public static void AbilityEntered(int player, int slot, AbilityMonoBehaviour ability)
     {
-        if (!Enabled) return;
+        ActorAbilityCapture?.Invoke(player,slot,ability);
+        if (!Recording) return;
         string name = ability.gameObject.name.Replace("(Clone)", "");
         abilityEntries.TryGetValue(name, out int count);
         abilityEntries[name] = count + 1;
@@ -95,7 +98,7 @@ public static class ReferenceCapture
 
     public static void AfterTick()
     {
-        if (!Enabled) return;
+        if (!Recording) return;
         try
         {
             EnsureWriter();

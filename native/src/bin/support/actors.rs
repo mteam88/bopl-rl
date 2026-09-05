@@ -27,7 +27,10 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         }
         if let Some(inputs) = action.get("routing_inputs") {
             for (actor, input) in runtime.actors.iter_mut().zip(inputs.as_array().unwrap()) {
-                let state = actor.slime.as_mut().unwrap().abilities.as_mut().unwrap();
+                let Some(slime) = actor.slime.as_mut() else {
+                    continue;
+                };
+                let state = slime.abilities.as_mut().unwrap();
                 state.buttons = serde_json::from_value(input["buttons"].clone()).unwrap();
                 state.can_use = input["can_use"].as_bool().unwrap();
             }
@@ -36,11 +39,32 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         for (i, enabled) in action["enabled"].as_array().unwrap().iter().enumerate() {
             runtime.scheduler.components[i].enabled = enabled.as_bool().unwrap();
         }
-        let mut command = |schedule: &mut bopl_sim::scheduler::State,
-                           actors: &mut [bopl_sim::actors::Actor],
-                           scene: &mut bopl_sim::physics::scene::Scene,
+        let mut command = |actors: &mut [bopl_sim::actors::Actor],
+                           context: &mut bopl_sim::actors::Context,
+                           report: &mut Report,
                            command: &Value| {
             effects.push(command.clone());
+            if command["op"] == "ordinary_exit" {
+                return Runtime::exit_ordinary(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    &serde_json::from_value(command["info"].clone()).unwrap(),
+                    report,
+                );
+            }
+            if command["op"] == "slime_exit" {
+                return Runtime::exit_actor(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    &serde_json::from_value(command["info"].clone()).unwrap(),
+                    report,
+                );
+            }
+            let bopl_sim::actors::Context {
+                schedule, scene, ..
+            } = context;
             match command["op"].as_str().unwrap() {
                 "actor_active" | "body_simulated" => {
                     let entity = actors[command["actor"].as_u64().unwrap() as usize]
@@ -122,9 +146,15 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
             .map_or(Ok(()), |commands| {
                 commands.as_array().unwrap().iter().try_for_each(|c| {
                     command(
-                        &mut runtime.scheduler,
                         &mut runtime.actors,
-                        &mut runtime.scene,
+                        &mut bopl_sim::actors::Context {
+                            schedule: &mut runtime.scheduler,
+                            scene: &mut runtime.scene,
+                            bindings: &runtime.bindings,
+                            grounds: &runtime.grounds,
+                            space: runtime.space,
+                        },
+                        &mut report,
                         c,
                     )
                 })
@@ -133,7 +163,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                 runtime.tick_with(
                     Fix(action["dt"].as_i64().unwrap()),
                     &mut report,
-                    &mut |schedule, actors, scene, phase| {
+                    &mut |actors, context, report, phase| {
                         let key = format!(
                             "{}:{}",
                             phase.kind.as_str(),
@@ -144,22 +174,28 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                         *index += 1;
                         if let Some(commands) = q["scripts"][&key].get(invocation) {
                             for c in commands.as_array().unwrap() {
-                                command(schedule, actors, scene, c)?;
+                                command(actors, context, report, c)?;
                             }
                         }
                         Ok(())
                     },
                 )
             });
+        if q["entry_events"].as_bool() != Some(true) {
+            report.events.retain(|e| {
+                !matches!(e.event, bopl_sim::player_controller::Event::AbilityEntry(_))
+            });
+        }
         let mut scene = runtime.scene.clone();
         scene.objects.sort_by_key(|o| o.id);
         let mut frame = json!({"actors":runtime.actors,"scene":scene,"report":report,"ticks":runtime.scheduler.ticks,
             "time":runtime.scheduler.time,"level_time":runtime.scheduler.level_time,"inputs":runtime.scheduler.inputs});
         if q["routing_checks"].as_bool() == Some(true) {
             frame["routing_checks"] = json!(runtime.actors.iter().map(|actor| {
-                let state = actor.slime.as_ref().unwrap().abilities.as_ref().unwrap();
+                let Some(slime) = actor.slime.as_ref() else {return Value::Null};
+                let state = slime.abilities.as_ref().unwrap();
                 let value = |r: Result<bool, &'static str>| match r { Ok(v) => json!(v), Err(e) => json!({"error":e}) };
-                (0..=state.slots.len()).map(|i| json!({"ready":value(state.ready(i)),"castable":value(state.castable_for_player(i,actor.controller.physics.motion.grounded,runtime.scheduler.players.iter().find(|p|Some(p.id)==actor.body.holder).is_some_and(|p|p.invisible)))})).collect::<Vec<_>>()
+                Value::Array((0..=state.slots.len()).map(|i| json!({"ready":value(state.ready(i)),"castable":value(state.castable_for_player(i,actor.controller.physics.motion.grounded,runtime.scheduler.players.iter().find(|p|Some(p.id)==actor.body.holder).is_some_and(|p|p.invisible)))})).collect::<Vec<_>>())
             }).collect::<Vec<_>>());
         }
         if q["player_state"].as_bool() == Some(true) {

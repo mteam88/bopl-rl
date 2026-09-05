@@ -9,6 +9,12 @@ use crate::{
     vector::Vec2,
 };
 
+#[derive(Clone, Debug)]
+pub(crate) struct Request {
+    pub target: usize,
+    pub slot: usize,
+    pub info: PlayerInfo,
+}
 impl Instance {
     pub(crate) fn enter_ability(
         &mut self,
@@ -17,7 +23,7 @@ impl Instance {
         update: &mut Update,
         context: &player_controller::Context,
         emit: &mut impl FnMut(Event),
-    ) -> Result<()> {
+    ) -> Result<Option<Request>> {
         let routing = self.abilities.as_mut().ok_or("missing_ability_routing")?;
         let ability_id = routing.slots[slot].ok_or("null_reference")?;
         if routing.pool[ability_id].handler.is_none() {
@@ -64,7 +70,14 @@ impl Instance {
         };
         info.rope = update.body.rope;
         info.top = update.body.top;
-        // InstantAbility.IsInstant is true: the original body's rope is retained.
+        if matches!(
+            routing.pool[ability_id].handler,
+            Some(Handler::Entity { .. })
+        ) {
+            update.body.velocity = motion.velocity;
+            update.body.external_velocity = motion.external_velocity;
+            update.body.clear_for_ability();
+        }
         info.up = if motion.grounded {
             let normal = platform()?.surface.normal(motion.position);
             let length = normal.length();
@@ -93,7 +106,7 @@ impl Instance {
         let ability = &mut routing.pool[ability_id];
         if !ability.present || ability.destroyed {
             *routing.timer(slot)? = Fix::ZERO;
-            return Ok(());
+            return Ok(None);
         }
         if let Some(flags) = &mut update.player.flags {
             flags.spark = false;
@@ -103,7 +116,23 @@ impl Instance {
         // InstantAbility does not deactivate the slime or enter its in-ability
         // mode. The callback changes the shared player state synchronously.
         match ability.handler.as_mut().unwrap() {
+            Handler::Entity { actor } => {
+                routing.in_ability = true;
+                update.player.time_ability = Fix::ZERO;
+                *entry
+                    .invisible_on_entry
+                    .as_mut()
+                    .ok_or("missing_ability_entry_state")? = update.player.invisible;
+                update.entity.as_mut().ok_or("missing_actor_entity")?.active = false;
+                emit(Event::AbilityEntry(slot));
+                return Ok(Some(Request {
+                    target: *actor,
+                    slot,
+                    info: info.clone(),
+                }));
+            }
             Handler::Invisibility(instant) => {
+                emit(Event::AbilityEntry(slot));
                 instant.info = info.clone();
                 instant.active = true;
                 instant.slime = info.slime;
@@ -129,7 +158,7 @@ impl Instance {
             }
         }
         *routing.timer(slot)? = Fix::ZERO;
-        Ok(())
+        Ok(None)
     }
     pub(crate) fn finish_invisibility(&mut self, invisible: bool) -> Result<()> {
         if let Some(entry) = &mut self.entry {

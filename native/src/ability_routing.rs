@@ -21,6 +21,28 @@ pub struct Ability {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Indicator {
     pub seconds_since_reset: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<IndicatorLifecycle>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndicatorLifecycle {
+    pub active: bool,
+    pub follow: bool,
+}
+impl Indicator {
+    pub fn reactivate_and_sync(&mut self) -> Result<()> {
+        let was_active = self.lifecycle.as_ref().is_some_and(|l| l.active);
+        if let Some(l) = &mut self.lifecycle {
+            l.active = true;
+        }
+        if !was_active && self.seconds_since_reset > 0.0 {
+            self.seconds_since_reset = 11.0;
+        }
+        if self.lifecycle.as_ref().is_none_or(|l| !l.follow) {
+            return Err("null_reference");
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct State {
@@ -44,7 +66,7 @@ impl State {
     pub(crate) fn timer(&mut self, slot: usize) -> Result<&mut Fix> {
         self.timers.get_mut(slot).ok_or("index_out_of_range")
     }
-    fn indicator(&mut self, slot: usize) -> Result<&mut Indicator> {
+    pub(crate) fn indicator(&mut self, slot: usize) -> Result<&mut Indicator> {
         self.indicators
             .get_mut(slot)
             .ok_or("index_out_of_range")?
@@ -75,7 +97,7 @@ impl State {
             Some(crate::ability::Handler::Invisibility(instant)) => {
                 !(instant.gate_invisible && invisible)
             }
-            None => ability.castable,
+            None | Some(crate::ability::Handler::Entity { .. }) => ability.castable,
         })
     }
     /// This path handles ordinary Ability components. Rope implementations must

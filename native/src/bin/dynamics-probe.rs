@@ -228,7 +228,7 @@ fn evaluate(q: Value) -> Value {
                         Event::Exit(_) => {
                             s.physics.motion.position += read::<Vec2>(&q, "exit_offset")
                         }
-                        Event::JumpSound(_) | Event::Sound(_) => {}
+                        Event::JumpSound(_) | Event::Sound(_) | Event::AbilityEntry(_) => {}
                     }
                     events.push(event);
                     Ok(())

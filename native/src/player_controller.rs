@@ -39,6 +39,7 @@ pub enum Event {
     Exit(Info),
     JumpSound(String),
     Sound(String),
+    AbilityEntry(usize),
 }
 pub struct Context<'a> {
     pub scene: &'a mut Scene,

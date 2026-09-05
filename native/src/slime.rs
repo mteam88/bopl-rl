@@ -178,6 +178,15 @@ impl Instance {
             .as_ref()
             .ok_or("null_reference")?
             .sprite;
+        self.enter_fall_sprite(controller, anticipation, context, emit)
+    }
+    pub(crate) fn enter_fall_sprite(
+        &mut self,
+        controller: &mut player_controller::State,
+        anticipation: Option<u32>,
+        context: &mut player_controller::Context,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<()> {
         self.align_air();
         let motion = &mut controller.physics.motion;
         motion.rotation = Fix::ZERO;
@@ -213,7 +222,7 @@ impl Instance {
             self.state.turn_input = Fix::ZERO;
         }
     }
-    fn enter(
+    pub(crate) fn enter(
         &mut self,
         mode: i32,
         input: Fix,
@@ -313,28 +322,40 @@ impl Instance {
                 if !self.callback_gates.0 || !self.callback_gates.1 {
                     return Ok(());
                 }
-                self.state.mode = 4;
-                start(
-                    &mut self.animator,
-                    Start::Begin {
-                        frames: Some(frames(&self.animations, "land")?),
-                        next: Some(frames(&self.animations, "idle")?),
-                        callback: Some(3),
-                        style: 1,
-                    },
-                    &self.speed,
+                self.land(
+                    m.ground
+                        .and_then(|i| bindings.get(i as usize))
+                        .and_then(|b| b.platform.as_ref()),
+                    m.position,
+                    id,
+                    emit,
                 )?;
-                emit(Event::Sound(format!("slimeLand{id}")));
-                let ground = m
-                    .ground
-                    .and_then(|i| bindings.get(i as usize))
-                    .and_then(|b| b.platform.as_ref())
-                    .ok_or("null_reference")?;
-                if ground.surface.normal(m.position).y < Fix::ZERO {
-                    self.state.facing_right = !self.state.facing_right;
-                }
             }
             _ => {}
+        }
+        Ok(())
+    }
+    pub(crate) fn land(
+        &mut self,
+        ground: Option<&crate::player_physics::Platform>,
+        position: Vec2,
+        id: i32,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<()> {
+        self.state.mode = 4;
+        start(
+            &mut self.animator,
+            Start::Begin {
+                frames: Some(frames(&self.animations, "land")?),
+                next: Some(frames(&self.animations, "idle")?),
+                callback: Some(3),
+                style: 1,
+            },
+            &self.speed,
+        )?;
+        emit(Event::Sound(format!("slimeLand{id}")));
+        if ground.ok_or("null_reference")?.surface.normal(position).y < Fix::ZERO {
+            self.state.facing_right = !self.state.facing_right;
         }
         Ok(())
     }
@@ -355,7 +376,7 @@ impl Instance {
         update: &mut Update,
         context: &mut player_controller::Context,
         emit: &mut impl FnMut(Event),
-    ) -> Result<()> {
+    ) -> Result<Option<crate::slime_ability::Request>> {
         let id = context.holder.ok_or("null_reference")?;
         let (dt, input, jump) = (update.dt, update.input, update.jump);
         if let Some(position) = &mut update.player.position {
@@ -371,7 +392,7 @@ impl Instance {
             abilities.cooldowns(context.dt(dt), context.time_scale < Fix::from_f32(0.01))?;
         }
         if self.state.mode == 8 || self.state.mode == 9 || self.state.mode == 10 {
-            return Ok(());
+            return Ok(None);
         }
         self.state.input = input;
         let mut alignment = controller.input_alignment(input.normalized_safe(), context)?;
@@ -410,8 +431,7 @@ impl Instance {
             .transpose()?
             .flatten();
         if let Some(slot) = selected {
-            self.enter_ability(slot, controller, update, context, emit)?;
-            return Ok(());
+            return self.enter_ability(slot, controller, update, context, emit);
         }
         match self.state.mode {
             4 => {
@@ -453,15 +473,15 @@ impl Instance {
         if !controller.physics.motion.grounded {
             self.align_air();
         }
-        Ok(())
+        Ok(None)
     }
-    pub fn update(
+    pub(crate) fn begin_update(
         &mut self,
         controller: &mut player_controller::State,
-        mut update: Update,
+        update: &mut Update,
         context: &mut player_controller::Context,
         emit: &mut impl FnMut(Event),
-    ) -> Result<()> {
+    ) -> Result<Option<crate::slime_ability::Request>> {
         let id = context.holder.ok_or("null_reference")?;
         let dt = update.dt;
         if self.state.mode == 10 {
@@ -489,7 +509,17 @@ impl Instance {
             emit(event);
             emit(Event::JumpSound(format!("slimeJump{id}")));
         }
-        self.old_update(controller, &mut update, context, emit)?;
+        self.old_update(controller, update, context, emit)
+    }
+    pub(crate) fn finish_update(
+        &mut self,
+        controller: &mut player_controller::State,
+        update: &mut Update,
+        context: &mut player_controller::Context,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<()> {
+        let id = context.holder.ok_or("null_reference")?;
+        let dt = update.dt;
         self.finish_invisibility(update.player.invisible)?;
         if let Some(entity) = &mut update.entity {
             entity.collider.set_scale(

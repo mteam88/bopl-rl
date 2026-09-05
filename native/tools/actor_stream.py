@@ -111,7 +111,7 @@ class Protocol:
                 raise ValueError('Incomplete actor episode')
             else:
                 self.counts['complete_episodes'] += 1
-            self.players[len(query['runtime']['actors'])] += 1
+            self.players[len(query['runtime']['scheduler']['players'])] += 1
             self.case += 1
             self.action = 0
             self.previous = None

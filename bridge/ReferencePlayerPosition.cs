@@ -10,7 +10,7 @@ internal static class ReferencePlayerPosition
     private static SlimeController Controller(JToken id,List<ReferenceSlimeActors.Context> slimes)
         =>id.Type==JTokenType.Null?null:slimes[(int)id].Slime;
     private static JToken Id(SlimeController value,List<ReferenceSlimeActors.Context> slimes)
-        =>value==null?JValue.CreateNull():new JValue(slimes.FindIndex(s=>s.Slime==value));
+        =>value==null?JValue.CreateNull():new JValue(slimes.FindIndex(s=>s!=null&&s.Slime==value));
     internal static void Bind(JToken initial,List<Player> players,List<ReferenceSlimeActors.Context> slimes)
     {
         for(int i=0;i<players.Count;i++)

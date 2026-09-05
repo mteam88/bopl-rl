@@ -995,3 +995,48 @@ Invisibility source corpus exactly (output SHA-256
 The retained actor-entity fixtures contain 12 complete 300-tick episodes and all
 eight edge cases. Original Awake runs, but prefab Init, the complete registered
 component graph, ordinary ability exit and full round lifecycle are not covered.
+
+
+## Ordinary ability ownership and return callbacks
+
+Two independent source corpora each match all 48 complete 300-tick episodes
+(14,400 ticks each), with eight cases for every player count from one through six.
+The first invokes original SlimeController.onExitAbility and continues scheduled
+motion; it includes 18,200 physics callbacks. Nine targeted cases include two
+successful returns and seven original failures (six null references, one index
+error), with exact failed-state comparison.
+
+- Slime-return assembly SHA-256: `ef0b392936f6425756b3c4ed2237118caef2c904308f32b17470f35dda6e7e69`
+- Main input SHA-256: `38d64604b85edb9914dabc7cf1e00d28cfff383f983e3931eab31acfc6a85f7b`
+- Main output SHA-256: `f324691865907586a007db63210e4e9e882c5bdb48501fa01859d77ada85e73b`
+- Edge input SHA-256: `11cfc8e750bb00b009bcbef48acc26fbdf7946675934b47b0cf7bd5bb8c5a5f9`
+- Edge output SHA-256: `3c7fe063c88ba54c14e4ab965c3c66215ac50e70509609845fae2c11f4d0bad7`
+
+The second corpus binds one separate ordinary Ability body per primary slime
+(two through twelve actors). Held player inputs produce 1,499 actual ability-entry
+events. There are 1,680 supplied exit calls, 14,390 physics stages and 74,216
+collision callbacks. The source compares shared player flags/position, all actor
+and collider state, complete PlayerInfo and callback ownership, ordered scheduler
+phases and events. Five targeted cases cover missing collider, destroyed target,
+ready entry, absent exit callback and zero previous scale: two complete and three
+match original failures (two null references, one division error).
+
+Stress commands deliberately change primary object activity independently of the
+ability lifecycle. Among 50,400 primary/ability pair snapshots, 23,688 have only
+the slime active, 5,046 only the ability, 20,897 both, and 769 neither. These are
+supplied-state stress episodes, not ordinary full-match legality tests. Between
+frames there are 1,499 ability activations and 1,498 deactivations; actual entry
+events, rather than frame transitions, are the cast-count authority.
+
+- Ordinary assembly SHA-256: `42cdaf099b16498200c19fff9d73f57903a4f13b5574586b18a1fb706d90c046`
+- Main input SHA-256: `f58994f0200a47d03bfd44404329d404b12063b749f351b94f59ad527a87debf`
+- Main output SHA-256: `14b78ba361fe22bb5e1cec27f3111350694365098d8377751958f933d654af49`
+- Edge input SHA-256: `164045930a9843fd84a608c5c34cd56a9084d19fdcc69447a35f1b872f03842b`
+- Edge output SHA-256: `73ea7b0ddc69a97b2f0847e47d09c4ea85cf1bde7f0a37bf827f7d8ac7cf185a`
+
+Fresh Unity regression with this assembly also reproduces all 2,536 records from
+the prior 13-case Invisibility corpus byte for byte (output SHA-256
+`8ac66cc08bfd943c71f2d2ab04fcf3dcad69fdef5bfe82ad4e7fdfa3aef7e403`).
+Each new main fixture retains twelve complete episodes; all edge cases are retained.
+Plain Ability contains no concrete effect component. Concrete ability lifecycle,
+rope transfer, successful death returns and complete matches are not established.

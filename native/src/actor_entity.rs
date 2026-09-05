@@ -94,14 +94,23 @@ impl Actor {
             )
     }
     pub fn sync_box(&self, scene: &mut Scene) -> scheduler::Result<()> {
-        let c = &self.entity.as_ref().ok_or("missing_actor_entity")?.collider;
+        self.entity
+            .as_ref()
+            .ok_or("missing_actor_entity")?
+            .collider
+            .sync(self.object, scene)
+    }
+}
+impl BoxComponent {
+    pub fn sync(&self, object_id: u32, scene: &mut Scene) -> scheduler::Result<()> {
+        let c = self;
         if !c.initialized {
             return Ok(());
         }
         let index = scene
             .objects
             .iter()
-            .position(|o| o.id == self.object)
+            .position(|o| o.id == object_id)
             .ok_or("missing_actor_object")?;
         if let Some(composite) = scene.objects[index]
             .composite

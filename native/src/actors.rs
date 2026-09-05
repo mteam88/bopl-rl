@@ -24,6 +24,8 @@ pub struct Actor {
     pub slime: Option<crate::slime::Instance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity: Option<crate::actor_entity::Entity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinary: Option<crate::ordinary_ability::Instance>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +34,7 @@ pub enum Role {
     Motor,
     Animation,
     Body,
+    Ability,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Component {
@@ -65,6 +68,13 @@ pub struct Report {
     pub events: Vec<Event>,
     pub physics: Option<StepReport>,
     pub pushes: Vec<Push>,
+}
+pub struct Context<'a> {
+    pub schedule: &'a mut scheduler::State,
+    pub scene: &'a mut Scene,
+    pub bindings: &'a [Binding],
+    pub grounds: &'a [player_controller::Ground],
+    pub space: bool,
 }
 impl Actor {
     fn refresh_callback_gates(&mut self, scene: &Scene) {
@@ -146,6 +156,131 @@ impl Actor {
     }
 }
 impl Runtime {
+    fn finish_slime(
+        actors: &mut [Actor],
+        context: &mut Context,
+        id: usize,
+        dt: Fix,
+        report: &mut Report,
+    ) -> scheduler::Result<()> {
+        let priorities = Self::position_priorities(actors);
+        let actor = &mut actors[id];
+        actor.refresh_callback_gates(context.scene);
+        let holder = actor.body.holder;
+        let player = context
+            .schedule
+            .players
+            .iter_mut()
+            .find(|p| Some(p.id) == holder)
+            .ok_or("null_reference")?;
+        let protected = Some(player.protected);
+        let mut update = crate::slime::Update {
+            dt,
+            input: actor.input,
+            jump: false,
+            actor: id,
+            body: &mut actor.body,
+            player,
+            position_priorities: &priorities,
+            entity: actor.entity.as_mut(),
+            object: actor.object,
+        };
+        let mut controller_context = player_controller::Context {
+            scene: context.scene,
+            bindings: context.bindings,
+            grounds: context.grounds,
+            config: &actor.config,
+            holder,
+            protected,
+            time_scale: context.schedule.time_scale,
+            space: context.space,
+            ability: false,
+        };
+        let result = actor
+            .slime
+            .as_mut()
+            .ok_or("missing_slime_controller")?
+            .finish_update(
+                &mut actor.controller,
+                &mut update,
+                &mut controller_context,
+                &mut |event| report.events.push(Event { actor: id, event }),
+            );
+        if let Some(slime) = &mut actor.slime {
+            slime.sync_callback();
+        }
+        actor.controller_to_body();
+        actor.sync_transform(context.scene);
+        result
+    }
+    pub fn exit_actor(
+        actors: &mut [Actor],
+        context: &mut Context,
+        id: usize,
+        info: &crate::ability::ExitInfo,
+        report: &mut Report,
+    ) -> scheduler::Result<()> {
+        let priorities = Self::position_priorities(actors);
+        let actor = &mut actors[id];
+        actor.refresh_callback_gates(context.scene);
+        let entity = actor.entity.as_mut().ok_or("missing_actor_entity")?;
+        entity.active = true;
+        context.schedule.nodes[entity.node].active = true;
+        context
+            .scene
+            .objects
+            .iter_mut()
+            .find(|o| o.id == actor.object)
+            .ok_or("missing_actor_object")?
+            .active = true;
+        let holder = actor.body.holder;
+        let player = context
+            .schedule
+            .players
+            .iter_mut()
+            .find(|p| Some(p.id) == holder)
+            .ok_or("null_reference")?;
+        let protected = Some(player.protected);
+        let mut update = crate::slime::Update {
+            dt: Fix::ZERO,
+            input: Vec2::ZERO,
+            jump: false,
+            actor: id,
+            body: &mut actor.body,
+            player,
+            position_priorities: &priorities,
+            entity: actor.entity.as_mut(),
+            object: actor.object,
+        };
+        let mut controller_context = player_controller::Context {
+            scene: context.scene,
+            bindings: context.bindings,
+            grounds: context.grounds,
+            config: &actor.config,
+            holder,
+            protected,
+            time_scale: context.schedule.time_scale,
+            space: context.space,
+            ability: false,
+        };
+        let result = actor
+            .slime
+            .as_mut()
+            .ok_or("missing_slime_controller")?
+            .exit_ability(
+                info,
+                &mut actor.controller,
+                &mut update,
+                &mut controller_context,
+                &mut |event| report.events.push(Event { actor: id, event }),
+            );
+        if let Some(slime) = &mut actor.slime {
+            slime.sync_callback();
+        }
+        actor.controller_to_body();
+        actor.sync_transform(context.scene);
+        result
+    }
     pub fn refresh_entities(
         schedule: &mut scheduler::State,
         components: &[Component],
@@ -198,9 +333,9 @@ impl Runtime {
         dt: Fix,
         report: &mut Report,
         before: &mut impl FnMut(
-            &mut scheduler::State,
             &mut [Actor],
-            &mut Scene,
+            &mut Context,
+            &mut Report,
             scheduler::Event,
         ) -> scheduler::Result<()>,
     ) -> scheduler::Result<()> {
@@ -243,7 +378,18 @@ impl Runtime {
         } = self;
         scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
-            before(schedule, actors, scene, phase)?;
+            before(
+                actors,
+                &mut Context {
+                    schedule,
+                    scene,
+                    bindings,
+                    grounds,
+                    space: *space,
+                },
+                report,
+                phase,
+            )?;
             Self::refresh_entities(schedule, components, actors, scene);
             match phase.kind {
                 scheduler::Phase::Physics => {
@@ -302,6 +448,23 @@ impl Runtime {
                 }
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
                     let component = components[phase.id.unwrap()];
+                    if matches!(phase.kind, scheduler::Phase::Update)
+                        && matches!(component.role, Role::Ability)
+                    {
+                        let result = Self::update_ordinary(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                scene,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
                     let position_priorities = Self::position_priorities(actors);
                     let actor = &mut actors[component.actor];
                     actor.refresh_callback_gates(scene);
@@ -346,6 +509,7 @@ impl Runtime {
                         player_gravity: Fix::ZERO,
                         max_stretch: Fix::ZERO,
                     };
+                    let mut pending_entry = None;
                     let result = match (phase.kind, component.role) {
                         (scheduler::Phase::Init, Role::Body) => {
                             actor.body.init();
@@ -376,26 +540,39 @@ impl Runtime {
                                 .and_then(|p| p.input)
                                 .is_some_and(|i| schedule.inputs[i].pressed);
                             if let Some(slime) = &mut actor.slime {
-                                slime.update(
+                                let mut update = crate::slime::Update {
+                                    dt,
+                                    input: actor.input,
+                                    jump,
+                                    actor: component.actor,
+                                    player: schedule
+                                        .players
+                                        .iter_mut()
+                                        .find(|p| Some(p.id) == actor.body.holder)
+                                        .ok_or("null_reference")?,
+                                    position_priorities: &position_priorities,
+                                    entity: actor.entity.as_mut(),
+                                    object: actor.object,
+                                    body: &mut actor.body,
+                                };
+                                match slime.begin_update(
                                     &mut actor.controller,
-                                    crate::slime::Update {
-                                        dt,
-                                        input: actor.input,
-                                        jump,
-                                        actor: component.actor,
-                                        player: schedule
-                                            .players
-                                            .iter_mut()
-                                            .find(|p| Some(p.id) == actor.body.holder)
-                                            .ok_or("null_reference")?,
-                                        position_priorities: &position_priorities,
-                                        entity: actor.entity.as_mut(),
-                                        object: actor.object,
-                                        body: &mut actor.body,
-                                    },
+                                    &mut update,
                                     &mut context,
                                     &mut emit,
-                                )
+                                ) {
+                                    Ok(Some(request)) => {
+                                        pending_entry = Some(request);
+                                        Ok(())
+                                    }
+                                    Ok(None) => slime.finish_update(
+                                        &mut actor.controller,
+                                        &mut update,
+                                        &mut context,
+                                        &mut emit,
+                                    ),
+                                    Err(error) => Err(error),
+                                }
                             } else {
                                 let mut notify = |_: &mut player_controller::State, event| {
                                     emit(event);
@@ -466,7 +643,36 @@ impl Runtime {
                     }
                     actor.controller_to_body();
                     actor.sync_transform(scene);
+                    Self::refresh_entities(schedule, components, actors, scene);
                     result?;
+                    if let Some(request) = pending_entry {
+                        let mut context = Context {
+                            schedule,
+                            scene,
+                            bindings,
+                            grounds,
+                            space: *space,
+                        };
+                        Self::enter_ordinary(
+                            actors,
+                            &mut context,
+                            request.target,
+                            request.info,
+                            component.actor,
+                        )?;
+                        *actors[component.actor]
+                            .slime
+                            .as_mut()
+                            .unwrap()
+                            .abilities
+                            .as_mut()
+                            .unwrap()
+                            .timer(request.slot)? = Fix::ZERO;
+                        let result =
+                            Self::finish_slime(actors, &mut context, component.actor, dt, report);
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        result?;
+                    }
                 }
                 _ => {}
             }
