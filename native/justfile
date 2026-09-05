@@ -70,6 +70,9 @@ verify: build check
     python3 native/tools/verify_ordinary_ability.py --golden --name ordinary-ability-failures
     python3 native/tools/verify_dash_ability.py --golden
     python3 native/tools/verify_dash_ability.py --golden --name dash-ability-edges
+    python3 native/tools/verify_actor_ropes.py --golden
+    python3 native/tools/verify_actor_ropes.py --golden --name actor-rope-edges
+    python3 native/tools/verify_actor_ropes.py --golden --name rope-handoffs
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -195,3 +198,8 @@ verify-ordinary-ability: build
 verify-dash-ability: build
     python3 native/tools/verify_dash_ability.py --faults --name dash-ability-edges
     python3 native/tools/verify_dash_ability.py --cases 48 --steps 300
+
+verify-actor-ropes: build
+    python3 native/tools/verify_actor_ropes.py
+    python3 native/tools/verify_actor_ropes.py --faults --name actor-rope-edges
+    python3 native/tools/verify_actor_ropes.py --abilities --cases 6 --steps 180 --name rope-handoffs

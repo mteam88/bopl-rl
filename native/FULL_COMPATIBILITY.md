@@ -1015,3 +1015,19 @@ complete prefab spawning and full environment integration remain outstanding.
 Smear renderer geometry/material colors are presentation-only and are not in this
 projection. The existing C environment still uses its earlier restricted Dash
 implementation; this new component belongs to the separate composed runtime.
+
+## Shared actor ropes and ability handoffs
+
+Actors now reference the same rope segment arrays that the scene solver updates.
+Player-owned rope metadata records owner ID and both airborne clocks separately,
+without copying solver state. Body update/late update, grounded physics pulls,
+jump release, ordinary ability entry/exit, Invisibility packages and both Dash
+endpoint paths use those references. Slime detachment callbacks run before the
+late-update endpoint write, including callbacks that fail.
+
+The source comparison covers 60 complete movement episodes / 14,400 ticks,
+plus 12 Invisibility/Dash episodes / 2,031 completed ticks (11 complete episodes
+and one original division-by-zero failure), and four late-pull boundary cases.
+This supplies existing rope objects; Hookshot creation, flight, reeling, rope
+pool reuse, disabled-this-frame lifecycle and full combat remain unfinished.
+The public C environment still exposes the documented movement slice.

@@ -43,11 +43,19 @@ pub struct Component {
     pub role: Role,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActorRopes {
+    pub metadata: Vec<player_body::RopeMetadata>,
+    pub player_gravity: Fix,
+    pub max_stretch: Fix,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Runtime {
     pub scheduler: scheduler::State,
     pub components: Vec<Component>,
     pub actors: Vec<Actor>,
     pub scene: Scene,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_ropes: Option<ActorRopes>,
     pub bindings: Vec<Binding>,
     pub grounds: Vec<player_controller::Ground>,
     pub space: bool,
@@ -73,9 +81,53 @@ pub struct Report {
 pub struct Context<'a> {
     pub schedule: &'a mut scheduler::State,
     pub scene: &'a mut Scene,
+    pub actor_ropes: &'a mut Option<ActorRopes>,
     pub bindings: &'a [Binding],
     pub grounds: &'a [player_controller::Ground],
     pub space: bool,
+}
+impl Context<'_> {
+    pub(crate) fn attach_rope(
+        &mut self,
+        body: &mut player_body::State,
+        next: Option<usize>,
+        top: bool,
+    ) -> scheduler::Result<()> {
+        let system = self
+            .scene
+            .rope_system
+            .as_mut()
+            .ok_or("actor_rope_binding_invalid")?;
+        let metadata = &mut self
+            .actor_ropes
+            .as_mut()
+            .ok_or("actor_rope_binding_invalid")?
+            .metadata;
+        if metadata.len() != system.bodies.len()
+            || next
+                .into_iter()
+                .chain(body.rope)
+                .any(|i| i >= metadata.len())
+        {
+            return Err("actor_rope_binding_invalid");
+        }
+        body.attach_in(
+            next,
+            top,
+            &mut player_body::JoinedRopes {
+                physics: &mut system.bodies,
+                metadata,
+            },
+            &player_body::Context {
+                players: vec![],
+                time_scale: self.schedule.time_scale,
+                rope_gravity: system.gravity,
+                player_gravity: Fix::ZERO,
+                max_stretch: Fix::ZERO,
+            },
+        );
+        Ok(())
+    }
 }
 impl Actor {
     fn refresh_callback_gates(&mut self, scene: &Scene) {
@@ -346,8 +398,15 @@ impl Runtime {
             &self.actors,
             &mut self.scene,
         );
-        if self.scene.rope_system.is_some() || self.actors.iter().any(|a| a.body.rope.is_some()) {
-            return Err("actor_rope_integration_not_implemented");
+        match (&self.actor_ropes, &self.scene.rope_system) {
+            (Some(binding), Some(system))
+                if binding.metadata.len() == system.bodies.len()
+                    && self
+                        .actors
+                        .iter()
+                        .all(|a| a.body.rope.is_none_or(|i| i < system.bodies.len())) => {}
+            (None, None) if self.actors.iter().all(|a| a.body.rope.is_none()) => {}
+            _ => return Err("actor_rope_binding_invalid"),
         }
         if self.actors.iter().any(|a| a.push_strength.is_some()) {
             let scale = self.actors[0].controller.physics.scale;
@@ -376,6 +435,7 @@ impl Runtime {
             grounds,
             space,
             player_layer,
+            actor_ropes,
         } = self;
         scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
@@ -384,6 +444,7 @@ impl Runtime {
                 &mut Context {
                     schedule,
                     scene,
+                    actor_ropes,
                     bindings,
                     grounds,
                     space: *space,
@@ -457,6 +518,7 @@ impl Runtime {
                             &mut Context {
                                 schedule,
                                 scene,
+                                actor_ropes,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -476,6 +538,7 @@ impl Runtime {
                             &mut Context {
                                 schedule,
                                 scene,
+                                actor_ropes,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -499,17 +562,6 @@ impl Runtime {
                             event,
                         });
                     };
-                    let mut context = player_controller::Context {
-                        scene,
-                        bindings,
-                        grounds,
-                        config: &actor.config,
-                        holder: actor.body.holder,
-                        protected,
-                        time_scale: schedule.time_scale,
-                        space: *space,
-                        ability: false,
-                    };
                     let platforms: Vec<_> = bindings
                         .iter()
                         .map(|b| b.platform.clone().expect("actor platform binding"))
@@ -525,9 +577,22 @@ impl Runtime {
                             })
                             .collect(),
                         time_scale: schedule.time_scale,
-                        rope_gravity: Fix::ZERO,
-                        player_gravity: Fix::ZERO,
-                        max_stretch: Fix::ZERO,
+                        rope_gravity: scene.rope_system.as_ref().map_or(Fix::ZERO, |s| s.gravity),
+                        player_gravity: actor_ropes
+                            .as_ref()
+                            .map_or(Fix::ZERO, |r| r.player_gravity),
+                        max_stretch: actor_ropes.as_ref().map_or(Fix::ZERO, |r| r.max_stretch),
+                    };
+                    let mut context = player_controller::Context {
+                        scene,
+                        bindings,
+                        grounds,
+                        config: &actor.config,
+                        holder: actor.body.holder,
+                        protected,
+                        time_scale: schedule.time_scale,
+                        space: *space,
+                        ability: false,
                     };
                     let mut pending_entry = None;
                     let result = match (phase.kind, component.role) {
@@ -541,7 +606,7 @@ impl Runtime {
                                 .update(dt, &mut context, &mut |controller, event| {
                                     if let Some(slime) = &mut actor.slime {
                                         slime.physics_event(
-                                            controller,
+                                            &mut controller.physics,
                                             &event,
                                             bindings,
                                             actor.body.holder.ok_or("null_reference")?,
@@ -645,16 +710,76 @@ impl Runtime {
                                 &mut emit,
                             ),
                         (scheduler::Phase::Update, Role::Body) => {
-                            let result = actor.body.update(dt, &mut [], &body_context).map(|_| ());
+                            let result = if let Some(binding) = actor_ropes {
+                                actor.body.update_with(
+                                    dt,
+                                    &mut player_body::JoinedRopes {
+                                        physics: &mut context
+                                            .scene
+                                            .rope_system
+                                            .as_mut()
+                                            .unwrap()
+                                            .bodies,
+                                        metadata: &mut binding.metadata,
+                                    },
+                                    &body_context,
+                                    &mut || {
+                                        emit(player_controller::Event::Sound(
+                                            "hookshotLetGo".into(),
+                                        ))
+                                    },
+                                )
+                            } else {
+                                actor.body.update(dt, &mut [], &body_context)
+                            };
+                            let result = result.map(|_| ());
                             actor.body_to_controller();
                             result
                         }
-                        (scheduler::Phase::Late, Role::Physics) => actor
-                            .controller
-                            .physics
-                            .late_update(&platforms, None, &actor.config.physics, &mut |_, _| {}),
+                        (scheduler::Phase::Late, Role::Physics) => {
+                            let rope = actor.body.rope.map(|i| {
+                                (
+                                    &mut context.scene.rope_system.as_mut().unwrap().bodies[i],
+                                    actor.body.top,
+                                )
+                            });
+                            actor.controller.physics.late_update_rope(
+                                &platforms,
+                                rope,
+                                &actor.config.physics,
+                                &mut |physics, angle| {
+                                    let event = player_controller::Event::Detached(angle);
+                                    if let Some(slime) = &mut actor.slime {
+                                        slime.physics_event(
+                                            physics,
+                                            &event,
+                                            bindings,
+                                            actor.body.holder.ok_or("null_reference")?,
+                                            &mut emit,
+                                        )?;
+                                    }
+                                    emit(event);
+                                    Ok(())
+                                },
+                            )
+                        }
                         (scheduler::Phase::Late, Role::Body) => {
-                            actor.body.late_update(&mut [], &body_context)
+                            if let Some(binding) = actor_ropes {
+                                actor.body.late_update_in(
+                                    &mut player_body::JoinedRopes {
+                                        physics: &mut context
+                                            .scene
+                                            .rope_system
+                                            .as_mut()
+                                            .unwrap()
+                                            .bodies,
+                                        metadata: &mut binding.metadata,
+                                    },
+                                    &body_context,
+                                )
+                            } else {
+                                actor.body.late_update(&mut [], &body_context)
+                            }
                         }
                         _ => Ok(()),
                     };
@@ -669,6 +794,7 @@ impl Runtime {
                         let mut context = Context {
                             schedule,
                             scene,
+                            actor_ropes,
                             bindings,
                             grounds,
                             space: *space,
@@ -693,6 +819,11 @@ impl Runtime {
                             Self::finish_slime(actors, &mut context, component.actor, dt, report);
                         Self::refresh_entities(schedule, components, actors, scene);
                         result?;
+                    }
+                }
+                scheduler::Phase::RopeMesh => {
+                    if let Some(system) = &mut scene.rope_system {
+                        system.space = *space;
                     }
                 }
                 _ => {}

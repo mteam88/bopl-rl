@@ -1079,3 +1079,31 @@ SHA-256 is `d4f12599f02b521d7c55a0b40bddede82f90afae4703306fb2abb40812481e34`.
 The retained main fixture contains eleven complete 300-tick episodes plus the
 197 completed ticks and failed state of case 3. All ten boundary cases are retained.
 Successful non-wall damage, rope transfer and full-match lifecycle are not covered.
+
+## Scheduled shared ropes and ability transfer
+
+`verify_actor_ropes.py` supplies original RopeBody objects to the real DetPhysics
+scene and binds PlayerBody references to those same objects. Original RopeMesh
+instances allow the scheduler's late and mesh passes to run. Native physics
+arrays have one owner; a borrowed view joins those arrays with player metadata.
+
+All 60 locomotion episodes completed and matched: 14,400 ticks, 12,567 attached
+player frames, 3,914 frames with a rope shared by players, 175 detachments and
+45 release sounds. Four late-pull cases match two complete episodes / 12 ticks
+and the failed states of one missing renderer and one missing falling animation.
+The late-update callback failure stops before the endpoint write.
+
+The 12 Invisibility/Dash handoff cases match 2,031 completed ticks, 11 complete
+episodes and one original Dash division error, with 86 ordinary ability entries
+carrying ropes and 21 Invisibility casts carrying ropes. Full packages, both rope endpoint
+arrays, owner/airborne clocks, forces, activity and callback effects are compared.
+The division error is retained with its exact partial state, not counted as a
+completed episode. The three raw datasets and assembly/input/output hashes are
+in `artifacts/actor-ropes`, `artifacts/actor-rope-edges`, and `artifacts/rope-handoffs`;
+their retained fixtures run under `just verify`.
+
+Rope contact counts are reset by the original solver before snapshots; a zero
+retained count does not establish that no contact occurred. This batch does not
+claim Hookshot projectile lifecycle, rope creation/pool reuse, combat or a full
+match. The first movement dataset predates the later adapter additions; each
+dataset retains its own actual assembly hash.

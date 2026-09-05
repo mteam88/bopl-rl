@@ -211,7 +211,7 @@ impl Instance {
         let id = context.holder.ok_or("null_reference")?;
         // EnterFall uses Updater.standardFixedDeltaTime, not this call's dt.
         controller.cast(crate::world::DT, context, &mut |controller, event| {
-            self.physics_event(controller, &event, bindings, id, emit)?;
+            self.physics_event(&mut controller.physics, &event, bindings, id, emit)?;
             emit(event);
             Ok(())
         })
@@ -278,13 +278,13 @@ impl Instance {
     }
     pub fn physics_event(
         &mut self,
-        controller: &mut player_controller::State,
+        physics: &mut crate::player_physics::State,
         event: &Event,
         bindings: &[Binding],
         id: i32,
         emit: &mut impl FnMut(Event),
     ) -> Result<()> {
-        let m = &controller.physics.motion;
+        let m = &physics.motion;
         match event {
             Event::Detached(_) => {
                 self.state.mode = 2;
@@ -460,7 +460,7 @@ impl Instance {
                 .physics
                 .jump(&platforms, &context.config.physics)?;
             let event = Event::Detached(angle);
-            self.physics_event(controller, &event, context.bindings, id, emit)?;
+            self.physics_event(&mut controller.physics, &event, context.bindings, id, emit)?;
             emit(event);
             emit(Event::JumpSound(format!("slimeJump{id}")));
             // Jump advances animations immediately, even during time stop.
@@ -505,7 +505,7 @@ impl Instance {
             motion.up = motion.right.perp();
             let angle = motion.unground(ground.map(|p| &p.surface), false);
             let event = Event::Detached(angle);
-            self.physics_event(controller, &event, context.bindings, id, emit)?;
+            self.physics_event(&mut controller.physics, &event, context.bindings, id, emit)?;
             emit(event);
             emit(Event::JumpSound(format!("slimeJump{id}")));
         }
@@ -540,7 +540,7 @@ impl Instance {
             true,
             context,
             &mut |controller, event| {
-                self.physics_event(controller, &event, bindings, id, emit)?;
+                self.physics_event(&mut controller.physics, &event, bindings, id, emit)?;
                 emit(event);
                 Ok(())
             },

@@ -10,11 +10,10 @@ internal static class ReferenceSlimeExit
 {
     internal static AbilityExitInfo Info(JToken value,ReferenceSlimeActors.Context owner)
     {
-        if(value["rope"].Type!=JTokenType.Null)throw new NotSupportedException("Actor rope binding is not installed");
         return new AbilityExitInfo{isDead=(bool)value["dead"],killerId=(int)value["killer"],position=V(value["position"]),externalVelocity=V(value["external_velocity"]),selfImposedVelocity=V(value["velocity"]),
             isFacingRight=(bool)value["facing_right"],isGrounded=(bool)value["grounded"],groundedSpeed=F(value["grounded_speed"]),lastSprite=owner.Animation.Sprite(value["sprite"]),
             currentlyAttachedGround=value["ground"].Type==JTokenType.Null?null:owner.Platforms[(int)value["ground"]],groundedLocalPosition=F(value["local"]),justlanded=(bool)value["just_landed"],
-            causeOfDeath=(CauseOfDeath)(int)value["cause"],radius=F(value["radius"]),enterTurn=(bool)value["enter_turn"],enterJump=(bool)value["enter_jump"],ropeAttachment=null,topAttachment=(bool)value["top"]};
+            causeOfDeath=(CauseOfDeath)(int)value["cause"],radius=F(value["radius"]),enterTurn=(bool)value["enter_turn"],enterJump=(bool)value["enter_jump"],ropeAttachment=value["rope"].Type==JTokenType.Null?null:owner.Ropes[(int)value["rope"]],topAttachment=(bool)value["top"]};
     }
     internal static void Apply(JToken info,ReferenceSlimeActors.Context owner)
         =>typeof(SlimeController).GetMethod("onExitAbility",BindingFlags.NonPublic|BindingFlags.Instance).Invoke(owner.Slime,new object[]{Info(info,owner)});

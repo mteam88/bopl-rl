@@ -45,7 +45,7 @@ impl Runtime {
         ability.slime = ability.info.slime;
         actor.body.holder = Some(ability.info.player);
         if ability.body_linked && ability.info.rope.is_some() {
-            return Err("actor_rope_integration_not_implemented");
+            context.attach_rope(&mut actor.body, ability.info.rope, ability.info.top)?;
         }
         let linked = ability.collider_linked;
         let slime = ability.slime;
@@ -117,8 +117,11 @@ impl Runtime {
         let priorities = Self::position_priorities(actors);
         let actor = &mut actors[id];
         let ability = actor.ordinary.as_mut().ok_or("missing_ordinary_ability")?;
+        let mut info = info.clone();
         if ability.body_linked && actor.body.rope.is_some() {
-            return Err("actor_rope_integration_not_implemented");
+            info.rope = actor.body.rope;
+            info.top = actor.body.top;
+            actor.body.clear_for_ability();
         }
         if let Some(player) = context
             .schedule
@@ -149,7 +152,7 @@ impl Runtime {
             .active = false;
         let callback = ability.callback.ok_or("null_reference")?;
         let first_event = report.events.len();
-        let result = Self::exit_actor(actors, context, callback, info, report);
+        let result = Self::exit_actor(actors, context, callback, &info, report);
         // The reference audio hook records the dispatching actor. Physics
         // delegates carry their own actor identity across the nested callback.
         for event in &mut report.events[first_event..] {

@@ -15,9 +15,6 @@ impl Instance {
         context: &mut player_controller::Context,
         emit: &mut impl FnMut(Event),
     ) -> Result<()> {
-        if info.rope.is_some() {
-            return Err("actor_rope_integration_not_implemented");
-        }
         let entity = update.entity.as_mut().ok_or("missing_actor_entity")?;
         entity.active = true;
         update.player.time_ability = Fix::ZERO;
@@ -39,6 +36,10 @@ impl Instance {
             flags.spark = false;
             flags.macho = false;
             flags.platform = false;
+        }
+        if info.rope.is_some() {
+            update.body.rope = info.rope;
+            update.body.top = info.top;
         }
         if info.dead {
             controller.physics.motion.position = info.position;
@@ -77,7 +78,7 @@ impl Instance {
                     .physics
                     .jump(&platforms, &context.config.physics)?;
                 let event = Event::Detached(angle);
-                self.physics_event(controller, &event, context.bindings, id, emit)?;
+                self.physics_event(&mut controller.physics, &event, context.bindings, id, emit)?;
                 emit(event);
                 emit(Event::JumpSound(format!("slimeJump{id}")));
             }

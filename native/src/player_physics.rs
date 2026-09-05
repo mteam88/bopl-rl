@@ -143,6 +143,23 @@ impl State {
         config: &Config,
         notify: &mut impl FnMut(&mut Self, Fix),
     ) -> Result<(), &'static str> {
+        self.late_update_rope(
+            platforms,
+            rope.map(|(r, top)| (&mut r.physics, top)),
+            config,
+            &mut |physics, angle| {
+                notify(physics, angle);
+                Ok(())
+            },
+        )
+    }
+    pub fn late_update_rope(
+        &mut self,
+        platforms: &[Platform],
+        rope: Option<(&mut crate::physics::rope::Rope, bool)>,
+        config: &Config,
+        notify: &mut impl FnMut(&mut Self, Fix) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
         if self.motion.grounded
             && let Some(id) = self.motion.ground
             && !platforms[id as usize].destroyed
@@ -154,22 +171,15 @@ impl State {
                 self.align_rotation(surface);
             }
             if let Some((rope, top)) = rope
-                && rope.physics.enabled
-                && rope.physics.time_since_hook_arrived > Fix::ZERO
+                && rope.enabled
+                && rope.time_since_hook_arrived > Fix::ZERO
             {
                 let end = if top {
                     0
                 } else {
-                    rope.physics
-                        .count
-                        .checked_sub(1)
-                        .ok_or("index_out_of_range")?
+                    rope.count.checked_sub(1).ok_or("index_out_of_range")?
                 };
-                let endpoint = rope
-                    .physics
-                    .segment
-                    .get_mut(end)
-                    .ok_or("index_out_of_range")?;
+                let endpoint = rope.segment.get_mut(end).ok_or("index_out_of_range")?;
                 let offset = *endpoint - self.motion.position;
                 if offset.length_squared() >= Fix::from_f64(0.07) {
                     self.motion.external_velocity += offset * config.rope_strength;
@@ -181,7 +191,7 @@ impl State {
                     && !self.cannot_unground
                 {
                     let rotation = self.motion.unground(Some(surface), true);
-                    notify(self, rotation);
+                    notify(self, rotation)?;
                 }
                 *endpoint = self.motion.position;
             }

@@ -11,7 +11,67 @@ pub struct BodyRope {
     pub time_air_start: Fix,
     pub time_air_end: Fix,
 }
-impl BodyRope {
+/// Player-owned fields live separately from the scene's authoritative solver bodies.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RopeMetadata {
+    pub owner: u8,
+    pub time_air_start: Fix,
+    pub time_air_end: Fix,
+}
+pub struct RopeMut<'a> {
+    pub physics: &'a mut Rope,
+    time_air_start: &'a mut Fix,
+    time_air_end: &'a mut Fix,
+}
+pub trait RopeStorage {
+    fn physics(&self, index: usize) -> &Rope;
+    fn owner(&self, index: usize) -> u8;
+    fn rope_mut(&mut self, index: usize) -> RopeMut<'_>;
+}
+impl RopeStorage for [BodyRope] {
+    fn physics(&self, index: usize) -> &Rope {
+        &self[index].physics
+    }
+    fn owner(&self, index: usize) -> u8 {
+        self[index].owner
+    }
+    fn rope_mut(&mut self, index: usize) -> RopeMut<'_> {
+        let r = &mut self[index];
+        RopeMut {
+            physics: &mut r.physics,
+            time_air_start: &mut r.time_air_start,
+            time_air_end: &mut r.time_air_end,
+        }
+    }
+}
+pub struct JoinedRopes<'a> {
+    pub physics: &'a mut [Rope],
+    pub metadata: &'a mut [RopeMetadata],
+}
+impl RopeStorage for JoinedRopes<'_> {
+    fn physics(&self, index: usize) -> &Rope {
+        &self.physics[index]
+    }
+    fn owner(&self, index: usize) -> u8 {
+        self.metadata[index].owner
+    }
+    fn rope_mut(&mut self, index: usize) -> RopeMut<'_> {
+        let m = &mut self.metadata[index];
+        RopeMut {
+            physics: &mut self.physics[index],
+            time_air_start: &mut m.time_air_start,
+            time_air_end: &mut m.time_air_end,
+        }
+    }
+}
+fn endpoint(physics: &Rope, top: bool) -> Result<usize, &'static str> {
+    if top {
+        Ok(0)
+    } else {
+        physics.count.checked_sub(1).ok_or("index_out_of_range")
+    }
+}
+impl RopeMut<'_> {
     fn set_force(&mut self, force: Vec2, top: bool) {
         if top {
             self.physics.force_start = force;
@@ -21,19 +81,9 @@ impl BodyRope {
     }
     fn set_time(&mut self, time: Fix, top: bool) {
         if top {
-            self.time_air_start = time;
+            *self.time_air_start = time;
         } else {
-            self.time_air_end = time;
-        }
-    }
-    fn endpoint(&self, top: bool) -> Result<usize, &'static str> {
-        if top {
-            Ok(0)
-        } else {
-            self.physics
-                .count
-                .checked_sub(1)
-                .ok_or("index_out_of_range")
+            *self.time_air_end = time;
         }
     }
 }
@@ -99,8 +149,17 @@ impl State {
         ropes: &mut [BodyRope],
         context: &Context,
     ) {
+        self.attach_in(next, top, ropes, context)
+    }
+    pub fn attach_in(
+        &mut self,
+        next: Option<usize>,
+        top: bool,
+        ropes: &mut (impl RopeStorage + ?Sized),
+        context: &Context,
+    ) {
         if let Some(index) = self.rope {
-            let rope = &mut ropes[index];
+            let mut rope = ropes.rope_mut(index);
             rope.set_force(
                 if self.ignore_gravity {
                     Vec2::ZERO
@@ -131,9 +190,26 @@ impl State {
         ropes: &mut [BodyRope],
         context: &Context,
     ) -> Result<bool, &'static str> {
+        self.update_in(dt, ropes, context)
+    }
+    pub fn update_in(
+        &mut self,
+        dt: Fix,
+        ropes: &mut (impl RopeStorage + ?Sized),
+        context: &Context,
+    ) -> Result<bool, &'static str> {
+        self.update_with(dt, ropes, context, &mut || {})
+    }
+    pub fn update_with(
+        &mut self,
+        dt: Fix,
+        ropes: &mut (impl RopeStorage + ?Sized),
+        context: &Context,
+        released: &mut impl FnMut(),
+    ) -> Result<bool, &'static str> {
         let mut sound = false;
         if let Some(index) = self.rope
-            && ropes[index].physics.enabled
+            && ropes.physics(index).enabled
         {
             let id = self.holder.ok_or("null_reference")?;
             let player = context
@@ -141,23 +217,24 @@ impl State {
                 .iter()
                 .find(|p| p.id == id)
                 .ok_or("null_reference")?;
-            if player.id == i32::from(ropes[index].owner)
+            if player.id == i32::from(ropes.owner(index))
                 && self
                     .physics
                     .as_ref()
                     .is_none_or(|p| !p.grounded && !p.jumped)
                 && player.jump
             {
-                let r = &ropes[index];
-                let end = r.endpoint(self.top)?;
-                let position = *r.physics.segment.get(end).ok_or("index_out_of_range")?;
-                let previous = *r.physics.previous.get(end).ok_or("index_out_of_range")?;
+                let r = ropes.physics(index);
+                let end = endpoint(r, self.top)?;
+                let position = *r.segment.get(end).ok_or("index_out_of_range")?;
+                let previous = *r.previous.get(end).ok_or("index_out_of_range")?;
                 self.velocity = (position - previous) / DT;
-                self.attach(None, self.top, ropes, context);
+                self.attach_in(None, self.top, ropes, context);
                 sound = true;
+                released();
             }
         }
-        if self.rope.is_some_and(|i| !ropes[i].physics.enabled) {
+        if self.rope.is_some_and(|i| !ropes.physics(i).enabled) {
             self.rope = None;
         }
         let protected = self
@@ -167,13 +244,13 @@ impl State {
         let effective_dt = crate::game_time::fixed_delta_time(dt, context.time_scale, protected);
         self.position += self.total_velocity() * effective_dt;
         if let Some(index) = self.rope {
-            let r = &mut ropes[index];
+            let mut r = ropes.rope_mut(index);
             if r.physics.detached {
-                let end = r.endpoint(self.top)?;
+                let end = endpoint(r.physics, self.top)?;
                 *r.physics.segment.get_mut(end).ok_or("index_out_of_range")? = self.position;
-                self.attach(None, self.top, ropes, context);
+                self.attach_in(None, self.top, ropes, context);
             } else if r.physics.time_since_hook_arrived <= Fix::ZERO {
-                let end = r.endpoint(self.top)?;
+                let end = endpoint(r.physics, self.top)?;
                 *r.physics.segment.get_mut(end).ok_or("index_out_of_range")? = self.position;
                 r.set_time(Fix::ZERO, self.top);
                 r.physics.set_mass(Fix::ONE, self.top, Fix::ONE);
@@ -186,11 +263,11 @@ impl State {
                 r.physics.set_mass(mass, self.top, Fix::ONE);
                 r.set_force(Vec2::ZERO, self.top);
             } else {
-                let end = r.endpoint(self.top)?;
+                let end = endpoint(r.physics, self.top)?;
                 let time = if self.top {
-                    &mut r.time_air_start
+                    &mut *r.time_air_start
                 } else {
-                    &mut r.time_air_end
+                    &mut *r.time_air_end
                 };
                 *time += dt;
                 let time = *time;
@@ -220,16 +297,23 @@ impl State {
         ropes: &mut [BodyRope],
         context: &Context,
     ) -> Result<(), &'static str> {
+        self.late_update_in(ropes, context)
+    }
+    pub fn late_update_in(
+        &mut self,
+        ropes: &mut (impl RopeStorage + ?Sized),
+        context: &Context,
+    ) -> Result<(), &'static str> {
         if let Some(index) = self.rope {
-            if !ropes[index].physics.enabled {
+            if !ropes.physics(index).enabled {
                 self.rope = None;
             } else {
-                let r = &ropes[index].physics;
+                let r = ropes.physics(index);
                 for i in 0..r.count.saturating_sub(2) {
                     let a = r.segment.get(i).ok_or("index_out_of_range")?;
                     let b = r.segment.get(i + 1).ok_or("index_out_of_range")?;
                     if (*a - *b).length_squared() > context.max_stretch {
-                        self.attach(None, self.top, ropes, context);
+                        self.attach_in(None, self.top, ropes, context);
                         break;
                     }
                 }
@@ -242,7 +326,9 @@ impl State {
             if self.ignore_gravity {
                 imposed.y = Fix::ZERO;
             }
-            ropes[index].set_force(imposed + external + self.extra_swing_force, self.top);
+            ropes
+                .rope_mut(index)
+                .set_force(imposed + external + self.extra_swing_force, self.top);
             self.extra_swing_force = Vec2::ZERO;
         }
         self.previous_position = self.position;

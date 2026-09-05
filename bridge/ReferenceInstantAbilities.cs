@@ -39,22 +39,20 @@ internal static class ReferenceInstantAbilities
     }
     internal static PlayerInfo Info(JToken v,ReferenceSlimeActors.Context owner)
     {
-        if(v["rope"].Type!=JTokenType.Null)throw new NotSupportedException("Actor rope binding is not installed");
         return new PlayerInfo{
             playerId=(int)v["player"],AbilityButtonUsedIndex012=(int)v["slot"],position=V(v["position"]),externalVelocity=V(v["external_velocity"]),selfImposedVelocity=V(v["velocity"]),
             playerMaterial=v["material"].Type==JTokenType.Null?null:owner.Animation.Animator.spriteRen.material,isGrounded=(bool)v["grounded"],groundedSpeed=F(v["grounded_speed"]),rotation=F(v["rotation"]),
             forwardsVector=V(v["forward"]),upVector=V(v["up"]),isFacingRight=(bool)v["facing_right"],currentlyAttachedGround=v["ground"].Type==JTokenType.Null?null:owner.Platforms[(int)v["ground"]],
-            groundedLocalPosition=F(v["local"]),radius=F(v["radius"]),EntrySprite=owner.Animation.Sprite(v["sprite"]),ropeBody=null,topAttachment=(bool)v["top"],
+            groundedLocalPosition=F(v["local"]),radius=F(v["radius"]),EntrySprite=owner.Animation.Sprite(v["sprite"]),ropeBody=v["rope"].Type==JTokenType.Null?null:owner.Ropes[(int)v["rope"]],topAttachment=(bool)v["top"],
             useRopeOnOtherPlayer=(bool)v["use_rope_on_player"],playerToUseRopeOn=Target(v["rope_target"],owner),slimeController=v["slime"].Type==JTokenType.Null?null:owner.Slime};
     }
     internal static JObject Info(PlayerInfo v,ReferenceSlimeActors.Context owner)
     {
-        if(v.ropeBody!=null)throw new NotSupportedException("Actor rope binding is not installed");
         return new JObject{
             ["player"]=v.playerId,["slot"]=v.AbilityButtonUsedIndex012,["position"]=V(v.position),["external_velocity"]=V(v.externalVelocity),["velocity"]=V(v.selfImposedVelocity),
             ["material"]=v.playerMaterial==null?JValue.CreateNull():new JValue(owner.Actor),["grounded"]=v.isGrounded,["grounded_speed"]=v.groundedSpeed.m_rawValue,["rotation"]=v.rotation.m_rawValue,
             ["forward"]=V(v.forwardsVector),["up"]=V(v.upVector),["facing_right"]=v.isFacingRight,["ground"]=v.currentlyAttachedGround==null?JValue.CreateNull():new JValue(owner.Platforms.IndexOf(v.currentlyAttachedGround)),
-            ["local"]=v.groundedLocalPosition.m_rawValue,["radius"]=v.radius.m_rawValue,["sprite"]=owner.Animation.SpriteId(v.EntrySprite),["rope"]=JValue.CreateNull(),["top"]=v.topAttachment,
+            ["local"]=v.groundedLocalPosition.m_rawValue,["radius"]=v.radius.m_rawValue,["sprite"]=owner.Animation.SpriteId(v.EntrySprite),["rope"]=v.ropeBody==null?JValue.CreateNull():new JValue(owner.Ropes.IndexOf(v.ropeBody)),["top"]=v.topAttachment,
             ["use_rope_on_player"]=v.useRopeOnOtherPlayer,["rope_target"]=Target(v.playerToUseRopeOn,owner),["slime"]=Slime(v.slimeController,owner)};
     }
     internal static Instance Bind(JToken metadata,ReferenceSlimeActors.Context owner)

@@ -247,8 +247,38 @@ impl Instance {
                     }
                     physics.motion.position = position;
                 }
-                if actor.body.rope.is_some() {
-                    return Err("actor_rope_integration_not_implemented");
+                if let Some(index) = actor.body.rope {
+                    let rope = context
+                        .scene
+                        .rope_system
+                        .as_mut()
+                        .ok_or("actor_rope_binding_invalid")?
+                        .bodies
+                        .get_mut(index)
+                        .ok_or("actor_rope_binding_invalid")?;
+                    let force = self.input * self.leave_speed * Fix::from_int(10);
+                    if actor.body.top {
+                        rope.force_start = force;
+                        *rope.segment.get_mut(0).ok_or("index_out_of_range")? =
+                            physics.motion.position;
+                    } else {
+                        rope.force_end = force;
+                        let first = *rope.segment.first().ok_or("index_out_of_range")?;
+                        let delta = physics.motion.position - first;
+                        let count = Fix::from_int(rope.count as i64);
+                        let step = Vec2::new(
+                            delta.x.checked_div(count).map_err(|_| "division_by_zero")?,
+                            delta.y.checked_div(count).map_err(|_| "division_by_zero")?,
+                        );
+                        for i in 1..rope.count {
+                            *rope.segment.get_mut(i).ok_or("index_out_of_range")? =
+                                first + step * Fix::from_int(i as i64);
+                        }
+                        for i in 0..rope.count {
+                            *rope.previous.get_mut(i).ok_or("index_out_of_range")? =
+                                *rope.segment.get(i).ok_or("index_out_of_range")?;
+                        }
+                    }
                 }
                 let motion = &physics.motion;
                 return Ok(Some(ExitInfo {

@@ -21,6 +21,7 @@ internal static class ReferenceSlimeActors
         internal Dictionary<uint,MagnetGun> Magnets=new Dictionary<uint,MagnetGun>();
         internal List<GameObject> Objects;
         internal List<GameObject> Entities;
+        internal List<RopeBody> Ropes;
         internal AbilityMonoBehaviour[] RoutingPool;
         internal int Actor;
         internal List<StickyRoundedRectangle> Platforms;
@@ -106,7 +107,7 @@ internal static class ReferenceSlimeActors
         }
         return Next(0);
     }
-    internal static Context Bind(JToken value,SlimeController slime,PlayerBody body,PlayerPhysics physics,IPhysicsCollider hurtbox,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets,int actor,List<StickyRoundedRectangle> platforms,List<ReferencePhysicsScene.Adapter> adapters,List<GameObject> entities)
+    internal static Context Bind(JToken value,SlimeController slime,PlayerBody body,PlayerPhysics physics,IPhysicsCollider hurtbox,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets,int actor,List<StickyRoundedRectangle> platforms,List<ReferencePhysicsScene.Adapter> adapters,List<GameObject> entities,List<RopeBody> ropes)
     {
         var s=value["state"];slime.abilities=new List<AbilityMonoBehaviour>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();
         if(value["managed_destroyed"]!=null)slime.IsDestroyed=(bool)value["managed_destroyed"];
@@ -120,7 +121,7 @@ internal static class ReferenceSlimeActors
         var flags=BindingFlags.NonPublic|BindingFlags.Instance;
         physics.OnNoLongerGrounded+=(Action<Fix>)Delegate.CreateDelegate(typeof(Action<Fix>),slime,typeof(SlimeController).GetMethod("OnNoLongerGrounded",flags));
         physics.OnAttachedToGround+=(Action<RaycastInformation>)Delegate.CreateDelegate(typeof(Action<RaycastInformation>),slime,typeof(SlimeController).GetMethod("attachToGround",flags,null,new[]{typeof(RaycastInformation)},null));
-        var context=new Context{Slime=slime,Animation=animation,Flip=flip,TurnInput=F(s["turn_input"]),Objects=objects,Entities=entities,Actor=actor,Platforms=platforms,Adapters=adapters};
+        var context=new Context{Slime=slime,Animation=animation,Flip=flip,TurnInput=F(s["turn_input"]),Objects=objects,Entities=entities,Ropes=ropes,Actor=actor,Platforms=platforms,Adapters=adapters};
         if(value["ragdoll"]!=null)
         {
             var r=value["ragdoll"];Set(slime,"ragdollDuration",F(r["duration"]));Set(slime,"timeInRagdoll",F(r["time"]));Set(slime,"ragDollSpeed",V(r["speed"]));Set(slime,"magnetHolder",context.Magnet(r["magnet_holder"]));

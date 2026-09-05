@@ -20,11 +20,23 @@ internal static class ReferenceActors
         var saved=typeof(Updater).GetFields(Statics).Where(f=>!f.IsLiteral&&!f.IsInitOnly).ToDictionary(f=>f,f=>f.GetValue(null));
         var oldPlayers=PlayerHandler.Get().PlayerList();var oldScale=GameTime.PlayerTimeScale;var oldSpace=Constants.leveltype;
         var oldDeadzone=Constants.GROUNDALIGNMENTDEADZONE;var oldCapture=ReferenceScheduler.Capture;var oldSound=ReferencePlayerController.SoundCapture;var oldRecord=Host.recordReplay;var oldEntryCapture=ReferenceCapture.ActorAbilityCapture;
+        var oldPlayerGravity=scene.playerGravity;var oldMaxStretch=scene.maxStretchLength;var oldRopeStrength=scene.groundedPlayerRopeStr;
+        var ropes=scene.ropes.ropeBodies.ToList();var meshes=new List<RopeMesh>();
         var objects=new List<GameObject>();var assets=new List<UnityEngine.Object>();var slimes=new List<ReferenceSlimeActors.Context>();
         var achievedField=typeof(AchievementHandler).GetField("isAchieved",Statics);var oldAchieved=achievedField.GetValue(null);
         try
         {
             var runtime=query["runtime"];if(animations!=null)achievedField.SetValue(null,new bool[28]);if((int)runtime["player_layer"]!=LayerMask.NameToLayer("Player"))throw new ArgumentException("Incorrect player layer");var initial=runtime["scheduler"];var actorData=(JArray)runtime["actors"].DeepClone();
+            if(runtime["actor_ropes"]!=null)
+            {
+                var binding=runtime["actor_ropes"];scene.playerGravity=F(binding["player_gravity"]);scene.maxStretchLength=F(binding["max_stretch"]);
+                if(binding["metadata"].Count()!=ropes.Count)throw new ArgumentException("Actor rope metadata count");
+                for(int i=0;i<ropes.Count;i++)
+                {
+                    var m=binding["metadata"][i];var r=ropes[i];r.ownerId=(byte)m["owner"];r.timeInAir_start=F(m["time_air_start"]);r.timeInAir_end=F(m["time_air_end"]);
+                    r.ropeMesh=new RopeMesh();meshes.Add(r.ropeMesh);assets.Add(r.ropeMesh.mesh);
+                }
+            }
             var bound=ReferenceSurfaceMotion.BindPlatforms(runtime["bindings"],scene,adapters,objects);
             var platforms=runtime["bindings"].Select(b=>bound[(int)b["object"]]).ToList();
             for(int i=0;i<platforms.Count;i++)
@@ -53,6 +65,7 @@ internal static class ReferenceActors
                 body.selfImposedVelocity=V(motion["velocity"]);body.externalVelocity=V(motion["external_velocity"]);
                 body.prevPosition=V(bs["previous_position"]);Set(body,"prevPlayerVel",V(bs["previous_velocity"]));Set(body,"prevImposedVel",V(bs["previous_imposed"]));Set(body,"prevExternalVel",V(bs["previous_external"]));
                 body.extraSwingForce=V(bs["extra_swing_force"]);body.topAttachment=(bool)bs["top"];body.ignoreGravityWhenRoped=(bool)bs["ignore_gravity"];body.RopePlayerMass01=F(bs["rope_mass"]);
+                body.ropeBody=bs["rope"].Type==JTokenType.Null?null:ropes[(int)bs["rope"]];
                 var p=go.GetComponent<PlayerPhysics>()??go.AddComponent<PlayerPhysics>();physics.Add(p);Set(p,"body",body);Set(p,"playerIdHolder",holder);Set(body,"physics",p);
                 Set(p,"isGrounded",(bool)motion["grounded"]);Set(p,"attachedGround",motion["ground"].Type==JTokenType.Null?null:platforms[(int)motion["ground"]]);
                 Set(p,"<LocalPlatformPos>k__BackingField",F(motion["local"]));p.radius=F(motion["radius"]);p.groundedSpeed=F(motion["grounded_speed"]);
@@ -67,7 +80,7 @@ internal static class ReferenceActors
                 int colliderIndex=scene.boxes.ColliderIndex(adapter.parent.instanceId);scene.boxes.physicsParents[colliderIndex]=adapter.parent;
                 SlimeController slime=null;
                 if((animations!=null&&animations[i]!=null)||a["push_strength"].Type!=JTokenType.Null){slime=go.GetComponent<SlimeController>()??go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
-                if(animations!=null)slimes.Add(animations[i]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?(IPhysicsCollider)go.GetComponent<DPhysicsBox>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects));
+                if(animations!=null)slimes.Add(animations[i]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?(IPhysicsCollider)go.GetComponent<DPhysicsBox>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects,ropes));
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
                     // All actors have equal scale in this corpus. The bite gate
@@ -126,7 +139,7 @@ internal static class ReferenceActors
                     else if(animations!=null&&slimes[actor]!=null)slimes[actor].Slime.UpdateSim(dt);
                     else {if(players[actor].jumpButton_PressedThisFrame()&&physics[actor].IsGrounded())physics[actor].Jump();physics[actor].Move(V(actorData[actor]["input"]),dt);}
                 };
-                d.Late=dt=>{Phase("late",id);currentActor=actor;if(role=="physics")physics[actor].LateUpdateSim(dt);else if(role=="body")bodies[actor].LateUpdateSim(dt);};
+                d.Late=dt=>{Phase("late",id);currentActor=actor;scene.groundedPlayerRopeStr=F(actorData[actor]["config"]["physics"]["rope_strength"]);if(role=="physics")physics[actor].LateUpdateSim(dt);else if(role=="body")bodies[actor].LateUpdateSim(dt);};
             }
             Static("toBeAddedUpdatables",initial["pending"]["items"].Take((int)initial["pending"]["length"]).Select(id=>(MonoUpdatable)drivers[(int)id]).ToList());
             Updater.updatables=initial["live"].Select(id=>(MonoUpdatable)drivers[(int)id]).ToList();
@@ -144,12 +157,13 @@ internal static class ReferenceActors
                     c["physics"]["scale"]=bodies[i].fixtrans.Scale.m_rawValue;c["physics"]["previous_scale"]=Get<Fix>(p,"prevScal").m_rawValue;c["physics"]["jumped"]=p.jumpedThisFrame;
                     if(animations!=null&&slimes[i]!=null)states[i]["slime"]=slimes[i].Snapshot(actorData[i]["slime"]);
                     if(ordinary.TryGetValue(i,out var ability))states[i]["ordinary"]=ability.Snapshot(actorData[i]["ordinary"]);
-                    states[i]["body"]=ReferencePlayerBody.SnapshotBody(bodies[i],new List<RopeBody>(),false)["state"];
+                    states[i]["body"]=ReferencePlayerBody.SnapshotBody(bodies[i],ropes,false)["state"];
                 }
                 var world=sceneSnapshot();world["objects"]=new JArray(world["objects"].OrderBy(o=>(int)o["id"]));
                 var frame=new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
                     ["inputs"]=new JArray(inputs.Select((p,i)=>{var v=new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME};if(initial["inputs"][i]["angle"]!=null)v["angle"]=p.joystickAngleByte;return v;}))};
+                if(runtime["actor_ropes"]!=null){var binding=(JObject)runtime["actor_ropes"].DeepClone();binding["metadata"]=new JArray(ropes.Select(r=>new JObject{["owner"]=r.ownerId,["time_air_start"]=r.timeInAir_start.m_rawValue,["time_air_end"]=r.timeInAir_end.m_rawValue}));frame["actor_ropes"]=binding;}
                 if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["scale"]!=null)v["scale"]=player.Scale.m_rawValue;if(v["position"]!=null)v["position"]=ReferencePlayerPosition.Snapshot(player,slimes);if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
                 if(query["scripts"]!=null)frame["effects"]=effects;
                 if((bool?)query["routing_checks"]==true)frame["routing_checks"]=new JArray(slimes.Select(s=>s==null?(JToken)JValue.CreateNull():s.RoutingChecks()));
@@ -171,6 +185,7 @@ internal static class ReferenceActors
         }
         finally
         {
+            foreach(var mesh in meshes)mesh.Dispose();scene.playerGravity=oldPlayerGravity;scene.maxStretchLength=oldMaxStretch;scene.groundedPlayerRopeStr=oldRopeStrength;
             ReferenceScheduler.Capture=null;achievedField.SetValue(null,oldAchieved);foreach(var asset in assets)UnityEngine.Object.DestroyImmediate(asset);foreach(var go in objects)if(go!=null)UnityEngine.Object.DestroyImmediate(go);
             foreach(var pair in saved)pair.Key.SetValue(null,pair.Value);PlayerHandler.Get().SetPlayerList(oldPlayers);GameTime.PlayerTimeScale=oldScale;
             Constants.leveltype=oldSpace;Constants.GROUNDALIGNMENTDEADZONE=oldDeadzone;ReferenceScheduler.Capture=oldCapture;ReferencePlayerController.SoundCapture=oldSound;Host.recordReplay=oldRecord;ReferenceCapture.ActorAbilityCapture=oldEntryCapture;

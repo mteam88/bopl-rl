@@ -135,8 +135,9 @@ and readiness gates now run there too. Invisibility has an executable instant
 handler, including expiration and cooldown recovery. Separate ordinary Ability
 actors now execute entry, scale/position updates, and returns through the original
 SlimeController callback. An attached Dash component now runs windup, quantized
-aiming, wall/air raycasts and automatic returns in that scheduler. Damage and rope
-transfer are still absent there; unconnected selected abilities stop with an
+aiming, wall/air raycasts and automatic returns in that scheduler. Shared scene
+ropes now support body motion, grounded pulls, jump release, Invisibility packages
+and ordinary/Dash ability handoffs. Damage remains absent; unconnected selected abilities stop with an
 explicit unimplemented-entry error. It is not yet driving this C environment. Full player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still

@@ -153,6 +153,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                         &mut bopl_sim::actors::Context {
                             schedule: &mut runtime.scheduler,
                             scene: &mut runtime.scene,
+                            actor_ropes: &mut runtime.actor_ropes,
                             bindings: &runtime.bindings,
                             grounds: &runtime.grounds,
                             space: runtime.space,
@@ -193,6 +194,9 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         scene.objects.sort_by_key(|o| o.id);
         let mut frame = json!({"actors":runtime.actors,"scene":scene,"report":report,"ticks":runtime.scheduler.ticks,
             "time":runtime.scheduler.time,"level_time":runtime.scheduler.level_time,"inputs":runtime.scheduler.inputs});
+        if let Some(binding) = &runtime.actor_ropes {
+            frame["actor_ropes"] = json!(binding);
+        }
         if q["routing_checks"].as_bool() == Some(true) {
             frame["routing_checks"] = json!(runtime.actors.iter().map(|actor| {
                 let Some(slime) = actor.slime.as_ref() else {return Value::Null};
