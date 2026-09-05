@@ -43,6 +43,8 @@ pub struct RagdollImpulse {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn: Option<crate::actor_spawn::State>,
     pub state: State,
     pub animator: animator::State,
     pub speed: Speed,
@@ -268,6 +270,7 @@ impl Instance {
                 state.mode = 0;
                 Ok(())
             }
+            4 => Err("actor_spawn_requested"),
             _ => Err("unknown_slime_animation_callback"),
         };
         if let Some(scale) = scale {

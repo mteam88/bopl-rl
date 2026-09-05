@@ -54,3 +54,5 @@ pub mod actor_combat;
 mod actor_contacts;
 
 pub mod death_effect;
+
+pub mod actor_spawn;

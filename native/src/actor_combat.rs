@@ -14,6 +14,8 @@ pub struct Collision {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Revival {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_position: Option<crate::vector::Vec2>,
     pub status: i32,
     pub stocks: i32,
     pub respawn_count: usize,
@@ -163,7 +165,34 @@ impl Runtime {
             }
             Self::destroy_actor(actors, context, id)?;
         } else if revival.status == 3 {
-            return Err("actor_permanent_revive_not_implemented");
+            let position = revival
+                .spawn_position
+                .ok_or("missing_actor_spawn_position")?;
+            Self::spawn_actor(
+                actors,
+                context,
+                id,
+                crate::actor_spawn::Action::Unground,
+                position,
+                report,
+            )?;
+            context.combat.as_mut().unwrap().revival[victim].status = 2;
+            Self::spawn_actor(
+                actors,
+                context,
+                id,
+                crate::actor_spawn::Action::Prepare,
+                position,
+                report,
+            )?;
+            Self::spawn_actor(
+                actors,
+                context,
+                id,
+                crate::actor_spawn::Action::Respawn,
+                position,
+                report,
+            )?;
         }
         Ok(true)
     }

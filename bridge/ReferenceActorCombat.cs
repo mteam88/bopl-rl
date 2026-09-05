@@ -32,6 +32,7 @@ internal sealed class ReferenceActorCombat : IDisposable
             if((int)v["id"]!=p.Id)throw new ArgumentException("Combat player identity");
             p.Team=(int)v["team"];p.playersAndClonesStillAlive=(int)v["bodies_alive"];p.WonThisRound=(bool)v["won_round"];p.Kills=(int)v["kills"];p.Deaths=(int)v["deaths"];p.stillAliveThisRound=(bool)v["still_alive_round"];p.CauseOfDeath=(CauseOfDeath)(int)v["cause"];p.RumbleState=(Rumble)(int)v["rumble"];
             typeof(Player).GetProperty("TimestampWhenKilled").SetValue(p,(long)v["killed_at"]);
+            if(r["spawn_position"]!=null)p.SpawnPosition=ReferenceDynamics.V(r["spawn_position"]);
             p.ExtraLife=(ReviveStatus)(int)r["status"];p.StocksRemaining=(int)r["stocks"];
             if((int)r["respawn_count"]!=0)throw new NotSupportedException("Actor revive indicators are not installed");
             p.playerDied+=(id,cause)=>events.Add(new JObject{["player"]=id,["cause"]=(int)cause});
@@ -48,7 +49,7 @@ internal sealed class ReferenceActorCombat : IDisposable
     internal JObject Snapshot()
     {
         var result=(JObject)initial.DeepClone();var book=ReferencePlayerLife.Snapshot(players,events);result["events"]=book["events"];book.Remove("events");result["book"]=book;
-        for(int i=0;i<players.Count;i++){var r=result["revival"][i];r["status"]=(int)players[i].ExtraLife;r["stocks"]=players[i].StocksRemaining;r["respawn_count"]=players[i].RespawnPositions.Count;}
+        for(int i=0;i<players.Count;i++){var r=result["revival"][i];r["status"]=(int)players[i].ExtraLife;r["stocks"]=players[i].StocksRemaining;r["respawn_count"]=players[i].RespawnPositions.Count;if(r["spawn_position"]!=null)r["spawn_position"]=ReferenceDynamics.V(players[i].SpawnPosition);}
         result["trauma"]=(double)camera.GetTrauma();result["max_trauma"]=(double)camera.maxTrauma;return result;
     }
     public void Dispose()

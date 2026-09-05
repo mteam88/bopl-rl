@@ -42,12 +42,16 @@ pub struct State {
     /// References preserve repeated ability/indicator identities.
     pub abilities: Option<Vec<Option<usize>>>,
     pub ability_pool: Vec<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability_present: Option<Vec<bool>>,
     pub cooldowns: Option<Vec<Fix>>,
     pub indicator_refs: Option<Vec<Option<usize>>>,
     pub indicators: Vec<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback: Option<u32>,
     pub player: i32,
     pub holder: Option<i32>,
     pub jump_strength: Fix,
@@ -105,7 +109,7 @@ impl State {
         }
         Ok(())
     }
-    fn unground(&mut self, c: &mut Context<'_>) -> Result<()> {
+    pub(crate) fn unground(&mut self, c: &mut Context<'_>) -> Result<()> {
         let surface = self.motion.ground.and_then(|i| c.surfaces.get(i as usize));
         let angle = self.motion.unground(surface, true);
         // SlimeController.OnNoLongerGrounded runs before other test listeners and sound.
@@ -158,7 +162,7 @@ impl State {
             c.start(Start::Begin {
                 frames: Some(frames),
                 next: None,
-                callback: Some(1),
+                callback: Some(c.config.callback.unwrap_or(1)),
                 style: 3,
             })?;
         }
@@ -222,6 +226,13 @@ impl State {
         self.renderer_enabled = false;
         for i in 0..self.ability_count()? {
             let id = self.abilities.as_ref().unwrap()[i].ok_or("null_reference")?;
+            if self
+                .ability_present
+                .as_ref()
+                .is_some_and(|p| p.get(id) == Some(&false))
+            {
+                return Err("null_reference");
+            }
             if *self.ability_pool.get(id).ok_or("null_reference")? && c.player()?.revive == Some(id)
             {
                 *self

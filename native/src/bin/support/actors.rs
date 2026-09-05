@@ -47,6 +47,16 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                            report: &mut Report,
                            command: &Value| {
             effects.push(command.clone());
+            if command["op"] == "actor_spawn" {
+                return Runtime::spawn_actor(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    serde_json::from_value(command["action"].clone()).unwrap(),
+                    serde_json::from_value(command["position"].clone()).unwrap(),
+                    report,
+                );
+            }
             if command["op"] == "kill_actor" {
                 Runtime::kill_actor(
                     actors,

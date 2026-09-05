@@ -416,7 +416,13 @@ impl Runtime {
                 schedule.components[i].execution_gate = Some(
                     entity.present != Some(false)
                         && entity.active
-                        && (!matches!(component.role, Role::Body) || entity.body_simulated),
+                        && (!matches!(component.role, Role::Body) || entity.body_simulated)
+                        && (!matches!(component.role, Role::Physics)
+                            || actors[component.actor]
+                                .slime
+                                .as_ref()
+                                .and_then(|s| s.spawn.as_ref())
+                                .is_none_or(|s| s.physics_enabled)),
                 );
             }
         }
@@ -601,6 +607,33 @@ impl Runtime {
                 }
                 scheduler::Phase::Init | scheduler::Phase::Update | scheduler::Phase::Late => {
                     let component = components[phase.id.unwrap()];
+                    if matches!(phase.kind, scheduler::Phase::Init)
+                        && matches!(component.role, Role::Motor)
+                        && actors[component.actor]
+                            .slime
+                            .as_ref()
+                            .is_some_and(|s| s.spawn.is_some())
+                    {
+                        let result = Self::spawn_actor(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                scene,
+                                actor_ropes,
+                                combat,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                            crate::actor_spawn::Action::Init,
+                            Vec2::ZERO,
+                            report,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
+
                     if matches!(phase.kind, scheduler::Phase::Update)
                         && matches!(component.role, Role::Dash)
                     {
@@ -886,6 +919,26 @@ impl Runtime {
                     actor.controller_to_body();
                     actor.sync_transform(scene);
                     Self::refresh_entities(schedule, components, actors, scene);
+                    if result == Err("actor_spawn_requested") {
+                        let result = Self::spawn_actor(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                scene,
+                                actor_ropes,
+                                combat,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                            crate::actor_spawn::Action::Spawn,
+                            Vec2::ZERO,
+                            report,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
                     result?;
                     if let Some(request) = pending_entry {
                         let mut context = Context {

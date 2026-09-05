@@ -1104,3 +1104,41 @@ prefab's pinned hitstop is zero; nonzero hitstop in the outer host loop is not
 certified here. Stock/respawn/drop/clone creation and other ability handlers are
 still separate outstanding work. This does not expand the public C environment
 beyond its documented movement/dash slice.
+
+## Scheduled first spawn and revival
+
+`actor_spawn.rs` binds the existing spawn state machine to live actors, shared
+player revival/ability flags, colliders, indicator clocks, and scheduler gates.
+SlimeController.Init now runs for actors carrying spawn metadata. Its animation
+callback enables physics and body simulation at the source's exact position in
+the update order. PrepareToRevive, ReSpawn, ReSpawnFast and the permanent-revival
+kill branch use the same body and animator. Partial writes survive callback or
+reference failure. SpriteAnimator's spawn callback has its own identity, separate
+from locomotion and death-effect callbacks.
+
+The reference calls the original SlimeController methods, including Init through
+Updater and Spawn through the actual SpriteAnimator callback. Source and native
+traces compare subsequent movement, collider participation, shared player flags,
+indicator activation/reset clocks and death-effect scheduling. Tests include
+calls before ticks, before physics, and inside a body's late-update phase;
+protected/unprotected actors during time stop; repeated fast respawn; tutorial
+hurtboxes; and null/deleted ability, indicator, renderer and animation failures.
+
+The `actor-spawn` corpus has 78 cases: 48 complete 210-tick episodes (10,080 ticks)
+and 30 exact source failures (six missing-animation and 24 null-reference cases).
+`actor-spawn-initial` adds six complete episodes with every player's initial
+HasSpawned flag false: 1,260 ticks and 21 observed first-spawn completions.
+Together these are 84 cases, 54 complete episodes and 11,340 completed ticks,
+with every one-through-six-player roster represented in both sets. The main
+corpus observes 24 false-to-true HasSpawned transitions, 99 physics re-enables and
+48 indicator activations. These are frame-state transitions, not an exhaustive
+count of calls within a frame. The permanent-revival branch keeps its body alive
+and emits no Player.Kill death event, matching the source.
+
+All cases are retained in `fixtures/actor-spawn*.jsonl.gz`. Run
+`python3 native/tools/verify_actor_spawn.py --golden` and the same command with
+`--initial`; raw inputs/outputs and hashes are under the matching artifact names.
+Existing standalone spawn, locomotion, death and death-effect fixtures pass.
+This integration uses explicitly bound actors and indicator lifecycle state.
+Clone allocation, Revival ability placement/travel, stock choice and full match
+initialization remain outstanding; the public C environment's scope is unchanged.

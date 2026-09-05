@@ -227,3 +227,9 @@ one through six players, 5,160 ticks, and 21 normal contact deaths. Run
 `python3 native/tools/verify_death_effects.py --golden`; see
 [scope and evidence](FULL_COMPATIBILITY.md#spawned-death-effects-in-the-actor-runtime).
 The public C environment remains the movement/dash slice.
+
+
+First-spawn and respawn callbacks are now connected to the composed actor runner:
+84 source comparisons, including 54 complete episodes and 30 matching failure
+states. See [scheduled spawn coverage](FULL_COMPATIBILITY.md#scheduled-first-spawn-and-revival).
+Clone creation and stock selection remain outstanding.

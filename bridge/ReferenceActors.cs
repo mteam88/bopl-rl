@@ -19,6 +19,7 @@ internal static class ReferenceActors
     {
         var saved=typeof(Updater).GetFields(Statics).Where(f=>!f.IsLiteral&&!f.IsInitOnly).ToDictionary(f=>f,f=>f.GetValue(null));
         var oldPlayers=PlayerHandler.Get().PlayerList();var oldScale=GameTime.PlayerTimeScale;var oldSpace=Constants.leveltype;
+        var oldTutorial=TutorialGameHandler.isInTutorial;
         var oldDeadzone=Constants.GROUNDALIGNMENTDEADZONE;var oldCapture=ReferenceScheduler.Capture;var oldSound=ReferencePlayerController.SoundCapture;var oldRecord=Host.recordReplay;var oldEntryCapture=ReferenceCapture.ActorAbilityCapture;
         var oldPlayerGravity=scene.playerGravity;var oldMaxStretch=scene.maxStretchLength;var oldRopeStrength=scene.groundedPlayerRopeStr;
         ReferenceActorCombat combat=null;ReferenceDeathEffects deathEffects=null;
@@ -28,6 +29,8 @@ internal static class ReferenceActors
         try
         {
             var runtime=query["runtime"];if(animations!=null)achievedField.SetValue(null,new bool[28]);if((int)runtime["player_layer"]!=LayerMask.NameToLayer("Player"))throw new ArgumentException("Incorrect player layer");var initial=runtime["scheduler"];var actorData=(JArray)runtime["actors"].DeepClone();
+            var spawnActors=actorData.Where(a=>a["slime"]?["spawn"]!=null).ToList();
+            if(spawnActors.Count>0){bool tutorial=(bool)spawnActors[0]["slime"]["spawn"]["tutorial"];if(spawnActors.Any(a=>(bool)a["slime"]["spawn"]["tutorial"]!=tutorial))throw new ArgumentException("Tutorial state must be shared");TutorialGameHandler.isInTutorial=tutorial;}
             if(runtime["actor_ropes"]!=null)
             {
                 var binding=runtime["actor_ropes"];scene.playerGravity=F(binding["player_gravity"]);scene.maxStretchLength=F(binding["max_stretch"]);
@@ -123,6 +126,7 @@ internal static class ReferenceActors
             void Command(JToken command)
             {
                 effects.Add(command.DeepClone());
+                if((string)command["op"]=="actor_spawn"){currentActor=(int)command["actor"];ReferenceActorSpawn.Apply((string)command["action"],command["position"],slimes[currentActor]);return;}
                 if((string)command["op"]=="kill_actor"){var request=command["request"];currentActor=(int)command["actor"];bodies[currentActor].GetComponent<PlayerCollision>().killPlayer((int)request["killer"],(bool)request["spawn_effect"],(bool)request["ignore_invulnerability"],(CauseOfDeath)(int)request["cause"]);return;}
                 if((string)command["op"]=="destroy_actor"){Updater.DestroyFix(bodies[(int)command["actor"]].gameObject);return;}
                 if((string)command["op"]=="ordinary_exit"){currentActor=(int)command["actor"];ordinary[currentActor].Exit(command["info"]);return;}
@@ -149,8 +153,8 @@ internal static class ReferenceActors
                 var go=entityObjects[actor]??new GameObject("composed dispatch");if(entityObjects[actor]==null)objects.Add(go);var d=go.AddComponent<ReferenceActorDriver>();drivers.Add(d);
                 d.Destroyed=()=>Phase("destroy_updatable",id);
                 d.HierarchyNumber=(int)initial["components"][i]["hierarchy"];
-                if(actorData[actor]["entity"]!=null)d.Activity=()=>bodies[actor].gameObject.activeInHierarchy&&(role!="body"||bodies[actor].simulated);
-                d.Initialize=()=>{Phase("init",id);if(role=="body")bodies[actor].Init();};
+                if(actorData[actor]["entity"]!=null)d.Activity=()=>bodies[actor].gameObject.activeInHierarchy&&(role!="body"||bodies[actor].simulated)&&(role!="physics"||actorData[actor]["slime"]?["spawn"]==null||physics[actor].enabled);
+                d.Initialize=()=>{Phase("init",id);currentActor=actor;if(role=="body")bodies[actor].Init();else if(role=="motor"&&actorData[actor]["slime"]?["spawn"]!=null)slimes[actor].Slime.Init();};
                 d.Step=dt=>{
                     Phase("update",id);currentActor=actor;Constants.GROUNDALIGNMENTDEADZONE=F(actorData[actor]["config"]["alignment_deadzone"]);
                     if(role=="collision")bodies[actor].GetComponent<PlayerCollision>().UpdateSim(dt);
@@ -242,7 +246,7 @@ internal static class ReferenceActors
             foreach(var mesh in meshes)mesh.Dispose();scene.playerGravity=oldPlayerGravity;scene.maxStretchLength=oldMaxStretch;scene.groundedPlayerRopeStr=oldRopeStrength;
             ReferenceScheduler.Capture=null;achievedField.SetValue(null,oldAchieved);foreach(var asset in assets)UnityEngine.Object.DestroyImmediate(asset);foreach(var go in objects)if(go!=null)UnityEngine.Object.DestroyImmediate(go);
             foreach(var pair in saved)pair.Key.SetValue(null,pair.Value);PlayerHandler.Get().SetPlayerList(oldPlayers);GameTime.PlayerTimeScale=oldScale;
-            Constants.leveltype=oldSpace;Constants.GROUNDALIGNMENTDEADZONE=oldDeadzone;ReferenceScheduler.Capture=oldCapture;ReferencePlayerController.SoundCapture=oldSound;Host.recordReplay=oldRecord;ReferenceCapture.ActorAbilityCapture=oldEntryCapture;
+            TutorialGameHandler.isInTutorial=oldTutorial;Constants.leveltype=oldSpace;Constants.GROUNDALIGNMENTDEADZONE=oldDeadzone;ReferenceScheduler.Capture=oldCapture;ReferencePlayerController.SoundCapture=oldSound;Host.recordReplay=oldRecord;ReferenceCapture.ActorAbilityCapture=oldEntryCapture;
         }
     }
 }

@@ -65,12 +65,14 @@ internal static class ReferenceSlimeActors
                 TurnInput=(Fix)field.GetValue(callback.Target);
             }
             else if(name=="setStateToIdle"){id=3;TurnInput=Fix.Zero;}
+            else if(name=="Spawn"){id=4;TurnInput=Fix.Zero;}
             else throw new InvalidOperationException("Unmapped slime callback "+name);
             Animation.RegisterCallback(callback,id);
         }
         internal JObject Snapshot(JToken original)
         {
             TrackCallback();var value=(JObject)original.DeepClone();var s=value["state"];
+            if(value["spawn"]!=null)value["spawn"]=ReferenceActorSpawn.Snapshot(value["spawn"],this);
             if(value["managed_destroyed"]!=null||Slime.IsDestroyed)value["managed_destroyed"]=Slime.IsDestroyed;
             s["mode"]=(int)Slime.getCurrentState();s["facing_right"]=Flip.facingRight();s["was_upside_down"]=Get<bool>(Slime,"wasUpsideDown");
             s["input"]=V(Get<Vec2>(Slime,"inputVector"));s["previous_input"]=Get<Fix>(Slime,"prevInput").m_rawValue;s["suppress"]=Slime.suppressInput;s["has_spawned"]=Slime.HasSpawned;
@@ -143,6 +145,7 @@ internal static class ReferenceSlimeActors
             context.RoutingInputs(routing);
         }
         if(value["entry"]!=null){var entry=value["entry"];Set(slime,"playerAbilityInfoPackage",ReferenceInstantAbilities.Info(entry["info"],context));Set(slime,"wasInvisible",(bool)entry["was_invisible"]);if(entry["invisible_on_entry"]!=null)Set(slime,"wasInvisibileWhenEnteredAbility",(bool)entry["invisible_on_entry"]);Set(slime,"ropeCastBuffer",ReferenceInstantAbilities.Target(entry["rope_target"],context));}
+        if(value["spawn"]!=null)ReferenceActorSpawn.Bind(value["spawn"],context);
         return context;
     }
 }
