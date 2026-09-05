@@ -654,7 +654,7 @@ impl Runtime {
                     if matches!(phase.kind, scheduler::Phase::Init)
                         && matches!(component.role, Role::Collider)
                     {
-                        return actors[component.actor].initialize_box(
+                        return actors[component.actor].initialize_collider(
                             scene,
                             schedule.components[phase.id.unwrap()].hierarchy,
                         );

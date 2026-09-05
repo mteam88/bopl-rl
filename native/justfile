@@ -94,6 +94,10 @@ verify: build check
     python3 native/tools/verify_actor_eating.py --handoffs --golden
     python3 native/tools/verify_actor_eating.py --clones --golden
     python3 native/tools/verify_actor_eating.py --timing --golden
+    python3 native/tools/verify_actor_circles.py --golden
+    python3 native/tools/verify_actor_circles.py --faults --golden
+    python3 native/tools/verify_actor_circles.py --handoffs --golden
+    python3 native/tools/verify_actor_circles.py --lifecycle --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -260,3 +264,9 @@ verify-actor-eating: build
     python3 native/tools/verify_actor_eating.py --handoffs
     python3 native/tools/verify_actor_eating.py --clones
     python3 native/tools/verify_actor_eating.py --timing
+
+verify-actor-circles: build
+    python3 native/tools/verify_actor_circles.py
+    python3 native/tools/verify_actor_circles.py --faults
+    python3 native/tools/verify_actor_circles.py --handoffs
+    python3 native/tools/verify_actor_circles.py --lifecycle

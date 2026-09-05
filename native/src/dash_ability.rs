@@ -88,7 +88,7 @@ impl Instance {
             .physics
             .sync(&self.info.physics(), false, &platforms)?;
         actor.sync_transform(context.scene);
-        actor.sync_box(context.scene)?;
+        actor.sync_collider(context.scene)?;
         let motion = &mut actor.controller.physics.motion;
         motion.rotation = Fix::ZERO;
         motion.right = Vec2::angle(Fix::ZERO);

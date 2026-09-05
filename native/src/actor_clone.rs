@@ -32,7 +32,7 @@ impl Prefab {
         let entity = self.actor.entity.as_ref().ok_or("missing_clone_entity")?;
         if self.actor.pending_object.is_none()
             || entity.node >= self.nodes.len()
-            || entity.collider.initialized
+            || entity.collider.initialized()
             || self
                 .components
                 .iter()

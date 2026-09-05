@@ -226,14 +226,28 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                         .enabled = command["value"].as_bool().unwrap();
                     return Ok(());
                 }
+                "circle_radius" => {
+                    let actor = &mut actors[command["actor"].as_u64().unwrap() as usize];
+                    return actor
+                        .entity
+                        .as_mut()
+                        .ok_or("missing_actor_entity")?
+                        .collider
+                        .set_radius(
+                            serde_json::from_value(command["value"].clone()).unwrap(),
+                            actor.object,
+                            scene,
+                        );
+                }
                 "box_scale" => {
-                    return actors[command["actor"].as_u64().unwrap() as usize].set_box_scale(
+                    return actors[command["actor"].as_u64().unwrap() as usize].set_collider_scale(
                         serde_json::from_value(command["value"].clone()).unwrap(),
                         scene,
                     );
                 }
                 "box_sync" => {
-                    return actors[command["actor"].as_u64().unwrap() as usize].sync_box(scene);
+                    return actors[command["actor"].as_u64().unwrap() as usize]
+                        .sync_collider(scene);
                 }
                 "set_position" => {
                     let priorities = Runtime::position_priorities(actors);

@@ -1,11 +1,5 @@
 //! Collider and GameObject state used by composed actor ability handoffs.
-use crate::{
-    actors::Actor,
-    fixed::Fix,
-    physics::{scene::Scene, shape::Collider},
-    scheduler,
-    vector::Vec2,
-};
+use crate::{actors::Actor, fixed::Fix, physics::scene::Scene, scheduler};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -17,107 +11,34 @@ pub struct Entity {
     pub destroyed: Option<bool>,
     pub active: bool,
     pub body_simulated: bool,
-    #[serde(rename = "box")]
-    pub collider: BoxComponent,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BoxComponent {
-    pub scale: Fix,
-    pub min_scale: Fix,
-    pub max_scale: Fix,
-    pub minimum_extents: Fix,
-    pub start_extents: Vec2,
-    pub initialized: bool,
-}
-impl BoxComponent {
-    pub fn set_scale(
-        &mut self,
-        value: Fix,
-        transform_scale: &mut Fix,
-        object_id: u32,
-        scene: &mut Scene,
-        pending: Option<&mut crate::physics::scene::Object>,
-    ) -> scheduler::Result<()> {
-        let c = self;
-        let inverse = Fix::ONE
-            .checked_div(c.scale)
-            .map_err(|_| "division_by_zero")?;
-        c.scale = value.max(c.min_scale).min(c.max_scale);
-        let offset_factor = c
-            .scale
-            .checked_div(*transform_scale)
-            .map_err(|_| "division_by_zero")?;
-        let object = scene
-            .objects
-            .iter_mut()
-            .find(|o| o.id == object_id)
-            .or(pending)
-            .ok_or("missing_actor_object")?;
-        object.transform.offset *= offset_factor;
-        *transform_scale = c.scale;
-        let factor = inverse * c.scale;
-        if c.initialized {
-            let Collider::Box(shape) = &mut object.collider else {
-                return Err("actor_box_required");
-            };
-            shape.right *= factor;
-            shape.up *= factor;
-            shape.inverse_extents = Vec2::new(
-                shape
-                    .inverse_extents
-                    .x
-                    .checked_div(factor)
-                    .map_err(|_| "division_by_zero")?,
-                shape
-                    .inverse_extents
-                    .y
-                    .checked_div(factor)
-                    .map_err(|_| "division_by_zero")?,
-            );
-        } else {
-            c.start_extents *= factor;
-        }
-        Ok(())
-    }
+    #[serde(flatten)]
+    pub collider: crate::actor_collider::Component,
 }
 impl Actor {
-    pub(crate) fn initialize_box(
+    pub(crate) fn initialize_collider(
         &mut self,
         scene: &mut Scene,
         hierarchy: i32,
     ) -> scheduler::Result<()> {
+        if self
+            .entity
+            .as_ref()
+            .ok_or("missing_actor_entity")?
+            .collider
+            .skips_init()
+        {
+            return Ok(());
+        }
         let Some(object) = self.pending_object.as_mut() else {
             return Err("actor_collider_already_initialized");
         };
         let c = &mut self.entity.as_mut().ok_or("missing_actor_entity")?.collider;
-        if c.start_extents.x == Fix::ZERO {
-            c.start_extents.x = c.minimum_extents;
-        }
-        if c.start_extents.y == Fix::ZERO {
-            c.start_extents.y = c.minimum_extents;
-        }
-        let basis = object.transform.basis();
-        object.collider = Collider::Box(crate::geometry::OrientedBox {
-            center: object.transform.position + basis.complex_mul(object.transform.offset),
-            right: basis * c.start_extents.x,
-            up: basis.perp() * c.start_extents.y,
-            inverse_extents: Vec2::new(
-                Fix::ONE
-                    .checked_div(c.start_extents.x)
-                    .map_err(|_| "division_by_zero")?
-                    .abs(),
-                Fix::ONE
-                    .checked_div(c.start_extents.y)
-                    .map_err(|_| "division_by_zero")?
-                    .abs(),
-            ),
-        });
+        c.initialize_geometry(object)?;
         object.body = crate::physics::Body {
             inverse_mass: -Fix::ONE,
             orientation: object.transform.rotation,
             ..Default::default()
         };
-        c.initialized = true;
         object.hierarchy = Some(hierarchy);
         self.collision_hierarchy = hierarchy;
         scene.objects.push(self.pending_object.take().unwrap());
@@ -128,7 +49,7 @@ impl Actor {
             .as_ref()
             .is_none_or(|e| e.present != Some(false))
     }
-    pub fn set_box_scale(&mut self, value: Fix, scene: &mut Scene) -> scheduler::Result<()> {
+    pub fn set_collider_scale(&mut self, value: Fix, scene: &mut Scene) -> scheduler::Result<()> {
         self.entity
             .as_mut()
             .ok_or("missing_actor_entity")?
@@ -141,54 +62,12 @@ impl Actor {
                 self.pending_object.as_mut(),
             )
     }
-    pub fn sync_box(&self, scene: &mut Scene) -> scheduler::Result<()> {
+    pub fn sync_collider(&self, scene: &mut Scene) -> scheduler::Result<()> {
         self.entity
             .as_ref()
             .ok_or("missing_actor_entity")?
             .collider
             .sync(self.object, scene)
-    }
-}
-impl BoxComponent {
-    pub fn sync(&self, object_id: u32, scene: &mut Scene) -> scheduler::Result<()> {
-        let c = self;
-        if !c.initialized {
-            return Ok(());
-        }
-        let index = scene
-            .objects
-            .iter()
-            .position(|o| o.id == object_id)
-            .ok_or("missing_actor_object")?;
-        if let Some(composite) = scene.objects[index]
-            .composite
-            .filter(|&i| !scene.composites[i].destroyed)
-        {
-            scene.synchronize_composite(composite);
-        } else {
-            let object = &mut scene.objects[index];
-            let Collider::Box(shape) = &mut object.collider else {
-                return Err("actor_box_required");
-            };
-            let basis = Vec2::angle(object.transform.rotation);
-            let divide = |v: Vec2, d: Fix| -> scheduler::Result<Vec2> {
-                Ok(Vec2::new(
-                    v.x.checked_div(d).map_err(|_| "division_by_zero")?,
-                    v.y.checked_div(d).map_err(|_| "division_by_zero")?,
-                ))
-            };
-            shape.right = divide(Vec2::RIGHT, shape.inverse_extents.x)?.complex_mul(basis);
-            shape.up = divide(Vec2::UP, shape.inverse_extents.y)?.complex_mul(basis);
-            object.collider.set_center(
-                object.transform.position
-                    + object
-                        .transform
-                        .basis()
-                        .complex_mul(object.transform.offset),
-            );
-            object.body.orientation = object.transform.rotation;
-        }
-        Ok(())
     }
 }
 

@@ -61,7 +61,7 @@ impl Runtime {
                 .ok_or("null_reference")?
                 .scale
                 .unwrap_or(Fix::ONE);
-            actor.set_box_scale(scale, context.scene)?;
+            actor.set_collider_scale(scale, context.scene)?;
         }
         if let Some(player) = context
             .schedule
@@ -103,7 +103,7 @@ impl Runtime {
             ability.previous_scale = scale;
         }
         let slime = ability.slime;
-        actor.set_box_scale(scale, context.scene)?;
+        actor.set_collider_scale(scale, context.scene)?;
         if let Some(position) = &mut player.position {
             position.set(actor.controller.physics.motion.position, slime, &priorities);
         }

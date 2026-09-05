@@ -1396,3 +1396,35 @@ captures are in `artifacts/actor-eating-verified`, `actor-eating-failures`,
 render-only presentation are outside these headless traces. Remaining abilities,
 stock selection and the complete match environment remain outstanding; the
 public C environment retains its documented movement/dash scope.
+
+### Circular collider components in composed actors
+
+The composed runtime now binds either the original `DPhysicsBox` or
+`DPhysicsCircle` component. Circle scale changes preserve the source's operation
+order: divide by the old component scale, clamp, update the FixTransform scale
+and offset, then scale the radius. A zero new scale can succeed; a subsequent
+scale write divides by zero. Radius writes address the initial radius before
+initialization and the registered geometry afterward. Circle synchronization
+updates center and body orientation, including the existing composite path.
+
+Four complete retained Unity corpora cover 198 cases across one through six
+players, 16,890 completed ticks and 36,696 collision callbacks:
+
+- 48 movement/activity cases: 11,520 ticks, mixed boxes and circles, radius
+  writes, player scale, time scale, collider enable state and active GameObjects.
+- 72 boundary cases: 54 completed ticks and 18 matching division-by-zero
+  prefixes, including zero/negative radius, reversed clamps, uninitialized
+  property writes and uninitialized synchronization.
+- 24 plain Ability handoff cases: 4,320 ticks and 449 actual entries between
+  independently scheduled SlimeController and circular Ability bodies.
+- 54 destruction cases: 996 ticks, 69 removed actor bodies, parent-child
+  cleanup and six matching null-reference prefixes for already-removed actors.
+
+Every frame and exception prefix is retained in `fixtures/actor-circles*.jsonl.xz`.
+Assembly/input/output hashes and raw captures are in
+`artifacts/actor-circles-verified`, `actor-circles-faults-verified`,
+`actor-circles-handoffs`, and `actor-circles-lifecycle`. The handoff suite uses
+plain Ability components without a concrete spell effect. Fresh circle
+instantiation, manual initialization and BoplBody initialization are not covered
+by these corpora. This extends composed collider behavior; it does not complete
+the remaining spells or the public C environment's full-game integration.

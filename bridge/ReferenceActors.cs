@@ -93,11 +93,16 @@ internal static class ReferenceActors
                 p.jumpStrength=F(c["jump_strength"]);p.jumpExtraXStrength=F(c["jump_extra_x"]);p.jumpKeptMomentum=F(c["jump_momentum"]);p.jumpNormalScaleFactor=F(c["jump_normal_scale"]);p.extraJumpTeleportMultiplier=F(c["jump_teleport"]);p.inverseMass01=F(c["inverse_mass"]);
                 Set(p,"PlatformSlipperyness01",F(config["friction"]));Set(p,"IcePlatformSlipperyness01",F(config["ice_friction"]));
                 adapter.parent.hierarchyNumber=(int)a["collision_hierarchy"];
-                if(a["entity"]!=null){var box=go.GetComponent<DPhysicsBox>();box.HierarchyNumber=(int)a["collision_hierarchy"];box.pp=adapter.parent;}
-                int colliderIndex=scene.boxes.ColliderIndex(adapter.parent.instanceId);scene.boxes.physicsParents[colliderIndex]=adapter.parent;
+                if(a["entity"]!=null)
+                {
+                    var collider=go.GetComponent<IPhysicsCollider>();((MonoUpdatable)collider).HierarchyNumber=(int)a["collision_hierarchy"];
+                    if(collider is DPhysicsBox box)box.pp=adapter.parent;else ((DPhysicsCircle)collider).pp=adapter.parent;
+                }
+                if(adapter.shape==Shape.Circle)scene.circles.physicsParents[scene.circles.ColliderIndex(adapter.parent.instanceId)]=adapter.parent;
+                else scene.boxes.physicsParents[scene.boxes.ColliderIndex(adapter.parent.instanceId)]=adapter.parent;
                 SlimeController slime=null;
                 if((animations!=null&&animations[i]!=null)||a["push_strength"].Type!=JTokenType.Null){slime=go.GetComponent<SlimeController>()??go.AddComponent<SlimeController>();Set(slime,"body",body);Set(slime,"playerPhysics",p);slime.playerNumber=(int)bs["holder"];}
-                if(animations!=null)slimes.Add(animations[i]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?(IPhysicsCollider)go.GetComponent<DPhysicsBox>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects,ropes));
+                if(animations!=null)slimes.Add(animations[i]==null?null:ReferenceSlimeActors.Bind(a["slime"],slime,body,p,a["entity"]!=null?go.GetComponent<IPhysicsCollider>():adapter,animations[i],objects,assets,i,platforms,adapters,entityObjects,ropes));
                 if(a["rewind"]!=null)ReferenceActorRewind.Bind(a["rewind"],slime);
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
@@ -160,9 +165,10 @@ internal static class ReferenceActors
                 if((string)command["op"]=="actor_active"){bodies[(int)command["actor"]].gameObject.SetActive((bool)command["value"]);return;}
                 if((string)command["op"]=="body_simulated"){bodies[(int)command["actor"]].simulated=(bool)command["value"];return;}
                 if((string)command["op"]=="player_scale"){players[(int)command["player"]].Scale=F(command["value"]);return;}
-                if((string)command["op"]=="box_enabled"){bodies[(int)command["actor"]].GetComponent<DPhysicsBox>().enabled=(bool)command["value"];return;}
-                if((string)command["op"]=="box_scale"){bodies[(int)command["actor"]].GetComponent<DPhysicsBox>().Scale=F(command["value"]);return;}
-                if((string)command["op"]=="box_sync"){bodies[(int)command["actor"]].GetComponent<DPhysicsBox>().UpdatePhysicsPositions();return;}
+                if((string)command["op"]=="box_enabled"){bodies[(int)command["actor"]].GetComponent<IPhysicsCollider>().enabled=(bool)command["value"];return;}
+                if((string)command["op"]=="box_scale"){bodies[(int)command["actor"]].GetComponent<IPhysicsCollider>().Scale=F(command["value"]);return;}
+                if((string)command["op"]=="circle_radius"){bodies[(int)command["actor"]].GetComponent<DPhysicsCircle>().radius=F(command["value"]);return;}
+                if((string)command["op"]=="box_sync"){bodies[(int)command["actor"]].GetComponent<IPhysicsCollider>().UpdatePhysicsPositions();return;}
                 if((string)command["op"]!="ragdoll")throw new ArgumentException("Unknown actor command");
                 slimes[(int)command["actor"]].Apply(command["request"]);
             }
