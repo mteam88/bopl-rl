@@ -93,6 +93,18 @@ impl World {
         serde_json::from_str(include_str!("../data/level1-movement.json"))
             .expect("validated embedded reset")
     }
+    pub fn level1_with_players(players: usize) -> Option<Self> {
+        let reset = match players {
+            1 => include_str!("../data/level1-movement-1.json"),
+            2 => return Some(Self::level1()),
+            3 => include_str!("../data/level1-movement-3.json"),
+            4 => include_str!("../data/level1-movement-4.json"),
+            5 => include_str!("../data/level1-movement-5.json"),
+            6 => include_str!("../data/level1-movement-6.json"),
+            _ => return None,
+        };
+        Some(serde_json::from_str(reset).expect("validated embedded multiplayer reset"))
+    }
     pub fn terminal(&self) -> bool {
         self.players.iter().any(|p| !p.alive)
     }

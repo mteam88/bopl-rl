@@ -1,0 +1,278 @@
+{
+  "reference": "c5b73bb0e17f2a87a7c19d3de24d78403a910e77",
+  "abilities": [
+    {
+      "id": 0,
+      "name": "NullAbility",
+      "prefab": "Assets/GameObject/NullAbility.prefab",
+      "prefab_guid": "c6184b2da376bc0418d15724e93d435f",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 1,
+      "name": "Random",
+      "prefab": "Assets/GameObject/Random.prefab",
+      "prefab_guid": "104ab7202bc7daf48bf2cc31fd8cf403",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 2,
+      "name": "Dash",
+      "prefab": "Assets/GameObject/Dash.prefab",
+      "prefab_guid": "fb4c4d5ea2fd99d4a91d8ba7efbe0542",
+      "native_status": "slice-only"
+    },
+    {
+      "id": 3,
+      "name": "Grenade",
+      "prefab": "Assets/GameObject/Grenade_0.prefab",
+      "prefab_guid": "7deaedf5cf4a92e4585ce06988f30efd",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 4,
+      "name": "Bow",
+      "prefab": "Assets/GameObject/Bow.prefab",
+      "prefab_guid": "39014498316c3ea4fa825e8bba01c406",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 5,
+      "name": "Engine",
+      "prefab": "Assets/GameObject/Engine.prefab",
+      "prefab_guid": "06006cbd8160cbe4e8f343b1ec17a96c",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 6,
+      "name": "Blink gun",
+      "prefab": "Assets/GameObject/Blink gun.prefab",
+      "prefab_guid": "27cf7117645fa164caf281cfa9f34fa8",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 7,
+      "name": "Gust",
+      "prefab": "Assets/GameObject/Gust.prefab",
+      "prefab_guid": "05feec16b8416224fb842a3774879cf4",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 8,
+      "name": "Growth ray",
+      "prefab": "Assets/GameObject/Growth ray.prefab",
+      "prefab_guid": "34c14705ee822d546bac37f0da5c2f19",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 9,
+      "name": "Rock",
+      "prefab": "Assets/GameObject/Rock.prefab",
+      "prefab_guid": "44115a8eb36b70448af81e1d922e7e12",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 10,
+      "name": "Missile",
+      "prefab": "Assets/GameObject/Missile.prefab",
+      "prefab_guid": "ffd8f8bdcaa07a44382f6002679021df",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 11,
+      "name": "Spike",
+      "prefab": "Assets/GameObject/Spike.prefab",
+      "prefab_guid": "b28199828504fa141b09a7fbc4328c9d",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 12,
+      "name": "Time stop",
+      "prefab": "Assets/GameObject/Time stop.prefab",
+      "prefab_guid": "13b1168b7f11655458dddcfce3f9b0ce",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 13,
+      "name": "Smoke",
+      "prefab": "Assets/GameObject/Smoke.prefab",
+      "prefab_guid": "ce4ee6a2ec049d6498bc13786335c085",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 14,
+      "name": "Platform",
+      "prefab": "Assets/GameObject/Platform.prefab",
+      "prefab_guid": "69401f310afcfa94a84da50ccfc4b638",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 15,
+      "name": "Revival",
+      "prefab": "Assets/GameObject/Revival.prefab",
+      "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 16,
+      "name": "Roll",
+      "prefab": "Assets/GameObject/Roll.prefab",
+      "prefab_guid": "b021bd38a2adc8c48a6a73b81255f4b2",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 17,
+      "name": "Shrink ray",
+      "prefab": "Assets/GameObject/Shrink ray.prefab",
+      "prefab_guid": "b67f9e6a1e870ab469ad480333d1022b",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 18,
+      "name": "Black hole",
+      "prefab": "Assets/GameObject/Black hole.prefab",
+      "prefab_guid": "902b30a54480357438ed3cc55485e8de",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 19,
+      "name": "Invisibility",
+      "prefab": "Assets/GameObject/Invisibility.prefab",
+      "prefab_guid": "98dc74d37d856a44794621d205de7e72",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 20,
+      "name": "Meteor",
+      "prefab": "Assets/GameObject/Meteor.prefab",
+      "prefab_guid": "cf66511cb6ed3aa41acdad8d6d7915fe",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 21,
+      "name": "Throw",
+      "prefab": "Assets/GameObject/Throw.prefab",
+      "prefab_guid": "9ad291238c72a1a41a715ba7b7a8477e",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 22,
+      "name": "Push",
+      "prefab": "Assets/GameObject/Push.prefab",
+      "prefab_guid": "df77479189541ac49a8b01eb919f04b1",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 23,
+      "name": "Tesla coil",
+      "prefab": "Assets/GameObject/Tesla coil.prefab",
+      "prefab_guid": "fecc7830c8d177f4d9482f4c4302a06b",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 24,
+      "name": "Mine",
+      "prefab": "Assets/GameObject/Mine.prefab",
+      "prefab_guid": "aa6bd66183fd339489444ffd04d85fd3",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 25,
+      "name": "Teleport",
+      "prefab": "Assets/GameObject/Teleport.prefab",
+      "prefab_guid": "96597c44420b8d146b7e554c170e3564",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 26,
+      "name": "Drill",
+      "prefab": "Assets/GameObject/Drill.prefab",
+      "prefab_guid": "42151d40a4924fd45b2fac553adf0f36",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 27,
+      "name": "Grappling hook",
+      "prefab": "Assets/GameObject/Grappling hook.prefab",
+      "prefab_guid": "964ae230194fbf1468d5b187d6d4df92",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 28,
+      "name": "Beam",
+      "prefab": "Assets/GameObject/Beam.prefab",
+      "prefab_guid": "551e7eb68828c994d8f83e8e070fed17",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 29,
+      "name": "Duplicator",
+      "prefab": "Assets/GameObject/Duplicator.prefab",
+      "prefab_guid": "9c1404930ef762b49ad05b1034a4c4d8",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 30,
+      "name": "Magnet gun",
+      "prefab": "Assets/GameObject/Magnet gun.prefab",
+      "prefab_guid": "f4ca9e84a5c630c41af189a13d9a24aa",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 31,
+      "name": "Rewind",
+      "prefab": "Assets/GameObject/Rewind.prefab",
+      "prefab_guid": "b03946a27fb04a3092575c77faa0d9e6",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 32,
+      "name": "Web swing",
+      "prefab": "Assets/GameObject/Web swing.prefab",
+      "prefab_guid": "6508c9ccd4a0464a8445e0ee0eb6e26d",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 33,
+      "name": "Poke ball",
+      "prefab": "Assets/GameObject/Poke ball.prefab",
+      "prefab_guid": "c752170c9d694ab78a0f23c34fee8cea",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 34,
+      "name": "Gold mushroom",
+      "prefab": "Assets/GameObject/Super star.prefab",
+      "prefab_guid": "bcb43516390546c3a28f827b2bdd0254",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 35,
+      "name": "Tack",
+      "prefab": "Assets/GameObject/Banana peel.prefab",
+      "prefab_guid": "924cddb182e642829c914ae7aa5f57e2",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 36,
+      "name": "Freeze ray",
+      "prefab": "Assets/GameObject/Freeze ray.prefab",
+      "prefab_guid": "d342fcb8fb1443d5908491b61f06fcbb",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 37,
+      "name": "Mjolnir",
+      "prefab": "Assets/GameObject/Mjolnir.prefab",
+      "prefab_guid": "823ddf3de86a44909b972860ac2f24a2",
+      "native_status": "unimplemented"
+    },
+    {
+      "id": 38,
+      "name": "Portal gun",
+      "prefab": "Assets/GameObject/Portal gun.prefab",
+      "prefab_guid": "63655ac5f0ee4fbe8e325a3705bbf15b",
+      "native_status": "unimplemented"
+    }
+  ]
+}

@@ -15,10 +15,12 @@ using UnityEngine.SceneManagement;
 // Opt-in differential instrumentation. Never used by an ordinary game session.
 public static class ReferenceCapture
 {
-    public const string Schema = "bopl-managed-state-v2";
+    public const string Schema = "bopl-managed-state-v3";
     private static readonly string output = Environment.GetEnvironmentVariable("BOPL_TRACE");
     private static StreamWriter writer;
     private static int captured;
+    private static JArray events = new JArray();
+    private static readonly SortedDictionary<string, int> abilityEntries = new SortedDictionary<string, int>(StringComparer.Ordinal);
     private static readonly Dictionary<Type, FieldInfo[]> fields = new Dictionary<Type, FieldInfo[]>();
     private static readonly int limit = ReadPositive("BOPL_TRACE_TICKS", 600);
     public static bool Enabled => !string.IsNullOrEmpty(output);
@@ -42,6 +44,24 @@ public static class ReferenceCapture
             ["value"] = new Encoder().Value(input, "input") }.ToString(Formatting.None));
     }
 
+    public static void BeforeReplayStep(InputPacket[] input)
+    {
+        if (!Enabled) return;
+        EnsureWriter();
+        writer.WriteLine(new JObject { ["kind"] = "input", ["index"] = captured,
+            ["value"] = new Encoder().Value(input, "input") }.ToString(Formatting.None));
+    }
+
+    public static void AbilityEntered(int player, int slot, AbilityMonoBehaviour ability)
+    {
+        if (!Enabled) return;
+        string name = ability.gameObject.name.Replace("(Clone)", "");
+        abilityEntries.TryGetValue(name, out int count);
+        abilityEntries[name] = count + 1;
+        events.Add(new JObject { ["kind"] = "ability_entry", ["player"] = player, ["slot"] = slot,
+            ["prefab"] = name, ["instance"] = Encoder.Identity(ability) });
+    }
+
     public static void AfterTick()
     {
         if (!Enabled) return;
@@ -51,6 +71,8 @@ public static class ReferenceCapture
             var encoder = new Encoder();
             var state = new JObject();
             state["tick"] = Updater.SimulationTicks;
+            state["events"] = events;
+            events = new JArray();
             state["scene"] = SceneManager.GetActiveScene().name;
             state["updater"] = encoder.Static(typeof(Updater), new[] {
                 "random", "hitStopFrames", "SimTimePassed", "SimTimeSinceLevelLoaded",
@@ -112,6 +134,8 @@ public static class ReferenceCapture
         writer.WriteLine(new JObject { ["kind"] = "header", ["schema"] = Schema,
             ["reference"] = "67484d097087562123f860e1ed209bcb56e99d2e", ["unity"] = Application.unityVersion,
             ["batch"] = Batch, ["limit"] = limit,
+            ["replayFormat"] = ReplaySession.Playing == null ? "legacy" : "BOPLREP2",
+            ["setup"] = ReplaySession.Playing == null ? null : JObject.FromObject(new { ReplaySession.Playing.sourceHash, ReplaySession.Playing.catalogHash, ReplaySession.Playing.seed, ReplaySession.Playing.level, ReplaySession.Playing.gameMode, ReplaySession.Playing.stocks, ReplaySession.Playing.players }),
             ["scope"] = "managed updatables, active and inactive fixed transforms, facing, players, live rigid bodies, session; excludes native rendering internals and unlisted physics globals"
         }.ToString(Formatting.None));
     }
@@ -120,7 +144,7 @@ public static class ReferenceCapture
     {
         EnsureWriter();
         writer.WriteLine(new JObject { ["kind"] = "end", ["ticks"] = captured,
-            ["reason"] = reason }.ToString(Formatting.None));
+            ["reason"] = reason, ["abilityEntries"] = JObject.FromObject(abilityEntries) }.ToString(Formatting.None));
         writer.Dispose();
         writer = null;
         Completed = true;
@@ -158,7 +182,9 @@ public static class ReferenceCapture
             foreach (FieldInfo field in Fields(value.GetType()))
             {
                 if (field.Name == "instanceId" || field.Name == "instanceIdToColliderIndex") continue;
-                result[field.DeclaringType.Name + "." + field.Name] = Value(field.GetValue(value), path + "/" + field.Name);
+                if (field.DeclaringType == typeof(CompositeBody) && (field.Name == "circleIds" || field.Name == "boxIds" || field.Name == "roundedRectIds"))
+                    result[field.DeclaringType.Name + "." + field.Name] = new JArray(((IEnumerable<int>)field.GetValue(value)).Select(BodyIdentity));
+                else result[field.DeclaringType.Name + "." + field.Name] = Value(field.GetValue(value), path + "/" + field.Name);
             }
             return result;
         }
@@ -205,6 +231,19 @@ public static class ReferenceCapture
                 return ObjectFields(value, path);
             // Explicit diagnostics: consumers must not interpret this as complete state.
             return new JObject { ["$unsupported"] = type.FullName };
+        }
+
+        private static string BodyIdentity(int id)
+        {
+            var physics = DetPhysics.Get();
+            string Find<T>(PhysicsBodyList<T> list)
+            {
+                for (int i = 0; i < list.Length; i++)
+                    if (list.physicsParents[i].instanceId == id) return Identity(list.physicsParents[i].fixTrans);
+                return null;
+            }
+            return Find(physics.circles) ?? Find(physics.boxes) ?? Find(physics.roundedRects)
+                ?? throw new InvalidOperationException("Composite refers to an unregistered body: " + id);
         }
 
         public static string Identity(UnityEngine.Object value)

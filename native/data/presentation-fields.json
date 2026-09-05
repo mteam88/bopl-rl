@@ -29,6 +29,60 @@
       "sources": [
         "QuickSpell.cs"
       ]
+    },
+    "SimpleSparkNode.timeSinceActivated": {
+      "reason": "Updated only by MonoBehaviour.Update and reset when connecting nodes. Its only read evaluates ScaleAnim for the LitOrbs[1] sprite flare transform; lightning activation uses the separate fixed SpriteAnimator clock, which stays compared.",
+      "sources": [
+        "SimpleSparkNode.cs"
+      ]
+    },
+    "BlackHole.onEatParticles": {
+      "reason": "List of cosmetic ParticleSystems from SpawnParticle. UpdateSim only removes expired references and updates orbital particle offsets; gravity, mass, consumed bodies and black-hole clocks remain compared.",
+      "sources": [
+        "BlackHole.cs"
+      ]
+    },
+    "Portal.ageVisual": {
+      "reason": "Only read and written in LateUpdate for sprite scale/color and cosmetic sparkles. Portal crossing tests use fixed position, normal, tangent, halfWidth and thickness; lifetime uses separate fixed timeAlive. All these gameplay fields remain compared.",
+      "sources": [
+        "Portal.cs"
+      ]
+    },
+    "Portal.spinPhase": {
+      "reason": "Only read and written in LateUpdate for sprite scale/color and cosmetic sparkles. Portal crossing tests use fixed position, normal, tangent, halfWidth and thickness; lifetime uses separate fixed timeAlive. All these gameplay fields remain compared.",
+      "sources": [
+        "Portal.cs"
+      ]
+    },
+    "Portal.sparkleTimer": {
+      "reason": "Only read and written in LateUpdate for sprite scale/color and cosmetic sparkles. Portal crossing tests use fixed position, normal, tangent, halfWidth and thickness; lifetime uses separate fixed timeAlive. All these gameplay fields remain compared.",
+      "sources": [
+        "Portal.cs"
+      ]
+    },
+    "DuplicatePlatformEffect.effectShake": {
+      "reason": "Only subtracted from and added to the platformShaderEffect sprite transform, using Unity cosmetic RNG. The platform itself uses newPlatformPos and its fixed collider; these remain compared.",
+      "sources": [
+        "DuplicatePlatformEffect.cs"
+      ]
+    },
+    "SuperStarEffect.shimmerPhase": {
+      "reason": "Only used by LateUpdate for tint shimmer and ambient ParticleSystem spawning. Buff duration, invulnerability, collision force and ability form state use separate fixed fields, which remain compared.",
+      "sources": [
+        "SuperStarEffect.cs"
+      ]
+    },
+    "SuperStarEffect.sparkTimer": {
+      "reason": "Only used by LateUpdate for tint shimmer and ambient ParticleSystem spawning. Buff duration, invulnerability, collision force and ability form state use separate fixed fields, which remain compared.",
+      "sources": [
+        "SuperStarEffect.cs"
+      ]
+    },
+    "SuperStarEffect.lastTintedForm": {
+      "reason": "Tracks the SpriteRenderer whose color LateUpdate last changed, so RestoreTint can restore its visual tint. Only those two presentation methods read/write this reference; fixed buff lifetime and collision/invulnerability fields stay compared.",
+      "sources": [
+        "SuperStarEffect.cs"
+      ]
     }
   }
 }

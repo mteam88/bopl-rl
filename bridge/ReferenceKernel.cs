@@ -42,6 +42,7 @@ public static class ReferenceKernel
 
     public static JToken Evaluate(JObject query)
     {
+        if (((string)query["operation"]).StartsWith("dynamics_", StringComparison.Ordinal)) return ReferenceDynamics.Evaluate(query);
         var center = Vector(query["center"]);
         var extent = Vector(query["extent"]);
         var origin = Vector(query["origin"]);

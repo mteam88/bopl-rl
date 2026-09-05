@@ -1,7 +1,10 @@
 use bopl_sim::world::{Action, World};
 use std::io::{self, BufRead, BufWriter, Write};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut world = World::level1();
+    let mut world = match std::env::args().nth(1) {
+        Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
+        None => World::level1(),
+    };
     let mut output = BufWriter::new(io::stdout().lock());
     for line in io::stdin().lock().lines() {
         let raw: Vec<[u8; 2]> = serde_json::from_str(&line?)?;

@@ -91,3 +91,27 @@ README.md. No trained policy or PufferLib backend has been validated.
 
 Expand these gates alongside each new mechanic. Preserve failures and report
 which fields, episodes, and interactions were actually compared.
+
+## Full-compatibility expansion checkpoint
+
+The expanded goal remains incomplete; see [FULL_COMPATIBILITY.md](FULL_COMPATIBILITY.md).
+One-through-six-player movement/dash is now exposed through the C/ctypes APIs.
+Six additional Unity episodes add 951 exact independent C-ABI ticks (6,821 total
+across 15 episodes). Unity's own playback matches for all six player counts at
+batches 1 and 16, 900 ticks per episode.
+
+The new rigid-body primitives match 27,000 actual Unity queries across six
+collider pairs, integration, impulse/friction resolution and positional correction.
+The suite includes source arithmetic failures; two initial one-raw-unit negation
+ordering bugs were fixed. A 1,754-case stratified regression is checked in.
+
+RNG output and state match 65,000 mixed operations across 65 seeds against the
+actual managed game assembly, including calls to Updater.RandomFix; 5,000 draws
+are kept as a standalone regression. The BOPLREP2 codec passed 21,504 complete
+packet roundtrips across 1..6 players and all 1,024 input-bit combinations, with
+corruption, partial streams, reserved bits and invalid IDs rejected.
+
+These primitive checks do not certify an integrated Rust physics world or the
+unported abilities. The new reference setup/capture code has been compiled and
+run in Unity; actual local recording parity, later-round carried state, full
+physics/global state capture and the complete Rust gameplay port remain required.

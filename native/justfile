@@ -14,6 +14,8 @@ verify: build check
     cc -std=c11 -Wall -Wextra -Werror -I native/include native/examples/smoke.c -L native/target/release -lbopl_sim -Wl,-rpath,'$ORIGIN/../target/release' -o native/target/c-smoke
     LD_LIBRARY_PATH=native/target/release native/target/c-smoke
     python3 native/tools/golden.py verify
+    python3 native/tools/dynamics_golden.py verify
+    python3 native/tools/verify_random.py --golden
     python3 native/tools/test_python.py
 
 verify-math: build
@@ -31,3 +33,17 @@ verify-geometry: build
 
 benchmark: build
     python3 native/tools/benchmark.py
+
+# Full-port verification layers (Unity player must be built with current probes).
+verify-replay-codec:
+    dotnet run --project native/tools/replay-codec -c Release -- selftest
+
+verify-dynamics: build
+    python3 native/tools/verify_dynamics.py --cases 3000
+
+verify-pin:
+    python3 native/tools/pin_reference.py --commit c5b73bb0e17f2a87a7c19d3de24d78403a910e77 --verify
+
+verify-random: build
+    dotnet build native/tools/random-oracle -c Release --nologo -v:q
+    python3 native/tools/verify_random.py

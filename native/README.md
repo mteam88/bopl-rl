@@ -1,12 +1,16 @@
 # Bopl native foundation
 
-A standalone Rust simulation of **Level1 with two equal-size slimes, movement,
+A standalone Rust simulation of **Level1 with one through six equal-size slimes, movement,
 jump, dash, player shoves, and the first player death**. It exposes a small C ABI
 and Python/Gymnasium adapters. Unity is needed to generate fresh reference data,
 not to build or run the native environment.
 
 This is the first verified slice of the port. It is **not the complete game** and
 there is no trained bot or PufferLib training integration yet.
+
+The full-game expansion is active: [scope and progress](FULL_COMPATIBILITY.md).
+The Gym adapter still controls a two-player environment; the C and ctypes APIs
+support all six players in the movement slice.
 
 ## Run
 
@@ -38,9 +42,9 @@ spawn sequence; it does not run Unity or replay the spawn animation. The native
 world stops at the first death. Call reset before stepping again.
 
 Actions use the original byte-angle table: zero means neutral, bytes 1–255
-represent `(byte-1)*2π/255`. Button bits are jump=1 and dash=2. Both players receive
+represent `(byte-1)*2π/255`. Button bits are jump=1 and dash=2. All players receive
 one action each tick, at the game's exact fixed timestep. Other button bits are
-rejected. The C API deliberately provides no unverified map/loadout selector.
+rejected. Use `bopl_create_players(1..6)` or `World(players=6)` to select player count. The C API deliberately provides no unverified map/loadout selector.
 
 ## RL access
 
@@ -159,8 +163,10 @@ The mutator preserves the replay header and mixes original play with seeded
 held-input bursts and simultaneous ability presses. Preflight rejects missing
 player inputs and unresolved ability ID 255. Legacy recordings have no build ID
 and only four player streams: five/six-player matches cannot be reconstructed
-faithfully from these files. A future recording format should store every player,
-resolved loadout, game/settings version, RNG state, and a tick-state fingerprint.
+faithfully from these files. The new `BOPLREP2` format records all six player inputs, prefab-resolved
+loadouts and pinned game/catalog identity; see [the format description](FULL_COMPATIBILITY.md#replay-v2).
+Use `tools/replay-codec` and `generate_full_scenarios.py` for new-format scenarios.
+The old replay inspection/mutation tool above remains specific to legacy files.
 
 ## Extending the port
 

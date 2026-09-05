@@ -34,5 +34,22 @@ int main(void) {
     assert(bopl_terminal(NULL)==-1);
     bopl_destroy(a);bopl_destroy(b);bopl_destroy(NULL);
     free(initial);free(left);free(right);free(unchanged);free(reset);
+    assert(bopl_create_players(0)==NULL && bopl_create_players(7)==NULL);
+    assert(bopl_player_count(NULL)==0);
+    for(size_t count=1;count<=6;count++) {
+        BoplWorld *world=bopl_create_players(count);assert(world);
+        assert(bopl_player_count(world)==count);
+        BoplAction actions[6]={{0}};
+        BoplObservation values[6];
+        char *before=state(world);
+        assert(bopl_step(world,actions,count-1)==BOPL_INVALID_ARGUMENT);
+        assert(bopl_observe(world,values,count-1)==BOPL_INVALID_ARGUMENT);
+        assert(bopl_step(world,actions,count)==BOPL_OK);
+        assert(bopl_observe(world,values,count)==BOPL_OK);
+        for(size_t p=0;p<count;p++) assert(values[p].id==p+1 && values[p].alive);
+        assert(bopl_reset(world)==BOPL_OK);
+        char *after=state(world);assert(strcmp(before,after)==0);
+        free(before);free(after);bopl_destroy(world);
+    }
     puts("C_ABI_SMOKE_OK");
 }

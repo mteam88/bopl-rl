@@ -40,13 +40,28 @@ pub extern "C" fn bopl_abi_version() -> u32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bopl_create() -> *mut BoplWorld {
+    bopl_create_players(2)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn bopl_create_players(players: usize) -> *mut BoplWorld {
     catch_unwind(|| {
-        Box::into_raw(Box::new(BoplWorld {
-            world: World::level1(),
-        }))
+        World::level1_with_players(players).map_or(ptr::null_mut(), |world| {
+            Box::into_raw(Box::new(BoplWorld { world }))
+        })
     })
     .unwrap_or(ptr::null_mut())
 }
+/// # Safety
+/// Null or readable live handle; no concurrent mutation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bopl_player_count(handle: *const BoplWorld) -> usize {
+    if handle.is_null() {
+        0
+    } else {
+        unsafe { &(*handle).world }.players.len()
+    }
+}
+
 /// # Safety
 /// `handle` is null or a live handle returned by bopl_create, with no concurrent calls.
 #[unsafe(no_mangle)]
@@ -63,7 +78,8 @@ pub unsafe extern "C" fn bopl_reset(handle: *mut BoplWorld) -> i32 {
         return INVALID;
     }
     guarded(|| {
-        let reset = World::level1();
+        let reset = World::level1_with_players(unsafe { &(*handle).world }.players.len())
+            .expect("valid player count");
         unsafe {
             (*handle).world = reset;
         };
@@ -78,10 +94,13 @@ pub unsafe extern "C" fn bopl_step(
     actions: *const Action,
     count: usize,
 ) -> i32 {
-    if handle.is_null() || actions.is_null() || count != 2 {
+    if handle.is_null() || actions.is_null() {
         return INVALID;
     }
     guarded(|| {
+        if count != unsafe { &(*handle).world }.players.len() {
+            return INVALID;
+        }
         let actions = unsafe { slice::from_raw_parts(actions, count) };
         if actions.iter().any(|a| a.buttons & !3 != 0) {
             return UNSUPPORTED;
@@ -108,10 +127,13 @@ pub unsafe extern "C" fn bopl_observe(
     out: *mut Observation,
     count: usize,
 ) -> i32 {
-    if handle.is_null() || out.is_null() || count != 2 {
+    if handle.is_null() || out.is_null() {
         return INVALID;
     }
     guarded(|| {
+        if count != unsafe { &(*handle).world }.players.len() {
+            return INVALID;
+        }
         for (index, p) in unsafe { &(*handle).world }.players.iter().enumerate() {
             let velocity = p.velocity + p.external_velocity;
             let value = Observation {

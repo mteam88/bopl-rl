@@ -16,7 +16,7 @@ def read_trace(path):
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rt") as stream:
         header = json.loads(next(stream))
-        if header.get("kind") != "header" or header.get("schema") not in ("bopl-managed-state-v1", "bopl-managed-state-v2"):
+        if header.get("kind") != "header" or header.get("schema") not in ("bopl-managed-state-v1", "bopl-managed-state-v2", "bopl-managed-state-v3"):
             raise ValueError(f"invalid trace header: {path}")
         yield header
         count = 0
