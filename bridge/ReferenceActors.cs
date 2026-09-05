@@ -36,7 +36,7 @@ internal static class ReferenceActors
             var players=initial["players"].Select(p=>{var player=new Player((int)p["id"],0){isProtectedFromTimeStop=(bool)p["protected"],isInvisible=(bool)p["invisible"],timeSpentInvisible=F(p["time_invisible"]),timeSinceEnteredAbility=F(p["time_ability"])};Set(player,"Inputs",inputs[(int)p["input"]]);return player;}).ToList();
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             var bodies=new List<PlayerBody>();var physics=new List<PlayerPhysics>();var transforms=new List<FixTransform>();
-            JArray events=null,phases=null,pushes=null;bool simulated=false;
+            JArray events=null,phases=null,pushes=null,effects=null;bool simulated=false;
             void Event(int actor,string kind,JToken value)=>events.Add(new JObject{["actor"]=actor,["event"]=new JObject{["kind"]=kind,["value"]=value}});
             for(int i=0;i<actorData.Count;i++)
             {
@@ -78,7 +78,19 @@ internal static class ReferenceActors
             }
             var drivers=new List<ReferenceActorDriver>();int currentActor=0;
             ReferencePlayerController.SoundCapture=name=>Event(currentActor,name.StartsWith("slimeJump")?"jump_sound":"sound",name);
-            void Phase(string kind,int? id)=>phases.Add(new JObject{["kind"]=kind,["id"]=id.HasValue?new JValue(id.Value):JValue.CreateNull()});
+            var calls=new Dictionary<string,int>();
+            void Command(JToken command)
+            {
+                effects.Add(command.DeepClone());
+                if((string)command["op"]!="ragdoll")throw new ArgumentException("Unknown actor command");
+                slimes[(int)command["actor"]].Apply(command["request"]);
+            }
+            void Phase(string kind,int? id)
+            {
+                phases.Add(new JObject{["kind"]=kind,["id"]=id.HasValue?new JValue(id.Value):JValue.CreateNull()});
+                string key=kind+":"+(id.HasValue?id.Value.ToString():"*");int index=calls.TryGetValue(key,out int old)?old:0;calls[key]=index+1;
+                var script=query["scripts"]?[key];if(script!=null&&index<script.Count())foreach(var command in script[index])Command(command);
+            }
             for(int i=0;i<runtime["components"].Count();i++)
             {
                 int id=i;var entry=runtime["components"][i];int actor=(int)entry["actor"];string role=(string)entry["role"];
@@ -113,17 +125,19 @@ internal static class ReferenceActors
                     states[i]["body"]=ReferencePlayerBody.SnapshotBody(bodies[i],new List<RopeBody>(),false)["state"];
                 }
                 var world=sceneSnapshot();world["objects"]=new JArray(world["objects"].OrderBy(o=>(int)o["id"]));
-                return new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
+                var frame=new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
                     ["inputs"]=new JArray(inputs.Select(p=>new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME}))};
+                if(query["scripts"]!=null)frame["effects"]=effects;
+                return frame;
             }
             var frames=new JArray();foreach(var a in query["actions"])
             {
-                events=new JArray();phases=new JArray();pushes=new JArray();simulated=false;
+                events=new JArray();phases=new JArray();pushes=new JArray();effects=new JArray();simulated=false;
                 for(int i=0;i<actorData.Count;i++){actorData[i]["input"]=a["inputs"][i]["direction"].DeepClone();inputs[i].jumpButton_IS_DOWN=(bool)a["inputs"][i]["jump"];}
                 if(animations!=null)for(int i=0;i<inputs.Count;i++){var dir=V(a["inputs"][i]["direction"]);inputs[i].UsesMouse=true;inputs[i].w_IS_DOWN=dir.y>Fix.Zero;inputs[i].s_IS_DOWN=dir.y<Fix.Zero;inputs[i].d_IS_DOWN=dir.x>Fix.Zero;inputs[i].a_IS_DOWN=dir.x<Fix.Zero;}
                 GameTime.PlayerTimeScale=F(a["scale"]);for(int i=0;i<drivers.Count;i++)drivers[i].EnabledFlag=(bool)a["enabled"][i];
-                string error=null;try{typeof(Updater).GetMethod("TickSimulationInner",Statics).Invoke(null,new object[]{F(a["dt"])});}
+                string error=null;try{if(a["commands"]!=null)foreach(var command in a["commands"])Command(command);typeof(Updater).GetMethod("TickSimulationInner",Statics).Invoke(null,new object[]{F(a["dt"])});}
                 catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}
                 if(error!=null)return new JObject{["error"]=error,["action"]=frames.Count,["completed"]=frames,["failed"]=Snapshot()};
                 frames.Add(Snapshot());

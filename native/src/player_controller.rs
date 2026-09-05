@@ -70,7 +70,8 @@ impl State {
     fn ground(&self) -> Option<u32> {
         self.physics.motion.ground
     }
-    fn cast(
+    /// VelocityBasedRaycasts with ground attachment and synchronous listeners.
+    pub fn cast(
         &mut self,
         dt: Fix,
         context: &mut Context,

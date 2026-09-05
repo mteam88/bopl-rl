@@ -18,6 +18,19 @@ internal static class ReferenceSlimeActors
         internal ReferenceAnimator.Context Animation;
         internal FlippingTransform Flip;
         internal Fix TurnInput;
+        internal Dictionary<uint,MagnetGun> Magnets=new Dictionary<uint,MagnetGun>();
+        internal List<GameObject> Objects;
+        internal MagnetGun Magnet(JToken id)
+        {
+            if(id.Type==JTokenType.Null)return null;uint key=(uint)id;
+            if(!Magnets.TryGetValue(key,out var magnet))
+            {
+                var go=new GameObject("ragdoll magnet reference");go.SetActive(false);Objects.Add(go);magnet=go.AddComponent<MagnetGun>();Magnets.Add(key,magnet);
+            }
+            return magnet;
+        }
+        internal void Apply(JToken request)=>Slime.ApplyRagDoll(F(request["duration"]),V(request["speed"]),(bool)request["fast"],(bool)request["reset_animation"],Magnet(request["magnet"]));
+
         internal void TrackCallback()
         {
             var callback=Get<Action>(Animation.Animator,"animationSwappedCallBack");
@@ -39,6 +52,11 @@ internal static class ReferenceSlimeActors
             s["mode"]=(int)Slime.getCurrentState();s["facing_right"]=Flip.facingRight();s["was_upside_down"]=Get<bool>(Slime,"wasUpsideDown");
             s["input"]=V(Get<Vec2>(Slime,"inputVector"));s["previous_input"]=Get<Fix>(Slime,"prevInput").m_rawValue;s["suppress"]=Slime.suppressInput;s["has_spawned"]=Slime.HasSpawned;
             s["time_moonwalking"]=Get<Fix>(Slime,"timeSpentMoonwalking").m_rawValue;s["turn_input"]=TurnInput.m_rawValue;
+            if(value["ragdoll"]!=null)
+            {
+                var holder=Get<MagnetGun>(Slime,"magnetHolder");
+                value["ragdoll"]=new JObject{["duration"]=Get<Fix>(Slime,"ragdollDuration").m_rawValue,["time"]=Get<Fix>(Slime,"timeInRagdoll").m_rawValue,["speed"]=V(Get<Vec2>(Slime,"ragDollSpeed")),["magnet_holder"]=holder==null?JValue.CreateNull():new JValue(Magnets.First(p=>p.Value==holder).Key)};
+            }
             value["animator"]=Animation.Snapshot();value["speed"]=new JObject{["velocity"]=V(Animation.Bodies[0].velocity),["rotation"]=Animation.Bodies[0].rotation.m_rawValue};return value;
         }
     }
@@ -68,6 +86,11 @@ internal static class ReferenceSlimeActors
         var flags=BindingFlags.NonPublic|BindingFlags.Instance;
         physics.OnNoLongerGrounded+=(Action<Fix>)Delegate.CreateDelegate(typeof(Action<Fix>),slime,typeof(SlimeController).GetMethod("OnNoLongerGrounded",flags));
         physics.OnAttachedToGround+=(Action<RaycastInformation>)Delegate.CreateDelegate(typeof(Action<RaycastInformation>),slime,typeof(SlimeController).GetMethod("attachToGround",flags,null,new[]{typeof(RaycastInformation)},null));
-        return new Context{Slime=slime,Animation=animation,Flip=flip,TurnInput=F(s["turn_input"])};
+        var context=new Context{Slime=slime,Animation=animation,Flip=flip,TurnInput=F(s["turn_input"]),Objects=objects};
+        if(value["ragdoll"]!=null)
+        {
+            var r=value["ragdoll"];Set(slime,"ragdollDuration",F(r["duration"]));Set(slime,"timeInRagdoll",F(r["time"]));Set(slime,"ragDollSpeed",V(r["speed"]));Set(slime,"magnetHolder",context.Magnet(r["magnet_holder"]));
+        }
+        return context;
     }
 }

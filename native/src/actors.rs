@@ -65,6 +65,19 @@ pub struct Report {
     pub pushes: Vec<Push>,
 }
 impl Actor {
+    pub fn apply_ragdoll(
+        &mut self,
+        request: &crate::slime::RagdollImpulse,
+        scene: &mut Scene,
+    ) -> scheduler::Result<()> {
+        let slime = self.slime.as_mut().ok_or("missing_slime_controller")?;
+        let result = slime.apply_ragdoll(&mut self.controller, request);
+        slime.sync_callback();
+        self.controller_to_body();
+        self.sync_transform(scene);
+        result
+    }
+
     /// The equal-scale shove branch of SlimeController.OnCollide. Bite and
     /// other collision effects must be supplied by the full gameplay controller.
     fn shove(&mut self, other_position: Vec2, other_hierarchy: i32) -> Option<Vec2> {
@@ -124,6 +137,20 @@ impl Runtime {
         }
     }
     pub fn tick(&mut self, dt: Fix, report: &mut Report) -> scheduler::Result<()> {
+        self.tick_with(dt, report, &mut |_, _, _, _| Ok(()))
+    }
+    /// Dispatch external gameplay effects at exact component/physics phases.
+    pub fn tick_with(
+        &mut self,
+        dt: Fix,
+        report: &mut Report,
+        before: &mut impl FnMut(
+            &mut scheduler::State,
+            &mut [Actor],
+            &mut Scene,
+            scheduler::Event,
+        ) -> scheduler::Result<()>,
+    ) -> scheduler::Result<()> {
         if self.scene.rope_system.is_some() || self.actors.iter().any(|a| a.body.rope.is_some()) {
             return Err("actor_rope_integration_not_implemented");
         }
@@ -157,6 +184,7 @@ impl Runtime {
         } = self;
         scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
+            before(schedule, actors, scene, phase)?;
             match phase.kind {
                 scheduler::Phase::Physics => {
                     report.physics =

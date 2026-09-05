@@ -807,6 +807,36 @@ Ability lists are empty; swallowing and invisibility start false, scales remain
 equal, and there are no attached ropes or ragdolls. Achievement flags are false
 and reference players are nonlocal, allowing the moonwalk timer to be compared
 without awards. Player position-setter state and collider Scale bookkeeping are
-not compared here. Full ability selection/cooldowns, ragdoll recovery, swallowing,
+not compared here. Ragdoll recovery is covered in the extension below.
+Full ability selection/cooldowns, swallowing,
 invisibility, position arbitration, prefab initialization and round lifecycle
 remain required. The public C environment still uses its existing movement slice.
+
+
+## Ragdoll in the composed runner
+
+The actor runtime now accepts ragdoll impulses and runs SlimeController's timed
+recovery and invalid-ground repair. The impulse preserves Unity's order: begin
+the optional animation before changing mode, divide horizontal imposed speed by
+1.5, derive orientation from the original vector, and retain ground attachment
+and external velocity. The supplied magnet argument is unused in the pinned
+source. Existing holder identity remains until recovery clears it.
+
+Recovery uses the player's scaled/protected clock and a strict duration boundary.
+It transfers imposed velocity into external velocity, reads the current sprite,
+aligns facing, begins the fall animation, then casts using the standard fixed dt.
+Missing/destroyed ground invokes the normal ground-loss listener and sound path.
+Partial failures preserve the state reached before the exception. A scheduler
+hook allows commands between components, including commands affecting other
+actors; the tests do not assume all of one player's work occurs together.
+
+All 120 scenarios match Unity, with 20 cases at each player count 1..6:
+13,801 completed ticks, 3,812 impulses, 15,308 ragdoll actor snapshots,
+7,313 grounded ragdoll snapshots and 842 with retained animation callbacks.
+Four targeted failures match missing fast/slow/fall animations and a missing
+renderer during recovery. Both fixtures run in the standalone verification suite.
+
+This extends the supplied-state, empty-ability runner. It does not yet connect
+ragdoll to ability casts, MagnetSteal, swallowing, ropes, deaths or full prefab
+initialization. The full-game C environment and remaining integration are still
+required; this checkpoint does not certify complete ability behavior.

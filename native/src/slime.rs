@@ -1,5 +1,5 @@
 //! SlimeController's locomotion and animation transitions. This instance currently
-//! accepts an empty ability list; ability selection, ragdoll, swallowing and the
+//! accepts an empty ability list; ability selection, swallowing and the
 //! rest of the controller are separate integration work, not silent no-ops.
 use crate::{
     animator::{self, Frame, Speed, Start, VelocityFrame},
@@ -25,6 +25,22 @@ pub struct State {
     /// The captured argument of EnterTurn's animation callback.
     pub turn_input: Fix,
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Ragdoll {
+    pub duration: Fix,
+    pub time: Fix,
+    pub speed: Vec2,
+    pub magnet_holder: Option<u32>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RagdollImpulse {
+    pub duration: Fix,
+    pub speed: Vec2,
+    pub fast: bool,
+    pub reset_animation: bool,
+    /// The pinned ApplyRagDoll accepts this argument but never assigns it.
+    pub magnet: Option<u32>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
     pub state: State,
@@ -32,6 +48,8 @@ pub struct Instance {
     pub speed: Speed,
     pub animations: BTreeMap<String, Vec<Frame>>,
     pub fall_map: Vec<VelocityFrame>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ragdoll: Option<Ragdoll>,
 }
 fn frames(data: &BTreeMap<String, Vec<Frame>>, name: &str) -> Result<Vec<Frame>> {
     data.get(name).cloned().ok_or("animation_missing")
@@ -84,6 +102,89 @@ fn enter(
     Ok(())
 }
 impl Instance {
+    pub fn apply_ragdoll(
+        &mut self,
+        controller: &mut player_controller::State,
+        request: &RagdollImpulse,
+    ) -> Result<()> {
+        if request.reset_animation {
+            start(
+                &mut self.animator,
+                Start::Begin {
+                    frames: Some(frames(
+                        &self.animations,
+                        if request.fast {
+                            "ragdollFast"
+                        } else {
+                            "ragdollSlow"
+                        },
+                    )?),
+                    next: None,
+                    callback: None,
+                    style: 0,
+                },
+                &self.speed,
+            )?;
+        }
+        self.state.mode = 10;
+        let ragdoll = self.ragdoll.get_or_insert_with(Ragdoll::default);
+        ragdoll.speed = request.speed;
+        ragdoll.speed.x /= Fix::from_int(3) / Fix::from_int(2);
+        ragdoll.duration = request.duration;
+        ragdoll.time = Fix::ZERO;
+        let motion = &mut controller.physics.motion;
+        motion.velocity = ragdoll.speed;
+        let right = request.speed.normalized_safe();
+        if right != Vec2::ZERO {
+            motion.right = right;
+            motion.up = right.perp();
+            motion.rotation = right.normalized_angle();
+        }
+        // Applying ragdoll does not unground, clear external velocity, update
+        // the animation speed container, or assign the supplied magnet.
+        Ok(())
+    }
+    fn enter_fall(
+        &mut self,
+        controller: &mut player_controller::State,
+        context: &mut player_controller::Context,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<()> {
+        let anticipation = self
+            .animator
+            .render
+            .as_ref()
+            .ok_or("null_reference")?
+            .sprite;
+        self.align_air();
+        let motion = &mut controller.physics.motion;
+        motion.rotation = Fix::ZERO;
+        motion.right = Vec2::angle(Fix::ZERO);
+        motion.up = motion.right.perp();
+        self.state.mode = 2;
+        self.speed = Speed {
+            velocity: motion.velocity,
+            rotation: motion.rotation,
+        };
+        start(
+            &mut self.animator,
+            Start::Y {
+                map: Some(self.fall_map.clone()),
+                looping: Some(frames(&self.animations, "fallLeftLoop")?),
+                anticipation,
+                body: Some(0),
+            },
+            &self.speed,
+        )?;
+        let bindings = context.bindings;
+        let id = context.holder.ok_or("null_reference")?;
+        // EnterFall uses Updater.standardFixedDeltaTime, not this call's dt.
+        controller.cast(crate::world::DT, context, &mut |controller, event| {
+            self.physics_event(controller, &event, bindings, id, emit)?;
+            emit(event);
+            Ok(())
+        })
+    }
     /// Only an installed turn callback retains its captured argument.
     pub fn sync_callback(&mut self) {
         if self.animator.callback != Some(2) {
@@ -231,9 +332,31 @@ impl Instance {
     ) -> Result<()> {
         let id = context.holder.ok_or("null_reference")?;
         if self.state.mode == 10 {
-            return Err("slime_ragdoll_integration_not_implemented");
+            let ragdoll = self.ragdoll.as_mut().ok_or("missing_ragdoll_state")?;
+            ragdoll.time += context.dt(dt);
+            if ragdoll.time > ragdoll.duration {
+                ragdoll.magnet_holder = None;
+                controller.physics.motion.external_velocity += controller.physics.motion.velocity;
+                controller.physics.motion.velocity = Vec2::ZERO;
+                self.enter_fall(controller, context, emit)?;
+            }
         }
-        if self.state.mode == 8 || self.state.mode == 9 {
+        let motion = &mut controller.physics.motion;
+        let ground = motion
+            .ground
+            .and_then(|i| context.bindings.get(i as usize))
+            .and_then(|b| b.platform.as_ref());
+        if motion.grounded && ground.is_none_or(|p| p.destroyed) {
+            motion.rotation = Fix::ZERO;
+            motion.right = Vec2::angle(Fix::ZERO);
+            motion.up = motion.right.perp();
+            let angle = motion.unground(ground.map(|p| &p.surface), false);
+            let event = Event::Detached(angle);
+            self.physics_event(controller, &event, context.bindings, id, emit)?;
+            emit(event);
+            emit(Event::JumpSound(format!("slimeJump{id}")));
+        }
+        if self.state.mode == 8 || self.state.mode == 9 || self.state.mode == 10 {
             return Ok(());
         }
         self.state.input = input;

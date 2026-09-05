@@ -776,3 +776,55 @@ also matches after extending animator callback registration: 9,138 completed
 calls and 154 spawn callbacks, including 15 initially installed callbacks. Its
 evidence is in `artifacts/slime-spawn-regression/`. The complete `just verify`
 suite passes with both new fixtures and all existing C movement checks.
+
+
+## Scheduled ragdoll impulses and recovery
+
+`verify_ragdoll.py --cases 120 --steps 120` matches all 120 supplied-state
+scenarios, 20 at each player count 1..6. There are 115 complete sequences,
+13,801 completed ticks and five matching division-by-zero partial failures.
+The comparison includes 13,778 physics stages, 40,012 collision callbacks,
+428 shoves, 179,654 component updates and 179,361 late updates.
+
+There are 3,812 impulses across completed ticks: 1,922 reset animations and
+1,890 retain them; 1,897 select fast and 1,915 slow; 647 have zero speed and
+2,849 supply a magnet argument. The 15,308 ragdoll actor snapshots include
+7,313 still grounded and 842 with an installed callback. Recovery clears an
+existing magnet holder 308 times. These counts exclude effects in failed ticks.
+
+Cases vary strict duration boundaries, positive/zero/negative dt, fractional and
+stopped player clocks, protection from time stop, component order/disablement,
+missing or destroyed ground and commands at multiple scheduler phases. The
+reference invokes original ApplyRagDoll and UpdateSim; Rust retains its own
+state throughout each sequence. The fast/slow arrays use exported MCAnimData.
+
+Assembly: `dfa96c2c226fdb47b5c058ac14d820c65ff37d77db875b0c45b2de83f37967ef`.
+
+Input SHA: `5713d1e64128d807673333e58e91da7bc47e382f851fd14b7cfd28316af2714d`.
+
+Output SHA: `91ba92119d2875befb485a099f2bc8a0709b1da126e4f12853120386f25ca86e`.
+
+The golden fixture retains 38 cases in 3,769,441 compressed bytes. Evidence is
+under `artifacts/ragdoll/` and `artifacts/ragdoll-verification.log`.
+
+All four targeted faults also match the partial first tick. Missing ragdollFast
+or ragdollSlow fails before the impulse changes mode/body. Missing fallLeftLoop
+fails after recovery transfers velocity and clears the holder. A missing renderer
+fails earlier in recovery, while evaluating the sprite argument before entering
+fall. Each case asserts the failing scheduled component and one applied command.
+All four are retained in the 17,555-byte failure fixture.
+
+Failure input SHA: `d398899abe0c771b6b0f4b07800ddc9da2c17c2128f3c1d0ea5b6efb5c991314`.
+
+Failure output SHA: `4f3262eb04ba316b75c79f26110cba167ee9b3553b0be9ee3835ad933f88956f`.
+
+Evidence: `artifacts/ragdoll-failures/`. The complete `just verify` suite passes,
+including both ragdoll fixtures and the public C movement episodes. The pinned
+5,199-file source/assets manifest remains unchanged and verifies successfully.
+Ability-driven impulses, MagnetSteal, ropes, lifecycle and the full C integration
+are outside this corpus and remain required.
+
+A fresh capture of all 41 previously retained locomotion/failure cases through
+the updated Unity harness reproduces their earlier expected outputs exactly and
+matches Rust. Evidence is in `artifacts/ragdoll-slime-regression/`; this checks
+the shared oracle as well as native regression behavior.
