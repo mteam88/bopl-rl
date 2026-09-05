@@ -112,7 +112,8 @@ game. The separate rigid/composite solver now has exact Unity scene tests;
 integrating it with movement and ability effects remains in progress. The rope
 physics stage, beam graph, hitbox pool and target force/charge components are
 verified together in the source physics update order. Shared death accounting and
-collision-effect selection have separate Unity checks; their downstream lifecycle
+collision-effect selection have separate Unity checks. Ground attachment and
+detachment are shared with the movement world; the remaining death/revival
 handlers still need integration. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still

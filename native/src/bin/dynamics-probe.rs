@@ -12,6 +12,34 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_ground" => {
+            let mut state: bopl_sim::player_ground::State = read(&q, "state");
+            let surfaces: Vec<bopl_sim::surface::Surface> = read(&q, "surfaces");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut event = Value::Null;
+                let result = match action["op"].as_str().unwrap() {
+                    "attach" => {
+                        let id: u32 = read(action, "surface");
+                        state.attach(id, &surfaces[id as usize], read(action, "position"))
+                    }
+                    "unground" => {
+                        event = json!(state.unground(
+                            state.ground.map(|i| &surfaces[i as usize]),
+                            read(action, "null_rotation")
+                        ));
+                        Ok(())
+                    }
+                    _ => panic!("unknown ground action"),
+                };
+                let frame = json!({"state":state,"event":event});
+                if let Err(error) = result {
+                    return json!({"error":format!("{error:?}"),"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_player_collision" => {
             let mut receiver: bopl_sim::player_collision::Receiver = read(&q, "receiver");
             let mut globals: bopl_sim::player_collision::Globals = read(&q, "globals");

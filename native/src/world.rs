@@ -201,18 +201,38 @@ impl Player {
         self.up = platform.surface.normal(self.position);
         self.rotation = self.up.perp_cw().normalized_angle();
     }
+    fn ground_state(&self) -> crate::player_ground::State {
+        crate::player_ground::State {
+            position: self.position,
+            rotation: self.rotation,
+            up: self.up,
+            right: self.up.perp_cw(),
+            velocity: self.velocity,
+            external_velocity: self.external_velocity,
+            radius: self.radius,
+            grounded: self.grounded,
+            ground: self.ground,
+            local: self.local,
+            grounded_speed: self.grounded_speed,
+        }
+    }
+    fn apply_ground_state(&mut self, motion: crate::player_ground::State) {
+        self.position = motion.position;
+        self.rotation = motion.rotation;
+        self.up = motion.up;
+        self.velocity = motion.velocity;
+        self.external_velocity = motion.external_velocity;
+        self.grounded = motion.grounded;
+        self.ground = motion.ground;
+        self.local = motion.local;
+        self.grounded_speed = motion.grounded_speed;
+    }
     fn attach(&mut self, platform: &Platform, position: Vec2) {
-        self.ground = Some(platform.id);
-        self.grounded = true;
-        self.grounded_speed = self.velocity.cross(platform.surface.normal(self.position));
-        self.local = platform
-            .surface
-            .local_position(position, self.radius)
+        let mut motion = self.ground_state();
+        motion
+            .attach(platform.id, &platform.surface, position)
             .expect("valid attachment");
-        self.position = platform.surface.position(self.local, self.radius);
-        self.velocity = Vec2::ZERO;
-        self.external_velocity = Vec2::ZERO;
-        self.align(platform);
+        self.apply_ground_state(motion);
     }
     fn collision_rays(&mut self, platforms: &[Platform]) {
         let velocity = self.velocity + self.external_velocity;
@@ -245,11 +265,9 @@ impl Player {
         self.velocity = normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum
             + up * self.constants.jump_strength;
         self.position += self.velocity * self.constants.jump_teleport;
-        self.position += platform.surface.normal(self.position) * Fix::from_f32(0.05);
-        self.grounded_speed = Fix::ZERO;
-        self.grounded = false;
-        self.rotation = Fix::ZERO;
-        self.up = Vec2::UP;
+        let mut motion = self.ground_state();
+        motion.unground(Some(&platform.surface), true);
+        self.apply_ground_state(motion);
     }
     fn move_grounded(&mut self, input: Vec2, platforms: &[Platform]) {
         let platform = self.platform(platforms).unwrap();

@@ -393,5 +393,37 @@ The component receives resolved metadata snapshots. Persistent entity references
 (including copied ignored colliders) still need resolution in the native world.
 Synthetic checks replace downstream kill/attach handlers with recording sinks;
 gameplay capture runs the real handlers and projects their changes out of this
-comparison. This does not implement ground attachment, body destruction, ability
-exits or a full combat episode through the C API.
+comparison. The collision module delegates ground attachment (ported below), body
+destruction and ability exits; it does not provide a full combat episode through
+the C API.
+
+
+## Ground attachment and detachment
+
+`player_ground::State` executes `PlayerPhysics.AttachToGround` and `UnGround`.
+Attachment stores platform identity before computing speed, perimeter position,
+body position and orientation, then clears both velocities. Detachment retains
+that identity and the old perimeter position. It clears grounded speed, nudges
+the body along the retained platform's current normal even on repeated airborne
+calls, optionally resets rotation and its cached axes, and returns the old angle
+for immediate listener dispatch. A platform marked `IsDestroyed` still supplies
+the normal if its Unity object reference is non-null.
+
+The existing native movement environment now uses these shared methods for
+attachment and jump detachment. All independent C-ABI movement episodes remain
+exact; this is executable integration rather than a probe-only implementation.
+
+Actual Unity component calls match **1,000 scenarios / 10,741 completed actions**:
+3,497 attachments and 7,244 detachments/events. Another 126 actions match the
+source's first division-by-zero failure, including the completed prefix and
+partial state. Some exact corners and degenerate surfaces expose this source
+behavior; the native component preserves it. Inputs vary requested position
+separately from current position, platform identity, cached axes, player radius,
+platform rotation/extent/radius, velocities and repeated detachment flags.
+
+The fixture runs under `just verify`; regenerate with `just verify-player-ground`.
+Raw reference inputs, outputs and hashes are in `artifacts/player-ground/`.
+Rendering and optional jump sounds are outside the comparison. The return value
+supplies a pending notification; arbitrary listener effects, moving-platform
+updates, rope-driven ungrounding, and full death/revival handlers still require
+integration and validation in the full native world.

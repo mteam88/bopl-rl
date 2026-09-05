@@ -330,3 +330,25 @@ reports are under `artifacts/player-collision/` and
 `artifacts/player-collision-gameplay/`. Both fixture sets run in `just verify`.
 Persistent component references and downstream lifecycle execution remain outside
 this component's coverage and are not exposed as full combat through the C API.
+
+
+## PlayerPhysics attachment and detachment
+
+The actual Unity methods match 1,000 generated scenarios: 874 complete sequences,
+10,741 completed actions (3,497 attachments / 7,244 detachments and listener
+notifications), and 126 first-error snapshots. All errors are division by zero;
+completed prefixes and partial state are compared. The source can fail at exact
+corners and degenerate surfaces. Rendering and the optional jump sound are
+excluded, with a recording listener attached for detachment notifications.
+
+Assembly:
+`669b9c2b6b2cccfeecaf58900b644da0a205f754fb2299b255c8df20824e2bcd`.
+Input SHA:
+`b49a04a95225738b0c77f2e7b418b500322bc4dc8260ef0ff8adae9e4ff16a70`.
+Output SHA:
+`252bf39edb0e66355cf16b8f819436b8b0eb1af07ac645a4977aaa7513865d0e`.
+
+The movement world uses the shared code for attachment and jump detachment;
+existing independent C-ABI episodes remain exact. The fixture is included in
+`just verify`. Full component-reference lifecycle, arbitrary event listeners,
+rope-driven detachment and death/revival execution remain outside this check.

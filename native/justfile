@@ -35,6 +35,7 @@ verify: build check
     python3 native/tools/verify_player_life.py --golden --gameplay
     python3 native/tools/verify_player_collision.py --golden
     python3 native/tools/verify_player_collision.py --golden --gameplay
+    python3 native/tools/verify_player_ground.py --golden
     python3 native/tools/test_python.py
 
 verify-math: build
@@ -95,3 +96,6 @@ verify-player-life: build
 
 verify-player-collision: build
     python3 native/tools/verify_player_collision.py --cases 600
+
+verify-player-ground: build
+    python3 native/tools/verify_player_ground.py --cases 1000
