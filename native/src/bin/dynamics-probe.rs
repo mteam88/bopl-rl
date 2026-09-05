@@ -36,8 +36,89 @@ fn animator_callback(
     }
     Ok(())
 }
+fn evaluate_spawn(q: &Value) -> Value {
+    use bopl_sim::{
+        animator,
+        spawn::{self, Context},
+        surface::Surface,
+    };
+    let mut state: spawn::State = read(q, "spawn");
+    let mut animator: animator::State = read(q, "state");
+    let mut bodies: Vec<animator::Speed> = read(q, "bodies");
+    let mut players: Vec<spawn::Player> = read(q, "players");
+    let surfaces: Vec<Surface> = read(q, "surfaces");
+    let config: spawn::Config = read(q, "config");
+    let offset: Vec2 = read(&q["config"], "detach_offset");
+    let velocity: Vec2 = read(&q["config"], "detach_velocity");
+    let mut on_detach = |state: &mut spawn::State, _angle| {
+        state.motion.position += offset;
+        state.motion.velocity += velocity;
+        Ok(())
+    };
+    let holder: Option<i32> = read(q, "holder");
+    let mut frames = Vec::new();
+    for a in q["actions"].as_array().unwrap() {
+        let mut events = Vec::new();
+        let op = a["op"].as_str().unwrap();
+        let result = if op == "animate" || op == "update" {
+            // All animator speed reads precede the callback. The callback may
+            // update the shared speed container and begin the fall animation.
+            let speeds_before = bodies.clone();
+            let protected = holder
+                .and_then(|id| players.iter().find(|p| p.id == id))
+                .map(|p| p.protected);
+            let mut callback = |animator: &mut animator::State, id| {
+                assert_eq!(id, 1);
+                state.spawn(&mut Context {
+                    animator,
+                    speeds: &mut bodies,
+                    players: &mut players,
+                    surfaces: &surfaces,
+                    config: &config,
+                    events: &mut events,
+                    on_detach: &mut on_detach,
+                })
+            };
+            if op == "animate" {
+                animator.animate(&speeds_before, &mut callback)
+            } else {
+                animator.update(read(a, "scale"), protected, &speeds_before, &mut callback)
+            }
+        } else {
+            let mut c = Context {
+                animator: &mut animator,
+                speeds: &mut bodies,
+                players: &mut players,
+                surfaces: &surfaces,
+                config: &config,
+                events: &mut events,
+                on_detach: &mut on_detach,
+            };
+            match op {
+                "init" => state.init(&mut c),
+                "before" => state.before(&mut c),
+                "prepare" => state.prepare(read(a, "position"), &mut c),
+                "respawn" => state.respawn(read(a, "position"), &mut c),
+                "fast" => state.fast_respawn(read(a, "position"), &mut c),
+                "spawn" => state.spawn(&mut c),
+                "pop" => {
+                    state.pop(read(a, "direction"), config.jump_strength);
+                    Ok(())
+                }
+                _ => panic!("Unknown spawn action"),
+            }
+        };
+        let frame = json!({"spawn":state,"animator":animator,"bodies":bodies,"players":players,"events":events});
+        if let Err(error) = result {
+            return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+        }
+        frames.push(frame);
+    }
+    json!(frames)
+}
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_spawn" => return evaluate_spawn(&q),
         "dynamics_animator" => {
             let mut state: bopl_sim::animator::State = read(&q, "state");
             let mut bodies: Vec<bopl_sim::animator::Speed> = read(&q, "bodies");

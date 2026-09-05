@@ -119,8 +119,9 @@ coupled component tests and actual replay checks. Ability physics handoff and
 grounded rope updates have Unity component checks; gravity and air movement are
 shared with this C environment. Animation clocks and callback boundaries now
 have exact component tests, including the real spawn frame sequences and fast
-respawn conversion. Full spawning and ability callback effects still need
-integration. Independent player-input
+respawn conversion. Spawn/revival transitions now have coupled tests with the real ground-loss
+handler and animator. Connecting them to deaths, stocks, clones and the full
+world scheduler remains in progress. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

@@ -584,3 +584,46 @@ cross-checked against all 35 current YAML assets. Raw evidence is under
 `just verify`. Opaque sprite identities are compared exactly; this component
 check does not certify texture rendering, arbitrary callback side effects,
 complete spawning, ability lifecycles or independent world scheduling.
+
+
+## Coupled spawning and revival
+
+All 600 actual SlimeController scenarios match: 471 complete sequences,
+84,312 completed calls, 1,086 transitions from unspawned to spawned and 1,377
+animation-triggered Spawn callbacks. The body can already be marked spawned
+when another completion callback runs, so these counts measure different things.
+There are 3,374 completed detachment/sound pairs. The actual
+SlimeController.OnNoLongerGrounded listener changes animation state before an
+additional listener changes position and velocity; those effects are compared.
+
+There are 100 setups at each player count from one through six, 130 cases with
+repeated ability references, 125 with repeated indicator references and 29 with
+more than three abilities. Only one slime advances per scenario. Other players'
+revival/ability flags are compared throughout. Real spawn/fall animation data,
+mutable shared speed containers, arbitrary initial masks, tutorial mode,
+time-stop protection, abilityless initialization and interrupted revival are
+included. Another 150 cases start with an in-flight spawn callback, rebound to
+the actual slime instance. The pinned Player prefab uses the same renderer for
+SlimeController and SpriteAnimator; this identity is preserved in the test.
+Registration/destruction and complete multiplayer episodes are not.
+
+The 129 errors match their completed prefixes and partial state: 82 null
+references, 24 invalid indices, 12 missing animations, six missing velocity maps
+and five overflows. All 13 failing fast-respawn calls preserve the source's
+uncleared fast-animation flag. The fixture retains 250 cases
+(788,282 compressed bytes).
+
+Assembly: `a161745418fb9a70e55069855884c374b7743bd6788c2eee1d712d12714c0b81`.
+
+Input SHA: `3be8f47d478546324552ebc3e7df1c5adc8850770825213ee1329fde01f592de`.
+
+Output SHA: `0110dc2cf7fe08c9ff502013dd38c3bd6e324aa7b4165c7f6abcc501539e839d`.
+
+Animation fixture SHA: `212a2f2510ee283430e7142d3ad7442b4089eb419ef18b313066d96809e7f38a`.
+
+Raw evidence is in `artifacts/spawn/`. `just verify` runs the checked fixture
+without Unity. Stock-choice logic, clone creation, death handlers, revive travel
+effects and the full world scheduler remain separate completion requirements.
+
+The reusable animator harness also passes a fresh 100-case / 11,219-call Unity
+regression (215 callbacks), retained under `artifacts/spawn-animator-regression/`.

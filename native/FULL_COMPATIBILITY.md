@@ -676,3 +676,29 @@ Fresh asset checks require `just export-assets`; `just verify-animator` runs bot
 live corpora. This verifies the clock and callback boundaries, not complete
 SlimeController spawning, arbitrary ability callbacks, object registration or
 world scheduling. Those remain integration work.
+
+
+## Spawn and revival transitions
+
+`spawn.rs` composes SlimeController's Init, BeforeSpawnInit, Spawn, ReSpawn,
+ReSpawnFast, PrepareToRevive and PopIntoAir with the animator and ground-loss
+handler. It preserves body/collider enablement, input suppression, invulnerability
+bits, player revival/ability flags, shared speed references, cooldown resets and
+indicator identities. The actual OnNoLongerGrounded callback runs before external
+listeners and sound; it can replace the spawn animation with a velocity map.
+Reentrant spawn callbacks run synchronously, including after interrupted revival.
+
+All 600 actual Unity component scenarios match: 84,312 completed calls, 1,377
+animation-triggered spawn callbacks and 3,374 detachment/sound pairs. There are
+100 setups at each player count from one to six. Only the selected slime is
+advanced; other player state is retained and compared. The corpus includes the
+real spawn/fall animation data, random signed frame durations, tutorial mode,
+time-stop protection, repeated references and more than three abilities. Another
+150 setups begin with an in-flight spawn callback already registered.
+All 129 errors include the completed prefix and partial failing state, including
+13 failed ReSpawnFast calls whose fast-animation flag remains set.
+
+The 250-case fixture runs in `just verify`; `just verify-spawn` regenerates it
+against Unity. The C movement API still resets from its tick-240 snapshot.
+Full prefab creation, stock choice, revive travel effects, death selection,
+ability drops and the world scheduler remain outside this component stage.

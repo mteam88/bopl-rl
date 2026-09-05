@@ -10,7 +10,17 @@ using static ReferenceBeamTargets;
 
 internal static class ReferenceAnimator
 {
-    internal static JToken Evaluate(JObject query)
+    internal sealed class Context
+    {
+        internal GameObject GameObject;
+        internal SpriteAnimator Animator;
+        internal SpeedContainer[] Bodies;
+        internal Func<JObject> Snapshot;
+        internal Func<JToken,SpriteFrame[]> Frames;
+        internal Func<JToken,VelocityFrame[]> Map;
+        internal Action<Action,uint> RegisterCallback;
+    }
+    internal static JToken Evaluate(JObject query, Func<Context,JToken> operation=null)
     {
         var objects=new List<UnityEngine.Object>();
         var oldPlayers=PlayerHandler.Get().PlayerList();var oldScale=GameTime.PlayerTimeScale;
@@ -94,6 +104,12 @@ internal static class ReferenceAnimator
                 }
             }
             Set(animator,"animationSwappedCallBack",Callback(state["callback"]));
+            if(operation!=null)return operation(new Context{GameObject=go,Animator=animator,Bodies=bodies,Snapshot=Snapshot,Frames=Frames,Map=Map,
+                RegisterCallback=(callback,id)=>{
+                    var current=Get<Action>(animator,"animationSwappedCallBack");
+                    if(current!=null&&callbackIds[current]==id)Set(animator,"animationSwappedCallBack",callback);
+                    callbackIds[callback]=id;callbacks[id]=callback;
+                }});
             JObject Frame(JToken result)=>new JObject{["state"]=Snapshot(),["bodies"]=new JArray(bodies.Select(b=>new JObject{["velocity"]=V(b.velocity),["rotation"]=b.rotation.m_rawValue})),["events"]=events,["result"]=result};
             var frames=new JArray();
             foreach(var a in query["actions"])
