@@ -12,8 +12,10 @@ pub mod fixed;
 pub mod geometry;
 pub mod ordinary_ability;
 pub mod quick_spell;
+pub mod shockwave;
 mod slime_ability;
 mod slime_exit;
+pub mod spell_world;
 pub mod surface;
 pub mod vector;
 

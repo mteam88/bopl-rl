@@ -45,7 +45,7 @@ internal static class ReferenceOrdinaryAbilities
     }
     internal static Instance Bind(JToken state,GameObject go,List<ReferenceSlimeActors.Context> slimes,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets)
     {
-        var ability=go.GetComponent<Ability>();if(state["kill_players_on_contact"]!=null)ability.KillPlayersOnContact=(bool)state["kill_players_on_contact"];int owner=(int)state["owner"];
+        var ability=go.GetComponent<Ability>();if(state["is_pushable"]!=null)ability.isPushable=(bool)state["is_pushable"];if(state["kill_players_on_contact"]!=null)ability.KillPlayersOnContact=(bool)state["kill_players_on_contact"];int owner=(int)state["owner"];
         Set(ability,"playerInfo",ReferenceInstantAbilities.Info(state["info"],slimes[owner]));
         Set(ability,"slimeController",state["slime"].Type==JTokenType.Null?null:slimes[(int)state["slime"]].Slime);
         Action<AbilityExitInfo> callback=null;

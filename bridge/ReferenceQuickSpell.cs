@@ -24,8 +24,7 @@ internal static class ReferenceQuickSpell
         Set(quick,"player",s["player"].Type==JTokenType.Null?null:PlayerHandler.Get().GetPlayer((int)s["player"]));
         Set(quick,"EnterAbilityOffset",V(s["enter_offset"]));Set(quick,"ExitAbilityOffset",V(s["exit_offset"]));Set(quick,"shockwaveOffset",V(s["shockwave_offset"]));
         Set(quick,"AudioToPlayOnEnter",(string)s["audio_enter"]);Set(quick,"AudioToPlayOnCast",(string)s["audio_cast"]);quick.scaleParticleSize=(bool)s["scale_particle_size"];
-        if(s["spell"].Type!=JTokenType.Null)throw new NotSupportedException("QuickSpell prefab binding is not configured");
-        Set(quick,"spell",null);Set(quick,"spellFunc",null);
+        Set(quick,"spell",s["spell"].Type==JTokenType.Null?null:ReferenceSpellWorld.Active.Prefab((string)s["spell"]));Set(quick,"spellFunc",null);
         if((bool)s["particle_prefab"])
         {
             var go=new GameObject("headless cast particle prefab");go.SetActive(false);objects.Add(go);Set(quick,"ParticleCastPrefab",go.AddComponent<ParticleSystem>());

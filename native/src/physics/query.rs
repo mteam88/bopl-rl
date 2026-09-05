@@ -154,3 +154,52 @@ impl Scene {
         Ok(found)
     }
 }
+
+impl Scene {
+    /// CircleCastAll scans circles, boxes, then rounded rectangles, stopping at the supplied capacity.
+    pub fn circle_cast_all(
+        &mut self,
+        center: Vec2,
+        radius: Fix,
+        mask: u32,
+        capacity: usize,
+    ) -> crate::scheduler::Result<Vec<u32>> {
+        self.remove_destroyed();
+        let mut hits = Vec::new();
+        for kind in [0, 1, 2] {
+            for object in &self.objects {
+                if object.collider.kind() != kind
+                    || !object.is_active()
+                    || mask & (1u32 << object.layer) == 0
+                {
+                    continue;
+                }
+                let circle = crate::geometry::Circle { center, radius };
+                let overlaps = match object.collider {
+                    Collider::Circle(other) => {
+                        (other.center - center).length_squared()
+                            < (radius + other.radius) * (radius + other.radius)
+                    }
+                    Collider::Box(other) => super::contact::circle_box_overlaps(circle, other),
+                    Collider::RoundedRect(other) => super::contact::circle_box_overlaps(
+                        crate::geometry::Circle {
+                            radius: radius + other.radius,
+                            ..circle
+                        },
+                        other.inner,
+                    ),
+                };
+                if overlaps {
+                    if hits.len() >= capacity {
+                        return Err("index_out_of_range");
+                    }
+                    hits.push(object.id);
+                    if hits.len() == capacity {
+                        return Ok(hits);
+                    }
+                }
+            }
+        }
+        Ok(hits)
+    }
+}

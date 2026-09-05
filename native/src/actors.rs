@@ -74,6 +74,8 @@ pub struct Runtime {
     pub actor_ropes: Option<ActorRopes>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combat: Option<crate::actor_combat::Combat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spells: Option<crate::spell_world::World>,
     pub bindings: Vec<Binding>,
     pub grounds: Vec<player_controller::Ground>,
     pub space: bool,
@@ -102,6 +104,7 @@ pub struct Context<'a> {
     pub scene: &'a mut Scene,
     pub actor_ropes: &'a mut Option<ActorRopes>,
     pub combat: &'a mut Option<crate::actor_combat::Combat>,
+    pub spells: &'a mut Option<crate::spell_world::World>,
     pub bindings: &'a [Binding],
     pub grounds: &'a [player_controller::Ground],
     pub space: bool,
@@ -526,6 +529,7 @@ impl Runtime {
             player_layer,
             actor_ropes,
             combat,
+            spells,
         } = self;
         scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
@@ -537,6 +541,7 @@ impl Runtime {
                     scene,
                     actor_ropes,
                     combat,
+                    spells,
                     bindings,
                     grounds,
                     space: *space,
@@ -547,6 +552,20 @@ impl Runtime {
             Self::refresh_entities(schedule, components, actors, scene);
             if let Some(effects) = combat.as_mut().and_then(|c| c.death_effects.as_mut())
                 && effects.phase(schedule, scene, phase, report)?
+            {
+                return Ok(());
+            }
+            if let Some(world) = spells.as_mut()
+                && world.phase(
+                    schedule,
+                    &mut crate::shockwave::Targets {
+                        actors,
+                        scene,
+                        bindings,
+                    },
+                    phase,
+                    dt,
+                )?
             {
                 return Ok(());
             }
@@ -606,6 +625,7 @@ impl Runtime {
                                         scene,
                                         actor_ropes,
                                         combat,
+                                        spells,
                                         bindings,
                                         grounds,
                                         space: *space,
@@ -633,6 +653,7 @@ impl Runtime {
                                     scene,
                                     actor_ropes,
                                     combat,
+                                    spells,
                                     bindings,
                                     grounds,
                                     space: *space,
@@ -670,6 +691,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -700,6 +722,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -728,6 +751,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -749,6 +773,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -771,6 +796,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -1034,6 +1060,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -1053,6 +1080,7 @@ impl Runtime {
                                 scene,
                                 actor_ropes,
                                 combat,
+                                spells,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -1073,6 +1101,7 @@ impl Runtime {
                             scene,
                             actor_ropes,
                             combat,
+                            spells,
                             bindings,
                             grounds,
                             space: *space,

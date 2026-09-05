@@ -100,6 +100,11 @@ verify: build check
     python3 native/tools/verify_actor_circles.py --lifecycle --golden
     python3 native/tools/verify_quick_spell.py --golden
     python3 native/tools/verify_quick_spell.py --faults --golden
+    python3 native/tools/verify_gust.py --golden
+    python3 native/tools/verify_gust.py --contacts --golden
+    python3 native/tools/verify_gust.py --clones --golden
+    python3 native/tools/verify_gust.py --custom --golden
+    python3 native/tools/verify_gust.py --interactions --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -276,3 +281,10 @@ verify-actor-circles: build
 verify-quick-spell: build
     python3 native/tools/verify_quick_spell.py
     python3 native/tools/verify_quick_spell.py --faults --directory quick-spell-faults
+
+verify-gust: build
+    python3 native/tools/verify_gust.py
+    python3 native/tools/verify_gust.py --contacts --directory gust-contacts
+    python3 native/tools/verify_gust.py --clones --directory gust-clones
+    python3 native/tools/verify_gust.py --custom --directory gust-custom
+    python3 native/tools/verify_gust.py --interactions --directory gust-interactions

@@ -23,6 +23,7 @@ internal static class ReferenceSurfaceMotion
             if (binding["platform"].Type == JTokenType.Null) continue;
             var source = ReferencePlayerGround.Platform(binding["platform"]["surface"], objects);
             var rr = a.transform.gameObject.AddComponent<DPhysicsRoundedRect>();
+            rr.pp = a.parent;
             rr.radius = source.rr.radius;
             rr.enabled = a.enabled;
             rr.IsDestroyed = a.IsDestroyed;

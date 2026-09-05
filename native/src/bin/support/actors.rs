@@ -161,6 +161,25 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                     command["actor"].as_u64().unwrap() as usize,
                 );
             }
+            if command["op"] == "spell_command" {
+                let bopl_sim::actors::Context {
+                    spells,
+                    schedule,
+                    scene,
+                    bindings,
+                    ..
+                } = context;
+                return spells.as_mut().ok_or("spell_world_not_bound")?.command(
+                    command["spell"].as_u64().unwrap() as usize,
+                    serde_json::from_value(command["command"].clone()).unwrap(),
+                    schedule,
+                    &mut bopl_sim::shockwave::Targets {
+                        actors,
+                        scene,
+                        bindings,
+                    },
+                );
+            }
             if command["op"] == "quick_cast" {
                 return Runtime::cast_quick_spell(
                     actors,
@@ -307,6 +326,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                             scene: &mut runtime.scene,
                             actor_ropes: &mut runtime.actor_ropes,
                             combat: &mut runtime.combat,
+                            spells: &mut runtime.spells,
                             bindings: &runtime.bindings,
                             grounds: &runtime.grounds,
                             space: runtime.space,
@@ -350,6 +370,14 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         if q["registration_state"].as_bool() == Some(true) {
             let s = &runtime.scheduler;
             let mut dynamic:Vec<_>=runtime.combat.as_ref().and_then(|c|c.death_effects.as_ref()).into_iter().flat_map(|e|&e.instances).flat_map(|e|e.components[..2].iter()).map(|&id| {let c=&s.components[id];json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present})}).collect();
+            if let Some(spells) = &runtime.spells {
+                for instance in &spells.instances {
+                    let id = instance.components[0];
+                    let c = &s.components[id];
+                    dynamic.push(json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present}));
+                }
+                dynamic.sort_by_key(|v| v["id"].as_u64().unwrap());
+            }
             if dynamic_actors {
                 let initial = q["runtime"]["scheduler"]["components"]
                     .as_array()
@@ -364,6 +392,9 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                 dynamic.sort_by_key(|v| v["id"].as_u64().unwrap());
             }
             frame["registration"] = json!({"added":s.added,"prefabs_added":s.prefabs_added,"registering_prefab":s.registering_prefab,"pending":s.pending.items[..s.pending.length],"live":s.live,"hitstop":s.hitstop,"dynamic":dynamic});
+        }
+        if let Some(spells) = &runtime.spells {
+            frame["spells"] = json!(spells);
         }
         if let Some(combat) = &runtime.combat {
             frame["combat"] = json!(combat);

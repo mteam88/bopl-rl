@@ -1454,3 +1454,42 @@ presence is observed, while its rendering and nondeterministic visual simulation
 are excluded. Full frames are in `fixtures/quick-spell*.jsonl.xz`, with raw
 captures and assembly/input/output hashes in `artifacts/quick-spell-verified`
 and `artifacts/quick-spell-faults`.
+
+### Gust shockwaves in the composed world
+
+QuickSpell now instantiates a scheduled Shockwave from the pinned Gust prefab.
+The new spell registry shares scheduler node and component identities with
+actors, clones and death effects. The wave records the original 50-slot target
+buffer, queries circles before boxes before rounded rectangles, pushes eligible
+player bodies on activation, applies timed impulses to captured platform bodies
+and removes itself through Updater. The boolean circle query preserves the
+source's strict radius boundary, which differs from its collision-manifold test.
+
+Five retained corpora cover 176 cases across one through six players, 15,194
+completed ticks and 124,454 collision callbacks:
+
+- 30 ordinary/time/scale cases create 105 waves; the 21 waves under zero delta
+  time remain present, and the other 84 expire.
+- 45 contact cases exercise 30 actual target pushes and 15 inactive, disabled or
+  unpushable exclusions, including grounded force reduction and time stop.
+- 18 clone cases create and remove 420 original empty-player prefab instances,
+  interleave death effects with recasts, and fill the 50-target buffer in all
+  four capacity cases with three through six players.
+- 48 custom-configuration cases cover single activation, forced early removal,
+  the unused ActivateOnStart flag, shifted/single-key/empty curves and errors
+  after spell allocation. Eighteen exact failure prefixes retain 33 new waves.
+- 35 interaction cases exercise ignored players/platforms, requerying inactive
+  or destroyed targets, zero/negative scale and explicit destruction. Ignoring
+  a player does not prevent its immediate push on repeated activation; the
+  source only consults that set for continuous impulses.
+
+The complete records are in `fixtures/gust*.jsonl.xz`. Raw captures and exact
+assembly/input/output hashes are in `artifacts/gust-verified`,
+`gust-contacts-verified`, `gust-clones-verified`, `gust-custom`, and
+`gust-interactions`. Coverage guards require actual pushes, expected exclusions,
+clone allocation/removal, full target buffers, wave expiry and intended errors.
+
+This validates Gust against the composed player, clone, plain Ability and
+bound-platform graphs. Concrete lethal-terrain BoplBody targets, BlackHole,
+boulder tags and grenade achievement state are not yet covered. The remaining
+spell kinds and full public C match integration remain open.

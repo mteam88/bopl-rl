@@ -260,6 +260,17 @@ fn circle_edges(c: Circle, b: OrientedBox) -> ([Vec2; 4], [Vec2; 4], bool) {
     let edges = [right, right - b.right - b.right, top, top - b.up - b.up];
     (corners, edges, inside)
 }
+/// Boolean Circle/Box test uses a strict radius boundary, unlike the manifold overload.
+pub fn circle_box_overlaps(c: Circle, b: OrientedBox) -> bool {
+    let (_, edges, inside) = circle_edges(c, b);
+    inside
+        || edges
+            .iter()
+            .map(|&p| (p - c.center).length_squared())
+            .min()
+            .unwrap()
+            < c.radius * c.radius
+}
 pub fn circle_box(c: Circle, b: OrientedBox) -> Option<Contact> {
     let (_, edges, inside) = circle_edges(c, b);
     let distances = edges.map(|p| (p - c.center).length_squared());

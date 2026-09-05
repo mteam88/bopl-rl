@@ -14,6 +14,8 @@ pub struct Instance {
     pub dash: Option<crate::dash_ability::Instance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quick_spell: Option<crate::quick_spell::Instance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_pushable: Option<bool>,
     pub owner: usize,
     pub info: PlayerInfo,
     pub slime: Option<usize>,

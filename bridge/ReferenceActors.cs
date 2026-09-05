@@ -22,7 +22,7 @@ internal static class ReferenceActors
         var oldTutorial=TutorialGameHandler.isInTutorial;
         var oldDeadzone=Constants.GROUNDALIGNMENTDEADZONE;var oldCapture=ReferenceScheduler.Capture;var oldSound=ReferencePlayerController.SoundCapture;var oldRecord=Host.recordReplay;var oldEntryCapture=ReferenceCapture.ActorAbilityCapture;
         var oldPlayerGravity=scene.playerGravity;var oldMaxStretch=scene.maxStretchLength;var oldRopeStrength=scene.groundedPlayerRopeStr;
-        ReferenceActorCombat combat=null;ReferenceDeathEffects deathEffects=null;ReferenceActorClones clones=null;
+        ReferenceActorCombat combat=null;ReferenceDeathEffects deathEffects=null;ReferenceActorClones clones=null;ReferenceSpellWorld spells=null;
         var ropes=scene.ropes.ropeBodies.ToList();var meshes=new List<RopeMesh>();
         var objects=new List<GameObject>();var assets=new List<UnityEngine.Object>();var slimes=new List<ReferenceSlimeActors.Context>();
         var achievedField=typeof(AchievementHandler).GetField("isAchieved",Statics);var oldAchieved=achievedField.GetValue(null);
@@ -56,6 +56,7 @@ internal static class ReferenceActors
             for(int i=0;i<players.Count;i++)if(initial["players"][i]["eaten_count"]!=null)players[i].playersEatenCountThisRound=(int)initial["players"][i]["eaten_count"];
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             if(runtime["combat"]?["death_effects"]!=null)deathEffects=new ReferenceDeathEffects(runtime["combat"]["death_effects"],initial);
+            if(runtime["spells"]!=null)spells=new ReferenceSpellWorld(runtime["spells"],initial,deathEffects);
             if(runtime["combat"]!=null)combat=new ReferenceActorCombat(runtime["combat"],players);
             var entityObjects=actorData.Select(a=>a["entity"]!=null?ReferenceActorEntity.Create(a["entity"],adapters.Find(v=>v.sourceId==(int)a["object"]),a["ordinary"],a["collision"],a["bounds"]):null).ToList();
             for(int i=0;i<entityObjects.Count;i++)if(entityObjects[i]!=null)
@@ -141,6 +142,7 @@ internal static class ReferenceActors
                 clones=new ReferenceActorClones(query,actorData,slimes,bodies,physics,transforms,entityObjects,objects,platforms,adapters,ropes,deathEffects,Event,actor=>currentActor=actor,(actor,delta)=>pushes.Add(new JObject{["actor"]=actor,["external_delta"]=V(delta)}));
                 foreach(var player in players){var owner=slimes.First(s=>s!=null&&s.Slime.playerNumber==player.Id);player.Color=owner.Animation.Animator.spriteRen.sharedMaterial;}
             }
+            if(spells!=null){spells.ActorId=quick=>entityObjects.IndexOf(quick.gameObject);spells.ObjectId=id=>adapters.Find(a=>a.parent.instanceId==id)?.sourceId??id;spells.RuntimeObjectId=id=>adapters.Find(a=>a.sourceId==id)?.parent.instanceId??id;spells.JoinRegistration();}
             var calls=new Dictionary<string,int>();
             void Command(JToken command)
             {
@@ -159,6 +161,7 @@ internal static class ReferenceActors
                 if((string)command["op"]=="actor_spawn"){currentActor=(int)command["actor"];ReferenceActorSpawn.Apply((string)command["action"],command["position"],slimes[currentActor]);return;}
                 if((string)command["op"]=="kill_actor"){var request=command["request"];currentActor=(int)command["actor"];bodies[currentActor].GetComponent<PlayerCollision>().killPlayer((int)request["killer"],(bool)request["spawn_effect"],(bool)request["ignore_invulnerability"],(CauseOfDeath)(int)request["cause"]);return;}
                 if((string)command["op"]=="destroy_actor"){Updater.DestroyFix(bodies[(int)command["actor"]].gameObject);return;}
+                if((string)command["op"]=="spell_command"){spells.Command(command);return;}
                 if((string)command["op"]=="quick_cast"){currentActor=(int)command["actor"];ReferenceQuickSpell.Cast(bodies[currentActor].GetComponent<QuickSpell>());return;}
                 if((string)command["op"]=="quick_exit"){currentActor=(int)command["actor"];bodies[currentActor].GetComponent<QuickSpell>().ExitAbility(ReferenceSlimeExit.Info(command["info"],slimes[ordinary[currentActor].Owner]));return;}
                 if((string)command["op"]=="ordinary_exit"){currentActor=(int)command["actor"];ordinary[currentActor].Exit(command["info"]);return;}
@@ -203,7 +206,19 @@ internal static class ReferenceActors
                 };
                 d.Late=dt=>{Phase("late",id);currentActor=actor;scene.groundedPlayerRopeStr=F(actorData[actor]["config"]["physics"]["rope_strength"]);if(role=="physics")physics[actor].LateUpdateSim(dt);else if(role=="body")bodies[actor].LateUpdateSim(dt);};
             }
-            if(deathEffects!=null){deathEffects.ActorId=body=>bodies.IndexOf(body);deathEffects.MaterialId=material=>{int id=slimes.FindIndex(s=>s!=null&&s.Animation.Animator.spriteRen!=null&&s.Animation.Animator.spriteRen.sharedMaterial==material);if(id<0)throw new ArgumentException("Unbound death material");return id;};ReferenceDeathEffects.ComponentPhase=(kind,component)=>{var id=deathEffects.Id(component);if(id.HasValue){int actor=deathEffects.Actor(component);currentActor=actor;Phase(kind,id);currentActor=actor;}else if(clones!=null&&(id=clones.Id(component)).HasValue){int actor=clones.Actor(component);currentActor=actor;Phase(kind,id);currentActor=actor;}};}
+            if(deathEffects!=null)
+            {
+                deathEffects.ActorId=body=>bodies.IndexOf(body);deathEffects.MaterialId=material=>{int id=slimes.FindIndex(s=>s!=null&&s.Animation.Animator.spriteRen!=null&&s.Animation.Animator.spriteRen.sharedMaterial==material);if(id<0)throw new ArgumentException("Unbound death material");return id;};
+            }
+            ReferenceDeathEffects.ComponentPhase=(kind,component)=>
+            {
+                int? id=deathEffects?.Id(component);int actor=-1;
+                if(id.HasValue)actor=deathEffects.Actor(component);
+                else if((id=clones?.Id(component)).HasValue)actor=clones.Actor(component);
+                else if((id=spells?.Id(component)).HasValue)actor=spells.Actor(component);
+                if(id.HasValue){currentActor=actor;Phase(kind,id);currentActor=actor;}
+            };
+
             Static("addedUpdatables",(int)initial["added"]);Static("prefabsAdded",(int)initial["prefabs_added"]);Static("registeringAPrefab",(bool)initial["registering_prefab"]);Static("hitStopFrames",(int)initial["hitstop"]);
             Static("toBeAddedUpdatables",initial["pending"]["items"].Take((int)initial["pending"]["length"]).Select(id=>(MonoUpdatable)drivers[(int)id]).ToList());
             Updater.updatables=initial["live"].Select(id=>(MonoUpdatable)drivers[(int)id]).ToList();
@@ -233,13 +248,13 @@ internal static class ReferenceActors
                 if(kind=="destroy_object")
                 {
                     int actor=entityObjects.FindIndex(go=>ReferenceEquals(go,target));
-                    if(actor>=0)id=(int)actorData[actor]["entity"]["node"];else if(deathEffects!=null)id=deathEffects.Node((GameObject)target);
+                    if(actor>=0)id=(int)actorData[actor]["entity"]["node"];else id=deathEffects?.Node((GameObject)target)??spells?.Node((GameObject)target);
                 }
                 Phase(kind,id);
                 if(kind=="physics"){simulated=true;ReferencePhysicsScene.BeginFrame();}
                 if(kind=="destroy_object"&&target is GameObject doomed&&doomed!=null)
                 {
-                    deathEffects?.Removing(doomed);
+                    deathEffects?.Removing(doomed);spells?.Removing(doomed);
                     sceneSnapshot();
                     for(int i=0;i<entityObjects.Count;i++)if(entityObjects[i]!=null&&(entityObjects[i]==doomed||entityObjects[i].transform.IsChildOf(doomed.transform)))
                     {
@@ -254,7 +269,8 @@ internal static class ReferenceActors
                 var frame=new JObject{["actors"]=states,["scene"]=world,["report"]=new JObject{["phases"]=phases,["events"]=events,["pushes"]=pushes,["physics"]=simulated?(JToken)ReferencePhysicsScene.Report(adapters):JValue.CreateNull()},
                     ["ticks"]=Updater.SimulationTicks,["time"]=Updater.SimTimePassed.m_rawValue,["level_time"]=Updater.SimTimeSinceLevelLoaded.m_rawValue,
                     ["inputs"]=new JArray(inputs.Select((p,i)=>{var v=new JObject{["jump"]=p.jumpButton_IS_DOWN,["pressed"]=p.jumpButton_DOWN_THIS_FRAME,["previous"]=p.jumpButton_DOWN_LAST_FRAME};if(initial["inputs"][i]["angle"]!=null)v["angle"]=p.joystickAngleByte;return v;}))};
-                if((bool?)query["registration_state"]==true)frame["registration"]=deathEffects.Registration(drivers);
+                if((bool?)query["registration_state"]==true)frame["registration"]=spells!=null?spells.Registration(drivers):deathEffects.Registration(drivers);
+                if(spells!=null)frame["spells"]=spells.Snapshot();
                 if(combat!=null){frame["combat"]=combat.Snapshot();if(deathEffects!=null)frame["combat"]["death_effects"]=deathEffects.Snapshot();}
                 if(runtime["actor_ropes"]!=null){var binding=(JObject)runtime["actor_ropes"].DeepClone();binding["metadata"]=new JArray(ropes.Select(r=>new JObject{["owner"]=r.ownerId,["time_air_start"]=r.timeInAir_start.m_rawValue,["time_air_end"]=r.timeInAir_end.m_rawValue}));frame["actor_ropes"]=binding;}
                 if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["scale"]!=null)v["scale"]=player.Scale.m_rawValue;if(v["eaten_count"]!=null)v["eaten_count"]=player.playersEatenCountThisRound;if(v["position"]!=null)v["position"]=ReferencePlayerPosition.Snapshot(player,slimes);if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
@@ -279,7 +295,7 @@ internal static class ReferenceActors
         }
         finally
         {
-            clones?.Dispose();deathEffects?.Dispose();combat?.Dispose();
+            clones?.Dispose();deathEffects?.Dispose();combat?.Dispose();spells?.Dispose();ReferenceDeathEffects.ComponentPhase=null;
             foreach(var mesh in meshes)mesh.Dispose();scene.playerGravity=oldPlayerGravity;scene.maxStretchLength=oldMaxStretch;scene.groundedPlayerRopeStr=oldRopeStrength;
             ReferenceScheduler.Capture=null;achievedField.SetValue(null,oldAchieved);foreach(var asset in assets)UnityEngine.Object.DestroyImmediate(asset);foreach(var go in objects)if(go!=null)UnityEngine.Object.DestroyImmediate(go);
             foreach(var pair in saved)pair.Key.SetValue(null,pair.Value);PlayerHandler.Get().SetPlayerList(oldPlayers);GameTime.PlayerTimeScale=oldScale;

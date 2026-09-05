@@ -118,14 +118,31 @@ impl Instance {
         &mut self,
         animator: &mut State,
         id: usize,
-        players: &[scheduler::Player],
+        context: &mut Context,
+        position: Vec2,
         report: &mut Report,
     ) -> scheduler::Result<()> {
-        if !players.iter().any(|p| Some(p.id) == self.player) {
-            return Err("null_reference");
-        }
-        if self.spell.is_some() {
-            return Err("quick_spell_prefab_not_implemented");
+        let scale = context
+            .schedule
+            .players
+            .iter()
+            .find(|p| Some(p.id) == self.player)
+            .ok_or("null_reference")?
+            .scale
+            .unwrap_or(Fix::ONE);
+        if let Some(prefab) = &self.spell {
+            context
+                .spells
+                .as_mut()
+                .ok_or("spell_world_not_bound")?
+                .spawn(
+                    context.schedule,
+                    prefab,
+                    id,
+                    self.info.player,
+                    position + self.shockwave_offset * scale,
+                    scale,
+                )?;
         }
         if !self.particle_prefab {
             return Err("instantiate_null");
@@ -192,17 +209,18 @@ impl Runtime {
     }
     pub fn cast_quick_spell(
         actors: &mut [Actor],
-        context: &Context,
+        context: &mut Context,
         id: usize,
         report: &mut Report,
     ) -> scheduler::Result<()> {
+        let position = actors[id].controller.physics.motion.position;
         let quick = actors[id]
             .ordinary
             .as_mut()
             .and_then(|a| a.quick_spell.as_mut())
             .ok_or("missing_quick_spell")?;
         let mut animator = std::mem::replace(&mut quick.animator, State::idle(None));
-        let result = quick.cast(&mut animator, id, &context.schedule.players, report);
+        let result = quick.cast(&mut animator, id, context, position, report);
         quick.animator = animator;
         result
     }
@@ -213,6 +231,7 @@ impl Runtime {
         report: &mut Report,
     ) -> scheduler::Result<()> {
         let actor = &mut actors[id];
+        let position = actor.controller.physics.motion.position;
         let quick = actor
             .ordinary
             .as_mut()
@@ -230,7 +249,7 @@ impl Runtime {
             protected,
             &[],
             &mut |animator, callback| match callback {
-                1 => quick.cast(animator, id, &context.schedule.players, report),
+                1 => quick.cast(animator, id, context, position, report),
                 2 => Err("quick_spell_exit_requested"),
                 _ => Err("quick_spell_unknown_callback"),
             },
