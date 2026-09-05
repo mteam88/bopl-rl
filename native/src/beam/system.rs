@@ -42,9 +42,10 @@ pub struct Step {
     pub graph: Option<Snapshot>,
     pub physics: StepReport,
 }
+#[derive(Serialize, Deserialize)]
 pub struct System {
     pub config: Config,
-    pub pool: Vec<Slot>,
+    pub pool: Vec<Option<Slot>>,
     pub targets: Vec<Target>,
     graph: Graph,
     next_id: u32,
@@ -104,6 +105,8 @@ impl System {
             let existing = self
                 .pool
                 .get(i)
+                .and_then(Option::as_ref)
+                .filter(|slot| !slot.destroyed)
                 .and_then(|slot| scene.objects.iter().position(|o| o.id == slot.id));
             if let Some(index) = existing {
                 scene.objects[index].active = true;
@@ -137,18 +140,21 @@ impl System {
                     destroyed: false,
                 };
                 if i < self.pool.len() {
-                    self.pool[i] = slot;
+                    self.pool[i] = Some(slot);
                 } else {
-                    self.pool.push(slot);
+                    self.pool.push(Some(slot));
                 }
             }
         }
         // The original deactivation loop stops at its first empty, destroyed or inactive slot.
-        for slot in self.pool.iter().skip(count) {
+        for entry in self.pool.iter().skip(count) {
+            let Some(slot) = entry else {
+                break;
+            };
             let Some(object) = scene.objects.iter_mut().find(|o| o.id == slot.id) else {
                 break;
             };
-            if object.destroyed || !object.active {
+            if slot.destroyed || object.destroyed || !object.active {
                 break;
             }
             object.active = false;
@@ -158,7 +164,7 @@ impl System {
                 *beam,
                 matches!(graph.roles[i], Role::Parent | Role::ParentAndChild),
             );
-            let slot = &mut self.pool[i];
+            let slot = self.pool[i].as_mut().unwrap();
             let object = scene.objects.iter_mut().find(|o| o.id == slot.id).unwrap();
             if let Collider::Box(collider) = object.collider {
                 slot.hitbox.collider = Some(collider);
@@ -173,7 +179,7 @@ impl System {
     }
     /// Match DestroyFix's flags; collider removal belongs to the next physics step.
     pub fn destroy_slot(&mut self, scene: &mut Scene, index: usize) {
-        if let Some(slot) = self.pool.get_mut(index) {
+        if let Some(slot) = self.pool.get_mut(index).and_then(Option::as_mut) {
             slot.destroyed = true;
             if let Some(object) = scene.objects.iter_mut().find(|o| o.id == slot.id) {
                 object.destroyed = true;
@@ -182,7 +188,7 @@ impl System {
         }
     }
     pub fn refresh(&mut self, scene: &Scene) {
-        for slot in &mut self.pool {
+        for slot in self.pool.iter_mut().flatten() {
             if let Some(object) = scene.objects.iter().find(|o| o.id == slot.id) {
                 if let Collider::Box(collider) = object.collider {
                     slot.hitbox.collider = Some(collider);

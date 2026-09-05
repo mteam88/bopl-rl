@@ -7,7 +7,7 @@ using UnityEngine;
 using static ReferenceDynamics;
 
 // Optional stage-level evidence taken from real gameplay, before ability callbacks.
-// Includes rope physics. Beam subsystem state still needs a replay-stage adapter.
+// Includes rope physics and the persistent beam graph, pool and target effects.
 public static class ReferencePhysicsCapture
 {
     public static bool Enabled => ReferenceCapture.Enabled && Environment.GetEnvironmentVariable("BOPL_TRACE_PHYSICS")=="1";
@@ -15,7 +15,8 @@ public static class ReferencePhysicsCapture
     private static readonly Dictionary<int,int> ids=new Dictionary<int,int>();
     private static readonly BindingFlags flags=BindingFlags.NonPublic|BindingFlags.Instance;
     internal static Func<int,int> IdentityOverride;
-    private static int Id(int instance) {if(IdentityOverride!=null)return IdentityOverride(instance);if(!ids.TryGetValue(instance,out int id)){id=ids.Count+1;ids.Add(instance,id);}return id;}
+    internal static int NextId => ids.Count+1;
+    internal static int Id(int instance) {if(IdentityOverride!=null)return IdentityOverride(instance);if(!ids.TryGetValue(instance,out int id)){id=ids.Count+1;ids.Add(instance,id);}return id;}
     private static JArray Ids(List<int> instances) {var result=new JArray();foreach(int id in instances)result.Add(Id(id));return result;}
     public static void Begin(DetPhysics p, Fix dt)
     {
@@ -25,12 +26,14 @@ public static class ReferencePhysicsCapture
             ["tick"]=Updater.SimulationTicks,["dt"]=(GameTime.IsTimeStopped()?Fix.Zero:dt).m_rawValue,
             ["ropes"]=ropes,["beams"]=(int)typeof(DetPhysics).GetField("beamsThisFrame",flags).GetValue(p),["before"]=Scene(p)
         };
+        LastStep["beams_before"]=ReferenceBeamRuntimeCapture.Snapshot(p,true);
     }
     public static void End(DetPhysics p)
     {
         if(!Enabled)return;
         if(LastStep==null)throw new InvalidOperationException("Physics capture without begin");
         LastStep["after"]=Scene(p);
+        LastStep["beams_after"]=ReferenceBeamRuntimeCapture.Snapshot(p,false);
         var events=new JArray();
         foreach(var c in (List<CollisionInformation>)typeof(DetPhysics).GetField("ToMakeCallBacks",flags).GetValue(p))
             events.Add(new JObject {["receiver"]=Id(c.pp.instanceId),["other"]=Id(c.colliderPP.instanceId),["collider"]=ReferencePhysicsScene.ShapeJson(c.collider),["layer"]=c.layer,["impact_velocity"]=V(c.colliderImpactVelocity),

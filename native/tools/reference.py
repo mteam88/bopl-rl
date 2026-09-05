@@ -107,7 +107,7 @@ def capture(args):
         raise ValueError("ticks and batch must be positive")
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists():
+    if output.exists() or Path(str(output) + ".failure.json").exists():
         raise ValueError(f"refusing to overwrite {output}")
     binary = ROOT / "Builds/Linux/BoplBattle.x86_64"
     env = dict(os.environ, BOPL_TRACE=str(output), BOPL_TRACE_TICKS=str(args.ticks), BOPL_TRACE_BATCH=str(args.batch))
@@ -125,18 +125,25 @@ def capture(args):
     started = time.monotonic()
     with output.with_suffix(".stdout.log").open("w") as stdout:
         subprocess.run(command, env=env, cwd=ROOT, stdout=stdout, stderr=subprocess.STDOUT, check=True, timeout=args.timeout)
-    ticks = sum(row["kind"] == "state" for row in read_trace(output))
-    if ticks != args.ticks:
-        raise ValueError(f"only {ticks}/{args.ticks} requested ticks captured")
     after = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
     if before != after:
         raise ValueError("reference inputs changed while capture was running")
     provenance = {
-        "command": command, "batch": args.batch, "ticks": ticks, "physics_stages": physics,
+        "command": command, "batch": args.batch, "requested_ticks": args.ticks, "physics_stages": physics,
         "elapsed_seconds": time.monotonic() - started,
         **before,
         "trace_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
     }
+    failure = Path(str(output) + ".failure.json")
+    if failure.exists():
+        provenance["status"] = "simulation exception; full trace rejected"
+        provenance["failure_sha256"] = hashlib.sha256(failure.read_bytes()).hexdigest()
+        failure.with_suffix(".provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+        raise ValueError(f"Unity simulation failed; boundary evidence: {failure}")
+    ticks = sum(row["kind"] == "state" for row in read_trace(output))
+    if ticks != args.ticks:
+        raise ValueError(f"only {ticks}/{args.ticks} requested ticks captured")
+    provenance["ticks"] = ticks
     output.with_suffix(".provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(json.dumps(provenance, indent=2))
     return 0

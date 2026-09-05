@@ -45,6 +45,13 @@ fn evaluate(q: Value) -> Value {
             }
             return json!(states);
         }
+        "dynamics_beam_capture" => {
+            let mut scene: physics::scene::Scene = read(&q, "scene");
+            let mut beams: bopl_sim::beam::system::System = read(&q, "beams");
+            let step = beams.simulate(&mut scene, read(&q, "dt"), &[]);
+            scene.objects.sort_by_key(|o| o.collider.kind());
+            return json!({"scene": scene, "beams": beams, "callbacks": step.physics.callbacks});
+        }
         "dynamics_beam_scene" => {
             let mut scene: physics::scene::Scene = read(&q, "scene");
             let next_id = scene.objects.iter().map(|o| o.id).max().unwrap_or(0) + 1;

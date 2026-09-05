@@ -19,6 +19,7 @@ public static class ReferenceCapture
     private static readonly string output = Environment.GetEnvironmentVariable("BOPL_TRACE");
     private static StreamWriter writer;
     private static int captured;
+    private static JToken lastInput;
     private static JArray events = new JArray();
     private static readonly SortedDictionary<string, int> abilityEntries = new SortedDictionary<string, int>(StringComparer.Ordinal);
     private static readonly Dictionary<Type, FieldInfo[]> fields = new Dictionary<Type, FieldInfo[]>();
@@ -40,16 +41,40 @@ public static class ReferenceCapture
     {
         if (!Enabled) return;
         EnsureWriter();
+        lastInput = new Encoder().Value(input, "input");
         writer.WriteLine(new JObject { ["kind"] = "input", ["index"] = captured,
-            ["value"] = new Encoder().Value(input, "input") }.ToString(Formatting.None));
+            ["value"] = lastInput }.ToString(Formatting.None));
     }
 
     public static void BeforeReplayStep(InputPacket[] input)
     {
         if (!Enabled) return;
         EnsureWriter();
+        lastInput = new Encoder().Value(input, "input");
         writer.WriteLine(new JObject { ["kind"] = "input", ["index"] = captured,
-            ["value"] = new Encoder().Value(input, "input") }.ToString(Formatting.None));
+            ["value"] = lastInput }.ToString(Formatting.None));
+    }
+
+    // Keep the completed physics stage even if its subsequent gameplay callback
+    // throws. This is separate evidence, never a successful full-tick state.
+    public static void FailedTick(Exception failure)
+    {
+        if (!Enabled) return;
+        try
+        {
+            var stage = ReferencePhysicsCapture.LastStep;
+            var snapshot = new JObject {
+                ["schema"] = "bopl-replay-failure-v1", ["input_index"] = captured,
+                ["tick"] = Updater.SimulationTicks, ["input"] = lastInput,
+                ["exception"] = failure.GetType().FullName, ["message"] = failure.Message,
+                ["stack"] = failure.StackTrace,
+                ["physics_stage_complete"] = stage != null && stage["after"] != null && stage["callbacks"] != null,
+                ["physicsStage"] = stage
+            };
+            File.WriteAllText(output + ".failure.json", snapshot.ToString(Formatting.None));
+            Finish("simulation-exception");
+        }
+        catch (Exception captureFailure) { Debug.LogException(captureFailure); }
     }
 
     public static void AbilityEntered(int player, int slot, AbilityMonoBehaviour ability)

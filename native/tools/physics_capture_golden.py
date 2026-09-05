@@ -13,7 +13,7 @@ from reference import ROOT, read_trace, provenance, first_difference
 FIXTURE=ROOT/'native/fixtures/physics-gameplay.jsonl.gz'
 
 
-def export(paths):
+def export(paths, fixture):
     records=[];sources=[]
     for path in paths:
         report=json.loads(path.with_suffix('.physics-report.json').read_text())
@@ -23,21 +23,25 @@ def export(paths):
         for row in read_trace(path):
             if row['kind']!='state':continue
             s=row['value'].get('physicsStage')
-            if s is None or s['beams'] or (s['ropes'] and 'rope_system' not in s['before']):continue
-            if s['tick'] in range(237,246) or index%stride==0:
-                records.append({'source':len(sources),'tick':s['tick'],'query':{'operation':'dynamics_scene','scene':s['before'],'steps':[s['dt']]},
-                    'expected':{'scene':s['after'],'callbacks':s['callbacks']}})
+            if s is None or (s['beams'] and 'beams_before' not in s) or (s['ropes'] and 'rope_system' not in s['before']):continue
+            if s['beams'] or s['tick'] in range(237,246) or index%stride==0:
+                query={'operation':'dynamics_scene','scene':s['before'],'steps':[s['dt']]}
+                expected={'scene':s['after'],'callbacks':s['callbacks']}
+                if 'beams_before' in s:
+                    query={'operation':'dynamics_beam_capture','scene':s['before'],'beams':s['beams_before'],'dt':s['dt']}
+                    expected['beams']=s['beams_after']
+                records.append({'source':len(sources),'tick':s['tick'],'query':query,'expected':expected})
             index+=1
         if index!=report['compared_stages']:raise ValueError('Coverage changed since verification')
         sources.append(source)
     header={'schema':'bopl-gameplay-physics-stage-v1','stages':len(records),'sources':sources,
         'scope':'Unity supplies the state before each independent physics stage; gameplay callback effects are excluded'}
-    raw=''.join(json.dumps(r,separators=(',',':'))+'\n' for r in [header,*records]);FIXTURE.write_bytes(gzip.compress(raw.encode(),mtime=0))
-    print(json.dumps({'exported':str(FIXTURE),'stages':len(records)}))
+    raw=''.join(json.dumps(r,separators=(',',':'))+'\n' for r in [header,*records]);fixture.write_bytes(gzip.compress(raw.encode(),mtime=0))
+    print(json.dumps({'exported':str(fixture),'stages':len(records)}))
 
 
-def verify():
-    with gzip.open(FIXTURE,'rt') as f:header=json.loads(next(f));records=[json.loads(l) for l in f]
+def verify(fixture):
+    with gzip.open(fixture,'rt') as f:header=json.loads(next(f));records=[json.loads(l) for l in f]
     if header['schema']!='bopl-gameplay-physics-stage-v1' or len(records)!=header['stages'] or not records:raise ValueError('Invalid gameplay physics fixture')
     p=subprocess.run([str(ROOT/'native/target/release/dynamics-probe')],input=''.join(json.dumps(r['query'])+'\n' for r in records),text=True,capture_output=True,check=True)
     actual=[json.loads(l) for l in p.stdout.splitlines()]
@@ -45,11 +49,11 @@ def verify():
     for i,(r,out) in enumerate(zip(records,actual)):
         value={'scene':out[0]['scene'],'callbacks':out[0]['report']['callbacks']} if isinstance(out,list) else out
         if value!=r['expected']:raise ValueError(json.dumps({'stage':i,'tick':r['tick'],'difference':first_difference(r['expected'],value)}))
-    print(json.dumps({'gameplay_physics_stage_match':True,'stages':len(records),'fixture_sha256':hashlib.sha256(FIXTURE.read_bytes()).hexdigest()}))
+    print(json.dumps({'gameplay_physics_stage_match':True,'stages':len(records),'fixture_sha256':hashlib.sha256(fixture.read_bytes()).hexdigest()}))
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('command',choices=['export','verify']);p.add_argument('traces',nargs='*',type=Path);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('command',choices=['export','verify']);p.add_argument('traces',nargs='*',type=Path);p.add_argument('--fixture',type=Path,default=FIXTURE);a=p.parse_args()
     if a.command=='export':
         if not a.traces:p.error('export requires verified capture paths')
-        export(a.traces)
-    else:verify()
+        export(a.traces,a.fixture)
+    else:verify(a.fixture)

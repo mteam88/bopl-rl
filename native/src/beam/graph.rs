@@ -66,6 +66,7 @@ pub struct Snapshot {
     pub initial: usize,
     pub mapping: Vec<(i32, usize)>,
 }
+#[derive(Serialize, Deserialize)]
 pub struct Graph {
     pub(super) config: Config,
     pub(super) bodies: Vec<Beam>,

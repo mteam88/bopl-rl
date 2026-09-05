@@ -223,5 +223,38 @@ Reference assembly:
 `8c397c6a720302d54261628cf28c07a04c3e7488c7704dd54858f3fadd3d318c`.
 `artifacts/beam-scene/report.json` and `artifacts/beam-scene-stress/report.json`
 retain input/output hashes and counts. Standalone fixtures retain 73 scenarios,
-1,236 successful steps and all eight source errors. Actual replay import and an
-independent native player-input episode with beam abilities remain required.
+1,236 successful steps and all eight source errors. An independent native
+player-input episode with beam abilities remains required; replay-stage import
+is covered next.
+
+
+## Beam replay stage import and exception evidence
+
+Three completed six-player traces match 1,780 stages and 15,514 callbacks. Of
+these, the four-Beam/two-Dash replay covers 700 stages, 141 with actual emission,
+and 6,898 callbacks. Beam owners 1–4 emit; at most four beams are queued. The two
+540-stage all-Beam prefixes contain no emitted beams and are counted separately
+in their reports. None of these replay cases exercises beam crossing/reflection.
+
+Completed-capture assembly:
+`5bf8b058428d859c0c3cd8b73ed8e9a8496fb9298bdcfd608d6f94b161cd72e1`.
+The 700-stage replay SHA is
+`d2c7f8d27932ff6d6655b63c8c879c4e7f30370f9d8b76e88b5849c9b769ddd0`;
+its trace SHA is
+`e9316afa59f7eff4bf42e849ede2c844edb2303b74076d74cda16ac1f315640b`.
+
+The all-six-Beam stationary replay throws in `Beam.ExitAbility` at input index
+561 because the missing player-5/6 charge sound produces index -1. Capture now
+records the first exception separately and rejects the incomplete full trace.
+The completed physics stage preceding that exception exactly matches Rust,
+including four queued beams owned by 3–6 and ten callbacks. Subsequent damage,
+death, and the exception itself are not native gameplay implementation evidence.
+
+Exception-capture assembly:
+`0e2136f5c6a64388415f87060d6451f401ba00bf08e112cdf326f2ac05184f25`.
+Failure snapshot SHA:
+`55ca48de830519c6f78e9349585fca7885ba4ff94edbc5864b406f51a33718a9`.
+Both before/after beam state and scene state are compared, including retained
+history, target state, pool contents and canonical IDs. Fixtures retain 284 completed
+stages and one exception-boundary stage. All evidence and source-failure logs
+are retained under `artifacts/beam-gameplay/`.

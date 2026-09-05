@@ -261,6 +261,53 @@ Regenerate with `just verify-beam-scenes`. Raw queries, Unity/native states and
 hashes are in `artifacts/beam-scene/` and `artifacts/beam-scene-stress/`.
 
 This is independent multi-step physics-stage evidence from synthetic initial
-scenes, with supplied beam bodies. Actual replay-stage import still needs the
-persistent beam subsystem state. Ability callbacks, explosion damage, full
-player/ability lifecycle, map loading and the full C environment remain open.
+scenes, with supplied beam bodies. Replay-stage import is now covered below.
+Ability callbacks, explosion damage, full player/ability lifecycle, map loading
+and the full C environment remain open.
+
+
+## Beam state from actual gameplay
+
+Physics traces now include the functional beam state before and after each stage:
+all graph arrays, crossing history, queued bodies, pooled hitboxes (including
+null gaps), target force/velocity/orb charge, and source configuration. Rust
+imports that state and executes the same combined physics stage. Target membership
+is held across the stage so removal does not hide a target's final state.
+
+Three complete six-player captures match **1,780/1,780 stages and 15,514 queued
+collision callbacks**. Two 540-tick captures cover charge/cancellation without
+emission. The third has four Beam users and two idle Dash users: **700/700 stages,
+141 stages with emitted beams, and 6,898 callbacks**. Emission uses owners 1–4,
+with up to four queued beams. No replay reflections or crossings occur in this
+corpus; those remain covered by the synthetic graph and combined-stage corpora.
+
+The all-six-Beam stationary replay exposes a source defect at input index 561.
+`AudioManager.PlayInterruptable` returns index -1 for absent `beamCharge5` or
+`beamCharge6`; `Beam.ExitAbility` passes it to the unchecked `TimesSoundsPlayed`
+array lookup. Death during charging/firing can therefore interrupt the tick.
+The short-press and moving held-input cases also expose this path. These are
+rejected full traces, not successful matches or native ability validation.
+
+Opt-in replay capture now preserves the first exception in a separate
+`.failure.json` snapshot and stops the capture, while rethrowing the original
+exception. The normal game path keeps its original exception behavior. The
+snapshot includes the input and the completed physics stage, if physics reached
+its pre-callback boundary. Its provenance is separate from successful traces.
+Rust exactly matches the stationary replay's final physics stage: four emitted
+beams owned by **3, 4, 5 and 6**, plus ten queued callbacks. This verifies every
+owner ID in actual gameplay across the two emission cases; it does not prove a
+completed six-simultaneous-beam match or reproduce the subsequent native death.
+
+`fixtures/beam-gameplay.jsonl.gz` retains 284 completed-stage regressions, including
+all 141 emission stages. `fixtures/beam-failure.jsonl.gz` retains the final stage
+before the source exception. Both run under `just verify`. Raw captures, failure
+logs, reports and hashes are in `artifacts/beam-gameplay/`.
+
+Generate the input setups with `python3 native/tools/beam_gameplay_cases.py DIR`
+(after the standard asset export), then encode them with `tools/replay-codec`.
+Use `reference.py capture --physics` and `verify_physics_capture.py` for completed
+captures. Use `verify_physics_failure.py CAPTURE.failure.json` for a recorded
+exception boundary; it never upgrades the failed tick to a successful rollout.
+
+Beam's player controller, animation-driven lifecycle and collision damage remain
+unported. The public C environment remains the movement/dash slice.

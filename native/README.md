@@ -182,3 +182,10 @@ shrink failures to the first divergent input prefix before diagnosing them.
 
 Finite tests establish agreement over their corpus, not universal equivalence.
 See [VALIDATION.md](VALIDATION.md) for measured results and their limits.
+
+
+Beam graph, pooled hitboxes and target effects can now be imported from actual
+replay physics stages. The checked fixtures include 141 stages with emitted beams
+and a completed physics stage immediately before a six-player Unity exception.
+These tests supply Unity's pre-state each step; they do not run the full native
+Beam ability. See [coverage and source failures](FULL_COMPATIBILITY.md#beam-state-from-actual-gameplay).
