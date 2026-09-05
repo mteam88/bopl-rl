@@ -283,3 +283,97 @@ pub fn air_movement(
     *velocity += -Vec2::RIGHT * damping * velocity.x;
     Ok(())
 }
+
+/// CollisionRaycasts tests the front ray, then each side ray, stopping at the
+/// first successful query rather than comparing hits across the three rays.
+pub fn collision_cast<T>(
+    position: Vec2,
+    velocity: Vec2,
+    radius: Fix,
+    effective_dt: Fix,
+    query: &mut impl FnMut(Vec2, Vec2, Fix) -> Option<(T, Vec2)>,
+) -> Option<(T, Vec2)> {
+    let magnitude = velocity.length();
+    let distance = magnitude * effective_dt;
+    let direction = if magnitude == Fix::ZERO {
+        Vec2::ZERO
+    } else {
+        velocity / magnitude
+    };
+    let side = -direction.perp_cw() * radius;
+    for (origin, correction) in [
+        (position + direction * radius, Vec2::ZERO),
+        (position - side, side),
+        (position + side, -side),
+    ] {
+        if let Some((hit, point)) = query(origin, direction, distance) {
+            return Some((hit, point + correction));
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CollisionRaycast {
+    pub velocity: Vec2,
+    pub effective_dt: Fix,
+    pub attach: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroundTarget {
+    pub object: u32,
+    pub ground: Option<u32>,
+}
+impl State {
+    pub fn attach(
+        &mut self,
+        ground: Option<u32>,
+        location: Vec2,
+        platforms: &[Platform],
+    ) -> Result<(), &'static str> {
+        self.motion.ground = ground;
+        self.motion.grounded = true;
+        let platform = self.platform(platforms)?;
+        if !platform.has_shape {
+            self.motion.grounded_speed = self
+                .motion
+                .velocity
+                .cross(platform.surface.normal(self.motion.position));
+            return Err("null_reference");
+        }
+        self.motion
+            .attach(ground.unwrap(), &platform.surface, location)
+            .map_err(|_| "division_by_zero")
+    }
+    pub fn collision_raycasts(
+        &mut self,
+        request: CollisionRaycast,
+        scene: &mut crate::physics::scene::Scene,
+        targets: &[GroundTarget],
+        platforms: &[Platform],
+        notify: &mut impl FnMut(&mut Self, crate::physics::query::SurfaceHit),
+    ) -> Result<bool, &'static str> {
+        let result = collision_cast(
+            self.motion.position,
+            request.velocity,
+            self.motion.radius,
+            request.effective_dt,
+            &mut |origin, direction, distance| {
+                let hit = scene.raycast_rounded(origin, direction, distance);
+                hit.object.map(|_| (hit, hit.near_position))
+            },
+        );
+        let Some((hit, location)) = result else {
+            return Ok(false);
+        };
+        if request.attach {
+            let ground = targets
+                .iter()
+                .find(|t| Some(t.object) == hit.object)
+                .and_then(|t| t.ground);
+            self.attach(ground, location, platforms)?;
+            notify(self, hit);
+        }
+        Ok(true)
+    }
+}

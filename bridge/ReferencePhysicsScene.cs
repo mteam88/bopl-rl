@@ -60,6 +60,25 @@ public static class ReferencePhysicsScene
             default:throw new ArgumentException("Unknown scene command");
         }
     }
+    private static JObject Snapshot(JObject scene, JArray objects, List<Adapter> adapters)
+    {
+        var snapshot=(JObject)scene.DeepClone();var states=new JArray();
+        for(int i=0;i<adapters.Count;i++)
+        {
+            var a=adapters[i];if(!Contains(a))continue;
+            var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();
+            o["body"]=Body(body);o["collider"]=ShapeJson(shape);
+            o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
+            o["relative_pos"]=V(body.relativePos);o["relative_orientation"]=body.relativeOrientation.m_rawValue;
+            o["transform"]=new JObject {["position"]=V(a.transform.position),["rotation"]=a.transform.rotation.m_rawValue,["offset"]=V(a.transform.offset)};
+            if(objects[i]["transform"]["right"]!=null)o["transform"]["right"]=V(a.transform.right);
+            states.Add(o);
+        }
+        snapshot["objects"]=states;
+        if(scene["rope_system"]!=null){var bodies=new JArray();foreach(var r in physics.ropes.ropeBodies)bodies.Add(ReferenceRope.State(r));snapshot["rope_system"]["bodies"]=bodies;}
+        var composites=new JArray();foreach(var c in physics.composites)composites.Add(CompositeJson(c));snapshot["composites"]=composites;
+        return snapshot;
+    }
     public static JToken Evaluate(JObject query)
     {
         if (physics==null) {physics=new GameObject("Reference physics scene").AddComponent<DetPhysics>();originalRopes=physics.ropes.ropeBodies;}
@@ -114,6 +133,8 @@ public static class ReferencePhysicsScene
                 else if(a.shape==Shape.Box){var shape=Box(raw);shape.layer=layer;physics.boxes.AddBody(a.parent,shape,body);}
                 else {var shape=Rounded(raw);shape.layer=layer;physics.roundedRects.AddBody(a.parent,shape,body);}
             }
+            if ((string)query["operation"] == "dynamics_player_rays")
+                return ReferencePlayerRays.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
             var result=new JArray();
             int tick=0;
             foreach(var dt in query["steps"])
@@ -122,21 +143,7 @@ public static class ReferencePhysicsScene
                 if(commands!=null)foreach(var command in commands)Command(command,adapters);
                 events.Clear();sweepX=false;roundedSweepX=false;
                 physics.Simulate(F(dt));
-                var snapshot=(JObject)scene.DeepClone();var states=new JArray();
-                for(int i=0;i<adapters.Count;i++)
-                {
-                    var a=adapters[i];if(!Contains(a))continue;
-                    var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();
-                    o["body"]=Body(body);o["collider"]=ShapeJson(shape);
-                    o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
-                    o["relative_pos"]=V(body.relativePos);o["relative_orientation"]=body.relativeOrientation.m_rawValue;
-                    o["transform"]=new JObject {["position"]=V(a.transform.position),["rotation"]=a.transform.rotation.m_rawValue,["offset"]=V(a.transform.offset)};
-                    if(objects[i]["transform"]["right"]!=null)o["transform"]["right"]=V(a.transform.right);
-                    states.Add(o);
-                }
-                snapshot["objects"]=states;
-                if(ropeSystem!=null){var bodies=new JArray();foreach(var r in physics.ropes.ropeBodies)bodies.Add(ReferenceRope.State(r));snapshot["rope_system"]["bodies"]=bodies;}
-                var composites=new JArray();foreach(var c in physics.composites)composites.Add(CompositeJson(c));snapshot["composites"]=composites;
+                var snapshot=Snapshot(scene,objects,adapters);
                 var groups=new JArray();
                 for(int g=0;g<pairFields.Length;g++)
                 {

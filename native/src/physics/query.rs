@@ -41,3 +41,52 @@ impl Scene {
         result
     }
 }
+
+/// Complete RaycastInformation for the rounded-rectangle-only query.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SurfaceHit {
+    pub object: Option<u32>,
+    pub near_position: Vec2,
+    pub far_position: Vec2,
+    pub near_distance: Fix,
+    pub far_distance: Fix,
+    pub layer: usize,
+}
+impl Default for SurfaceHit {
+    fn default() -> Self {
+        Self {
+            object: None,
+            near_position: Vec2::ZERO,
+            far_position: Vec2::ZERO,
+            near_distance: Fix::MAX,
+            far_distance: Fix::ZERO,
+            layer: 0,
+        }
+    }
+}
+impl Scene {
+    pub fn raycast_rounded(&mut self, origin: Vec2, direction: Vec2, distance: Fix) -> SurfaceHit {
+        self.remove_destroyed();
+        let mut result = SurfaceHit::default();
+        for object in &self.objects {
+            let Collider::RoundedRect(shape) = object.collider else {
+                continue;
+            };
+            if object.active
+                && let Some(hit) = shape.raycast(origin, direction)
+                && hit.near < result.near_distance
+                && hit.near <= distance
+            {
+                result = SurfaceHit {
+                    object: Some(object.id),
+                    near_position: origin + hit.near * direction,
+                    far_position: origin + hit.far * direction,
+                    near_distance: hit.near,
+                    far_distance: hit.far,
+                    layer: object.layer,
+                };
+            }
+        }
+        result
+    }
+}

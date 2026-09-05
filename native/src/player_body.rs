@@ -160,15 +160,11 @@ impl State {
         if self.rope.is_some_and(|i| !ropes[i].physics.enabled) {
             self.rope = None;
         }
-        let effective_dt = if self
+        let protected = self
             .holder
             .and_then(|id| context.players.iter().find(|p| p.id == id))
-            .is_some_and(|p| !p.protected)
-        {
-            dt * context.time_scale
-        } else {
-            dt
-        };
+            .map(|p| p.protected);
+        let effective_dt = crate::game_time::fixed_delta_time(dt, context.time_scale, protected);
         self.position += self.total_velocity() * effective_dt;
         if let Some(index) = self.rope {
             let r = &mut ropes[index];

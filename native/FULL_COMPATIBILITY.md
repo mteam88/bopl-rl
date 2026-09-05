@@ -512,8 +512,41 @@ These are supplied component states, not 1,000 independent gameplay episodes.
 
 `fixtures/player-physics.jsonl.gz` retains 405 scenarios, including every source
 error; it runs under `just verify`. Regenerate with `just verify-player-physics`.
-Raw evidence is in `artifacts/player-physics/`. The new methods do not implement
-world raycast registration, blocked perimeter movement/platform hopping, the
-whole PlayerPhysics update controller, arbitrary ability callbacks or full
-world scheduling. Rendering and jump audio are outside this fixed-point state
+Raw evidence is in `artifacts/player-physics/`. These handoff methods do not implement blocked perimeter movement/platform
+hopping, the whole PlayerPhysics update controller, arbitrary ability callbacks
+or full world scheduling. The rounded-rectangle raycast work below adds scene
+registration and hit selection. Rendering and jump audio are outside this fixed-point state
 comparison. Full independent ability episodes remain required.
+
+
+## Player raycasts and attachment
+
+`Scene::raycast_rounded` ports `DetPhysics.RaycastToClosestRoundedRect`, including
+destroyed-collider cleanup, current registration order, complete near/far hit
+information, inclusive distance limits and first-registered wins at equal
+distance. All rounded-rectangle layers participate. Circle and box objects are
+excluded from hits but still participate in the source cleanup pass.
+
+`player_physics::State::collision_raycasts` ports `CollisionRaycasts` and the
+velocity selection used by `VelocityBasedRaycasts`. It tries the front ray, then
+the two side rays in source order, correcting the attachment position for the
+selected side. Attachment updates run before the listener; listener movement is
+retained. Missing platform/shape components preserve partial state before the
+source error. The shared clock helper preserves missing-holder/player behavior
+and time-stop protection. The C movement environment uses the same three-ray
+selection, with its existing independent episodes as regressions.
+
+Actual Unity component calls match **1,000 scenarios / 22,711 completed actions**:
+10,000 direct queries, 4,958 velocity-based calls and 7,753 explicit-velocity
+calls. There are 6,452 direct hits across all 32 layers, 2,738 player-ray hits
+and 1,203 attachment notifications. The 958 complete sequences and 42 matching
+null-reference boundaries include the complete scene, collider orders, player
+state and listener records. Inputs cover one through six registered players,
+protected/unprotected/missing players, zero and negative time, duplicate hit
+distances, both side rays, inactive/destroyed objects and composites.
+
+`fixtures/player-rays.jsonl.gz` keeps 224 cases, including every source error.
+It runs under `just verify`; regenerate with `just verify-player-rays`. Raw
+evidence is in `artifacts/player-rays/`. This is a component oracle with supplied
+scene and platform caches. Full movement control, blocked surface traversal,
+platform hopping and independent full-world ability episodes remain required.

@@ -236,25 +236,20 @@ impl Player {
     }
     fn collision_rays(&mut self, platforms: &[Platform]) {
         let velocity = self.velocity + self.external_velocity;
-        let magnitude = velocity.length();
-        let distance = magnitude * DT;
-        let dir = if magnitude == Fix::ZERO {
-            Vec2::ZERO
-        } else {
-            velocity / magnitude
-        };
-        let side = dir.perp() * self.radius;
-        for (origin, correction) in [
-            (self.position + dir * self.radius, Vec2::ZERO),
-            (self.position - side, side),
-            (self.position + side, -side),
-        ] {
-            if let Some((index, _, position)) = closest(platforms, origin, dir, distance, None) {
-                self.attach(&platforms[index], position + correction);
-                break;
-            }
+        if let Some((index, position)) = crate::player_physics::collision_cast(
+            self.position,
+            velocity,
+            self.radius,
+            DT,
+            &mut |origin, direction, distance| {
+                closest(platforms, origin, direction, distance, None)
+                    .map(|(index, _, point)| (index, point))
+            },
+        ) {
+            self.attach(&platforms[index], position);
         }
     }
+
     fn jump(&mut self, platforms: &[Platform]) {
         let platform = self.platform(platforms).unwrap();
         let normal = platform.surface.normal(self.position);

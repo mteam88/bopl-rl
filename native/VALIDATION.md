@@ -415,3 +415,35 @@ Raw evidence is in `artifacts/player-physics/`; the fixture runs under
 `just verify`. This tests the fixed-point component state and listener ordering,
 not rendering, jump audio, whole-world scheduling, blocked surface traversal or
 an independent native ability episode.
+
+
+## Player raycast ordering and callbacks
+
+All 1,000 scenarios match the actual Unity raycast and player methods. There are
+958 complete sequences, 22,711 completed actions, 1,203 attachment callbacks and
+42 matching null-reference failures with partial state and completed prefixes.
+The comparison includes full scene state, all three collider registration orders,
+near/far hit records, player state and callback effects. Direct queries hit all
+32 layers. Scenarios use one through six registered players, varied time-stop
+protection and missing holder/player references, with zero/negative time,
+registration ties, side-ray hits, cleanup and missing platform components.
+
+The fixture retains 224 cases (917,904 compressed bytes). It is a supplied-state
+component check, not 1,000 independently simulated full-game episodes. Shared
+three-ray selection and time scaling remain covered by the existing independent
+C movement and player-body fixtures.
+
+Assembly:
+`1ab7a0ba5cd41e50982a389389bff9bf76216f200e992c0952693e72c51cdd27`.
+Input SHA:
+`fa4fac7517944c68cb33b073d42b744705b0eb612b5b9f9151011dd880320856`.
+Output SHA:
+`e98f938e40a51c3d601c5173ff533c5a973267ee0745b989d8466430ce9b16ba`.
+
+Raw evidence is in `artifacts/player-rays/`; regenerate with
+`just verify-player-rays`. The fixture runs under `just verify`.
+
+After extracting the shared scene snapshot helper, a fresh Unity rigid/composite
+regression also matches 100 scenes / 1,200 steps / 14,898 callbacks, including 55
+composite scenes. Evidence is in `artifacts/player-rays-scene-regression/`.
+The full standalone verification suite passes with the new raycast fixture.

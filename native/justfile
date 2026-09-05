@@ -37,6 +37,7 @@ verify: build check
     python3 native/tools/verify_player_collision.py --golden --gameplay
     python3 native/tools/verify_player_ground.py --golden
     python3 native/tools/verify_player_physics.py --golden
+    python3 native/tools/verify_player_rays.py --golden
     python3 native/tools/verify_player_body.py --golden
     python3 native/tools/verify_player_body.py --golden --gameplay
     python3 native/tools/test_python.py
@@ -108,3 +109,6 @@ verify-player-body: build
 
 verify-player-physics: build
     python3 native/tools/verify_player_physics.py --cases 1000
+
+verify-player-rays: build
+    python3 native/tools/verify_player_rays.py --cases 1000

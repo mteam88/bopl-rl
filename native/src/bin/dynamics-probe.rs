@@ -12,6 +12,81 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_rays" => {
+            let mut state: bopl_sim::player_physics::State = read(&q, "state");
+            let mut scene: bopl_sim::physics::scene::Scene = read(&q, "scene");
+            let platforms: Vec<bopl_sim::player_physics::Platform> = read(&q, "platforms");
+            let targets: Vec<bopl_sim::player_physics::GroundTarget> = read(&q, "targets");
+            let holder: Option<i32> = read(&q, "holder");
+            let protection = holder
+                .and_then(|id| {
+                    q["players"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|p| p["id"].as_i64() == Some(i64::from(id)))
+                })
+                .map(|p| p["protected"].as_bool().unwrap());
+            let time_scale: bopl_sim::fixed::Fix = read(&q, "time_scale");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut events = Vec::new();
+                let result = if action["op"] == "query" {
+                    Ok(json!(scene.raycast_rounded(
+                        read(action, "origin"),
+                        read(action, "direction"),
+                        read(action, "distance")
+                    )))
+                } else {
+                    let velocity = if action["op"] == "velocity" {
+                        state.motion.external_velocity + state.motion.velocity
+                    } else {
+                        read(action, "velocity")
+                    };
+                    let dt = bopl_sim::game_time::fixed_delta_time(
+                        read(action, "dt"),
+                        time_scale,
+                        protection,
+                    );
+                    state
+                        .collision_raycasts(
+                            bopl_sim::player_physics::CollisionRaycast {
+                                velocity,
+                                effective_dt: dt,
+                                attach: read(action, "attach"),
+                            },
+                            &mut scene,
+                            &targets,
+                            &platforms,
+                            &mut |s, hit| {
+                                events.push(hit);
+                                s.motion.position += read::<Vec2>(&q, "event_offset");
+                            },
+                        )
+                        .map(|v| json!(v))
+                };
+                let orders: Vec<Vec<u32>> = [2, 0, 1]
+                    .into_iter()
+                    .map(|kind| {
+                        scene
+                            .objects
+                            .iter()
+                            .filter(|o| o.collider.kind() == kind)
+                            .map(|o| o.id)
+                            .collect()
+                    })
+                    .collect();
+                let mut snapshot = scene.clone();
+                snapshot.objects.sort_by_key(|o| o.id);
+                let value = result.as_ref().cloned().unwrap_or(Value::Null);
+                let frame = json!({"state":state,"scene":snapshot,"orders":orders,"events":events,"result":value});
+                if let Err(error) = result {
+                    return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_player_physics" => {
             let mut state: bopl_sim::player_physics::State = read(&q, "state");
             let config: bopl_sim::player_physics::Config = read(&q, "config");
