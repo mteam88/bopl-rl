@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AssemblyName>Assembly-CSharp</AssemblyName>
+    <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
+    <NoWarn>CS0067;CS0649;CS0414;CS0169;CS0168;CS0219;CS8019;CS0162</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../Assets/Scripts/**/*.cs" />
+    <Reference Include="../../../Builds/Linux/BoplBattle_Data/Managed/*.dll" Exclude="../../../Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll" />
+  </ItemGroup>
+</Project>

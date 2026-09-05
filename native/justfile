@@ -1,0 +1,33 @@
+set working-directory := ".."
+unity_editor := env("UNITY_EDITOR", "Unity")
+
+# Standalone library and probes. Unity is only needed for live reference checks.
+build:
+    cargo build --release --manifest-path native/Cargo.toml
+
+check:
+    cargo fmt --manifest-path native/Cargo.toml -- --check
+    cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+    cargo test --manifest-path native/Cargo.toml
+
+verify: build check
+    cc -std=c11 -Wall -Wextra -Werror -I native/include native/examples/smoke.c -L native/target/release -lbopl_sim -Wl,-rpath,'$ORIGIN/../target/release' -o native/target/c-smoke
+    LD_LIBRARY_PATH=native/target/release native/target/c-smoke
+    python3 native/tools/golden.py verify
+    python3 native/tools/test_python.py
+
+verify-math: build
+    dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
+    python3 native/tools/verify_math.py
+
+unity-build:
+    "{{unity_editor}}" -batchmode -nographics -quit -projectPath "$PWD" -executeMethod BuildScript.BuildLinux -logFile "$PWD/native-unity-build.log"
+
+export-assets:
+    "{{unity_editor}}" -batchmode -nographics -quit -projectPath "$PWD" -executeMethod ReferenceExport.Export -logFile "$PWD/native-export.log"
+
+verify-geometry: build
+    python3 native/tools/verify_geometry.py --cases 2000
+
+benchmark: build
+    python3 native/tools/benchmark.py

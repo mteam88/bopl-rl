@@ -1,0 +1,10 @@
+/target/
+/artifacts/
+/reference-build/
+/reference-export/
+__pycache__/
+
+*.log
+# The Unity repository ignores bin directories and csproj files globally.
+!/src/bin/
+!*.csproj

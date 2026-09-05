@@ -1,0 +1,19 @@
+[package]
+name = "bopl-sim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+overflow-checks = true
+lto = "thin"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

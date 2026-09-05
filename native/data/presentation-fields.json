@@ -1,0 +1,34 @@
+{
+  "schema": "bopl-presentation-exclusions-v1",
+  "fields": {
+    "Player.<RumbleState>k__BackingField": {
+      "reason": "Controller vibration request. Reads in InputUpdater affect hardware vibration; reads in CastSpell, Roll, and MeteorSmash only clear the vibration request.",
+      "sources": [
+        "Player.cs",
+        "InputUpdater.cs",
+        "GameSessionHandler.cs",
+        "CastSpell.cs",
+        "Roll.cs",
+        "MeteorSmash.cs"
+      ]
+    },
+    "PokeBall.wigglePhase": {
+      "reason": "Only updated in MonoBehaviour.Update and read to rotate the child SpriteRenderer. Capture clocks and victim physics remain compared.",
+      "sources": [
+        "PokeBall.cs"
+      ]
+    },
+    "DeathEffect2.prevDisp": {
+      "reason": "Only read and written by LateUpdate to shake the Unity Transform. The effect uses FixTransform.position for simulation queries; hit-stop and animation clocks remain compared.",
+      "sources": [
+        "DeathEffect2.cs"
+      ]
+    },
+    "QuickSpell.ParticleOnCast": {
+      "reason": "A ParticleSystem reference assigned on cast and used only to set its visual scale. Particle expiry runs on rendering time. Spell logic and fixed state remain compared.",
+      "sources": [
+        "QuickSpell.cs"
+      ]
+    }
+  }
+}

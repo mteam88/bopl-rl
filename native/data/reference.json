@@ -1,0 +1,17 @@
+{
+  "reference_commit": "67484d097087562123f860e1ed209bcb56e99d2e",
+  "reference_tree": "4cedafaa4bb5ee237c10a48d1946ed835b472780",
+  "unity_version": "2022.3.60f1",
+  "math_source": "Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs",
+  "math_source_sha256": "5b35014257d0ae89312e73bcd034d93970798c8a5fe25db0b48b1cb3fd24b01d",
+  "tables": {
+    "sinlut.bin": {
+      "entries": 205887,
+      "sha256": "c961c966d351773f613616cbb593e8b4c55de47d1d39b6c9d8cc3f6d4a0b58a3"
+    },
+    "tanlut.bin": {
+      "entries": 205887,
+      "sha256": "335db3ae988eb72adf47fd97ca02052af3cb407cfff3d3954f6d10ab94850eda"
+    }
+  }
+}

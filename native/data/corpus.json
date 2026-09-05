@@ -1,0 +1,12 @@
+{
+  "data/level1-movement.json": "163ec91ec888f9f4e1917098e02df7e93cd0e35096444a48f71c9adb0e197a04",
+  "fixtures/reference/held-jump.jsonl.gz": "e05e51925070cfb8d92a6a9c8528754baee14926e4140f8191209ca781c823c4",
+  "fixtures/reference/movement.jsonl.gz": "68f2248f6ae21ab8a868c2d1b6eaad8eb31df1be8a75fa68ea38829a0320ffae",
+  "fixtures/reference/perimeter.jsonl.gz": "f82fcfd27d19ab68fb3030a1c4f461d11fa9a935b1d81c19a1ada9efb6f733e2",
+  "fixtures/reference/random-1.jsonl.gz": "5062023c00a601d50e815cdd182e00f541d8f6cff93838daeb6f71e0233cef84",
+  "fixtures/reference/random-2.jsonl.gz": "26da4cb33cf74f95b427f76341d05ffbe4e9773c7aa0c9ace5ca1f8a1e7ca57c",
+  "fixtures/reference/random-3.jsonl.gz": "ee28d6961b6b578770308b502347d488eaccc6925a8b9e0988534b126b0f8ac1",
+  "fixtures/reference/random-4.jsonl.gz": "3ff3fb7b24a8e287c2593a759743e498d41d2c0d6d0aa08eda9766e082c1d8e5",
+  "fixtures/reference/simultaneous-dash.jsonl.gz": "cd63b4af525333bcd624464bec211e9c0e72417c17c04572dc04435decf9f385",
+  "fixtures/reference/surface-circuit.jsonl.gz": "3d4096042acefc2e2084e9ab0683aae7cf20d5027ed81ddcfc4f3448bb30335e"
+}
