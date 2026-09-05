@@ -67,14 +67,16 @@ public static class ReferencePhysicsScene
         for(int i=0;i<adapters.Count;i++)
         {
             var a=adapters[i];if(!Contains(a))continue;
+            if(a.transform==null){if(a.lastSnapshot!=null)states.Add(a.lastSnapshot.DeepClone());continue;}
             var (shape,body)=State(a);var o=(JObject)objects[i].DeepClone();o["active"]=a.transform.gameObject.activeInHierarchy;
             if(a.parent.monobehaviourCollider.enabled)o.Remove("enabled");else o["enabled"]=false;
+            o["destroyed"]=a.parent.monobehaviourCollider.IsDestroyed;
             o["body"]=Body(body);o["collider"]=ShapeJson(shape);
             o["composite"]=body.compositeParent==null ? JValue.CreateNull() : new JValue(physics.composites.IndexOf(body.compositeParent));
             o["relative_pos"]=V(body.relativePos);o["relative_orientation"]=body.relativeOrientation.m_rawValue;
             o["transform"]=new JObject {["position"]=V(a.transform.position),["rotation"]=a.transform.rotation.m_rawValue,["offset"]=V(a.transform.offset)};
             if(objects[i]["transform"]["right"]!=null)o["transform"]["right"]=V(a.transform.right);
-            states.Add(o);
+            a.lastSnapshot=(JObject)o.DeepClone();states.Add(o);
         }
         snapshot["objects"]=states;
         if(scene["rope_system"]!=null){var bodies=new JArray();foreach(var r in physics.ropes.ropeBodies)bodies.Add(ReferenceRope.State(r));snapshot["rope_system"]["bodies"]=bodies;}
@@ -139,7 +141,7 @@ public static class ReferencePhysicsScene
         {
             foreach(JObject v in objects)
             {
-                var go=new GameObject("Reference collider");
+                var go=new GameObject("Reference collider");go.layer=(int)v["layer"];
                 var ft=go.AddComponent<FixTransform>();
                 ft.position=V(v["transform"]["position"]);ft.rotation=F(v["transform"]["rotation"]);ft.offset=V(v["transform"]["offset"]);
                 if(v["transform"]["right"]!=null)typeof(FixTransform).GetField("rightInner",flags).SetValue(ft,V(v["transform"]["right"]));
@@ -186,6 +188,7 @@ public static class ReferencePhysicsScene
     }
     internal sealed class Adapter : IPhysicsCollider, ICollisionCallback
     {
+        internal JObject lastSnapshot;
         public int sourceId;public FixTransform transform;public PhysicsParent parent;public bool callbackDestroyed;
         bool ICollisionCallback.IsDestroyed {get=>callbackDestroyed;set=>callbackDestroyed=value;}
         public bool IsDestroyed {get;set;}

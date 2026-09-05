@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entity {
     pub node: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destroyed: Option<bool>,
     pub active: bool,
     pub body_simulated: bool,
     #[serde(rename = "box")]
@@ -81,6 +85,11 @@ impl BoxComponent {
     }
 }
 impl Actor {
+    pub fn is_present(&self) -> bool {
+        self.entity
+            .as_ref()
+            .is_none_or(|e| e.present != Some(false))
+    }
     pub fn set_box_scale(&mut self, value: Fix, scene: &mut Scene) -> scheduler::Result<()> {
         self.entity
             .as_mut()
@@ -139,6 +148,49 @@ impl BoxComponent {
                         .complex_mul(object.transform.offset),
             );
             object.body.orientation = object.transform.rotation;
+        }
+        Ok(())
+    }
+}
+
+impl crate::actors::Runtime {
+    pub fn destroy_actor(
+        actors: &mut [Actor],
+        context: &mut crate::actors::Context,
+        id: usize,
+    ) -> scheduler::Result<()> {
+        if !actors[id].is_present() {
+            return Err("null_reference");
+        }
+        let root = actors[id]
+            .entity
+            .as_ref()
+            .ok_or("missing_actor_entity")?
+            .node;
+        context.schedule.destroy_object(Some(root))?;
+        for actor in actors {
+            let Some(entity) = &mut actor.entity else {
+                continue;
+            };
+            let mut node = Some(entity.node);
+            while let Some(id) = node {
+                if id == root {
+                    entity.destroyed = Some(true);
+                    if let Some(slime) = &mut actor.slime {
+                        slime.managed_destroyed = Some(true);
+                    }
+                    if let Some(object) = context
+                        .scene
+                        .objects
+                        .iter_mut()
+                        .find(|o| o.id == actor.object)
+                    {
+                        object.destroyed = true;
+                    }
+                    break;
+                }
+                node = context.schedule.nodes[id].parent;
+            }
         }
         Ok(())
     }

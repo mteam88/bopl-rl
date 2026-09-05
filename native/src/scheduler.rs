@@ -258,7 +258,7 @@ impl State {
     fn removed(&self, id: Option<Id>) -> bool {
         self.null(id) || self.components[id.unwrap()].destroyed
     }
-    fn active(&self, id: Id) -> bool {
+    pub(crate) fn active(&self, id: Id) -> bool {
         let node = &self.nodes[id];
         node.present && node.active && node.parent.is_none_or(|p| self.active(p))
     }

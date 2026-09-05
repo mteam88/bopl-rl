@@ -9,6 +9,9 @@ This is the first verified slice of the port. It is **not the complete game** an
 there is no trained bot or PufferLib training integration yet.
 
 The full-game expansion is active: [scope and progress](FULL_COMPATIBILITY.md).
+The composed test runtime now includes scheduled actor removal, direct deaths,
+rope/Dash death handoffs and bounded collision-death coverage; [validation](VALIDATION.md)
+records the tested conditions and remaining combat/lifecycle gaps.
 The Gym adapter still controls a two-player environment; the C and ctypes APIs
 support all six players in the movement slice.
 

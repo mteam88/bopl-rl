@@ -1107,3 +1107,42 @@ retained count does not establish that no contact occurred. This batch does not
 claim Hookshot projectile lifecycle, rope creation/pool reuse, combat or a full
 match. The first movement dataset predates the later adapter additions; each
 dataset retains its own actual assembly hash.
+
+## Scheduled actor death and removal
+
+The original PlayerCollision, Player.Kill, Dash.ExitAbility and Updater run
+against the same actor bodies and scene colliders. Reference dispatch components
+now belong to their actual actor GameObjects, so DestroyFix removes them through
+the real updater. Final snapshots are captured before DestroyImmediate; later
+frames retain those actor records while the physics scene prunes dead colliders.
+Physics callback reports retain only the delivered prefix when a callback fails.
+
+| Dataset | Cases | Complete episodes | Successful ticks | Failed states |
+| --- | ---: | ---: | ---: | ---: |
+| actor-lifecycle | 54 | 48 | 996 | 6 |
+| actor-deaths | 66 | 54 | 1,356 | 12 |
+| actor-death-handoffs | 18 | 18 | 432 | 0 |
+| actor-death-contacts | 24 | 18 | 432 | 6 |
+
+Every dataset covers one through six players. Removal checks cover update/init/
+late/physics/rope phases, duplicate destruction, child objects and calls after
+physical deletion. Direct death cases cover invulnerability, inactive objects,
+clone-count accounting, winning players, repeated calls, revival-status branches,
+missing camera and missing death prefab. They account for 36 body deaths and 24
+final-death events; clone creation is not part of this set. Dash handoffs account
+for six body deaths and compare shared ropes, reactivation, blocked owner deaths,
+ability destruction and position-reference cleanup through later ticks.
+
+Contact cases bind real Hitbox ownership and deliver DetPhysics callbacks to the
+real PlayerCollision. They account for 42 body deaths and 42 final-death events;
+duplicate colliders do not double-count a victim. Successful deaths use the
+already-reviving branch, which suppresses the absent visual prefab. Six other
+cases retain the original Instantiate-null failure and its callback prefix.
+Camera trauma includes exact conversion of the source float value 0.8.
+
+Raw inputs, source outputs, hashes and reports live under artifacts with the four
+dataset names above. All 162 cases are retained in fixtures and run in just verify.
+The earlier datasets retain their actual build hashes; the final contact build
+also fixes GameObject layer binding for generic scene colliders. These checks do
+not certify the absent death-effect prefab, respawns/stocks/drops, other pooled
+abilities, or a complete public Rust/C match environment.

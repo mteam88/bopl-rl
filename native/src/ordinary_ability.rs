@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kill_players_on_contact: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dash: Option<crate::dash_ability::Instance>,
     pub owner: usize,
     pub info: PlayerInfo,

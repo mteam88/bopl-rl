@@ -47,6 +47,23 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                            report: &mut Report,
                            command: &Value| {
             effects.push(command.clone());
+            if command["op"] == "kill_actor" {
+                Runtime::kill_actor(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    &serde_json::from_value(command["request"].clone()).unwrap(),
+                    report,
+                )?;
+                return Ok(());
+            }
+            if command["op"] == "destroy_actor" {
+                return Runtime::destroy_actor(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                );
+            }
             if command["op"] == "ordinary_exit" {
                 return Runtime::exit_ordinary(
                     actors,
@@ -154,6 +171,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                             schedule: &mut runtime.scheduler,
                             scene: &mut runtime.scene,
                             actor_ropes: &mut runtime.actor_ropes,
+                            combat: &mut runtime.combat,
                             bindings: &runtime.bindings,
                             grounds: &runtime.grounds,
                             space: runtime.space,
@@ -194,6 +212,9 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
         scene.objects.sort_by_key(|o| o.id);
         let mut frame = json!({"actors":runtime.actors,"scene":scene,"report":report,"ticks":runtime.scheduler.ticks,
             "time":runtime.scheduler.time,"level_time":runtime.scheduler.level_time,"inputs":runtime.scheduler.inputs});
+        if let Some(combat) = &runtime.combat {
+            frame["combat"] = json!(combat);
+        }
         if let Some(binding) = &runtime.actor_ropes {
             frame["actor_ropes"] = json!(binding);
         }

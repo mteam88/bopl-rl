@@ -73,6 +73,10 @@ verify: build check
     python3 native/tools/verify_actor_ropes.py --golden
     python3 native/tools/verify_actor_ropes.py --golden --name actor-rope-edges
     python3 native/tools/verify_actor_ropes.py --golden --name rope-handoffs
+    python3 native/tools/verify_actor_lifecycle.py --golden
+    python3 native/tools/verify_actor_deaths.py --golden
+    python3 native/tools/verify_actor_deaths.py --golden --handoffs
+    python3 native/tools/verify_actor_deaths.py --golden --contacts
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -203,3 +207,10 @@ verify-actor-ropes: build
     python3 native/tools/verify_actor_ropes.py
     python3 native/tools/verify_actor_ropes.py --faults --name actor-rope-edges
     python3 native/tools/verify_actor_ropes.py --abilities --cases 6 --steps 180 --name rope-handoffs
+
+# Original actor cleanup, direct death, Dash/rope death and actual contact delivery.
+verify-actor-deaths: build
+    python3 native/tools/verify_actor_lifecycle.py
+    python3 native/tools/verify_actor_deaths.py
+    python3 native/tools/verify_actor_deaths.py --handoffs
+    python3 native/tools/verify_actor_deaths.py --contacts

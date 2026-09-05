@@ -8,7 +8,7 @@ using Newtonsoft.Json.Linq;
 public static class ReferencePlayerLife
 {
     private const BindingFlags Fields=BindingFlags.Static|BindingFlags.NonPublic;
-    private static JObject Snapshot(List<Player> players, JArray events)
+    internal static JObject Snapshot(List<Player> players, JArray events)
     {
         var states=new JArray();
         foreach(var p in players)states.Add(new JObject {

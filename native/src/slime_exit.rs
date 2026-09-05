@@ -43,9 +43,7 @@ impl Instance {
         }
         if info.dead {
             controller.physics.motion.position = info.position;
-            // These composed entities currently have no PlayerCollision. The
-            // source dereferences that missing component after writing position.
-            return Err("null_reference");
+            return Err("actor_death_requested");
         }
         self.state.facing_right = info.facing_right;
         let platforms: Vec<_> = context

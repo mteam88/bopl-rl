@@ -26,6 +26,8 @@ pub struct Actor {
     pub entity: Option<crate::actor_entity::Entity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordinary: Option<crate::ordinary_ability::Instance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collision: Option<crate::actor_combat::Collision>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +38,7 @@ pub enum Role {
     Body,
     Ability,
     Dash,
+    Collision,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Component {
@@ -56,6 +59,8 @@ pub struct Runtime {
     pub scene: Scene,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_ropes: Option<ActorRopes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combat: Option<crate::actor_combat::Combat>,
     pub bindings: Vec<Binding>,
     pub grounds: Vec<player_controller::Ground>,
     pub space: bool,
@@ -82,6 +87,7 @@ pub struct Context<'a> {
     pub schedule: &'a mut scheduler::State,
     pub scene: &'a mut Scene,
     pub actor_ropes: &'a mut Option<ActorRopes>,
+    pub combat: &'a mut Option<crate::actor_combat::Combat>,
     pub bindings: &'a [Binding],
     pub grounds: &'a [player_controller::Ground],
     pub space: bool,
@@ -194,12 +200,19 @@ impl Actor {
         m.external_velocity = self.body.external_velocity;
     }
     pub(crate) fn sync_transform(&self, scene: &mut Scene) {
-        let t = &mut scene
-            .objects
-            .iter_mut()
-            .find(|o| o.id == self.object)
-            .expect("actor scene object")
-            .transform;
+        // A ray query can prune a DestroyFix-marked collider before Unity
+        // deletes the GameObject. The current component call still finishes
+        // against its live body/transform, retained on the actor.
+        let Some(object) = scene.objects.iter_mut().find(|o| o.id == self.object) else {
+            assert!(
+                self.entity
+                    .as_ref()
+                    .is_some_and(|e| e.destroyed == Some(true)),
+                "actor scene object"
+            );
+            return;
+        };
+        let t = &mut object.transform;
         let m = &self.controller.physics.motion;
         t.position = m.position;
         t.rotation = m.rotation;
@@ -332,29 +345,77 @@ impl Runtime {
         }
         actor.controller_to_body();
         actor.sync_transform(context.scene);
+        if result == Err("actor_death_requested") {
+            Self::kill_actor(
+                actors,
+                context,
+                id,
+                &crate::actor_combat::Kill {
+                    killer: info.killer,
+                    spawn_effect: false,
+                    ignore_invulnerability: false,
+                    cause: info.cause,
+                },
+                report,
+            )?;
+            actors[id]
+                .slime
+                .as_mut()
+                .unwrap()
+                .abilities
+                .as_mut()
+                .ok_or("missing_ability_routing")?
+                .in_ability = false;
+            return Ok(());
+        }
         result
     }
     pub fn refresh_entities(
         schedule: &mut scheduler::State,
         components: &[Component],
-        actors: &[Actor],
+        actors: &mut [Actor],
         scene: &mut Scene,
     ) {
-        for actor in actors {
+        let lifecycle: Vec<_> = actors
+            .iter()
+            .map(|a| a.entity.as_ref().map(|e| (e.present, e.destroyed)))
+            .collect();
+        for actor in actors.iter_mut() {
+            if let Some(routing) = actor.slime.as_mut().and_then(|s| s.abilities.as_mut()) {
+                for ability in &mut routing.pool {
+                    if let Some(crate::ability::Handler::Entity { actor }) = ability.handler
+                        && let Some((present, destroyed)) = lifecycle[actor]
+                    {
+                        if present == Some(false) {
+                            ability.present = false;
+                        }
+                        if destroyed == Some(true) {
+                            ability.destroyed = true;
+                        }
+                    }
+                }
+            }
+        }
+        for actor in actors.iter() {
             if let Some(entity) = &actor.entity {
                 schedule.nodes[entity.node].active = entity.active;
-                scene
-                    .objects
-                    .iter_mut()
-                    .find(|o| o.id == actor.object)
-                    .expect("actor scene object")
-                    .active = entity.active;
+            }
+        }
+        for actor in actors.iter() {
+            if let Some(entity) = &actor.entity {
+                if entity.present == Some(false) {
+                    continue;
+                }
+                if let Some(object) = scene.objects.iter_mut().find(|o| o.id == actor.object) {
+                    object.active = schedule.active(entity.node);
+                }
             }
         }
         for (i, component) in components.iter().enumerate() {
             if let Some(entity) = &actors[component.actor].entity {
                 schedule.components[i].execution_gate = Some(
-                    entity.active
+                    entity.present != Some(false)
+                        && entity.active
                         && (!matches!(component.role, Role::Body) || entity.body_simulated),
                 );
             }
@@ -373,6 +434,9 @@ impl Runtime {
     }
     pub fn synchronize(&mut self) {
         for actor in &mut self.actors {
+            if !actor.is_present() {
+                continue;
+            }
             actor.controller_to_body();
             actor.sync_transform(&mut self.scene);
         }
@@ -395,7 +459,7 @@ impl Runtime {
         Self::refresh_entities(
             &mut self.scheduler,
             &self.components,
-            &self.actors,
+            &mut self.actors,
             &mut self.scene,
         );
         match (&self.actor_ropes, &self.scene.rope_system) {
@@ -436,6 +500,7 @@ impl Runtime {
             space,
             player_layer,
             actor_ropes,
+            combat,
         } = self;
         scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
@@ -445,6 +510,7 @@ impl Runtime {
                     schedule,
                     scene,
                     actor_ropes,
+                    combat,
                     bindings,
                     grounds,
                     space: *space,
@@ -462,12 +528,13 @@ impl Runtime {
                             dt
                         }));
                     for a in actors.iter_mut() {
-                        let transform = scene
-                            .objects
-                            .iter()
-                            .find(|o| o.id == a.object)
-                            .expect("actor scene object")
-                            .transform;
+                        let Some(object) = scene.objects.iter().find(|o| o.id == a.object) else {
+                            continue;
+                        };
+                        if !a.is_present() {
+                            continue;
+                        }
+                        let transform = object.transform;
                         a.controller.physics.motion.position = transform.position;
                         a.controller.physics.motion.rotation = transform.rotation;
                         a.controller.physics.motion.right =
@@ -478,33 +545,52 @@ impl Runtime {
                     // DetPhysics delivers queued callbacks only after synchronizing
                     // collider transforms. The equal-size shove branch does not
                     // alter colliders until the following physics step.
-                    for hit in &report.physics.as_ref().unwrap().callbacks {
-                        if hit.layer != *player_layer {
-                            continue;
-                        }
+                    let callbacks = std::mem::take(&mut report.physics.as_mut().unwrap().callbacks);
+                    for hit in callbacks {
+                        report.physics.as_mut().unwrap().callbacks.push(hit.clone());
                         let Some(index) = actors.iter().position(|a| a.object == hit.receiver)
                         else {
                             continue;
                         };
-                        let other = scene
-                            .objects
-                            .iter()
-                            .find(|o| o.id == hit.other)
-                            .expect("collision object");
-                        // Player-layer colliders in this integration stage all
-                        // belong to actors, which retain their collision priority.
-                        let other_hierarchy = actors
-                            .iter()
-                            .find(|a| a.object == hit.other)
-                            .expect("player actor collision")
-                            .collision_hierarchy;
-                        if let Some(external_delta) =
-                            actors[index].shove(other.transform.position, other_hierarchy)
-                        {
-                            report.pushes.push(Push {
-                                actor: index,
-                                external_delta,
-                            });
+                        if hit.layer == *player_layer {
+                            let other = scene
+                                .objects
+                                .iter()
+                                .find(|o| o.id == hit.other)
+                                .expect("collision object");
+                            // Player-layer colliders in this integration stage all
+                            // belong to actors, which retain their collision priority.
+                            let other_hierarchy = actors
+                                .iter()
+                                .find(|a| a.object == hit.other)
+                                .expect("player actor collision")
+                                .collision_hierarchy;
+                            if let Some(external_delta) =
+                                actors[index].shove(other.transform.position, other_hierarchy)
+                            {
+                                report.pushes.push(Push {
+                                    actor: index,
+                                    external_delta,
+                                });
+                            }
+                        }
+                        if combat.as_ref().is_some_and(|c| c.collisions == Some(true)) {
+                            Self::collide_actor(
+                                actors,
+                                &mut Context {
+                                    schedule,
+                                    scene,
+                                    actor_ropes,
+                                    combat,
+                                    bindings,
+                                    grounds,
+                                    space: *space,
+                                },
+                                index,
+                                &hit,
+                                report,
+                            )?;
+                            Self::refresh_entities(schedule, components, actors, scene);
                         }
                     }
                 }
@@ -519,6 +605,7 @@ impl Runtime {
                                 schedule,
                                 scene,
                                 actor_ropes,
+                                combat,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -539,6 +626,7 @@ impl Runtime {
                                 schedule,
                                 scene,
                                 actor_ropes,
+                                combat,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -598,6 +686,10 @@ impl Runtime {
                     let result = match (phase.kind, component.role) {
                         (scheduler::Phase::Init, Role::Body) => {
                             actor.body.init();
+                            Ok(())
+                        }
+                        (scheduler::Phase::Update, Role::Collision) => {
+                            actor.collision.as_mut().ok_or("null_reference")?.was_killed = false;
                             Ok(())
                         }
                         (scheduler::Phase::Update, Role::Physics) => {
@@ -795,6 +887,7 @@ impl Runtime {
                             schedule,
                             scene,
                             actor_ropes,
+                            combat,
                             bindings,
                             grounds,
                             space: *space,
@@ -819,6 +912,27 @@ impl Runtime {
                             Self::finish_slime(actors, &mut context, component.actor, dt, report);
                         Self::refresh_entities(schedule, components, actors, scene);
                         result?;
+                    }
+                }
+                scheduler::Phase::DestroyObject => {
+                    for actor in actors.iter_mut() {
+                        if let Some(entity) = &mut actor.entity {
+                            let mut node = Some(entity.node);
+                            while let Some(id) = node {
+                                if Some(id) == phase.id {
+                                    entity.present = Some(false);
+                                    break;
+                                }
+                                node = schedule.nodes[id].parent;
+                            }
+                        }
+                    }
+                    for player in &mut schedule.players {
+                        if let Some(position) = &mut player.position {
+                            position.current = position.current.filter(|&i| actors[i].is_present());
+                            position.previous =
+                                position.previous.filter(|&i| actors[i].is_present());
+                        }
                     }
                 }
                 scheduler::Phase::RopeMesh => {

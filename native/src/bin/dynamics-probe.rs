@@ -846,7 +846,9 @@ fn panic_result(panic: Box<dyn std::any::Any + Send>) -> Value {
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    std::panic::set_hook(Box::new(|_| {}));
+    if std::env::var_os("BOPL_PROBE_BACKTRACE").is_none() {
+        std::panic::set_hook(Box::new(|_| {}));
+    }
     let mut out = BufWriter::new(io::stdout().lock());
     for (case, line) in io::stdin().lock().lines().enumerate() {
         let query: Value = serde_json::from_str(&line?)?;

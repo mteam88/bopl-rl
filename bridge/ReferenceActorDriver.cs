@@ -8,9 +8,11 @@ public sealed class ReferenceActorDriver : MonoUpdatable
     public bool EnabledFlag = true;
     public Func<bool> Activity;
     public Action Initialize;
+    public Action Destroyed;
     public Action<Fix> Step;
     public Action<Fix> Late;
     public override bool IsEnabled() => EnabledFlag&&(Activity==null||Activity());
+    public override void OnDestroyUpdatable() => Destroyed?.Invoke();
     public override void Init() => Initialize();
     public override void UpdateSim(Fix dt) => Step(dt);
     public override void LateUpdateSim(Fix dt) => Late(dt);

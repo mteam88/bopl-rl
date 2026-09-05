@@ -71,7 +71,7 @@ internal static class ReferenceSlimeActors
         internal JObject Snapshot(JToken original)
         {
             TrackCallback();var value=(JObject)original.DeepClone();var s=value["state"];
-            if(value["managed_destroyed"]!=null)value["managed_destroyed"]=Slime.IsDestroyed;
+            if(value["managed_destroyed"]!=null||Slime.IsDestroyed)value["managed_destroyed"]=Slime.IsDestroyed;
             s["mode"]=(int)Slime.getCurrentState();s["facing_right"]=Flip.facingRight();s["was_upside_down"]=Get<bool>(Slime,"wasUpsideDown");
             s["input"]=V(Get<Vec2>(Slime,"inputVector"));s["previous_input"]=Get<Fix>(Slime,"prevInput").m_rawValue;s["suppress"]=Slime.suppressInput;s["has_spawned"]=Slime.HasSpawned;
             s["time_moonwalking"]=Get<Fix>(Slime,"timeSpentMoonwalking").m_rawValue;s["turn_input"]=TurnInput.m_rawValue;
@@ -82,10 +82,11 @@ internal static class ReferenceSlimeActors
             }
             if(value["abilities"]!=null)
             {
-                var routing=value["abilities"];routing["timers"]=new JArray(Get<Fix[]>(Slime,"abilityCooldownTimers").Select(f=>f.m_rawValue));routing["in_ability"]=Get<bool>(Slime,"isInAbility");
+                var routing=value["abilities"];routing["slots"]=new JArray(Slime.abilities.Select(a=>ReferenceEquals(a,null)?(JToken)JValue.CreateNull():new JValue(Array.IndexOf(RoutingPool,a))));routing["timers"]=new JArray(Get<Fix[]>(Slime,"abilityCooldownTimers").Select(f=>f.m_rawValue));routing["in_ability"]=Get<bool>(Slime,"isInAbility");
                 var player=PlayerHandler.Get().GetPlayer(Slime.playerNumber);routing["can_use"]=player.CanUseAbilities;
                 var inputs=Get<Player.InputProfile>(player,"Inputs");var buttons=routing["buttons"];
                 for(int i=0;i<buttons.Count();i++)buttons[i]=i==0?inputs.firstAbilityButton_IS_DOWN:i==1?inputs.secondAbilityButton_IS_DOWN:i==2?inputs.thirdAbilityButton_IS_DOWN:(bool)buttons[i];
+                for(int i=0;i<RoutingPool.Length;i++){routing["pool"][i]["present"]=RoutingPool[i]!=null;if(!ReferenceEquals(RoutingPool[i],null))routing["pool"][i]["destroyed"]=RoutingPool[i].IsDestroyed;}
                 foreach(var pair in Instants){var metadata=routing["pool"][pair.Key];metadata["cooldown"]=pair.Value.Ability.GetCooldown().m_rawValue;metadata["handler"]=pair.Value.Snapshot(metadata["handler"]);}
                 routing["indicators"]=new JArray(Slime.AbilityReadyIndicators.Select((indicator,i)=>ReferenceSlimeExit.Indicator(indicator,original["abilities"]["indicators"][i])));
             }

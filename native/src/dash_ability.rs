@@ -191,6 +191,69 @@ impl Instance {
         self.hit_ground = None;
         Ok(())
     }
+    fn exit(
+        &mut self,
+        actor: &mut Actor,
+        context: &mut Context,
+        info: ExitInfo,
+    ) -> scheduler::Result<ExitInfo> {
+        let physics = &actor.controller.physics;
+        if let Some(index) = actor.body.rope {
+            let rope = context
+                .scene
+                .rope_system
+                .as_mut()
+                .ok_or("actor_rope_binding_invalid")?
+                .bodies
+                .get_mut(index)
+                .ok_or("actor_rope_binding_invalid")?;
+            let force = self.input * self.leave_speed * Fix::from_int(10);
+            if actor.body.top {
+                rope.force_start = force;
+                *rope.segment.get_mut(0).ok_or("index_out_of_range")? = physics.motion.position;
+            } else {
+                rope.force_end = force;
+                let first = *rope.segment.first().ok_or("index_out_of_range")?;
+                let delta = physics.motion.position - first;
+                let count = Fix::from_int(rope.count as i64);
+                let step = Vec2::new(
+                    delta.x.checked_div(count).map_err(|_| "division_by_zero")?,
+                    delta.y.checked_div(count).map_err(|_| "division_by_zero")?,
+                );
+                for i in 1..rope.count {
+                    *rope.segment.get_mut(i).ok_or("index_out_of_range")? =
+                        first + step * Fix::from_int(i as i64);
+                }
+                for i in 0..rope.count {
+                    *rope.previous.get_mut(i).ok_or("index_out_of_range")? =
+                        *rope.segment.get(i).ok_or("index_out_of_range")?;
+                }
+            }
+        }
+        self.smear_enabled = false;
+        self.sprite_enabled = true;
+        let motion = &physics.motion;
+        Ok(ExitInfo {
+            grounded_speed: Fix::ZERO,
+            facing_right: self.input.dot(Vec2::RIGHT) <= Fix::ZERO,
+            velocity: self.input
+                * self.leave_speed
+                * if context.space {
+                    Fix::from_f32(0.5)
+                } else {
+                    Fix::ONE
+                },
+            external_velocity: Vec2::ZERO,
+            grounded: false,
+            ground: motion.ground,
+            position: motion.position,
+            radius: motion.radius,
+            local: motion.local,
+            top: actor.body.top,
+            rope: actor.body.rope,
+            ..info
+        })
+    }
     fn update(
         &mut self,
         actor: &mut Actor,
@@ -247,60 +310,7 @@ impl Instance {
                     }
                     physics.motion.position = position;
                 }
-                if let Some(index) = actor.body.rope {
-                    let rope = context
-                        .scene
-                        .rope_system
-                        .as_mut()
-                        .ok_or("actor_rope_binding_invalid")?
-                        .bodies
-                        .get_mut(index)
-                        .ok_or("actor_rope_binding_invalid")?;
-                    let force = self.input * self.leave_speed * Fix::from_int(10);
-                    if actor.body.top {
-                        rope.force_start = force;
-                        *rope.segment.get_mut(0).ok_or("index_out_of_range")? =
-                            physics.motion.position;
-                    } else {
-                        rope.force_end = force;
-                        let first = *rope.segment.first().ok_or("index_out_of_range")?;
-                        let delta = physics.motion.position - first;
-                        let count = Fix::from_int(rope.count as i64);
-                        let step = Vec2::new(
-                            delta.x.checked_div(count).map_err(|_| "division_by_zero")?,
-                            delta.y.checked_div(count).map_err(|_| "division_by_zero")?,
-                        );
-                        for i in 1..rope.count {
-                            *rope.segment.get_mut(i).ok_or("index_out_of_range")? =
-                                first + step * Fix::from_int(i as i64);
-                        }
-                        for i in 0..rope.count {
-                            *rope.previous.get_mut(i).ok_or("index_out_of_range")? =
-                                *rope.segment.get(i).ok_or("index_out_of_range")?;
-                        }
-                    }
-                }
-                let motion = &physics.motion;
-                return Ok(Some(ExitInfo {
-                    grounded_speed: Fix::ZERO,
-                    facing_right: self.input.dot(Vec2::RIGHT) <= Fix::ZERO,
-                    velocity: self.input
-                        * self.leave_speed
-                        * if context.space {
-                            Fix::from_f32(0.5)
-                        } else {
-                            Fix::ONE
-                        },
-                    external_velocity: Vec2::ZERO,
-                    grounded: false,
-                    ground: motion.ground,
-                    position: motion.position,
-                    radius: motion.radius,
-                    local: motion.local,
-                    top: actor.body.top,
-                    rope: actor.body.rope,
-                    ..ExitInfo::default()
-                }));
+                return self.exit(actor, context, ExitInfo::default()).map(Some);
             }
             self.updates = self.updates.wrapping_add(1);
         }
@@ -308,6 +318,25 @@ impl Instance {
     }
 }
 impl Runtime {
+    pub(crate) fn exit_dash(
+        actors: &mut [Actor],
+        context: &mut Context,
+        id: usize,
+        info: ExitInfo,
+        report: &mut Report,
+    ) -> scheduler::Result<()> {
+        let actor = &mut actors[id];
+        let mut dash = actor
+            .ordinary
+            .as_mut()
+            .and_then(|a| a.dash.take())
+            .ok_or("missing_dash_component")?;
+        let result = dash.exit(actor, context, info);
+        actor.ordinary.as_mut().unwrap().dash = Some(dash);
+        actor.controller_to_body();
+        Self::exit_ordinary(actors, context, id, &result?, report)
+    }
+
     pub(crate) fn enter_dash(
         actors: &mut [Actor],
         context: &mut Context,

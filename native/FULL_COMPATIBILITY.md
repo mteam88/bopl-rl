@@ -1031,3 +1031,35 @@ and one original division-by-zero failure), and four late-pull boundary cases.
 This supplies existing rope objects; Hookshot creation, flight, reeling, rope
 pool reuse, disabled-this-frame lifecycle and full combat remain unfinished.
 The public C environment still exposes the documented movement slice.
+
+## Composed actor destruction and death
+
+Actor entities now retain final snapshots after Unity object deletion. DestroyFix
+marks the actor and descendant components immediately; queries may prune their
+colliders before the current component call returns. The updater then removes
+marked components and deletes objects in its original order. Surviving actors
+continue stepping. Player position references and ability links reflect removal.
+
+PlayerCollision.killPlayer now shares the scheduled body, rope, player death
+ledger and ability graph. Direct deaths detach ropes before the invulnerability
+and activity gates, dispatch Dash exits through the original handoff order,
+apply camera trauma and death accounting, and destroy represented ability actors
+before their owner. Collision callbacks can call this same path and preserve the
+callback prefix on failure. These are composed-runtime features; the public C
+world retains its documented movement scope.
+
+Fresh source comparisons cover 162 cases and 3,216 successful ticks: 54 removal
+cases, 66 direct-death cases, 18 rope/Dash handoffs and 24 contact cases. Of these,
+138 episodes complete and 24 reproduce original failed states. The contact set
+accounts for 42 body deaths and 42 final-death events, including duplicate-contact
+suppression. See VALIDATION.md for the specific conditions and evidence.
+
+This is not full combat or respawning. The death-effect prefab is absent from
+this binding; successful direct and Dash deaths request no visual effect, while
+successful contact deaths use the original already-reviving branch that skips
+that spawn. Missing-prefab failures are explicit. Effect animations/hitstop,
+revive indicators, stocks, permanent revival, clone creation, drops and pooled
+non-actor ability destruction remain unimplemented. Contact binding currently
+covers Hitbox hazards and actor colliders with default collision settings;
+projectile/orb/explosion metadata, ignored references, pickup platforms and
+Dash's non-wall damage ray traversal still need integration.
