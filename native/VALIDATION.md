@@ -115,3 +115,20 @@ These primitive checks do not certify an integrated Rust physics world or the
 unported abilities. The new reference setup/capture code has been compiled and
 run in Unity; actual local recording parity, later-round carried state, full
 physics/global state capture and the complete Rust gameplay port remain required.
+
+## Ordered physics scenes
+
+The Rust rigid/composite scene solver matches the actual Unity
+`DetPhysics.Simulate` function on 1,000 generated scenes and 12,000 consecutive
+steps, with 164,124 ordered callback records and 137,486 broad-phase pairs.
+All scenes passed; none ended in an arithmetic exception. 560 scenes contain
+composites, including attachment, detachment, child/platform destruction and
+reuse of destroyed composite slots. Layer masks, triggers, inactive objects,
+transform offsets, angular motion, drag and zero timestep are included.
+
+`artifacts/physics-scene/report.json` contains reference assembly and corpus
+hashes. `fixtures/physics-scene.jsonl.gz` retains 60 scenes and 720 steps;
+`just verify` runs them through the standalone Rust probe. These compare every
+represented scene field without presentation exclusions. The Unity adapter
+records callbacks without executing abilities; ropes and beams are absent.
+This verifies the shared physics stage, not full combat or native match parity.

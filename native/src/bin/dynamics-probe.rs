@@ -12,6 +12,35 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_scene" => {
+            let mut scene: physics::scene::Scene = read(&q, "scene");
+            let mut steps = Vec::new();
+            for (tick, dt) in read::<Vec<Fix>>(&q, "steps").into_iter().enumerate() {
+                if let Some(commands) = q["commands"][tick].as_array() {
+                    for command in commands {
+                        let id: u32 = read(command, "id");
+                        match command["op"].as_str().unwrap() {
+                            "attach" => scene.attach(id, read(command, "root")),
+                            "detach" => scene.detach(id),
+                            "destroy" => scene.destroy(id),
+                            "force" => {
+                                scene
+                                    .objects
+                                    .iter_mut()
+                                    .find(|o| o.id == id)
+                                    .unwrap()
+                                    .body
+                                    .force += read::<Vec2>(command, "force")
+                            }
+                            _ => panic!("unknown scene command"),
+                        }
+                    }
+                }
+                let report = scene.step(dt);
+                steps.push(json!({"scene":scene,"report":report}));
+            }
+            return json!(steps);
+        }
         "dynamics_circle_circle" => contact::circle_circle(read(&q, "a"), read(&q, "b")),
         "dynamics_circle_box" => contact::circle_box(read(&q, "a"), read(&q, "b")),
         "dynamics_circle_rounded" => contact::circle_rounded(read(&q, "a"), read(&q, "b")),

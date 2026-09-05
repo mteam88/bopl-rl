@@ -90,10 +90,20 @@ python3 native/tools/verify_dynamics.py
   positional correction. This does not yet exercise a complete Rust rigid-body
   scene or integrate those primitives into every ability.
 - Broad ability replays include all catalog entries 1..38 and six active players.
-  Comparison is still being hardened: raw Unity object IDs in composite body
-  membership required canonical identities (trace schema v3). Cosmetic exclusions
-  are source-audited in `data/presentation-fields.json`; raw traces are retained.
+  All three 900-tick Unity playback comparisons pass at batches 1 and 16.
+  Composite membership uses canonical identities (trace schema v3). Cosmetic
+  exclusions are source-audited in `data/presentation-fields.json`; raw traces
+  are retained. Ability-entry events now distinguish loadout selection from casts.
+- Ordered rigid-body scenes: 1,000 scenes, 12,000 consecutive steps and 164,124
+  callback records match actual `DetPhysics.Simulate`, with no excluded fields
+  and no failed scenes. 560 scenes contain composite bodies. Coverage includes
+  all collider groups, layer masks, inactive bodies, triggers, offsets, zero
+  timestep, attachments, detachment, destroyed objects and composite-slot reuse.
+  A 60-scene/720-step subset is checked in for standalone regression.
+  The oracle runs the original solver with synthetic collider parents that record
+  callbacks. Ropes, beams and ability callback effects are not in these scenes;
+  integrating this stage into full native gameplay remains required.
 
 Pending: actual local recording versus replay, full state-capture audit, full
-physics world integration, all abilities and map/round lifecycle in Rust, broad
+physics integration with gameplay, all abilities and map/round lifecycle in Rust, broad
 interaction verification and final API/adapter integration. The goal stays active.

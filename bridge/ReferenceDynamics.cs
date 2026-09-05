@@ -5,19 +5,19 @@ using Newtonsoft.Json.Linq;
 
 public static class ReferenceDynamics
 {
-    private static Fix F(JToken value) => Fix.FromRaw((long)value);
-    private static Vec2 V(JToken value) => new Vec2(F(value["x"]), F(value["y"]));
-    private static JObject V(Vec2 value) => new JObject { ["x"] = value.x.m_rawValue, ["y"] = value.y.m_rawValue };
-    private static Box Box(JToken value) => new Box { center = V(value["center"]), right = V(value["right"]), up = V(value["up"]), inverseExtents = V(value["inverse_extents"]) };
-    private static Circle Circle(JToken value) => new Circle { center = V(value["center"]), radius = F(value["radius"]) };
-    private static RoundedRect Rounded(JToken value) => new RoundedRect { box = Box(value["inner"]), radius = F(value["radius"]) };
-    private static PhysicsBody Body(JToken v) => new PhysicsBody { inverseMass=F(v["inverse_mass"]),velocity=V(v["velocity"]),force=V(v["force"]),
+    internal static Fix F(JToken value) => Fix.FromRaw((long)value);
+    internal static Vec2 V(JToken value) => new Vec2(F(value["x"]), F(value["y"]));
+    internal static JObject V(Vec2 value) => new JObject { ["x"] = value.x.m_rawValue, ["y"] = value.y.m_rawValue };
+    internal static Box Box(JToken value) => new Box { center = V(value["center"]), right = V(value["right"]), up = V(value["up"]), inverseExtents = V(value["inverse_extents"]) };
+    internal static Circle Circle(JToken value) => new Circle { center = V(value["center"]), radius = F(value["radius"]) };
+    internal static RoundedRect Rounded(JToken value) => new RoundedRect { box = Box(value["inner"]), radius = F(value["radius"]) };
+    internal static PhysicsBody Body(JToken v) => new PhysicsBody { inverseMass=F(v["inverse_mass"]),velocity=V(v["velocity"]),force=V(v["force"]),
         angularVelocity=F(v["angular_velocity"]),orientation=F(v["orientation"]),inverseMomentOfInertia=F(v["inverse_inertia"]),bounciness=F(v["bounciness"]),
         staticFriction=F(v["static_friction"]),dynamicFriction=F(v["dynamic_friction"]),gravityScale=F(v["gravity_scale"]),airDrag=F(v["air_drag"]),rotationalDrag=F(v["rotational_drag"]) };
-    private static JObject Body(PhysicsBody v) => new JObject { ["inverse_mass"]=v.inverseMass.m_rawValue,["velocity"]=V(v.velocity),["force"]=V(v.force),
+    internal static JObject Body(PhysicsBody v) => new JObject { ["inverse_mass"]=v.inverseMass.m_rawValue,["velocity"]=V(v.velocity),["force"]=V(v.force),
         ["angular_velocity"]=v.angularVelocity.m_rawValue,["orientation"]=v.orientation.m_rawValue,["inverse_inertia"]=v.inverseMomentOfInertia.m_rawValue,["bounciness"]=v.bounciness.m_rawValue,
         ["static_friction"]=v.staticFriction.m_rawValue,["dynamic_friction"]=v.dynamicFriction.m_rawValue,["gravity_scale"]=v.gravityScale.m_rawValue,["air_drag"]=v.airDrag.m_rawValue,["rotational_drag"]=v.rotationalDrag.m_rawValue };
-    private static CollisionManifold Contact(JToken v) => new CollisionManifold { penetration=F(v["penetration"]),normal=V(v["normal"]),contactPoint=V(v["point"]) };
+    internal static CollisionManifold Contact(JToken v) => new CollisionManifold { penetration=F(v["penetration"]),normal=V(v["normal"]),contactPoint=V(v["point"]) };
     public static JToken Evaluate(JObject q)
     {
         string op = (string)q["operation"];
@@ -25,6 +25,7 @@ public static class ReferenceDynamics
         bool hit;
         switch (op)
         {
+            case "dynamics_scene": return ReferencePhysicsScene.Evaluate(q);
             case "dynamics_circle_circle": hit=PhysTools.CollisionTest(Circle(q["a"]),Circle(q["b"]),ref contact);break;
             case "dynamics_circle_box": hit=PhysTools.CollisionTest(Circle(q["a"]),Box(q["b"]),ref contact);break;
             case "dynamics_circle_rounded": hit=PhysTools.CollisionTest(Circle(q["a"]),Rounded(q["b"]),ref contact);break;

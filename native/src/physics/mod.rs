@@ -1,8 +1,13 @@
-//! Rigid-body primitives from DetPhysics and PhysTools. World integration is separate.
+//! Rigid-body primitives and ordered scenes from DetPhysics and PhysTools.
+//! Full gameplay integration, ropes and beams are still in progress.
 use crate::{fixed::Fix, vector::Vec2, world::DT};
 use serde::{Deserialize, Serialize};
 
+mod composite;
 pub mod contact;
+pub mod scene;
+pub mod shape;
+mod sweep;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Body {
