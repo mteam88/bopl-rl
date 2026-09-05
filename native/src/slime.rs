@@ -1,6 +1,6 @@
 //! SlimeController locomotion, animation and ability routing. Executable handlers
-//! are explicit; unsupported selected abilities return an error. Swallowing,
-//! general ability handoff and the remaining lifecycle are integration work.
+//! are explicit; unsupported selected abilities return an error. Eating, spawn
+//! and ordinary ability callbacks share the surrounding actor runtime.
 use crate::{
     animator::{self, Frame, Speed, Start, VelocityFrame},
     fixed::Fix,
@@ -43,6 +43,8 @@ pub struct RagdollImpulse {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eating: Option<crate::actor_eating::State>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn: Option<crate::actor_spawn::State>,
     pub state: State,
@@ -253,6 +255,7 @@ impl Instance {
             animator,
             speed,
             animations,
+            eating,
             ..
         } = self;
         let mut callback = |animator: &mut animator::State, callback| match callback {
@@ -271,6 +274,36 @@ impl Instance {
                 Ok(())
             }
             4 => Err("actor_spawn_requested"),
+            5 => Err("actor_chew_requested"),
+            6 => {
+                emit(Event::Sound("swallow".into()));
+                start(
+                    animator,
+                    Start::Begin {
+                        frames: Some(frames(animations, "swallow")?),
+                        next: None,
+                        callback: Some(7),
+                        style: 3,
+                    },
+                    speed,
+                )?;
+                eating.as_mut().ok_or("missing_actor_eating")?.swallowing = true;
+                Ok(())
+            }
+            7 => {
+                state.mode = 0;
+                eating.as_mut().ok_or("missing_actor_eating")?.swallowing = false;
+                start(
+                    animator,
+                    Start::Begin {
+                        frames: Some(frames(animations, "idle")?),
+                        next: None,
+                        callback: None,
+                        style: 2,
+                    },
+                    speed,
+                )
+            }
             _ => Err("unknown_slime_animation_callback"),
         };
         if let Some(scale) = scale {
@@ -523,6 +556,15 @@ impl Instance {
     ) -> Result<()> {
         let id = context.holder.ok_or("null_reference")?;
         let dt = update.dt;
+        if let Some(eating) = &self.eating
+            && eating.swallowing
+            && (id == 1000
+                || context.time_scale >= Fix::from_f32(0.01)
+                || context.protected == Some(true))
+        {
+            let scale = update.player.scale.as_mut().ok_or("missing_player_scale")?;
+            *scale = (*scale + eating.scale_increase).clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        }
         self.finish_invisibility(update.player.invisible)?;
         if let Some(entity) = &mut update.entity {
             entity.collider.set_scale(

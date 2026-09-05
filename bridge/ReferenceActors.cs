@@ -53,6 +53,7 @@ internal static class ReferenceActors
             var players=initial["players"].Select(p=>{var player=new Player((int)p["id"],0){isProtectedFromTimeStop=(bool)p["protected"],isInvisible=(bool)p["invisible"],timeSpentInvisible=F(p["time_invisible"]),timeSinceEnteredAbility=F(p["time_ability"])};Set(player,"Inputs",inputs[(int)p["input"]]);return player;}).ToList();
             for(int i=0;i<players.Count;i++)if(initial["players"][i]["flags"]!=null){var f=initial["players"][i]["flags"];players[i].InSparkShot=(bool)f["spark"];players[i].InMachoThrow=(bool)f["macho"];players[i].InPlatformTransform=(bool)f["platform"];}
             for(int i=0;i<players.Count;i++)if(initial["players"][i]["scale"]!=null)Set(players[i],"scale",F(initial["players"][i]["scale"]));
+            for(int i=0;i<players.Count;i++)if(initial["players"][i]["eaten_count"]!=null)players[i].playersEatenCountThisRound=(int)initial["players"][i]["eaten_count"];
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             if(runtime["combat"]?["death_effects"]!=null)deathEffects=new ReferenceDeathEffects(runtime["combat"]["death_effects"],initial);
             if(runtime["combat"]!=null)combat=new ReferenceActorCombat(runtime["combat"],players);
@@ -100,10 +101,10 @@ internal static class ReferenceActors
                 if(a["rewind"]!=null)ReferenceActorRewind.Bind(a["rewind"],slime);
                 if(a["push_strength"].Type!=JTokenType.Null)
                 {
-                    // All actors have equal scale in this corpus. The bite gate
-                    // is therefore false; this checks the original shove branch.
+                    // Run the original bite gate and overlap shove together.
                     slime.scaleDiffBeforeNomNom=a["bite_threshold"]==null?Fix.One:F(a["bite_threshold"]);slime.pushOverlappingPlayersStr=F(a["push_strength"]);
                     adapter.Collision=hit=>{
+                        currentActor=actor;
                         var before=body.externalVelocity;slime.OnCollide(hit);
                         if(body.externalVelocity!=before)pushes.Add(new JObject{["actor"]=actor,["external_delta"]=V(body.externalVelocity-before)});
                     };
@@ -117,6 +118,12 @@ internal static class ReferenceActors
                 p.OnAttachedToGround+=hit=>Event(actor,"attached",new JObject{["object"]=hit.pp.instanceId,["near_position"]=V(hit.nearPos),["far_position"]=V(hit.farPos),["near_distance"]=hit.nearDist.m_rawValue,["far_distance"]=hit.farDist.m_rawValue,["layer"]=hit.layer});
             }
             var ordinary=new Dictionary<int,ReferenceOrdinaryAbilities.Instance>();
+            for(int i=0;i<slimes.Count;i++)if(slimes[i]!=null)
+            {
+                slimes[i].Peers=slimes;var eating=actorData[i]["slime"]["eating"];if(eating==null)continue;
+                slimes[i].Slime.scaleIncreaseOnNom=F(eating["scale_increase"]);Set(slimes[i].Slime,"swallowing",(bool)eating["swallowing"]);
+                Set(slimes[i].Slime,"playerToEat",eating["target"].Type==JTokenType.Null?null:slimes[(int)eating["target"]].Slime);
+            }
             for(int i=0;i<actorData.Count;i++)if(actorData[i]["ordinary"]!=null)ordinary.Add(i,ReferenceOrdinaryAbilities.Bind(actorData[i]["ordinary"],entityObjects[i],slimes));
             if(deathEffects!=null)for(int i=0;i<bodies.Count;i++){var collision=bodies[i].GetComponent<PlayerCollision>();if(collision!=null)Set(collision,"playerIdHolder",slimes[i]!=null?(IPlayerIdHolder)slimes[i].Slime:ordinary[i].Ability);}
             for(int i=0;i<bodies.Count;i++)if(actorData[i]["bounds"]!=null)ReferenceActorBounds.Bind(actorData[i]["bounds"],bodies[i],physics[i],slimes[i]!=null?(IPlayerIdHolder)slimes[i].Slime:ordinary[i].Ability,deathEffects);
@@ -133,6 +140,9 @@ internal static class ReferenceActors
             void Command(JToken command)
             {
                 effects.Add(command.DeepClone());
+                if((string)command["op"]=="bite_actor"){currentActor=(int)command["actor"];slimes[currentActor].Slime.Bite(bodies[(int)command["victim"]].GetComponent<PlayerCollision>());return;}
+                if((string)command["op"]=="chew_actor"){currentActor=(int)command["actor"];slimes[currentActor].Slime.Chew();return;}
+                if((string)command["op"]=="collision_invulnerable"){bodies[(int)command["actor"]].GetComponent<PlayerCollision>().SetInvulnerable((bool)command["value"],(uint)command["mask"]);return;}
                 if((string)command["op"]=="clone_actor")
                 {
                     currentActor=(int)command["actor"];var collision=bodies[currentActor].GetComponent<PlayerCollision>();var prefab=collision.reviveEffectPrefab;
@@ -239,7 +249,7 @@ internal static class ReferenceActors
                 if((bool?)query["registration_state"]==true)frame["registration"]=deathEffects.Registration(drivers);
                 if(combat!=null){frame["combat"]=combat.Snapshot();if(deathEffects!=null)frame["combat"]["death_effects"]=deathEffects.Snapshot();}
                 if(runtime["actor_ropes"]!=null){var binding=(JObject)runtime["actor_ropes"].DeepClone();binding["metadata"]=new JArray(ropes.Select(r=>new JObject{["owner"]=r.ownerId,["time_air_start"]=r.timeInAir_start.m_rawValue,["time_air_end"]=r.timeInAir_end.m_rawValue}));frame["actor_ropes"]=binding;}
-                if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["scale"]!=null)v["scale"]=player.Scale.m_rawValue;if(v["position"]!=null)v["position"]=ReferencePlayerPosition.Snapshot(player,slimes);if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
+                if((bool?)query["player_state"]==true)frame["players"]=new JArray(players.Select((player,i)=>{var v=(JObject)initial["players"][i].DeepClone();v["protected"]=player.isProtectedFromTimeStop;v["invisible"]=player.isInvisible;v["time_invisible"]=player.timeSpentInvisible.m_rawValue;v["time_ability"]=player.timeSinceEnteredAbility.m_rawValue;if(v["scale"]!=null)v["scale"]=player.Scale.m_rawValue;if(v["eaten_count"]!=null)v["eaten_count"]=player.playersEatenCountThisRound;if(v["position"]!=null)v["position"]=ReferencePlayerPosition.Snapshot(player,slimes);if(v["flags"]!=null)v["flags"]=new JObject{["spark"]=player.InSparkShot,["macho"]=player.InMachoThrow,["platform"]=player.InPlatformTransform};return v;}));
                 if(query["scripts"]!=null)frame["effects"]=effects;
                 if((bool?)query["routing_checks"]==true)frame["routing_checks"]=new JArray(slimes.Select(s=>s==null?(JToken)JValue.CreateNull():s.RoutingChecks()));
                 return frame;

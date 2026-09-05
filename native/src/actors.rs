@@ -178,52 +178,6 @@ impl Actor {
         result
     }
 
-    fn check_bite(
-        &self,
-        other: &Actor,
-        schedule: &scheduler::State,
-        combat: &Option<crate::actor_combat::Combat>,
-    ) -> scheduler::Result<()> {
-        if self.push_strength.is_none()
-            || self.slime.as_ref().is_some_and(|s| s.state.mode == 9)
-            || !self.controller.physics.motion.grounded
-        {
-            return Ok(());
-        }
-        let holder = self.body.holder.ok_or("null_reference")?;
-        if holder != 1000
-            && schedule.time_scale < Fix::from_f32(0.01)
-            && !schedule
-                .players
-                .iter()
-                .find(|p| p.id == holder)
-                .ok_or("null_reference")?
-                .protected
-        {
-            return Ok(());
-        }
-        if self.controller.physics.scale - other.controller.physics.scale
-            < self.bite_threshold.unwrap_or(Fix::ONE)
-            || other.collision.is_none()
-        {
-            return Ok(());
-        }
-        let book = &combat.as_ref().ok_or("actor_bite_context_missing")?.book;
-        let mine = book
-            .players
-            .iter()
-            .find(|p| p.id == holder)
-            .ok_or("null_reference")?;
-        let theirs = book
-            .players
-            .iter()
-            .find(|p| Some(p.id) == other.body.holder)
-            .ok_or("null_reference")?;
-        if mine.team != theirs.team {
-            return Err("actor_bite_integration_not_implemented");
-        }
-        Ok(())
-    }
     /// SlimeController's overlap shove, after checking the separate bite gate.
     fn shove(&mut self, other_position: Vec2, other_hierarchy: i32) -> Option<Vec2> {
         let strength = self.push_strength?;
@@ -446,6 +400,9 @@ impl Runtime {
             .map(|a| a.entity.as_ref().map(|e| (e.present, e.destroyed)))
             .collect();
         for actor in actors.iter_mut() {
+            if !actor.is_present() {
+                continue;
+            }
             if let Some(routing) = actor.slime.as_mut().and_then(|s| s.abilities.as_mut()) {
                 for ability in &mut routing.pool {
                     if let Some(crate::ability::Handler::Entity { actor }) = ability.handler
@@ -634,14 +591,32 @@ impl Runtime {
                                 .expect("collision object");
                             // Player-layer colliders in this integration stage all
                             // belong to actors, which retain their collision priority.
-                            let other_actor = actors
+                            let other_index = actors
                                 .iter()
-                                .find(|a| a.object == hit.other)
+                                .position(|a| a.object == hit.other)
                                 .expect("player actor collision");
-                            actors[index].check_bite(other_actor, schedule, combat)?;
-                            let other_hierarchy = other_actor.collision_hierarchy;
+                            let other_position = other.transform.position;
+                            let other_hierarchy = actors[other_index].collision_hierarchy;
+                            if actors[index].should_bite(&actors[other_index], schedule, combat)? {
+                                Self::bite_actor(
+                                    actors,
+                                    &mut Context {
+                                        schedule,
+                                        components,
+                                        scene,
+                                        actor_ropes,
+                                        combat,
+                                        bindings,
+                                        grounds,
+                                        space: *space,
+                                    },
+                                    index,
+                                    other_index,
+                                    report,
+                                )?;
+                            }
                             if let Some(external_delta) =
-                                actors[index].shove(other.transform.position, other_hierarchy)
+                                actors[index].shove(other_position, other_hierarchy)
                             {
                                 report.pushes.push(Push {
                                     actor: index,
@@ -1025,6 +1000,25 @@ impl Runtime {
                     actor.controller_to_body();
                     actor.sync_transform(scene);
                     Self::refresh_entities(schedule, components, actors, scene);
+                    if result == Err("actor_chew_requested") {
+                        let result = Self::chew_actor(
+                            actors,
+                            &mut Context {
+                                schedule,
+                                components,
+                                scene,
+                                actor_ropes,
+                                combat,
+                                bindings,
+                                grounds,
+                                space: *space,
+                            },
+                            component.actor,
+                            report,
+                        );
+                        Self::refresh_entities(schedule, components, actors, scene);
+                        return result;
+                    }
                     if result == Err("actor_spawn_requested") {
                         let result = Self::spawn_actor(
                             actors,
@@ -1100,6 +1094,7 @@ impl Runtime {
                                 position.previous.filter(|&i| actors[i].is_present());
                         }
                     }
+                    Self::refresh_entities(schedule, components, actors, scene);
                 }
                 scheduler::Phase::RopeMesh => {
                     if let Some(system) = &mut scene.rope_system {

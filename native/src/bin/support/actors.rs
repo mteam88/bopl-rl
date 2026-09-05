@@ -81,6 +81,37 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                            report: &mut Report,
                            command: &Value| {
             effects.push(command.clone());
+            if command["op"] == "collision_invulnerable" {
+                let actor = &mut actors[command["actor"].as_u64().unwrap() as usize];
+                if !actor.is_present() {
+                    return Err("missing_reference");
+                }
+                let collision = actor.collision.as_mut().ok_or("null_reference")?;
+                let mask = command["mask"].as_u64().unwrap() as u32;
+                if command["value"].as_bool().unwrap() {
+                    collision.invulnerable |= mask;
+                } else {
+                    collision.invulnerable &= !mask;
+                }
+                return Ok(());
+            }
+            if command["op"] == "bite_actor" {
+                return Runtime::bite_actor(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    command["victim"].as_u64().unwrap() as usize,
+                    report,
+                );
+            }
+            if command["op"] == "chew_actor" {
+                return Runtime::chew_actor(
+                    actors,
+                    context,
+                    command["actor"].as_u64().unwrap() as usize,
+                    report,
+                );
+            }
             if command["op"] == "clone_actor" {
                 let caller = actors
                     .get(command["actor"].as_u64().unwrap() as usize)

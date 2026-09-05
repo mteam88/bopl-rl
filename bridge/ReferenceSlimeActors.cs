@@ -24,6 +24,7 @@ internal static class ReferenceSlimeActors
         internal List<RopeBody> Ropes;
         internal AbilityMonoBehaviour[] RoutingPool;
         internal int Actor;
+        internal List<Context> Peers;
         internal List<StickyRoundedRectangle> Platforms;
         internal List<ReferencePhysicsScene.Adapter> Adapters;
         internal Dictionary<int,ReferenceInstantAbilities.Instance> Instants=new Dictionary<int,ReferenceInstantAbilities.Instance>();
@@ -66,6 +67,9 @@ internal static class ReferenceSlimeActors
             }
             else if(name=="setStateToIdle"){id=3;TurnInput=Fix.Zero;}
             else if(name=="Spawn"){id=4;TurnInput=Fix.Zero;}
+            else if(name=="Chew"){id=5;TurnInput=Fix.Zero;}
+            else if(name=="Swallow"){id=6;TurnInput=Fix.Zero;}
+            else if(name=="FinishEating"){id=7;TurnInput=Fix.Zero;}
             else throw new InvalidOperationException("Unmapped slime callback "+name);
             Animation.RegisterCallback(callback,id);
         }
@@ -73,6 +77,11 @@ internal static class ReferenceSlimeActors
         {
             TrackCallback();var value=(JObject)original.DeepClone();var s=value["state"];
             if(value["spawn"]!=null)value["spawn"]=ReferenceActorSpawn.Snapshot(value["spawn"],this);
+            if(value["eating"]!=null)
+            {
+                var target=Get<SlimeController>(Slime,"playerToEat");
+                value["eating"]=new JObject{["target"]=ReferenceEquals(target,null)?JValue.CreateNull():new JValue(Peers.FindIndex(p=>p!=null&&ReferenceEquals(p.Slime,target))),["swallowing"]=Get<bool>(Slime,"swallowing"),["scale_increase"]=Slime.scaleIncreaseOnNom.m_rawValue};
+            }
             if(value["managed_destroyed"]!=null||Slime.IsDestroyed)value["managed_destroyed"]=Slime.IsDestroyed;
             s["mode"]=(int)Slime.getCurrentState();s["facing_right"]=Flip.facingRight();s["was_upside_down"]=Get<bool>(Slime,"wasUpsideDown");
             s["input"]=V(Get<Vec2>(Slime,"inputVector"));s["previous_input"]=Get<Fix>(Slime,"prevInput").m_rawValue;s["suppress"]=Slime.suppressInput;s["has_spawned"]=Slime.HasSpawned;

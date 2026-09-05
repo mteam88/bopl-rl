@@ -7,6 +7,7 @@ from actor_stream import ROOT
 from verify_actor_spawn import queries as spawn_queries
 from verify_actor_bounds import assets as boundary_assets
 from verify_actors import ONE, vec
+from eating_prefab import assets as eating_assets
 
 
 @lru_cache
@@ -48,6 +49,9 @@ def prefab():
     sample = dict(position=vec(), velocity=vec(), external_velocity=vec(), rotation=0, cooldowns=[0]*3)
     actor['rewind'] = dict(ring=[copy.deepcopy(sample) for _ in range(188)], head=0, count=0, rewinding=False)
     slime = actor['slime']
+    animations, growth = eating_assets()
+    slime['animations'].update(copy.deepcopy(animations))
+    slime['eating'] = dict(target=None, swallowing=False, scale_increase=growth)
     slime['state'].update(mode=2, facing_right=True, was_upside_down=False, input=vec(), previous_input=0,
                           suppress=True, has_spawned=False, time_moonwalking=0, turn_input=0)
     slime['spawn'].update(physics_enabled=True, renderer_enabled=True, fast=False, next_ability=0,

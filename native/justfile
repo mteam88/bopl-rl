@@ -88,6 +88,12 @@ verify: build check
     python3 native/tools/verify_actor_clones.py --saturation --golden
     python3 native/tools/verify_actor_clones.py --interactions --golden
     python3 native/tools/verify_actor_clones.py --orphan-inputs --golden
+    python3 native/tools/verify_actor_eating.py --golden
+    python3 native/tools/verify_actor_eating.py --faults --golden
+    python3 native/tools/verify_actor_eating.py --contacts --golden
+    python3 native/tools/verify_actor_eating.py --handoffs --golden
+    python3 native/tools/verify_actor_eating.py --clones --golden
+    python3 native/tools/verify_actor_eating.py --timing --golden
 
 verify-math: build
     dotnet build native/tools/math-oracle/math-oracle.csproj -c Release --nologo -v:q
@@ -246,3 +252,11 @@ verify-actor-clones: build
     python3 native/tools/verify_actor_clones.py --saturation
     python3 native/tools/verify_actor_clones.py --interactions
     python3 native/tools/verify_actor_clones.py --orphan-inputs
+
+verify-actor-eating: build
+    python3 native/tools/verify_actor_eating.py
+    python3 native/tools/verify_actor_eating.py --faults
+    python3 native/tools/verify_actor_eating.py --contacts
+    python3 native/tools/verify_actor_eating.py --handoffs
+    python3 native/tools/verify_actor_eating.py --clones
+    python3 native/tools/verify_actor_eating.py --timing

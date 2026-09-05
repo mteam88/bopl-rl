@@ -63,6 +63,8 @@ pub struct Component {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eaten_count: Option<i32>,
     pub id: i32,
     pub protected: bool,
     pub invisible: bool,

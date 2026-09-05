@@ -1256,7 +1256,60 @@ are under `artifacts/actor-clones-verified`, `actor-clones-saturation`, and
 state but missed two intended water deaths and is not the canonical corpus.
 
 This is the shared abilityless-clone factory, not the complete Duplicate or
-Revival ability. Their casting/placement, stock selection, enemy eating and the
-full match environment remain outstanding. Same-team unequal-scale contact is
-supported; a qualifying enemy bite still returns an explicit unsupported error.
+Revival ability. Their casting/placement, stock selection and the
+full match environment remain outstanding. Eating is covered below.
 The public C environment retains its documented movement/dash scope.
+
+
+## Eating and shared player growth
+
+`actor_eating.rs` connects SlimeController.OnCollide, Bite and Chew to the live
+actor runtime. Contact entry checks grounded state, size difference, teams,
+time stop and the victim's active collision component. Bite keeps its target
+reference; Chew resolves that target's active body again when the animation
+finishes. A victim can enter or leave Dash between those calls. Chew uses the
+existing death/rope/ability cleanup path with cause Eaten and no death effect.
+Swallow and FinishEating run through the original animation callback order.
+Growth updates shared Player.Scale and its 0.3-to-3 clamp, then updates the
+actor's box, including other surviving clones on their scheduled turns.
+
+Six retained corpora match the original Unity methods in 225 cases: 201 complete
+episodes, 24 matching missing-animation failure prefixes, 24,504 completed ticks
+and 18,562 collision callbacks. The sets contain 187 bite audio requests, 166
+swallow requests, 99 accounted body deaths, 152 eaten-counter increments, 2,183
+frames of increasing scale and five frames of decreasing scale. There are 36
+real clone births/removals in the eating interactions. Contact and Dash tests
+cover two through six players; the direct-method, clone, clock and failure tests
+also include one player. Direct self-bite cases exercise the source method;
+they do not imply that normal one-player contact can target itself.
+
+The corpora distinguish initial invulnerability from becoming invulnerable
+before Chew, target deletion/inactivity, repeated Bite, an active Dash versus its
+inactive owner, ability exit/deletion, pending and spawned clones, replacement
+clones, zero dt, slow time, time-stop protection, signed counter overflow, scale
+limits, and missing bite/chew/swallow/idle animations. Every intended contact,
+death, counter increment and clone lifecycle has a coverage check. The controlled
+Dash set keeps the eater stationary so unrelated landing animations cannot cancel
+the callback being tested; the earlier moving pilot remains separate evidence.
+
+Two unusual source behaviors are retained. Chew increments the eaten counter
+when it finds a live collision component even if killPlayer refuses an
+invulnerable victim. Growth adds a fixed amount per update, including zero-dt
+updates when time is not stopped. Ragdoll can replace the swallow animation and
+its completion callback while leaving the swallowing flag set; six cases then
+grow to the size clamp and retain that flag. No repair is applied to these rules.
+
+This work also fixes the observed timing of ability references: a surviving
+owner sees a deleted ability become absent in the same frame. Deleted owners
+keep their cached final state. Existing lifecycle, ordinary/Dash, ragdoll, death,
+clone, Rust/Python and C regression checks pass.
+
+Run `python3 native/tools/verify_actor_eating.py --golden`, adding `--faults`,
+`--contacts`, `--handoffs`, `--clones` or `--timing` for the other sets. Traces are
+in `fixtures/actor-eating*.jsonl.xz`. Assembly/input/output hashes and full raw
+captures are in `artifacts/actor-eating-verified`, `actor-eating-failures`,
+`actor-eating-contacts-verified`, `actor-eating-handoffs-controlled`,
+`actor-eating-clones-verified`, and `actor-eating-timing`. Steam achievements and
+render-only presentation are outside these headless traces. Remaining abilities,
+stock selection and the complete match environment remain outstanding; the
+public C environment retains its documented movement/dash scope.

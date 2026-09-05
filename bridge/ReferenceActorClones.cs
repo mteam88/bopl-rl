@@ -58,7 +58,7 @@ internal sealed class ReferenceActorClones : IDisposable
             var adapter=new ReferencePhysicsScene.Adapter{sourceId=id,shape=Shape.Box,transform=ft,parent=box.pp,realBox=box,template=(JObject)value["pending_object"].DeepClone()};
             clones.Add(actor,adapter);adapters.Add(adapter);actorData.Add(value);entities.Add(go);bodies.Add(body);physics.Add(p);transforms.Add(ft);
             var animation=ReferenceAnimatorObserver.Create(slime,value["slime"]);
-            slimes.Add(new ReferenceSlimeActors.Context{Slime=slime,Animation=animation,Flip=go.GetComponentInChildren<FlippingTransform>(),TurnInput=Fix.Zero,Objects=objects,Entities=entities,Ropes=ropes,Actor=actor,Platforms=platforms,Adapters=adapters,RoutingPool=Array.Empty<AbilityMonoBehaviour>()});
+            slimes.Add(new ReferenceSlimeActors.Context{Slime=slime,Animation=animation,Flip=go.GetComponentInChildren<FlippingTransform>(),TurnInput=Fix.Zero,Objects=objects,Entities=entities,Ropes=ropes,Actor=actor,Peers=slimes,Platforms=platforms,Adapters=adapters,RoutingPool=Array.Empty<AbilityMonoBehaviour>()});
             p.OnNoLongerGrounded+=angle=>emit(actor,"detached",angle.m_rawValue);
             p.OnAttachedToGround+=hit=>emit(actor,"attached",new JObject{["object"]=hit.pp.instanceId,["near_position"]=V(hit.nearPos),["far_position"]=V(hit.farPos),["near_distance"]=hit.nearDist.m_rawValue,["far_distance"]=hit.farDist.m_rawValue,["layer"]=hit.layer});
         };
