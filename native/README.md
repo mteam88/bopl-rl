@@ -115,7 +115,9 @@ verified together in the source physics update order. Shared death accounting an
 collision-effect selection have separate Unity checks. Ground attachment and
 detachment are shared with the movement world; the remaining death/revival
 handlers still need integration. Player-body motion and rope transitions have
-coupled component tests and actual replay checks. Independent player-input
+coupled component tests and actual replay checks. Ability physics handoff and
+grounded rope updates have Unity component checks; gravity and air movement are
+shared with this C environment. Independent player-input
 episodes, grappling and beam ability lifecycles, collision-driven damage, time
 manipulation, scaling, clones, other abilities, stocks and additional maps still
 require ports and comparisons. Equal-size slime shoves use the source's distance condition; the

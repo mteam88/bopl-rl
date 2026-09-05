@@ -323,11 +323,14 @@ impl Player {
     }
     fn gravity_step(&mut self, platforms: &[Platform]) {
         if !self.grounded {
-            let gravity = self.constants.gravity_accel * self.constants.gravity_modifier;
-            self.velocity +=
-                (-Vec2::UP) * self.constants.gravity_accel * self.constants.gravity_modifier;
-            self.velocity +=
-                (-Vec2::UP) * (gravity / self.constants.gravity_max_fall_speed) * self.velocity.y;
+            crate::player_physics::apply_gravity(
+                &mut self.velocity,
+                self.constants.gravity_accel,
+                self.constants.gravity_modifier,
+                self.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid movement gravity constants");
             self.collision_rays(platforms);
         }
     }
@@ -354,11 +357,13 @@ impl Player {
         if self.grounded {
             self.move_grounded(input, platforms);
         } else {
-            self.velocity += Vec2::new(input.x * self.constants.air_accel, Fix::ZERO);
-            self.velocity += (-Vec2::RIGHT)
-                * (self.constants.air_accel
-                    / (self.constants.max_speed + self.constants.air_accel))
-                * self.velocity.x;
+            crate::player_physics::air_movement(
+                &mut self.velocity,
+                input.x,
+                self.constants.air_accel,
+                self.constants.max_speed,
+            )
+            .expect("valid movement air constants");
             self.collision_rays(platforms);
         }
         if self.outside_bounds() {

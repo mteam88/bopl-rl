@@ -476,3 +476,44 @@ imports Unity state before each method. Full-world component identity, scheduler
 enablement, physics/body update ordering across an independent episode, ability
 controllers, and death/revival orchestration still need integration. The public
 C environment remains the movement/dash slice.
+
+
+## Ability physics handoff and grounded ropes
+
+`player_physics::State` ports the fixed-point state changes in `UpdateScale`,
+`AddGravityFactor`, `AirealMovement`, `AddForce`, `Jump`, `AlignToGround`,
+`ApplyOffset`, both `SyncPhysicsTo` overloads and `LateUpdateSim`. It shares ground
+attachment state and the existing body/rope objects. The C movement environment
+now uses the same gravity and air-movement functions; its independent episodes
+remain exact.
+
+The implementation preserves the differences between entering and exiting an
+ability. Entry uses the receiving body's radius, while exit projects the old
+perimeter position using the outgoing radius before computing the receiving
+body's local coordinate. An invalid grounded exit clears the platform reference
+but leaves the incoming grounded flag set. Scaling and partial failures retain
+source order. Perimeter lookup also preserves the case where no segment is
+selected and the source returns zero without reading a missing shape component.
+
+Grounded rope updates align the body first, add endpoint force at the original
+strict threshold, then detach when the outward velocity exceeds the source limit.
+The detachment listener runs before the final rope endpoint assignment. The
+native callback can mutate the body at that point; generated Unity cases include
+listeners that move it to verify this ordering.
+
+The actual component methods match **1,000 scenarios / 15,026 completed calls**,
+including 2,432 ability handoffs, 3,414 late updates and 2,286 jumps. There are
+2,718 matching detachment notifications. The 701 complete sequences and 299
+first-error boundaries cover missing platforms/shapes, invalid rope indices,
+zero scale denominators and invalid movement constants: 191 null references,
+102 division errors and six index errors. Inputs include all six owner IDs,
+space gravity, different radii, destroyed platforms and boundary rope forces.
+These are supplied component states, not 1,000 independent gameplay episodes.
+
+`fixtures/player-physics.jsonl.gz` retains 405 scenarios, including every source
+error; it runs under `just verify`. Regenerate with `just verify-player-physics`.
+Raw evidence is in `artifacts/player-physics/`. The new methods do not implement
+world raycast registration, blocked perimeter movement/platform hopping, the
+whole PlayerPhysics update controller, arbitrary ability callbacks or full
+world scheduling. Rendering and jump audio are outside this fixed-point state
+comparison. Full independent ability episodes remain required.

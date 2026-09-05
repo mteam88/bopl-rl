@@ -12,6 +12,52 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_player_physics" => {
+            let mut state: bopl_sim::player_physics::State = read(&q, "state");
+            let config: bopl_sim::player_physics::Config = read(&q, "config");
+            let platforms: Vec<bopl_sim::player_physics::Platform> = read(&q, "platforms");
+            let mut rope: Option<bopl_sim::player_body::BodyRope> = read(&q, "rope");
+            let event_offset: Vec2 = read(&q, "event_offset");
+            let mut frames = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                let mut events = Vec::new();
+                let mut notify = |s: &mut bopl_sim::player_physics::State, angle| {
+                    events.push(angle);
+                    s.motion.position += event_offset;
+                };
+                let result = match action["op"].as_str().unwrap() {
+                    "scale" => {
+                        state.scale = read(action, "scale");
+                        state.update_scale()
+                    }
+                    "gravity" => state.gravity(&config, read(&q, "space")),
+                    "air" => state.air_move(read(action, "input"), &config),
+                    "force" => {
+                        state.add_force(read(action, "force"), &config);
+                        Ok(())
+                    }
+                    "jump" => state
+                        .jump(&platforms, &config)
+                        .map(|angle| notify(&mut state, angle)),
+                    "align" => state.align(&platforms),
+                    "offset" => state.offset(read(action, "offset"), &platforms),
+                    "sync" => state.sync(&read(action, "info"), read(action, "exit"), &platforms),
+                    "late" => state.late_update(
+                        &platforms,
+                        rope.as_mut().map(|r| (r, read(&q, "top"))),
+                        &config,
+                        &mut notify,
+                    ),
+                    _ => panic!("unknown player physics action"),
+                };
+                let frame = json!({"state":state,"rope":rope,"events":events});
+                if let Err(error) = result {
+                    return json!({"error":error,"action":frames.len(),"completed":frames,"failed":frame});
+                }
+                frames.push(frame);
+            }
+            return json!(frames);
+        }
         "dynamics_player_body" => {
             let mut state: bopl_sim::player_body::State = read(&q, "state");
             let context: bopl_sim::player_body::Context = read(&q, "context");

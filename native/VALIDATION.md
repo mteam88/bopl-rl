@@ -387,3 +387,31 @@ The gameplay assembly is the same as the direct oracle. Reports and raw evidence
 are in `artifacts/player-body/` and `artifacts/player-body-gameplay/`. Both body
 fixtures run under `just verify`. Global scheduler/component identity and full
 ability/death/revival orchestration remain outside this check.
+
+
+## PlayerPhysics handoff, forces and grounded rope updates
+
+All 1,000 actual-component scenarios match: 701 complete sequences and 15,026
+completed actions. There are 2,432 ability entry/exit handoffs, 3,414 late updates,
+2,286 jumps and 2,718 detachment notifications. Error snapshots compare the first
+failing action, its completed prefix and partial state: 191 null references, 102
+division-by-zero errors and six invalid indices. Detachment listeners can move
+the body, and the resulting rope endpoint is checked after the callback.
+
+The corpus exercises scale ratios, different outgoing/receiving radii, missing
+and destroyed platforms, missing rounded-rectangle components, space gravity,
+zero movement denominators and force thresholds. The fixture retains 405 cases,
+including all 299 errors. Gravity and air movement are shared with the public C
+movement environment; its existing independent trajectories remain exact.
+
+Assembly:
+`89a8b02c61b3756feab35f99a5d7e60fa1fe3d3c5ac5ae4b2a4e1de3f0c18dc7`.
+Input SHA:
+`32aaa8141e671407f385b31c2451ac69dd5aa3d4a93a742a64c804808de13061`.
+Output SHA:
+`1286d658b35b2c8c988a8e31897d862449d107772c3870eb39ba05891b6f6705`.
+
+Raw evidence is in `artifacts/player-physics/`; the fixture runs under
+`just verify`. This tests the fixed-point component state and listener ordering,
+not rendering, jump audio, whole-world scheduling, blocked surface traversal or
+an independent native ability episode.

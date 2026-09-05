@@ -63,7 +63,7 @@ impl Surface {
     pub fn forward(&self, point: Vec2) -> Vec2 {
         self.normal(point).perp_cw()
     }
-    pub fn position(&self, local: Fix, player_radius: Fix) -> Vec2 {
+    pub fn perimeter_zone(&self, local: Fix, player_radius: Fix) -> Option<(usize, Fix)> {
         let distance = local * (self.circumference() + player_radius * Fix::TAU);
         let mut total = Fix::ZERO;
         for (zone, segment) in self.segments().iter().enumerate() {
@@ -75,37 +75,43 @@ impl Surface {
             if distance >= total {
                 continue;
             }
-            let center = self.center;
-            let right = self.right;
-            let up = self.up;
-            let radius = self.radius + player_radius;
-            let x = self.extents.x;
-            let y = self.extents.y;
-            return match zone {
-                0 => center - right * x + up * (y + radius) + right * progress,
-                1 => {
-                    let angle = Fix::HALF_PI - progress / radius;
-                    center + right * x + up * y + (right * angle.cos() + up * angle.sin()) * radius
-                }
-                2 => center + right * (x + radius) + up * (y - progress),
-                3 => {
-                    let angle = -progress / radius;
-                    center + right * x - up * y + (right * angle.cos() + up * angle.sin()) * radius
-                }
-                4 => center + right * x - up * (y + radius) - right * progress,
-                5 => {
-                    let angle = Fix::HALF_PI - progress / radius + Fix::PI;
-                    center - right * x - up * y + (right * angle.cos() + up * angle.sin()) * radius
-                }
-                6 => center - right * (x + radius) + up * (progress - y),
-                7 => {
-                    let angle = Fix::PI - progress / radius;
-                    center - right * x + up * y + (right * angle.cos() + up * angle.sin()) * radius
-                }
-                _ => unreachable!(),
-            };
+            return Some((zone, progress));
         }
-        Vec2::ZERO
+        None
+    }
+    pub fn position(&self, local: Fix, player_radius: Fix) -> Vec2 {
+        let Some((zone, progress)) = self.perimeter_zone(local, player_radius) else {
+            return Vec2::ZERO;
+        };
+        let center = self.center;
+        let right = self.right;
+        let up = self.up;
+        let radius = self.radius + player_radius;
+        let x = self.extents.x;
+        let y = self.extents.y;
+        match zone {
+            0 => center - right * x + up * (y + radius) + right * progress,
+            1 => {
+                let angle = Fix::HALF_PI - progress / radius;
+                center + right * x + up * y + (right * angle.cos() + up * angle.sin()) * radius
+            }
+            2 => center + right * (x + radius) + up * (y - progress),
+            3 => {
+                let angle = -progress / radius;
+                center + right * x - up * y + (right * angle.cos() + up * angle.sin()) * radius
+            }
+            4 => center + right * x - up * (y + radius) - right * progress,
+            5 => {
+                let angle = Fix::HALF_PI - progress / radius + Fix::PI;
+                center - right * x - up * y + (right * angle.cos() + up * angle.sin()) * radius
+            }
+            6 => center - right * (x + radius) + up * (progress - y),
+            7 => {
+                let angle = Fix::PI - progress / radius;
+                center - right * x + up * y + (right * angle.cos() + up * angle.sin()) * radius
+            }
+            _ => unreachable!(),
+        }
     }
     pub fn closest_point(&self, point: Vec2) -> Result<Vec2, MathError> {
         let x = (point - self.center).dot(self.right);

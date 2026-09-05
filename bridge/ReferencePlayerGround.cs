@@ -10,7 +10,7 @@ using static ReferenceBeamTargets;
 // and optional jump sound) is excluded; detachment listeners are recorded.
 public static class ReferencePlayerGround
 {
-    private static StickyRoundedRectangle Platform(JToken value, List<GameObject> objects)
+    internal static StickyRoundedRectangle Platform(JToken value, List<GameObject> objects)
     {
         var go = new GameObject("ground oracle platform");
         go.SetActive(false);
@@ -35,6 +35,18 @@ public static class ReferencePlayerGround
         Set(platform, "circumferences", segments);
         Set(platform, "totalCircum", segments[0] * (Fix)2L + segments[1] * (Fix)4L + segments[2] * (Fix)2L);
         return platform;
+    }
+
+    internal static JObject Motion(PlayerPhysics physics, PlayerBody body, List<StickyRoundedRectangle> surfaces)
+    {
+        var ground = physics.getAttachedGround();
+        return new JObject {
+            ["position"] = V(body.position), ["rotation"] = body.rotation.m_rawValue,
+            ["up"] = V(body.up), ["right"] = V(body.right),
+            ["velocity"] = V(body.selfImposedVelocity), ["external_velocity"] = V(body.externalVelocity),
+            ["radius"] = physics.radius.m_rawValue, ["grounded"] = physics.IsGrounded(),
+            ["ground"] = ground == null ? JValue.CreateNull() : new JValue(surfaces.IndexOf(ground)),
+            ["local"] = physics.LocalPlatformPos.m_rawValue, ["grounded_speed"] = physics.groundedSpeed.m_rawValue };
     }
 
     public static JToken Evaluate(JObject query)
@@ -68,18 +80,7 @@ public static class ReferencePlayerGround
             if (state["ground"].Type != JTokenType.Null) Set(physics, "attachedGround", surfaces[(int)state["ground"]]);
             JToken notification = JValue.CreateNull();
             physics.OnNoLongerGrounded += rotation => notification = new JValue(rotation.m_rawValue);
-            JObject Snapshot()
-            {
-                var ground = physics.getAttachedGround();
-                var s = new JObject {
-                    ["position"] = V(body.position), ["rotation"] = body.rotation.m_rawValue,
-                    ["up"] = V(body.up), ["right"] = V(body.right),
-                    ["velocity"] = V(body.selfImposedVelocity), ["external_velocity"] = V(body.externalVelocity),
-                    ["radius"] = physics.radius.m_rawValue, ["grounded"] = physics.IsGrounded(),
-                    ["ground"] = ground == null ? JValue.CreateNull() : new JValue(surfaces.IndexOf(ground)),
-                    ["local"] = physics.LocalPlatformPos.m_rawValue, ["grounded_speed"] = physics.groundedSpeed.m_rawValue };
-                return new JObject { ["state"] = s, ["event"] = notification };
-            }
+            JObject Snapshot() => new JObject { ["state"] = Motion(physics, body, surfaces), ["event"] = notification };
             var frames = new JArray();
             foreach (var action in query["actions"])
             {
