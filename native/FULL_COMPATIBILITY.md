@@ -185,9 +185,44 @@ against the instrumented Unity build with `just verify-beams`.
 
 This is a **graph-stage** comparison. The probe captures immediately before
 `renderBeams`, which also creates gameplay hitboxes and applies damage/forces.
-Those effects, beam ability startup/shutdown, target component behavior, carried
-renderer/hitbox state, and independent native beam gameplay remain unported.
+The graph result alone does not verify those effects. The component ports below
+cover hitbox geometry and target force/charge rules; beam ability startup/shutdown,
+pooled object lifecycle and independent native beam gameplay remain required.
 Graph scenarios currently use null ground references and synthetic obstacles;
 they do not certify every live-game beam state or the entire Beam ability.
 Evidence and assembly/input/output hashes are in `artifacts/beam/`,
 `artifacts/beam-graph/` and `artifacts/beam-graph-stress/`.
+
+
+## Beam hitboxes and target effects
+
+The next component layer is implemented in `src/curve.rs`, `src/beam/hitbox.rs`
+and `src/beam/effects.rs`:
+
+- `AnimationCurveFixed` interpolation, pre/post wrapping, boundary comparisons,
+  empty/single-key behavior and arithmetic errors match 2,000 Unity scenarios:
+  92,935 returned values and 57 matching source errors.
+- The actual beam prefab's `BeamObject.SetDimensions` / `Initialize` path matches
+  1,000 sequences and 14,000 states. This includes cached direction versus angle,
+  pre-initialization extents, subsequent box updates, animated widths, exact-zero
+  extent replacement, negative extents and zero direction.
+- The actual `DetPhysics.renderBeams` target path matches 980 complete scenarios
+  and 7,840 frames, plus 20 matching errors from zero-mass black holes. The probe
+  uses real DPhysicsBox, BoplBody, BlackHole and Orb components and invokes their
+  unchanged methods. It verifies platform/player forces, black-hole velocity,
+  orb type/charge/firing/colors, owner protection from time stop, environmental
+  ownership, role/reflection exclusions and the strict water-height threshold.
+  Every affected target kind changed in the corpus: wall 574, terrain 577, lethal
+  terrain 601, player 1,234, black hole 1,051 and orb 963 frame/target changes.
+
+The component tests retain 250 curve scenarios, 196 hitbox sequences and 214
+force/charge scenarios as standalone fixtures, including every source error.
+All run under `just verify`; regenerate with `just verify-beam-components`.
+Hashes and raw evidence live in `artifacts/curves/`, `artifacts/beam-hitbox/` and
+`artifacts/beam-effects/`.
+
+These tests initialize the components directly. They do not yet verify their
+combined graph/pool/physics update order, composite target routing, explosion
+collision callbacks, deaths, ability startup/shutdown, or a native beam episode
+from player inputs. The public C environment is still the movement/dash slice;
+Beam, Orb and BlackHole are not complete native abilities.

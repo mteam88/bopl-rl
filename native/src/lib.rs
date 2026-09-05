@@ -1,4 +1,5 @@
 pub mod beam;
+pub mod curve;
 pub mod fixed;
 pub mod geometry;
 pub mod surface;

@@ -12,6 +12,39 @@ fn read<T: DeserializeOwned>(v: &Value, k: &str) -> T {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_curve" => {
+            let curve: bopl_sim::curve::Curve = read(&q, "curve");
+            return json!(
+                read::<Vec<bopl_sim::fixed::Fix>>(&q, "times")
+                    .into_iter()
+                    .map(|t| curve.evaluate(t))
+                    .collect::<Vec<_>>()
+            );
+        }
+        "dynamics_beam_hitbox" => {
+            let config = read(&q, "config");
+            let mut hitbox = bopl_sim::beam::hitbox::Hitbox::default();
+            let mut states = Vec::new();
+            for action in q["actions"].as_array().unwrap() {
+                if action["operation"] == "initialize" {
+                    hitbox.initialize(config);
+                } else {
+                    hitbox.set_dimensions(config, &read(action, "dimensions"));
+                }
+                states.push(hitbox.clone());
+            }
+            return json!(states);
+        }
+        "dynamics_beam_effects" => {
+            let config = read(&q, "config");
+            let mut targets = read::<Vec<bopl_sim::beam::effects::Target>>(&q, "targets");
+            let mut states = Vec::new();
+            for impacts in read::<Vec<Vec<bopl_sim::beam::effects::Impact>>>(&q, "frames") {
+                bopl_sim::beam::effects::apply(&config, &impacts, &mut targets);
+                states.push(targets.clone());
+            }
+            return json!(states);
+        }
         "dynamics_beam_graph" => {
             let mut graph = bopl_sim::beam::graph::Graph::new(read(&q, "config"));
             let mut scene: physics::scene::Scene = read(&q, "scene");
@@ -156,6 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 message,
                 "negative squared length: Domain"
                     | "normalized vector outside cosine domain: Domain"
+                    | "negative black hole mass magnitude: Domain"
             ) {
                 json!({"error":"domain"})
             } else {

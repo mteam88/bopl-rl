@@ -23,6 +23,8 @@ public static class ReferenceBeam
     public static JToken Evaluate(JObject q)
     {
         if((string)q["operation"]=="dynamics_beam_colors")return ColorsJson(ReadColors(q["a"]).Mix(ReadColors(q["b"])));
+        if((string)q["operation"]=="dynamics_beam_effects")return ReferenceBeamEffects.Evaluate(q);
+        if((string)q["operation"]=="dynamics_beam_hitbox")return ReferenceBeamHitbox.Evaluate(q);
         if((string)q["operation"]=="dynamics_beam_graph")return ReferenceBeamGraph.Evaluate(q);
         var a=Ray(q["a"]);var b=Ray(q["b"]);Vec2 distance;bool hit;
         if((string)q["operation"]=="dynamics_beam_lines")hit=PhysTools.LineToLineIntersection(a.position,a.direction,a.distance,b.position,b.direction,b.distance,out distance);

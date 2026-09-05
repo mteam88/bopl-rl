@@ -176,5 +176,29 @@ The final reference assembly is
 full input/output hashes are in each beam artifact directory's report.
 
 This oracle intentionally stops before beam hitbox creation and target effects.
-Those effects and the beam ability lifecycle are required next; graph parity
-alone is not full combat parity. [Full scope](FULL_COMPATIBILITY.md) remains open.
+The separate component evidence below covers hitbox geometry and target effects.
+Combining the stages and implementing the beam ability lifecycle remain required;
+graph parity alone is not full combat parity. [Full scope](FULL_COMPATIBILITY.md) remains open.
+
+
+## Beam hitbox and target component checkpoint
+
+Against actual Unity methods, fixed curves match 92,935 returned values across
+1,943 successful scenarios and 57 source-error scenarios. Hitbox initialization
+and resizing match 1,000 sequences / 14,000 states. Beam target effects match
+980 sequences / 7,840 frames, plus 20 matching zero-mass arithmetic failures.
+Force/velocity/charge changes occurred for every intended target kind; counts
+are recorded in `artifacts/beam-effects/report.json`.
+
+These probes execute the actual beam prefab and `renderBeams`, with real target
+components. They check the represented gameplay state exactly. They do not run
+collision-driven deaths, composite targets, or the full ability lifecycle, and
+are not independent native combat episodes. Color and renderer animation output
+from `renderBeams` are not compared by the target-effect probe; beam color mixing
+has its own bit-exact fixture.
+
+The reference assembly for all three corpora is
+`c079c5b54e61534ca1228339651e0179233ff706fb5338c0ebf780ff1c219f60`.
+Standalone fixtures retain 250 curve scenarios (9,119 values and 57 errors),
+196 hitbox sequences (2,744 states), and 214 target scenarios (1,552 frames and
+20 errors). They are included in `just verify`.
