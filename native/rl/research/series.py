@@ -165,8 +165,8 @@ def main():
     p.add_argument('--workers',type=int,default=16); p.add_argument('--seeds',type=lambda s:[int(x) for x in s.split(',')],default=[73,173,273])
     p.add_argument('--training-maps',type=map_ids,default=[0]);p.add_argument('--heldout-maps',type=map_ids,default=[1,2])
     p.add_argument('--opponents',type=Path)
-    p.add_argument('--pipeline-groups',type=int,default=1)
-    p.add_argument('--cuda-graphs',type=int,choices=(0,1),default=0)
+    p.add_argument('--pipeline-groups',type=int,default=2)
+    p.add_argument('--cuda-graphs',type=int,choices=(0,1),default=1)
     p.add_argument('--split-step',type=int,choices=(0,1),default=0,
                    help='Use the original two-request game step instead of the combined request')
     p.add_argument('--diagnostic-games',type=int,default=64);p.add_argument('--diagnostic-heldout-games',type=int,default=16)

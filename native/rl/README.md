@@ -168,6 +168,7 @@ native/artifacts/rl/venv/bin/python native/rl/research/check_maps.py \
 native/artifacts/rl/venv/bin/python native/rl/research/series.py prepare \
   --output native/artifacts/rl/dap-multimap-001 --steps 10000000 \
   --workers 16 --seeds 73,173,273 --training-maps 0,1,2 --heldout-maps 3,4 \
+  --pipeline-groups 2 --cuda-graphs 1 \
   --baseline native/artifacts/rl/dap-001/checkpoints/policy-000000000.pt \
   --opponents native/rl/evidence/frozen-dap-series-001.json \
   --diagnostic-games 32 --diagnostic-frozen-games 16 \
