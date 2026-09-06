@@ -1,5 +1,7 @@
 # Bopl reinforcement-learning research
 
+Completed runs and measured outcomes: [experiment log](EXPERIMENTS.md).
+
 This environment runs the actual reconstructed Unity game in persistent headless
 processes, controlled through the C API in `bopl_rl.h`. It is separate from the
 partial Rust gameplay port in the parent `native/` directory. The game engine
