@@ -337,5 +337,9 @@ the previous loop bit-for-bit over 24 updates.
 Reset cost (`reset_profile`, `frame_profile`): a reset is about 32 ms, of which
 scene load is 13 ms and the 240 warmup ticks are 19 ms at 16 ticks per engine
 frame. Engine frame overhead is only about 0.6 ms, so lifting the warmup
-ticks-per-frame could save at most 9 ms per reset, about 0.5 s per 393k-decision
-run. Reset semantics were left unchanged.
+ticks-per-frame could save at most 9 ms per reset. The final runs completed 486
+matches, so the bound is 4.4 s per 393k-decision run (6% of the 71 s active time
+of the default arm) if no reset stall is hidden by the other group's inference;
+overlap was not instrumented, so that is an upper bound, not a measurement.
+Reset semantics were left unchanged; this remains a candidate for later work
+since it needs a game rebuild and a parity re-check.

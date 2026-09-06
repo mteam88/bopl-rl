@@ -321,7 +321,12 @@
   "engine_frame_overhead_ms": 0.6,
   "frames_per_reset": 15,
   "max_gain_ms_per_reset": 9,
-  "decision": "not changed; ~0.5 s per 393k-decision run (<1% of active time)"
+  "resets_per_final_run": 486,
+  "unoverlapped_bound_s": 4.4,
+  "unoverlapped_bound_share_of_active": "6.1% of 71.4 s (g2cg-w16-1); 4.9% of 87.8 s synchronous",
+  "overlap_accounting": "not measured: resets happen in one worker at a time (0.02 per group step), stalling that group; how much of the stall the other group hides was not instrumented",
+  "decision": "not changed: at most ~4.4 s (~6%) per 393k-decision run before any overlap credit, and it needs a game rebuild plus parity re-check; a candidate for later work",
+  "correction": "an earlier note claimed ~0.5 s (<1%); that was an arithmetic error"
  },
  "limits": [
   "GPU utilization stays low (7-16% at 16 workers): the loop is bound by game IPC and per-step Python/launch overhead, not by GPU compute",
