@@ -316,7 +316,9 @@ capture for new snapshots is paid), three repeats each, at 16 workers:
 
 That is +24% active and +15% wall throughput over the synchronous loop. All three
 serial/async pairs match exactly across every update (rewards, matches, losses,
-KL, gradients, behavior, pool state), so the gain is overlap alone. The 98,304-decision
+KL, gradients, behavior, pool state). Overlap alone raises active throughput
+by 39% against the identical grouped serial control; the 24% gain against the
+synchronous baseline includes both grouping and CUDA graphs. The 98,304-decision
 screen of groups 1/2/4 with and without graphs (two repeats) put 2 groups with graphs
 first at 16 workers; 4 groups without graphs was slower than synchronous. Graph
 capture and checkpoint snapshots cost under 0.05 s per run. GPU utilization stays

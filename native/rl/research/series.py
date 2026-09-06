@@ -26,6 +26,7 @@ def prepare(args):
     out=args.output.resolve()
     if args.steps<1 or args.workers<1 or not args.seeds or len(set(args.seeds))!=len(args.seeds):
         raise ValueError('Positive steps/workers and distinct training seeds required')
+    if args.pipeline_groups is None: args.pipeline_groups=2 if args.workers%2==0 else 1
     if args.pipeline_groups<1 or args.workers%args.pipeline_groups:
         raise ValueError('Pipeline groups must be positive and divide the worker count')
     if any(x<2 or x%2 for x in (args.diagnostic_games,args.diagnostic_heldout_games,args.final_games,args.final_heldout_games,
@@ -165,7 +166,7 @@ def main():
     p.add_argument('--workers',type=int,default=16); p.add_argument('--seeds',type=lambda s:[int(x) for x in s.split(',')],default=[73,173,273])
     p.add_argument('--training-maps',type=map_ids,default=[0]);p.add_argument('--heldout-maps',type=map_ids,default=[1,2])
     p.add_argument('--opponents',type=Path)
-    p.add_argument('--pipeline-groups',type=int,default=2)
+    p.add_argument('--pipeline-groups',type=int,default=None,help='Default 2 for even worker counts, otherwise 1')
     p.add_argument('--cuda-graphs',type=int,choices=(0,1),default=1)
     p.add_argument('--split-step',type=int,choices=(0,1),default=0,
                    help='Use the original two-request game step instead of the combined request')
