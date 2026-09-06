@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "source_commit": "b03dfce",
+  "workers": 16,
+  "seed": 73,
+  "training_decisions": 65536,
+  "repeats": 3,
+  "evaluation": false,
+  "video": false,
+  "arms": {
+    "baseline": {
+      "runs": [
+        {
+          "name": "e2e-baseline-1",
+          "decisions": 65536,
+          "matches": 79,
+          "loop_seconds": 15.17343325800357,
+          "decisions_per_second": 4319.127970950909,
+          "wall_seconds": 50.966753254999276
+        },
+        {
+          "name": "e2e-baseline-2",
+          "decisions": 65536,
+          "matches": 79,
+          "loop_seconds": 15.007679094995183,
+          "decisions_per_second": 4366.831112603893,
+          "wall_seconds": 51.59575731099903
+        },
+        {
+          "name": "e2e-baseline-3",
+          "decisions": 65536,
+          "matches": 79,
+          "loop_seconds": 15.491050605003693,
+          "decisions_per_second": 4230.57168109899,
+          "wall_seconds": 52.52325912500055
+        }
+      ],
+      "median_decisions_per_second": 4319.127970950909
+    },
+    "optimized": {
+      "runs": [
+        {
+          "name": "e2e-optimized-1",
+          "decisions": 65536,
+          "matches": 79,
+          "loop_seconds": 13.707085346997701,
+          "decisions_per_second": 4781.176912592474,
+          "wall_seconds": 50.41531006399964
+        },
+        {
+          "name": "e2e-optimized-2",
+          "decisions": 65536,
+          "matches": 79,
+          "loop_seconds": 13.731175478002115,
+          "decisions_per_second": 4772.788761238341,
+          "wall_seconds": 50.44158955400053
+        },
+        {
+          "name": "e2e-optimized-3",
+          "decisions": 65536,
+          "matches": 79,
+          "loop_seconds": 14.364930489997278,
+          "decisions_per_second": 4562.221867041726,
+          "wall_seconds": 51.413552365000214
+        }
+      ],
+      "median_decisions_per_second": 4772.788761238341
+    }
+  },
+  "speedup": 1.1050352740966722,
+  "assembly_sha256": "5732d73323d003f141c5fb7d6ddbab44d846160dd7b0beae3a0ee4f72ac284c5",
+  "puffer_library_sha256": "f1b0adf063f6798777065f83b9b531017638d5c3d84ff9e4e2c1047cf0924486",
+  "gpu": "NVIDIA GeForce RTX 5070",
+  "correctness": "Profiling subagent verified exact per-update training metrics, final policy weights and Torch CPU/CUDA RNG across all six runs; CPU and CUDA opponent-cache equivalence each passed 40 trials.",
+  "limits": [
+    "Uses the pre-telemetry v1 game/bridge; combined v2 integration checked separately.",
+    "Third pair overlapped a system load spike.",
+    "Throughput excludes startup, evaluation and video contention; report actual long-run throughput separately."
+  ]
+}
