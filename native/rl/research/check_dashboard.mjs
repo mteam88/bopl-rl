@@ -93,12 +93,16 @@ if (videoAvailable) {
     "document.querySelector('#viewVideo').click();document.querySelector('#video').muted=true;document.querySelector('#video').play()",
   );
   await sleep(600);
-  await evaluate("document.querySelector('#video').currentTime=Math.min(7,document.querySelector('#video').duration/2)");
-  await sleep(300);
-  const video = await evaluate(
-    "({time:document.querySelector('#video').currentTime,ready:document.querySelector('#video').readyState})",
-  );
-  if (video.ready < 2 || video.time <= 0)
+  const targetTime = await evaluate("document.querySelector('#video').currentTime=Math.min(7,document.querySelector('#video').duration/2)");
+  let video;
+  for (let i = 0; i < 50; i++) {
+    await sleep(200);
+    video = await evaluate(
+      "(() => {const v=document.querySelector('#video');return {time:v.currentTime,ready:v.readyState,seeking:v.seeking,paused:v.paused}})()",
+    );
+    if (video.ready >= 2 && !video.seeking && !video.paused && video.time > targetTime + .05) break;
+  }
+  if (video.ready < 2 || video.seeking || video.paused || video.time <= targetTime + .05)
     throw Error("Native video did not play: " + JSON.stringify(video));
   await evaluate("document.querySelector('#video').pause()");
 }

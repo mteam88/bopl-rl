@@ -11,6 +11,92 @@ the same configuration bit-exact across all 96 updates in all three repeats.
 Details and limits in [README](README.md#evidence-and-limits) and
 [evidence/throughput/summary.json](evidence/throughput/summary.json).
 
+## dap-multimap-001 — 2026-09-06
+
+All three independent 10M-decision runs completed, with maps 0, 1 and 2 sampled
+during training and maps 3 and 4 reserved for evaluation. The resulting policies
+beat the weak baselines on each training map. Against the three previous trained
+policies, results are mixed on maps 0 and 1 and better on map 2. This does not
+establish a consistent strength improvement over the previous policies.
+
+[Dashboard, behavior graphs and videos](https://powerspec-g728.tailb55536.ts.net:8876/?series=dap-multimap-001)
+(Tailscale required). [Opponent comparison](evidence/dap-multimap-001/overview.png),
+[transfer and survival](evidence/dap-multimap-001/transfer.png),
+[machine-readable summary](evidence/dap-multimap-001/summary.json),
+[validation record](evidence/dap-multimap-001/validation.json).
+
+### Fixed protocol and completion
+
+The series used revision `850d391`, fresh initializations with seeds 73, 173 and
+273, and the same rewards, observations, PPO settings and historical-opponent
+cadence as the previous series. The three old 10M policies were frozen
+evaluation-only opponents; they did not enter the training opponent pool.
+Source, game assembly, native libraries, baseline and opponent identities matched
+across all three runs. The runtime used 16 workers, two pipelined groups,
+CUDA-graph inference and one game round trip per decision.
+
+- Each seed completed 10,002,432 agent decisions and 2,442 PPO updates.
+- Total: 30,007,296 agent decisions, 22,505,472 learner decisions and 31,836 matches.
+- Completed matches on maps 0 / 1 / 2 were 3,535 / 3,604 / 3,551 for seed 73;
+  3,534 / 3,556 / 3,551 for seed 173; and 3,507 / 3,467 / 3,531 for seed 273.
+- Collection plus PPO averaged 5,086 / 5,029 / 5,000 decisions/sec by seed.
+  Whole-series elapsed time, including evaluations and media, was 8,473 seconds.
+  These rates include different maps and background evaluation work, so the
+  controlled throughput comparison above remains the speedup measurement.
+- All metrics were finite, with zero game errors or observation overflow.
+- Each seed completed four 369-game diagnostic suites and a 2,817-game final
+  suite: 12,879 evaluation games overall. Each suite includes one self-play
+  replay that is not a strength measurement.
+- Saved media: 12 native game videos and 270 native replays, with physics replays.
+
+### Fresh final evaluation
+
+On each training map, each final policy played 256 games against random play,
+256 against the frozen starting policy, and 128 against each of the three old
+trained policies. Each unseen map used 64 games against random play. Game seeds
+were separate from diagnostics, shared across training seeds, and paired with
+player sides swapped. Timeouts count as non-wins.
+
+The first three columns below are descriptive means across the three old
+opponents, with equal game counts. The figure and JSON report each opponent
+separately, with 95% intervals that resample whole side-swapped seed pairs.
+Those intervals describe evaluation uncertainty for a fixed policy; they do not
+pool the training seeds or adjust for the many comparisons.
+
+| Training seed | Old policies, map 0 | Old policies, map 1 | Old policies, map 2 | Random, unseen map 3 | Random, unseen map 4 |
+|---|---:|---:|---:|---:|---:|
+| 73 | 181/384 (47.1%) | 200/384 (52.1%) | 246/384 (64.1%) | 48/64 (75.0%) | 61/64 (95.3%) |
+| 173 | 183/384 (47.7%) | 184/384 (47.9%) | 261/384 (68.0%) | 51/64 (79.7%) | 61/64 (95.3%) |
+| 273 | 151/384 (39.3%) | 151/384 (39.3%) | 252/384 (65.6%) | 44/64 (68.8%) | 55/64 (85.9%) |
+
+Against the starting policy on the three training maps, final win rates ranged
+from 60.5% to 85.5%. On map 2, each final policy's interval was above 50% against
+two of the three old policies; intervals against the remaining policy include 50%.
+The old policies had trained only on map 0, and were already weak on map 2:
+the new policies won 58–63% against them in the small initial diagnostics.
+The map 2 advantage therefore cannot all be attributed to learning in this run.
+
+All three seeds improved against the old policies on maps 0 and 1 between 1M
+and 3M decisions. Results from 3M to 10M were mixed. Environment deaths fell from
+3.8–4.1 to 1.9–2.0 per simulated learner-minute, comparing the first and last
+100 updates. This supports improved survival but does not isolate aiming or
+tactics. Maps 3 and 4 were never trained, but their evaluation uses random play;
+it does not establish transfer against strong opponents or improvement over the
+previous series, which used different unseen maps.
+
+The combined pipeline passed transport, delayed-observation alignment,
+serial/asynchronous equivalence and CUDA-graph equivalence checks before the
+series. The multi-map smoke exercised both training seeds, all five maps, frozen
+opponents, final evaluation, reporting and media. See
+[integration evidence](evidence/multimap-combined.json) and the throughput record
+above. Final dashboard checks covered all three runs on desktop and phone sizes,
+native video playback, advancing physics replays, behavior plots and all 17
+opponent/map rows. The video check waits for playback after seeking so that an
+uncached video is not rejected merely for taking more than 300 ms to load.
+
+This experiment uses the reconstructed Unity game through the native C bridge;
+it does not complete the separate Rust gameplay port.
+
 ## dap-series-001 — 2026-09-06
 
 Three independent 10M-decision runs completed. All three final policies beat
