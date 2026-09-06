@@ -61,12 +61,12 @@ def main():
     parser.add_argument('--evaluation-baseline',type=Path,
                         help='Frozen opponent shared by the experiment series; defaults to this run initial policy')
     parser.add_argument('--episode-ticks',type=int,default=3600)
-    parser.add_argument('--pipeline-groups',type=int,default=1,
-                        help='Contiguous worker groups stepped on their own C thread/CUDA stream so one group ticks while another infers; 1 is the original synchronous loop')
+    parser.add_argument('--pipeline-groups',type=int,default=None,
+                        help='Contiguous worker groups stepped on their own C thread/CUDA stream so one group ticks while another infers; 1 is the original synchronous loop. Default 2 for even worker counts (measured +24%% active throughput at 16 workers, bit-exact with --pipeline-serial), else 1')
     parser.add_argument('--pipeline-serial',action='store_true',
                         help='Test oracle: wait for each group right after launching it (same (t,group) inference/RNG order, no overlap)')
-    parser.add_argument('--cuda-graphs',type=int,default=0,choices=(0,1),
-                        help='Replay captured CUDA graphs for rollout inference of the learner and each historical policy')
+    parser.add_argument('--cuda-graphs',type=int,default=1,choices=(0,1),
+                        help='Replay captured CUDA graphs for rollout inference of the learner and each historical policy (bit-exact with eager inference; default on)')
     parser.add_argument('--no-eval',action='store_true')
     parser.add_argument('--no-video',action='store_true')
     parser.add_argument('--load',type=Path)
@@ -74,6 +74,7 @@ def main():
     if min(opt.steps,opt.workers,opt.horizon,opt.sequence,opt.epochs,opt.checkpoint_every,opt.episode_ticks)<1 or opt.horizon%opt.sequence:
         parser.error('Positive counts and horizon divisible by sequence are required')
     if opt.minibatch_segments is not None and opt.minibatch_segments<1: parser.error('Minibatch segments must be positive')
+    if opt.pipeline_groups is None: opt.pipeline_groups=2 if opt.workers%2==0 else 1
     if opt.pipeline_groups<1 or opt.workers%opt.pipeline_groups: parser.error('Pipeline groups must divide the worker count')
     if opt.evaluation_workers<1 or any(n<2 or n%2 for n in
             (opt.evaluation_games,opt.evaluation_heldout_games,opt.evaluation_frozen_games)):

@@ -58,6 +58,24 @@ The pilot uses the game's raw kill counter, which also credits self-kills. Thus
 the small kill/death terms cancel for a suicide. The controlled three-seed series
 preserves this behavior; excluding self-kill bonuses is a separate reward ablation.
 
+Rollout collection is pipelined (`research/vector.py`, `native/rl/puffer/binding.c`):
+the workers are split into contiguous groups, each with its own C thread and CUDA
+stream, so one group's games tick while the policy runs inference for the other.
+Observation age (9 ticks), reward alignment, recurrent resets, historical-opponent
+ownership and on-policy update boundaries are unchanged; `--pipeline-serial` waits
+for each group immediately and reproduces the overlapped run bit-exactly, and
+`--pipeline-groups 1` reproduces the previous synchronous loop bit-exactly.
+Rollout inference for the learner and every pooled historical policy replays
+captured CUDA graphs (`research/inference.py`, `--cuda-graphs 0` for eager) with
+identical random draws and recurrent state. Each decision is one game round trip:
+the bridge's sampled step (op 6) runs the 3-tick and 1-tick phases together and
+returns the intermediate state used for observations plus the final state and
+telemetry. `BOPL_SPLIT_STEP=1` forces the old two-round-trip path (test oracle);
+`step_mode` in `config.json`/metrics records which path a run actually used, and
+training refuses to run on an old game build that would silently fall back.
+Defaults are two groups (for even worker counts) and CUDA graphs on; see
+[Evidence and limits](#evidence-and-limits) for the measurements behind them.
+
 Each run writes its configuration, source hashes, game assembly hash, checkpoints
 (with optimizer state), metrics, evaluation reports, and replays. `--load` is a
 warm start of weights/optimizer in fresh environments; it is not a bit-exact
@@ -120,6 +138,19 @@ native/artifacts/rl/venv/bin/python native/rl/research/train.py \
   --output native/artifacts/rl/dap-001 --workers 16 --steps 1000000
 
 python3 native/rl/research/serve.py --host 127.0.0.1 --port 8876
+```
+
+Throughput and pipeline correctness checks (GPU; the game must be rebuilt after
+`RlBridge.cs` changes, see `native/README.md`):
+
+```sh
+native/artifacts/rl/sampled_check Builds/Linux/BoplBattle.x86_64 \
+  native/fixtures/movement.rep /tmp/sampled_check.log 1     # exact one-trip vs two-trip stepping
+native/artifacts/rl/venv/bin/python native/rl/research/check_pipeline.py \
+  --output native/artifacts/rl/throughput/pipeline-check    # transport, serial/async, alignment, graphs
+native/artifacts/rl/venv/bin/python native/rl/research/bench_throughput.py \
+  --output native/artifacts/rl/throughput/bench --workers 16 --repeats 3 --decisions 393216 \
+  --arms "sync=--pipeline-groups 1 --cuda-graphs 0,default="
 ```
 
 For a declared three-seed series, prepare after building and checking the final
@@ -267,3 +298,42 @@ on an otherwise idle machine, measured 4,231–4,367 decisions/s before and
 state were bit-identical across all six runs. Profiler numbers exclude
 evaluation/video and the `--no-eval` runs exclude evaluation contention, so
 expect lower wall throughput in a full research run.
+
+Throughput work (2026-09-06, [evidence/throughput/summary.json](evidence/throughput/summary.json),
+raw logs under `native/artifacts/rl/throughput/`). Worker counts 16/24/32 were
+benchmarked with sampled GPU utilization/power and CPU load; 32 workers is about
+9% faster than 16 in loop throughput but saturates the six cores and changes the
+PPO batch, so 16 stays the series contract. The three runtime changes were then
+measured in matched `--no-eval --no-video` runs of 393,216 decisions (96 updates,
+crossing three checkpoint snapshots so the pool reaches four versions and graph
+capture for new snapshots is paid), three repeats each, at 16 workers:
+
+| arm | loop decisions/s | active (incl. snapshots) | wall (incl. 36 s startup) | GPU util | busy cores |
+|---|---|---|---|---|---|
+| synchronous loop (`--pipeline-groups 1 --cuda-graphs 0`) | 4,455 | 4,448 | 3,131 | 8.8% | 5.5 |
+| default (2 groups, CUDA graphs) | 5,547 | 5,506 | 3,605 | 15.6% | 6.1 |
+| default with `--pipeline-serial` (oracle) | 3,986 | 3,965 | 2,873 | 12.4% | 4.3 |
+
+That is +24% active and +15% wall throughput over the synchronous loop. All three
+serial/async pairs match exactly across every update (rewards, matches, losses,
+KL, gradients, behavior, pool state), so the gain is overlap alone. The 98,304-decision
+screen of groups 1/2/4 with and without graphs (two repeats) put 2 groups with graphs
+first at 16 workers; 4 groups without graphs was slower than synchronous. Graph
+capture and checkpoint snapshots cost under 0.05 s per run. GPU utilization stays
+low because the loop is bound by game IPC and per-step launch overhead, and loop
+throughput falls in every arm as the historical pool grows from one to four versions.
+
+Correctness: `check_pipeline.py` passed all phases (transport ordering with 2/4
+groups and injected jitter, serial versus overlapped rollouts, observation/reward/
+reset/recurrent-state alignment, CUDA graphs versus eager across three pool
+versions). `sampled_check` passed on the new build (459 decisions, three episodes
+ending inside the first phase) and on the old build through the transparent
+fallback; `check_telemetry.py` matched MAIN's build exactly for state, observations
+and replays on both the sampled and split paths; the new synchronous loop matched
+the previous loop bit-for-bit over 24 updates.
+
+Reset cost (`reset_profile`, `frame_profile`): a reset is about 32 ms, of which
+scene load is 13 ms and the 240 warmup ticks are 19 ms at 16 ticks per engine
+frame. Engine frame overhead is only about 0.6 ms, so lifting the warmup
+ticks-per-frame could save at most 9 ms per reset, about 0.5 s per 393k-decision
+run. Reset semantics were left unchanged.

@@ -1,5 +1,16 @@
 # Dash / Arrow / Platform experiments
 
+## Throughput — 2026-09-06
+
+Runtime changes before the multi-map series: one game round trip per decision,
+two pipelined rollout groups, and CUDA-graph inference. Matched 393,216-decision
+runs at the series contract (16 workers, horizon 128, 32 minibatch segments,
+three snapshots) measured 5,506 active decisions/s against 4,448 for the previous
+synchronous loop (+24%; +15% wall including startup), with the serial oracle of
+the same configuration bit-exact across all 96 updates in all three repeats.
+Details and limits in [README](README.md#evidence-and-limits) and
+[evidence/throughput/summary.json](evidence/throughput/summary.json).
+
 ## dap-series-001 — 2026-09-06
 
 Three independent 10M-decision runs completed. All three final policies beat

@@ -1,0 +1,29 @@
+{
+ "status": "pass",
+ "games": 12,
+ "totals": {
+  "dash_activations": 86.0,
+  "bow_activations": 153.0,
+  "platform_activations": 53.0,
+  "arrows_fired": 153.0,
+  "arrow_hits": 4.0,
+  "deaths_environment": 42.0,
+  "deaths_opponent": 4.0,
+  "deaths_self": 6.0,
+  "deaths_other": 0.0,
+  "reward_outcome": 0.0,
+  "reward_kills": 1.0000000149011612,
+  "reward_deaths": -5.200000077486038,
+  "episodes": 24.0,
+  "wins": 12.0,
+  "timeouts": 0.0,
+  "ticks": 37456.0
+ },
+ "event_conservation": "pass",
+ "reset": "pass",
+ "sampled_native": true,
+ "split_step": true,
+ "candidate_assembly_sha256": "72cb1e03cc4874b91feefb560ed4bdfce6d34d4acf77ac01fc987baddd622cd2",
+ "baseline_gameplay_observations_replays": "exact match",
+ "baseline_assembly_sha256": "78a2a9885b52c54c628998cbcc89cabd37f60271d30f7fa0eda9d2b75af4b488"
+}

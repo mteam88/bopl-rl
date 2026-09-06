@@ -146,7 +146,7 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--workers',type=int,default=8)
     parser.add_argument('--reference-metrics',type=Path,help='metrics.jsonl of an original-loop run to compare a groups=1 run against')
-    parser.add_argument('--reference-args',default='--workers 16 --steps 98304',help='train.py arguments reproducing the reference run')
+    parser.add_argument('--reference-args',default='--workers 16 --steps 98304 --pipeline-groups 1 --cuda-graphs 0',help='train.py arguments reproducing the reference run')
     parser.add_argument('--skip-transport',action='store_true')
     opt=parser.parse_args()
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
@@ -157,22 +157,22 @@ def main():
         print('A transport: exact',flush=True)
     w=opt.workers; n=2*w; steps=3*128*n
     runs={}
-    runs['g2-serial']=train(out,'g2-serial',w,steps,['--pipeline-groups','2','--pipeline-serial'])
-    runs['g2']=train(out,'g2',w,steps,['--pipeline-groups','2'])
-    runs['g2-jitter']=train(out,'g2-jitter',w,steps,['--pipeline-groups','2'],env={'BOPL_GROUP_JITTER_US':'700'})
-    runs['g4-serial']=train(out,'g4-serial',w,steps,['--pipeline-groups','4','--pipeline-serial'])
-    runs['g4']=train(out,'g4',w,steps,['--pipeline-groups','4'])
-    runs['g4-jitter']=train(out,'g4-jitter',w,steps,['--pipeline-groups','4'],env={'BOPL_GROUP_JITTER_US':'1200'})
+    runs['g2-serial']=train(out,'g2-serial',w,steps,['--pipeline-groups','2','--pipeline-serial','--cuda-graphs','0'])
+    runs['g2']=train(out,'g2',w,steps,['--pipeline-groups','2','--cuda-graphs','0'])
+    runs['g2-jitter']=train(out,'g2-jitter',w,steps,['--pipeline-groups','2','--cuda-graphs','0'],env={'BOPL_GROUP_JITTER_US':'700'})
+    runs['g4-serial']=train(out,'g4-serial',w,steps,['--pipeline-groups','4','--pipeline-serial','--cuda-graphs','0'])
+    runs['g4']=train(out,'g4',w,steps,['--pipeline-groups','4','--cuda-graphs','0'])
+    runs['g4-jitter']=train(out,'g4-jitter',w,steps,['--pipeline-groups','4','--cuda-graphs','0'],env={'BOPL_GROUP_JITTER_US':'1200'})
     for a,b in (('g2-serial','g2'),('g2-serial','g2-jitter'),('g4-serial','g4'),('g4-serial','g4-jitter')):
         same_dump(runs[a]['dump'],runs[b]['dump'],f'{a} vs {b}')
         if comparable(runs[a]['metrics'])!=comparable(runs[b]['metrics']): raise AssertionError(f'{a} vs {b}: metrics differ')
     report['phases']['B_serial_vs_async']=dict(status='exact',pairs=['g2-serial=g2','g2-serial=g2-jitter','g4-serial=g4','g4-serial=g4-jitter'],
         updates=len(runs['g2']['metrics']),matches={k:v['metrics'][-1]['matches'] for k,v in runs.items()}); save()
     print('B serial vs async: exact',flush=True)
-    runs['g1']=train(out,'g1',w,steps,[])
+    runs['g1']=train(out,'g1',w,steps,['--pipeline-groups','1','--cuda-graphs','0'])
     report['phases']['C_alignment']={name:alignment(r['dump'],w,32) for name,r in runs.items()}; save()
     print('C alignment: pass',flush=True)
-    runs['g1-graphs']=train(out,'g1-graphs',w,steps,['--cuda-graphs','1'])
+    runs['g1-graphs']=train(out,'g1-graphs',w,steps,['--pipeline-groups','1','--cuda-graphs','1'])
     runs['g2-graphs']=train(out,'g2-graphs',w,steps,['--pipeline-groups','2','--cuda-graphs','1'])
     graph_status={}
     for a,b in (('g1','g1-graphs'),('g2','g2-graphs')):

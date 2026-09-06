@@ -84,6 +84,7 @@ def run_once(python,out,workers,decisions,seed,extra,env):
                 decisions_per_second=steps/loop,decisions_per_second_active=steps/result['elapsed'],
                 decisions_per_second_wall=steps/(finished-started),wall_seconds=finished-started,
                 startup_seconds=json.loads((out/'config.json').read_text())['startup_seconds'],
+                step_mode=json.loads((out/'config.json').read_text()).get('step_mode'),
                 cuda_memory_mb=records[-1]['cuda_memory_mb'],
                 window_seconds=(window[-1]['t']-window[0]['t']) if len(window)>1 else 0,
                 gpu_util=summarize([s['gpu_util'] for s in window]),gpu_power_w=summarize([s['gpu_power_w'] for s in window]),
@@ -99,7 +100,7 @@ def main():
     parser.add_argument('--decisions',type=int,default=98304)
     parser.add_argument('--seed',type=int,default=73)
     parser.add_argument('--label',default='')
-    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=,pipe=--pipeline 2"')
+    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Pass flags explicitly; an empty arm uses train.py defaults')
     parser.add_argument('extra',nargs='*',help='extra train.py arguments for every run (after --)')
     opt=parser.parse_args()
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)

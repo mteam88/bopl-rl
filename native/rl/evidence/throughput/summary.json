@@ -1,0 +1,332 @@
+{
+ "schema": 1,
+ "date": "2026-09-06",
+ "source_commit_runtime": "1dba084",
+ "gpu": "NVIDIA GeForce RTX 5070, 610.57.04",
+ "cpu": "Ryzen 5 7600X3D (6C/12T)",
+ "game_assembly_sha256": "72cb1e03cc4874b91feefb560ed4bdfce6d34d4acf77ac01fc987baddd622cd2",
+ "selected_defaults": {
+  "pipeline_groups": 2,
+  "cuda_graphs": 1,
+  "step": "sampled (one IPC round trip per decision)",
+  "workers": 16
+ },
+ "final_confirmation": {
+  "decisions": 393216,
+  "repeats": 3,
+  "workers": 16,
+  "horizon": 128,
+  "minibatch_segments": 32,
+  "checkpoint_every": 100000,
+  "pool_versions_at_end": 4,
+  "arms": {
+   "g1-w16": {
+    "loop_dps": 4455,
+    "gpu_util_pct": 8.8,
+    "gpu_power_w": 39.9,
+    "busy_cores": 5.54,
+    "runs": [
+     4484,
+     4455,
+     4453
+    ],
+    "active_dps": 4448,
+    "wall_dps": 3131
+   },
+   "g2cg-w16": {
+    "loop_dps": 5547,
+    "gpu_util_pct": 15.6,
+    "gpu_power_w": 43.5,
+    "busy_cores": 6.06,
+    "runs": [
+     5547,
+     5558,
+     5350
+    ],
+    "active_dps": 5506,
+    "wall_dps": 3605
+   },
+   "g2cg-serial-w16": {
+    "loop_dps": 3986,
+    "gpu_util_pct": 12.4,
+    "gpu_power_w": 41.6,
+    "busy_cores": 4.31,
+    "runs": [
+     3986,
+     4004,
+     3712
+    ],
+    "active_dps": 3965,
+    "wall_dps": 2873
+   }
+  },
+  "speedup_vs_synchronous": {
+   "active": 0.238,
+   "loop": 0.245,
+   "wall": 0.151
+  },
+  "serial_vs_async_equivalence": {
+   "g2cg-w16-1=g2cg-serial-w16-1": {
+    "status": "exact",
+    "updates": 96,
+    "matches": 486,
+    "pool_versions": 4
+   },
+   "g2cg-w16-2=g2cg-serial-w16-2": {
+    "status": "exact",
+    "updates": 96,
+    "matches": 486,
+    "pool_versions": 4
+   },
+   "g2cg-w16-3=g2cg-serial-w16-3": {
+    "status": "exact",
+    "updates": 96,
+    "matches": 486,
+    "pool_versions": 4
+   }
+  }
+ },
+ "screen": {
+  "decisions": 98304,
+  "repeats": 2,
+  "checkpoint_every": 32768,
+  "arms": {
+   "g1-w16": {
+    "loop_dps": 4427,
+    "gpu_util_pct": 7.1,
+    "gpu_power_w": 37.3,
+    "busy_cores": 5.21,
+    "runs": [
+     4443,
+     4411
+    ],
+    "active_dps": 4407,
+    "wall_dps": 1634
+   },
+   "g1-w32": {
+    "loop_dps": 5201,
+    "gpu_util_pct": 5.7,
+    "gpu_power_w": 35.6,
+    "busy_cores": 5.85,
+    "runs": [
+     5246,
+     5156
+    ],
+    "active_dps": 5185,
+    "wall_dps": 1066
+   },
+   "g1cg-w16": {
+    "loop_dps": 5047,
+    "gpu_util_pct": 8.0,
+    "gpu_power_w": 36.9,
+    "busy_cores": 5.79,
+    "runs": [
+     5138,
+     4956
+    ],
+    "active_dps": 4912,
+    "wall_dps": 1698
+   },
+   "g1cg-w32": {
+    "loop_dps": 5720,
+    "gpu_util_pct": 4.5,
+    "gpu_power_w": 34.9,
+    "busy_cores": 6.15,
+    "runs": [
+     5687,
+     5752
+    ],
+    "active_dps": 5561,
+    "wall_dps": 1074
+   },
+   "g2-w16": {
+    "loop_dps": 4642,
+    "gpu_util_pct": 13.5,
+    "gpu_power_w": 41.3,
+    "busy_cores": 5.5,
+    "runs": [
+     4724,
+     4561
+    ],
+    "active_dps": 4613,
+    "wall_dps": 1662
+   },
+   "g2-w32": {
+    "loop_dps": 5505,
+    "gpu_util_pct": 8.0,
+    "gpu_power_w": 38.3,
+    "busy_cores": 6.4,
+    "runs": [
+     5593,
+     5417
+    ],
+    "active_dps": 5487,
+    "wall_dps": 1080
+   },
+   "g2cg-w16": {
+    "loop_dps": 5436,
+    "gpu_util_pct": 14.9,
+    "gpu_power_w": 40.3,
+    "busy_cores": 5.89,
+    "runs": [
+     5468,
+     5404
+    ],
+    "active_dps": 5297,
+    "wall_dps": 1756
+   },
+   "g2cg-w32": {
+    "loop_dps": 6140,
+    "gpu_util_pct": 7.6,
+    "gpu_power_w": 36.9,
+    "busy_cores": 6.42,
+    "runs": [
+     6194,
+     6086
+    ],
+    "active_dps": 5963,
+    "wall_dps": 1095
+   },
+   "g4-w16": {
+    "loop_dps": 3830,
+    "gpu_util_pct": 17.8,
+    "gpu_power_w": 43.3,
+    "busy_cores": 4.57,
+    "runs": [
+     3866,
+     3794
+    ],
+    "active_dps": 3818,
+    "wall_dps": 1550
+   },
+   "g4-w32": {
+    "loop_dps": 5308,
+    "gpu_util_pct": 13.8,
+    "gpu_power_w": 40.7,
+    "busy_cores": 5.87,
+    "runs": [
+     5271,
+     5345
+    ],
+    "active_dps": 5293,
+    "wall_dps": 1064
+   },
+   "g4cg-w16": {
+    "loop_dps": 5274,
+    "gpu_util_pct": 26.4,
+    "gpu_power_w": 50.0,
+    "busy_cores": 5.78,
+    "runs": [
+     5438,
+     5110
+    ],
+    "active_dps": 5126,
+    "wall_dps": 1721
+   },
+   "g4cg-w32": {
+    "loop_dps": 6089,
+    "gpu_util_pct": 13.6,
+    "gpu_power_w": 39.4,
+    "busy_cores": 6.84,
+    "runs": [
+     6144,
+     6035
+    ],
+    "active_dps": 5908,
+    "wall_dps": 1094
+   }
+  }
+ },
+ "worker_counts_controlled": {
+  "decisions": 98304,
+  "repeats": 3,
+  "arms": {
+   "h64m32-w32": {
+    "loop_dps": 5310,
+    "gpu_util_pct": 4.2,
+    "gpu_power_w": 34.4,
+    "busy_cores": 6.18,
+    "runs": [
+     5313,
+     5310,
+     5299
+    ]
+   },
+   "h64m32-w16": {
+    "loop_dps": 4828,
+    "gpu_util_pct": 6.1,
+    "gpu_power_w": 36.6,
+    "busy_cores": 5.64,
+    "runs": [
+     4828,
+     4843,
+     4810
+    ]
+   },
+   "base-w32": {
+    "loop_dps": 5146,
+    "gpu_util_pct": 2.5,
+    "gpu_power_w": 34.4,
+    "busy_cores": 6.27,
+    "runs": [
+     5474,
+     5146,
+     4858
+    ]
+   },
+   "base-w16": {
+    "loop_dps": 4787,
+    "gpu_util_pct": 6.1,
+    "gpu_power_w": 37.0,
+    "busy_cores": 5.54,
+    "runs": [
+     4740,
+     4800,
+     4787
+    ]
+   }
+  }
+ },
+ "correctness": {
+  "pipeline_check": {
+   "A_transport": "pass",
+   "B_serial_vs_async": "exact",
+   "C_alignment": "pass",
+   "D_cuda_graphs": "exact"
+  },
+  "sampled_step": {
+   "new_build": {
+    "status": "pass",
+    "decisions": 459,
+    "phase1_terminal_episodes": 3,
+    "sampled_native": 1
+   },
+   "old_build_fallback": {
+    "status": "pass",
+    "decisions": 459,
+    "phase1_terminal_episodes": 3,
+    "sampled_native": 0
+   },
+   "telemetry_parity_vs_main": {
+    "sampled": "exact match",
+    "split": "exact match"
+   }
+  },
+  "groups1_vs_previous_loop": "24 updates bit-identical (equivalence/g1-w16 vs workers-controlled/base-w16-1)"
+ },
+ "reset": {
+  "reset_ms_warmup240": 32,
+  "scene_load_ms": 13,
+  "warmup_240_ticks_ms": 19,
+  "engine_frame_overhead_ms": 0.6,
+  "frames_per_reset": 15,
+  "max_gain_ms_per_reset": 9,
+  "decision": "not changed; ~0.5 s per 393k-decision run (<1% of active time)"
+ },
+ "limits": [
+  "GPU utilization stays low (7-16% at 16 workers): the loop is bound by game IPC and per-step Python/launch overhead, not by GPU compute",
+  "loop sps falls as the historical pool grows from 1 to 4 versions in every arm (more distinct inference calls per step)",
+  "32 workers changes the PPO batch contract; measured only as a screen, not adopted",
+  "benchmarks exclude evaluation and video contention (--no-eval --no-video)"
+ ]
+}
