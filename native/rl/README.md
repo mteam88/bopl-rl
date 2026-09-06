@@ -140,3 +140,20 @@ build objects. A matching 65,536-decision comparison measured median throughput 
 decisions/s with eight workers and 4,490 with sixteen (38% higher). Report wall
 throughput for the actual research run, including evaluation/video contention;
 do not extrapolate the native fused smoke benchmark to this recurrent workload.
+
+Collection profiling (2026-09-06, sixteen workers, `research/profile_collection.py`):
+one vectorised step costs about 7.4 ms, of which the game/IPC step is 3.3 ms
+median (5 ms mean; ~33 ms scene resets stall the OpenMP barrier), and the
+remainder is serial GPU-side Python work. Games use about 0.4 cores each and a
+single uncontended game needs 0.63 ms per four-tick decision, so the vector is
+bound by two IPC round trips per decision, not by CPU. Two exact changes landed:
+`Categorical(validate_args=False)` in `policy.distribution` (removes a per-call
+GPU sync; samples and log-probabilities are identical) and `research/selfplay.py`,
+which caches per-version opponent index tensors instead of rebuilding Python
+index lists every step (`check_selfplay.py` verifies bit-exact equivalence).
+Matched 65,536-decision `--no-eval --no-video` runs, alternating three times each
+on an otherwise idle machine, measured 4,231–4,367 decisions/s before and
+4,562–4,781 after (median 4,319 vs 4,773, about +10%); final weights and RNG
+state were bit-identical across all six runs. Profiler numbers exclude
+evaluation/video and the `--no-eval` runs exclude evaluation contention, so
+expect lower wall throughput in a full research run.
