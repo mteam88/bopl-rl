@@ -130,6 +130,8 @@ def summarize(directory,allow_partial):
                 for key in ('gpu_busy_percent','gpu_memory_mb','gpu_power_watts','cpu_busy_percent')}
         resource_summary.append(dict(run=run_name,phase=phase,samples=len(samples),**fields))
     summary=dict(schema=1,status=state['status'],name=plan['name'],git_revision=plan['git_revision'],
+                 execution_settings={key:plan.get(key) for key in
+                                     ('workers','pipeline_groups','cuda_graphs','split_step')},
                  budget=plan['steps'],training_maps=plan.get('training_maps',[0]),evaluation_maps=evaluation_maps,
                  heldout_maps=heldout_maps,frozen_opponents=frozen,
                  reporting_versions=dict(numpy=np.__version__,matplotlib=matplotlib.__version__),
