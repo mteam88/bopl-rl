@@ -173,6 +173,8 @@ public static class ReferencePhysicsScene
                 return ReferencePlayerRays.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
             if ((string)query["operation"] == "dynamics_surface_motion")
                 return ReferenceSurfaceMotion.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
+            if ((string)query["operation"] == "dynamics_bopl_body")
+                return ReferenceBoplBody.Evaluate(query, physics, adapters, () => Snapshot(scene, objects, adapters));
             var result=new JArray();
             int tick=0;
             foreach(var dt in query["steps"])

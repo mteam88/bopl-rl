@@ -1410,3 +1410,21 @@ This validates Gust against the composed player, clone, plain Ability and
 bound-platform graphs. Concrete lethal-terrain BoplBody targets, BlackHole,
 boulder tags and grenade achievement state are not yet covered. The remaining
 spell kinds and full public C match integration remain open.
+
+### BoplBody component methods
+
+`bopl_body` preserves the original mass/inertia initialization, pre-initialization
+setters, effective composite-body access, forces, scale correction and magnet
+hold/drop state. The actual Unity BoplBody runs on real circle, box and rounded
+rectangle components in the oracle; no collider force implementation is replaced.
+
+The full retained corpus has 432 cases and 13,568 completed actions: 346 complete
+cases and 86 intentional division errors with exact partial state. It includes
+196 scale-driven mass changes, zero/inverted scale, live/destroyed composites,
+zero mass/inertia, and magnet duration zero/negative/overflow behavior. All 432
+records are in `fixtures/bopl-body.jsonl.gz`; hashes and raw captures are in
+`artifacts/bopl-body-verified`. Run `verify_bopl_body.py --golden` to replay them.
+
+These are component-method checks against seeded registered physics state.
+Fresh collider initialization and dynamic Revival marker integration remain
+separate work; this corpus does not establish a complete Revival ability.

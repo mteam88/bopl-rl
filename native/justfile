@@ -100,6 +100,7 @@ verify: build check
     python3 native/tools/verify_actor_circles.py --lifecycle --golden
     python3 native/tools/verify_quick_spell.py --golden
     python3 native/tools/verify_quick_spell.py --faults --golden
+    python3 native/tools/verify_bopl_body.py --golden
     python3 native/tools/verify_gust.py --golden
     python3 native/tools/verify_gust.py --contacts --golden
     python3 native/tools/verify_gust.py --clones --golden
@@ -288,3 +289,6 @@ verify-gust: build
     python3 native/tools/verify_gust.py --clones --directory gust-clones
     python3 native/tools/verify_gust.py --custom --directory gust-custom
     python3 native/tools/verify_gust.py --interactions --directory gust-interactions
+
+verify-bopl-body: build
+    python3 native/tools/verify_bopl_body.py --directory bopl-body-verified

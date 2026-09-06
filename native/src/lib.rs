@@ -34,6 +34,7 @@ pub mod player_collision;
 
 pub mod player_ground;
 
+pub mod bopl_body;
 pub mod player_body;
 pub mod player_position;
 

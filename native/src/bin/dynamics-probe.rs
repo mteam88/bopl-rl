@@ -1,5 +1,7 @@
 #[path = "support/actors.rs"]
 mod actors_probe;
+#[path = "support/bopl_body.rs"]
+mod bopl_body_probe;
 #[path = "support/scheduler.rs"]
 mod scheduler_probe;
 use bopl_sim::{
@@ -122,6 +124,7 @@ fn evaluate_spawn(q: &Value) -> Value {
 }
 fn evaluate(q: Value) -> Value {
     let contact = match q["operation"].as_str().unwrap() {
+        "dynamics_bopl_body" => return bopl_body_probe::evaluate(&q),
         "dynamics_scheduler" => return scheduler_probe::evaluate(&q),
         "dynamics_actors" | "dynamics_slime_actors" => return actors_probe::evaluate(&q),
         "dynamics_spawn" => return evaluate_spawn(&q),
