@@ -43,7 +43,7 @@ def prepare(args):
               created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
               git_revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
               source_identity=source_identity,steps=args.steps,workers=args.workers,resource_sampling=True,
-              pipeline_groups=args.pipeline_groups,cuda_graphs=args.cuda_graphs,
+              pipeline_groups=args.pipeline_groups,cuda_graphs=args.cuda_graphs,split_step=args.split_step,
               training_maps=args.training_maps,evaluation_maps=args.training_maps,heldout_maps=args.heldout_maps,
               opponents=str(out/'opponents.json') if frozen else None,frozen_opponents=frozen,
               runs=[dict(name=f'{out.name}-s{seed}',seed=seed) for seed in args.seeds],
@@ -89,7 +89,8 @@ def run(plan_path):
     def execute(command,log):
         nonlocal process
         with log.open('a') as stream:
-            process=subprocess.Popen(command,cwd=ROOT,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+            process=subprocess.Popen(command,cwd=ROOT,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True,
+                                     env=dict(os.environ,BOPL_SPLIT_STEP=str(plan.get('split_step',0)),BOPL_GROUP_JITTER_US='0',BOPL_DUMP_ROLLOUT=''))
             while process.poll() is None:
                 if monitor is not None and monitor.poll() is not None:
                     raise RuntimeError('Resource sampler failed; see resource-monitor.log')
@@ -166,6 +167,8 @@ def main():
     p.add_argument('--opponents',type=Path)
     p.add_argument('--pipeline-groups',type=int,default=1)
     p.add_argument('--cuda-graphs',type=int,choices=(0,1),default=0)
+    p.add_argument('--split-step',type=int,choices=(0,1),default=0,
+                   help='Use the original two-request game step instead of the combined request')
     p.add_argument('--diagnostic-games',type=int,default=64);p.add_argument('--diagnostic-heldout-games',type=int,default=16)
     p.add_argument('--diagnostic-frozen-games',type=int,default=16);p.add_argument('--final-frozen-games',type=int,default=128)
     p.add_argument('--final-games',type=int,default=256);p.add_argument('--final-heldout-games',type=int,default=64)
