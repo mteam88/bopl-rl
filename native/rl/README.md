@@ -142,6 +142,21 @@ untrained map. Final evaluation uses 256 and 64 respectively, with fresh seed
 pairs. Report individual training-seed results; Wilson intervals are descriptive
 and do not adjust for dependence within side-swapped pairs.
 
+After the series finishes, generate a portable JSON summary and PNG/SVG figures
+with a separate Python environment containing NumPy and Matplotlib:
+
+```sh
+python3 native/rl/reports/summarize_series.py \
+  --series native/artifacts/rl/dap-series-001 \
+  --output native/artifacts/rl/dap-series-001/report
+```
+
+This reporter checks the declared final game counts and per-game outcomes. Its
+final error bars resample whole side-swapped seed pairs, with 5,000 bootstrap
+draws. They describe evaluation uncertainty for each fixed policy; they do not
+pool training seeds or establish performance against human opponents.
+`--allow-partial` creates an explicitly labeled preview while a series is running.
+
 An output directory must be new. The normal training command requires CUDA and
 runs evaluation and video capture. `--no-eval` is for short throughput checks;
 `--no-video` retains evaluation and both downloadable replay formats.

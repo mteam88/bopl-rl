@@ -1,5 +1,82 @@
 # Dash / Arrow / Platform experiments
 
+## dap-series-001 — 2026-09-06
+
+Three independent 10M-decision runs completed. All three final policies beat
+both weak fixed opponents on the training map. The checkpoint diagnostics show
+most of the gain between 1M and 3M decisions; improvement from 3M to 10M is mixed.
+Transfer to the second untrained map remains weak.
+
+[Dashboard, behavior graphs and videos](https://powerspec-g728.tailb55536.ts.net:8876/?series=dap-series-001)
+(Tailscale required). [Comparison figure](evidence/dap-series-001/overview.png),
+[SVG](evidence/dap-series-001/overview.svg),
+[machine-readable summary](evidence/dap-series-001/summary.json).
+
+### Fixed protocol and completion
+
+The series used revision `4d11f1e`, seeds 73, 173 and 273, and the same PPO,
+reward, observation, opponent-checkpoint cadence and 16-worker settings as the
+pilot. Telemetry was added without entering policy observations or rewards.
+All runs shared the frozen pilot starting-policy opponent. Source, assembly,
+bridge and baseline hashes were checked across all three configurations.
+
+- Each run completed 10,002,432 agent decisions and 2,442 updates.
+- Total: 30,007,296 agent decisions, 22,505,472 learner decisions and 28,156 matches.
+  Historical-opponent decisions are excluded from learner counts and PPO losses.
+- Collection plus PPO averaged 4,132 / 4,115 / 4,127 decisions/sec by seed.
+  Whole-series elapsed time, including evaluations and media, was 8,076 seconds.
+- All training metrics were finite, with zero game errors or observation overflow.
+- Each seed has four 161-game diagnostic suites and a fresh 641-game final suite.
+  Suites include one self-play replay, which is not a strength measurement.
+- Saved media: 12 native game videos and 75 native replays, with physics replays.
+
+### Fresh final evaluation
+
+Each trained-map opponent used 256 games (128 side-swapped seed pairs). Each
+untrained map used 64 games (32 pairs), against random play. These game seeds
+were separate from checkpoint diagnostics and shared across training seeds.
+Timeouts count as non-wins. The figure uses 95% bootstrap intervals that resample
+whole side-swapped pairs, separately for each fixed trained policy.
+
+| Training seed | Random, trained map | Starting policy, trained map | Random, untrained map 1 | Random, untrained map 2 |
+|---|---:|---:|---:|---:|
+| 73 | 208/256 (81.3%) | 216/256 (84.4%) | 44/64 (68.8%) | 34/64 (53.1%) |
+| 173 | 190/256 (74.2%) | 196/256 (76.6%) | 41/64 (64.1%) | 37/64 (57.8%) |
+| 273 | 210/256 (82.0%) | 211/256 (82.4%) | 48/64 (75.0%) | 27/64 (42.2%) |
+
+Timeout counts in the four table columns were respectively 5/5/2/0, 6/4/4/0,
+and 6/6/4/0. Do not pool these training seeds into an independent-game estimate
+or interpret beating random and untrained policies as human-level ability.
+
+The environment-death curves drop from roughly 3.7 to 1.7 deaths per simulated
+learner-minute. Fixed-opponent diagnostics also show fewer environment deaths
+at 3M than at 1M in every run. This supports improved survival as an important
+part of the gain; it does not isolate the contribution of aiming or tactics.
+The longer budget answered the pilot's immediate question: learning becomes
+visible after 1M. It does not establish that simply training beyond 10M will
+resolve transfer or improve play against stronger opponents.
+
+### Profiling and validation
+
+The requested Claude Code Fable 5.1 subagent profiled collection and removed
+repeated historical-opponent indexing work and unnecessary categorical
+validation synchronizations. In three matched 65,536-decision runs per arm,
+median collection-plus-PPO throughput increased from 4,319 to 4,773 decisions/sec
+(**10.5%**). These short comparisons used the pre-telemetry bridge and excluded
+evaluation and video; the actual series rates above include the new telemetry.
+[Performance evidence and limitations](evidence/collection-performance.json).
+
+The subagent checked identical per-update metrics, final weights and CPU/CUDA
+random-generator state across all six comparison runs. Opponent-cache equivalence
+passed 40 trials on CPU and 40 on CUDA. Integration checks compared telemetry
+conservation, delayed observations and lossless replays against the prior build;
+the controlled-series smoke exercised training, final evaluations and videos.
+Desktop and phone dashboard checks verified video playback, advancing physics
+replays, behavior charts and no JavaScript errors or horizontal overflow.
+
+This experiment runs the reconstructed Unity game through the native C bridge;
+it does not complete the separate Rust gameplay port.
+
 ## dap-001 — 2026-09-06
 
 The first GPU research run completed successfully, but has not established a
