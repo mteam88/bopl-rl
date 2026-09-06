@@ -15,12 +15,16 @@ pub struct Ability {
     pub ignore_next_cooldown: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handler: Option<crate::ability::Handler>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<crate::clone_ability::Registration>,
 }
 /// Headless indicators retain the reset clock. Sprite/material presentation is
 /// not represented; a missing indicator itself still throws at the source call.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Indicator {
     pub seconds_since_reset: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_icon: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<IndicatorLifecycle>,
 }
@@ -106,6 +110,7 @@ impl State {
             Some(crate::ability::Handler::Invisibility(instant)) => {
                 !(instant.gate_invisible && invisible)
             }
+            Some(crate::ability::Handler::Instant(_)) => true,
             None | Some(crate::ability::Handler::Entity { .. }) => ability.castable,
         })
     }

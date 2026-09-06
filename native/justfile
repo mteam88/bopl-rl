@@ -109,6 +109,13 @@ verify: build check
     python3 native/tools/verify_actor_revival.py --water --golden
     python3 native/tools/verify_actor_revival_mature.py --golden
     python3 native/tools/verify_revival_edges.py --golden
+    python3 native/tools/verify_clone_abilities.py --golden
+    python3 native/tools/verify_clone_abilities.py --long --golden
+    python3 native/tools/verify_clone_revival.py --golden
+    python3 native/tools/verify_clone_revival.py --casts --golden
+    python3 native/tools/verify_actor_deaths.py --aliases --golden
+    python3 native/tools/verify_instant_ability.py --golden
+    python3 native/tools/verify_instant_ability.py --clone-faults --golden
     python3 native/tools/verify_bopl_body.py --golden
     python3 native/tools/verify_gust.py --golden
     python3 native/tools/verify_gust.py --contacts --golden
@@ -314,3 +321,12 @@ verify-revival: build
     python3 native/tools/verify_actor_revival.py --water
     python3 native/tools/verify_actor_revival_mature.py
     python3 native/tools/verify_revival_edges.py
+
+verify-clone-abilities: build
+    python3 native/tools/verify_clone_abilities.py --directory clone-abilities-expanded
+    python3 native/tools/verify_clone_abilities.py --long --directory clone-abilities-long
+    python3 native/tools/verify_clone_revival.py --directory clone-revival
+    python3 native/tools/verify_clone_revival.py --casts --directory clone-revival-casts-complete
+    python3 native/tools/verify_actor_deaths.py --aliases
+    python3 native/tools/verify_instant_ability.py --directory instant-ability
+    python3 native/tools/verify_instant_ability.py --clone-faults --directory null-ability-clones

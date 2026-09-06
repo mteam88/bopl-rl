@@ -115,48 +115,49 @@ impl Instance {
         }
         // InstantAbility does not deactivate the slime or enter its in-ability
         // mode. The callback changes the shared player state synchronously.
-        match ability.handler.as_mut().unwrap() {
-            Handler::Entity { actor } => {
-                routing.in_ability = true;
-                update.player.time_ability = Fix::ZERO;
-                *entry
-                    .invisible_on_entry
-                    .as_mut()
-                    .ok_or("missing_ability_entry_state")? = update.player.invisible;
-                update.entity.as_mut().ok_or("missing_actor_entity")?.active = false;
-                emit(Event::AbilityEntry(slot));
-                return Ok(Some(Request {
-                    target: *actor,
-                    slot,
-                    info: info.clone(),
-                }));
-            }
-            Handler::Invisibility(instant) => {
-                emit(Event::AbilityEntry(slot));
-                instant.info = info.clone();
-                instant.active = true;
-                instant.slime = info.slime;
-                if !instant.transform_present {
-                    return Err("null_reference");
-                }
-                instant.position = info.position;
-                if instant.component_present {
-                    if !instant.linked {
-                        return Err("null_reference");
-                    }
-                    update.player.invisible = true;
-                    update.player.time_invisible = Fix::ZERO;
-                    update.player.time_ability = Fix::ZERO;
-                    ability.cooldown = Fix::from_int(10000);
-                }
-                if let Some(audio) = &instant.audio
-                    && !audio.is_empty()
-                {
-                    emit(Event::Sound(audio.clone()));
-                }
-                instant.active = false;
-            }
+        let handler = ability.handler.as_mut().unwrap();
+        if let Handler::Entity { actor } = handler {
+            routing.in_ability = true;
+            update.player.time_ability = Fix::ZERO;
+            *entry
+                .invisible_on_entry
+                .as_mut()
+                .ok_or("missing_ability_entry_state")? = update.player.invisible;
+            update.entity.as_mut().ok_or("missing_actor_entity")?.active = false;
+            emit(Event::AbilityEntry(slot));
+            return Ok(Some(Request {
+                target: *actor,
+                slot,
+                info: info.clone(),
+            }));
         }
+        emit(Event::AbilityEntry(slot));
+        let instant = handler.instant_mut().unwrap();
+        instant.info = info.clone();
+        instant.active = true;
+        instant.slime = info.slime;
+        if !instant.transform_present {
+            return Err("null_reference");
+        }
+        instant.position = info.position;
+        if let Handler::Invisibility(effect) = handler
+            && effect.component_present
+        {
+            if !effect.linked {
+                return Err("null_reference");
+            }
+            update.player.invisible = true;
+            update.player.time_invisible = Fix::ZERO;
+            update.player.time_ability = Fix::ZERO;
+            ability.cooldown = Fix::from_int(10000);
+        }
+        let instant = handler.instant_mut().unwrap();
+        if let Some(audio) = &instant.audio
+            && !audio.is_empty()
+        {
+            emit(Event::Sound(audio.clone()));
+        }
+        instant.active = false;
         *routing.timer(slot)? = Fix::ZERO;
         Ok(None)
     }

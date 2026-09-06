@@ -112,7 +112,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                     report,
                 );
             }
-            if command["op"] == "clone_actor" {
+            if command["op"] == "clone_actor" || command["op"] == "full_clone_actor" {
                 let caller = actors
                     .get(command["actor"].as_u64().unwrap() as usize)
                     .ok_or("argument_out_of_range")?;
@@ -120,6 +120,22 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                     return Err("missing_reference");
                 }
                 caller.collision.as_ref().ok_or("null_reference")?;
+                if command["op"] == "full_clone_actor" {
+                    Runtime::spawn_clone(
+                        actors,
+                        context,
+                        command["actor"].as_u64().unwrap() as usize,
+                        command["player"].as_u64().unwrap() as usize,
+                        serde_json::from_value(command["position"].clone()).unwrap(),
+                        if command["null_prefab"].as_bool() == Some(true) {
+                            None
+                        } else {
+                            clone_prefab.as_ref()
+                        },
+                        report,
+                    )?;
+                    return Ok(());
+                }
                 Runtime::spawn_abilityless_clone(
                     actors,
                     context,
@@ -441,6 +457,19 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                 }
                 dynamic.sort_by_key(|v| v["id"].as_u64().unwrap());
             }
+            for a in runtime
+                .actors
+                .iter()
+                .filter_map(|a| a.slime.as_ref()?.abilities.as_ref())
+                .flat_map(|r| &r.pool)
+            {
+                if let Some(r) = &a.registration {
+                    let id = r.component;
+                    let c = &s.components[id];
+                    dynamic.push(json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present}));
+                }
+            }
+            dynamic.sort_by_key(|v| v["id"].as_u64().unwrap());
             frame["registration"] = json!({"added":s.added,"prefabs_added":s.prefabs_added,"registering_prefab":s.registering_prefab,"pending":s.pending.items[..s.pending.length],"live":s.live,"hitstop":s.hitstop,"dynamic":dynamic});
         }
         if let Some(spells) = &runtime.spells {

@@ -569,6 +569,9 @@ impl Runtime {
             {
                 return Ok(());
             }
+            if Self::pooled_ability_phase(actors, schedule, phase)? {
+                return Ok(());
+            }
             if Self::particle_phase(
                 actors,
                 &mut Context {
@@ -1207,6 +1210,7 @@ impl Runtime {
             }
             Ok(())
         });
+        Self::refresh_pooled_abilities(actors, scheduler);
         if let Some(world) = spells {
             world.sync_positions(scene);
         }

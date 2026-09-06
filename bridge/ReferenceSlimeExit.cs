@@ -17,7 +17,7 @@ internal static class ReferenceSlimeExit
     }
     internal static void Apply(JToken info,ReferenceSlimeActors.Context owner)
         =>typeof(SlimeController).GetMethod("onExitAbility",BindingFlags.NonPublic|BindingFlags.Instance).Invoke(owner.Slime,new object[]{Info(info,owner)});
-    internal static AbilityReadyIndicator Indicator(JToken value,List<GameObject> objects)
+    internal static AbilityReadyIndicator Indicator(JToken value,List<GameObject> objects,SlimeController owner=null)
     {
         if(value.Type==JTokenType.Null)return null;
         var go=new GameObject("headless routing indicator");go.SetActive(false);objects.Add(go);
@@ -27,13 +27,16 @@ internal static class ReferenceSlimeExit
             if((bool)value["lifecycle"]["follow"]){go.AddComponent<FollowTransform>();indicator.Init();}
             go.SetActive(true);go.SetActive(false);go.SetActive((bool)value["lifecycle"]["active"]);
         }
+        if(value["primary_icon"]!=null)Set(indicator,"overiddenSprite",owner.abilityIcons.sprites[(int)value["primary_icon"]].sprite);
         Set(indicator,"SecondsSinceReset",(float)value["seconds_since_reset"]);
         return indicator;
     }
-    internal static JToken Indicator(AbilityReadyIndicator indicator,JToken initial)
+    internal static JToken Indicator(AbilityReadyIndicator indicator,JToken initial,SlimeController owner=null)
     {
         if(indicator==null)return JValue.CreateNull();
-        var value=(JObject)initial.DeepClone();value["seconds_since_reset"]=Get<float>(indicator,"SecondsSinceReset");
+        var value=initial.Type==JTokenType.Null?new JObject{["lifecycle"]=new JObject{["active"]=false,["follow"]=true}}:(JObject)initial.DeepClone();
+        if(owner!=null&&(initial.Type==JTokenType.Null||initial["primary_icon"]!=null))value["primary_icon"]=owner.abilityIcons.IndexOf(indicator.GetPrimarySprite());
+        value["seconds_since_reset"]=Get<float>(indicator,"SecondsSinceReset");
         if(value["lifecycle"]!=null)value["lifecycle"]=new JObject{["active"]=indicator.gameObject.activeSelf,["follow"]=Get<FollowTransform>(indicator,"followTrans")!=null};
         return value;
     }

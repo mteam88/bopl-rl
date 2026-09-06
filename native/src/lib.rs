@@ -6,6 +6,7 @@ pub mod actor_collider;
 pub mod actor_eating;
 pub mod actor_entity;
 pub mod beam;
+pub mod clone_ability;
 pub mod curve;
 pub mod dash_ability;
 pub mod fixed;

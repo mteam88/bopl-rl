@@ -550,7 +550,7 @@ Complete records and hashes are in `fixtures/revival-marker*.jsonl.xz` and
 removal, the expected extra-life flag/reference counts, and the exact errors.
 
 Marker creation now connects to the death and respawn path described below.
-Equipped-ability copying remains open; this is not a complete Revival ability
+Copying all equipped ability types remains open; this is not a complete Revival ability
 or full public C match implementation.
 
 ### Revival death, effects and particles
@@ -592,7 +592,58 @@ are in `artifacts/revive-particle-complete`, `revive-effect-complete`,
 those captures retain the resulting pending effects and do not establish
 that every newly allocated effect finishes within their time windows.
 
-Cloning a player with equipped abilities still fails explicitly after the
-new body allocation. Fresh ability selection from indicator sprites, copied
-indicator objects and pooled ability removal are the next missing pieces.
-The public C environment remains the documented movement slice.
+The equipped-clone extension below now covers Invisibility. Copying other
+concrete ability graphs and integrating the full public C match remain open.
+
+### Equipped clones and empty instant callbacks
+
+SpawnClone selects fresh abilities from the old indicator sprites. It does not
+copy the old ability objects or their mutable cooldowns. The runtime now models
+this for Invisibility, including the separate pooled object registration,
+three-slot indicator array, spawn completion,
+casting and removal before the owning body. It preserves allocations made
+before a later indicator or fixed-transform access fails.
+
+The main corpus contains 66 cases and 14,400 completed ticks for one through
+six players: 48 cases complete and 18 preserve exact failure prefixes. It
+records 126 casts, 231 first-generation abilities, 21 second-generation clones
+and 42 clone removals. Null and aliased old ability slots still produce fresh
+objects when the indicator sprites select them. Short/null/oversized indicator
+arrays retain the source's partial allocation and list-assignment order.
+
+Twelve longer cases add 10,800 ticks, 105 casts and 21 visible expiries. They
+cover cooldown restoration and repeated casts after the fresh prefab's initial
+two-second cooldown. Six marker-revival cases add 2,160 ticks: 21 equipped
+clones and their abilities are removed, 21 equipped replacements finish their
+spawn, and all 21 revival particles arrive and are removed. A further six
+Dash death cases cover 144 ticks with aliased ability slots and require the
+same destruction sequence as Unity.
+A six-case continuation adds 3,360 ticks and 18 casts by revived replacements.
+Three replacements die at scene boundaries before casting, and one dies after
+casting; all four removals match the source. Initial casters are deactivated at
+action 200 so the subsequent input targets the surviving replacement bodies.
+
+The NullAbility prefab is a placeholder with an InstantAbility component and
+no FixTransform. Fixed instantiation therefore throws after allocating and
+registering the object. Eighteen exact failure cases retain 24 allocated
+prefabs, including an Invisibility allocation before a subsequent NullAbility
+failure. These checks preserve the shipped failure; they do not make the
+placeholder usable. Separately, 24 supplied component-graph cases cover the
+empty-callback InstantAbility with a bound transform, audio requests and a
+missing transform link: 2,700 ticks, 18 complete cases, 6 exact failures and 378 casts.
+The empty callback never makes a player invisible.
+
+Complete fixtures are `clone-abilities.jsonl.xz`,
+`clone-abilities-long.jsonl.xz`, `clone-revival.jsonl.xz`,
+`clone-revival-casts.jsonl.xz`,
+`actor-death-aliases.jsonl.gz`, `null-ability-clones.jsonl.xz` and
+`instant-ability.jsonl.xz` under `fixtures/`. Raw captures, hashes and coverage
+reports are under `artifacts/clone-abilities-expanded`, `clone-abilities-long`,
+`clone-revival`, `clone-revival-casts-complete`, `actor-death-aliases`,
+`null-ability-clones` and
+`instant-ability`. The 231 first-generation count excludes second-generation
+and failed-prefix allocations; it is not the total number of pooled objects.
+
+Physical destruction of arbitrary initially supplied instant graphs, cloning
+other concrete abilities, pickups/drops, complete match lifecycle and the
+full C environment remain open.

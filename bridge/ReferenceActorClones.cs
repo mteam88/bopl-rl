@@ -12,6 +12,26 @@ using static ReferenceBeamTargets;
 internal sealed class ReferenceActorClones : IDisposable
 {
     internal static Action<SlimeController,int> Created;
+    internal static Action<SlimeController,GameObject,int> AbilityCreated;
+    private sealed class AbilityObservation : IDisposable
+    {
+        internal SlimeController Owner;internal GameObject Prefab;internal int Icon;internal AbilityObservation Previous;internal bool Observed;
+        public void Dispose(){observation=Previous;}
+    }
+    private static AbilityObservation observation;
+    internal static IDisposable ObserveAbility(SlimeController owner,GameObject prefab,int icon)
+    {
+        if(AbilityCreated==null)return null;
+        var value=new AbilityObservation{Owner=owner,Prefab=prefab,Icon=icon,Previous=observation};observation=value;return value;
+    }
+    internal static void FixedPrefabCreated(GameObject go,GameObject prefab)
+    {
+        var value=observation;if(value==null||value.Observed||!ReferenceEquals(value.Prefab,prefab))return;
+        value.Observed=true;AbilityCreated?.Invoke(value.Owner,go,value.Icon);
+    }
+    private readonly Dictionary<GameObject,(int Node,ReferenceInstantAbilities.Instance Instance,JToken Template)> abilities=new Dictionary<GameObject,(int,ReferenceInstantAbilities.Instance,JToken)>();
+    internal int? Node(GameObject go)=>abilities.TryGetValue(go,out var value)?(int?)value.Node:null;
+    internal void Removing(GameObject go){if(abilities.TryGetValue(go,out var value))value.Instance.Cache(value.Template);}
     internal static Action<SlimeController,Vec2> Pushed;
     private readonly Dictionary<MonoUpdatable,(int Id,int Actor)> components=new Dictionary<MonoUpdatable,(int,int)>();
     private readonly Dictionary<int,ReferencePhysicsScene.Adapter> clones=new Dictionary<int,ReferencePhysicsScene.Adapter>();
@@ -62,6 +82,19 @@ internal sealed class ReferenceActorClones : IDisposable
             p.OnNoLongerGrounded+=angle=>emit(actor,"detached",angle.m_rawValue);
             p.OnAttachedToGround+=hit=>emit(actor,"attached",new JObject{["object"]=hit.pp.instanceId,["near_position"]=V(hit.nearPos),["far_position"]=V(hit.farPos),["near_distance"]=hit.nearDist.m_rawValue,["far_distance"]=hit.farDist.m_rawValue,["layer"]=hit.layer});
         };
+        AbilityCreated=(slime,go,icon)=>
+        {
+            int actor=slimes.FindIndex(c=>c!=null&&ReferenceEquals(c.Slime,slime));var owner=slimes[actor];
+            var metadata=(JObject)prefab["abilities"][icon].DeepClone();
+            var ability=go.GetComponent<InstantAbility>();if(ability==null)throw new NotSupportedException("Clone pooled prefab is not instant");
+            var transform=go.GetComponent<FixTransform>();int node=effects.ReserveNodes(1),component=effects.ReserveComponents(transform==null?1:2),pool=owner.RoutingPool.Length;
+            components.Add(ability,(component,actor));
+            metadata["registration"]=new JObject{["node"]=node,["component"]=component,["transform"]=transform==null?JValue.CreateNull():(JToken)new JValue(component+1)};
+            var instance=new ReferenceInstantAbilities.Instance{Ability=ability,Effect=go.GetComponent<Invisibility>(),Transform=transform,Owner=owner};
+            owner.RoutingPool=owner.RoutingPool.Concat(new[]{(AbilityMonoBehaviour)ability}).ToArray();owner.Instants.Add(pool,instance);
+            ((JArray)actorData[actor]["slime"]["abilities"]["pool"]).Add(metadata);
+            abilities.Add(go,(node,instance,metadata["handler"]));objects.Add(go);
+        };
         effects.AdditionalId=Id;
         effects.AdditionalComponents=()=>new JArray(components.OrderBy(p=>p.Value.Id).Select(p=>new JObject{["id"]=p.Value.Id,["hierarchy"]=p.Key.HierarchyNumber,["destroyed"]=p.Key.IsDestroyed,["present"]=p.Key!=null}));
     }
@@ -74,5 +107,5 @@ internal sealed class ReferenceActorClones : IDisposable
         pending["transform"]["position"]=V(adapter.transform.position);pending["transform"]["rotation"]=adapter.transform.rotation.m_rawValue;pending["transform"]["right"]=V(adapter.transform.right);pending["transform"]["offset"]=V(adapter.transform.offset);
         pending["active"]=box.gameObject.activeInHierarchy;if(box.enabled)pending.Remove("enabled");else pending["enabled"]=false;pending["destroyed"]=box.IsDestroyed;
     }
-    public void Dispose(){Created=null;Pushed=null;ReferencePhysicsScene.BoxCollision=oldCollision;}
+    public void Dispose(){Created=null;AbilityCreated=null;observation=null;Pushed=null;ReferencePhysicsScene.BoxCollision=oldCollision;}
 }

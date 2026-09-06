@@ -25,6 +25,8 @@ pub struct Prefab {
     pub components: Vec<PrefabComponent>,
     /// Awake registration can differ from component traversal order.
     pub registration: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abilities: Option<Vec<Option<crate::ability_routing::Ability>>>,
 }
 
 impl Prefab {
@@ -189,24 +191,7 @@ impl Runtime {
         else {
             return Ok(None);
         };
-        let routing = actors[source]
-            .slime
-            .as_ref()
-            .ok_or("null_reference")?
-            .abilities
-            .as_ref()
-            .ok_or("missing_ability_routing")?;
-        if !routing.slots.is_empty() || routing.indicators.iter().any(Option::is_some) {
-            return Err("actor_clone_abilities_not_implemented");
-        }
-        actors[id]
-            .slime
-            .as_mut()
-            .unwrap()
-            .abilities
-            .as_mut()
-            .unwrap()
-            .indicators = vec![None; 3];
+        Self::copy_clone_abilities(actors, context, source, id, prefab.unwrap())?;
         Self::spawn_actor(
             actors,
             context,

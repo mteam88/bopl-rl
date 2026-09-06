@@ -17,10 +17,13 @@ internal static class ReferenceInstantAbilities
         internal Invisibility Effect;
         internal FixTransform Transform;
         internal ReferenceSlimeActors.Context Owner;
+        private JObject cached;
+        internal void Cache(JToken initial){cached=Snapshot(initial);}
         internal JObject Snapshot(JToken initial)
         {
+            if(cached!=null)return (JObject)cached.DeepClone();
             var value=(JObject)initial.DeepClone();
-            value["position"]=V(Transform.position);value["active"]=Ability.gameObject.activeSelf;
+            if(Transform!=null)value["position"]=V(Transform.position);value["active"]=Ability.gameObject.activeSelf;
             value["info"]=Info(Ability.playerInfo,Owner);value["slime"]=Slime(Ability.GetSlimeController(),Owner);
             return value;
         }
@@ -57,16 +60,16 @@ internal static class ReferenceInstantAbilities
     }
     internal static Instance Bind(JToken metadata,ReferenceSlimeActors.Context owner)
     {
-        var state=metadata["handler"];if((string)state["kind"]!="invisibility")throw new ArgumentException("Unknown instant handler");
+        var state=metadata["handler"];bool invisibility=(string)state["kind"]=="invisibility";if(!invisibility&&(string)state["kind"]!="instant")throw new ArgumentException("Unknown instant handler");
         var go=new GameObject("reference instant invisibility");go.SetActive(false);owner.Objects.Add(go);
         var transform=go.AddComponent<FixTransform>();var ability=go.AddComponent<InstantAbility>();
-        var effect=(bool)state["component_present"]?go.AddComponent<Invisibility>():null;
+        var effect=invisibility&&(bool)state["component_present"]?go.AddComponent<Invisibility>():null;
         // Prime Awake once before supplying state. The caller resets Updater's
         // registration queues after all actor components have been constructed.
         go.SetActive(true);go.SetActive(false);
         ability.OnlyCastableOnGround=(bool)metadata["ground_only"];ability.IsDestroyed=(bool)metadata["destroyed"];
         ability.SetCoolDown(F(metadata["cooldown"]));ability.cooldownStoppedDuringTimeStop=(bool)metadata["stopped_during_time_stop"];ability.ignoreNextCooldown=(bool)metadata["ignore_next_cooldown"];
-        ability.isInvisibilty=(bool)state["gate_invisible"];ability.AudioOnCast=(string)state["audio"];ability.EffectOnEnter=null;ability.funcOnEnter=new UnityEvent();
+        ability.isInvisibilty=invisibility&&(bool)state["gate_invisible"];ability.AudioOnCast=(string)state["audio"];ability.EffectOnEnter=null;ability.funcOnEnter=new UnityEvent();
         if(effect!=null){effect.cooldown=F(state["restore_cooldown"]);if(!(bool)state["linked"])Set(effect,"ia",null);ability.funcOnEnter.AddListener(effect.CastInvisibility);}
         if(!(bool)state["transform_present"])Set(ability,"fixTrans",null);
         transform.position=V(state["position"]);ability.playerInfo=Info(state["info"],owner);Set(ability,"slimeController",state["slime"].Type==JTokenType.Null?null:owner.Slime);

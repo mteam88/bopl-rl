@@ -65,6 +65,15 @@ def handoffs(seed):
             yield q
 
 
+def aliases(seed):
+    for base in handoffs(seed):
+        if base['death_case']!='dash':continue
+        q=copy.deepcopy(base);q['death_case']='aliased_dash'
+        for actor in q['runtime']['actors']:
+            if actor.get('slime') is None:continue
+            routing=actor['slime']['abilities'];routing['slots']=[0]*3;routing['timers']=[routing['timers'][0]]*3;routing['indicators']=[copy.deepcopy(routing['indicators'][0]) for _ in range(3)]
+        yield q
+
 def contacts(seed):
     bases=[q for q in queries(seed) if q['death_case']=='death']
     for base in bases:
@@ -89,11 +98,11 @@ def contacts(seed):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--seed',type=int,default=724548);p.add_argument('--reuse-unity',action='store_true');p.add_argument('--golden',action='store_true');p.add_argument('--handoffs',action='store_true');p.add_argument('--contacts',action='store_true');args=p.parse_args()
-    name='actor-death-contacts' if args.contacts else 'actor-death-handoffs' if args.handoffs else 'actor-deaths';fixture=ROOT/f'native/fixtures/{name}.jsonl.gz'
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--seed',type=int,default=724548);p.add_argument('--reuse-unity',action='store_true');p.add_argument('--golden',action='store_true');p.add_argument('--handoffs',action='store_true');p.add_argument('--contacts',action='store_true');p.add_argument('--aliases',action='store_true');args=p.parse_args()
+    name='actor-death-aliases' if args.aliases else 'actor-death-contacts' if args.contacts else 'actor-death-handoffs' if args.handoffs else 'actor-deaths';fixture=ROOT/f'native/fixtures/{name}.jsonl.gz'
     if args.golden:result=golden(fixture)
     else:
-        directory=ROOT/f'native/artifacts/{name}';inputs,hashes=capture(directory,list(contacts(args.seed) if args.contacts else handoffs(args.seed) if args.handoffs else queries(args.seed)),args.reuse_unity)
+        directory=ROOT/f'native/artifacts/{name}';inputs,hashes=capture(directory,list(aliases(args.seed) if args.aliases else contacts(args.seed) if args.contacts else handoffs(args.seed) if args.handoffs else queries(args.seed)),args.reuse_unity)
         result=dict(verify(directory,inputs),provenance=hashes);(directory/'report.json').write_text(json.dumps(result,indent=2)+'\n')
         if result['match']:promote(directory,fixture,inputs,set(range(len(inputs))),hashes,__doc__)
     print(json.dumps(result,indent=2));return int(not result['match'])

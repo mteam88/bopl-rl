@@ -287,26 +287,7 @@ impl crate::actors::Runtime {
         let index =
             world.spawn_revive_effect(context.schedule, effect, id, actors[id].body.position)?;
         world.init_revive_effect(index, Some(player), Some(targets))?;
-        let routing = actors[id]
-            .slime
-            .as_mut()
-            .unwrap()
-            .abilities
-            .as_mut()
-            .ok_or("missing_ability_routing")?;
-        let mut abilities = vec![];
-        for slot in routing.slots.iter().flatten() {
-            let ability = &routing.pool[*slot];
-            if ability.present {
-                let Some(crate::ability::Handler::Entity { actor }) = ability.handler else {
-                    return Err("actor_pooled_ability_lifecycle_not_implemented");
-                };
-                abilities.push(actor);
-            }
-        }
-        for ability in abilities {
-            Self::destroy_actor(actors, context, ability)?;
-        }
+        Self::destroy_pooled_or_actor_abilities(actors, context, id, true)?;
         actors[id]
             .slime
             .as_mut()

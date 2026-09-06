@@ -94,6 +94,7 @@ impl ExitInfo {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Handler {
     Invisibility(Box<Invisibility>),
+    Instant(Box<Instant>),
     Entity { actor: usize },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,10 +105,36 @@ pub struct Invisibility {
     pub gate_invisible: bool,
     pub component_present: bool,
     pub linked: bool,
+    #[serde(flatten)]
+    pub common: Instant,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Instant {
     pub transform_present: bool,
     pub position: Vec2,
     pub active: bool,
     pub info: PlayerInfo,
     pub slime: Option<usize>,
     pub audio: Option<String>,
+}
+
+impl std::ops::Deref for Invisibility {
+    type Target = Instant;
+    fn deref(&self) -> &Instant {
+        &self.common
+    }
+}
+impl std::ops::DerefMut for Invisibility {
+    fn deref_mut(&mut self) -> &mut Instant {
+        &mut self.common
+    }
+}
+impl Handler {
+    pub fn instant_mut(&mut self) -> Option<&mut Instant> {
+        match self {
+            Self::Instant(instant) => Some(instant),
+            Self::Invisibility(effect) => Some(&mut effect.common),
+            Self::Entity { .. } => None,
+        }
+    }
 }

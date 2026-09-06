@@ -152,11 +152,11 @@ internal static class ReferenceActors
                 if((string)command["op"]=="bite_actor"){currentActor=(int)command["actor"];slimes[currentActor].Slime.Bite(bodies[(int)command["victim"]].GetComponent<PlayerCollision>());return;}
                 if((string)command["op"]=="chew_actor"){currentActor=(int)command["actor"];slimes[currentActor].Slime.Chew();return;}
                 if((string)command["op"]=="collision_invulnerable"){bodies[(int)command["actor"]].GetComponent<PlayerCollision>().SetInvulnerable((bool)command["value"],(uint)command["mask"]);return;}
-                if((string)command["op"]=="clone_actor")
+                if((string)command["op"]=="clone_actor"||(string)command["op"]=="full_clone_actor")
                 {
                     currentActor=(int)command["actor"];var collision=bodies[currentActor].GetComponent<PlayerCollision>();var prefab=collision.reviveEffectPrefab;
                     if((bool?)command["null_prefab"]==true)collision.reviveEffectPrefab=null;
-                    try{collision.SpawnAbilityLessClone(players[(int)command["player"]],null,V(command["position"]));}finally{collision.reviveEffectPrefab=prefab;}
+                    try{if((string)command["op"]=="full_clone_actor")collision.SpawnClone(players[(int)command["player"]],slimes[currentActor].Slime,V(command["position"]));else collision.SpawnAbilityLessClone(players[(int)command["player"]],null,V(command["position"]));}finally{collision.reviveEffectPrefab=prefab;}
                     return;
                 }
                 if((string)command["op"]=="actor_spawn"){currentActor=(int)command["actor"];ReferenceActorSpawn.Apply((string)command["action"],command["position"],slimes[currentActor]);return;}
@@ -252,14 +252,14 @@ internal static class ReferenceActors
                 if(kind=="destroy_object")
                 {
                     int actor=entityObjects.FindIndex(go=>ReferenceEquals(go,target));
-                    if(actor>=0)id=(int)actorData[actor]["entity"]["node"];else id=deathEffects?.Node((GameObject)target)??spells?.Node((GameObject)target);
+                    if(actor>=0)id=(int)actorData[actor]["entity"]["node"];else id=deathEffects?.Node((GameObject)target)??spells?.Node((GameObject)target)??clones?.Node((GameObject)target);
                 }
                 if(kind=="destroy_mono"&&target is MonoBehaviour mono){id=spells?.ComponentId(mono);spells?.RemovingMono(mono);}
                 Phase(kind,id);
                 if(kind=="physics"){simulated=true;ReferencePhysicsScene.BeginFrame();}
                 if(kind=="destroy_object"&&target is GameObject doomed&&doomed!=null)
                 {
-                    deathEffects?.Removing(doomed);spells?.Removing(doomed);
+                    deathEffects?.Removing(doomed);spells?.Removing(doomed);clones?.Removing(doomed);
                     sceneSnapshot();
                     for(int i=0;i<entityObjects.Count;i++)if(entityObjects[i]!=null&&(entityObjects[i]==doomed||entityObjects[i].transform.IsChildOf(doomed.transform)))
                     {

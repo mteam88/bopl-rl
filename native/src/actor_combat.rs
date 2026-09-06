@@ -139,6 +139,7 @@ impl Runtime {
                 let a = &routing.pool[i];
                 a.present
                     && !a.destroyed
+                    && a.registration.is_none()
                     && !matches!(a.handler, Some(crate::ability::Handler::Entity { .. }))
             }) {
                 return Err("actor_pooled_ability_lifecycle_not_implemented");
@@ -151,27 +152,16 @@ impl Runtime {
             ) {
                 combat.events.push(event);
             }
-            let targets: Vec<_> = routing
+            Self::destroy_pooled_or_actor_abilities(actors, context, id, false)?;
+            actors[id]
+                .slime
+                .as_mut()
+                .unwrap()
+                .abilities
+                .as_mut()
+                .unwrap()
                 .slots
-                .iter()
-                .flatten()
-                .filter_map(|&i| {
-                    let a = &mut routing.pool[i];
-                    if !a.present || a.destroyed {
-                        return None;
-                    }
-                    a.destroyed = true;
-                    match a.handler {
-                        Some(crate::ability::Handler::Entity { actor }) => Some(actor),
-                        _ => None,
-                    }
-                })
-                .collect();
-            routing.slots.clear();
-            // Each ability GameObject is destroyed before the owning slime.
-            for target in targets {
-                Self::destroy_actor(actors, context, target)?;
-            }
+                .clear();
             Self::destroy_actor(actors, context, id)?;
         } else if revival.status == 3 {
             let position = revival

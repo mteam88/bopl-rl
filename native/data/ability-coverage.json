@@ -6,7 +6,8 @@
       "name": "NullAbility",
       "prefab": "Assets/GameObject/NullAbility.prefab",
       "prefab_guid": "c6184b2da376bc0418d15724e93d435f",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "The shipped prefab lacks FixTransform: 18 exact clone-instantiation failure prefixes retain allocated registered objects. Empty-callback InstantAbility methods are separately verified on supplied graphs with a transform; this does not make the shipped placeholder usable."
     },
     {
       "id": 1,
@@ -113,7 +114,7 @@
       "prefab": "Assets/GameObject/Revival.prefab",
       "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
       "native_status": "partial",
-      "verification": "Composed marker placement/replacement, duplicate particle updates, arrival and body respawn; revival-effect and empty-loadout death paths have source differential coverage. Equipped-ability copying, full match lifecycle and C environment integration remain required."
+      "verification": "Composed markers, effects, duplicate particle updates, arrival and respawn have source differential coverage, including empty and Invisibility-equipped clones. Copying other concrete ability graphs, full match lifecycle and public C integration remain required."
     },
     {
       "id": 16,
@@ -142,7 +143,7 @@
       "prefab": "Assets/GameObject/Invisibility.prefab",
       "prefab_guid": "98dc74d37d856a44794621d205de7e72",
       "native_status": "partial",
-      "verification": "Independent composed actor episodes: Invisibility entry, shared player clocks, expiration and cooldown restoration. Full lifecycle, actor ropes, presentation and C environment integration remain required."
+      "verification": "Original casts, cooldown restoration, fresh equipped-clone allocation, indicator copying and pooled cleanup have source differential coverage. Complete match lifecycle and public C integration remain required."
     },
     {
       "id": 20,
