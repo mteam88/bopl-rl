@@ -1,11 +1,30 @@
 """Plot the completed Bow curriculum from saved outcomes, without rerunning fits."""
 import argparse
+from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+
+def compact_games(games, source):
+    """Keep report aggregates; detailed trial records stay in the artifact tree."""
+    groups = {}
+    for game in games:
+        key = (json.dumps(game['task'], sort_keys=True), game['mode'])
+        groups.setdefault(key, []).append(game)
+    rows = []
+    for (task, mode), group in groups.items():
+        successful = [g for g in group if g['success']]
+        rows.append(dict(task=json.loads(task), mode=mode, trials=len(group),
+                         successes=len(successful), shots=sum(g['shots'] for g in group),
+                         deaths=sum(g['deaths'] for g in group),
+                         hits_by_tick=dict(sorted(Counter(g['ticks'] for g in successful).items())),
+                         initial_players=group[0]['initial_players']))
+    return dict(artifact=source.name, sha256=hashlib.sha256(source.read_bytes()).hexdigest(), groups=rows)
 
 
 def main():
@@ -74,7 +93,13 @@ def main():
     fig.supxlabel('The teacher is absent during seeded PPO and evaluation. These are short two-player drills, not full-game strength tests.', fontsize=10)
     for extension in ('png', 'svg', 'pdf'):
         fig.savefig(args.output/f'overview.{extension}', dpi=170)
-    summary = dict(plan=read('plan.json'), fits=fits, evaluations=evaluation, transfer=transfer,
+    svg = args.output/'overview.svg'
+    svg.write_text('\n'.join(line.rstrip() for line in svg.read_text().splitlines())+'\n')
+    summarized_evaluation = {name:compact_games(games, args.artifacts/name/'final-evaluation.json')
+                            for name, games in evaluation.items()}
+    summarized_transfer = {name:compact_games(data['games'], args.artifacts/name/'result.json')
+                           for name, data in transfer.items()}
+    summary = dict(plan=read('plan.json'), fits=fits, evaluations=summarized_evaluation, transfer=summarized_transfer,
                    contracts=read('contracts/result.json'), teacher_alignment=read('teacher-alignment/result.json'),
                    baseline_parity=read('baseline-parity/result.json'), learned_parity=read('learned-parity/result.json'),
                    shot_timing=read('shot-timing/result.json'), stable_parity=read('stable-parity/result.json'),
