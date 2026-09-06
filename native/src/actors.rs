@@ -52,6 +52,7 @@ pub enum Role {
     Collision,
     Rewind,
     Bounds,
+    Revival,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Component {
@@ -76,6 +77,8 @@ pub struct Runtime {
     pub combat: Option<crate::actor_combat::Combat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spells: Option<crate::spell_world::World>,
+    #[serde(default)]
+    pub object_id_high_water: u32,
     pub bindings: Vec<Binding>,
     pub grounds: Vec<player_controller::Ground>,
     pub space: bool,
@@ -105,6 +108,7 @@ pub struct Context<'a> {
     pub actor_ropes: &'a mut Option<ActorRopes>,
     pub combat: &'a mut Option<crate::actor_combat::Combat>,
     pub spells: &'a mut Option<crate::spell_world::World>,
+    pub object_id_high_water: &'a mut u32,
     pub bindings: &'a [Binding],
     pub grounds: &'a [player_controller::Ground],
     pub space: bool,
@@ -471,6 +475,14 @@ impl Runtime {
             .collect()
     }
     pub fn synchronize(&mut self) {
+        self.object_id_high_water = self.object_id_high_water.max(
+            self.actors
+                .iter()
+                .map(|a| a.object)
+                .chain(self.scene.objects.iter().map(|o| o.id))
+                .max()
+                .unwrap_or(0),
+        );
         for actor in &mut self.actors {
             if !actor.is_present() {
                 continue;
@@ -530,8 +542,9 @@ impl Runtime {
             actor_ropes,
             combat,
             spells,
+            object_id_high_water,
         } = self;
-        scheduler.tick(dt, &mut |schedule, phase| {
+        let result = scheduler.tick(dt, &mut |schedule, phase| {
             report.phases.push(phase);
             before(
                 actors,
@@ -542,6 +555,7 @@ impl Runtime {
                     actor_ropes,
                     combat,
                     spells,
+                    object_id_high_water,
                     bindings,
                     grounds,
                     space: *space,
@@ -565,6 +579,7 @@ impl Runtime {
                     },
                     phase,
                     dt,
+                    *space,
                 )?
             {
                 return Ok(());
@@ -626,6 +641,7 @@ impl Runtime {
                                         actor_ropes,
                                         combat,
                                         spells,
+                                        object_id_high_water,
                                         bindings,
                                         grounds,
                                         space: *space,
@@ -654,6 +670,7 @@ impl Runtime {
                                     actor_ropes,
                                     combat,
                                     spells,
+                                    object_id_high_water,
                                     bindings,
                                     grounds,
                                     space: *space,
@@ -672,6 +689,9 @@ impl Runtime {
                         .copied()
                         .flatten()
                         .ok_or("unbound_actor_component")?;
+                    if matches!(component.role, Role::Revival) {
+                        return Ok(());
+                    }
                     if matches!(phase.kind, scheduler::Phase::Init)
                         && matches!(component.role, Role::Collider)
                     {
@@ -692,6 +712,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -723,6 +744,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -752,6 +774,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -774,6 +797,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -797,6 +821,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -1061,6 +1086,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -1081,6 +1107,7 @@ impl Runtime {
                                 actor_ropes,
                                 combat,
                                 spells,
+                                object_id_high_water,
                                 bindings,
                                 grounds,
                                 space: *space,
@@ -1102,6 +1129,7 @@ impl Runtime {
                             actor_ropes,
                             combat,
                             spells,
+                            object_id_high_water,
                             bindings,
                             grounds,
                             space: *space,
@@ -1158,6 +1186,10 @@ impl Runtime {
                 _ => {}
             }
             Ok(())
-        })
+        });
+        if let Some(world) = spells {
+            world.sync_positions(scene);
+        }
+        result
     }
 }

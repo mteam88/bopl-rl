@@ -17,6 +17,7 @@ internal static class ReferenceQuickSpell
     }
     internal static void Bind(JToken s,QuickSpell quick,ReferenceSlimeActors.Context owner,ReferenceAnimator.Context animation,List<GameObject> objects,List<UnityEngine.Object> assets)
     {
+        if(s["revival"]!=null){var revive=quick.GetComponent<Revive>();Set(revive,"player",s["revival"]["player"].Type==JTokenType.Null?null:PlayerHandler.Get().GetPlayer((int)s["revival"]["player"]));if(s["revival"]["indicator"].Type!=JTokenType.Null)throw new NotSupportedException("Initial Revival indicator is not bound");}
         var data=ScriptableObject.CreateInstance<AnimationData>();assets.Add(data);
         Set(data,"spriteFrames",((JObject)s["animations"]).Properties().ToDictionary(p=>p.Name,p=>animation.Frames(p.Value)));
         Set(quick,"animData",data);Set(quick,"animator",animation.Animator);Set(animation.Animator,"idHolder",quick.GetComponent<Ability>());
@@ -41,7 +42,9 @@ internal static class ReferenceQuickSpell
     }
     internal static JObject Snapshot(JToken initial,QuickSpell quick,ReferenceSlimeActors.Context owner,ReferenceAnimator.Context animation)
     {
-        var value=(JObject)initial.DeepClone();value["info"]=ReferenceInstantAbilities.Info(Get<PlayerInfo>(quick,"playerInfo"),owner);
+        var value=(JObject)initial.DeepClone();
+        if(initial["revival"]!=null){var revive=quick.GetComponent<Revive>();var p=Get<Player>(revive,"player");value["revival"]=new JObject{["player"]=p==null?JValue.CreateNull():new JValue(p.Id),["indicator"]=ReferenceSpellWorld.Active.MarkerIndex(Get<RevivePositionIndicator>(revive,"reviveIndicator"))};}
+value["info"]=ReferenceInstantAbilities.Info(Get<PlayerInfo>(quick,"playerInfo"),owner);
         var player=Get<Player>(quick,"player");value["player"]=player==null?JValue.CreateNull():new JValue(player.Id);
         var particle=Get<ParticleSystem>(quick,"ParticleOnCast");if(particle!=null&&!owner.Objects.Contains(particle.gameObject))owner.Objects.Add(particle.gameObject);value["particle_present"]=particle!=null;value["animator"]=animation.Snapshot();return value;
     }

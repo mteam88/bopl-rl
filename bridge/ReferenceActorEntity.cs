@@ -18,6 +18,7 @@ internal static class ReferenceActorEntity
         if(ordinary==null){var slime=go.AddComponent<SlimeController>();slime.AbilityReadyIndicators=Array.Empty<AbilityReadyIndicator>();}
         if(ordinary?["dash"]!=null)ReferenceDashAbility.Create(go);
         if(ordinary?["quick_spell"]!=null)ReferenceQuickSpell.Create(go);
+        if(ordinary?["quick_spell"]?["revival"]!=null)go.AddComponent<Revive>();
         if(collision!=null)go.AddComponent<PlayerCollision>();
         if(bounds!=null)go.AddComponent<DestroyIfOutsideSceneBounds>();
         go.SetActive(true);

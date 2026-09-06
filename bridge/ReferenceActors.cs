@@ -56,7 +56,7 @@ internal static class ReferenceActors
             for(int i=0;i<players.Count;i++)if(initial["players"][i]["eaten_count"]!=null)players[i].playersEatenCountThisRound=(int)initial["players"][i]["eaten_count"];
             PlayerHandler.Get().SetPlayerList(players);if(animations!=null)foreach(var player in players)player.IsLocalPlayer=false;Constants.leveltype=(bool)runtime["space"]?LevelType.space:LevelType.grass;
             if(runtime["combat"]?["death_effects"]!=null)deathEffects=new ReferenceDeathEffects(runtime["combat"]["death_effects"],initial);
-            if(runtime["spells"]!=null)spells=new ReferenceSpellWorld(runtime["spells"],initial,deathEffects);
+            if(runtime["spells"]!=null)spells=new ReferenceSpellWorld(runtime["spells"],initial,deathEffects,adapters);
             if(runtime["combat"]!=null)combat=new ReferenceActorCombat(runtime["combat"],players);
             var entityObjects=actorData.Select(a=>a["entity"]!=null?ReferenceActorEntity.Create(a["entity"],adapters.Find(v=>v.sourceId==(int)a["object"]),a["ordinary"],a["collision"],a["bounds"]):null).ToList();
             for(int i=0;i<entityObjects.Count;i++)if(entityObjects[i]!=null)
@@ -142,6 +142,7 @@ internal static class ReferenceActors
                 clones=new ReferenceActorClones(query,actorData,slimes,bodies,physics,transforms,entityObjects,objects,platforms,adapters,ropes,deathEffects,Event,actor=>currentActor=actor,(actor,delta)=>pushes.Add(new JObject{["actor"]=actor,["external_delta"]=V(delta)}));
                 foreach(var player in players){var owner=slimes.First(s=>s!=null&&s.Slime.playerNumber==player.Id);player.Color=owner.Animation.Animator.spriteRen.sharedMaterial;}
             }
+            if(spells!=null)foreach(var player in players){var owner=slimes.First(s=>s!=null&&s.Slime.playerNumber==player.Id);player.Color=owner.Animation.Animator.spriteRen.sharedMaterial;}
             if(spells!=null){spells.ActorId=quick=>entityObjects.IndexOf(quick.gameObject);spells.ObjectId=id=>adapters.Find(a=>a.parent.instanceId==id)?.sourceId??id;spells.RuntimeObjectId=id=>adapters.Find(a=>a.sourceId==id)?.parent.instanceId??id;spells.JoinRegistration();}
             var calls=new Dictionary<string,int>();
             void Command(JToken command)
@@ -197,6 +198,7 @@ internal static class ReferenceActors
                     else if(role=="bounds")bodies[actor].GetComponent<DestroyIfOutsideSceneBounds>().UpdateSim(dt);
                     else if(role=="rewind")bodies[actor].GetComponent<RewindRecorder>().UpdateSim(dt);
                     else if(role=="dash")ordinary[actor].Ability.GetComponent<Dash>().UpdateSim(dt);
+                    else if(role=="revival")ordinary[actor].Ability.GetComponent<Revive>().UpdateSim(dt);
                     else if(role=="ability")ordinary[actor].Ability.UpdateSim(dt);
                     else if(role=="physics")physics[actor].UpdateSim(dt);
                     else if(role=="body")bodies[actor].UpdateSim(dt);
@@ -250,6 +252,7 @@ internal static class ReferenceActors
                     int actor=entityObjects.FindIndex(go=>ReferenceEquals(go,target));
                     if(actor>=0)id=(int)actorData[actor]["entity"]["node"];else id=deathEffects?.Node((GameObject)target)??spells?.Node((GameObject)target);
                 }
+                if(kind=="destroy_mono"&&target is MonoBehaviour mono){id=spells?.ComponentId(mono);spells?.RemovingMono(mono);}
                 Phase(kind,id);
                 if(kind=="physics"){simulated=true;ReferencePhysicsScene.BeginFrame();}
                 if(kind=="destroy_object"&&target is GameObject doomed&&doomed!=null)

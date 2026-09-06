@@ -17,20 +17,23 @@ internal sealed class ReferenceSpellWorld : IDisposable
     private readonly List<Entry> entries=new List<Entry>();
     private readonly Dictionary<string,GameObject> prefabs=new Dictionary<string,GameObject>();
     private int nextNode,nextComponent;
+    private readonly List<ReferencePhysicsScene.Adapter> adapters;
     internal Func<QuickSpell,int> ActorId;
     internal Func<int,int> ObjectId=id=>id;
     internal Func<int,int> RuntimeObjectId=id=>id;
     private sealed class Entry
     {
         internal GameObject Go;internal Shockwave Wave;internal string Prefab;internal int Actor,Node;
-        internal int[] Components;internal JObject Removed;internal JArray Registration;
+        internal int[] Components;internal JObject Removed,Cached;internal JArray Registration;internal ReferenceRevivalMarker Marker;internal MonoBehaviour[] Behaviours;
     }
-    internal ReferenceSpellWorld(JToken state,JToken schedule,ReferenceDeathEffects effects)
+    internal ReferenceSpellWorld(JToken state,JToken schedule,ReferenceDeathEffects effects,List<ReferencePhysicsScene.Adapter> adapters)
     {
+        this.adapters=adapters;
         initial=(JObject)state.DeepClone();this.effects=effects;nextNode=schedule["nodes"].Count();nextComponent=schedule["components"].Count();
         if(state["instances"].Count()!=0)throw new NotSupportedException("Initial spell instances are not bound");
         foreach(var p in ((JObject)state["prefabs"]).Properties())
         {
+            if((string)p.Value["kind"]=="marker"){prefabs.Add(p.Name,ReferenceRevivalMarker.Prefab(p.Value["config"]));continue;}
             if((string)p.Value["kind"]!="shockwave")throw new NotSupportedException("Unbound spell kind");
             var source=Resources.FindObjectsOfTypeAll<QuickSpell>().FirstOrDefault(q=>q.name=="Gust"&&q.SpellPrefab!=null)?.SpellPrefab;
             if(source==null||source.GetComponent<Shockwave>()==null)throw new InvalidOperationException("Actual Gust shockwave prefab unavailable");
@@ -48,9 +51,22 @@ internal sealed class ReferenceSpellWorld : IDisposable
         var self=Active;if(self==null)return;
         string key=self.prefabs.Single(p=>ReferenceEquals(p.Value,prefab)).Key;
         int node=self.effects!=null?self.effects.ReserveNodes(1):self.nextNode++;
-        int component=self.effects!=null?self.effects.ReserveComponents(2):self.nextComponent;
-        if(self.effects==null)self.nextComponent+=2;
-        self.entries.Add(new Entry{Go=go,Wave=go.GetComponent<Shockwave>(),Prefab=key,Actor=self.ActorId(caster),Node=node,Components=new[]{component,component+1}});
+        bool marker=go.GetComponent<RevivePositionIndicator>()!=null;int count=marker?4:2;
+        int component=self.effects!=null?self.effects.ReserveComponents(count):self.nextComponent;
+        if(self.effects==null)self.nextComponent+=count;
+        var entry=new Entry{Go=go,Wave=go.GetComponent<Shockwave>(),Prefab=key,Actor=self.ActorId(caster),Node=node,Components=Enumerable.Range(component,count).ToArray()};
+        if(marker){entry.Marker=new ReferenceRevivalMarker(go,self.adapters);entry.Behaviours=new MonoBehaviour[]{entry.Marker.Indicator,entry.Marker.Transform,entry.Marker.BodyComponent,entry.Marker.CircleComponent};}
+        else entry.Behaviours=new MonoBehaviour[]{entry.Wave,go.GetComponent<FixTransform>()};
+        self.entries.Add(entry);
+    }
+    internal JToken MarkerIndex(RevivePositionIndicator marker)
+    {
+        if(ReferenceEquals(marker,null))return JValue.CreateNull();int index=entries.FindIndex(e=>e.Marker!=null&&ReferenceEquals(e.Marker.Indicator,marker));
+        if(index<0)throw new NotSupportedException("Unbound marker identity");return new JValue(index);
+    }
+    internal void CircleCollision(DPhysicsCircle circle,CollisionInformation info)
+    {
+        var entry=entries.Find(e=>e.Marker!=null&&ReferenceEquals(e.Marker.CircleComponent,circle));entry?.Marker.Adapter.Observe(info);
     }
     internal void Command(JToken command)
     {
@@ -61,20 +77,34 @@ internal sealed class ReferenceSpellWorld : IDisposable
             case "ignore":e.Wave.AddObjectToIgnore(RuntimeObjectId((int)c["object"]));break;
             case "scale":e.Wave.SetScale(F(c["value"]));break;
             case "destroy":Updater.DestroyFix(e.Go);break;
+            case "end":e.Marker.Indicator.End();break;
+            case "add_scale":e.Marker.Indicator.AddScale(F(c["value"]));break;
+            case "position":e.Marker.BodyComponent.position=V(c["value"]);break;
+            case "manual_init":e.Marker.CircleComponent.ManualInit();break;
             default:throw new NotSupportedException("Unknown spell command");
         }
     }
-    internal int? Id(MonoUpdatable c)=>entries.Where(e=>ReferenceEquals(e.Wave,c)).Select(e=>(int?)e.Components[0]).FirstOrDefault();
-    internal int Actor(MonoUpdatable c)=>entries.First(e=>ReferenceEquals(e.Wave,c)).Actor;
+    internal int? ComponentId(MonoBehaviour c)
+    {
+        foreach(var e in entries)for(int i=0;i<e.Behaviours.Length;i++)if(ReferenceEquals(e.Behaviours[i],c))return e.Components[i];return null;
+    }
+    internal int? Id(MonoUpdatable c)=>ComponentId(c);
+    internal int Actor(MonoUpdatable c)=>entries.First(e=>e.Behaviours.Any(b=>ReferenceEquals(b,c))).Actor;
     internal int? Node(GameObject go)=>entries.Where(e=>ReferenceEquals(e.Go,go)).Select(e=>(int?)e.Node).FirstOrDefault();
     private JObject Snapshot(Entry e)
     {
         if(e.Removed!=null)return e.Removed;
+        if(e.Cached!=null)return e.Cached;
+        if(e.Marker!=null)return new JObject{["prefab"]=e.Prefab,["actor"]=e.Actor,["node"]=e.Node,["components"]=new JArray(e.Components),["position"]=V(e.Marker.Transform.position),["present"]=true,["destroyed"]=e.Marker.Indicator.IsDestroyed,["state"]=new JObject{["kind"]="marker",["state"]=e.Marker.Snapshot()}};
         var w=e.Wave;var hits=Get<PhysicsParent[]>(w,"hits");
         var state=new JObject{["scale"]=Get<Fix>(w,"scale").m_rawValue,["time"]=Get<Fix>(w,"timeAlive").m_rawValue,["owner"]=w.GetPlayerId(),["hit_count"]=Get<int>(w,"hitCount"),
             ["hits"]=new JArray(hits.Select(h=>ReferenceEquals(h.fixTrans,null)?JValue.CreateNull():(JToken)new JValue(ObjectId(h.instanceId)))),
             ["hit_objects"]=new JArray(Get<HashSet<int>>(w,"gameObjectIdsHit").Select(ObjectId).OrderBy(x=>x)),["ignored"]=new JArray(Get<HashSet<int>>(w,"extraObjectsToIgnore").Select(ObjectId).OrderBy(x=>x))};
         return new JObject{["prefab"]=e.Prefab,["actor"]=e.Actor,["node"]=e.Node,["components"]=new JArray(e.Components),["position"]=V(e.Go.GetComponent<FixTransform>().position),["present"]=true,["destroyed"]=w.IsDestroyed,["state"]=new JObject{["kind"]="shockwave",["state"]=state}};
+    }
+    internal void RemovingMono(MonoBehaviour mono)
+    {
+        foreach(var e in entries)if(e.Behaviours.Any(b=>ReferenceEquals(b,mono))&&e.Cached==null)e.Cached=Snapshot(e);
     }
     internal void Removing(GameObject go)
     {
@@ -83,7 +113,7 @@ internal sealed class ReferenceSpellWorld : IDisposable
             e.Removed=Snapshot(e);e.Removed["present"]=false;e.Registration=Components(e);foreach(var c in e.Registration)c["present"]=false;
         }
     }
-    private JArray Components(Entry e)=>e.Registration??new JArray(new JObject{["id"]=e.Components[0],["hierarchy"]=e.Wave.HierarchyNumber,["destroyed"]=e.Wave.IsDestroyed,["present"]=true});
+    private JArray Components(Entry e)=>e.Registration??new JArray(e.Behaviours.Select((b,i)=>(b,i)).Where(pair=>pair.b is MonoUpdatable).Select(pair=>new JObject{["id"]=e.Components[pair.i],["hierarchy"]=((MonoUpdatable)pair.b).HierarchyNumber,["destroyed"]=((MonoUpdatable)pair.b).IsDestroyed,["present"]=pair.b!=null}));
     internal JArray Components()=>new JArray(entries.SelectMany(Components));
     internal JObject Snapshot()=>new JObject{["prefabs"]=initial["prefabs"].DeepClone(),["instances"]=new JArray(entries.Select(Snapshot))};
     internal void JoinRegistration()

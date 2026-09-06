@@ -37,6 +37,7 @@ pub mod player_ground;
 pub mod bopl_body;
 pub mod player_body;
 pub mod player_position;
+pub mod revival;
 
 pub mod player_physics;
 

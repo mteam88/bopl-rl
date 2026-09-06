@@ -1428,3 +1428,37 @@ records are in `fixtures/bopl-body.jsonl.gz`; hashes and raw captures are in
 These are component-method checks against seeded registered physics state.
 Fresh collider initialization and dynamic Revival marker integration remain
 separate work; this corpus does not establish a complete Revival ability.
+
+### Revival marker allocation and lifetime
+
+QuickSpell can now create the pinned Revival marker with its original
+BoplBody, circle and fixed transform. The world preserves the original Awake
+registration order, fresh circle initialization, body scaling, camera/water
+clamping, and component removal. Revive.SetReviveFlag shares the player's
+extra-life status and marker references. Replacing a live marker ends it first;
+ending it separately and then casting again retains the old destroyed reference,
+as the source does. Particle-only visual tails are outside the fixed gameplay
+state after their gameplay components are removed.
+
+The retained standard corpus covers 72 cases, 7,200 ticks and 109,510 collision
+callbacks across one through six players. It creates 273 markers and ends 42.
+The custom corpus adds 72 cases, 5,508 completed ticks and 50,592 callbacks,
+including 18 exact failure prefixes. It covers velocity, gravity, offsets,
+pre-initialization scaling/removal, manual initialization, missing particles or
+spells, missing exit animation and recasting after a marker was ended.
+
+A further 30 interaction cases cover 3,000 ticks, 38,762 collision callbacks
+and 84 real empty-player clones. They mix markers with clone births/removal,
+repeated End calls and a custom QuickSpell that creates the marker without a
+Revive component. Clone and marker physics IDs share a monotonic allocator.
+Finishing a clone spawn clears ExtraLife while retaining the marker list; a
+later recast sets the flag again.
+Complete records and hashes are in `fixtures/revival-marker*.jsonl.xz` and
+`artifacts/revival-marker-verified`, `revival-marker-custom`, and
+`revival-marker-interactions`. Coverage requires marker/clone creation and
+removal, the expected extra-life flag/reference counts, and the exact errors.
+
+This validates marker creation and replacement. Player death still explicitly
+rejects the marker revival branch: full SpawnClone ability copying, ReviveEffect,
+ReviveParticle travel and the resulting respawn sequence remain to be connected.
+It is not a complete Revival ability or full public C match implementation.

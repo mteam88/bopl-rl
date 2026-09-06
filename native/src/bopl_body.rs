@@ -49,7 +49,7 @@ fn reciprocal(value: Fix) -> scheduler::Result<Fix> {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sorting {
-    pub layer: String,
+    pub layer: Option<String>,
     pub order: i32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -115,7 +115,7 @@ impl State {
         {
             self.original_sorting = sorting.clone();
             if change_sorting {
-                sorting.layer = "Player".into();
+                sorting.layer = Some("Player".into());
                 sorting.order = 0;
             }
         }

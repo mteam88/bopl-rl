@@ -15,6 +15,10 @@ pub struct Collision {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Revival {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub positions: Option<Vec<Option<usize>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_position: Option<crate::vector::Vec2>,
     pub status: i32,
     pub stocks: i32,

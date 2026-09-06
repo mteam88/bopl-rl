@@ -85,14 +85,11 @@ impl Runtime {
         let prefab = prefab.ok_or("null_reference")?;
         prefab.validate()?;
         let actor_id = actors.len();
-        let object_id = actors
-            .iter()
-            .map(|a| a.object)
-            .chain(context.scene.objects.iter().map(|o| o.id))
-            .max()
-            .unwrap_or(0)
+        let object_id = context
+            .object_id_high_water
             .checked_add(1)
             .ok_or("actor_object_id_exhausted")?;
+        *context.object_id_high_water = object_id;
         let node_base = context.schedule.nodes.len();
         let component_base = context.schedule.components.len();
         let mut actor = prefab.actor.clone();

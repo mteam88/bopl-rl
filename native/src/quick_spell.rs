@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revival: Option<crate::revival::Ability>,
     pub animations: BTreeMap<String, Option<Vec<Frame>>>,
     pub animator: State,
     pub enter_offset: Vec2,
@@ -130,19 +132,55 @@ impl Instance {
             .ok_or("null_reference")?
             .scale
             .unwrap_or(Fix::ONE);
+        let mut spawned = None;
         if let Some(prefab) = &self.spell {
-            context
-                .spells
-                .as_mut()
-                .ok_or("spell_world_not_bound")?
-                .spawn(
-                    context.schedule,
+            let world = context.spells.as_mut().ok_or("spell_world_not_bound")?;
+            let marker = matches!(
+                world.prefabs.get(prefab),
+                Some(crate::spell_world::Prefab::Marker(_))
+            );
+            let object = if marker {
+                let id = context
+                    .object_id_high_water
+                    .checked_add(1)
+                    .ok_or("actor_object_id_exhausted")?;
+                *context.object_id_high_water = id;
+                Some(id)
+            } else {
+                None
+            };
+            let mut position = position + self.shockwave_offset * scale;
+            if self.revival.is_some() {
+                position = crate::revival::camera_clamp(position);
+            }
+            spawned = Some(world.spawn(
+                context.schedule,
+                crate::spell_world::Spawn {
                     prefab,
-                    id,
-                    self.info.player,
-                    position + self.shockwave_offset * scale,
+                    actor: id,
+                    player: self.info.player,
+                    position,
                     scale,
+                    object,
+                },
+            )?);
+            if marker && self.revival.is_none() {
+                let crate::spell_world::State::Marker(marker) =
+                    &mut world.instances[spawned.unwrap()].state
+                else {
+                    unreachable!()
+                };
+                marker.circle.set_scale(
+                    scale,
+                    &mut marker.scale,
+                    marker.object,
+                    context.scene,
+                    marker.pending_object.as_mut(),
                 )?;
+            }
+        }
+        if let Some(revival) = &mut self.revival {
+            revival.set_flag(spawned, self.info.player, id, context)?;
         }
         if !self.particle_prefab {
             return Err("instantiate_null");

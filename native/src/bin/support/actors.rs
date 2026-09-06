@@ -327,6 +327,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                             actor_ropes: &mut runtime.actor_ropes,
                             combat: &mut runtime.combat,
                             spells: &mut runtime.spells,
+                            object_id_high_water: &mut runtime.object_id_high_water,
                             bindings: &runtime.bindings,
                             grounds: &runtime.grounds,
                             space: runtime.space,
@@ -372,9 +373,12 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
             let mut dynamic:Vec<_>=runtime.combat.as_ref().and_then(|c|c.death_effects.as_ref()).into_iter().flat_map(|e|&e.instances).flat_map(|e|e.components[..2].iter()).map(|&id| {let c=&s.components[id];json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present})}).collect();
             if let Some(spells) = &runtime.spells {
                 for instance in &spells.instances {
-                    let id = instance.components[0];
-                    let c = &s.components[id];
-                    dynamic.push(json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present}));
+                    for &id in &instance.components {
+                        let c = &s.components[id];
+                        if c.kind == bopl_sim::scheduler::Kind::Updatable {
+                            dynamic.push(json!({"id":id,"hierarchy":c.hierarchy,"destroyed":c.destroyed,"present":c.present}));
+                        }
+                    }
                 }
                 dynamic.sort_by_key(|v| v["id"].as_u64().unwrap());
             }

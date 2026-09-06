@@ -100,6 +100,9 @@ verify: build check
     python3 native/tools/verify_actor_circles.py --lifecycle --golden
     python3 native/tools/verify_quick_spell.py --golden
     python3 native/tools/verify_quick_spell.py --faults --golden
+    python3 native/tools/verify_revival_marker.py --golden
+    python3 native/tools/verify_revival_marker.py --custom --golden
+    python3 native/tools/verify_revival_marker.py --interactions --golden
     python3 native/tools/verify_bopl_body.py --golden
     python3 native/tools/verify_gust.py --golden
     python3 native/tools/verify_gust.py --contacts --golden
@@ -292,3 +295,8 @@ verify-gust: build
 
 verify-bopl-body: build
     python3 native/tools/verify_bopl_body.py --directory bopl-body-verified
+
+verify-revival-marker: build
+    python3 native/tools/verify_revival_marker.py --directory revival-marker-verified
+    python3 native/tools/verify_revival_marker.py --custom --directory revival-marker-custom
+    python3 native/tools/verify_revival_marker.py --interactions --directory revival-marker-interactions

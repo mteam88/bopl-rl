@@ -67,10 +67,10 @@ public static class ReferencePhysicsScene
         var snapshot=(JObject)scene.DeepClone();var states=new JArray();
         for(int i=0;i<adapters.Count;i++)
         {
-            var a=adapters[i];if(a.realBox!=null)a.parent=a.realBox.pp;if(!Contains(a))continue;
+            var a=adapters[i];if(a.realBox!=null)a.parent=a.realBox.pp;if(a.realCollider!=null)a.parent=a.realCollider.GetPhysicsParent();if(!Contains(a))continue;
             if(a.transform==null){if(a.lastSnapshot!=null)states.Add(a.lastSnapshot.DeepClone());continue;}
             var (shape,body)=State(a);var template=a.template??objects[i];var o=(JObject)template.DeepClone();o["active"]=a.transform.gameObject.activeInHierarchy;
-            if(a.realBox!=null)o["hierarchy"]=a.parent.hierarchyNumber;
+            if(a.realBox!=null||a.realCollider!=null)o["hierarchy"]=a.parent.hierarchyNumber;
             if(a.parent.monobehaviourCollider.enabled)o.Remove("enabled");else o["enabled"]=false;
             o["destroyed"]=a.parent.monobehaviourCollider.IsDestroyed;
             o["body"]=Body(body);o["collider"]=ShapeJson(shape);
@@ -195,6 +195,7 @@ public static class ReferencePhysicsScene
         internal JObject lastSnapshot;
         internal JObject template;
         internal DPhysicsBox realBox;
+        internal IPhysicsCollider realCollider;
         public int sourceId;public FixTransform transform;public PhysicsParent parent;public bool callbackDestroyed;
         bool ICollisionCallback.IsDestroyed {get=>callbackDestroyed;set=>callbackDestroyed=value;}
         public bool IsDestroyed {get;set;}

@@ -49,7 +49,7 @@ internal sealed class ReferenceActorCombat : IDisposable
     internal JObject Snapshot()
     {
         var result=(JObject)initial.DeepClone();var book=ReferencePlayerLife.Snapshot(players,events);result["events"]=book["events"];book.Remove("events");result["book"]=book;
-        for(int i=0;i<players.Count;i++){var r=result["revival"][i];r["status"]=(int)players[i].ExtraLife;r["stocks"]=players[i].StocksRemaining;r["respawn_count"]=players[i].RespawnPositions.Count;if(r["spawn_position"]!=null)r["spawn_position"]=ReferenceDynamics.V(players[i].SpawnPosition);}
+        for(int i=0;i<players.Count;i++){var r=result["revival"][i];r["status"]=(int)players[i].ExtraLife;r["stocks"]=players[i].StocksRemaining;r["respawn_count"]=players[i].RespawnPositions.Count;if(r["spawn_position"]!=null)r["spawn_position"]=ReferenceDynamics.V(players[i].SpawnPosition);if(r["positions"]!=null)r["positions"]=new JArray(players[i].RespawnPositions.ConvertAll(v=>ReferenceSpellWorld.Active.MarkerIndex(v)));if(players[i].ReviveInstance!=null)r["ability"]=ReferenceSpellWorld.Active.ActorId(players[i].ReviveInstance.GetComponent<QuickSpell>());}
         result["trauma"]=(double)camera.GetTrauma();result["max_trauma"]=(double)camera.maxTrauma;return result;
     }
     public void Dispose()
