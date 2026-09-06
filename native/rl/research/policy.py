@@ -33,8 +33,12 @@ class Policy(nn.Module):
         return self.actor(value),self.critic(value).squeeze(-1)
 
 def distribution(logits,actions=None):
+    # validate_args=False skips torch's per-call finiteness check, which forces
+    # a GPU sync and roughly doubles the cost of each sampling call. Samples,
+    # log-probabilities and entropies are computed identically; train.py still
+    # checks observations, losses and gradients for finite values.
     angle,buttons=logits.split([256,16],dim=-1)
-    a,b=Categorical(logits=angle),Categorical(logits=buttons)
+    a,b=Categorical(logits=angle,validate_args=False),Categorical(logits=buttons,validate_args=False)
     if actions is None: actions=torch.stack([a.sample(),b.sample()],dim=-1)
     return actions,a.log_prob(actions[...,0])+b.log_prob(actions[...,1]),a.entropy()+b.entropy()
 

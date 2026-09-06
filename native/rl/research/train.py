@@ -73,6 +73,7 @@ def main():
     from policy import Policy,distribution
     from vector import Vector
     from telemetry import FIELDS,summarize
+    from selfplay import Opponents
     torch.set_num_threads(opt.workers)
     torch.manual_seed(opt.seed); np.random.seed(opt.seed)
     torch.set_float32_matmul_precision('high')
@@ -132,6 +133,7 @@ def main():
     random=np.random.default_rng(opt.seed)
     n=vec.size; h=policy.hidden; tmax=opt.horizon; length=opt.sequence
     state=policy.initial(n,device); frozen_state=policy.initial(n,device)
+    opponents=Opponents(opt.workers,device)
     reset_before=torch.ones(n,dtype=torch.bool,device=device)
     completed_matches=0
     evaluation_milestones=sorted(set(opt.eval_at or []))
@@ -189,14 +191,8 @@ def main():
                 with torch.no_grad():
                     logits,value,state=policy.step(vec.obs,state)
                     chosen,logp,_=distribution(logits)
-                    active=torch.ones(n,dtype=torch.bool,device=device)
-                    for version in set(versions):
-                        ids=[2*w+side[w] for w in range(opt.workers) if historical[w] and versions[w]==version]
-                        if not ids: continue
-                        opponent_logits,_,next_state=pool[version].step(vec.obs[ids],frozen_state[:,ids])
-                        opponent_actions,_,_=distribution(opponent_logits)
-                        chosen[ids]=opponent_actions; frozen_state[:,ids]=next_state
-                        active[ids]=False
+                    opponents.refresh(versions,historical,side)
+                    active=opponents.act(pool,vec.obs,frozen_state,chosen)
                     actions[t]=chosen; old_logp[t]=logp; values[t]=value; masks[t]=active
                     vec.step(chosen)
                     events[t]=vec.telemetry
