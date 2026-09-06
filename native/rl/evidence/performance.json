@@ -1,0 +1,31 @@
+{
+  "description": "Short recurrent PPO throughput comparison, first two updates excluded; no evaluation or video contention.",
+  "rows": [
+    {
+      "workers": 8,
+      "agents": 16,
+      "steps": 65536,
+      "obs_size": 3257,
+      "median_agent_decisions_per_second": 3251.6546613479914,
+      "mean_agent_decisions_per_second": 3280.7789304394473,
+      "elapsed_train_loop": 20.6053376509999,
+      "evaluation_enabled": false,
+      "research_library_sha256": "29a88795aaa6d216f9c97395cd943a97487a2791606f5c9910f3f669f3b45e1f",
+      "puffer_revision": "42f70d6932c30ac977736f861006809c50168ba9",
+      "max_cuda_memory_mb": 172.2666015625
+    },
+    {
+      "workers": 16,
+      "agents": 32,
+      "steps": 65536,
+      "obs_size": 3257,
+      "median_agent_decisions_per_second": 4489.8739510500845,
+      "mean_agent_decisions_per_second": 4538.09434899182,
+      "elapsed_train_loop": 15.11476825599948,
+      "evaluation_enabled": false,
+      "research_library_sha256": "29a88795aaa6d216f9c97395cd943a97487a2791606f5c9910f3f669f3b45e1f",
+      "puffer_revision": "42f70d6932c30ac977736f861006809c50168ba9",
+      "max_cuda_memory_mb": 266.30224609375
+    }
+  ]
+}

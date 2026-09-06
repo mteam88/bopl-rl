@@ -83,6 +83,12 @@
       "sources": [
         "SuperStarEffect.cs"
       ]
+    },
+    "Missile.spawnTime": {
+      "reason": "Assigned Time.time in Init and read only by Update to delay the loopEngine audio. Missile motion, collision state and fixed-point lifetime remain compared.",
+      "sources": [
+        "Missile.cs"
+      ]
     }
   }
 }

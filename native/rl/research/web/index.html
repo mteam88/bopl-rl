@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Bopl · Learning Lab</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/" aria-label="Bopl Learning Lab home"
+        ><svg viewBox="0 0 48 40" aria-hidden="true">
+          <path
+            d="M5 27C2 16 9 4 24 5s23 13 20 23C41 39 8 40 5 27"
+            fill="currentColor"
+          />
+          <circle cx="19" cy="19" r="3" fill="#f6f3e9" />
+          <circle cx="32" cy="19" r="3" fill="#f6f3e9" /></svg
+        ><span>Bopl <i>/</i> Learning Lab</span></a
+      >
+      <div class="connection">
+        <span id="connectionDot"></span><span id="connection">Connecting</span>
+      </div>
+    </header>
+    <main>
+      <div class="intro">
+        <div>
+          <p class="eyebrow">EXPERIMENT NOTEBOOK · 001</p>
+          <h1>Learning to <em>hold its own.</em></h1>
+          <p class="lede">
+            Dash out of trouble. Find the arrow. Build a way back.
+          </p>
+        </div>
+        <label class="run-picker"
+          >Experiment<select id="run">
+            <option>Waiting for a run</option>
+          </select></label
+        >
+      </div>
+      <div class="protocol">
+        <span><b>02</b> players</span><span><b>15 Hz</b> decisions</span
+        ><span><b>150 ms</b> delayed view</span
+        ><span>Dash <i>↗</i> Arrow <i>→</i> Platform <i>▰</i></span
+        ><span id="runState" class="pill">Preparing</span>
+      </div>
+      <div id="notice" role="status"></div>
+      <section class="stats" aria-label="Training progress">
+        <article>
+          <p>Agent decisions</p>
+          <strong id="steps">—</strong>
+          <div class="progress"><span id="progress"></span></div>
+          <small id="target">Waiting for training</small>
+        </article>
+        <article>
+          <p>Collection + training</p>
+          <strong id="sps">—</strong><small>agent decisions / second</small>
+        </article>
+        <article>
+          <p>Completed matches</p>
+          <strong id="matches">—</strong><small id="elapsed">—</small>
+        </article>
+        <article class="accent">
+          <p>Against the initial policy</p>
+          <strong id="win">—</strong
+          ><small id="winDetail">Fixed evaluation · both player sides</small>
+        </article>
+      </section>
+      <div class="workspace">
+        <section class="watch">
+          <div class="section-top">
+            <div>
+              <p class="eyebrow">WATCH THE POLICY</p>
+              <h2>A match tells the story.</h2>
+            </div>
+            <div>
+              <span id="replayTag" class="tag">Awaiting evaluation</span
+              ><label class="follow"
+                ><input id="followLatest" type="checkbox" checked /> Follow
+                latest</label
+              >
+            </div>
+          </div>
+          <div class="replay-select">
+            <label
+              >Checkpoint<select id="checkpoint">
+                <option>No checkpoints yet</option>
+              </select></label
+            ><label
+              >Match<select id="match">
+                <option>No replays yet</option>
+              </select></label
+            >
+          </div>
+          <div class="stage">
+            <canvas
+              id="arena"
+              width="960"
+              height="540"
+              aria-label="Animated physics replay of the selected match"
+            ></canvas
+            ><video id="video" controls playsinline hidden></video>
+            <div id="emptyReplay">
+              Saved evaluation matches will appear here.<br /><span
+                >Training continues while the evaluator plays.</span
+              >
+            </div>
+            <div id="arenaLabel">PHYSICS REPLAY</div>
+          </div>
+          <div class="replay-controls">
+            <button id="play" disabled aria-label="Play replay">▶</button
+            ><input
+              id="scrub"
+              type="range"
+              min="0"
+              max="0"
+              value="0"
+              aria-label="Replay position"
+            /><span id="replayTime">0:00 / 0:00</span
+            ><select id="speed" aria-label="Playback speed">
+              <option value="0.5">½×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+            </select>
+          </div>
+          <div class="replay-footer">
+            <div>
+              <button id="viewPhysics" class="text-button active">
+                Physics view</button
+              ><button id="viewVideo" class="text-button" disabled>
+                Game video
+              </button>
+            </div>
+            <a id="download" hidden>Download .rep ↗</a>
+          </div>
+          <div id="players" class="players"></div>
+          <p class="caption">
+            The physics view shows recorded positions and collisions. Game
+            videos use the actual Unity build. Both come from the same saved
+            inputs.
+          </p>
+        </section>
+        <section class="learning">
+          <div class="section-top">
+            <div>
+              <p class="eyebrow">MEASURE THE CHANGE</p>
+              <h2>Is it getting better?</h2>
+            </div>
+          </div>
+          <div class="chart-title">
+            <b>Win rate against fixed opponents</b
+            ><span>Evaluation checkpoints</span>
+          </div>
+          <canvas
+            id="winsChart"
+            class="chart tall"
+            aria-label="Win rate chart"
+          ></canvas>
+          <div class="legend">
+            <span style="--series: #2846d4">Random buttons</span
+            ><span style="--series: #e87350">Initial policy</span
+            ><span style="--series: #71816a">Unseen maps</span>
+          </div>
+          <p id="evalNote" class="caption">
+            Same seeds and swapped sides at every checkpoint. Bands show 95%
+            Wilson intervals; small samples remain uncertain.
+          </p>
+          <div class="chart-title">
+            <b>Throughput</b><span>Decisions / second</span>
+          </div>
+          <canvas
+            id="speedChart"
+            class="chart"
+            aria-label="Training throughput chart"
+          ></canvas>
+          <div class="chart-title">
+            <b>Action variety</b><span>Policy entropy</span>
+          </div>
+          <canvas
+            id="entropyChart"
+            class="chart"
+            aria-label="Policy entropy chart"
+          ></canvas>
+          <p class="caption">
+            Falling entropy means more consistent choices. It does not prove
+            better play.
+          </p>
+        </section>
+      </div>
+      <section class="details">
+        <article>
+          <p class="eyebrow">BEHAVIOR</p>
+          <h3>Which buttons get pressed?</h3>
+          <div id="actionBars"></div>
+          <p class="caption">
+            Fraction of decisions holding each button, across both players.
+            These are attempts, not confirmed casts.
+          </p>
+        </article>
+        <article>
+          <p class="eyebrow">OPTIMIZATION</p>
+          <h3>Learning health</h3>
+          <canvas
+            id="lossChart"
+            class="chart"
+            aria-label="Value loss chart"
+          ></canvas>
+          <div class="health">
+            <span>Policy change <b id="kl">—</b></span
+            ><span>Clipped updates <b id="clip">—</b></span
+            ><span>GPU memory <b id="memory">—</b></span>
+          </div>
+        </article>
+        <article>
+          <p class="eyebrow">RESEARCH DESIGN</p>
+          <h3>One clear first question.</h3>
+          <p>
+            Can a recurrent policy learn to survive and win using dash, arrow,
+            and platform with a delayed view?
+          </p>
+          <ul>
+            <li>Train on one map; evaluate on two additional maps.</li>
+            <li>Half the games face earlier checkpoints.</li>
+            <li>Win/loss is the main reward, with a small kill/death bonus.</li>
+            <li>Loadouts and cooldowns are public for every player.</li>
+          </ul>
+          <a id="configLink">View exact configuration ↗</a>
+        </article>
+      </section>
+      <footer>
+        <span>BOPL / LEARNING LAB</span
+        ><span id="updated">Local experiment · waiting for data</span>
+      </footer>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

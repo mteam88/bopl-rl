@@ -6,7 +6,9 @@ and Python/Gymnasium adapters. Unity is needed to generate fresh reference data,
 not to build or run the native environment.
 
 This is the first verified slice of the port. It is **not the complete game** and
-there is no trained bot or PufferLib training integration yet.
+the standalone Rust slice is not the backend used for full-game training.
+A separate [Unity-backed C/PufferLib research environment](rl/README.md) now
+provides GPU training, delayed observations, evaluations and a replay dashboard.
 
 The full-game expansion is active: [scope and progress](FULL_COMPATIBILITY.md).
 The composed test runtime now includes scheduled actor removal, direct deaths,

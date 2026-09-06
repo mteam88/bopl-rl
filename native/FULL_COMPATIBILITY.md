@@ -11,6 +11,11 @@ to that baseline; every capture also records its actual game assembly hash.
 Level1 movement/dash slice, now with one through six players. A reference replay successfully
 running in Unity does not mean its mechanics are implemented in Rust.
 
+Current training research uses the actual Unity game through the
+[C/PufferLib environment](rl/README.md). Its first experiment fixes the loadout to
+dash, arrow and platform. Successful training or playback in that environment
+does not complete the independent Rust port or the broader interaction audit.
+
 The ability inventory is `data/ability-coverage.json`: 39 catalog entries,
 including NullAbility, Random, and eight custom entries from Rewind through
 Portal gun. No entries are omitted because they are custom or difficult.
