@@ -2,6 +2,8 @@
 
 Completed runs and measured outcomes: [experiment log](EXPERIMENTS.md).
 
+Current skill-learning step: [Bow curriculum and long-term goal](BOW_CURRICULUM.md).
+
 Human demonstration extraction, supervised GRU fits and replay diagnostics:
 [imitation workflow](IMITATION.md).
 

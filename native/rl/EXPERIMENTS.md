@@ -1,5 +1,14 @@
 # Dash / Arrow / Platform experiments
 
+## Bow curriculum — 2026-09-06
+
+A 38-decision teaching example seeds an unassisted Bow controller. Two PPO runs
+with smaller updates finish at 125/128 and 128/128 hits on one setup; the default
+learning rate loses the skill in one of two seeds. Nearby starts transfer, while
+moving-target and wider setup tests fail. [Results, plots and video](evidence/bow-curriculum-001/REPORT.md).
+The [curriculum plan](BOW_CURRICULUM.md) keeps the long-term all-game, adaptive
+superhuman goal explicit.
+
 ## Imitation controls — 2026-09-06
 
 Input ablations, 30 Hz controls, action-change prediction and event weighting
