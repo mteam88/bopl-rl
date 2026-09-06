@@ -24,6 +24,8 @@ void my_init(Env *env, Dict *kwargs) {
     env->observation_delay=option(kwargs, "observation_delay", 9);
     env->repeat=option(kwargs, "action_repeat", 4);
     env->random_maps=option(kwargs, "random_maps", 0);
+    env->training_map_mask=(uint32_t)option(kwargs, "training_map_mask", 0);
+    if (env->training_map_mask&0x80000000u) abort();
     env->random_loadouts=option(kwargs, "random_loadouts", 0);
     bopl_rl_default_config(&env->config, (uint32_t)env->num_agents);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
@@ -41,8 +43,27 @@ void my_init(Env *env, Dict *kwargs) {
     init(env);
 }
 void my_log(Log *log, Dict *out) {
+    /* PufferLib retains key pointers and starts with room for only 32 fields. */
+    static const char *map_keys[31]={
+        "map_0_fraction", "map_1_fraction", "map_2_fraction", "map_3_fraction",
+        "map_4_fraction", "map_5_fraction", "map_6_fraction", "map_7_fraction",
+        "map_8_fraction", "map_9_fraction", "map_10_fraction", "map_11_fraction",
+        "map_12_fraction", "map_13_fraction", "map_14_fraction", "map_15_fraction",
+        "map_16_fraction", "map_17_fraction", "map_18_fraction", "map_19_fraction",
+        "map_20_fraction", "map_21_fraction", "map_22_fraction", "map_23_fraction",
+        "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
+        "map_28_fraction", "map_29_fraction", "map_30_fraction"
+    };
+    if (out->capacity<40) {
+        DictItem *items=realloc(out->items,40*sizeof(DictItem));
+        if (!items) abort();
+        out->items=items;out->capacity=40;
+    }
     dict_set(out, "perf", log->perf); dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return); dict_set(out, "episode_length", log->episode_length);
     dict_set(out, "environment_ticks", log->environment_ticks);
     dict_set(out, "observation_overflow", log->observation_overflow); dict_set(out, "game_errors", log->game_errors);
+    for (int map=0; map<31; map++) if (log->map_fraction[map]) {
+        dict_set(out, map_keys[map], log->map_fraction[map]);
+    }
 }

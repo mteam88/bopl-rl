@@ -8,12 +8,15 @@ from pufferlib import _C,pufferl
 from pufferlib.torch_pufferl import _CudaPtr, _cpu_tensor
 
 class Vector:
-    def __init__(self,workers,seed,limit=3600,delay=9):
+    def __init__(self,workers,seed,limit=3600,delay=9,training_maps=(0,)):
+        if not training_maps or len(set(training_maps))!=len(training_maps) or any(m<0 or m>30 for m in training_maps):
+            raise ValueError('Distinct training map IDs between 0 and 30 required')
         saved=sys.argv; sys.argv=[saved[0]]
         try: args=pufferl.load_config('bopl')
         finally: sys.argv=saved
         args['vec'].update(total_agents=2*workers,num_threads=workers,num_buffers=1)
-        args['env'].update(players=2,seed=seed,stocks=3,map=0,ability1=2,ability2=4,ability3=14,
+        args['env'].update(players=2,seed=seed,stocks=3,map=training_maps[0],ability1=2,ability2=4,ability3=14,
+                           training_map_mask=sum(1<<m for m in training_maps) if len(training_maps)>1 else 0,
                            action_repeat=4,observation_delay=delay,max_episode_ticks=limit,
                            random_maps=0,random_loadouts=0)
         # Retained for the complete native vector lifetime. Workers own disjoint

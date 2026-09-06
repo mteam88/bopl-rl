@@ -142,6 +142,45 @@ untrained map. Final evaluation uses 256 and 64 respectively, with fresh seed
 pairs. Report individual training-seed results; Wilson intervals are descriptive
 and do not adjust for dependence within side-swapped pairs.
 
+The multi-map extension selects an explicit set at each episode reset. A single
+map retains the original reset RNG sequence. `--training-maps 0,1,2` samples only
+those IDs; the game has a larger map catalog, so this differs from the low-level
+`random_maps` option that samples every map. Completed training matches by map
+are recorded in each metrics row. Map IDs in `--heldout-maps` must not appear in
+training; the dashboard labels maps according to the saved configuration.
+`research/check_map_contracts.py --output <new-artifact-directory>` checks native
+selection, stable log keys, and immediate failure on observation overflow without
+starting a game or GPU. Python schedule/identity tests run with
+`python3 -m unittest discover -s native/rl/research -p test_evaluation_protocol.py`.
+
+Frozen trained opponents are described by a schema-1 JSON manifest containing
+`name`, `path`, and `sha256` for each checkpoint. Relative paths resolve from the
+manifest. The series copies and checks their identities, and evaluators reject
+changed weights or a conflicting existing evaluation. These opponents enter
+evaluation only; training retains its current/recent-checkpoint self-play mix.
+
+After qualifying the selected maps with `research/check_maps.py`, prepare the
+next experiment using the three final policies from `dap-series-001`:
+
+```sh
+native/artifacts/rl/venv/bin/python native/rl/research/check_maps.py \
+  --output native/artifacts/rl/multimap-checks --maps 0,1,2,3,4
+native/artifacts/rl/venv/bin/python native/rl/research/series.py prepare \
+  --output native/artifacts/rl/dap-multimap-001 --steps 10000000 \
+  --workers 16 --seeds 73,173,273 --training-maps 0,1,2 --heldout-maps 3,4 \
+  --baseline native/artifacts/rl/dap-001/checkpoints/policy-000000000.pt \
+  --opponents native/rl/evidence/frozen-dap-series-001.json \
+  --diagnostic-games 32 --diagnostic-frozen-games 16 \
+  --final-games 256 --final-frozen-games 128
+```
+
+This schedule has 369 games per diagnostic and 2,817 per final suite. It evaluates
+each frozen policy on every training map, with separate random-play checks on
+the two unseen maps. Each suite includes one self-play game for a native video.
+The series samples GPU activity, memory, power and host CPU load once per second
+in `resource-samples.jsonl`. These measurements cover the whole device and host;
+the training phase includes startup, checkpoint evaluation and video work.
+
 After the series finishes, generate a portable JSON summary and PNG/SVG figures
 with a separate Python environment containing NumPy and Matplotlib:
 

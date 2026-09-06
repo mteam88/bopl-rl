@@ -23,6 +23,7 @@ class State(C.Structure):
 LIB = C.CDLL(str(ROOT/'native/artifacts/rl/libbopl_research.so'))
 LIB.research_obs_size.restype = C.c_int
 LIB.research_telemetry_size.restype = C.c_int
+LIB.research_check.argtypes = [C.c_void_p]; LIB.research_check.restype = C.c_int
 if LIB.research_telemetry_size()!=len(FIELDS): raise RuntimeError('Rebuild the research telemetry binding')
 LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
@@ -47,14 +48,21 @@ class Environment:
         if not self.handle: raise RuntimeError('Could not open Bopl evaluator')
         self.obs=np.ctypeslib.as_array(LIB.research_obs(self.handle),shape=(2*OBS_SIZE,)).reshape(2,OBS_SIZE)
         self.telemetry=np.ctypeslib.as_array(LIB.research_telemetry(self.handle),shape=(2*len(FIELDS),)).reshape(2,len(FIELDS))
+        try: self.check()
+        except BaseException:
+            self.close();raise
+    def check(self):
+        if LIB.research_check(self.handle): raise RuntimeError('Game error or observation overflow during evaluation')
     @property
     def state(self): return LIB.research_state(self.handle).contents
     @property
     def ended(self): return bool(self.state.header.flags&1)
-    def reset(self,seed,map_id=0): LIB.research_reset(self.handle,seed,map_id)
+    def reset(self,seed,map_id=0):
+        LIB.research_reset(self.handle,seed,map_id);self.check()
     def step(self,actions):
         actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,2)
         LIB.research_step(self.handle,actions.ctypes.data_as(C.POINTER(C.c_float)))
+        self.check()
     def replay(self,path):
         if LIB.research_replay(self.handle,os.fsencode(path)): raise RuntimeError('Replay export failed')
     def frame(self):

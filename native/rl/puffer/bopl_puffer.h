@@ -15,6 +15,7 @@ enum { BOPL_EVENT_FIELDS=9, BOPL_TELEMETRY_SIZE=16,
        BOPL_EPISODES, BOPL_WINS, BOPL_TIMEOUTS, BOPL_TICKS };
 typedef struct {
     float perf, score, episode_return, episode_length, environment_ticks, observation_overflow, game_errors, n;
+    float map_fraction[31];
 } Log;
 typedef struct {
     Log log;
@@ -24,6 +25,7 @@ typedef struct {
     BoplRl *world;
     BoplRlConfig config;
     int repeat, random_maps, random_loadouts, failed;
+    uint32_t training_map_mask;
     int observation_delay, delay_cursor, no_autoreset;
     float *history, *sample;
     float returns[6];
@@ -90,7 +92,13 @@ static void compute_observations(BoplPuffer *env) {
             if (!bopl_hidden(state, state->slimes[i].owner, self->id)) visible_slimes++;
         obs[6]=bopl_clip((double)visible_slimes/BOPL_OBS_SLIMES);
         obs[7]=bopl_clip((double)(visible_slimes>BOPL_OBS_SLIMES?visible_slimes-BOPL_OBS_SLIMES:0)/BOPL_OBS_SLIMES);
-        if (active_count>count || visible_slimes>BOPL_OBS_SLIMES) env->log.observation_overflow++;
+        if (active_count>count || visible_slimes>BOPL_OBS_SLIMES) {
+            env->log.observation_overflow++;
+            /* Vector logging skips unfinished episodes, so a log-only error
+             * could disappear before the trainer sees it. Never train on it. */
+            fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes\n", active_count, visible_slimes);
+            abort();
+        }
         obs[8]=bopl_clip(self_x/64.0); obs[9]=bopl_clip(self_y/64.0);
         for (uint32_t i=0; i<state->header.player_count; i++) {
             uint32_t index=i==0?(uint32_t)a:(i<=(uint32_t)a?i-1:i);
@@ -169,6 +177,13 @@ static void init(BoplPuffer *env) {
     if (length<0 || (size_t)length>=sizeof(log_path)) abort();
     env->world=bopl_rl_open(game, replay, log_path, 30000, env->error, sizeof(env->error));
     if (!env->world) { fprintf(stderr, "Bopl RL startup: %s\n", env->error); abort(); }
+    for (uint32_t map=0; map<31; map++)
+        if ((env->training_map_mask&(1u<<map)) && map>=bopl_rl_map_count(env->world)) {
+            fprintf(stderr, "Training map outside game catalog\n"); abort();
+        }
+    if (env->training_map_mask && env->random_maps) {
+        fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
+    }
     if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
     env->history=calloc((size_t)2*env->num_agents*BOPL_OBS_SIZE, sizeof(float));
     env->sample=calloc((size_t)env->num_agents*BOPL_OBS_SIZE, sizeof(float));
@@ -178,7 +193,15 @@ static void init(BoplPuffer *env) {
 }
 static void c_reset(BoplPuffer *env) {
     env->config.seed=bopl_random(env);
-    if (env->random_maps) env->config.map=bopl_random(env)%bopl_rl_map_count(env->world);
+    if (env->training_map_mask) {
+        uint32_t count=0;
+        for (uint32_t map=0; map<31; map++) count+=(env->training_map_mask>>map)&1u;
+        uint32_t selected=bopl_random(env)%count;
+        for (uint32_t map=0; map<31; map++) if (env->training_map_mask&(1u<<map)) {
+            if (selected==0) { env->config.map=map; break; }
+            selected--;
+        }
+    } else if (env->random_maps) env->config.map=bopl_random(env)%bopl_rl_map_count(env->world);
     if (env->random_loadouts) for (int i=0; i<env->num_agents; i++) for (uint32_t j=0; j<env->config.slots; j++)
         env->config.player[i].abilities[j]=1+bopl_random(env)%(BOPL_ABILITY_COUNT-1); // Exclude the source's NullAbility placeholder.
     if (bopl_rl_reset(env->world, &env->config)) bopl_failed(env, "reset");
@@ -244,6 +267,7 @@ static void c_step(BoplPuffer *env) {
         env->rewards[i]=reward; env->returns[i]+=reward;
         env->deaths[i]=player->deaths; env->kills[i]=player->kills;
         if (terminal) {
+            if (env->config.map<31) env->log.map_fraction[env->config.map]++;
             env->terminals[i]=1;
             env->log.perf+=(player->flags&2)!=0; env->log.score+=player->kills;
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;

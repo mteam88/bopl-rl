@@ -198,6 +198,8 @@ function update() {
     ? `${initial.wins} / ${initial.games} wins · ${final ? "fresh final seeds · " : data.validation_evaluation ? "expanded evaluation · " : ""}95% interval ${percent(initial.interval[0])}–${percent(initial.interval[1])}`
     : "Fixed evaluation · both player sides";
   const evals = data.evaluations;
+  replaceOptions($("winMap"), (c.eval_maps || [0, 1, 2]).map((m) => [String(m), `Map ${m}`]));
+  const chartMap = Number($("winMap").value);
   const makeSeries = (opponent, map, color) => ({
     color,
     points: evals.flatMap((e) => {
@@ -207,11 +209,16 @@ function update() {
         : [];
     }),
   });
-  const unseen = {
+  const frozenNames = new Set((c.frozen_opponents || []).map((p) => p.name));
+  $("thirdWinLegend").textContent = frozenNames.size ? "Previous trained policies · mean" : "Unseen maps · mean";
+  const comparison = {
     color: "#71816a",
-    points: evals.map((e) => {
-      const gs = e.groups.filter((g) => g.map !== 0);
-      return {
+    points: evals.flatMap((e) => {
+      const gs = e.groups.filter((g) => frozenNames.size
+        ? g.map === chartMap && frozenNames.has(g.opponent)
+        : !(c.training_maps || [0]).includes(g.map) && g.opponent === "random");
+      if (!gs.length) return [];
+      return [{
         x: e.step,
         y:
           gs.reduce((n, g) => n + g.wins, 0) /
@@ -219,18 +226,41 @@ function update() {
             1,
             gs.reduce((n, g) => n + g.games, 0),
           ),
-      };
+      }];
     }),
   };
   chart(
     "winsChart",
     [
-      makeSeries("random", 0, "#2846d4"),
-      makeSeries("initial", 0, "#e87350"),
-      unseen,
+      makeSeries("random", chartMap, "#2846d4"),
+      makeSeries("initial", chartMap, "#e87350"),
+      comparison,
     ],
     { min: 0, max: 1, format: percent },
   );
+  const matrix = final || data.validation_evaluation || latest;
+  $("evaluationMatrix").hidden = !matrix;
+  if (matrix) {
+    $("matrixSuite").textContent = final ? "Final · fresh game seeds" : `Checkpoint · ${short(matrix.step)} decisions`;
+    const played = {};
+    for (const row of data.metrics) for (const [map, count] of Object.entries(row.map_matches || {})) played[map] = (played[map] || 0) + count;
+    $("mapCoverage").textContent = `Training maps: ${(c.training_maps || [0]).join(", ")}.` +
+      (Object.keys(played).length ? ` Completed matches: ${Object.entries(played).map(([map,count]) => `map ${map}: ${fmt.format(count)}`).join(" · ")}.` : "");
+    const opponentName = (name) => name === "random" ? "Random buttons" : name === "initial" ? "Starting policy" : name.replace(/^trained-s/, "Previous seed ");
+    $("evaluationRows").replaceChildren(...matrix.groups.map((g) => {
+      const row = document.createElement("tr");
+      const trained = (c.training_maps || [0]).includes(g.map);
+      const values = [opponentName(g.opponent), `${g.map} · ${trained ? "trained" : "untrained"}`,
+        `${g.wins}/${g.games} · ${(100*g.win_rate).toFixed(1)}%`,
+        `${(100*g.interval[0]).toFixed(1)}–${(100*g.interval[1]).toFixed(1)}%`, String(g.timeouts)];
+      values.forEach((value, i) => {
+        const cell = document.createElement("td"); cell.textContent = value;
+        if (i === 1 && !trained) cell.className = "untrained-map";
+        row.append(cell);
+      });
+      return row;
+    }));
+  }
   chart(
     "speedChart",
     [
@@ -754,6 +784,7 @@ $("checkpoint").onchange = () => {
   selectEvaluation();
 };
 $("match").onchange = selectMatch;
+$("winMap").onchange = () => { if (data) update(); };
 $("play").onclick = () => {
   if (!replay) return;
   setView("physics");

@@ -173,7 +173,7 @@
           </div>
           <div class="chart-title">
             <b>Win rate against fixed opponents</b
-            ><span>Evaluation checkpoints</span>
+            ><label>Map<select id="winMap" aria-label="Map for win rate chart"><option value="0">Map 0</option></select></label>
           </div>
           <canvas
             id="winsChart"
@@ -183,7 +183,7 @@
           <div class="legend">
             <span style="--series: #2846d4">Random buttons</span
             ><span style="--series: #e87350">Initial policy</span
-            ><span style="--series: #71816a">Unseen maps</span>
+            ><span id="thirdWinLegend" style="--series: #71816a">Unseen maps</span>
           </div>
           <p id="evalNote" class="caption">
             Same seeds and swapped sides at every checkpoint. Bands show 95%
@@ -211,6 +211,20 @@
           </p>
         </section>
       </div>
+      <section id="evaluationMatrix" class="evaluation-matrix" hidden>
+        <div class="section-top">
+          <div><p class="eyebrow">EVERY OPPONENT. EVERY MAP.</p><h2>Where does it hold up?</h2></div>
+          <span id="matrixSuite" class="tag">Checkpoint evaluation</span>
+        </div>
+        <p id="mapCoverage" class="caption"></p>
+        <div class="evaluation-table-wrap">
+          <table class="evaluation-table">
+            <thead><tr><th scope="col">Opponent</th><th scope="col">Map</th><th scope="col">Wins</th><th scope="col">95% interval</th><th scope="col">Timeouts</th></tr></thead>
+            <tbody id="evaluationRows"></tbody>
+          </table>
+        </div>
+        <p class="caption">Each result uses both player sides. Timeouts count as non-wins. These Wilson intervals describe individual groups and do not adjust for dependence within a seed pair. Previous trained policies stay frozen and are used only for evaluation.</p>
+      </section>
       <section id="behaviorSection" class="behavior-section">
         <div class="section-top">
           <div>

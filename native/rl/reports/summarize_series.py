@@ -5,6 +5,7 @@ not changed. Final intervals resample whole side-swapped game-seed pairs; they
 describe evaluation uncertainty for each fixed policy, not training-seed variance.
 """
 import argparse
+from collections import defaultdict
 import json
 import math
 from pathlib import Path
@@ -33,7 +34,9 @@ def interval(games,opponent,map_id,rng):
     pairs={}
     for game in games:
         if (game['opponent'],game['map'])!=(opponent,map_id): continue
-        pairs.setdefault(game['seed'],{})[game['side']]=float(game['win'])
+        pair=pairs.setdefault(game['seed'],{})
+        if game['side'] in pair: raise ValueError('Duplicate game side in evaluation seed pair')
+        pair[game['side']]=float(game['win'])
     if not pairs or any(set(pair)!={0,1} for pair in pairs.values()):
         raise ValueError('Final evaluation must contain complete side-swapped pairs')
     values=np.array([sum(pair.values())/2 for pair in pairs.values()])
@@ -46,6 +49,12 @@ def summarize(directory,allow_partial):
     if state['status']!='complete' and not allow_partial:
         raise ValueError('Series has not completed; use --allow-partial only for a labeled preview')
     rng=np.random.default_rng(1949); runs=[]; histories=[]
+    evaluation_maps=plan.get('evaluation_maps',[0]);heldout_maps=plan.get('heldout_maps',[1,2])
+    frozen=plan.get('frozen_opponents',[])
+    expected_groups={(opponent,map_id):plan['final_games']
+                     for map_id in evaluation_maps for opponent in ('random','initial')}
+    expected_groups.update({(item['name'],map_id):plan['final_frozen_games'] for map_id in evaluation_maps for item in frozen})
+    expected_groups.update({('random',map_id):plan['final_heldout_games'] for map_id in heldout_maps})
     for member in plan['runs']:
         root=directory.parent/member['name']; file=root/'metrics.jsonl'
         rows=[]
@@ -63,6 +72,8 @@ def summarize(directory,allow_partial):
         if errors or overflow: raise ValueError('Game errors or observation overflow')
         loop_seconds=sum(row['rollout_seconds']+row['train_seconds'] for row in rows)
         run=dict(**member,step=rows[-1]['step'],matches=rows[-1]['matches'],updates=len(rows),
+                 map_matches=({str(m):sum(row.get('map_matches',{}).get(str(m),0) for row in rows)
+                               for m in plan.get('training_maps',[0])} if any('map_matches' in r for r in rows) else None),
                  learner_decisions=sum(row['behavior']['decisions'] for row in rows),
                  checks=dict(all_metrics_finite=True,game_errors=errors,observation_overflow=overflow),
                  loop_seconds=loop_seconds,loop_decisions_per_second=rows[-1]['step']/loop_seconds,
@@ -71,6 +82,8 @@ def summarize(directory,allow_partial):
                               for p in sorted(root.glob('evaluations/*/result.json')) if (report:=read(p))],
                  native_videos=len(list(root.glob('evaluations/*/selfplay.mp4'))),
                  native_replays=len(list(root.glob('evaluations/*/*.rep')))+len(list(root.glob('final-evaluations/*/*.rep'))))
+        if run['map_matches'] is not None and sum(run['map_matches'].values())!=run['matches']:
+            raise ValueError('Per-map match counts do not conserve the completed match total')
         result=root/'result.json'
         run['training_result']=read(result) if result.exists() else None
         if not allow_partial and (not run['training_result'] or run['training_result']['status']!='complete' or run['step']<plan['steps']):
@@ -81,9 +94,14 @@ def summarize(directory,allow_partial):
             report=read(reports[-1]); groups=[]
             if report['step']!=run['step'] or report['baseline_sha256']!=plan['baseline_sha256']:
                 raise ValueError('Final checkpoint or baseline identity differs from the plan')
+            keys=[(g['opponent'],g['map']) for g in report['groups']]
+            if len(keys)!=len(expected_groups) or set(keys)!=set(expected_groups):
+                raise ValueError('Final evaluation is missing or duplicating a declared opponent/map group')
+            if [(p['name'],p['sha256']) for p in report.get('frozen_opponents',[])]!=[(p['name'],p['sha256']) for p in frozen]:
+                raise ValueError('Frozen evaluation opponents differ from the plan')
             for group in report['groups']:
                 games=[g for g in report['games'] if (g['opponent'],g['map'])==(group['opponent'],group['map'])]
-                expected=plan['final_games'] if group['map']==0 else plan['final_heldout_games']
+                expected=expected_groups[group['opponent'],group['map']]
                 if len(games)!=expected or len(games)!=group['games'] or sum(g['win'] for g in games)!=group['wins'] or sum(g['timeout'] for g in games)!=group['timeouts']:
                     raise ValueError('Final group does not match its per-game results and declared budget')
                 groups.append(dict(**group,pair_bootstrap_interval=interval(report['games'],group['opponent'],group['map'],rng)))
@@ -92,17 +110,42 @@ def summarize(directory,allow_partial):
                               heldout_seed_base=report['heldout_seed_base'],elapsed=report['elapsed'])
         elif not allow_partial: raise ValueError('Missing final evaluation')
         runs.append(run); histories.append(rows)
+    if not runs: raise ValueError('No training metrics available yet')
+    resources=defaultdict(list);resource_file=directory/'resource-samples.jsonl'
+    if plan.get('resource_sampling') and not resource_file.exists() and not allow_partial:
+        raise ValueError('Missing declared resource measurements')
+    if resource_file.exists():
+        for line in resource_file.read_text().splitlines():
+            try: sample=json.loads(line)
+            except ValueError:
+                if not allow_partial: raise
+                continue
+            resources[sample['active_run'],sample['phase']].append(sample)
+    resource_summary=[]
+    for (run_name,phase),samples in resources.items():
+        if not all(map(finite,samples)): raise ValueError('Nonfinite resource measurements')
+        fields={key:dict(mean=statistics.mean(row[key] for row in samples),
+                         median=statistics.median(row[key] for row in samples),
+                         p90=float(np.quantile([row[key] for row in samples],.9)))
+                for key in ('gpu_busy_percent','gpu_memory_mb','gpu_power_watts','cpu_busy_percent')}
+        resource_summary.append(dict(run=run_name,phase=phase,samples=len(samples),**fields))
     summary=dict(schema=1,status=state['status'],name=plan['name'],git_revision=plan['git_revision'],
+                 budget=plan['steps'],training_maps=plan.get('training_maps',[0]),evaluation_maps=evaluation_maps,
+                 heldout_maps=heldout_maps,frozen_opponents=frozen,
                  reporting_versions=dict(numpy=np.__version__,matplotlib=matplotlib.__version__),
                  source_identity=plan['source_identity'],baseline_sha256=plan['baseline_sha256'],
                  elapsed=state['elapsed'],total_decisions=sum(run['step'] for run in runs),
                  total_learner_decisions=sum(run['learner_decisions'] for run in runs),
                  total_matches=sum(run['matches'] for run in runs),runs=runs,
+                 resources=resource_summary,resource_scope='Device-wide GPU and host CPU activity, sampled each second; training phase includes startup and diagnostic/video work.',
                  interval_method='95% percentile bootstrap over side-swapped game-seed pairs, 5000 draws, RNG seed 1949; conditional on each fixed trained policy. Training-seed results are reported separately.')
     return summary,histories
 
 
 def plot(summary,histories,output):
+    if summary['frozen_opponents']:
+        from multimap import plot as plot_multimap
+        return plot_multimap(summary,histories,output)
     plt.rcParams.update({'font.family':'DejaVu Sans','font.size':10,'axes.titlesize':12,
                          'axes.labelcolor':'#354052','text.color':'#182236','axes.edgecolor':'#cfd3d8'})
     fig,axes=plt.subplots(2,2,figsize=(13.5,8.7),facecolor='#f5f3ed')

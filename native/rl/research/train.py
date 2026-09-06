@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import traceback
+from evaluation_protocol import map_ids,opponents as frozen_opponents
 
 ROOT=Path(__file__).resolve().parents[3]
 
@@ -49,6 +50,11 @@ def main():
                         help='Evaluate these decision milestones; does not change historical checkpoint cadence')
     parser.add_argument('--evaluation-games',type=int,default=8)
     parser.add_argument('--evaluation-heldout-games',type=int,default=4)
+    parser.add_argument('--training-maps',type=map_ids,default=[0])
+    parser.add_argument('--evaluation-maps',type=map_ids,default=[0])
+    parser.add_argument('--heldout-maps',type=map_ids,default=[1,2])
+    parser.add_argument('--evaluation-opponents',type=Path)
+    parser.add_argument('--evaluation-frozen-games',type=int,default=16)
     parser.add_argument('--evaluation-workers',type=int,default=2)
     parser.add_argument('--evaluation-baseline',type=Path,
                         help='Frozen opponent shared by the experiment series; defaults to this run initial policy')
@@ -59,10 +65,14 @@ def main():
     opt=parser.parse_args()
     if min(opt.steps,opt.workers,opt.horizon,opt.sequence,opt.epochs,opt.checkpoint_every,opt.episode_ticks)<1 or opt.horizon%opt.sequence:
         parser.error('Positive counts and horizon divisible by sequence are required')
-    if min(opt.evaluation_games,opt.evaluation_heldout_games,opt.evaluation_workers)<1:
-        parser.error('Evaluation counts must be positive')
+    if opt.evaluation_workers<1 or any(n<2 or n%2 for n in
+            (opt.evaluation_games,opt.evaluation_heldout_games,opt.evaluation_frozen_games)):
+        parser.error('Evaluation needs positive workers and complete side-swapped game pairs')
     if opt.eval_at is not None and (not opt.eval_at or any(x<=0 for x in opt.eval_at)):
         parser.error('Evaluation milestones must be positive')
+    if set(opt.heldout_maps)&(set(opt.training_maps)|set(opt.evaluation_maps)):
+        parser.error('Held-out maps must be excluded from training and primary evaluation maps')
+    frozen=frozen_opponents(opt.evaluation_opponents)
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
     os.environ['OMP_NUM_THREADS']=str(opt.workers)
     os.environ.setdefault('OMP_WAIT_POLICY','PASSIVE')
@@ -79,7 +89,7 @@ def main():
     torch.set_float32_matmul_precision('high')
     torch.backends.cudnn.benchmark=True
     device='cuda'
-    vec=Vector(opt.workers,opt.seed,opt.episode_ticks)
+    vec=Vector(opt.workers,opt.seed,opt.episode_ticks,training_maps=opt.training_maps)
     policy=Policy(vec.obs_size).to(device)
     optimizer=torch.optim.Adam(policy.parameters(),lr=3e-4,eps=1e-5)
     step=0; updates=0
@@ -88,6 +98,8 @@ def main():
         policy.load_state_dict(previous['policy']); optimizer.load_state_dict(previous['optimizer'])
         step=previous['step']; updates=previous['updates']
     config={**vars(opt),'output':str(out),'load':str(opt.load) if opt.load else None,
+            'evaluation_opponents':str(opt.evaluation_opponents.resolve()) if opt.evaluation_opponents else None,
+            'frozen_opponents':frozen,
             'evaluation_baseline':str(opt.evaluation_baseline.resolve()) if opt.evaluation_baseline else None,
             'evaluation_baseline_sha256':hashlib.sha256(opt.evaluation_baseline.read_bytes()).hexdigest() if opt.evaluation_baseline else None,
             'schema':1,'obs_size':vec.obs_size,'hidden':policy.hidden,'device':device,
@@ -96,7 +108,7 @@ def main():
             'gpu':torch.cuda.get_device_name(),
             'algorithm':'recurrent PPO','gamma':.995,'gae_lambda':.95,'learning_rate':.0003,
             'action_hz':15,'observation_delay_ticks':9,'own_previous_actions':'immediate','loadout':['dash','arrow','platform'],
-            'training_maps':[0],'eval_maps':[0,1,2],'stocks':3,'pool_size':4,
+            'training_maps':opt.training_maps,'eval_maps':opt.evaluation_maps+opt.heldout_maps,'stocks':3,'pool_size':4,
             'historical_game_fraction':.5,'reward':{'win':1,'loss':-1,'kill':.1,'death':-.1,'timeout':0},
             'timeout_semantics':'finite-horizon match; no winner bonus; terminal value zero',
             'puffer_revision':'42f70d6932c30ac977736f861006809c50168ba9',
@@ -153,6 +165,9 @@ def main():
         evaluation=subprocess.Popen([sys.executable,str(Path(__file__).with_name('evaluate.py')),
             '--run',str(out),'--checkpoint',str(path),'--initial',str(opt.evaluation_baseline or initial_path),
             '--games-per-opponent',str(opt.evaluation_games),'--heldout-games',str(opt.evaluation_heldout_games),
+            '--evaluation-maps',','.join(map(str,opt.evaluation_maps)),'--heldout-maps',','.join(map(str,opt.heldout_maps)),
+            '--frozen-games',str(opt.evaluation_frozen_games),
+            *(['--opponents',str(opt.evaluation_opponents.resolve())] if opt.evaluation_opponents else []),
             '--workers',str(opt.evaluation_workers)],
             stdout=evaluation_log,stderr=subprocess.STDOUT,start_new_session=True)
 
@@ -259,6 +274,8 @@ def main():
             elapsed=time.monotonic()-started
             record=dict(step=step,update=updates,elapsed=elapsed,sps=tmax*n/(rollout_seconds+train_seconds),
                 mean_reward=float(mean),matches=completed_matches,env=env,
+                map_matches={key.removeprefix('map_').removesuffix('_fraction'):round(value*env['n']/2)
+                             for key,value in env.items() if key.startswith('map_') and key.endswith('_fraction')},
                 rollout_seconds=rollout_seconds,train_seconds=train_seconds,
                 policy_loss=float(loss[0]),value_loss=float(loss[1]),entropy=float(loss[2]),
                 kl=float(loss[3]),clip_fraction=float(loss[4]),gradient_norm=float(loss[5]),explained_variance=explained,

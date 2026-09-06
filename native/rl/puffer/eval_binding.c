@@ -2,6 +2,7 @@
 #include "bopl_puffer.h"
 int research_obs_size(void) { return BOPL_OBS_SIZE; }
 int research_telemetry_size(void) { return BOPL_TELEMETRY_SIZE; }
+int research_check(BoplPuffer *env) { return env->log.game_errors || env->log.observation_overflow; }
 BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
     BoplPuffer *env=calloc(1, sizeof(*env));
     if (!env) return NULL;
