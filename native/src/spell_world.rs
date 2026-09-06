@@ -7,12 +7,16 @@ use std::collections::BTreeMap;
 pub enum Prefab {
     Shockwave(shockwave::Config),
     Marker(revival::Config),
+    ReviveParticle(crate::revive_particle::Config),
+    ReviveEffect(crate::revive_effect::Config),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "state", rename_all = "snake_case")]
 pub enum State {
     Shockwave(shockwave::State),
     Marker(Box<revival::Marker>),
+    ReviveParticle(Box<crate::revive_particle::Particle>),
+    ReviveEffect(Box<crate::revive_effect::Effect>),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
@@ -36,6 +40,23 @@ impl World {
         schedule: &mut scheduler::State,
         request: Spawn,
     ) -> scheduler::Result<usize> {
+        if matches!(
+            self.prefabs.get(request.prefab),
+            Some(Prefab::ReviveParticle(_))
+        ) {
+            return self.spawn_particle(schedule, request.prefab, request.actor, request.position);
+        }
+        if matches!(
+            self.prefabs.get(request.prefab),
+            Some(Prefab::ReviveEffect(_))
+        ) {
+            return self.spawn_revive_effect(
+                schedule,
+                request.prefab,
+                request.actor,
+                request.position,
+            );
+        }
         let config = self
             .prefabs
             .get(request.prefab)
@@ -77,6 +98,7 @@ impl World {
         }
         schedule.end_prefab()?;
         let state = match config {
+            Prefab::ReviveParticle(_) | Prefab::ReviveEffect(_) => unreachable!(),
             Prefab::Shockwave(_) => {
                 State::Shockwave(shockwave::State::new(request.player, request.scale))
             }
@@ -148,6 +170,9 @@ impl World {
         space: bool,
     ) -> scheduler::Result<bool> {
         self.sync_positions(targets.scene);
+        if self.revive_effect_phase(schedule, phase)? {
+            return Ok(true);
+        }
         let Some(id) = phase.id else {
             return Ok(false);
         };
@@ -242,6 +267,11 @@ impl World {
                 Command::Scale { value } => state.scale = value,
                 Command::Destroy => destroy = true,
                 _ => return Err("shockwave_command_required"),
+            },
+            (State::ReviveParticle(_), Prefab::ReviveParticle(_))
+            | (State::ReviveEffect(_), Prefab::ReviveEffect(_)) => match command {
+                Command::Destroy => destroy = true,
+                _ => return Err("particle_command_required"),
             },
             (State::Marker(state), Prefab::Marker(config)) => match command {
                 Command::Destroy => destroy = true,

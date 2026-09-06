@@ -30,7 +30,7 @@ pub struct State {
 }
 impl Runtime {
     pub(crate) fn update_bounds(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         report: &mut Report,

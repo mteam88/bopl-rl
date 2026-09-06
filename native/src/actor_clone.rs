@@ -60,13 +60,13 @@ impl Prefab {
 }
 
 impl Runtime {
-    pub fn spawn_abilityless_clone(
+    fn allocate_clone(
         actors: &mut Vec<Actor>,
         context: &mut Context,
         player: usize,
         target: Vec2,
         prefab: Option<&Prefab>,
-        report: &mut Report,
+        _report: &mut Report,
     ) -> scheduler::Result<Option<usize>> {
         let owner = context
             .combat
@@ -153,14 +153,68 @@ impl Runtime {
             .as_mut()
             .ok_or("null_reference")?
             .sprite = None;
+        Ok(Some(actor_id))
+    }
+    pub fn spawn_abilityless_clone(
+        actors: &mut Vec<Actor>,
+        context: &mut Context,
+        player: usize,
+        target: Vec2,
+        prefab: Option<&Prefab>,
+        report: &mut Report,
+    ) -> scheduler::Result<Option<usize>> {
+        let clone = Self::allocate_clone(actors, context, player, target, prefab, report)?;
+        if let Some(id) = clone {
+            Self::spawn_actor(
+                actors,
+                context,
+                id,
+                crate::actor_spawn::Action::Prepare,
+                target,
+                report,
+            )?;
+        }
+        Ok(clone)
+    }
+    pub fn spawn_clone(
+        actors: &mut Vec<Actor>,
+        context: &mut Context,
+        source: usize,
+        player: usize,
+        target: Vec2,
+        prefab: Option<&Prefab>,
+        report: &mut Report,
+    ) -> scheduler::Result<Option<usize>> {
+        let Some(id) = Self::allocate_clone(actors, context, player, target, prefab, report)?
+        else {
+            return Ok(None);
+        };
+        let routing = actors[source]
+            .slime
+            .as_ref()
+            .ok_or("null_reference")?
+            .abilities
+            .as_ref()
+            .ok_or("missing_ability_routing")?;
+        if !routing.slots.is_empty() || routing.indicators.iter().any(Option::is_some) {
+            return Err("actor_clone_abilities_not_implemented");
+        }
+        actors[id]
+            .slime
+            .as_mut()
+            .unwrap()
+            .abilities
+            .as_mut()
+            .unwrap()
+            .indicators = vec![None; 3];
         Self::spawn_actor(
             actors,
             context,
-            actor_id,
+            id,
             crate::actor_spawn::Action::Prepare,
             target,
             report,
         )?;
-        Ok(Some(actor_id))
+        Ok(Some(id))
     }
 }

@@ -161,6 +161,52 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
                     command["actor"].as_u64().unwrap() as usize,
                 );
             }
+            if command["op"] == "revive_effect" {
+                let world = context.spells.as_mut().ok_or("spell_world_not_bound")?;
+                let index = world.spawn_revive_effect(
+                    context.schedule,
+                    command["prefab"].as_str().unwrap(),
+                    command["actor"].as_u64().unwrap() as usize,
+                    serde_json::from_value(command["position"].clone()).unwrap(),
+                )?;
+                return world.init_revive_effect(
+                    index,
+                    command["player"]
+                        .as_u64()
+                        .and_then(|i| context.schedule.players.get(i as usize))
+                        .map(|p| p.id),
+                    serde_json::from_value(command["targets"].clone()).unwrap(),
+                );
+            }
+            if command["op"] == "revive_particle_init" {
+                let world = context.spells.as_mut().ok_or("spell_world_not_bound")?;
+                world.sync_positions(context.scene);
+                return world.init_particle(
+                    context.schedule,
+                    command["spell"].as_u64().unwrap() as usize,
+                    command["target"].as_u64().map(|i| i as usize),
+                    command["slime"].as_u64().map(|i| i as usize),
+                    command["clone_id"].as_i64().unwrap() as i32,
+                );
+            }
+            if command["op"] == "revive_particle" {
+                let world = context.spells.as_mut().ok_or("spell_world_not_bound")?;
+                world.sync_positions(context.scene);
+                let index = world.spawn_particle(
+                    context.schedule,
+                    command["prefab"].as_str().unwrap(),
+                    command["actor"].as_u64().unwrap() as usize,
+                    serde_json::from_value(command["position"].clone()).unwrap(),
+                )?;
+                world.init_particle(
+                    context.schedule,
+                    index,
+                    command["target"].as_u64().map(|i| i as usize),
+                    command["slime"].as_u64().map(|i| i as usize),
+                    command["clone_id"].as_i64().unwrap() as i32,
+                )?;
+                return Ok(());
+            }
             if command["op"] == "spell_command" {
                 let bopl_sim::actors::Context {
                     spells,

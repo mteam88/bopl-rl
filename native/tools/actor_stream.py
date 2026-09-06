@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import threading
 
-from reference import ROOT, first_difference
+from reference import ROOT, first_difference, run_reference
 
 SCHEMA = 'bopl-actor-stream-v1'
 
@@ -162,7 +162,7 @@ def capture(directory, queries, reuse=False):
             env.pop(key, None)
         log = directory / 'unity.log'
         with (directory / 'stdout.log').open('w') as stdout:
-            subprocess.run([str(ROOT / 'Builds/Linux/BoplBattle.x86_64'),
+            run_reference([str(ROOT / 'Builds/Linux/BoplBattle.x86_64'),
                             str(ROOT / 'native/fixtures/movement.rep'), '-batchmode', '-nographics',
                             '-logFile', str(log)], env=env, stdout=stdout,
                            stderr=subprocess.STDOUT, check=True, timeout=1800)

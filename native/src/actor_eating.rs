@@ -190,7 +190,7 @@ impl Runtime {
     }
 
     pub fn chew_actor(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         eater: usize,
         report: &mut Report,

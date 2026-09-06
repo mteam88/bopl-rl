@@ -27,6 +27,10 @@ pub struct Revival {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Combat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_prefab: Option<Box<crate::actor_clone::Prefab>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revive_effect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub death_effects: Option<crate::death_effect::Effects>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collisions: Option<bool>,
@@ -50,7 +54,7 @@ pub struct Kill {
 }
 impl Runtime {
     pub fn kill_actor(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         request: &Kill,
@@ -112,7 +116,8 @@ impl Runtime {
         };
         let revival = &combat.revival[victim];
         if revival.respawn_count > 0 {
-            return Err("actor_revival_not_implemented");
+            Self::revive_actor(actors, context, id, victim, request, report)?;
+            return Ok(true);
         }
         if revival.status == 0
             && combat.book.players[victim].bodies_alive == 1

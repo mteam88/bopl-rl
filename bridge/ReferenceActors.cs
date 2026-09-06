@@ -143,7 +143,8 @@ internal static class ReferenceActors
                 foreach(var player in players){var owner=slimes.First(s=>s!=null&&s.Slime.playerNumber==player.Id);player.Color=owner.Animation.Animator.spriteRen.sharedMaterial;}
             }
             if(spells!=null)foreach(var player in players){var owner=slimes.First(s=>s!=null&&s.Slime.playerNumber==player.Id);player.Color=owner.Animation.Animator.spriteRen.sharedMaterial;}
-            if(spells!=null){spells.ActorId=quick=>entityObjects.IndexOf(quick.gameObject);spells.ObjectId=id=>adapters.Find(a=>a.parent.instanceId==id)?.sourceId??id;spells.RuntimeObjectId=id=>adapters.Find(a=>a.sourceId==id)?.parent.instanceId??id;spells.JoinRegistration();}
+            if(spells!=null){spells.SelectActor=actor=>currentActor=actor;spells.CollisionActor=collision=>entityObjects.IndexOf(collision.gameObject);spells.SlimeId=slime=>ReferenceEquals(slime,null)?JValue.CreateNull():(JToken)new JValue(slimes.FindIndex(s=>s!=null&&ReferenceEquals(s.Slime,slime)));spells.ActorId=quick=>entityObjects.IndexOf(quick.gameObject);spells.ObjectId=id=>adapters.Find(a=>a.parent.instanceId==id)?.sourceId??id;spells.RuntimeObjectId=id=>adapters.Find(a=>a.sourceId==id)?.parent.instanceId??id;spells.JoinRegistration();}
+            if(runtime["combat"]?["revive_effect"]!=null)foreach(var body in bodies){var collision=body.GetComponent<PlayerCollision>();if(collision!=null)collision.reviveEffectPrefab=spells.Prefab((string)runtime["combat"]["revive_effect"]).GetComponent<ReviveEffect>();}
             var calls=new Dictionary<string,int>();
             void Command(JToken command)
             {
@@ -154,7 +155,6 @@ internal static class ReferenceActors
                 if((string)command["op"]=="clone_actor")
                 {
                     currentActor=(int)command["actor"];var collision=bodies[currentActor].GetComponent<PlayerCollision>();var prefab=collision.reviveEffectPrefab;
-                    clones.CreatingPlayer=players[(int)command["player"]].Id;
                     if((bool?)command["null_prefab"]==true)collision.reviveEffectPrefab=null;
                     try{collision.SpawnAbilityLessClone(players[(int)command["player"]],null,V(command["position"]));}finally{collision.reviveEffectPrefab=prefab;}
                     return;
@@ -162,6 +162,8 @@ internal static class ReferenceActors
                 if((string)command["op"]=="actor_spawn"){currentActor=(int)command["actor"];ReferenceActorSpawn.Apply((string)command["action"],command["position"],slimes[currentActor]);return;}
                 if((string)command["op"]=="kill_actor"){var request=command["request"];currentActor=(int)command["actor"];bodies[currentActor].GetComponent<PlayerCollision>().killPlayer((int)request["killer"],(bool)request["spawn_effect"],(bool)request["ignore_invulnerability"],(CauseOfDeath)(int)request["cause"]);return;}
                 if((string)command["op"]=="destroy_actor"){Updater.DestroyFix(bodies[(int)command["actor"]].gameObject);return;}
+                if((string)command["op"]=="revive_effect"){currentActor=(int)command["actor"];spells.SpawnReviveEffect(command,slimes,players);return;}
+                if((string)command["op"]=="revive_particle"||(string)command["op"]=="revive_particle_init"){currentActor=(int)command["actor"];spells.SpawnParticle(command,slimes);return;}
                 if((string)command["op"]=="spell_command"){spells.Command(command);return;}
                 if((string)command["op"]=="quick_cast"){currentActor=(int)command["actor"];ReferenceQuickSpell.Cast(bodies[currentActor].GetComponent<QuickSpell>());return;}
                 if((string)command["op"]=="quick_exit"){currentActor=(int)command["actor"];bodies[currentActor].GetComponent<QuickSpell>().ExitAbility(ReferenceSlimeExit.Info(command["info"],slimes[ordinary[currentActor].Owner]));return;}
@@ -290,7 +292,7 @@ internal static class ReferenceActors
                 if(a["routing_inputs"]!=null)for(int i=0;i<a["routing_inputs"].Count();i++)if(slimes[i]!=null)slimes[i].RoutingInputs(a["routing_inputs"][i]);
                 GameTime.PlayerTimeScale=F(a["scale"]);for(int i=0;i<drivers.Count;i++)drivers[i].EnabledFlag=(bool)a["enabled"][i];
                 string error=null;try{if(a["commands"]!=null)foreach(var command in a["commands"])Command(command);typeof(Updater).GetMethod("TickSimulationInner",Statics).Invoke(null,new object[]{F(a["dt"])});}
-                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NullReferenceException)error="null_reference";else if(e is MissingReferenceException)error="missing_reference";else if(e is ArgumentException&&e.Message.StartsWith("The Object you want to instantiate is null"))error="instantiate_null";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}
+                catch(Exception e){while(e is TargetInvocationException)e=e.InnerException;if(e is NotImplementedException)error="not_implemented";else if(e.GetType()==typeof(Exception)&&e.Message=="cannot set this player")error="cannot_set_revive_effect_player";else if(e is NullReferenceException)error="null_reference";else if(e is MissingReferenceException)error="missing_reference";else if(e is ArgumentException&&e.Message.StartsWith("The Object you want to instantiate is null"))error="instantiate_null";else if(e is DivideByZeroException)error="division_by_zero";else if(e is IndexOutOfRangeException)error="index_out_of_range";else if(e.Message.StartsWith("animation "))error="animation_missing";else throw;}
                 if(error!=null)return new JObject{["error"]=error,["action"]=completed,["completed"]=streaming?(JToken)new JValue(completed):frames,["failed"]=Snapshot()};
                 var frame=Snapshot();if(streaming)ReferenceKernel.ActorFrameSink(completed,frame);else frames.Add(frame);completed++;
             }

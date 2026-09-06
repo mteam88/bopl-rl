@@ -7,7 +7,7 @@ use crate::{
 };
 impl Runtime {
     pub(crate) fn collide_actor(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         event: &CollisionEvent,

@@ -11,9 +11,8 @@ using static ReferenceBeamTargets;
 // This class adds identities and readers, never replaces prefab component state.
 internal sealed class ReferenceActorClones : IDisposable
 {
-    internal static Action<SlimeController> Created;
+    internal static Action<SlimeController,int> Created;
     internal static Action<SlimeController,Vec2> Pushed;
-    internal int CreatingPlayer;
     private readonly Dictionary<MonoUpdatable,(int Id,int Actor)> components=new Dictionary<MonoUpdatable,(int,int)>();
     private readonly Dictionary<int,ReferencePhysicsScene.Adapter> clones=new Dictionary<int,ReferencePhysicsScene.Adapter>();
     private readonly Action<DPhysicsBox,CollisionInformation> oldCollision;
@@ -32,9 +31,10 @@ internal sealed class ReferenceActorClones : IDisposable
         ReferencePhysicsScene.BoxCollision=(box,hit)=>{oldCollision?.Invoke(box,hit);if(components.TryGetValue(box,out var value)){select(value.Actor);clones[value.Actor].Observe(hit);}};
         var revive=Resources.FindObjectsOfTypeAll<PlayerCollision>().First(p=>p.reviveEffectPrefab!=null&&p.reviveEffectPrefab.emptyPlayerPrefab!=null).reviveEffectPrefab;
         foreach(var body in bodies){var collision=body.GetComponent<PlayerCollision>();if(collision!=null)collision.reviveEffectPrefab=revive;}
-        Created=slime=>
+        Created=(slime,playerId)=>
         {
             int actor=actorData.Count;select(actor);var go=slime.gameObject;objects.Add(go);var body=go.GetComponent<PlayerBody>();var p=go.GetComponent<PlayerPhysics>();var ft=go.GetComponent<FixTransform>();var box=go.GetComponent<DPhysicsBox>();
+            if(query["runtime"]["combat"]["revive_effect"]!=null)go.GetComponent<PlayerCollision>().reviveEffectPrefab=ReferenceSpellWorld.Active.Prefab((string)query["runtime"]["combat"]["revive_effect"]).GetComponent<ReviveEffect>();
             var tree=go.GetComponentsInChildren<Transform>(true);
             if(tree.Length!=prefab["nodes"].Count())throw new ArgumentException("Clone prefab node count");
             int nodeBase=effects.ReserveNodes(tree.Length);int componentBase=effects.ReserveComponents(prefab["components"].Count());
@@ -53,7 +53,7 @@ internal sealed class ReferenceActorClones : IDisposable
                 if(all[i] is MonoUpdatable updatable)components.Add(updatable,(componentBase+i,actor));
             }
             var value=(JObject)prefab["actor"].DeepClone();int id=adapters.Select(a=>a.sourceId).Concat(actorData.Select(a=>(int)a["object"])).DefaultIfEmpty(0).Max()+1;
-            value["input"]=actorData.First(a=>(int?)a["body"]["holder"]==CreatingPlayer)["input"].DeepClone();
+            value["input"]=actorData.First(a=>(int?)a["body"]["holder"]==playerId)["input"].DeepClone();
             value["object"]=id;value["entity"]["node"]=(int)value["entity"]["node"]+nodeBase;value["pending_object"]["id"]=id;
             var adapter=new ReferencePhysicsScene.Adapter{sourceId=id,shape=Shape.Box,transform=ft,parent=box.pp,realBox=box,template=(JObject)value["pending_object"].DeepClone()};
             clones.Add(actor,adapter);adapters.Add(adapter);actorData.Add(value);entities.Add(go);bodies.Add(body);physics.Add(p);transforms.Add(ft);

@@ -115,7 +115,7 @@ impl Runtime {
         Ok(())
     }
     pub fn exit_ordinary(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         info: &ExitInfo,

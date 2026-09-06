@@ -164,6 +164,13 @@ impl Instance {
                     object,
                 },
             )?);
+            match &world.instances[spawned.unwrap()].state {
+                crate::spell_world::State::ReviveParticle(_) => return Err("not_implemented"),
+                crate::spell_world::State::ReviveEffect(_) => {
+                    return Err("cannot_set_revive_effect_player");
+                }
+                _ => {}
+            }
             if marker && self.revival.is_none() {
                 let crate::spell_world::State::Marker(marker) =
                     &mut world.instances[spawned.unwrap()].state
@@ -208,7 +215,7 @@ impl Runtime {
         result
     }
     pub fn exit_quick_spell(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         mut info: ExitInfo,
@@ -263,7 +270,7 @@ impl Runtime {
         result
     }
     pub(crate) fn animate_quick_spell(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         report: &mut Report,

@@ -55,7 +55,8 @@
       "name": "Gust",
       "prefab": "Assets/GameObject/Gust.prefab",
       "prefab_guid": "05feec16b8416224fb842a3774879cf4",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Composed QuickSpell entry/exit and dynamically registered shockwaves, including actor/platform impulses and clone interactions. Complete-match lifecycle and C environment integration remain required."
     },
     {
       "id": 8,
@@ -111,7 +112,8 @@
       "name": "Revival",
       "prefab": "Assets/GameObject/Revival.prefab",
       "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Composed marker placement/replacement, duplicate particle updates, arrival and body respawn; revival-effect and empty-loadout death paths have source differential coverage. Equipped-ability copying, full match lifecycle and C environment integration remain required."
     },
     {
       "id": 16,

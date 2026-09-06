@@ -9,7 +9,7 @@ import subprocess
 from collections import Counter
 
 from beam_cases import graph_queries, queries
-from reference import ROOT, first_difference
+from reference import ROOT, first_difference, run_reference
 
 SCHEMA = "bopl-beam-golden-v1"
 
@@ -74,7 +74,7 @@ def reference(directory, inputs, reuse):
             env.pop(key, None)
         log = directory / "unity.log"
         with (directory / "stdout.log").open("w") as stdout:
-            subprocess.run(
+            run_reference(
                 [str(ROOT / "Builds/Linux/BoplBattle.x86_64"),
                  str(ROOT / "native/fixtures/movement.rep"), "-batchmode", "-nographics",
                  "-logFile", str(log)],

@@ -319,7 +319,7 @@ impl Instance {
 }
 impl Runtime {
     pub(crate) fn exit_dash(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         info: ExitInfo,
@@ -354,7 +354,7 @@ impl Runtime {
         result
     }
     pub(crate) fn update_dash(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         dt: Fix,

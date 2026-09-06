@@ -306,7 +306,7 @@ impl Runtime {
         result
     }
     pub fn exit_actor(
-        actors: &mut [Actor],
+        actors: &mut Vec<Actor>,
         context: &mut Context,
         id: usize,
         info: &crate::ability::ExitInfo,
@@ -567,6 +567,26 @@ impl Runtime {
             if let Some(effects) = combat.as_mut().and_then(|c| c.death_effects.as_mut())
                 && effects.phase(schedule, scene, phase, report)?
             {
+                return Ok(());
+            }
+            if Self::particle_phase(
+                actors,
+                &mut Context {
+                    schedule,
+                    components,
+                    scene,
+                    actor_ropes,
+                    combat,
+                    spells,
+                    object_id_high_water,
+                    bindings,
+                    grounds,
+                    space: *space,
+                },
+                phase,
+                dt,
+                report,
+            )? {
                 return Ok(());
             }
             if let Some(world) = spells.as_mut()

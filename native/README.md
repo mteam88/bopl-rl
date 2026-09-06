@@ -549,7 +549,50 @@ Complete records and hashes are in `fixtures/revival-marker*.jsonl.xz` and
 `revival-marker-interactions`. Coverage requires marker/clone creation and
 removal, the expected extra-life flag/reference counts, and the exact errors.
 
-This validates marker creation and replacement. Player death still explicitly
-rejects the marker revival branch: full SpawnClone ability copying, ReviveEffect,
-ReviveParticle travel and the resulting respawn sequence remain to be connected.
-It is not a complete Revival ability or full public C match implementation.
+Marker creation now connects to the death and respawn path described below.
+Equipped-ability copying remains open; this is not a complete Revival ability
+or full public C match implementation.
+
+### Revival death, effects and particles
+
+The composed runtime now executes the original marker-driven death sequence
+for clones with no equipped abilities: allocate replacement bodies, clear the
+old marker references, remove the dead body, animate ReviveEffect, send its
+ReviveParticles to their markers and start the replacement spawn. Particle
+initialization registers its update twice, matching the source, and arrival
+ends the marker before starting the spawn animation. Time-stop ownership and
+reads through destroyed managed transform references retain source behavior.
+
+Six complete retained corpora cover one through six players:
+
+- Particle: 126 cases, 24,072 ticks, including 6 exact null-reference prefixes.
+  Covers repeated initialization, shared/moving/destroyed targets, zero and
+  negative speed/time, explicit removal and arrival callbacks.
+- Effect: 90 cases, 22,536 ticks, including 18 exact failure prefixes. Covers
+  empty/null target lists, multiple targets, removal and missing references;
+  all 189 emitted particles arrive and are removed.
+- Death: 48 cases, 15,570 ticks, including 6 null-prefab prefixes. Covers
+  simultaneous deaths, the body limit, multiple markers and time stop. Two
+  space-map cases are negative water-boundary controls.
+- Water: 6 additional cases, 2,160 ticks, with water deaths enabled for every
+  player count. All 21 revival effects and particles finish and are removed.
+- Mature clones: 6 cases, 1,800 ticks; 21 fully spawned clones die, allocate
+  normal death effects and produce 21 replacement bodies and particles.
+- Edge cases: 30 cases, 3,672 ticks; 18 mixed-owner time-stop cases finish
+  63 particles. Twelve invalid holder casts preserve allocated objects and
+  the source's deliberate SetPlayerId exceptions.
+
+The exact records are in `fixtures/revive-particle.jsonl.xz`,
+`revive-effect.jsonl.xz`, `actor-revival.jsonl.xz`,
+`actor-revival-water.jsonl.xz`, `actor-revival-mature.jsonl.xz` and
+`revival-edges.jsonl.xz`. Raw captures, hashes and semantic coverage reports
+are in `artifacts/revive-particle-complete`, `revive-effect-complete`,
+`actor-revival-complete`, `actor-revival-water`, `actor-revival-mature` and
+`revival-edges`. Some particle/effect cases cause additional late deaths;
+those captures retain the resulting pending effects and do not establish
+that every newly allocated effect finishes within their time windows.
+
+Cloning a player with equipped abilities still fails explicitly after the
+new body allocation. Fresh ability selection from indicator sprites, copied
+indicator objects and pooled ability removal are the next missing pieces.
+The public C environment remains the documented movement slice.

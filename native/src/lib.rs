@@ -66,3 +66,7 @@ mod actor_contacts;
 pub mod death_effect;
 
 pub mod actor_spawn;
+
+pub mod revive_particle;
+
+pub mod revive_effect;

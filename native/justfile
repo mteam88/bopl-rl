@@ -103,6 +103,12 @@ verify: build check
     python3 native/tools/verify_revival_marker.py --golden
     python3 native/tools/verify_revival_marker.py --custom --golden
     python3 native/tools/verify_revival_marker.py --interactions --golden
+    python3 native/tools/verify_revive_particle.py --golden
+    python3 native/tools/verify_revive_effect.py --golden
+    python3 native/tools/verify_actor_revival.py --golden
+    python3 native/tools/verify_actor_revival.py --water --golden
+    python3 native/tools/verify_actor_revival_mature.py --golden
+    python3 native/tools/verify_revival_edges.py --golden
     python3 native/tools/verify_bopl_body.py --golden
     python3 native/tools/verify_gust.py --golden
     python3 native/tools/verify_gust.py --contacts --golden
@@ -300,3 +306,11 @@ verify-revival-marker: build
     python3 native/tools/verify_revival_marker.py --directory revival-marker-verified
     python3 native/tools/verify_revival_marker.py --custom --directory revival-marker-custom
     python3 native/tools/verify_revival_marker.py --interactions --directory revival-marker-interactions
+
+verify-revival: build
+    python3 native/tools/verify_revive_particle.py
+    python3 native/tools/verify_revive_effect.py
+    python3 native/tools/verify_actor_revival.py
+    python3 native/tools/verify_actor_revival.py --water
+    python3 native/tools/verify_actor_revival_mature.py
+    python3 native/tools/verify_revival_edges.py

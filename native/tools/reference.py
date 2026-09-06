@@ -5,11 +5,34 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def run_reference(command, **kwargs):
+    """Keep Unity's heap/cache outside an IDE service's memory limit.
+
+    Long captures also run one at a time on a systemd host. Other hosts keep
+    the ordinary subprocess path; no machine-wide service settings change.
+    """
+    runtime = Path(f'/run/user/{os.getuid()}') if sys.platform == 'linux' else None
+    systemd = shutil.which('systemd-run') if runtime and (runtime/'bus').exists() else None
+    if systemd is None:
+        return subprocess.run(command, **kwargs)
+    import fcntl
+    with (runtime/'bopl-reference-capture.lock').open('a') as gate:
+        fcntl.flock(gate, fcntl.LOCK_EX)
+        unit = f'bopl-reference-{os.getpid()}-{uuid.uuid4().hex[:8]}'
+        wrapper = [systemd, '--user', '--scope', '--collect', '--quiet', '--unit='+unit]
+        if kwargs.get('timeout') is not None:
+            wrapper += ['--property=RuntimeMaxSec='+str(kwargs['timeout']),
+                        '--property=TimeoutStopSec=5s']
+        return subprocess.run(wrapper+list(command), **kwargs)
 
 
 def read_trace(path):
@@ -124,7 +147,7 @@ def capture(args):
     command = [str(binary), str(args.replay.resolve()), "-batchmode", "-nographics", "-logFile", str(log)]
     started = time.monotonic()
     with output.with_suffix(".stdout.log").open("w") as stdout:
-        subprocess.run(command, env=env, cwd=ROOT, stdout=stdout, stderr=subprocess.STDOUT, check=True, timeout=args.timeout)
+        run_reference(command, env=env, cwd=ROOT, stdout=stdout, stderr=subprocess.STDOUT, check=True, timeout=args.timeout)
     after = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
     if before != after:
         raise ValueError("reference inputs changed while capture was running")
