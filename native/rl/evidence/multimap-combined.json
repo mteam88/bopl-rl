@@ -1,0 +1,668 @@
+{
+  "schema": 1,
+  "scope": "Combined implementation validation only; short runs do not establish policy strength.",
+  "status": "pass",
+  "source_revision": "ae6f88b48b80bbb28040c3d38a30e500dca5b885",
+  "source_identity": {
+    "Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll": "72cb1e03cc4874b91feefb560ed4bdfce6d34d4acf77ac01fc987baddd622cd2",
+    "native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/pufferlib/_C.cpython-311-x86_64-linux-gnu.so": "3f47c4dfa905e21405b351419be7778fae6b86af4d782282062065562d58c24e",
+    "native/artifacts/rl/libbopl_research.so": "f50a172ec4e27416d3927341e04e836d4cfe27adb45359847ae3d614cb018d22",
+    "native/rl/benchmark.c": "de3e86ab875dc0c865303b21a488d537e4458c13be26337e035bf0f2533f0d2b",
+    "native/rl/bopl_rl.c": "64c9191e41ff9eb0576e3574800f7189ce8a2bf66ec03c44b0c5335efe390994",
+    "native/rl/bopl_rl.h": "dacf3492c8d9c0a40b208f2aa8283e5963a713ef0035abcef9b8d61cd6662612",
+    "native/rl/coverage.c": "499f1ffe2d5a66807640429b374a648b66b82fcd24ab0936bc9fc1fca7860e46",
+    "native/rl/frame_profile.c": "1e4453e873d8e74888b29aafd5f963acff5f1570f284c3fe0aef2b3b2076415f",
+    "native/rl/puffer/binding.c": "704f0c512009149183906bbb16a720df93a4ca52d3cd573d20e17729c8bac31d",
+    "native/rl/puffer/bopl.ini": "758c3602d6ad1541a058a3abc0778c5de37b84fccfa9339f61fa9b1e34a6ade7",
+    "native/rl/puffer/bopl_puffer.h": "73425282b255dd57ce1e3e72d81c3184559c73cb657715aacdc7b4c718c07209",
+    "native/rl/puffer/build.py": "148a6420f28735520b1e7536bb8494cfe9d574f3739f22ed0c6b097a1e15b198",
+    "native/rl/puffer/eval_binding.c": "c44255c2efdd51a0c69e1a417a3c587b83ddf10486599ec80f00a0bab750b200",
+    "native/rl/puffer/pufferlib-close.patch": "69a0237fcacccb6f008088588f39787761a5912c6a0602691a78662083aeebcf",
+    "native/rl/puffer/setup.py": "6b326e0d4f1f27794da0057467227b19133ef106c8390c1f1aee2a9078477787",
+    "native/rl/puffer/smoke.py": "160ec18c354d047b434ebbbab90ad9d6f0b94a34da2baeee7a21d55813140512",
+    "native/rl/puffer/train.py": "66ae259d9ed93e658ab44fb301b4aea5b94cfe7da7f94d58e8f24223c960155d",
+    "native/rl/record.c": "9522231259fca8fd87687c3242d4a4b829d183b1c5d5f462c758f1f473703d8a",
+    "native/rl/research/bench_throughput.py": "bf1f5f06aea2782b497ce39ef9ce358f8958e3213b8b74cc3cbdaf31620491ed",
+    "native/rl/research/check_map_contracts.py": "3ddf9fb5f3ebd9e557ef0d0cb37ae036c41589ca7e5ca93010054b3280f9f420",
+    "native/rl/research/check_map_logs.c": "702121bee9751d557fc1519fc619b94e3cc92416707e2125cfed6489fb7348d5",
+    "native/rl/research/check_map_sampling.c": "b7b1cedac71e5b4e8521ecef717a1f1ae134485f7b87762221c79aa05b26d0f4",
+    "native/rl/research/check_maps.py": "fa22c0f4729b1f1193f59f738232395d2d77d3101e86d69dba9a7e6f47adfdbc",
+    "native/rl/research/check_observations.c": "892fabfd997f70f822191f2b994c0746c3a88e4c65864689d4976a7ff167bf66",
+    "native/rl/research/check_pipeline.py": "b7d2f22f8e9d3fda83413155e6cffd834649327d6fb2b17b06db7b4ca24a1160",
+    "native/rl/research/check_selfplay.py": "9dce631966a859034a1605bf9a4a382568f156821e6747f5817fad1255f9fd6e",
+    "native/rl/research/check_telemetry.py": "67f13c42b92b757c189404ce5bc56afbc8d149659d592238913a46f04cc96916",
+    "native/rl/research/environment.py": "c7d3c3df2d1321b4cd8a46cebc593abce26d6ea86146b0ef890abf26e58c427b",
+    "native/rl/research/evaluate.py": "bde245ac01038b2fa5bbe9171e31140664d2025535da1eac7b965753301c4483",
+    "native/rl/research/evaluation_protocol.py": "8c3dafa9eb774589c66703f10696eeacaee13e48662fd865235bfa93abf2bbef",
+    "native/rl/research/inference.py": "c333a3886fe14f45db3c0971d2f7377649fc6d96ad108ab29cdb2f62c58b10be",
+    "native/rl/research/policy.py": "baaac2dff0ad0d642d352d3b3184711c048c55cf4d1ef46a8cc3f64701ced37a",
+    "native/rl/research/preflight.py": "12b89bfdc4df79d2ec6ed8c9f571429f5528bb356fce620377e79eacbeb8d389",
+    "native/rl/research/profile_collection.py": "46e72e58ff694f20e57c748cdae821cd8a899b2a203950077ea512e6e19f7abb",
+    "native/rl/research/render_video.py": "781b199f84531b069c52a1348b7c3366e0be1c490c7429a6cac468c2e3bc7a9d",
+    "native/rl/research/resource_monitor.py": "4f0900035c0823178d6957ecd61fabecc38dec3dde3a0b3cd7608c6f3d55f97d",
+    "native/rl/research/selfplay.py": "811bbaa6226bec89cf8718a3ff2ec764a6dca96a6e1796d0ef89dade6c853386",
+    "native/rl/research/series.py": "2228a2313c0886ede42c9293698b9b64b2d49eabed7067592ac4bf3cc2908766",
+    "native/rl/research/serve.py": "92b69376d08eb333cf907c793943e478854ab4ae25cd84bfcfaf752e9ee4f221",
+    "native/rl/research/telemetry.py": "0ff8fccef18a25bbd67ca2226f9574423c3f86ee1dcb5c4d787cf2a58e30321d",
+    "native/rl/research/test_evaluation_protocol.py": "bcf3aeef4eb0daaa39a20623246ff4d16f2a536aeddfd41b781b97d59bd2f1e4",
+    "native/rl/research/train.py": "ceb0f21d4037747f30f38b640ecb0d0018aac9b11b2e21f08f34f058caf9d1d8",
+    "native/rl/research/vector.py": "ff06ed659537e6bf29b7011865dca3d93b65c755d034bcf2ddad01f0dd2e6f60",
+    "native/rl/research/watch_videos.py": "c95ab6922abea1862d2b61633e1a59072efb657b1d6f78c9469185048132345f",
+    "native/rl/reset_check.c": "1e39eb7d231110beeddf86e6c10e4f83cd56a03188ab6ba434902245be257f11",
+    "native/rl/reset_profile.c": "759dd32bba9007139ff28cd6a558f553877fffdb430acc0bec025ebe0dbbd2c8",
+    "native/rl/sampled_check.c": "64e406eb2567462120b7ac605b4dd0f5ad8e49ad0f74e8206cebc89c07e33fe2"
+  },
+  "execution_settings": {
+    "workers": 4,
+    "pipeline_groups": 2,
+    "cuda_graphs": 1,
+    "split_step": 0
+  },
+  "checks": {
+    "native_contracts": {
+      "status": "pass",
+      "selection_and_default_rng": true,
+      "all_map_log_keys": true,
+      "overflow_before_episode_end": true
+    },
+    "preflight": {
+      "return_terminal_and_bootstrap": "pass",
+      "cpu_recurrent_reset_and_reload": "pass",
+      "cuda_recurrent_reset_and_reload": "pass",
+      "real_game_delay_reset_loadout": "pass"
+    },
+    "map_qualification": {
+      "status": "pass",
+      "maps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "games": [
+        {
+          "map": 0,
+          "seed": 91001,
+          "ticks": 2162,
+          "decisions": 541,
+          "observations_sha256": "a514b47a42c1e367198504f870e39621d11458787046fa1659447fc6d8fd0bc5",
+          "replay_sha256": "c272e1eb10694eb1fc337de88a48ce4396d15872f2d17de597bf6f81cef88897"
+        },
+        {
+          "map": 0,
+          "seed": 91002,
+          "ticks": 2738,
+          "decisions": 685,
+          "observations_sha256": "1e2c97bbbd4a82ff8ecd04a7498d0af6df8d58a386d4e9072c8c70b160270dfc",
+          "replay_sha256": "ea94948f4674d67380a4cf5a10439fba1aa9b52662814184d3497c3c854e2d1e"
+        },
+        {
+          "map": 0,
+          "seed": 91003,
+          "ticks": 1048,
+          "decisions": 262,
+          "observations_sha256": "699acb04894cb7388bdb707a88cbbcaa7be00ecdd985bfc7c40dfcfe2ae40f76",
+          "replay_sha256": "b4f3f2b6393a19e80e5532d2b62b18df59f59a26fc15de1c7e951becf6087726"
+        },
+        {
+          "map": 0,
+          "seed": 91004,
+          "ticks": 2178,
+          "decisions": 545,
+          "observations_sha256": "f5a955fee062b33b2444da9b6519efb1a40ac6924d64cda7c87d275b4a36f6e7",
+          "replay_sha256": "8409438a8110cf0ce6483939dd1e762d335b84a8e6c1a4ec8d24e15a34faf00a"
+        },
+        {
+          "map": 0,
+          "seed": 91005,
+          "ticks": 670,
+          "decisions": 168,
+          "observations_sha256": "f4465e2afff4ae61773166ade5cbd82b04269a28a96dc99fd6cd7d17875b5279",
+          "replay_sha256": "aa3381748740e416310774e2a758e483243b11c355dceadb0a8e5b79f24f7eea"
+        },
+        {
+          "map": 0,
+          "seed": 91006,
+          "ticks": 1246,
+          "decisions": 312,
+          "observations_sha256": "ff2353d41d3edb7858c33ccd5fb7bd0bfc6cb85b727f313253caf1717f5c3fb5",
+          "replay_sha256": "eca63c97a7b0d66510a84c60e09bdd6dd5d7f4e35294de555d9bb10b660e5430"
+        },
+        {
+          "map": 0,
+          "seed": 91007,
+          "ticks": 2150,
+          "decisions": 538,
+          "observations_sha256": "3d72827d9cfa1621bfda916b1c76a9e46a595d11c4b1bf575f374c3273784fc5",
+          "replay_sha256": "1bd795b585bf1c78e753da35eb81c9b1e67b5c2b94a2d5a070010599108e02eb"
+        },
+        {
+          "map": 0,
+          "seed": 91008,
+          "ticks": 1606,
+          "decisions": 402,
+          "observations_sha256": "5e050ccee93acf617335a0f7176f846d88c95917a2e81ba53cce3159b5ba6172",
+          "replay_sha256": "f4443f20ae89e388faf82daa94f303f729deae3139cfd22b134a18029cfc5d4d"
+        },
+        {
+          "map": 1,
+          "seed": 91001,
+          "ticks": 3600,
+          "decisions": 900,
+          "observations_sha256": "3ae51366d5022463bf4d22b07d8e9ae6227b3b5fa9cb73c362448020d869657c",
+          "replay_sha256": "b9a5660e547a76ae0cfc826179dfa5ba2bcac5b532dabe018421d4bf89001957"
+        },
+        {
+          "map": 1,
+          "seed": 91002,
+          "ticks": 2438,
+          "decisions": 610,
+          "observations_sha256": "35398bed930beb8f24f54216ee5db5d59b8cd4bfd43081d8d5dc09929c56d988",
+          "replay_sha256": "298343275c6d23ed6910a71366a012756ec12a7ef57504a73272a17e013b204b"
+        },
+        {
+          "map": 1,
+          "seed": 91003,
+          "ticks": 1328,
+          "decisions": 332,
+          "observations_sha256": "67ab47fa0539a9b20653e0fe31a3e3e477cfe14c262027e227fe5ccae56ddca5",
+          "replay_sha256": "53dd30ed7a50ad4003df162671ccff654dfef5322e70de7c962e6ca98322c8a9"
+        },
+        {
+          "map": 1,
+          "seed": 91004,
+          "ticks": 1502,
+          "decisions": 376,
+          "observations_sha256": "d6a4c48f26bdf08b2fbbde5e878458b7b896ba4a4bba5c12bfa9eebee0e64a65",
+          "replay_sha256": "46d45de6901a2c402789e5a118d6440f411964da9a42b0431ef6fcfb6040af0b"
+        },
+        {
+          "map": 1,
+          "seed": 91005,
+          "ticks": 2625,
+          "decisions": 657,
+          "observations_sha256": "6cf3631c989d77ea6e430072e36245624a865126977436e334ca522e19e0d1ca",
+          "replay_sha256": "c798063b3ca992d8a9fd1d824bf8bd3171fe5a677e4615ffeef2677433c03fc8"
+        },
+        {
+          "map": 1,
+          "seed": 91006,
+          "ticks": 1358,
+          "decisions": 340,
+          "observations_sha256": "37ef22b7176117598df0bbce7fcf36479b925dd16f1119a5f6233bcba48762a7",
+          "replay_sha256": "08f227119f893ff1078a3ed5aec26b2b7d565462ad35270913928416c2becdc8"
+        },
+        {
+          "map": 1,
+          "seed": 91007,
+          "ticks": 1340,
+          "decisions": 335,
+          "observations_sha256": "c2eaaf07b3dab1345bf3b245dc2e83c13a0dde6f5b7d2f839191aec3032d48cb",
+          "replay_sha256": "7638f768e0812a7f7f6bf0f2aaecb9e0406b4dea1411c47352cbb9fc4084babf"
+        },
+        {
+          "map": 1,
+          "seed": 91008,
+          "ticks": 669,
+          "decisions": 168,
+          "observations_sha256": "45bc49eebab217425c27c4b48f4187f955e801e232b5e029bbb0232b84571336",
+          "replay_sha256": "792a035d15b6ccdd6574e747859662e0b6b01c57dfceafc2b63f3c3d80c1a24d"
+        },
+        {
+          "map": 2,
+          "seed": 91001,
+          "ticks": 2449,
+          "decisions": 613,
+          "observations_sha256": "a2a40fedad33abaad7883a1d717a81463a64ac72982d7e9a152d17f53c34b94b",
+          "replay_sha256": "07cb3dcf2ec15ef7bb9e4acef70af6f9929cfe457e155b5e8c8786394e94df30"
+        },
+        {
+          "map": 2,
+          "seed": 91002,
+          "ticks": 925,
+          "decisions": 232,
+          "observations_sha256": "d9312df6c6cb74938c6bae6e6ba569fbecbb84263f16fd9d9a87c0e44caa2be4",
+          "replay_sha256": "cecfac3ae8cf684a333344342c7342458d44002945ec5f7e671592c12a54157c"
+        },
+        {
+          "map": 2,
+          "seed": 91003,
+          "ticks": 959,
+          "decisions": 240,
+          "observations_sha256": "ecc7ddef88d854b1c4c29c6b5b77f642133d9b333f85a2e336e75ac3f4fb7678",
+          "replay_sha256": "67706946a5b68ad6aab8a12a790c3a5fb30251fc8ba971dadb4f8c03499e420e"
+        },
+        {
+          "map": 2,
+          "seed": 91004,
+          "ticks": 874,
+          "decisions": 219,
+          "observations_sha256": "b0b6b124bbb44c379a38824ee1de73b575bf6db08812b3ccf69dc261b77f5d4a",
+          "replay_sha256": "a1ed1c3ee4320794ac0faab213065538efa4d41f6818f734cf771fd1a9c8c570"
+        },
+        {
+          "map": 2,
+          "seed": 91005,
+          "ticks": 1156,
+          "decisions": 289,
+          "observations_sha256": "eee0916a98bc768174a26c53e275ecd1832167f048c97d9d0d114d3a84bbfea5",
+          "replay_sha256": "9e9adc7251ca70f47e9163b0f2cb2912ade8f7d4808a74fc6dc6fc10ffd9baca"
+        },
+        {
+          "map": 2,
+          "seed": 91006,
+          "ticks": 1236,
+          "decisions": 309,
+          "observations_sha256": "932af17dc23ba25c5e36d515d66605c78df3c032455128a3dfd35374023e2642",
+          "replay_sha256": "c220753c4d27dae85237d6153c3eabda8fffbdb60f8e9955e1ff12ee22c0af3c"
+        },
+        {
+          "map": 2,
+          "seed": 91007,
+          "ticks": 789,
+          "decisions": 198,
+          "observations_sha256": "03b66aa8cafb1810b388a21a3080621738726b7ce39e6626e0b6d6a5a1468da2",
+          "replay_sha256": "1b556163b8580abcc074dfe1043df05b4c73c70a5538c14148a8d959a4a868e7"
+        },
+        {
+          "map": 2,
+          "seed": 91008,
+          "ticks": 1010,
+          "decisions": 253,
+          "observations_sha256": "15cdd226e96ef8123cba5451e088aaa63e40eac2704f2f350d173338271f970c",
+          "replay_sha256": "b93f3ead114134e1d7e8d99fbb1476ef4e216f39649e754cc077b538ca196e63"
+        },
+        {
+          "map": 3,
+          "seed": 91001,
+          "ticks": 1851,
+          "decisions": 463,
+          "observations_sha256": "c0cb4697b66954c106ace003b355892a56c02bd936b4ee58dc60d0b5d5c5e030",
+          "replay_sha256": "84a126dba4d20b4f46d02f63f9488ba349195f77654724afcd943d46c419662a"
+        },
+        {
+          "map": 3,
+          "seed": 91002,
+          "ticks": 679,
+          "decisions": 170,
+          "observations_sha256": "8c360e23b7706927c4f97952dd6844fcc9b32a31eb63c444d43c8609e00ce614",
+          "replay_sha256": "c7214bb581d9007e7333498b0f52e0d208414688151b037a9c829d0f67e8d319"
+        },
+        {
+          "map": 3,
+          "seed": 91003,
+          "ticks": 944,
+          "decisions": 236,
+          "observations_sha256": "559240c84fa6c722f72acacdd141962b8a27d4b21eb64c8d780d32146e02d5c3",
+          "replay_sha256": "4a4f0c87f6cb0f6efbc1823a30eb13f8a80d268f1f3343ae808aa4ae55db7e1a"
+        },
+        {
+          "map": 3,
+          "seed": 91004,
+          "ticks": 945,
+          "decisions": 237,
+          "observations_sha256": "3d6ce2b8066e0c521f769040cda1895b388627b04589461a9d3c514e5414944e",
+          "replay_sha256": "af41fbf72e396cccf7589fad0f87709d8c5cf2b88498d0fe9998ab8a4c0c051b"
+        },
+        {
+          "map": 3,
+          "seed": 91005,
+          "ticks": 1133,
+          "decisions": 284,
+          "observations_sha256": "4d84440b0c70256c8b8ca71f8903878c7892e0a483e75b17f168f4c5faca48ea",
+          "replay_sha256": "f8391c9c6b44515a96250e3fba80db8e5a3ea9e12416ec32f7c2869aaddd32db"
+        },
+        {
+          "map": 3,
+          "seed": 91006,
+          "ticks": 858,
+          "decisions": 215,
+          "observations_sha256": "708fe68f2681261ecb4ba778d31571eaf555f90a0c0824be853035ec09f0f4e9",
+          "replay_sha256": "2bb7218962f8c7e82bbf490783c61c5ee42144e8b21d36b41e0fd84153e58509"
+        },
+        {
+          "map": 3,
+          "seed": 91007,
+          "ticks": 1018,
+          "decisions": 255,
+          "observations_sha256": "b0106910cae7f8441ac50deeb17e93b1b787d2217102fa8a1a2f2b7f83d35cf2",
+          "replay_sha256": "ea509c96538e3fd3fd2aaeb0462d40d02678e6a01605a6aab0c185c8fa6b979b"
+        },
+        {
+          "map": 3,
+          "seed": 91008,
+          "ticks": 1584,
+          "decisions": 396,
+          "observations_sha256": "54927f4c74430c6d81cdc876b04b61ed1941d140324def8d4b0392665d52541e",
+          "replay_sha256": "c092b64240e90ac99004a9f6d764a7c140b93cae8c9e15776d53c6c6fd64fb7a"
+        },
+        {
+          "map": 4,
+          "seed": 91001,
+          "ticks": 509,
+          "decisions": 128,
+          "observations_sha256": "0c10873681d8c39f996c2da115adf78dbf4eee37710e92997962a1e63455edfc",
+          "replay_sha256": "ff7f2a3baa6ed1fc65d622c84e1dfdc17469aa665ca701842b64059d704561f4"
+        },
+        {
+          "map": 4,
+          "seed": 91002,
+          "ticks": 2155,
+          "decisions": 539,
+          "observations_sha256": "090f43406a9b571e5b908edd95c0d3ead8057a629392ee668b3d84a32f303277",
+          "replay_sha256": "c00265063e00210af4f28434c9a3d57caaa7d51612d4efebc194070ee097b20b"
+        },
+        {
+          "map": 4,
+          "seed": 91003,
+          "ticks": 1668,
+          "decisions": 417,
+          "observations_sha256": "06c57b92acbfc90166fb053ddc191c0e7de07f5e3bf851d7325f1e40615d5082",
+          "replay_sha256": "c2ca5dd7bc1f1ef6ca749f922e4060f2c68f755ab9ccdcd3788c7a3015206486"
+        },
+        {
+          "map": 4,
+          "seed": 91004,
+          "ticks": 864,
+          "decisions": 216,
+          "observations_sha256": "18bb6d604a9848d4663aeabe3d4f68a621dbb6074744c9158df2e977f5150e2b",
+          "replay_sha256": "5d2f6bec7fdd610bb9f4599208d8d9576e61af7ec4ea6e0d686d560b10cb5fde"
+        },
+        {
+          "map": 4,
+          "seed": 91005,
+          "ticks": 542,
+          "decisions": 136,
+          "observations_sha256": "3fb6784b6893d6998d66fff6b252f08bfe2b859a0efb2b93baad13ce659dd63f",
+          "replay_sha256": "3e5ac3864d3f69052912eb606bf1254960b9ae8f2606d3b0d9d9f2aa7f5fb06f"
+        },
+        {
+          "map": 4,
+          "seed": 91006,
+          "ticks": 1218,
+          "decisions": 305,
+          "observations_sha256": "3d95f0efba9f8f464031045e632f83dfcd0a1c82642c80d7a29c4d34c50dc81d",
+          "replay_sha256": "3d4f45150d39b5b6b4c8d2e87c7160f8b6778587bfab568228fd3c087f32f67a"
+        },
+        {
+          "map": 4,
+          "seed": 91007,
+          "ticks": 756,
+          "decisions": 189,
+          "observations_sha256": "2f48a8f026cf935433f89c3c5f4a1c00bba911873787671de328d95999775c5b",
+          "replay_sha256": "b29cd8d819fd8304871c3607a596300c01d19922daf84216ff9529fcfb49f70f"
+        },
+        {
+          "map": 4,
+          "seed": 91008,
+          "ticks": 545,
+          "decisions": 137,
+          "observations_sha256": "df8e2a43718713dfa6f7d180f9a604254e0b7f582b89e549740842ec3f07d964",
+          "replay_sha256": "c93b4a80406390f2a891177662b95947cab29b70e157dd8c116d9937d1169404"
+        }
+      ]
+    },
+    "pipeline": {
+      "schema": 1,
+      "workers": 4,
+      "phases": {
+        "A_transport": {
+          "reference_log": {
+            "perf": 0.0,
+            "score": 0.0416666679084301,
+            "episode_return": -0.03750000149011612,
+            "episode_length": 100.0,
+            "environment_ticks": 240.0,
+            "observation_overflow": 0.0,
+            "game_errors": 0.0,
+            "map_0_fraction": 1.0,
+            "n": 24.0,
+            "step_mode": "sampled"
+          },
+          "matches": 12.0,
+          "cases": [
+            {
+              "groups": 2,
+              "mode": "inorder",
+              "jitter_us": 0,
+              "status": "exact",
+              "launches": [
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 4,
+              "mode": "inorder",
+              "jitter_us": 0,
+              "status": "exact",
+              "launches": [
+                360,
+                360,
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 2,
+              "mode": "reverse",
+              "jitter_us": 0,
+              "status": "exact",
+              "launches": [
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 4,
+              "mode": "reverse",
+              "jitter_us": 0,
+              "status": "exact",
+              "launches": [
+                360,
+                360,
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 2,
+              "mode": "overwrite",
+              "jitter_us": 0,
+              "status": "exact",
+              "launches": [
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 2,
+              "mode": "inorder",
+              "jitter_us": 400,
+              "status": "exact",
+              "launches": [
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 4,
+              "mode": "reverse",
+              "jitter_us": 900,
+              "status": "exact",
+              "launches": [
+                360,
+                360,
+                360,
+                360
+              ]
+            },
+            {
+              "groups": 2,
+              "mode": "overwrite",
+              "jitter_us": 1500,
+              "status": "exact",
+              "launches": [
+                360,
+                360
+              ]
+            }
+          ]
+        },
+        "B_serial_vs_async": {
+          "status": "exact",
+          "pairs": [
+            "g2-serial=g2",
+            "g2-serial=g2-jitter",
+            "g4-serial=g4",
+            "g4-serial=g4-jitter"
+          ],
+          "updates": 3,
+          "matches": {
+            "g2-serial": 28,
+            "g2": 28,
+            "g2-jitter": 28,
+            "g4-serial": 28,
+            "g4": 28,
+            "g4-jitter": 28
+          }
+        },
+        "C_alignment": {
+          "g2-serial": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          },
+          "g2": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          },
+          "g2-jitter": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          },
+          "g4-serial": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          },
+          "g4": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          },
+          "g4-jitter": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          },
+          "g1": {
+            "decisions": 1024,
+            "resets": 16,
+            "reset_agents_checked": 16
+          }
+        },
+        "D_cuda_graphs": {
+          "status": "exact",
+          "pairs": {
+            "g1=g1-graphs": "exact rollout; metrics exact",
+            "g2=g2-graphs": "exact rollout; metrics exact"
+          },
+          "pool_versions": [
+            0,
+            1024,
+            2048
+          ]
+        }
+      },
+      "status": "pass"
+    }
+  },
+  "series": {
+    "artifact": "native/artifacts/rl/multimap-combined-series-smoke",
+    "status": "complete",
+    "steps_per_seed": 8192,
+    "evaluation_games": 210,
+    "runs": [
+      {
+        "seed": 83,
+        "step": 8192,
+        "matches": 11,
+        "map_matches": {
+          "0": 0,
+          "1": 3,
+          "2": 8
+        },
+        "checks": {
+          "all_metrics_finite": true,
+          "game_errors": 0,
+          "observation_overflow": 0
+        },
+        "native_videos": 2,
+        "native_replays": 54
+      },
+      {
+        "seed": 183,
+        "step": 8192,
+        "matches": 8,
+        "map_matches": {
+          "0": 2,
+          "1": 3,
+          "2": 3
+        },
+        "checks": {
+          "all_metrics_finite": true,
+          "game_errors": 0,
+          "observation_overflow": 0
+        },
+        "native_videos": 2,
+        "native_replays": 54
+      }
+    ],
+    "resource_samples": 237,
+    "report_artifact": "native/artifacts/rl/multimap-combined-series-smoke/report/summary.json"
+  },
+  "dashboard": {
+    "status": "DASHBOARD_OK",
+    "steps": "8,192",
+    "replay": true,
+    "wide": false,
+    "before": "0:04 / 0:27",
+    "after": "0:04 / 0:27",
+    "video_playback": true,
+    "behavioral": {
+      "notice": "Rates use simulated time for the learning players. Historical opponents and warmup are excluded.",
+      "charts": true
+    },
+    "matrix": {
+      "maps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "expected": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rows": 17,
+      "groups": 17,
+      "coverage": "Training maps: 0, 1, 2. Completed matches: map 1: 3 \u00b7 map 2: 8.",
+      "frozen": 3,
+      "legend": "Previous trained policies \u00b7 mean"
+    },
+    "mobile_overflow": false,
+    "console_errors": 0
+  },
+  "plots_visually_checked": [
+    "overview.png",
+    "transfer.png"
+  ]
+}

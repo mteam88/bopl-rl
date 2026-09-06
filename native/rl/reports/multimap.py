@@ -38,7 +38,7 @@ def plot(summary,histories,output):
     plt.rcParams.update({'font.family':'DejaVu Sans','font.size':10,'text.color':'#182236',
                          'axes.labelcolor':'#354052','axes.edgecolor':'#cfd3d8'})
     fig,axes=plt.subplots(len(maps),2,figsize=(13.5,3*len(maps)+2),squeeze=False,facecolor='#f5f3ed')
-    fig.subplots_adjust(top=.86,bottom=.1,left=.075,right=.975,hspace=.45,wspace=.23)
+    fig.subplots_adjust(top=.82,bottom=.1,left=.075,right=.975,hspace=.45,wspace=.23)
     fig.text(.075,.95,'LEARNING ACROSS MAPS',fontsize=22,weight='bold')
     fig.text(.075,.915,f"{len(runs)} training seeds · {budget:g}M decisions each · unchanged rewards and observations",fontsize=11)
     if summary['status']!='complete': fig.text(.975,.95,'PREVIEW · SERIES RUNNING',ha='right',color='#a1482b')
@@ -75,7 +75,7 @@ def plot(summary,histories,output):
         window=min(100,len(rows));kernel=np.ones(window)
         deaths=np.convolve([r['behavior']['totals']['deaths_environment'] for r in rows],kernel,'valid')
         minutes=np.convolve([r['behavior']['seconds']/60 for r in rows],kernel,'valid')
-        axes[1].plot([r['step']/1e6 for r in rows[window-1:]],deaths/minutes,color=COLORS[i%3],linewidth=1.8,label=f"Seed {run['seed']}")
+        axes[1].plot([r['step']/1e6 for r in rows[window-1:]],deaths/minutes,color=COLORS[i%3],linewidth=1.8,marker='o' if len(rows)==window else None,label=f"Seed {run['seed']}")
     axes[1].set_title('Environment deaths during training',loc='left',weight='bold',pad=12)
     axes[1].set(xlim=(0,max(.01,budget*1.02)),ylim=(0,None),xlabel='Training decisions (millions)',ylabel='Deaths / learner-minute')
     fig.legend(*axes[1].get_legend_handles_labels(),loc='upper left',bbox_to_anchor=(.068,.87),ncol=len(runs),frameon=False)

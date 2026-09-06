@@ -118,6 +118,7 @@ function updateSeries() {
   if (!study) return;
   const palette = ["#2846d4", "#e87350", "#71816a"];
   $("seriesState").textContent = study.status.status || "prepared";
+  $("seriesTitle").textContent = `${study.runs.length} training seeds. One protocol.`;
   $("seriesRuns").replaceChildren(
     ...study.runs.map((r, i) => {
       const card = document.createElement("a");
