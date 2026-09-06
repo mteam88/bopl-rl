@@ -11,7 +11,7 @@ import time
 import numpy as np
 import torch
 from torch.nn import functional as F
-from policy import Policy
+from policy import Policy, previous_actions
 
 def read(paths):
     result=[]
@@ -31,12 +31,17 @@ def batch(records,device):
         n=len(r['actions']);obs[:n,i]=r['obs'];actions[:n,i]=r['actions'];mask[:n,i]=r['alive']
     return tuple(torch.as_tensor(x,device=device) for x in (obs,actions,mask))
 
-def forward(model,data):
+def forward(model,data,change_weights=None):
     obs,actions,mask=data
     resets=torch.zeros(obs.shape[:2],device=obs.device,dtype=torch.bool)
     logits,_=model.sequence(obs,model.initial(obs.shape[1],obs.device),resets)
     a,b=logits.split([256,16],dim=-1)
-    loss=(F.cross_entropy(a[mask],actions[...,0][mask])+F.cross_entropy(b[mask],actions[...,1][mask]))
+    losses=[F.cross_entropy(part[mask],actions[...,i][mask],reduction='none') for i,part in enumerate((a,b))]
+    if change_weights is None: loss=sum(part.mean() for part in losses)
+    else:
+        changed=(actions!=previous_actions(obs))[mask]
+        weights=1+changed*(change_weights-1)
+        loss=sum((part*weights[:,i]).sum()/weights[:,i].sum() for i,part in enumerate(losses))
     pred=torch.stack([a.argmax(-1),b.argmax(-1)],-1)
     return loss,pred
 
@@ -60,22 +65,34 @@ def main():
     parser.add_argument('--lr',type=float,default=0.001)
     parser.add_argument('--device',default='cuda')
     parser.add_argument('--seed',type=int,default=73)
+    parser.add_argument('--balance-changes',action='store_true',help='Equal total training weight for changed and unchanged controls, independently per head')
+    parser.add_argument('--action-mode',choices=('absolute','delta'),default='absolute')
+    parser.add_argument('--input-mode',choices=('full','zero','previous','world'),default='full')
     args=parser.parse_args()
     torch.set_num_threads(1);torch.manual_seed(args.seed);np.random.seed(args.seed)
     training,validation=read(args.train),read(args.validation)
     train_ids={r['metadata']['replay']['sha256'] for r in training}
     val_ids={r['metadata']['replay']['sha256'] for r in validation}
     if train_ids & val_ids: raise ValueError('Replay leakage between train and validation')
+    contracts={(r["metadata"]["repeat"],r["metadata"]["delay"],r["metadata"]["origin"],r["metadata"]["episode_limit"]) for r in training+validation}
+    if len(contracts)!=1: raise ValueError("Mixed observation/control contracts")
+    control_repeat=next(iter(contracts))[0]
     args.output.mkdir(parents=True,exist_ok=False)
     train_batch,val_batch=batch(training,args.device),batch(validation,args.device)
-    model=Policy(train_batch[0].shape[-1]).to(args.device)
+    model=Policy(train_batch[0].shape[-1],input_mode=args.input_mode,action_mode=args.action_mode).to(args.device)
+    change_weights=None
+    if args.balance_changes:
+        obs,actions,mask=train_batch
+        rate=(actions!=previous_actions(obs))[mask].float().mean(0)
+        if torch.any((rate==0)|(rate==1)): raise ValueError("Cannot balance a constant control")
+        change_weights=(1-rate)/rate
     optimizer=torch.optim.Adam(model.parameters(),lr=args.lr)
-    manifest=dict(seed=args.seed,epochs=args.epochs,lr=args.lr,architecture='unchanged Policy: 128 tanh + GRU128',
+    manifest=dict(change_weights=change_weights.tolist() if change_weights is not None else None,action_mode=args.action_mode,control_repeat=control_repeat,input_mode=args.input_mode,seed=args.seed,epochs=args.epochs,lr=args.lr,architecture='unchanged Policy: 128 tanh + GRU128',
         train=[{k:v for k,v in r.items() if k not in ('obs','actions','alive')} for r in training],
         validation=[{k:v for k,v in r.items() if k not in ('obs','actions','alive')} for r in validation])
     (args.output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     def save(name,epoch):
-        torch.save(dict(policy=model.state_dict(),obs_size=model.obs_size,hidden=model.hidden,
+        torch.save(dict(policy=model.state_dict(),input_mode=args.input_mode,action_mode=args.action_mode,control_repeat=control_repeat,obs_size=model.obs_size,hidden=model.hidden,
             step=epoch,config=dict(episode_ticks=3600,training_maps=sorted({r['metadata']['replay']['level'] for r in training})),
             imitation_manifest=manifest),args.output/name)
     save('initial.pt',0)
@@ -84,7 +101,7 @@ def main():
         for epoch in range(args.epochs+1):
             if epoch:
                 model.train();optimizer.zero_grad(set_to_none=True)
-                loss,_=forward(model,train_batch)
+                loss,_=forward(model,train_batch,change_weights)
                 if not torch.isfinite(loss): raise ValueError('Nonfinite loss')
                 loss.backward();torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True);optimizer.step()
             if epoch%100==0 or epoch==args.epochs:

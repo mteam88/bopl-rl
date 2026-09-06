@@ -1,5 +1,12 @@
 # Dash / Arrow / Platform experiments
 
+## Imitation controls — 2026-09-06
+
+Input ablations, 30 Hz controls, action-change prediction and event weighting
+expose a persistence trap: 64% action accuracy with zero predicted Bow events.
+Weighted events trigger shots but no hits; a scripted hold/release baseline
+lands two hits. [Report and input visualizations](evidence/imitation-controls-001/REPORT.md).
+
 ## Human imitation — 2026-09-06
 
 The completed batch has 47 controller recordings across 47 maps. A 37-replay fit

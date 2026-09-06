@@ -1,5 +1,7 @@
 # Human replay imitation
 
+Latest: [control-rate and action-prediction experiments](evidence/imitation-controls-001/REPORT.md).
+
 The first experiment can fit a human demonstration with the existing GRU and
 execute the learned policy in the real game. It does not yet transfer well to
 other demonstrations. Resampling the human's controls is itself a substantial
@@ -19,7 +21,8 @@ rejects keyboard targets, unresolved abilities and Random loadouts. It never
 silently identifies a human from controller type: select `--player` explicitly.
 
 The shared C observation encoder provides all 3,257 features. Extraction begins
-at tick 240, samples a target every four ticks, and uses world state from nine
+at tick 240, samples a target every four ticks by default (two with `--repeat 2`),
+and uses world state from nine
 ticks earlier, clamped to tick 240 during startup. The episode-clock feature
 subtracts those 240 ticks and uses the training limit of 3,600. The immediate
 previous-action fields contain the previous sampled decision, never the current
@@ -74,7 +77,9 @@ Evaluation replays the original prefix through tick 240, then gives the model
 control of the selected player using its own recurrent memory and previous
 actions. Other players retain their recorded inputs. Each variant gets the same
 initial setup and original replay tick budget, or stops at an earlier terminal.
-`human60` and `human15` are input-playback controls. Policy evaluation uses argmax.
+`human60` and `human15` (or `human30` for two-tick checkpoints) are input-playback
+controls. Evaluation reads the decision rate from checkpoint metadata and rejects
+mixed rates or a conflicting `--repeat`. Policy evaluation uses argmax.
 This is a counterfactual replay diagnostic against fixed opponent input, not a
 competitive strength benchmark. Exported `.rep` files can be rendered with the
 existing `research/render_video.py`.

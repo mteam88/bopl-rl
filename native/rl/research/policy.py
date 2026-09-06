@@ -4,24 +4,48 @@ from torch import nn
 from torch.distributions import Categorical
 
 class Policy(nn.Module):
-    def __init__(self, obs_size, hidden=128):
+    def __init__(self, obs_size, hidden=128, input_mode="full", action_mode="absolute"):
         super().__init__()
         self.obs_size=obs_size; self.hidden=hidden
+        if input_mode not in ("full","zero","previous","world"): raise ValueError(input_mode)
+        self.input_mode=input_mode
+        if action_mode not in ("absolute","delta"): raise ValueError(action_mode)
+        self.action_mode=action_mode
         self.encoder=nn.Sequential(nn.Linear(obs_size,hidden),nn.Tanh())
         self.memory=nn.GRU(hidden,hidden)
         self.actor=nn.Linear(hidden,272)
         self.critic=nn.Linear(hidden,1)
         nn.init.orthogonal_(self.actor.weight,0.01); nn.init.zeros_(self.actor.bias)
         nn.init.orthogonal_(self.critic.weight,1.0); nn.init.zeros_(self.critic.bias)
+    def inputs(self,obs):
+        if self.input_mode=="full": return obs
+        if self.input_mode=="zero": return torch.zeros_like(obs)
+        masked=obs.clone()
+        if self.input_mode=="previous": masked[...,:-7]=0
+        else: masked[...,-7:]=0
+        return masked
+    def action_logits(self,raw,obs):
+        if self.action_mode=="absolute": return raw
+        # A permutation, not a new output head: delta zero keeps each control.
+        # When the prior stick is neutral, direction codes remain absolute.
+        # Otherwise 0..254 rotate on the 255-direction circle; 255 is neutral.
+        prior=previous_actions(obs)
+        absolute=torch.arange(256,device=obs.device)
+        direction=(absolute-prior[...,0,None])%255
+        direction=torch.where(absolute==0,255,direction)
+        direction=torch.where(prior[...,0,None]==0,absolute,direction)
+        buttons=torch.arange(16,device=obs.device)^prior[...,1,None]
+        angle_logits,button_logits=raw.split([256,16],-1)
+        return torch.cat([angle_logits.gather(-1,direction),button_logits.gather(-1,buttons)],-1)
     def initial(self,agents,device): return torch.zeros(1,agents,self.hidden,device=device)
     def step(self,obs,state):
-        value,state=self.memory(self.encoder(obs).unsqueeze(0),state)
+        value,state=self.memory(self.encoder(self.inputs(obs)).unsqueeze(0),state)
         value=value.squeeze(0)
-        return self.actor(value),self.critic(value).squeeze(-1),state
+        return self.action_logits(self.actor(value),obs),self.critic(value).squeeze(-1),state
     def sequence(self,obs,state,resets):
         # Reset only the agents that started a new episode. Splitting at the
         # union of boundaries allows cuDNN to process uninterrupted spans.
-        encoded=self.encoder(obs)
+        encoded=self.encoder(self.inputs(obs))
         boundaries=torch.where(resets.any(dim=1))[0].tolist()
         starts=sorted(set([0,*boundaries,obs.shape[0]]))
         chunks=[]
@@ -30,7 +54,15 @@ class Policy(nn.Module):
             value,state=self.memory(encoded[start:end],state)
             chunks.append(value)
         value=torch.cat(chunks,dim=0)
-        return self.actor(value),self.critic(value).squeeze(-1)
+        return self.action_logits(self.actor(value),obs),self.critic(value).squeeze(-1)
+
+def previous_actions(obs):
+    history=obs[...,-7:]
+    angle=(torch.round(torch.remainder(torch.atan2(history[...,2],history[...,1]),2*torch.pi)*255/(2*torch.pi)).long()%255)+1
+    angle=torch.where(history[...,0]>.5,0,angle)
+    bits=torch.tensor([1,2,4,8],device=obs.device)
+    buttons=((history[...,3:]>.5).long()*bits).sum(-1)
+    return torch.stack([angle,buttons],-1)
 
 def distribution(logits,actions=None):
     # validate_args=False skips torch's per-call finiteness check, which forces
@@ -44,6 +76,6 @@ def distribution(logits,actions=None):
 
 def load(path,device='cpu'):
     checkpoint=torch.load(path,map_location=device,weights_only=False)
-    policy=Policy(checkpoint['obs_size'],checkpoint['hidden']).to(device)
+    policy=Policy(checkpoint['obs_size'],checkpoint['hidden'],checkpoint.get('input_mode','full'),checkpoint.get('action_mode','absolute')).to(device)
     policy.load_state_dict(checkpoint['policy'])
     return policy,checkpoint

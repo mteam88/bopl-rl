@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 from replay_data import ReplayWorld, ROOT, decode, previous
 
-def extract(path, output, player, origin=240, episode_limit=3600):
+def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
+    if repeat not in (2,4): raise ValueError("Repeat must be 2 or 4")
     meta, inputs = decode(path)
     index = player-1
     if not 0 <= index < len(meta['players']): raise ValueError('Player is absent')
@@ -26,9 +27,9 @@ def extract(path, output, player, origin=240, episode_limit=3600):
             if world.ended: break
             if t >= origin:
                 history.append(world.pack(origin, episode_limit))
-                if (t-origin)%4 == 0:
+                if (t-origin)%repeat == 0:
                     obs = history[0].copy()  # t-9, clamped to initial observation
-                    prior = [(0,0)]*len(meta['players']) if t==origin else list(zip(inputs[t-4]['angle'], inputs[t-4]['buttons']))
+                    prior = [(0,0)]*len(meta['players']) if t==origin else list(zip(inputs[t-repeat]['angle'], inputs[t-repeat]['buttons']))
                     previous(obs, prior)
                     rows.append(obs[index]); labels.append([inputs[t,index]['angle'],inputs[t,index]['buttons']])
                     ticks.append(t)
@@ -39,14 +40,14 @@ def extract(path, output, player, origin=240, episode_limit=3600):
         final_events = [world.state.telemetry[index].arrows_fired,world.state.telemetry[index].arrow_hits]
     if not rows: raise ValueError('No post-warmup samples')
     labels = np.asarray(labels, np.int64)
-    # Report what 4-tick sample-and-hold would lose. Source playback itself is
+    # Report what sample-and-hold would lose. Source playback itself is
     # never quantized, and targets and own-history never use future inputs.
     changed = total = 0
     for t, action in zip(ticks,labels):
-        span = inputs[t:min(t+4,replayed_ticks),index]
+        span = inputs[t:min(t+repeat,replayed_ticks),index]
         changed += int(np.count_nonzero((span['angle']!=action[0]) | (span['buttons']!=action[1])))
         total += len(span)
-    metadata = dict(replay=meta, player=player, origin=origin, delay=9, repeat=4,
+    metadata = dict(replay=meta, player=player, origin=origin, delay=9, repeat=repeat,
         episode_limit=episode_limit, replayed_ticks=replayed_ticks, decisions=len(rows),
         alive_decisions=int(sum(alive)), action_resampling_mismatch=changed/max(1,total),
         final_arrows_fired=int(final_events[0]),final_arrow_hits=int(final_events[1]),
@@ -63,8 +64,9 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('replays',type=Path,nargs='+')
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--repeat',type=int,choices=(2,4),default=4)
     parser.add_argument('--player',type=int,required=True,help='1-based human player; never silently infer controller ownership')
     args=parser.parse_args()
-    for path in args.replays: extract(path,args.output,args.player)
+    for path in args.replays: extract(path,args.output,args.player,repeat=args.repeat)
 
 if __name__=='__main__': main()
