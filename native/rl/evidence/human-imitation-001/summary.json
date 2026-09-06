@@ -1,0 +1,777 @@
+{
+  "one_replay": {
+    "final": {
+      "epoch": 2000,
+      "elapsed_seconds": 5.468183408003824,
+      "train": {
+        "loss": 0.007481469307094812,
+        "decisions": 186,
+        "angle_accuracy": 1.0,
+        "buttons_accuracy": 1.0,
+        "joint_accuracy": 1.0,
+        "nonneutral_direction_mae_degrees": 0.0,
+        "neutral_accuracy": 1.0
+      },
+      "validation": {
+        "loss": 15.644441604614258,
+        "decisions": 228,
+        "angle_accuracy": 0.18421052631578946,
+        "buttons_accuracy": 0.6140350877192983,
+        "joint_accuracy": 0.16228070175438597,
+        "nonneutral_direction_mae_degrees": 63.00725221595487,
+        "neutral_accuracy": 0.5043859649122807
+      }
+    },
+    "persistence_baseline": {
+      "train": {
+        "decisions": 186,
+        "angle_accuracy": 0.45698924731182794,
+        "buttons_accuracy": 0.8709677419354839,
+        "joint_accuracy": 0.41935483870967744,
+        "nonneutral_direction_mae_degrees": 8.771626297577855,
+        "neutral_accuracy": 0.8978494623655914
+      },
+      "validation": {
+        "decisions": 228,
+        "angle_accuracy": 0.5,
+        "buttons_accuracy": 0.9298245614035088,
+        "joint_accuracy": 0.4649122807017544,
+        "nonneutral_direction_mae_degrees": 5.330628803245436,
+        "neutral_accuracy": 0.8157894736842105
+      }
+    }
+  },
+  "six_replays": {
+    "final": {
+      "epoch": 1000,
+      "elapsed_seconds": 3.867194546000974,
+      "train": {
+        "loss": 0.1104830875992775,
+        "decisions": 1562,
+        "angle_accuracy": 0.9916773367477593,
+        "buttons_accuracy": 0.9942381562099872,
+        "joint_accuracy": 0.9871959026888605,
+        "nonneutral_direction_mae_degrees": 0.0037613624490648837,
+        "neutral_accuracy": 0.9935979513444302
+      },
+      "validation": {
+        "loss": 8.660005569458008,
+        "decisions": 612,
+        "angle_accuracy": 0.19934640522875818,
+        "buttons_accuracy": 0.6977124183006536,
+        "joint_accuracy": 0.1895424836601307,
+        "nonneutral_direction_mae_degrees": 46.372549019607845,
+        "neutral_accuracy": 0.6683006535947712
+      }
+    },
+    "persistence_baseline": {
+      "train": {
+        "decisions": 1562,
+        "angle_accuracy": 0.5454545454545454,
+        "buttons_accuracy": 0.8943661971830986,
+        "joint_accuracy": 0.5006402048655569,
+        "nonneutral_direction_mae_degrees": 5.331269349845201,
+        "neutral_accuracy": 0.9142125480153649
+      },
+      "validation": {
+        "decisions": 612,
+        "angle_accuracy": 0.5490196078431373,
+        "buttons_accuracy": 0.9183006535947712,
+        "joint_accuracy": 0.5261437908496732,
+        "nonneutral_direction_mae_degrees": 4.376887038001041,
+        "neutral_accuracy": 0.8774509803921569
+      }
+    }
+  },
+  "closed_loop": {
+    "checkpoints": {
+      "initial": {
+        "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation/native/artifacts/rl/imitation/one-replay-2000/initial.pt",
+        "sha256": "dbcecdfd3e459cb6d79483179bd368dc0224723d3cbc5fe32005a00cf7d539f7"
+      },
+      "one": {
+        "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation/native/artifacts/rl/imitation/one-replay-2000/final.pt",
+        "sha256": "5d875e11e5a76abd3c961effbd53f927c82fe40deafec6f85af8aca8ea41c505"
+      },
+      "six": {
+        "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation/native/artifacts/rl/imitation/six-replay/final.pt",
+        "sha256": "c5496a8ac4d1165729aff8651ea31dd211f23c5d1c67a7ff28c8d413ab9d65c7"
+      }
+    },
+    "games": [
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 983,
+        "requested_ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          56,
+          27
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 983,
+        "requested_ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          56,
+          24
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "player": 2,
+        "mode": "initial",
+        "ticks": 983,
+        "requested_ticks": 983,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          80,
+          68
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "player": 2,
+        "mode": "one",
+        "ticks": 983,
+        "requested_ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          52,
+          56
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "player": 2,
+        "mode": "six",
+        "ticks": 983,
+        "requested_ticks": 983,
+        "arrows_fired": 1,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          56
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1151,
+        "requested_ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          77,
+          67
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1151,
+        "requested_ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          76,
+          68
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "player": 2,
+        "mode": "initial",
+        "ticks": 1151,
+        "requested_ticks": 1151,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "player": 2,
+        "mode": "one",
+        "ticks": 1151,
+        "requested_ticks": 1151,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          20
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1151,
+        "requested_ticks": 1151,
+        "arrows_fired": 1,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          304,
+          40
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 2368,
+        "requested_ticks": 2368,
+        "arrows_fired": 6,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          64,
+          63,
+          63,
+          144,
+          69,
+          31
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 2368,
+        "requested_ticks": 2368,
+        "arrows_fired": 6,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          64,
+          64,
+          64,
+          144,
+          72,
+          32
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "player": 2,
+        "mode": "initial",
+        "ticks": 2368,
+        "requested_ticks": 2368,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "player": 2,
+        "mode": "one",
+        "ticks": 2368,
+        "requested_ticks": 2368,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "player": 2,
+        "mode": "six",
+        "ticks": 2368,
+        "requested_ticks": 2368,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          32
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1775,
+        "requested_ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          84,
+          73,
+          36,
+          58
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1775,
+        "requested_ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          84,
+          72,
+          36,
+          60
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "player": 2,
+        "mode": "initial",
+        "ticks": 1775,
+        "requested_ticks": 1775,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          24,
+          28,
+          80,
+          24,
+          44,
+          52
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "player": 2,
+        "mode": "one",
+        "ticks": 1775,
+        "requested_ticks": 1775,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1775,
+        "requested_ticks": 1775,
+        "arrows_fired": 1,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          88,
+          16
+        ]
+      }
+    ]
+  },
+  "cadence": {
+    "origin": 240,
+    "variants": {
+      "human60": [
+        1,
+        0,
+        true,
+        true
+      ],
+      "human15": [
+        4,
+        0,
+        true,
+        true
+      ],
+      "human30": [
+        2,
+        0,
+        true,
+        true
+      ],
+      "aim15": [
+        4,
+        0,
+        true,
+        false
+      ],
+      "buttons15": [
+        4,
+        0,
+        false,
+        true
+      ],
+      "human15phase3": [
+        4,
+        3,
+        true,
+        true
+      ]
+    },
+    "games": [
+      {
+        "replay": "498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "variant": "human60",
+        "player": 2,
+        "ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "variant": "human15",
+        "player": 2,
+        "ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0
+      },
+      {
+        "replay": "498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "variant": "human30",
+        "player": 2,
+        "ticks": 982,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "variant": "aim15",
+        "player": 2,
+        "ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0
+      },
+      {
+        "replay": "498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "variant": "buttons15",
+        "player": 2,
+        "ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "498.rep",
+        "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+        "variant": "human15phase3",
+        "player": 2,
+        "ticks": 983,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0
+      },
+      {
+        "replay": "499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "variant": "human60",
+        "player": 2,
+        "ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "variant": "human15",
+        "player": 2,
+        "ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "variant": "human30",
+        "player": 2,
+        "ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "variant": "aim15",
+        "player": 2,
+        "ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "variant": "buttons15",
+        "player": 2,
+        "ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "499.rep",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "variant": "human15phase3",
+        "player": 2,
+        "ticks": 1151,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "variant": "human60",
+        "player": 2,
+        "ticks": 2368,
+        "arrows_fired": 6,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "variant": "human15",
+        "player": 2,
+        "ticks": 2368,
+        "arrows_fired": 6,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0
+      },
+      {
+        "replay": "501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "variant": "human30",
+        "player": 2,
+        "ticks": 2069,
+        "arrows_fired": 5,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "variant": "aim15",
+        "player": 2,
+        "ticks": 2368,
+        "arrows_fired": 6,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0
+      },
+      {
+        "replay": "501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "variant": "buttons15",
+        "player": 2,
+        "ticks": 2368,
+        "arrows_fired": 6,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1
+      },
+      {
+        "replay": "501.rep",
+        "replay_sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c",
+        "variant": "human15phase3",
+        "player": 2,
+        "ticks": 1570,
+        "arrows_fired": 3,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 2
+      },
+      {
+        "replay": "505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "variant": "human60",
+        "player": 2,
+        "ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "variant": "human15",
+        "player": 2,
+        "ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "variant": "human30",
+        "player": 2,
+        "ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "variant": "aim15",
+        "player": 2,
+        "ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0
+      },
+      {
+        "replay": "505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "variant": "buttons15",
+        "player": 2,
+        "ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0
+      },
+      {
+        "replay": "505.rep",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "variant": "human15phase3",
+        "player": 2,
+        "ticks": 1775,
+        "arrows_fired": 4,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0
+      }
+    ]
+  },
+  "parity": {
+    "match": true,
+    "matched_ticks": 983,
+    "projection": "gameplay-with-audited-exclusions",
+    "excluded_fields": [
+      "BlackHole.onEatParticles",
+      "DeathEffect2.prevDisp",
+      "DuplicatePlatformEffect.effectShake",
+      "Missile.spawnTime",
+      "Player.<RumbleState>k__BackingField",
+      "PokeBall.wigglePhase",
+      "Portal.ageVisual",
+      "Portal.sparkleTimer",
+      "Portal.spinPhase",
+      "QuickSpell.ParticleOnCast",
+      "SimpleSparkNode.timeSinceActivated",
+      "SuperStarEffect.lastTintedForm",
+      "SuperStarEffect.shimmerPhase",
+      "SuperStarEffect.sparkTimer"
+    ],
+    "replay_sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515",
+    "controlled_sha256": "0c7ef845b8ddb5da39f53edddbc35e71274b0c1ce7ea9dda397b8f9cb760b1fb",
+    "ordinary_sha256": "7459a0386c073958249690a590c9599d510fc3debd06fc4e8d4d3b1df075289e",
+    "assembly_sha256": "72cb1e03cc4874b91feefb560ed4bdfce6d34d4acf77ac01fc987baddd622cd2"
+  }
+}

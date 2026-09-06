@@ -1,5 +1,13 @@
 # Dash / Arrow / Platform experiments
 
+## Human imitation — 2026-09-06
+
+The first eight solo recordings support exact replay-to-policy extraction and a
+100% single-demonstration fit with the existing GRU. Transfer is still poor. A
+control-rate probe preserves 8 arrow hits at 60 Hz, 6 at 30 Hz, and 2 at 15 Hz
+across four recorded setups. [Report, plots and videos](evidence/human-imitation-001/REPORT.md)
+and [reproduction workflow](IMITATION.md).
+
 ## Throughput — 2026-09-06
 
 Runtime changes before the multi-map series: one game round trip per decision,

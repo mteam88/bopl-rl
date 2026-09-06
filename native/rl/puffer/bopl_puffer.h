@@ -162,6 +162,12 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
     }
 }
 static void compute_observations(BoplPuffer *env) { compute_observations_from(env, bopl_rl_state(env->world)); }
+static void bopl_previous_action(float *previous, BoplRlAction action) {
+    double angle=(action.angle-1)*6.283185307179586/255.0;
+    previous[0]=action.angle==0;
+    previous[1]=action.angle?cos(angle):0; previous[2]=action.angle?sin(angle):0;
+    for (int bit=0; bit<4; bit++) previous[3+bit]=(action.buttons&(1<<bit))!=0;
+}
 static void bopl_failed(BoplPuffer *env, const char *operation) {
     env->failed=1; env->log.game_errors++;
     snprintf(env->error, sizeof(env->error), "%s: %s", operation, bopl_rl_error(env->world));
@@ -294,10 +300,7 @@ static void c_step(BoplPuffer *env) {
     if (!terminal) for (int i=0; i<env->num_agents; i++) {
         // Own button history is known immediately; it is not world information.
         float *previous=env->observations+(size_t)(i+1)*BOPL_OBS_SIZE-7;
-        double angle=(actions[i].angle-1)*6.283185307179586/255.0;
-        previous[0]=actions[i].angle==0;
-        previous[1]=actions[i].angle?cos(angle):0; previous[2]=actions[i].angle?sin(angle):0;
-        for (int bit=0; bit<4; bit++) previous[3+bit]=(actions[i].buttons&(1<<bit))!=0;
+        bopl_previous_action(previous, actions[i]);
     }
 }
 static void c_render(BoplPuffer *env) {
