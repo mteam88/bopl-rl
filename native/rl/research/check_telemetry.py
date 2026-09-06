@@ -45,6 +45,11 @@ def capture(root,out,games):
             row=dict(seed=seed,decisions=decisions,ticks=env.state.header.episode_ticks,
                      state_sha256=state_hash.hexdigest(),observations_sha256=obs_hash.hexdigest(),
                      replay_sha256=hashlib.sha256(replay.read_bytes()).hexdigest())
+            if hasattr(env,'step_mode'):
+                # Checked after real stepping: an old game build would silently
+                # fall back to two roundtrips and must not pass as the new IPC path.
+                row['step_mode']=env.step_mode
+                if env.step_mode=='fallback': raise AssertionError('Game build rejected the sampled step command')
             if events:
                 from telemetry import EVENT_FIELDS,FIELDS
                 total=np.asarray(events).sum(axis=0,dtype=np.float64)
@@ -80,6 +85,7 @@ def main():
         if totals[k]<=0: raise AssertionError(f'Missing live coverage for {k}; extend the deterministic game corpus')
     assembly=Path('Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll')
     report=dict(status='pass',games=args.games,totals=totals,event_conservation='pass',reset='pass',
+                step_mode=sorted(set(row.get('step_mode','unknown') for row in candidate)),
                 candidate_assembly_sha256=hashlib.sha256((ROOT/assembly).read_bytes()).hexdigest(),episodes=candidate)
     if args.baseline:
         subprocess.run([sys.executable,str(__file__),'--output',str(args.output/'baseline'),

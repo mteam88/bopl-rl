@@ -28,17 +28,21 @@ _Static_assert(sizeof(BoplRlTelemetry)==36, "telemetry layout");
 
 enum { MAGIC=0x314c5242, MAX_PAYLOAD=104000000 };
 typedef struct { uint32_t magic, operation, sequence, length; } Frame;
+typedef struct {
+    BoplRlState state;
+    BoplRlEntity *entities;
+    BoplRlSlime *slimes;
+    size_t entity_capacity, slime_capacity;
+} Snapshot;
 struct BoplRl {
     int socket, listener;
     pid_t child;
     uint32_t timeout_ms, sequence, maps, abilities;
-    bool valid, broken;
+    bool valid, broken, sample_valid, sampled_unsupported;
     char directory[64], endpoint[108], error[512], source[65], catalog[65];
     unsigned char *buffer;
-    size_t capacity, entity_capacity, slime_capacity;
-    BoplRlEntity *entities;
-    BoplRlSlime *slimes;
-    BoplRlState state;
+    size_t capacity;
+    Snapshot main, sample;
 };
 extern char **environ;
 
@@ -111,36 +115,67 @@ static int command(BoplRl *w, uint32_t operation, const void *data, uint32_t len
     if (!result) result=receive_frame(w, operation, frame.sequence, response_length, deadline);
     return result;
 }
-static int decode_state(BoplRl *w, uint32_t length) {
+/* Decodes one self-delimiting state record from bytes. *consumed receives its
+ * length, which may be shorter than available when records are concatenated. */
+static int decode_snapshot(BoplRl *w, Snapshot *s, const unsigned char *bytes, uint32_t available, uint32_t *consumed) {
     BoplRlHeader header;
-    if (length<sizeof(header)) { errno=EPROTO; return fail(w, "Short RL state"); }
-    memcpy(&header, w->buffer, sizeof(header));
+    if (available<sizeof(header)) { errno=EPROTO; return fail(w, "Short RL state"); }
+    memcpy(&header, bytes, sizeof(header));
     size_t player_bytes=(size_t)header.player_count*sizeof(BoplRlPlayer);
     size_t entity_bytes=(size_t)header.entity_count*sizeof(BoplRlEntity);
     size_t slime_bytes=(size_t)header.slime_count*sizeof(BoplRlSlime);
     size_t telemetry_bytes=(size_t)header.player_count*sizeof(BoplRlTelemetry);
-    if (header.version!=2 || header.player_count<1 || header.player_count>6
-        || sizeof(header)+player_bytes+entity_bytes+slime_bytes+telemetry_bytes!=length) {
+    size_t total=sizeof(header)+player_bytes+entity_bytes+slime_bytes+telemetry_bytes;
+    if (header.version!=2 || header.player_count<1 || header.player_count>6 || total>available) {
         errno=EPROTO; return fail(w, "Invalid RL state layout");
     }
-    if (header.slime_count>w->slime_capacity) {
-        void *slimes=realloc(w->slimes, slime_bytes);
+    if (header.slime_count>s->slime_capacity) {
+        void *slimes=realloc(s->slimes, slime_bytes);
         if (!slimes) return fail(w, "RL slime allocation");
-        w->slimes=slimes; w->slime_capacity=header.slime_count;
+        s->slimes=slimes; s->slime_capacity=header.slime_count;
     }
-    if (header.entity_count>w->entity_capacity) {
-        void *entities=realloc(w->entities, entity_bytes);
+    if (header.entity_count>s->entity_capacity) {
+        void *entities=realloc(s->entities, entity_bytes);
         if (!entities) return fail(w, "RL entity allocation");
-        w->entities=entities; w->entity_capacity=header.entity_count;
+        s->entities=entities; s->entity_capacity=header.entity_count;
     }
-    w->state.header=header;
-    memset(w->state.players, 0, sizeof(w->state.players));
-    memcpy(w->state.players, w->buffer+sizeof(header), player_bytes);
-    if (entity_bytes) memcpy(w->entities, w->buffer+sizeof(header)+player_bytes, entity_bytes);
-    if (slime_bytes) memcpy(w->slimes, w->buffer+sizeof(header)+player_bytes+entity_bytes, slime_bytes);
-    memset(w->state.telemetry, 0, sizeof(w->state.telemetry));
-    memcpy(w->state.telemetry, w->buffer+sizeof(header)+player_bytes+entity_bytes+slime_bytes, telemetry_bytes);
-    w->state.entities=w->entities; w->state.slimes=w->slimes; w->valid=true; w->error[0]=0;
+    s->state.header=header;
+    memset(s->state.players, 0, sizeof(s->state.players));
+    memcpy(s->state.players, bytes+sizeof(header), player_bytes);
+    if (entity_bytes) memcpy(s->entities, bytes+sizeof(header)+player_bytes, entity_bytes);
+    if (slime_bytes) memcpy(s->slimes, bytes+sizeof(header)+player_bytes+entity_bytes, slime_bytes);
+    memset(s->state.telemetry, 0, sizeof(s->state.telemetry));
+    memcpy(s->state.telemetry, bytes+sizeof(header)+player_bytes+entity_bytes+slime_bytes, telemetry_bytes);
+    s->state.entities=s->entities; s->state.slimes=s->slimes;
+    *consumed=(uint32_t)total;
+    return BOPL_RL_OK;
+}
+static int decode_state(BoplRl *w, uint32_t length) {
+    uint32_t consumed;
+    int result=decode_snapshot(w, &w->main, w->buffer, length, &consumed);
+    if (result) return result;
+    if (consumed!=length) { errno=EPROTO; return fail(w, "Invalid RL state layout"); }
+    w->valid=true; w->error[0]=0;
+    return BOPL_RL_OK;
+}
+static int copy_snapshot(BoplRl *w, Snapshot *to, const Snapshot *from) {
+    const BoplRlHeader *header=&from->state.header;
+    size_t entity_bytes=(size_t)header->entity_count*sizeof(BoplRlEntity);
+    size_t slime_bytes=(size_t)header->slime_count*sizeof(BoplRlSlime);
+    if (header->slime_count>to->slime_capacity) {
+        void *slimes=realloc(to->slimes, slime_bytes);
+        if (!slimes) return fail(w, "RL slime allocation");
+        to->slimes=slimes; to->slime_capacity=header->slime_count;
+    }
+    if (header->entity_count>to->entity_capacity) {
+        void *entities=realloc(to->entities, entity_bytes);
+        if (!entities) return fail(w, "RL entity allocation");
+        to->entities=entities; to->entity_capacity=header->entity_count;
+    }
+    to->state=from->state;
+    if (entity_bytes) memcpy(to->entities, from->entities, entity_bytes);
+    if (slime_bytes) memcpy(to->slimes, from->slimes, slime_bytes);
+    to->state.entities=to->entities; to->state.slimes=to->slimes;
     return BOPL_RL_OK;
 }
 
@@ -225,24 +260,75 @@ int bopl_rl_reset(BoplRl *w, const BoplRlConfig *config) {
             if (!config->player[i].abilities[j] || config->player[i].abilities[j]>=w->abilities) return BOPL_RL_ARGUMENT;
     }
     uint32_t length;
+    w->sample_valid=false;
     int result=command(w, 1, config, sizeof(*config), &length);
     if (!result) result=decode_state(w, length);
     return result;
 }
-int bopl_rl_step(BoplRl *w, const BoplRlAction *actions, size_t count, uint32_t repeat) {
-    if (!w || !actions || !w->valid || count!=w->state.header.player_count || repeat<1 || repeat>16) return BOPL_RL_ARGUMENT;
-    if (w->state.header.flags & BOPL_RL_TERMINAL) return BOPL_RL_ENDED;
-    struct { uint32_t repeat; BoplRlAction actions[6]; } request={.repeat=repeat};
+static int check_actions(const BoplRl *w, const BoplRlAction *actions, size_t count, BoplRlAction *out) {
+    if (!w || !actions || !w->valid || count!=w->main.state.header.player_count) return BOPL_RL_ARGUMENT;
+    if (w->main.state.header.flags & BOPL_RL_TERMINAL) return BOPL_RL_ENDED;
     for (size_t i=0; i<count; i++) {
         if (actions[i].reserved || (actions[i].buttons & ~1023)) return BOPL_RL_ARGUMENT;
-        request.actions[i]=actions[i];
+        out[i]=actions[i];
     }
+    return BOPL_RL_OK;
+}
+int bopl_rl_step(BoplRl *w, const BoplRlAction *actions, size_t count, uint32_t repeat) {
+    struct { uint32_t repeat; BoplRlAction actions[6]; } request={.repeat=repeat};
+    int result=check_actions(w, actions, count, request.actions);
+    if (result) return result;
+    if (repeat<1 || repeat>16) return BOPL_RL_ARGUMENT;
+    w->sample_valid=false;
     uint32_t length;
-    int result=command(w, 2, &request, sizeof(request), &length);
+    result=command(w, 2, &request, sizeof(request), &length);
     if (!result) result=decode_state(w, length);
     return result;
 }
-const BoplRlState *bopl_rl_state(const BoplRl *w) { return w && w->valid ? &w->state : NULL; }
+int bopl_rl_step_sampled(BoplRl *w, const BoplRlAction *actions, size_t count, uint32_t first, uint32_t second) {
+    struct { uint32_t first, second; BoplRlAction actions[6]; } request={.first=first, .second=second};
+    int result=check_actions(w, actions, count, request.actions);
+    if (result) return result;
+    if (first<1 || first>16 || second<1 || second>16 || first+second>16) return BOPL_RL_ARGUMENT;
+    w->sample_valid=false;
+    if (!w->sampled_unsupported) {
+        uint32_t length;
+        result=command(w, 6, &request, sizeof(request), &length);
+        if (result==BOPL_RL_GAME_ERROR && strstr(w->error, "Unknown RL command")) {
+            /* An older game build rejected the command before simulating anything. */
+            w->sampled_unsupported=true; w->valid=true; w->error[0]=0;
+        } else {
+            if (result) return result;
+            uint32_t consumed;
+            result=decode_snapshot(w, &w->sample, w->buffer, length, &consumed);
+            if (result) return result;
+            if (consumed==length) {
+                if (!(w->sample.state.header.flags & BOPL_RL_TERMINAL)) { errno=EPROTO; return fail(w, "Missing final RL state"); }
+                result=copy_snapshot(w, &w->main, &w->sample);
+            } else {
+                uint32_t rest;
+                result=decode_snapshot(w, &w->main, w->buffer+consumed, length-consumed, &rest);
+                if (!result && consumed+rest!=length) { errno=EPROTO; return fail(w, "Invalid RL state layout"); }
+            }
+            if (result) return result;
+            w->valid=true; w->sample_valid=true; w->error[0]=0;
+            return BOPL_RL_OK;
+        }
+    }
+    result=bopl_rl_step(w, actions, count, first);
+    if (result) return result;
+    result=copy_snapshot(w, &w->sample, &w->main);
+    if (result) return result;
+    w->sample_valid=true;
+    if (!(w->main.state.header.flags & BOPL_RL_TERMINAL)) {
+        result=bopl_rl_step(w, actions, count, second);
+        w->sample_valid=!result;
+    }
+    return result;
+}
+const BoplRlState *bopl_rl_state(const BoplRl *w) { return w && w->valid ? &w->main.state : NULL; }
+const BoplRlState *bopl_rl_sample(const BoplRl *w) { return w && w->valid && w->sample_valid ? &w->sample.state : NULL; }
+int bopl_rl_sampled_native(const BoplRl *w) { return w && !w->sampled_unsupported; }
 int bopl_rl_replay(BoplRl *w, const void **bytes, size_t *length) {
     if (!w || !bytes || !length) return BOPL_RL_ARGUMENT;
     uint32_t received=0;
@@ -276,5 +362,5 @@ void bopl_rl_close(BoplRl *w) {
     }
     if (w->endpoint[0]) unlink(w->endpoint);
     if (w->directory[0]) rmdir(w->directory);
-    free(w->slimes); free(w->entities); free(w->buffer); free(w);
+    free(w->main.slimes); free(w->main.entities); free(w->sample.slimes); free(w->sample.entities); free(w->buffer); free(w);
 }

@@ -26,7 +26,7 @@ typedef struct {
     BoplRlConfig config;
     int repeat, random_maps, random_loadouts, failed;
     uint32_t training_map_mask;
-    int observation_delay, delay_cursor, no_autoreset;
+    int observation_delay, delay_cursor, no_autoreset, split_step;
     float *history, *sample;
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
@@ -64,9 +64,8 @@ static int bopl_hidden(const BoplRlState *state, uint32_t owner, uint32_t self) 
         if (state->players[i].id==owner) return (state->players[i].flags&4)!=0;
     return 0;
 }
-static void compute_observations(BoplPuffer *env) {
+static void compute_observations_from(BoplPuffer *env, const BoplRlState *state) {
     memset(env->observations, 0, (size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float));
-    const BoplRlState *state=bopl_rl_state(env->world);
     if (!state) return;
     for (int a=0; a<env->num_agents; a++) {
         const BoplRlPlayer *self=&state->players[a];
@@ -162,6 +161,7 @@ static void compute_observations(BoplPuffer *env) {
         }
     }
 }
+static void compute_observations(BoplPuffer *env) { compute_observations_from(env, bopl_rl_state(env->world)); }
 static void bopl_failed(BoplPuffer *env, const char *operation) {
     env->failed=1; env->log.game_errors++;
     snprintf(env->error, sizeof(env->error), "%s: %s", operation, bopl_rl_error(env->world));
@@ -189,6 +189,8 @@ static void init(BoplPuffer *env) {
     env->sample=calloc((size_t)env->num_agents*BOPL_OBS_SIZE, sizeof(float));
     if (!env->history || !env->sample) abort();
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
+    const char *split=getenv("BOPL_SPLIT_STEP");
+    env->split_step=split && *split && strcmp(split, "0")!=0;
     env->rng=env->rng*747796405u+2891336453u;
 }
 static void c_reset(BoplPuffer *env) {
@@ -233,12 +235,21 @@ static void c_step(BoplPuffer *env) {
     // Sample at phase 3 of each four-tick decision. At t=12 return the
     // observation from t=3, giving an exact nine-tick delay thereafter.
     uint32_t first=env->observation_delay?3:(uint32_t)env->repeat;
-    if (bopl_rl_step(env->world, actions, env->num_agents, first)) bopl_failed(env, "step");
-    if (env->observation_delay) {
-        compute_observations(env);
+    if (env->observation_delay && !env->split_step) {
+        // Both phases in one game roundtrip: the phase-3 state is returned
+        // alongside the final state (identical when the episode ends in phase 1).
+        if (bopl_rl_step_sampled(env->world, actions, env->num_agents, first, 1)) bopl_failed(env, "sampled step");
+        compute_observations_from(env, bopl_rl_sample(env->world));
         memcpy(env->sample, env->observations, (size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float));
-        if (!(bopl_rl_state(env->world)->header.flags&BOPL_RL_TERMINAL)
-            && bopl_rl_step(env->world, actions, env->num_agents, 1)) bopl_failed(env, "step phase");
+    } else {
+        // Original two-roundtrip path (BOPL_SPLIT_STEP=1), retained as the parity oracle.
+        if (bopl_rl_step(env->world, actions, env->num_agents, first)) bopl_failed(env, "step");
+        if (env->observation_delay) {
+            compute_observations(env);
+            memcpy(env->sample, env->observations, (size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float));
+            if (!(bopl_rl_state(env->world)->header.flags&BOPL_RL_TERMINAL)
+                && bopl_rl_step(env->world, actions, env->num_agents, 1)) bopl_failed(env, "step phase");
+        }
     }
     const BoplRlState *state=bopl_rl_state(env->world);
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;

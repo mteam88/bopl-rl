@@ -33,6 +33,8 @@ LIB.research_obs.argtypes = [C.c_void_p]; LIB.research_obs.restype = C.POINTER(C
 LIB.research_telemetry.argtypes = [C.c_void_p]; LIB.research_telemetry.restype = C.POINTER(C.c_float)
 LIB.research_state.argtypes = [C.c_void_p]; LIB.research_state.restype = C.POINTER(State)
 LIB.research_replay.argtypes = [C.c_void_p,C.c_char_p]
+LIB.research_step_mode.argtypes = [C.c_void_p]; LIB.research_step_mode.restype = C.c_int
+STEP_MODES={2:'sampled',1:'split',0:'fallback'}
 LIB.research_close.argtypes = [C.c_void_p]
 OBS_SIZE = LIB.research_obs_size()
 
@@ -63,6 +65,10 @@ class Environment:
         actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,2)
         LIB.research_step(self.handle,actions.ctypes.data_as(C.POINTER(C.c_float)))
         self.check()
+    @property
+    def step_mode(self):
+        """Report sampled, forced split, or old-game fallback after stepping."""
+        return STEP_MODES[LIB.research_step_mode(self.handle)]
     def replay(self,path):
         if LIB.research_replay(self.handle,os.fsencode(path)): raise RuntimeError('Replay export failed')
     def frame(self):

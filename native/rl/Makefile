@@ -2,7 +2,7 @@ CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Werror
 OUT ?= ../artifacts/rl
 
-all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check
+all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/sampled_check
 
 $(OUT)/libbopl_rl.so: bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
@@ -19,5 +19,8 @@ $(OUT)/record: record.c bopl_rl.h $(OUT)/libbopl_rl.so
 
 $(OUT)/reset_check: reset_check.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) reset_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+
+$(OUT)/sampled_check: sampled_check.c bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) sampled_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
 .PHONY: all

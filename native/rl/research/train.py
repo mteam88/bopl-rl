@@ -45,6 +45,8 @@ def main():
     parser.add_argument('--horizon',type=int,default=128)
     parser.add_argument('--sequence',type=int,default=32)
     parser.add_argument('--epochs',type=int,default=3)
+    parser.add_argument('--minibatch-segments',type=int,
+                        help='Sequence segments per PPO minibatch; defaults to the number of agents (2*workers), the original behaviour')
     parser.add_argument('--checkpoint-every',type=int,default=100_000)
     parser.add_argument('--eval-at',type=lambda value:[int(x) for x in value.split(',')],
                         help='Evaluate these decision milestones; does not change historical checkpoint cadence')
@@ -59,12 +61,20 @@ def main():
     parser.add_argument('--evaluation-baseline',type=Path,
                         help='Frozen opponent shared by the experiment series; defaults to this run initial policy')
     parser.add_argument('--episode-ticks',type=int,default=3600)
+    parser.add_argument('--pipeline-groups',type=int,default=1,
+                        help='Contiguous worker groups stepped on their own C thread/CUDA stream so one group ticks while another infers; 1 is the original synchronous loop')
+    parser.add_argument('--pipeline-serial',action='store_true',
+                        help='Test oracle: wait for each group right after launching it (same (t,group) inference/RNG order, no overlap)')
+    parser.add_argument('--cuda-graphs',type=int,default=0,choices=(0,1),
+                        help='Replay captured CUDA graphs for rollout inference of the learner and each historical policy')
     parser.add_argument('--no-eval',action='store_true')
     parser.add_argument('--no-video',action='store_true')
     parser.add_argument('--load',type=Path)
     opt=parser.parse_args()
     if min(opt.steps,opt.workers,opt.horizon,opt.sequence,opt.epochs,opt.checkpoint_every,opt.episode_ticks)<1 or opt.horizon%opt.sequence:
         parser.error('Positive counts and horizon divisible by sequence are required')
+    if opt.minibatch_segments is not None and opt.minibatch_segments<1: parser.error('Minibatch segments must be positive')
+    if opt.pipeline_groups<1 or opt.workers%opt.pipeline_groups: parser.error('Pipeline groups must divide the worker count')
     if opt.evaluation_workers<1 or any(n<2 or n%2 for n in
             (opt.evaluation_games,opt.evaluation_heldout_games,opt.evaluation_frozen_games)):
         parser.error('Evaluation needs positive workers and complete side-swapped game pairs')
@@ -84,12 +94,13 @@ def main():
     from vector import Vector
     from telemetry import FIELDS,summarize
     from selfplay import Opponents
+    from inference import Stepper
     torch.set_num_threads(opt.workers)
     torch.manual_seed(opt.seed); np.random.seed(opt.seed)
     torch.set_float32_matmul_precision('high')
     torch.backends.cudnn.benchmark=True
     device='cuda'
-    vec=Vector(opt.workers,opt.seed,opt.episode_ticks,training_maps=opt.training_maps)
+    vec=Vector(opt.workers,opt.seed,opt.episode_ticks,groups=opt.pipeline_groups,training_maps=opt.training_maps)
     policy=Policy(vec.obs_size).to(device)
     optimizer=torch.optim.Adam(policy.parameters(),lr=3e-4,eps=1e-5)
     step=0; updates=0
@@ -106,6 +117,8 @@ def main():
             'telemetry_schema':1,'telemetry_fields':FIELDS,'action_rates_scope':'learner decisions in this rollout',
             'startup_seconds':time.monotonic()-program_started,'torch_version':torch.__version__,
             'gpu':torch.cuda.get_device_name(),
+            'pipeline_groups':opt.pipeline_groups,'cuda_graphs':opt.cuda_graphs,'split_step_env':os.environ.get('BOPL_SPLIT_STEP','0'),
+            'decisions_per_update':opt.horizon*vec.size,'minibatch_segments':max(4,opt.minibatch_segments if opt.minibatch_segments is not None else vec.size),
             'algorithm':'recurrent PPO','gamma':.995,'gae_lambda':.95,'learning_rate':.0003,
             'action_hz':15,'observation_delay_ticks':9,'own_previous_actions':'immediate','loadout':['dash','arrow','platform'],
             'training_maps':opt.training_maps,'eval_maps':opt.evaluation_maps+opt.heldout_maps,'stocks':3,'pool_size':4,
@@ -144,8 +157,29 @@ def main():
     side=[w%2 for w in range(opt.workers)]
     random=np.random.default_rng(opt.seed)
     n=vec.size; h=policy.hidden; tmax=opt.horizon; length=opt.sequence
+    minibatch=max(4,opt.minibatch_segments if opt.minibatch_segments is not None else n)
     state=policy.initial(n,device); frozen_state=policy.initial(n,device)
-    opponents=Opponents(opt.workers,device)
+    # Pipeline groups: contiguous worker ranges. Group g owns agents slices[g]
+    # and workers [g*wpg,(g+1)*wpg). With one group this is the whole batch.
+    groups=opt.pipeline_groups; wpg=opt.workers//groups
+    slices=vec.groups if groups>1 else [slice(0,n)]
+    opponents=[Opponents(wpg,device,first=g*wpg) for g in range(groups)]
+    graphs=bool(opt.cuda_graphs)
+    learner_stepper=Stepper(policy,n//groups,device,graph=graphs)
+    # Historical-policy steppers are created outside the rollout (no group is
+    # in flight during graph capture) and pruned once their snapshot leaves the pool.
+    steppers={}
+    def add_steppers(version):
+        if not graphs: return
+        for g in range(groups):
+            capacity=opponents[g].capacity
+            if capacity: steppers[version,g]=Stepper(pool[version],capacity,device,graph=True,sample=False)
+    def prune_steppers():
+        for key in [k for k in steppers if k[0] not in pool]: steppers.pop(key).close()
+    def group_steppers(g):
+        if not graphs: return None
+        return {version:stepper for (version,gg),stepper in steppers.items() if gg==g}
+    add_steppers(step)
     reset_before=torch.ones(n,dtype=torch.bool,device=device)
     completed_matches=0
     evaluation_milestones=sorted(set(opt.eval_at or []))
@@ -199,29 +233,56 @@ def main():
             masks=torch.empty(tmax,n,dtype=torch.bool,device=device)
             resets=torch.empty(tmax,n,dtype=torch.bool,device=device)
             events=np.empty((tmax,n,len(FIELDS)),dtype=np.float32)
-            memories=[]
-            for t in range(tmax):
-                if t%length==0: memories.append(state.detach().clone())
-                obs[t].copy_(vec.obs); resets[t]=reset_before
-                with torch.no_grad():
-                    logits,value,state=policy.step(vec.obs,state)
-                    chosen,logp,_=distribution(logits)
-                    opponents.refresh(versions,historical,side)
-                    active=opponents.act(pool,vec.obs,frozen_state,chosen)
-                    actions[t]=chosen; old_logp[t]=logp; values[t]=value; masks[t]=active
-                    vec.step(chosen)
-                    events[t]=vec.telemetry
-                    rewards[t].copy_(vec.rewards); dones[t].copy_(vec.dones)
-                    reset_before=vec.dones.bool().clone()
-                    state*=~reset_before.view(1,-1,1); frozen_state*=~reset_before.view(1,-1,1)
-                ended=vec.cpu_dones.numpy().reshape(-1,2).all(axis=1)
+            memories=torch.empty(tmax//length,1,n,h,device=device)
+            def collect(t,g):
+                """Bank group g's results of decision t (its step is complete) and
+                apply its episode boundaries before the group's next inference."""
+                sl=slices[g]
+                events[t,sl]=vec.telemetry[sl]
+                rewards[t,sl].copy_(vec.rewards[sl]); dones[t,sl].copy_(vec.dones[sl])
+                ended_now=vec.dones[sl].bool().clone()
+                reset_before[sl]=ended_now
+                keep_state=~ended_now.view(1,-1,1)
+                state[:,sl]*=keep_state; frozen_state[:,sl]*=keep_state
+                ended=vec.cpu_dones[sl].numpy().reshape(-1,2).all(axis=1)
                 for w in np.flatnonzero(ended):
-                    completed_matches+=1
+                    w+=g*wpg; matches[0]+=1
                     versions[w]=int(random.choice(recent)); side[w]=int(random.integers(2))
                 # No snapshot can disappear while a match is still using it.
                 keep=set(recent)|set(versions)
                 for version in list(pool):
                     if version not in keep: del pool[version]
+            matches=[completed_matches]
+            dump=updates==0 and os.environ.get('BOPL_DUMP_ROLLOUT')
+            states_seen=torch.empty(tmax,1,n,h,device=device) if dump else None
+            for t in range(tmax):
+                for g in range(groups):
+                    sl=slices[g]
+                    if groups>1: vec.wait_group(g)
+                    if t: collect(t-1,g)
+                    if t%length==0: memories[t//length][:,sl].copy_(state[:,sl])
+                    if dump: states_seen[t][:,sl].copy_(state[:,sl])
+                    group_obs=vec.obs[sl]
+                    obs[t,sl].copy_(group_obs); resets[t,sl]=reset_before[sl]
+                    with torch.no_grad():
+                        chosen,logp,value,next_state=learner_stepper(group_obs,state[:,sl])
+                        state[:,sl].copy_(next_state)
+                        opponents[g].refresh(versions,historical,side)
+                        active=opponents[g].act(pool,group_obs,frozen_state[:,sl],chosen,group_steppers(g))
+                        actions[t,sl]=chosen; old_logp[t,sl]=logp; values[t,sl]=value; masks[t,sl]=active
+                        if groups>1:
+                            vec.step_group(g,chosen)
+                            if opt.pipeline_serial: vec.wait_group(g)
+                        else: vec.step(chosen)
+            if groups>1: vec.wait_all()
+            for g in range(groups): collect(tmax-1,g)
+            completed_matches=matches[0]
+            prune_steppers()
+            if updates==0 and os.environ.get('BOPL_DUMP_ROLLOUT'):
+                # Test hook (check_pipeline.py): the first update's complete rollout buffers.
+                torch.save(dict(obs=obs,actions=actions,old_logp=old_logp,values=values,rewards=rewards,dones=dones,masks=masks,
+                                resets=resets,memories=memories,states=states_seen,events=torch.from_numpy(events),
+                                final_state=state,final_reset=reset_before),os.environ['BOPL_DUMP_ROLLOUT'])
             with torch.no_grad():
                 _,last_value,_=policy.step(vec.obs,state)
                 adv=advantages(rewards,values,dones,last_value)
@@ -236,12 +297,12 @@ def main():
             def pack(x):
                 return x.reshape(segments,length,n,*x.shape[2:]).transpose(1,2).reshape(segments*n,length,*x.shape[2:]).transpose(0,1)
             bo,ba,bl,bv,br,bad,bm,bd=map(pack,(obs,actions,old_logp,values,returns,adv,masks,resets))
-            initial=torch.cat(memories,dim=1)
+            initial=torch.cat(list(memories),dim=1)
             indices=torch.where(bm.any(dim=0))[0]
             losses=[]
             for epoch in range(opt.epochs):
                 permutation=indices[torch.randperm(len(indices),device=device)]
-                for ids in permutation.split(max(4,n)):
+                for ids in permutation.split(minibatch):
                     logits,new_value=policy.sequence(bo[:,ids],initial[:,ids],bd[:,ids])
                     _,logp,entropy=distribution(logits,ba[:,ids])
                     mask=bm[:,ids]
@@ -267,6 +328,8 @@ def main():
             env=vec.log()
             if env.get('game_errors',0) or env.get('observation_overflow',0):
                 raise RuntimeError(f'Environment errors or dropped observations: {env}')
+            if env['step_mode']=='fallback': raise RuntimeError('Game build rejected the single-roundtrip sampled step; rebuild the player')
+            if 'step_mode' not in config: config['step_mode']=env['step_mode']; atomic_json(out/'config.json',config)
             mean=np.mean(rewards.cpu().numpy())
             target=returns[masks]; prediction=values[masks]
             variance=target.var(unbiased=False)
@@ -283,12 +346,14 @@ def main():
                 behavior=behavior,
                 pool_steps=recent,learner_fraction=float(masks.float().mean().item()),
                 cuda_memory_mb=torch.cuda.max_memory_allocated()/1048576)
-            metrics.write(json.dumps(record,allow_nan=False)+'\n')
-            atomic_json(out/'status.json',dict(status='running',pid=os.getpid(),**record,target_steps=opt.steps))
-            if updates%5==0: print(json.dumps(record),flush=True)
+            if groups>1: record['pipeline']=vec.group_profile()
+            # Snapshot work (checkpoint file, frozen copy, historical graph
+            # capture) happens outside rollout/train time; time it explicitly
+            # so loop sps cannot hide it. Evaluation launches are asynchronous.
+            snapshot_started=time.monotonic()
             if step>=next_checkpoint:
                 path=checkpoint(f'policy-{step:09d}')
-                pool[step]=frozen_copy()
+                pool[step]=frozen_copy(); add_steppers(step)
                 recent=(recent+[step])[-4:]
                 next_checkpoint=step+opt.checkpoint_every
                 if opt.eval_at is None: service_evaluation(path)
@@ -296,6 +361,11 @@ def main():
                 service_evaluation(checkpoint(f'policy-{step:09d}'))
                 evaluation_milestones=[x for x in evaluation_milestones if x>step]
             service_evaluation()
+            record['snapshot_seconds']=time.monotonic()-snapshot_started
+            record['pool_versions']=len(pool); record['steppers']=len(steppers)
+            metrics.write(json.dumps(record,allow_nan=False)+'\n')
+            atomic_json(out/'status.json',dict(status='running',pid=os.getpid(),**record,target_steps=opt.steps))
+            if updates%5==0: print(json.dumps(record),flush=True)
         status='stopped' if stopping else 'complete'
         final=checkpoint(f'policy-{step:09d}')
         service_evaluation(final)

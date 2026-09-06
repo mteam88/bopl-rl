@@ -25,7 +25,7 @@ public static class RlBridge
     private static InputPacket[] inputs;
     private static int loadedFrame;
     private static byte[] pendingStep;
-    private static uint pendingSequence;
+    private static uint pendingSequence, pendingOperation;
     private static ReplayArchive recording;
     private const int CommandsPerFrame = 16;
 
@@ -89,7 +89,10 @@ public static class RlBridge
                 byte[] bytes = pendingStep; pendingStep = null;
                 using var body = new BinaryReader(new MemoryStream(bytes, false));
                 int before = Updater.SimulationTicks;
-                try { Step(body); Observe(); Send(2, pendingSequence); }
+                try {
+                    if (pendingOperation == 6) StepSampled(body); else { Step(body); Observe(); }
+                    Send(pendingOperation, pendingSequence);
+                }
                 catch (Exception error) { Error(pendingSequence, error); }
                 frameTicks += Updater.SimulationTicks - before;
                 if (frameTicks >= CommandsPerFrame) return;
@@ -105,12 +108,15 @@ public static class RlBridge
                     switch (operation) {
                         case 1: Reset(host, body, sequence); return;
                         case 2:
-                            if (length >= 4 && frameTicks > 0 && BitConverter.ToInt32(bytes, 0) > CommandsPerFrame - frameTicks) {
-                                pendingStep = bytes; pendingSequence = sequence; return;
+                        case 6:
+                            // Both phases of a sampled step (6) count like one step of first+second ticks.
+                            if (length >= 4 && frameTicks > 0 && RequestedTicks(operation, bytes) > CommandsPerFrame - frameTicks) {
+                                pendingStep = bytes; pendingSequence = sequence; pendingOperation = operation; return;
                             }
                             int before = Updater.SimulationTicks;
-                            Step(body); frameTicks += Updater.SimulationTicks - before;
-                            Observe(); Send(operation, sequence);
+                            if (operation == 6) StepSampled(body); else { Step(body); Observe(); }
+                            frameTicks += Updater.SimulationTicks - before;
+                            Send(operation, sequence);
                             if (frameTicks >= CommandsPerFrame) return;
                             break;
                         case 3:
@@ -181,6 +187,12 @@ public static class RlBridge
         setup.frames.Clear(); recording = setup;
     }
 
+    private static int RequestedTicks(uint operation, byte[] bytes)
+    {
+        int first = BitConverter.ToInt32(bytes, 0);
+        return operation == 6 && bytes.Length >= 8 ? first + BitConverter.ToInt32(bytes, 4) : first;
+    }
+
     private static void Step(BinaryReader body)
     {
         if (!ready || failed) throw new InvalidOperationException("Reset required");
@@ -188,12 +200,37 @@ public static class RlBridge
         if (body.BaseStream.Length != 28) throw new InvalidDataException("Invalid step payload length");
         int repeat = body.ReadInt32();
         if (repeat < 1 || repeat > 16) throw new InvalidDataException("Action repeat must be 1..16");
+        ReadActions(body);
+        for (int i = 0; i < repeat && !terminal; i++) Tick(true);
+    }
+
+    // One command for two consecutive phases of the same actions. The response
+    // holds the observation after the first phase and, unless the episode ended
+    // during it, the observation after the second phase. Ticks run exactly as two
+    // Step commands would.
+    private static void StepSampled(BinaryReader body)
+    {
+        if (!ready || failed) throw new InvalidOperationException("Reset required");
+        if (terminal) throw new InvalidOperationException("Episode ended; reset required");
+        if (body.BaseStream.Length != 32) throw new InvalidDataException("Invalid sampled step payload length");
+        int first = body.ReadInt32(); int second = body.ReadInt32();
+        if (first < 1 || first > 16 || second < 1 || second > 16 || first + second > 16)
+            throw new InvalidDataException("Sampled step phases must be 1..16 ticks and at most 16 together");
+        ReadActions(body);
+        for (int i = 0; i < first && !terminal; i++) Tick(true);
+        Observe();
+        if (terminal) return;
+        for (int i = 0; i < second && !terminal; i++) Tick(true);
+        Observe(true);
+    }
+
+    private static void ReadActions(BinaryReader body)
+    {
         for (int i = 0; i < 6; i++) {
             byte angle = body.ReadByte(); byte reserved = body.ReadByte(); ushort buttons = body.ReadUInt16();
             if (reserved != 0 || (buttons & ~1023) != 0) throw new InvalidDataException("Invalid action bits");
             if (i < inputs.Length) inputs[i] = ReplayArchive.Input((uint)(Updater.SimulationTicks + 1), angle, buttons);
         }
-        for (int i = 0; i < repeat && !terminal; i++) Tick(true);
     }
 
     private static void Tick(bool counted)
@@ -213,9 +250,9 @@ public static class RlBridge
         terminal = (started && GameSessionHandler.HasGameEnded()) || Host.goToNextReplay || episodeTicks >= episodeLimit;
     }
 
-    private static void Observe()
+    private static void Observe(bool append = false)
     {
-        response.SetLength(0);
+        if (!append) response.SetLength(0);
         uint flags = (terminal ? 1u : 0u) | (episodeTicks >= episodeLimit ? 2u : 0u) | (started ? 4u : 0u) | (failed ? 8u : 0u);
         RlObservation.Write(payload, Version, episodeTicks, flags, warmup);
     }

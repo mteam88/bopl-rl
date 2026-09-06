@@ -62,6 +62,16 @@ BoplRl *bopl_rl_open(const char *executable, const char *bootstrap_replay,
                      const char *log_path, uint32_t timeout_ms, char *error, size_t capacity);
 int bopl_rl_reset(BoplRl *world, const BoplRlConfig *config);
 int bopl_rl_step(BoplRl *world, const BoplRlAction *actions, size_t count, uint32_t repeat);
+/* One roundtrip for two consecutive phases of the same actions: `first` ticks,
+ * then, unless the episode ended, `second` more ticks (first+second <= 16).
+ * bopl_rl_sample returns the state after the first phase and bopl_rl_state the
+ * final state; both stay valid until the next command. When the episode ends
+ * during the first phase, the sample and the final state are identical, like
+ * two separate step calls. Game builds without this command are driven with
+ * two step commands instead; bopl_rl_sampled_native reports which path is in use. */
+int bopl_rl_step_sampled(BoplRl *world, const BoplRlAction *actions, size_t count, uint32_t first, uint32_t second);
+const BoplRlState *bopl_rl_sample(const BoplRl *world);
+int bopl_rl_sampled_native(const BoplRl *world);
 /* Cached state; valid until the next step/reset/close. NULL before reset or after
  * a transport/game error. This does not cross into the game process. */
 const BoplRlState *bopl_rl_state(const BoplRl *world);

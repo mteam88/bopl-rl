@@ -27,6 +27,9 @@ void research_step(BoplPuffer *env, const float *actions) { memcpy(env->actions,
 const float *research_obs(BoplPuffer *env) { return env->observations; }
 const float *research_telemetry(BoplPuffer *env) { return env->last_telemetry; }
 const BoplRlState *research_state(BoplPuffer *env) { return bopl_rl_state(env->world); }
+/* 2 = single-roundtrip sampled step in use, 1 = two-roundtrip oracle forced by
+ * BOPL_SPLIT_STEP, 0 = client fell back to two step commands (older game build). */
+int research_step_mode(BoplPuffer *env) { return env->split_step?1:bopl_rl_sampled_native(env->world)?2:0; }
 int research_replay(BoplPuffer *env, const char *path) {
     const void *bytes; size_t length;
     if (bopl_rl_replay(env->world, &bytes, &length)) return 1;
