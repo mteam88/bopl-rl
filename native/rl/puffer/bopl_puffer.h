@@ -10,6 +10,9 @@
 enum { BOPL_OBS_ENTITIES=96, BOPL_OBS_SLIMES=12, BOPL_ABILITY_COUNT=39,
        BOPL_PLAYER_FEATURES=148, BOPL_ENTITY_FEATURES=21, BOPL_SLIME_FEATURES=28,
        BOPL_OBS_SIZE=10+6*BOPL_PLAYER_FEATURES+BOPL_OBS_ENTITIES*BOPL_ENTITY_FEATURES+BOPL_OBS_SLIMES*BOPL_SLIME_FEATURES+7 };
+enum { BOPL_EVENT_FIELDS=9, BOPL_TELEMETRY_SIZE=16,
+       BOPL_REWARD_OUTCOME=9, BOPL_REWARD_KILLS, BOPL_REWARD_DEATHS,
+       BOPL_EPISODES, BOPL_WINS, BOPL_TIMEOUTS, BOPL_TICKS };
 typedef struct {
     float perf, score, episode_return, episode_length, environment_ticks, observation_overflow, game_errors, n;
 } Log;
@@ -24,6 +27,10 @@ typedef struct {
     int observation_delay, delay_cursor, no_autoreset;
     float *history, *sample;
     float returns[6];
+    /* Optional host buffer, separate from every tensor visible to the policy. */
+    float *telemetry;
+    float last_telemetry[6*BOPL_TELEMETRY_SIZE];
+    BoplRlTelemetry previous_telemetry[6];
     uint32_t deaths[6], kills[6], steps;
     char error[512];
 } BoplPuffer;
@@ -177,6 +184,7 @@ static void c_reset(BoplPuffer *env) {
     if (bopl_rl_reset(env->world, &env->config)) bopl_failed(env, "reset");
     const BoplRlState *state=bopl_rl_state(env->world);
     memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
+    memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
     for (int i=0; i<env->num_agents; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
     compute_observations(env);
     size_t bytes=(size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float);
@@ -185,6 +193,8 @@ static void c_reset(BoplPuffer *env) {
     for (int i=0; i<env->num_agents; i++) env->observations[(i+1)*BOPL_OBS_SIZE-7]=1;
 }
 static void c_step(BoplPuffer *env) {
+    float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
+    memset(telemetry, 0, (size_t)env->num_agents*BOPL_TELEMETRY_SIZE*sizeof(float));
     memset(env->rewards, 0, (size_t)env->num_agents*sizeof(float));
     memset(env->terminals, 0, (size_t)env->num_agents*sizeof(float));
     BoplRlAction actions[6]={{0}};
@@ -212,6 +222,23 @@ static void c_step(BoplPuffer *env) {
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
     for (int i=0; i<env->num_agents; i++) {
         const BoplRlPlayer *player=&state->players[i];
+        float *stats=telemetry+i*BOPL_TELEMETRY_SIZE;
+        uint32_t events[BOPL_EVENT_FIELDS], previous[BOPL_EVENT_FIELDS];
+        memcpy(events, &state->telemetry[i], sizeof(events));
+        memcpy(previous, &env->previous_telemetry[i], sizeof(previous));
+        for (int field=0; field<BOPL_EVENT_FIELDS; field++) {
+            if (events[field]<previous[field]) bopl_failed(env, "telemetry counter regressed");
+            stats[field]=(float)(events[field]-previous[field]);
+        }
+        stats[BOPL_REWARD_KILLS]=0.1f*(float)((int64_t)player->kills-env->kills[i]);
+        stats[BOPL_REWARD_DEATHS]=-0.1f*(float)((int64_t)player->deaths-env->deaths[i]);
+        stats[BOPL_REWARD_OUTCOME]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED)?((player->flags&2)?1.0f:-1.0f):0;
+        stats[BOPL_EPISODES]=(float)terminal;
+        stats[BOPL_WINS]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED) && (player->flags&2);
+        stats[BOPL_TIMEOUTS]=terminal && (state->header.flags&BOPL_RL_TRUNCATED);
+        stats[BOPL_TICKS]=(float)(state->header.episode_ticks-ticks);
+        env->previous_telemetry[i]=state->telemetry[i];
+        /* Retain the original arithmetic/order for the actual PPO reward. */
         float reward=0.1f*((float)((int64_t)player->kills-env->kills[i])-(float)((int64_t)player->deaths-env->deaths[i]));
         if (terminal && !(state->header.flags&BOPL_RL_TRUNCATED)) reward+=(player->flags&2)?1.0f:-1.0f;
         env->rewards[i]=reward; env->returns[i]+=reward;

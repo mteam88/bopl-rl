@@ -9,6 +9,7 @@ const colors = [
   "#ef9e70",
 ];
 let data = null,
+  study = null,
   runName = "",
   replay = null,
   selectedEvaluation = null,
@@ -51,14 +52,46 @@ function connect(ok) {
 }
 async function refresh() {
   try {
-    const runs = await (await fetch("/api/runs")).json();
+    const [runs, studies] = await Promise.all(
+      ["/api/runs", "/api/series"].map(async (url) => {
+        const response = await fetch(url);
+        if (!response.ok) throw Error("Dashboard data unavailable");
+        return response.json();
+      }),
+    );
+    const query = new URLSearchParams(location.search);
+    study =
+      studies.find((s) => s.name === query.get("series")) ||
+      studies.find((s) =>
+        s.runs.some((r) => r.name === (query.get("run") || runName)),
+      ) ||
+      null;
+    if (study && query.has("series") && !query.has("run")) {
+      const active = study.status.active_run;
+      const target = runs.some((r) => r.name === active)
+        ? active
+        : study.runs.find((r) => runs.some((x) => x.name === r.name))?.name;
+      if (target && target !== runName) resetRun(target);
+    }
+    updateSeries();
     if (!runs.length) {
       connect(true);
       return;
     }
     if (!runName) {
-      const query = new URLSearchParams(location.search).get("run");
-      runName = runs.some((r) => r.name === query) ? query : runs[0].name;
+      const requested = query.get("run");
+      if (requested && !runs.some((r) => r.name === requested)) {
+        connect(true);
+        $("notice").textContent = `Waiting for ${requested} to start…`;
+        return;
+      }
+      if (study && query.has("series")) {
+        connect(true);
+        $("notice").textContent =
+          "The series is prepared. Its first run will appear here when training starts.";
+        return;
+      }
+      runName = requested || runs[0].name;
     }
     replaceOptions(
       $("run"),
@@ -79,6 +112,44 @@ async function refresh() {
     connect(false);
     $("notice").textContent = error.message;
   }
+}
+function updateSeries() {
+  $("seriesSection").hidden = !study;
+  if (!study) return;
+  const palette = ["#2846d4", "#e87350", "#71816a"];
+  $("seriesState").textContent = study.status.status || "prepared";
+  $("seriesRuns").replaceChildren(
+    ...study.runs.map((r, i) => {
+      const card = document.createElement("a");
+      card.className = "series-run" + (r.name === runName ? " active" : "");
+      card.style.setProperty("--seed-color", palette[i % palette.length]);
+      card.href = "?run=" + encodeURIComponent(r.name);
+      const title = document.createElement("b");
+      title.textContent = "Seed " + r.seed;
+      const progress = document.createElement("small");
+      progress.textContent = `${r.status.status} · ${short(r.status.step || 0)} / ${short(study.steps)} decisions`;
+      const result = document.createElement("small");
+      const g = r.final_groups?.find(
+        (g) => g.opponent === "initial" && g.map === 0,
+      );
+      result.textContent = g
+        ? `Final: ${g.wins}/${g.games} wins · ${percent(g.win_rate)}`
+        : "Fresh-seed final evaluation pending";
+      card.append(title, progress, result);
+      return card;
+    }),
+  );
+  chart(
+    "seriesChart",
+    study.runs.map((r, i) => ({
+      color: palette[i % palette.length],
+      points: r.evaluations.flatMap((e) => {
+        const g = e.groups.find((g) => g.opponent === "initial" && g.map === 0);
+        return g ? [{ x: e.step, y: g.win_rate }] : [];
+      }),
+    })),
+    { min: 0, max: 1, format: percent },
+  );
 }
 function update() {
   const c = data.config,
@@ -115,12 +186,16 @@ function update() {
   $("updated").textContent =
     `Last checked ${new Date().toLocaleTimeString()} · local GPU`;
   const latest = data.evaluations.at(-1);
-  const initial = latest?.groups.find(
+  const final = data.final_evaluation;
+  const initial = (final || data.validation_evaluation || latest)?.groups.find(
     (g) => g.opponent === "initial" && g.map === 0,
   );
   $("win").textContent = initial ? percent(initial.win_rate) : "—";
+  $("baselineLabel").textContent = c.evaluation_baseline
+    ? "Against the fixed baseline"
+    : "Against the initial policy";
   $("winDetail").textContent = initial
-    ? `${initial.wins} / ${initial.games} wins · 95% interval ${percent(initial.interval[0])}–${percent(initial.interval[1])}`
+    ? `${initial.wins} / ${initial.games} wins · ${final ? "fresh final seeds · " : data.validation_evaluation ? "expanded evaluation · " : ""}95% interval ${percent(initial.interval[0])}–${percent(initial.interval[1])}`
     : "Fixed evaluation · both player sides";
   const evals = data.evaluations;
   const makeSeries = (opponent, map, color) => ({
@@ -186,9 +261,70 @@ function update() {
     ],
     { min: 0, format: (n) => n.toFixed(3) },
   );
+  const measured = data.metrics.filter((m) => m.behavior?.schema === 1);
+  $("behaviorNotice").textContent = measured.length
+    ? "Rates use simulated time for the learning players. Historical opponents and warmup are excluded."
+    : c.telemetry_schema === 1
+      ? "Gameplay counters will appear after the first rollout."
+      : "This run predates gameplay counters. New experiments record activations, arrow hits, deaths and reward components.";
+  const rolling = rollingBehavior(measured);
+  const activity = (keys, palette, reward = false) =>
+    keys.map((key, i) => ({
+      color: palette[i],
+      points: rolling.map((m) => ({
+        x: m.step,
+        y: reward
+          ? (m.totals[key] * 1000) / Math.max(1, m.decisions)
+          : (m.totals[key] * 60) / Math.max(1e-9, m.seconds),
+      })),
+    }));
+  chart(
+    "abilitiesChart",
+    activity(
+      ["dash_activations", "bow_activations", "platform_activations"],
+      ["#2846d4", "#e87350", "#71816a"],
+    ),
+    { min: 0, format: (n) => n.toFixed(1) },
+  );
+  chart(
+    "arrowsChart",
+    activity(["arrows_fired", "arrow_hits"], ["#2846d4", "#e87350"]),
+    { min: 0, format: (n) => n.toFixed(1) },
+  );
+  chart(
+    "deathsChart",
+    activity(
+      ["deaths_environment", "deaths_opponent", "deaths_self", "deaths_other"],
+      ["#2846d4", "#e87350", "#71816a", "#ab8a5a"],
+    ),
+    { min: 0, format: (n) => n.toFixed(1) },
+  );
+  chart(
+    "rewardsChart",
+    activity(
+      ["reward_outcome", "reward_kills", "reward_deaths"],
+      ["#2846d4", "#71816a", "#e87350"],
+      true,
+    ),
+    { format: (n) => n.toFixed(2) },
+  );
+  $("actionNote").textContent =
+    c.telemetry_schema === 1
+      ? "Last 20 updates, weighted by learning-player decisions. Button presses are attempts, not confirmed activations."
+      : "Legacy run: cumulative button presses across both players, including historical opponents.";
+  const actionWindow = c.telemetry_schema === 1 ? data.metrics.slice(-20) : [m];
   $("actionBars").replaceChildren(
     ...["jump", "dash", "arrow", "platform"].map((name) => {
-      const rate = m.action_rates?.[name] ?? 0;
+      const weight = actionWindow.reduce(
+        (n, m) => n + (m.behavior?.decisions || 1),
+        0,
+      );
+      const rate =
+        actionWindow.reduce(
+          (n, m) =>
+            n + (m.action_rates?.[name] || 0) * (m.behavior?.decisions || 1),
+          0,
+        ) / Math.max(1, weight);
       const row = document.createElement("div");
       row.className = "bar";
       const label = document.createElement("span");
@@ -234,6 +370,26 @@ function update() {
       setVideo();
     }
   }
+}
+function rollingBehavior(rows) {
+  const result = [],
+    totals = {};
+  let decisions = 0,
+    seconds = 0;
+  const stride = Math.max(1, Math.ceil(rows.length / 600));
+  function add(m, sign) {
+    decisions += sign * m.behavior.decisions;
+    seconds += sign * m.behavior.seconds;
+    for (const [k, v] of Object.entries(m.behavior.totals))
+      totals[k] = (totals[k] || 0) + sign * v;
+  }
+  rows.forEach((m, i) => {
+    add(m, 1);
+    if (i >= 20) add(rows[i - 20], -1);
+    if (i % stride === 0 || i === rows.length - 1)
+      result.push({ step: m.step, decisions, seconds, totals: { ...totals } });
+  });
+  return result;
 }
 function chart(id, series, options = {}) {
   const canvas = $(id),
@@ -578,8 +734,8 @@ function animate(now) {
   lastFrameTime = now;
   requestAnimationFrame(animate);
 }
-$("run").onchange = () => {
-  runName = $("run").value;
+function resetRun(name) {
+  runName = name;
   data = null;
   selectedEvaluation = null;
   selectedGame = null;
@@ -587,6 +743,9 @@ $("run").onchange = () => {
   playing = false;
   $("video").pause();
   $("emptyReplay").style.display = "flex";
+}
+$("run").onchange = () => {
+  resetRun($("run").value);
   history.replaceState(null, "", "?run=" + encodeURIComponent(runName));
   refresh();
 };
@@ -609,6 +768,7 @@ $("scrub").oninput = () => {
 $("viewPhysics").onclick = () => setView("physics");
 $("viewVideo").onclick = () => setView("video");
 window.addEventListener("resize", () => {
+  updateSeries();
   if (data) update();
 });
 refresh();

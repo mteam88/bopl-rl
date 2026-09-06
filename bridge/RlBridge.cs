@@ -11,7 +11,7 @@ using UnityEngine.SceneManagement;
 public static class RlBridge
 {
     public const uint Magic = 0x314c5242; // BRL1, little endian
-    public const uint Version = 1;
+    public const uint Version = 2;
     private static readonly string endpoint = Environment.GetEnvironmentVariable("BOPL_RL_SOCKET");
     public static bool Enabled => !string.IsNullOrEmpty(endpoint);
     private static Socket socket;
@@ -176,6 +176,7 @@ public static class RlBridge
         loadedFrame = -1; remainingWarmup = warmup = startTicks;
         episodeTicks = 0; episodeLimit = maxTicks; resetSequence = sequence;
         RlObservation.Reset();
+        RlTelemetry.Reset();
         host.ResetRl(setup);
         setup.frames.Clear(); recording = setup;
     }
@@ -202,8 +203,10 @@ public static class RlBridge
         if (recording != null) recording.frames.Add((InputPacket[])inputs.Clone());
         if (ReferenceCapture.Recording) ReferenceCapture.BeforeReplayStep(inputs);
         for (int i = 0; i < inputs.Length; i++) players[i].OverrideInputWithNetworkInput(inputs[i]);
+        RlTelemetry.Counting = counted;
         try { Updater.TickSimulation(GameTime.FixedTimeStep); }
         catch (Exception error) { failed = true; ReferenceCapture.FailedTick(error); throw; }
+        finally { RlTelemetry.Counting = false; }
         Updater.LoadedALevelThisUpdate = false;
         started |= !GameSessionHandler.HasGameEnded();
         if (counted) episodeTicks++;

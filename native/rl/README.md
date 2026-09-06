@@ -54,6 +54,9 @@ checkpoints, plus any older version still in an active match.
 Rewards are +1/-1 for a round win/loss and +0.1/-0.1 per kill/death. There is no
 per-tick survival reward. A 3,600-tick match limit is part of the finite-horizon
 task: timeout ends the episode with no winner bonus and a terminal value of zero.
+The pilot uses the game's raw kill counter, which also credits self-kills. Thus
+the small kill/death terms cancel for a suicide. The controlled three-seed series
+preserves this behavior; excluding self-kill bonuses is a separate reward ablation.
 
 Each run writes its configuration, source hashes, game assembly hash, checkpoints
 (with optimizer state), metrics, evaluation reports, and replays. `--load` is a
@@ -66,6 +69,35 @@ initial policy, plus performance on two untrained maps. The default eight games
 per training-map opponent are a fast diagnostic, with wide Wilson intervals.
 A promising policy needs a larger, independently seeded tournament before a
 strength claim. Self-play's aggregate ~50% win rate is not evidence of improvement.
+
+The longer series keeps historical checkpoints at the same cadence as the pilot,
+but evaluates at 1M, 3M and 10M decisions. These milestones round up to a completed
+rollout. `--eval-at` changes only evaluation scheduling. It does not change the
+opponent pool, PPO updates, or random-number consumption. The three fresh training
+seeds share one frozen baseline opponent. Final evaluation uses separate seeds
+that are never used in the checkpoint diagnostics.
+
+## Behavioral measurements
+
+Protocol/ABI version 2 adds episode event counters after the existing state.
+The policy observation remains 3,257 floats; no telemetry enters its input or
+reward. Counters exclude warmup and track actual ability entries, arrows released,
+accepted damaging arrow collisions, and deaths by the game's credited killer.
+Environment deaths include falls and hazards; this is credit attribution, not a
+claim that an opponent could not have caused the fall. Self-kills are separate.
+Arrow hits exclude the owner and count accepted damaging collisions, not unique
+arrows or every geometric contact. Ability entry does not imply a useful action.
+
+Each native vector worker writes per-decision deltas to a separate host buffer.
+The trainer selects exactly the decisions used for learning, including the final
+decision before a reset. Historical opponents are excluded. The dashboard shows
+rolling 20-update event rates per simulated player-minute, a breakdown of the
+unchanged reward per 1,000 learner decisions, and recent learner-only button rates.
+The legacy pilot is labeled separately because it lacks these counters.
+
+`research/check_telemetry.py --baseline <old-project-root>` checks event/death
+conservation and reset behavior, then compares exact fixed-point gameplay state,
+every delayed observation, and lossless replay hashes against the old build.
 
 Every evaluation exports a lossless `.rep` plus a full physics-state playback.
 A separate video worker renders native game playback. If rendering falls behind,
@@ -89,6 +121,26 @@ native/artifacts/rl/venv/bin/python native/rl/research/train.py \
 
 python3 native/rl/research/serve.py --host 127.0.0.1 --port 8876
 ```
+
+For a declared three-seed series, prepare after building and checking the final
+implementation, then execute the saved plan. The runner checks source/binary
+identity before each seed, runs seeds sequentially, and stops on a failed run.
+It does not silently resume an interrupted training environment.
+
+```sh
+native/artifacts/rl/venv/bin/python native/rl/research/series.py prepare \
+  --output native/artifacts/rl/dap-series-001 --steps 10000000 \
+  --workers 16 --seeds 73,173,273 \
+  --baseline native/artifacts/rl/dap-001/checkpoints/policy-000000000.pt
+native/artifacts/rl/venv/bin/python native/rl/research/series.py run \
+  native/artifacts/rl/dap-series-001/plan.json
+```
+
+The series dashboard opens with `?series=dap-series-001` and follows the active
+seed. Diagnostic evaluation uses 64 games per training-map opponent and 16 per
+untrained map. Final evaluation uses 256 and 64 respectively, with fresh seed
+pairs. Report individual training-seed results; Wilson intervals are descriptive
+and do not adjust for dependence within side-swapped pairs.
 
 An output directory must be new. The normal training command requires CUDA and
 runs evaluation and video capture. `--no-eval` is for short throughput checks;

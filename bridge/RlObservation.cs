@@ -87,6 +87,7 @@ internal static class RlObservation
                 physics.beamWidth * beam.scale, Fix.Zero, Fix.Zero, Fix.Zero);
         }
         foreach (var slime in slimes) Slime(output, slime);
+        foreach (var player in players) RlTelemetry.Write(output, player.Id);
     }
 
     private static void Collider(BinaryWriter output, uint kind, PhysicsParent parent, PhysicsBody body,

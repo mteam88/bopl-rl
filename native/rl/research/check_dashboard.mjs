@@ -105,6 +105,16 @@ await fs.writeFile(
   out + "/dashboard-desktop.png",
   Buffer.from(desktop.data, "base64"),
 );
+const behavioral = await evaluate(
+  "document.querySelector('#behaviorSection') ? ({notice:document.querySelector('#behaviorNotice').textContent, charts:['abilitiesChart','arrowsChart','deathsChart','rewardsChart'].every(id=>document.getElementById(id).width>0&&document.getElementById(id).height>0)}) : null",
+);
+if (behavioral) {
+  if (!behavioral.charts) throw Error("Behavioral charts did not render");
+  await evaluate("document.querySelector('#behaviorSection').scrollIntoView()");
+  const behavior = await call("Page.captureScreenshot", { format: "png" });
+  await fs.writeFile(out + "/dashboard-behavior.png", Buffer.from(behavior.data, "base64"));
+  await evaluate("scrollTo(0,0)");
+}
 await call("Emulation.setDeviceMetricsOverride", {
   width: 393,
   height: 852,
@@ -132,6 +142,7 @@ console.log(
     before,
     after,
     video_playback: videoAvailable,
+    behavioral,
     mobile_overflow: overflow,
     console_errors: errors.length,
   }),

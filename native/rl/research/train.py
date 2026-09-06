@@ -45,6 +45,13 @@ def main():
     parser.add_argument('--sequence',type=int,default=32)
     parser.add_argument('--epochs',type=int,default=3)
     parser.add_argument('--checkpoint-every',type=int,default=100_000)
+    parser.add_argument('--eval-at',type=lambda value:[int(x) for x in value.split(',')],
+                        help='Evaluate these decision milestones; does not change historical checkpoint cadence')
+    parser.add_argument('--evaluation-games',type=int,default=8)
+    parser.add_argument('--evaluation-heldout-games',type=int,default=4)
+    parser.add_argument('--evaluation-workers',type=int,default=2)
+    parser.add_argument('--evaluation-baseline',type=Path,
+                        help='Frozen opponent shared by the experiment series; defaults to this run initial policy')
     parser.add_argument('--episode-ticks',type=int,default=3600)
     parser.add_argument('--no-eval',action='store_true')
     parser.add_argument('--no-video',action='store_true')
@@ -52,6 +59,10 @@ def main():
     opt=parser.parse_args()
     if min(opt.steps,opt.workers,opt.horizon,opt.sequence,opt.epochs,opt.checkpoint_every,opt.episode_ticks)<1 or opt.horizon%opt.sequence:
         parser.error('Positive counts and horizon divisible by sequence are required')
+    if min(opt.evaluation_games,opt.evaluation_heldout_games,opt.evaluation_workers)<1:
+        parser.error('Evaluation counts must be positive')
+    if opt.eval_at is not None and (not opt.eval_at or any(x<=0 for x in opt.eval_at)):
+        parser.error('Evaluation milestones must be positive')
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
     os.environ['OMP_NUM_THREADS']=str(opt.workers)
     os.environ.setdefault('OMP_WAIT_POLICY','PASSIVE')
@@ -61,6 +72,7 @@ def main():
     import torch
     from policy import Policy,distribution
     from vector import Vector
+    from telemetry import FIELDS,summarize
     torch.set_num_threads(opt.workers)
     torch.manual_seed(opt.seed); np.random.seed(opt.seed)
     torch.set_float32_matmul_precision('high')
@@ -75,7 +87,10 @@ def main():
         policy.load_state_dict(previous['policy']); optimizer.load_state_dict(previous['optimizer'])
         step=previous['step']; updates=previous['updates']
     config={**vars(opt),'output':str(out),'load':str(opt.load) if opt.load else None,
+            'evaluation_baseline':str(opt.evaluation_baseline.resolve()) if opt.evaluation_baseline else None,
+            'evaluation_baseline_sha256':hashlib.sha256(opt.evaluation_baseline.read_bytes()).hexdigest() if opt.evaluation_baseline else None,
             'schema':1,'obs_size':vec.obs_size,'hidden':policy.hidden,'device':device,
+            'telemetry_schema':1,'telemetry_fields':FIELDS,'action_rates_scope':'learner decisions in this rollout',
             'startup_seconds':time.monotonic()-program_started,'torch_version':torch.__version__,
             'gpu':torch.cuda.get_device_name(),
             'algorithm':'recurrent PPO','gamma':.995,'gae_lambda':.95,'learning_rate':.0003,
@@ -119,7 +134,7 @@ def main():
     state=policy.initial(n,device); frozen_state=policy.initial(n,device)
     reset_before=torch.ones(n,dtype=torch.bool,device=device)
     completed_matches=0
-    action_counts=np.zeros(4,dtype=np.int64); observation_count=0
+    evaluation_milestones=sorted(set(opt.eval_at or []))
     metrics=(out/'metrics.jsonl').open('a',buffering=1)
 
     def checkpoint(label):
@@ -134,7 +149,9 @@ def main():
         nonlocal evaluation,evaluation_log
         evaluation_log=(out/'evaluation-worker.log').open('a')
         evaluation=subprocess.Popen([sys.executable,str(Path(__file__).with_name('evaluate.py')),
-            '--run',str(out),'--checkpoint',str(path),'--initial',str(initial_path)],
+            '--run',str(out),'--checkpoint',str(path),'--initial',str(opt.evaluation_baseline or initial_path),
+            '--games-per-opponent',str(opt.evaluation_games),'--heldout-games',str(opt.evaluation_heldout_games),
+            '--workers',str(opt.evaluation_workers)],
             stdout=evaluation_log,stderr=subprocess.STDOUT,start_new_session=True)
 
     def service_evaluation(path=None):
@@ -164,6 +181,7 @@ def main():
             rewards=torch.empty(tmax,n,device=device); dones=torch.empty(tmax,n,device=device)
             masks=torch.empty(tmax,n,dtype=torch.bool,device=device)
             resets=torch.empty(tmax,n,dtype=torch.bool,device=device)
+            events=np.empty((tmax,n,len(FIELDS)),dtype=np.float32)
             memories=[]
             for t in range(tmax):
                 if t%length==0: memories.append(state.detach().clone())
@@ -181,6 +199,7 @@ def main():
                         active[ids]=False
                     actions[t]=chosen; old_logp[t]=logp; values[t]=value; masks[t]=active
                     vec.step(chosen)
+                    events[t]=vec.telemetry
                     rewards[t].copy_(vec.rewards); dones[t].copy_(vec.dones)
                     reset_before=vec.dones.bool().clone()
                     state*=~reset_before.view(1,-1,1); frozen_state*=~reset_before.view(1,-1,1)
@@ -230,9 +249,9 @@ def main():
             torch.cuda.synchronize()
             train_seconds=time.monotonic()-optimize_started
             step+=tmax*n; updates+=1
-            buttons=actions[:,:,1].cpu().numpy()
-            for i in range(4): action_counts[i]+=np.count_nonzero(buttons&(1<<i))
-            observation_count+=buttons.size
+            learner_mask=masks.cpu().numpy()
+            buttons=actions[:,:,1].cpu().numpy()[learner_mask]
+            behavior=summarize(events[learner_mask])
             loss=np.mean(losses,axis=0)
             env=vec.log()
             if env.get('game_errors',0) or env.get('observation_overflow',0):
@@ -247,7 +266,8 @@ def main():
                 rollout_seconds=rollout_seconds,train_seconds=train_seconds,
                 policy_loss=float(loss[0]),value_loss=float(loss[1]),entropy=float(loss[2]),
                 kl=float(loss[3]),clip_fraction=float(loss[4]),gradient_norm=float(loss[5]),explained_variance=explained,
-                action_rates=dict(zip(['jump','dash','arrow','platform'],(action_counts/observation_count).tolist())),
+                action_rates={name:float(np.mean((buttons&(1<<i))!=0)) for i,name in enumerate(['jump','dash','arrow','platform'])},
+                behavior=behavior,
                 pool_steps=recent,learner_fraction=float(masks.float().mean().item()),
                 cuda_memory_mb=torch.cuda.max_memory_allocated()/1048576)
             metrics.write(json.dumps(record,allow_nan=False)+'\n')
@@ -258,8 +278,11 @@ def main():
                 pool[step]=frozen_copy()
                 recent=(recent+[step])[-4:]
                 next_checkpoint=step+opt.checkpoint_every
-                service_evaluation(path)
-            else: service_evaluation()
+                if opt.eval_at is None: service_evaluation(path)
+            if evaluation_milestones and step>=evaluation_milestones[0]:
+                service_evaluation(checkpoint(f'policy-{step:09d}'))
+                evaluation_milestones=[x for x in evaluation_milestones if x>step]
+            service_evaluation()
         status='stopped' if stopping else 'complete'
         final=checkpoint(f'policy-{step:09d}')
         service_evaluation(final)

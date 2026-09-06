@@ -28,6 +28,9 @@ def main():
                 candidates.append(dict(name=file.parent.name,created=file.stat().st_mtime,
                                        status=read_json(file.parent/'status.json',{})))
         return sorted(candidates,key=lambda r:r['created'],reverse=True)
+    def latest_report(directory, pattern):
+        reports=sorted(directory.glob(pattern))
+        return read_json(reports[-1]) if reports else None
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self,fmt,*args):
             if len(args)<2 or str(args[1]) not in ('200','206','304'): super().log_message(fmt,*args)
@@ -40,6 +43,24 @@ def main():
         def do_GET(self):
             path=unquote(urlparse(self.path).path)
             if path=='/api/runs': return self.json(runs())
+            if path=='/api/series':
+                series=[]
+                for file in sorted(root.glob('*/plan.json')):
+                    plan=read_json(file,{})
+                    if plan.get('kind')!='bopl-training-series': continue
+                    members=[]
+                    for member in plan['runs']:
+                        name=member['name']
+                        if not re.fullmatch(r'[A-Za-z0-9_-]+',name): continue
+                        directory=root/name
+                        diagnostic=[dict(step=r['step'],groups=r['groups'])
+                                    for p in sorted(directory.glob('evaluations/*/result.json')) if (r:=read_json(p))]
+                        final=latest_report(directory,'final-evaluations/*/result.json')
+                        members.append(dict(**member,status=read_json(directory/'status.json',{'status':'queued'}),
+                                            evaluations=diagnostic,final_groups=final['groups'] if final else None))
+                    series.append(dict(name=plan['name'],steps=plan['steps'],runs=members,
+                                       status=read_json(file.parent/'status.json',{})))
+                return self.json(series)
             if path.startswith('/api/run/'):
                 name=path[len('/api/run/'):]
                 if name not in {r['name'] for r in runs()}: return self.send_error(404)
@@ -65,7 +86,9 @@ def main():
                         if poster.exists(): game['poster']=poster.name
                     evaluations.append(report)
                 return self.json(dict(name=name,config=read_json(directory/'config.json'),status=status,
-                                      metrics=metrics,evaluations=evaluations,video=read_json(directory/'video-status.json',{})))
+                                      metrics=metrics,evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
+                                      final_evaluation=latest_report(directory,'final-evaluations/*/result.json'),
+                                      validation_evaluation=latest_report(directory,'validation/evaluations/*/result.json')))
             if path.startswith('/runs/'):
                 parts=path[len('/runs/'):].split('/')
                 if not parts or parts[0] not in {r['name'] for r in runs()}: return self.send_error(404)

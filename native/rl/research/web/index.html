@@ -25,7 +25,7 @@
     <main>
       <div class="intro">
         <div>
-          <p class="eyebrow">EXPERIMENT NOTEBOOK · 001</p>
+          <p class="eyebrow">EXPERIMENT NOTEBOOK</p>
           <h1>Learning to <em>hold its own.</em></h1>
           <p class="lede">
             Dash out of trouble. Find the arrow. Build a way back.
@@ -44,6 +44,30 @@
         ><span id="runState" class="pill">Preparing</span>
       </div>
       <div id="notice" role="status"></div>
+      <section id="seriesSection" class="series-section" hidden>
+        <div class="section-top">
+          <div>
+            <p class="eyebrow">REPEAT THE EXPERIMENT</p>
+            <h2>Three seeds. One protocol.</h2>
+          </div>
+          <span id="seriesState" class="pill">Prepared</span>
+        </div>
+        <div id="seriesRuns" class="series-runs"></div>
+        <div class="chart-title">
+          <b>Against the same frozen opponent</b
+          ><span>Diagnostic seed pairs</span>
+        </div>
+        <canvas
+          id="seriesChart"
+          class="chart"
+          aria-label="Win rate comparison across independent training seeds"
+        ></canvas>
+        <p class="caption">
+          Each line starts from a fresh policy. Final results use separate seeds
+          and appear on the cards. Opening the series follows the active run;
+          choosing an individual run keeps it selected.
+        </p>
+      </section>
       <section class="stats" aria-label="Training progress">
         <article>
           <p>Agent decisions</p>
@@ -60,7 +84,7 @@
           <strong id="matches">—</strong><small id="elapsed">—</small>
         </article>
         <article class="accent">
-          <p>Against the initial policy</p>
+          <p id="baselineLabel">Against the initial policy</p>
           <strong id="win">—</strong
           ><small id="winDetail">Fixed evaluation · both player sides</small>
         </article>
@@ -187,14 +211,104 @@
           </p>
         </section>
       </div>
+      <section id="behaviorSection" class="behavior-section">
+        <div class="section-top">
+          <div>
+            <p class="eyebrow">FROM INPUT TO OUTCOME</p>
+            <h2>What is the policy learning?</h2>
+          </div>
+          <span class="tag">Learning players only · rolling 20 updates</span>
+        </div>
+        <p id="behaviorNotice" class="caption">
+          Gameplay counters will appear after the first rollout.
+        </p>
+        <div class="behavior-grid">
+          <article>
+            <div class="chart-title">
+              <b>Ability activations</b><span>Per player-minute</span>
+            </div>
+            <canvas
+              id="abilitiesChart"
+              class="chart"
+              aria-label="Confirmed dash bow and platform activations over training"
+            ></canvas>
+            <div class="legend">
+              <span style="--series: #2846d4">Dash</span
+              ><span style="--series: #e87350">Bow</span
+              ><span style="--series: #71816a">Platform</span>
+            </div>
+            <p class="caption">
+              Counts entry into each ability. Bow entry and arrow release are
+              separate events.
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>Arrows that connect</b><span>Per player-minute</span>
+            </div>
+            <canvas
+              id="arrowsChart"
+              class="chart"
+              aria-label="Arrows released and damaging arrow hits over training"
+            ></canvas>
+            <div class="legend">
+              <span style="--series: #2846d4">Released</span
+              ><span style="--series: #e87350">Damaging hits on opponents</span>
+            </div>
+            <p class="caption">
+              Hits are accepted damaging collisions, not every contact or a
+              unique-projectile accuracy score.
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>Where lives are lost</b><span>Per player-minute</span>
+            </div>
+            <canvas
+              id="deathsChart"
+              class="chart"
+              aria-label="Deaths credited to environment opponents self or other causes"
+            ></canvas>
+            <div class="legend">
+              <span style="--series: #2846d4">Environment</span
+              ><span style="--series: #e87350">Opponent</span
+              ><span style="--series: #71816a">Self</span
+              ><span style="--series: #ab8a5a">Other</span>
+            </div>
+            <p class="caption">
+              Uses the game's credited killer. Environment includes falling and
+              hazards; an uncredited shove can still appear here.
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>What earns reward</b><span>Per 1,000 decisions</span>
+            </div>
+            <canvas
+              id="rewardsChart"
+              class="chart"
+              aria-label="Win loss kill and death reward components over training"
+            ></canvas>
+            <div class="legend">
+              <span style="--series: #2846d4">Round outcome</span
+              ><span style="--series: #71816a">Game kill credit</span
+              ><span style="--series: #e87350">Deaths</span>
+            </div>
+            <p class="caption">
+              The existing game kill counter includes self-kills, whose small
+              kill and death terms cancel. Win/loss reward still applies.
+            </p>
+          </article>
+        </div>
+      </section>
       <section class="details">
         <article>
           <p class="eyebrow">BEHAVIOR</p>
           <h3>Which buttons get pressed?</h3>
           <div id="actionBars"></div>
-          <p class="caption">
-            Fraction of decisions holding each button, across both players.
-            These are attempts, not confirmed casts.
+          <p id="actionNote" class="caption">
+            Recent decisions from learning players only. Button presses are
+            attempts, not confirmed activations.
           </p>
         </article>
         <article>

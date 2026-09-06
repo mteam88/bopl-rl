@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "The v1 RL wire format currently requires a little-endian host"
+#error "The RL wire format currently requires a little-endian host"
 #endif
 _Static_assert(sizeof(BoplRlConfig)==176, "config layout");
 _Static_assert(sizeof(BoplRlAction)==4, "action layout");
@@ -24,6 +24,7 @@ _Static_assert(sizeof(BoplRlHeader)==48, "header layout");
 _Static_assert(sizeof(BoplRlPlayer)==72, "player layout");
 _Static_assert(sizeof(BoplRlEntity)==128, "entity layout");
 _Static_assert(sizeof(BoplRlSlime)==136, "slime layout");
+_Static_assert(sizeof(BoplRlTelemetry)==36, "telemetry layout");
 
 enum { MAGIC=0x314c5242, MAX_PAYLOAD=104000000 };
 typedef struct { uint32_t magic, operation, sequence, length; } Frame;
@@ -117,8 +118,9 @@ static int decode_state(BoplRl *w, uint32_t length) {
     size_t player_bytes=(size_t)header.player_count*sizeof(BoplRlPlayer);
     size_t entity_bytes=(size_t)header.entity_count*sizeof(BoplRlEntity);
     size_t slime_bytes=(size_t)header.slime_count*sizeof(BoplRlSlime);
-    if (header.version!=1 || header.player_count<1 || header.player_count>6
-        || sizeof(header)+player_bytes+entity_bytes+slime_bytes!=length) {
+    size_t telemetry_bytes=(size_t)header.player_count*sizeof(BoplRlTelemetry);
+    if (header.version!=2 || header.player_count<1 || header.player_count>6
+        || sizeof(header)+player_bytes+entity_bytes+slime_bytes+telemetry_bytes!=length) {
         errno=EPROTO; return fail(w, "Invalid RL state layout");
     }
     if (header.slime_count>w->slime_capacity) {
@@ -136,11 +138,13 @@ static int decode_state(BoplRl *w, uint32_t length) {
     memcpy(w->state.players, w->buffer+sizeof(header), player_bytes);
     if (entity_bytes) memcpy(w->entities, w->buffer+sizeof(header)+player_bytes, entity_bytes);
     if (slime_bytes) memcpy(w->slimes, w->buffer+sizeof(header)+player_bytes+entity_bytes, slime_bytes);
+    memset(w->state.telemetry, 0, sizeof(w->state.telemetry));
+    memcpy(w->state.telemetry, w->buffer+sizeof(header)+player_bytes+entity_bytes+slime_bytes, telemetry_bytes);
     w->state.entities=w->entities; w->state.slimes=w->slimes; w->valid=true; w->error[0]=0;
     return BOPL_RL_OK;
 }
 
-uint32_t bopl_rl_abi_version(void) { return 1; }
+uint32_t bopl_rl_abi_version(void) { return 2; }
 void bopl_rl_default_config(BoplRlConfig *config, uint32_t players) {
     if (!config) return;
     memset(config, 0, sizeof(*config));
@@ -204,7 +208,7 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
     uint32_t version;
     if (length!=140) { errno=EPROTO; fail(w, "Invalid RL handshake length"); goto cleanup; }
     memcpy(&version, w->buffer, 4);
-    if (version!=1) { errno=EPROTO; fail(w, "Unsupported RL protocol"); goto cleanup; }
+    if (version!=2) { errno=EPROTO; fail(w, "Unsupported RL protocol"); goto cleanup; }
     memcpy(w->source, w->buffer+4, 64); memcpy(w->catalog, w->buffer+68, 64);
     memcpy(&w->maps, w->buffer+132, 4); memcpy(&w->abilities, w->buffer+136, 4);
     error_text(error, capacity, ""); return w;

@@ -6,13 +6,21 @@
 #define Env BoplPuffer
 #include "vecenv.h"
 
+int bopl_puffer_telemetry_size(void) { return BOPL_TELEMETRY_SIZE; }
+
 static int option(Dict *kwargs, const char *name, int fallback) {
     DictItem *item=dict_get_unsafe(kwargs, name);
     return item?(int)item->value:fallback;
 }
 void my_init(Env *env, Dict *kwargs) {
+    unsigned int index=env->rng; // PufferLib assigns the physical environment index before my_init.
     env->rng^=(unsigned int)option(kwargs, "seed", 73);
     env->num_agents=option(kwargs, "players", 6);
+    DictItem *telemetry=dict_get_unsafe(kwargs, "telemetry_ptr");
+    if (telemetry && telemetry->value) {
+        if ((size_t)(index+1)*env->num_agents>(size_t)option(kwargs,"telemetry_agents",0)) abort();
+        env->telemetry=(float*)(uintptr_t)telemetry->value+(size_t)index*env->num_agents*BOPL_TELEMETRY_SIZE;
+    }
     env->observation_delay=option(kwargs, "observation_delay", 9);
     env->repeat=option(kwargs, "action_repeat", 4);
     env->random_maps=option(kwargs, "random_maps", 0);

@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-/* Version 1, Linux little-endian hosts. Owns an isolated, persistent headless
+/* Version 2, Linux little-endian hosts. Owns an isolated, persistent headless
  * game process. All fixed-point values are signed Q32.32. Serialize calls for
  * one handle; separate handles can run concurrently. */
 typedef struct BoplRl BoplRl;
@@ -39,11 +39,18 @@ typedef struct {
     uint32_t version, tick, episode_ticks, flags, player_count, entity_count, warmup_ticks, slime_count;
     int64_t simulation_time, player_time_scale;
 } BoplRlHeader;
+/* Episode-cumulative event counters, excluding warmup. Research telemetry only;
+ * not policy observations. Deaths follow the game's credited killer. */
+typedef struct {
+    uint32_t ability_activations[3], arrows_fired, arrow_hits;
+    uint32_t deaths_environment, deaths_opponent, deaths_self, deaths_other;
+} BoplRlTelemetry;
 typedef struct {
     BoplRlHeader header;
     BoplRlPlayer players[6];
     const BoplRlEntity *entities;
     const BoplRlSlime *slimes;
+    BoplRlTelemetry telemetry[6];
 } BoplRlState;
 
 uint32_t bopl_rl_abi_version(void);

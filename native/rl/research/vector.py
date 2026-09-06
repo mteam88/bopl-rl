@@ -1,6 +1,9 @@
 """Pinned PufferLib C vector runner with tensors shared with the CUDA backend."""
 import sys
+import ctypes
+import numpy as np
 import torch
+from telemetry import FIELDS
 from pufferlib import _C,pufferl
 from pufferlib.torch_pufferl import _CudaPtr, _cpu_tensor
 
@@ -13,6 +16,15 @@ class Vector:
         args['env'].update(players=2,seed=seed,stocks=3,map=0,ability1=2,ability2=4,ability3=14,
                            action_repeat=4,observation_delay=delay,max_episode_ticks=limit,
                            random_maps=0,random_loadouts=0)
+        # Retained for the complete native vector lifetime. Workers own disjoint
+        # slices, and Python reads only after synchronous gpu_step returns.
+        self.telemetry=np.zeros((2*workers,len(FIELDS)),dtype=np.float32)
+        if ctypes.CDLL(_C.__file__).bopl_puffer_telemetry_size()!=len(FIELDS):
+            raise RuntimeError('Rebuild the PufferLib telemetry binding')
+        pointer=self.telemetry.ctypes.data
+        if int(float(pointer))!=pointer: raise RuntimeError('Telemetry pointer cannot cross numeric config safely')
+        args['env']['telemetry_ptr']=pointer
+        args['env']['telemetry_agents']=2*workers
         self.config=args
         if not _C.gpu: raise RuntimeError('Build the CUDA PufferLib backend first')
         self.vec=_C.create_vec(args,True)
@@ -31,3 +43,4 @@ class Vector:
     def close(self):
         self.obs=self.rewards=self.dones=self.cpu_dones=None
         self.vec.close()
+        self.telemetry=None
