@@ -93,12 +93,33 @@ if (videoAvailable) {
     "document.querySelector('#viewVideo').click();document.querySelector('#video').muted=true;document.querySelector('#video').play()",
   );
   await sleep(600);
+  await evaluate("document.querySelector('#video').currentTime=Math.min(7,document.querySelector('#video').duration/2)");
+  await sleep(300);
   const video = await evaluate(
     "({time:document.querySelector('#video').currentTime,ready:document.querySelector('#video').readyState})",
   );
   if (video.ready < 2 || video.time <= 0)
     throw Error("Native video did not play: " + JSON.stringify(video));
   await evaluate("document.querySelector('#video').pause()");
+}
+const matrix = await evaluate(`(() => {
+  const maps = [...document.querySelector('#winMap').options].map(o => Number(o.value));
+  const expected = data.config.eval_maps || [0, 1, 2];
+  const report = data.final_evaluation || data.validation_evaluation || data.evaluations.at(-1);
+  return {maps, expected, rows: document.querySelectorAll('#evaluationRows tr').length,
+    groups: report?.groups.length || 0, coverage: document.querySelector('#mapCoverage').textContent,
+    frozen: (data.evaluations.at(-1)?.frozen_opponents || data.config.frozen_opponents || []).length,
+    legend: document.querySelector('#thirdWinLegend').textContent};
+})()`);
+if (JSON.stringify(matrix.maps) !== JSON.stringify(matrix.expected) || matrix.rows !== matrix.groups)
+  throw Error("Evaluation matrix mismatch: " + JSON.stringify(matrix));
+if (matrix.frozen && !matrix.legend.includes("Previous trained policies"))
+  throw Error("Frozen opponent legend missing");
+if (matrix.maps.length > 1) {
+  await evaluate(`document.querySelector('#winMap').value='${matrix.maps[1]}';document.querySelector('#winMap').dispatchEvent(new Event('change'))`);
+  if (await evaluate("Number(document.querySelector('#winMap').value)") !== matrix.maps[1])
+    throw Error("Map selector did not retain selection");
+  await evaluate(`document.querySelector('#winMap').value='${matrix.maps[0]}';document.querySelector('#winMap').dispatchEvent(new Event('change'))`);
 }
 const desktop = await call("Page.captureScreenshot", { format: "png" });
 await fs.writeFile(
@@ -143,6 +164,7 @@ console.log(
     after,
     video_playback: videoAvailable,
     behavioral,
+    matrix,
     mobile_overflow: overflow,
     console_errors: errors.length,
   }),

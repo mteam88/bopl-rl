@@ -26,6 +26,8 @@ def prepare(args):
     out=args.output.resolve()
     if args.steps<1 or args.workers<1 or not args.seeds or len(set(args.seeds))!=len(args.seeds):
         raise ValueError('Positive steps/workers and distinct training seeds required')
+    if args.pipeline_groups<1 or args.workers%args.pipeline_groups:
+        raise ValueError('Pipeline groups must be positive and divide the worker count')
     if any(x<2 or x%2 for x in (args.diagnostic_games,args.diagnostic_heldout_games,args.final_games,args.final_heldout_games,
                                args.diagnostic_frozen_games,args.final_frozen_games)):
         raise ValueError('Evaluation game counts must be positive seed pairs')
@@ -41,6 +43,7 @@ def prepare(args):
               created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
               git_revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
               source_identity=source_identity,steps=args.steps,workers=args.workers,resource_sampling=True,
+              pipeline_groups=args.pipeline_groups,cuda_graphs=args.cuda_graphs,
               training_maps=args.training_maps,evaluation_maps=args.training_maps,heldout_maps=args.heldout_maps,
               opponents=str(out/'opponents.json') if frozen else None,frozen_opponents=frozen,
               runs=[dict(name=f'{out.name}-s{seed}',seed=seed) for seed in args.seeds],
@@ -109,6 +112,8 @@ def run(plan_path):
             phase='training'; status('running')
             execute([sys.executable,str(HERE/'train.py'),'--output',str(directory),
                      '--steps',str(plan['steps']),'--workers',str(plan['workers']),'--seed',str(item['seed']),
+                     '--pipeline-groups',str(plan.get('pipeline_groups',1)),
+                     '--cuda-graphs',str(plan.get('cuda_graphs',0)),
                      '--training-maps',','.join(map(str,plan.get('training_maps',[0]))),*evaluation_args,
                      '--evaluation-frozen-games',str(plan.get('diagnostic_frozen_games',16)),
                      *(['--evaluation-opponents',plan['opponents']] if plan.get('opponents') else []),
@@ -159,6 +164,8 @@ def main():
     p.add_argument('--workers',type=int,default=16); p.add_argument('--seeds',type=lambda s:[int(x) for x in s.split(',')],default=[73,173,273])
     p.add_argument('--training-maps',type=map_ids,default=[0]);p.add_argument('--heldout-maps',type=map_ids,default=[1,2])
     p.add_argument('--opponents',type=Path)
+    p.add_argument('--pipeline-groups',type=int,default=1)
+    p.add_argument('--cuda-graphs',type=int,choices=(0,1),default=0)
     p.add_argument('--diagnostic-games',type=int,default=64);p.add_argument('--diagnostic-heldout-games',type=int,default=16)
     p.add_argument('--diagnostic-frozen-games',type=int,default=16);p.add_argument('--final-frozen-games',type=int,default=128)
     p.add_argument('--final-games',type=int,default=256);p.add_argument('--final-heldout-games',type=int,default=64)

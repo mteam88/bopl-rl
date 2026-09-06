@@ -133,7 +133,7 @@ function updateSeries() {
         (g) => g.opponent === "initial" && g.map === 0,
       );
       result.textContent = g
-        ? `Final: ${g.wins}/${g.games} wins · ${percent(g.win_rate)}`
+        ? `Final map 0: ${g.wins}/${g.games} wins · ${percent(g.win_rate)}`
         : "Fresh-seed final evaluation pending";
       card.append(title, progress, result);
       return card;
@@ -192,8 +192,8 @@ function update() {
   );
   $("win").textContent = initial ? percent(initial.win_rate) : "—";
   $("baselineLabel").textContent = c.evaluation_baseline
-    ? "Against the fixed baseline"
-    : "Against the initial policy";
+    ? "Against the fixed baseline · map 0"
+    : "Against the initial policy · map 0";
   $("winDetail").textContent = initial
     ? `${initial.wins} / ${initial.games} wins · ${final ? "fresh final seeds · " : data.validation_evaluation ? "expanded evaluation · " : ""}95% interval ${percent(initial.interval[0])}–${percent(initial.interval[1])}`
     : "Fixed evaluation · both player sides";
@@ -209,7 +209,7 @@ function update() {
         : [];
     }),
   });
-  const frozenNames = new Set((c.frozen_opponents || []).map((p) => p.name));
+  const frozenNames = new Set((latest?.frozen_opponents || c.frozen_opponents || []).map((p) => p.name));
   $("thirdWinLegend").textContent = frozenNames.size ? "Previous trained policies · mean" : "Unseen maps · mean";
   const comparison = {
     color: "#71816a",
@@ -526,7 +526,7 @@ function selectEvaluation() {
       )
       .map((g) => [
         g.name,
-        `${g.opponent === "selfplay" ? "Self-play" : g.opponent === "initial" ? "vs initial policy" : "vs random"} · map ${g.map + 1}`,
+        `${g.opponent === "selfplay" ? "Self-play" : g.opponent === "initial" ? "vs starting policy" : g.opponent === "random" ? "vs random" : "vs " + g.opponent.replace(/^trained-s/, "previous seed ")} · map ${g.map}`,
       ]),
   );
   selectMatch();

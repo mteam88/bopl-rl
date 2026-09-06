@@ -359,5 +359,72 @@
     "puffer_library_sha256": "36514601444836b95c9d6e6446e7ac121da1dee9dd8cf2bbf5dbfe82655f71a8",
     "research_library_sha256": "2f200211cd027b4af72bc3ecdb1dde48a99c146de0b4cb3186d6fb0c436595ab"
   },
-  "legacy_report": "Original30M decisions,28156matches and all final results preserved"
+  "legacy_report": "Original30M decisions,28156matches and all final results preserved",
+  "native_contracts": {
+    "status": "pass",
+    "selection_and_default_rng": true,
+    "all_map_log_keys": true,
+    "overflow_before_episode_end": true
+  },
+  "evaluation_smoke": {
+    "status": "pass",
+    "games": 35,
+    "groups": 17,
+    "maps": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "frozen_opponents": [
+      "trained-s73",
+      "trained-s173",
+      "trained-s273"
+    ],
+    "elapsed": 12.264188629000273,
+    "idempotent_retry": true,
+    "conflicting_schedule_rejected": true
+  },
+  "dashboard_smoke": {
+    "status": "DASHBOARD_OK",
+    "steps": "16,384",
+    "replay": true,
+    "wide": false,
+    "before": "0:04 / 0:09",
+    "after": "0:04 / 0:09",
+    "video_playback": true,
+    "behavioral": {
+      "notice": "Rates use simulated time for the learning players. Historical opponents and warmup are excluded.",
+      "charts": true
+    },
+    "matrix": {
+      "maps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "expected": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rows": 17,
+      "groups": 17,
+      "coverage": "Training maps: 0, 1, 2. Completed matches: map 0: 8 \u00b7 map 1: 7 \u00b7 map 2: 8.",
+      "frozen": 3,
+      "legend": "Previous trained policies \u00b7 mean"
+    },
+    "mobile_overflow": false,
+    "console_errors": 0
+  },
+  "video_smoke": {
+    "duration_seconds": 10,
+    "native_frame_visually_checked": true,
+    "scope": "Short native rendering and seeking check; full series videos are captured separately"
+  }
 }

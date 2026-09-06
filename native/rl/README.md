@@ -177,6 +177,8 @@ native/artifacts/rl/venv/bin/python native/rl/research/series.py prepare \
 This schedule has 369 games per diagnostic and 2,817 per final suite. It evaluates
 each frozen policy on every training map, with separate random-play checks on
 the two unseen maps. Each suite includes one self-play game for a native video.
+Series preparation also records `--pipeline-groups` and `--cuda-graphs` explicitly
+(defaults `1` and `0`), so later trainer defaults cannot change a declared run.
 The series samples GPU activity, memory, power and host CPU load once per second
 in `resource-samples.jsonl`. These measurements cover the whole device and host;
 the training phase includes startup, checkpoint evaluation and video work.
