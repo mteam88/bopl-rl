@@ -1,0 +1,2923 @@
+{
+  "plan": {
+    "source_replays": [
+      498,
+      544
+    ],
+    "human_player": 2,
+    "old_checkpoint": "six-replay/final.pt",
+    "old_checkpoint_new_match_test": [
+      506,
+      544
+    ],
+    "new_fit_training": [
+      498,
+      500,
+      501,
+      502,
+      503,
+      504,
+      506,
+      507,
+      508,
+      509,
+      510,
+      511,
+      512,
+      513,
+      514,
+      515,
+      516,
+      517,
+      518,
+      519,
+      520,
+      521,
+      522,
+      523,
+      524,
+      525,
+      526,
+      527,
+      528,
+      529,
+      530,
+      531,
+      532,
+      533,
+      534,
+      535,
+      536
+    ],
+    "new_fit_validation": [
+      499,
+      505,
+      537,
+      538,
+      539,
+      540,
+      541,
+      542,
+      543,
+      544
+    ],
+    "epochs": 1000,
+    "seed": 73,
+    "learning_rate": 0.001,
+    "checkpoint_selection": "fixed final epoch; no validation selection",
+    "closed_loop_test": [
+      537,
+      538,
+      539,
+      540,
+      541,
+      542,
+      543,
+      544
+    ],
+    "closed_loop_controls": [
+      "human60",
+      "human15",
+      "six",
+      "thirtyseven"
+    ],
+    "claim_scope": "same-session unseen-map demonstration transfer and fixed-opponent replay diagnostics"
+  },
+  "recordings": [
+    {
+      "file": "498.rep",
+      "ticks": 983,
+      "map": 0,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "2dc0157291571efe63cfbe6bc5b12a0f45e3e75d0d6fee86db6eb18d9dd07515"
+    },
+    {
+      "file": "499.rep",
+      "ticks": 1151,
+      "map": 33,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1"
+    },
+    {
+      "file": "500.rep",
+      "ticks": 1081,
+      "map": 26,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "da8814d3e6a2d25ae7776938ee397a96896e5b0f59db0db2f1b8c31f4d78adc4"
+    },
+    {
+      "file": "501.rep",
+      "ticks": 2368,
+      "map": 21,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "b0923927090936fdf49c988e3f1cbf02e81a636e767cc042e9a5a6237bc1fa3c"
+    },
+    {
+      "file": "502.rep",
+      "ticks": 914,
+      "map": 53,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "f158f80d38127c5e54051ff47263097005f2155f7ea35753820adb33df7a7881"
+    },
+    {
+      "file": "503.rep",
+      "ticks": 1364,
+      "map": 78,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "d1439319b0c138ccaff0daf19c8b424015f6bae47f182135d3cb56e5cc35d642"
+    },
+    {
+      "file": "504.rep",
+      "ticks": 969,
+      "map": 68,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "c705c9139fc0b2df4c9c148299c290e3e95c5fb93312a5d97211dc83eeba2d38"
+    },
+    {
+      "file": "505.rep",
+      "ticks": 1775,
+      "map": 48,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c"
+    },
+    {
+      "file": "506.rep",
+      "ticks": 1215,
+      "map": 101,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "473dd1875655d34d158771c366c230b0f0c767bedcaa5ca66e6a42abcab30d6a"
+    },
+    {
+      "file": "507.rep",
+      "ticks": 1213,
+      "map": 98,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "cb45a0233fa927c8e7b9bcde35e458aa0ae8e4c93bfeee677ce9fb1c5845e367"
+    },
+    {
+      "file": "508.rep",
+      "ticks": 814,
+      "map": 86,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "2c9a0efe630975d553ce9a2b93eecffbba900d11ab170b52d46fe2d873a169d6"
+    },
+    {
+      "file": "509.rep",
+      "ticks": 911,
+      "map": 27,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "2eeb4c58a7126548c8229b924a1abd14a101d44e4900c31741c6d96462983bdf"
+    },
+    {
+      "file": "510.rep",
+      "ticks": 811,
+      "map": 32,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "00d0093b1f50e29b164d1ff5efa8f1f41588a55807e37de9a4acae2377dd5e5b"
+    },
+    {
+      "file": "511.rep",
+      "ticks": 1156,
+      "map": 58,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "28fc04efe9bccafdb91ed01e3f864c4b69966e995044dee2225ca48593018cb8"
+    },
+    {
+      "file": "512.rep",
+      "ticks": 1098,
+      "map": 95,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "67f0ae94a5d51cca85f353feb07e551ff7526c884a96b9d8f1cd7bd8683b82f7"
+    },
+    {
+      "file": "513.rep",
+      "ticks": 1485,
+      "map": 11,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "3a4ed610d95e10b3c27a005ee7e344e99ea549c363cdb0110c327d9284b4128d"
+    },
+    {
+      "file": "514.rep",
+      "ticks": 1598,
+      "map": 45,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "b4fc8ace0f20c61cb2b82349b7d0c2dc43c4c720a963e83b8dd50a501a49e1be"
+    },
+    {
+      "file": "515.rep",
+      "ticks": 1107,
+      "map": 40,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "3e985de8de8b1336802b19852e363967a7388dc2581fcd1ca267a2b017fc82d8"
+    },
+    {
+      "file": "516.rep",
+      "ticks": 1338,
+      "map": 37,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "add1cd07e64115a3d6827611e0cb1c83a3a11c3321451e488637e9297357ffa0"
+    },
+    {
+      "file": "517.rep",
+      "ticks": 935,
+      "map": 64,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "b9f19864b4bd7593761922456debca14ffd2dd963cfa0515f1e8c7bba52cd8e5"
+    },
+    {
+      "file": "518.rep",
+      "ticks": 1134,
+      "map": 72,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "bfeb962f41a35b9354330d97e03f15a4a326bd482b3724792151040957007429"
+    },
+    {
+      "file": "519.rep",
+      "ticks": 1316,
+      "map": 90,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "8d863d147f4c48df31df1fe4a014d3150930bc48998f58070e86010d39a3b1d7"
+    },
+    {
+      "file": "520.rep",
+      "ticks": 1144,
+      "map": 30,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "51bf7cc38bf29f34cfd86fe72131ed5b6534c704ed973713bc1562d1660755b2"
+    },
+    {
+      "file": "521.rep",
+      "ticks": 855,
+      "map": 77,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "5780e497bfeb7e76cd7b336b7a2b5d2f5c1905e2c7cba6059614e94a1f5321b4"
+    },
+    {
+      "file": "522.rep",
+      "ticks": 2089,
+      "map": 73,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "e5e24c849cbf71162c80288f1c75fbea0383a4b1b9bafdbaa1aaca2a2e83dfa9"
+    },
+    {
+      "file": "523.rep",
+      "ticks": 1278,
+      "map": 71,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "afd0912b22a3bfb6d5f5affc9332eea02e3a63c19962512ae701468ef6d62c03"
+    },
+    {
+      "file": "524.rep",
+      "ticks": 1050,
+      "map": 15,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "f475b0ba8e7951c96c4c8771c78cb9005c417633331cef2ae3919c0a53b666a9"
+    },
+    {
+      "file": "525.rep",
+      "ticks": 1200,
+      "map": 36,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "a95bfe09fd3b712a16b39058c4cfe66a4b94c476e00700c8390d86f947e52726"
+    },
+    {
+      "file": "526.rep",
+      "ticks": 1181,
+      "map": 115,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "fca1e312bfd2b16623dfefcf42bbaefae8c0bafa6d5387d02c68fd73c9f8c332"
+    },
+    {
+      "file": "527.rep",
+      "ticks": 1422,
+      "map": 100,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "a1a4e0838313fb219d3db94619951bb03d865c25fc97b7da8aa7ae7801062ce6"
+    },
+    {
+      "file": "528.rep",
+      "ticks": 1043,
+      "map": 93,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "77347e11b5e77e20ce0bff10d45e59f64f9b11e4198cd454795a1631bb613e42"
+    },
+    {
+      "file": "529.rep",
+      "ticks": 970,
+      "map": 8,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "208faf878fd3e08cab8b5363e8bf4197565bede2aa020d28a82bd12001f47753"
+    },
+    {
+      "file": "530.rep",
+      "ticks": 1295,
+      "map": 84,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "4282e8b83331661d36cce9e33f6f6fb66da4f286045519acbe49c0f64bbba1b0"
+    },
+    {
+      "file": "531.rep",
+      "ticks": 1085,
+      "map": 67,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "0b24f66c8d8c352b19099c0a281e31c7a5d0335d8967c43408dc3d521cbe7118"
+    },
+    {
+      "file": "532.rep",
+      "ticks": 2066,
+      "map": 1,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "e39dfb250c0cefec5d2405f822ae0d4d7e6fe02f0349ca33e50f4737b7cb320a"
+    },
+    {
+      "file": "533.rep",
+      "ticks": 1384,
+      "map": 47,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "7b8055ba9afa6e056130c7861d7bfdb22a969e595d77a11ee2f156e58eda2121"
+    },
+    {
+      "file": "534.rep",
+      "ticks": 1147,
+      "map": 51,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "90ab64a6ead927646b23e493e9a033f6f243f83b4c0cb6b66e8d92060145c0f9"
+    },
+    {
+      "file": "535.rep",
+      "ticks": 2048,
+      "map": 50,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "b004d56d0903bb1a782a5903cc8419b17f3f014e613a656ea6002f0aee8944ed"
+    },
+    {
+      "file": "536.rep",
+      "ticks": 1714,
+      "map": 62,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "06af115a60ccfc58a4285c5c06f06df9b43aea68e0d9ba39c7526deae578141e"
+    },
+    {
+      "file": "537.rep",
+      "ticks": 1138,
+      "map": 55,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870"
+    },
+    {
+      "file": "538.rep",
+      "ticks": 964,
+      "map": 63,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84"
+    },
+    {
+      "file": "539.rep",
+      "ticks": 1223,
+      "map": 94,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009"
+    },
+    {
+      "file": "540.rep",
+      "ticks": 1673,
+      "map": 29,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef"
+    },
+    {
+      "file": "541.rep",
+      "ticks": 1135,
+      "map": 113,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085"
+    },
+    {
+      "file": "542.rep",
+      "ticks": 1331,
+      "map": 43,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7"
+    },
+    {
+      "file": "543.rep",
+      "ticks": 1159,
+      "map": 79,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690"
+    },
+    {
+      "file": "544.rep",
+      "ticks": 1301,
+      "map": 118,
+      "players": [
+        {
+          "id": 1,
+          "color": 0,
+          "team": 0,
+          "keyboard": true,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        },
+        {
+          "id": 2,
+          "color": 6,
+          "team": 1,
+          "keyboard": false,
+          "abilities": [
+            4,
+            14,
+            2
+          ]
+        }
+      ],
+      "sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b"
+    }
+  ],
+  "old_model_new39": {
+    "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/six-replay/final.pt",
+    "checkpoint_sha256": "c5496a8ac4d1165729aff8651ea31dd211f23c5d1c67a7ff28c8d413ab9d65c7",
+    "matches": 39,
+    "model": {
+      "loss": 10.421589151464456,
+      "decisions": 9931,
+      "angle_accuracy": 0.19051455039774443,
+      "buttons_accuracy": 0.6004430570939483,
+      "joint_accuracy": 0.16745544255361997,
+      "nonneutral_direction_mae_degrees": 42.78749498283013,
+      "neutral_accuracy": 0.7125163629040379
+    },
+    "persistence": {
+      "decisions": 9931,
+      "angle_accuracy": 0.5717450407813917,
+      "buttons_accuracy": 0.9098781592991643,
+      "joint_accuracy": 0.5379115899707985,
+      "nonneutral_direction_mae_degrees": 5.190240703805906,
+      "neutral_accuracy": 0.9271976638807774
+    },
+    "per_match": [
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/506-p2.npz",
+        "sha256": "77e76918a56047d74a4c3fca5bcd099c4d272d7b4af2ca30a6ac7296d12c1f2d",
+        "replay_sha256": "473dd1875655d34d158771c366c230b0f0c767bedcaa5ca66e6a42abcab30d6a",
+        "map": 101,
+        "loss": 16.062049865722656,
+        "decisions": 244,
+        "angle_accuracy": 0.05737704918032787,
+        "buttons_accuracy": 0.4918032786885246,
+        "joint_accuracy": 0.05737704918032787,
+        "nonneutral_direction_mae_degrees": 40.574277168494525,
+        "neutral_accuracy": 0.7827868852459017
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/507-p2.npz",
+        "sha256": "185bbc4871f2835b55fffd10f59794198fd13987cc241a40a815c93fe8f10407",
+        "replay_sha256": "cb45a0233fa927c8e7b9bcde35e458aa0ae8e4c93bfeee677ce9fb1c5845e367",
+        "map": 98,
+        "loss": 9.817489624023438,
+        "decisions": 244,
+        "angle_accuracy": 0.24180327868852458,
+        "buttons_accuracy": 0.7131147540983607,
+        "joint_accuracy": 0.2336065573770492,
+        "nonneutral_direction_mae_degrees": 34.64024767801857,
+        "neutral_accuracy": 0.6311475409836066
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/508-p2.npz",
+        "sha256": "188ab18451d56ff375e571fbb102d99696b8207123db9252d2611ac047a8af76",
+        "replay_sha256": "2c9a0efe630975d553ce9a2b93eecffbba900d11ab170b52d46fe2d873a169d6",
+        "map": 86,
+        "loss": 9.579891204833984,
+        "decisions": 144,
+        "angle_accuracy": 0.16666666666666666,
+        "buttons_accuracy": 0.6319444444444444,
+        "joint_accuracy": 0.16666666666666666,
+        "nonneutral_direction_mae_degrees": 29.947434292866088,
+        "neutral_accuracy": 0.7986111111111112
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/509-p2.npz",
+        "sha256": "95df32251124372d4df479f3ff6fb4b4399ed4833b6a6e53dce270392e069048",
+        "replay_sha256": "2eeb4c58a7126548c8229b924a1abd14a101d44e4900c31741c6d96462983bdf",
+        "map": 27,
+        "loss": 11.233660697937012,
+        "decisions": 168,
+        "angle_accuracy": 0.11904761904761904,
+        "buttons_accuracy": 0.6607142857142857,
+        "joint_accuracy": 0.10714285714285714,
+        "nonneutral_direction_mae_degrees": 21.461675579322637,
+        "neutral_accuracy": 0.6726190476190477
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/510-p2.npz",
+        "sha256": "a29c66cb9ab7ade0e2ee4d430093a3cc78faf850c622309d35f2cd5f1dfd3300",
+        "replay_sha256": "00d0093b1f50e29b164d1ff5efa8f1f41588a55807e37de9a4acae2377dd5e5b",
+        "map": 32,
+        "loss": 17.413009643554688,
+        "decisions": 143,
+        "angle_accuracy": 0.18181818181818182,
+        "buttons_accuracy": 0.3146853146853147,
+        "joint_accuracy": 0.13986013986013987,
+        "nonneutral_direction_mae_degrees": 53.14795008912656,
+        "neutral_accuracy": 0.8391608391608392
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/511-p2.npz",
+        "sha256": "d10fed7d99062a2a44d9fe8bcc1bf90c8bfba14e852fea08ea1009e9bf2c0c64",
+        "replay_sha256": "28fc04efe9bccafdb91ed01e3f864c4b69966e995044dee2225ca48593018cb8",
+        "map": 58,
+        "loss": 9.119790077209473,
+        "decisions": 229,
+        "angle_accuracy": 0.23580786026200873,
+        "buttons_accuracy": 0.5327510917030568,
+        "joint_accuracy": 0.1572052401746725,
+        "nonneutral_direction_mae_degrees": 34.694117647058825,
+        "neutral_accuracy": 0.8558951965065502
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/512-p2.npz",
+        "sha256": "08b80aa6f79d43c8020d1e8b28a6acd8342fb5ee8d44454cfcb0493970901f79",
+        "replay_sha256": "67f0ae94a5d51cca85f353feb07e551ff7526c884a96b9d8f1cd7bd8683b82f7",
+        "map": 95,
+        "loss": 15.83339786529541,
+        "decisions": 215,
+        "angle_accuracy": 0.14883720930232558,
+        "buttons_accuracy": 0.5162790697674419,
+        "joint_accuracy": 0.14883720930232558,
+        "nonneutral_direction_mae_degrees": 59.415821501014186,
+        "neutral_accuracy": 0.6883720930232559
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/513-p2.npz",
+        "sha256": "603b3c327481ae77b1642f11e49ce61778edfa9492f21de786132968ed2ff528",
+        "replay_sha256": "3a4ed610d95e10b3c27a005ee7e344e99ea549c363cdb0110c327d9284b4128d",
+        "map": 11,
+        "loss": 13.10016918182373,
+        "decisions": 312,
+        "angle_accuracy": 0.038461538461538464,
+        "buttons_accuracy": 0.40384615384615385,
+        "joint_accuracy": 0.02564102564102564,
+        "nonneutral_direction_mae_degrees": 44.49530785076677,
+        "neutral_accuracy": 0.8493589743589743
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/514-p2.npz",
+        "sha256": "3e02cf39cc2f8833a5f14a1d6381d4973ce222cee61c085920e6ad95766ed213",
+        "replay_sha256": "b4fc8ace0f20c61cb2b82349b7d0c2dc43c4c720a963e83b8dd50a501a49e1be",
+        "map": 45,
+        "loss": 10.429866790771484,
+        "decisions": 340,
+        "angle_accuracy": 0.22941176470588234,
+        "buttons_accuracy": 0.5647058823529412,
+        "joint_accuracy": 0.20294117647058824,
+        "nonneutral_direction_mae_degrees": 30.391959798994975,
+        "neutral_accuracy": 0.8117647058823529
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/515-p2.npz",
+        "sha256": "3616c9925b9488521f624cf858576e000bb0c78e4dc8d940ab9de65825bab4c8",
+        "replay_sha256": "3e985de8de8b1336802b19852e363967a7388dc2581fcd1ca267a2b017fc82d8",
+        "map": 40,
+        "loss": 10.92979621887207,
+        "decisions": 217,
+        "angle_accuracy": 0.12442396313364056,
+        "buttons_accuracy": 0.5391705069124424,
+        "joint_accuracy": 0.11981566820276497,
+        "nonneutral_direction_mae_degrees": 30.818057455540355,
+        "neutral_accuracy": 0.7142857142857143
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/516-p2.npz",
+        "sha256": "4aeceae24fe06054414ea9ee6efa144761d185a8c52a1db3d80fe17ffb4edaa1",
+        "replay_sha256": "add1cd07e64115a3d6827611e0cb1c83a3a11c3321451e488637e9297357ffa0",
+        "map": 37,
+        "loss": 11.103227615356445,
+        "decisions": 275,
+        "angle_accuracy": 0.23272727272727273,
+        "buttons_accuracy": 0.4036363636363636,
+        "joint_accuracy": 0.12363636363636364,
+        "nonneutral_direction_mae_degrees": 49.12364945978392,
+        "neutral_accuracy": 0.76
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/517-p2.npz",
+        "sha256": "362ec3ecb98256659f017fe8c6134172128caf9ef7eae6b72d4ad8020dd399f7",
+        "replay_sha256": "b9f19864b4bd7593761922456debca14ffd2dd963cfa0515f1e8c7bba52cd8e5",
+        "map": 64,
+        "loss": 9.73879623413086,
+        "decisions": 174,
+        "angle_accuracy": 0.1724137931034483,
+        "buttons_accuracy": 0.5517241379310345,
+        "joint_accuracy": 0.16666666666666666,
+        "nonneutral_direction_mae_degrees": 41.473145780051155,
+        "neutral_accuracy": 0.5632183908045977
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/518-p2.npz",
+        "sha256": "3e5b00735f5904f43443a426b5b7a5e8fe2f0cd933c488f49545e23839ba10d8",
+        "replay_sha256": "bfeb962f41a35b9354330d97e03f15a4a326bd482b3724792151040957007429",
+        "map": 72,
+        "loss": 11.364250183105469,
+        "decisions": 224,
+        "angle_accuracy": 0.0625,
+        "buttons_accuracy": 0.7321428571428571,
+        "joint_accuracy": 0.05803571428571429,
+        "nonneutral_direction_mae_degrees": 41.90424076607387,
+        "neutral_accuracy": 0.6294642857142857
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/519-p2.npz",
+        "sha256": "470850e7e9c739d7e13e1687fc3288ed6c2f6ac5ea3c4cdf65ac0b9f9f04c33b",
+        "replay_sha256": "8d863d147f4c48df31df1fe4a014d3150930bc48998f58070e86010d39a3b1d7",
+        "map": 90,
+        "loss": 9.846242904663086,
+        "decisions": 269,
+        "angle_accuracy": 0.1970260223048327,
+        "buttons_accuracy": 0.5539033457249071,
+        "joint_accuracy": 0.15613382899628253,
+        "nonneutral_direction_mae_degrees": 69.92864030858244,
+        "neutral_accuracy": 0.6505576208178439
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/520-p2.npz",
+        "sha256": "9caa0316549b5f0a3bd95e384abec91517add65b831e15a24e4226ff305d17c5",
+        "replay_sha256": "51bf7cc38bf29f34cfd86fe72131ed5b6534c704ed973713bc1562d1660755b2",
+        "map": 30,
+        "loss": 8.096735000610352,
+        "decisions": 226,
+        "angle_accuracy": 0.1504424778761062,
+        "buttons_accuracy": 0.6460176991150443,
+        "joint_accuracy": 0.084070796460177,
+        "nonneutral_direction_mae_degrees": 27.95294117647059,
+        "neutral_accuracy": 0.7964601769911505
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/521-p2.npz",
+        "sha256": "2240ff8d52358958c82bbb3bf6e53ad70e966007f5a324ca6633a2d2e8d24aea",
+        "replay_sha256": "5780e497bfeb7e76cd7b336b7a2b5d2f5c1905e2c7cba6059614e94a1f5321b4",
+        "map": 77,
+        "loss": 12.043960571289062,
+        "decisions": 154,
+        "angle_accuracy": 0.17532467532467533,
+        "buttons_accuracy": 0.538961038961039,
+        "joint_accuracy": 0.17532467532467533,
+        "nonneutral_direction_mae_degrees": 60.02016806722689,
+        "neutral_accuracy": 0.8506493506493507
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/522-p2.npz",
+        "sha256": "3e3f4e7f6de3ec7eaa8f6e8f5f0678951cfc44cf9f65376d6b887be4e6f12e8b",
+        "replay_sha256": "e5e24c849cbf71162c80288f1c75fbea0383a4b1b9bafdbaa1aaca2a2e83dfa9",
+        "map": 73,
+        "loss": 11.868569374084473,
+        "decisions": 463,
+        "angle_accuracy": 0.07127429805615551,
+        "buttons_accuracy": 0.6025917926565875,
+        "joint_accuracy": 0.06479481641468683,
+        "nonneutral_direction_mae_degrees": 46.30002035416243,
+        "neutral_accuracy": 0.6868250539956804
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/523-p2.npz",
+        "sha256": "8997d3ad04b79a7f0fda0817f4988e88b31dce4bc957bfbe62a2d2abc32f286a",
+        "replay_sha256": "afd0912b22a3bfb6d5f5affc9332eea02e3a63c19962512ae701468ef6d62c03",
+        "map": 71,
+        "loss": 8.889799118041992,
+        "decisions": 260,
+        "angle_accuracy": 0.24615384615384617,
+        "buttons_accuracy": 0.7423076923076923,
+        "joint_accuracy": 0.2423076923076923,
+        "nonneutral_direction_mae_degrees": 42.80904977375565,
+        "neutral_accuracy": 0.7384615384615385
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/524-p2.npz",
+        "sha256": "cf4deed445fe90d9d809f898b4827795271e1fff5e78975a7c6f814a26fdf34d",
+        "replay_sha256": "f475b0ba8e7951c96c4c8771c78cb9005c417633331cef2ae3919c0a53b666a9",
+        "map": 15,
+        "loss": 9.50407886505127,
+        "decisions": 203,
+        "angle_accuracy": 0.12315270935960591,
+        "buttons_accuracy": 0.6748768472906403,
+        "joint_accuracy": 0.12315270935960591,
+        "nonneutral_direction_mae_degrees": 29.01419878296146,
+        "neutral_accuracy": 0.8275862068965517
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/525-p2.npz",
+        "sha256": "3ed43e8c4e1995c19a83bd944c52430374344d7ec622d8910ea0acfcfe0224e2",
+        "replay_sha256": "a95bfe09fd3b712a16b39058c4cfe66a4b94c476e00700c8390d86f947e52726",
+        "map": 36,
+        "loss": 9.89098072052002,
+        "decisions": 240,
+        "angle_accuracy": 0.18333333333333332,
+        "buttons_accuracy": 0.6375,
+        "joint_accuracy": 0.18333333333333332,
+        "nonneutral_direction_mae_degrees": 60.85748124753257,
+        "neutral_accuracy": 0.8
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/526-p2.npz",
+        "sha256": "449284e7cd1fab7b9b0fbfba42e3c9ede1aaef21c4dc8a289e0080834140c5da",
+        "replay_sha256": "fca1e312bfd2b16623dfefcf42bbaefae8c0bafa6d5387d02c68fd73c9f8c332",
+        "map": 115,
+        "loss": 9.674909591674805,
+        "decisions": 236,
+        "angle_accuracy": 0.211864406779661,
+        "buttons_accuracy": 0.6567796610169492,
+        "joint_accuracy": 0.2076271186440678,
+        "nonneutral_direction_mae_degrees": 20.68606811145511,
+        "neutral_accuracy": 0.6059322033898306
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/527-p2.npz",
+        "sha256": "c7fc39919458a0e62e6454ff13ef61d7a55bff859ccc94417bfa26acf04a9269",
+        "replay_sha256": "a1a4e0838313fb219d3db94619951bb03d865c25fc97b7da8aa7ae7801062ce6",
+        "map": 100,
+        "loss": 8.41667366027832,
+        "decisions": 296,
+        "angle_accuracy": 0.3277027027027027,
+        "buttons_accuracy": 0.6824324324324325,
+        "joint_accuracy": 0.27702702702702703,
+        "nonneutral_direction_mae_degrees": 53.15653040877368,
+        "neutral_accuracy": 0.722972972972973
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/528-p2.npz",
+        "sha256": "2015c413db4530e9a6a1a080f3d98c6a2d858440a43602ff39e4ea6595e201f8",
+        "replay_sha256": "77347e11b5e77e20ce0bff10d45e59f64f9b11e4198cd454795a1631bb613e42",
+        "map": 93,
+        "loss": 8.207194328308105,
+        "decisions": 201,
+        "angle_accuracy": 0.22885572139303484,
+        "buttons_accuracy": 0.7661691542288557,
+        "joint_accuracy": 0.21890547263681592,
+        "nonneutral_direction_mae_degrees": 31.01278772378517,
+        "neutral_accuracy": 0.681592039800995
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/529-p2.npz",
+        "sha256": "9d7980e7cecd21e179a2da18873caa7ce05b5ad731da83d1acd3b71425e0e43a",
+        "replay_sha256": "208faf878fd3e08cab8b5363e8bf4197565bede2aa020d28a82bd12001f47753",
+        "map": 8,
+        "loss": 9.348069190979004,
+        "decisions": 183,
+        "angle_accuracy": 0.19672131147540983,
+        "buttons_accuracy": 0.7103825136612022,
+        "joint_accuracy": 0.1912568306010929,
+        "nonneutral_direction_mae_degrees": 28.26737967914439,
+        "neutral_accuracy": 0.6721311475409836
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/530-p2.npz",
+        "sha256": "11f655b6d5788f8bfb9711738db60caad1c950f062f6dfa4b4454d09eac07a5d",
+        "replay_sha256": "4282e8b83331661d36cce9e33f6f6fb66da4f286045519acbe49c0f64bbba1b0",
+        "map": 84,
+        "loss": 8.49713134765625,
+        "decisions": 264,
+        "angle_accuracy": 0.32196969696969696,
+        "buttons_accuracy": 0.8181818181818182,
+        "joint_accuracy": 0.3068181818181818,
+        "nonneutral_direction_mae_degrees": 30.265546218487398,
+        "neutral_accuracy": 0.7196969696969697
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/531-p2.npz",
+        "sha256": "0df55e6c3489d122a316b69bd1fbb7561e39bf20a14009ae3c9fb311b1b17b33",
+        "replay_sha256": "0b24f66c8d8c352b19099c0a281e31c7a5d0335d8967c43408dc3d521cbe7118",
+        "map": 67,
+        "loss": 12.586044311523438,
+        "decisions": 212,
+        "angle_accuracy": 0.09905660377358491,
+        "buttons_accuracy": 0.5,
+        "joint_accuracy": 0.08962264150943396,
+        "nonneutral_direction_mae_degrees": 62.43478260869565,
+        "neutral_accuracy": 0.75
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/532-p2.npz",
+        "sha256": "a5d23df4613567dc6895b449943a46cc447965d0d1514681e70f5adf08fd7f93",
+        "replay_sha256": "e39dfb250c0cefec5d2405f822ae0d4d7e6fe02f0349ca33e50f4737b7cb320a",
+        "map": 1,
+        "loss": 11.958683013916016,
+        "decisions": 457,
+        "angle_accuracy": 0.11816192560175055,
+        "buttons_accuracy": 0.5273522975929978,
+        "joint_accuracy": 0.10065645514223195,
+        "nonneutral_direction_mae_degrees": 39.082780748663104,
+        "neutral_accuracy": 0.7199124726477024
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/533-p2.npz",
+        "sha256": "55e934b2d00234e70d2f0adef6e52cf5a112512b94fbdaa9f81027b1aad579b0",
+        "replay_sha256": "7b8055ba9afa6e056130c7861d7bfdb22a969e595d77a11ee2f156e58eda2121",
+        "map": 47,
+        "loss": 7.773736000061035,
+        "decisions": 286,
+        "angle_accuracy": 0.2902097902097902,
+        "buttons_accuracy": 0.7167832167832168,
+        "joint_accuracy": 0.26223776223776224,
+        "nonneutral_direction_mae_degrees": 38.36029411764706,
+        "neutral_accuracy": 0.7272727272727273
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/534-p2.npz",
+        "sha256": "f043356f6d20c26c3cd5ed2d2aadd46bee1a55a70eff6faee2fbabe45bfc70dc",
+        "replay_sha256": "90ab64a6ead927646b23e493e9a033f6f243f83b4c0cb6b66e8d92060145c0f9",
+        "map": 51,
+        "loss": 8.64948844909668,
+        "decisions": 227,
+        "angle_accuracy": 0.20704845814977973,
+        "buttons_accuracy": 0.6828193832599119,
+        "joint_accuracy": 0.2026431718061674,
+        "nonneutral_direction_mae_degrees": 50.56561085972851,
+        "neutral_accuracy": 0.6607929515418502
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/535-p2.npz",
+        "sha256": "bfb202d4bec71b50e60ced4c7efbe9f667cdb1b66e49e160dfd1cdda9587446d",
+        "replay_sha256": "b004d56d0903bb1a782a5903cc8419b17f3f014e613a656ea6002f0aee8944ed",
+        "map": 50,
+        "loss": 10.730545043945312,
+        "decisions": 452,
+        "angle_accuracy": 0.18805309734513273,
+        "buttons_accuracy": 0.4026548672566372,
+        "joint_accuracy": 0.16371681415929204,
+        "nonneutral_direction_mae_degrees": 60.13402829486224,
+        "neutral_accuracy": 0.5353982300884956
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/536-p2.npz",
+        "sha256": "280af25d7a8f36f92686700afbbbcc02c9caca92d7d7ea4a55792b09a4c96511",
+        "replay_sha256": "06af115a60ccfc58a4285c5c06f06df9b43aea68e0d9ba39c7526deae578141e",
+        "map": 62,
+        "loss": 7.120767116546631,
+        "decisions": 369,
+        "angle_accuracy": 0.22764227642276422,
+        "buttons_accuracy": 0.7344173441734417,
+        "joint_accuracy": 0.21138211382113822,
+        "nonneutral_direction_mae_degrees": 60.31006047278724,
+        "neutral_accuracy": 0.5149051490514905
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/537-p2.npz",
+        "sha256": "58c3dfe6869a2fd4e5612850b1eb6269ef338b5066d28a439e47c061ac2090e6",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "map": 55,
+        "loss": 10.056879043579102,
+        "decisions": 225,
+        "angle_accuracy": 0.2222222222222222,
+        "buttons_accuracy": 0.6533333333333333,
+        "joint_accuracy": 0.19111111111111112,
+        "nonneutral_direction_mae_degrees": 30.539400665926753,
+        "neutral_accuracy": 0.64
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/538-p2.npz",
+        "sha256": "652c3b82cab48f1386216da074a72ad185539f99aef5eb9eb2476f0ce65ccc8e",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "map": 63,
+        "loss": 10.283488273620605,
+        "decisions": 181,
+        "angle_accuracy": 0.14917127071823205,
+        "buttons_accuracy": 0.8397790055248618,
+        "joint_accuracy": 0.14917127071823205,
+        "nonneutral_direction_mae_degrees": 35.976470588235294,
+        "neutral_accuracy": 0.8121546961325967
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/539-p2.npz",
+        "sha256": "1a298b628667a6972a7f83adbe546bbeedca66291fb09eeb0f77786d2a5dfcf8",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "map": 94,
+        "loss": 9.680294036865234,
+        "decisions": 246,
+        "angle_accuracy": 0.16666666666666666,
+        "buttons_accuracy": 0.7479674796747967,
+        "joint_accuracy": 0.15853658536585366,
+        "nonneutral_direction_mae_degrees": 34.23769507803121,
+        "neutral_accuracy": 0.7439024390243902
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/540-p2.npz",
+        "sha256": "b88a69c4adcaa4e64c8aab9ac600c9d791829671943aee0f37f6f2d80a447c8d",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "map": 29,
+        "loss": 12.814132690429688,
+        "decisions": 359,
+        "angle_accuracy": 0.2116991643454039,
+        "buttons_accuracy": 0.31197771587743733,
+        "joint_accuracy": 0.07520891364902507,
+        "nonneutral_direction_mae_degrees": 63.26868044515104,
+        "neutral_accuracy": 0.83008356545961
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/541-p2.npz",
+        "sha256": "9b835c78aec580f586e1300cb3db44eecc6533618ec5c6c538ab42df45b814db",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "map": 113,
+        "loss": 11.674294471740723,
+        "decisions": 224,
+        "angle_accuracy": 0.18303571428571427,
+        "buttons_accuracy": 0.6071428571428571,
+        "joint_accuracy": 0.17410714285714285,
+        "nonneutral_direction_mae_degrees": 42.17161359956826,
+        "neutral_accuracy": 0.6696428571428571
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/542-p2.npz",
+        "sha256": "59e5c695e8e473b701005ab9151184cc73084adb854b1e1a10f2214a6df536fa",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "map": 43,
+        "loss": 10.254939079284668,
+        "decisions": 273,
+        "angle_accuracy": 0.21611721611721613,
+        "buttons_accuracy": 0.5860805860805861,
+        "joint_accuracy": 0.21245421245421245,
+        "nonneutral_direction_mae_degrees": 38.962717481358744,
+        "neutral_accuracy": 0.7362637362637363
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/543-p2.npz",
+        "sha256": "7df61c28ea20d29d93aad4a45379f61b347864f01fe3b3e85bb36fbcf542bc0a",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "map": 79,
+        "loss": 7.660612106323242,
+        "decisions": 230,
+        "angle_accuracy": 0.3347826086956522,
+        "buttons_accuracy": 0.717391304347826,
+        "joint_accuracy": 0.3217391304347826,
+        "nonneutral_direction_mae_degrees": 31.24622592399792,
+        "neutral_accuracy": 0.8173913043478261
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/544-p2.npz",
+        "sha256": "6a151fbf7b8f1e50fc0b8622314c8f7ad7998750b11f46230ce0acf0d538538e",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "map": 118,
+        "loss": 6.514140605926514,
+        "decisions": 266,
+        "angle_accuracy": 0.37218045112781956,
+        "buttons_accuracy": 0.6390977443609023,
+        "joint_accuracy": 0.36466165413533835,
+        "nonneutral_direction_mae_degrees": 39.97860962566845,
+        "neutral_accuracy": 0.5375939849624061
+      }
+    ]
+  },
+  "old_model_held10": {
+    "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/six-replay/final.pt",
+    "checkpoint_sha256": "c5496a8ac4d1165729aff8651ea31dd211f23c5d1c67a7ff28c8d413ab9d65c7",
+    "matches": 10,
+    "model": {
+      "loss": 9.676861459326672,
+      "decisions": 2616,
+      "angle_accuracy": 0.22629969418960244,
+      "buttons_accuracy": 0.6318807339449541,
+      "joint_accuracy": 0.19877675840978593,
+      "nonneutral_direction_mae_degrees": 42.91830318494555,
+      "neutral_accuracy": 0.7121559633027523
+    },
+    "persistence": {
+      "decisions": 2616,
+      "angle_accuracy": 0.5741590214067278,
+      "buttons_accuracy": 0.9113149847094801,
+      "joint_accuracy": 0.5401376146788991,
+      "nonneutral_direction_mae_degrees": 4.8893174756241295,
+      "neutral_accuracy": 0.9181957186544343
+    },
+    "per_match": [
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/499-p2.npz",
+        "sha256": "f214daae25258c956741d5077f47476b83e42cad630af571b296d00d35275659",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "map": 33,
+        "loss": 9.462428092956543,
+        "decisions": 228,
+        "angle_accuracy": 0.15350877192982457,
+        "buttons_accuracy": 0.706140350877193,
+        "joint_accuracy": 0.14912280701754385,
+        "nonneutral_direction_mae_degrees": 54.28758169934641,
+        "neutral_accuracy": 0.6228070175438597
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/505-p2.npz",
+        "sha256": "4cf3cfd0aa551842472d19f278213d502d7474d4966ba754190d3df7623e6285",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "map": 48,
+        "loss": 8.182703971862793,
+        "decisions": 384,
+        "angle_accuracy": 0.2265625,
+        "buttons_accuracy": 0.6927083333333334,
+        "joint_accuracy": 0.21354166666666666,
+        "nonneutral_direction_mae_degrees": 41.62352941176471,
+        "neutral_accuracy": 0.6953125
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/537-p2.npz",
+        "sha256": "58c3dfe6869a2fd4e5612850b1eb6269ef338b5066d28a439e47c061ac2090e6",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "map": 55,
+        "loss": 10.056879043579102,
+        "decisions": 225,
+        "angle_accuracy": 0.2222222222222222,
+        "buttons_accuracy": 0.6533333333333333,
+        "joint_accuracy": 0.19111111111111112,
+        "nonneutral_direction_mae_degrees": 30.539400665926753,
+        "neutral_accuracy": 0.64
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/538-p2.npz",
+        "sha256": "652c3b82cab48f1386216da074a72ad185539f99aef5eb9eb2476f0ce65ccc8e",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "map": 63,
+        "loss": 10.283488273620605,
+        "decisions": 181,
+        "angle_accuracy": 0.14917127071823205,
+        "buttons_accuracy": 0.8397790055248618,
+        "joint_accuracy": 0.14917127071823205,
+        "nonneutral_direction_mae_degrees": 35.976470588235294,
+        "neutral_accuracy": 0.8121546961325967
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/539-p2.npz",
+        "sha256": "1a298b628667a6972a7f83adbe546bbeedca66291fb09eeb0f77786d2a5dfcf8",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "map": 94,
+        "loss": 9.680294036865234,
+        "decisions": 246,
+        "angle_accuracy": 0.16666666666666666,
+        "buttons_accuracy": 0.7479674796747967,
+        "joint_accuracy": 0.15853658536585366,
+        "nonneutral_direction_mae_degrees": 34.23769507803121,
+        "neutral_accuracy": 0.7439024390243902
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/540-p2.npz",
+        "sha256": "b88a69c4adcaa4e64c8aab9ac600c9d791829671943aee0f37f6f2d80a447c8d",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "map": 29,
+        "loss": 12.814132690429688,
+        "decisions": 359,
+        "angle_accuracy": 0.2116991643454039,
+        "buttons_accuracy": 0.31197771587743733,
+        "joint_accuracy": 0.07520891364902507,
+        "nonneutral_direction_mae_degrees": 63.26868044515104,
+        "neutral_accuracy": 0.83008356545961
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/541-p2.npz",
+        "sha256": "9b835c78aec580f586e1300cb3db44eecc6533618ec5c6c538ab42df45b814db",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "map": 113,
+        "loss": 11.674294471740723,
+        "decisions": 224,
+        "angle_accuracy": 0.18303571428571427,
+        "buttons_accuracy": 0.6071428571428571,
+        "joint_accuracy": 0.17410714285714285,
+        "nonneutral_direction_mae_degrees": 42.17161359956826,
+        "neutral_accuracy": 0.6696428571428571
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/542-p2.npz",
+        "sha256": "59e5c695e8e473b701005ab9151184cc73084adb854b1e1a10f2214a6df536fa",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "map": 43,
+        "loss": 10.254939079284668,
+        "decisions": 273,
+        "angle_accuracy": 0.21611721611721613,
+        "buttons_accuracy": 0.5860805860805861,
+        "joint_accuracy": 0.21245421245421245,
+        "nonneutral_direction_mae_degrees": 38.962717481358744,
+        "neutral_accuracy": 0.7362637362637363
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/543-p2.npz",
+        "sha256": "7df61c28ea20d29d93aad4a45379f61b347864f01fe3b3e85bb36fbcf542bc0a",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "map": 79,
+        "loss": 7.660612106323242,
+        "decisions": 230,
+        "angle_accuracy": 0.3347826086956522,
+        "buttons_accuracy": 0.717391304347826,
+        "joint_accuracy": 0.3217391304347826,
+        "nonneutral_direction_mae_degrees": 31.24622592399792,
+        "neutral_accuracy": 0.8173913043478261
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/544-p2.npz",
+        "sha256": "6a151fbf7b8f1e50fc0b8622314c8f7ad7998750b11f46230ce0acf0d538538e",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "map": 118,
+        "loss": 6.514140605926514,
+        "decisions": 266,
+        "angle_accuracy": 0.37218045112781956,
+        "buttons_accuracy": 0.6390977443609023,
+        "joint_accuracy": 0.36466165413533835,
+        "nonneutral_direction_mae_degrees": 39.97860962566845,
+        "neutral_accuracy": 0.5375939849624061
+      }
+    ]
+  },
+  "new_model_held10": {
+    "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/thirtyseven-replay/final.pt",
+    "checkpoint_sha256": "9dc582c1a53bc5275d90efac631560da4d2f1a59fcf06904e80d72bbd4bc9566",
+    "matches": 10,
+    "model": {
+      "loss": 5.206136206968115,
+      "decisions": 2616,
+      "angle_accuracy": 0.30313455657492355,
+      "buttons_accuracy": 0.7733180428134556,
+      "joint_accuracy": 0.2809633027522936,
+      "nonneutral_direction_mae_degrees": 15.670588235294119,
+      "neutral_accuracy": 0.8321865443425076
+    },
+    "persistence": {
+      "decisions": 2616,
+      "angle_accuracy": 0.5741590214067278,
+      "buttons_accuracy": 0.9113149847094801,
+      "joint_accuracy": 0.5401376146788991,
+      "nonneutral_direction_mae_degrees": 4.8893174756241295,
+      "neutral_accuracy": 0.9181957186544343
+    },
+    "per_match": [
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/499-p2.npz",
+        "sha256": "f214daae25258c956741d5077f47476b83e42cad630af571b296d00d35275659",
+        "replay_sha256": "358c9d57021b63cd88930b1e99b92599252f5ba35c3da70aaec1a1f9bfa605a1",
+        "map": 33,
+        "loss": 6.2925591468811035,
+        "decisions": 228,
+        "angle_accuracy": 0.32894736842105265,
+        "buttons_accuracy": 0.75,
+        "joint_accuracy": 0.3157894736842105,
+        "nonneutral_direction_mae_degrees": 23.743315508021393,
+        "neutral_accuracy": 0.7543859649122807
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/505-p2.npz",
+        "sha256": "4cf3cfd0aa551842472d19f278213d502d7474d4966ba754190d3df7623e6285",
+        "replay_sha256": "7caeef059c7b0aec6f04ee3e973555ba73ac35132e81f1af76131cbcd4cf392c",
+        "map": 48,
+        "loss": 4.2839131355285645,
+        "decisions": 384,
+        "angle_accuracy": 0.34375,
+        "buttons_accuracy": 0.7838541666666666,
+        "joint_accuracy": 0.2942708333333333,
+        "nonneutral_direction_mae_degrees": 8.91945701357466,
+        "neutral_accuracy": 0.8177083333333334
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/537-p2.npz",
+        "sha256": "58c3dfe6869a2fd4e5612850b1eb6269ef338b5066d28a439e47c061ac2090e6",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "map": 55,
+        "loss": 5.965246677398682,
+        "decisions": 225,
+        "angle_accuracy": 0.2,
+        "buttons_accuracy": 0.7422222222222222,
+        "joint_accuracy": 0.1688888888888889,
+        "nonneutral_direction_mae_degrees": 13.809954751131219,
+        "neutral_accuracy": 0.8622222222222222
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/538-p2.npz",
+        "sha256": "652c3b82cab48f1386216da074a72ad185539f99aef5eb9eb2476f0ce65ccc8e",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "map": 63,
+        "loss": 5.638372421264648,
+        "decisions": 181,
+        "angle_accuracy": 0.15469613259668508,
+        "buttons_accuracy": 0.8342541436464088,
+        "joint_accuracy": 0.143646408839779,
+        "nonneutral_direction_mae_degrees": 13.053037608486017,
+        "neutral_accuracy": 0.8176795580110497
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/539-p2.npz",
+        "sha256": "1a298b628667a6972a7f83adbe546bbeedca66291fb09eeb0f77786d2a5dfcf8",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "map": 94,
+        "loss": 5.581720352172852,
+        "decisions": 246,
+        "angle_accuracy": 0.23577235772357724,
+        "buttons_accuracy": 0.8089430894308943,
+        "joint_accuracy": 0.22357723577235772,
+        "nonneutral_direction_mae_degrees": 13.860155382907875,
+        "neutral_accuracy": 0.8211382113821138
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/540-p2.npz",
+        "sha256": "b88a69c4adcaa4e64c8aab9ac600c9d791829671943aee0f37f6f2d80a447c8d",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "map": 29,
+        "loss": 6.0415358543396,
+        "decisions": 359,
+        "angle_accuracy": 0.2785515320334262,
+        "buttons_accuracy": 0.7827298050139275,
+        "joint_accuracy": 0.27298050139275765,
+        "nonneutral_direction_mae_degrees": 22.544700699663128,
+        "neutral_accuracy": 0.9052924791086351
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/541-p2.npz",
+        "sha256": "9b835c78aec580f586e1300cb3db44eecc6533618ec5c6c538ab42df45b814db",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "map": 113,
+        "loss": 5.820346832275391,
+        "decisions": 224,
+        "angle_accuracy": 0.16071428571428573,
+        "buttons_accuracy": 0.7232142857142857,
+        "joint_accuracy": 0.14285714285714285,
+        "nonneutral_direction_mae_degrees": 15.625867738399705,
+        "neutral_accuracy": 0.8526785714285714
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/542-p2.npz",
+        "sha256": "59e5c695e8e473b701005ab9151184cc73084adb854b1e1a10f2214a6df536fa",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "map": 43,
+        "loss": 5.524165153503418,
+        "decisions": 273,
+        "angle_accuracy": 0.27472527472527475,
+        "buttons_accuracy": 0.6556776556776557,
+        "joint_accuracy": 0.2564102564102564,
+        "nonneutral_direction_mae_degrees": 16.923192206819035,
+        "neutral_accuracy": 0.8241758241758241
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/543-p2.npz",
+        "sha256": "7df61c28ea20d29d93aad4a45379f61b347864f01fe3b3e85bb36fbcf542bc0a",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "map": 79,
+        "loss": 4.774728775024414,
+        "decisions": 230,
+        "angle_accuracy": 0.28695652173913044,
+        "buttons_accuracy": 0.7521739130434782,
+        "joint_accuracy": 0.25217391304347825,
+        "nonneutral_direction_mae_degrees": 10.835294117647058,
+        "neutral_accuracy": 0.7608695652173914
+      },
+      {
+        "file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/dataset/544-p2.npz",
+        "sha256": "6a151fbf7b8f1e50fc0b8622314c8f7ad7998750b11f46230ce0acf0d538538e",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "map": 118,
+        "loss": 2.7245988845825195,
+        "decisions": 266,
+        "angle_accuracy": 0.6691729323308271,
+        "buttons_accuracy": 0.8984962406015038,
+        "joint_accuracy": 0.650375939849624,
+        "nonneutral_direction_mae_degrees": 20.209150326797385,
+        "neutral_accuracy": 0.868421052631579
+      }
+    ]
+  },
+  "new_fit": {
+    "final": {
+      "epoch": 1000,
+      "elapsed_seconds": 5.358038538994151,
+      "train": {
+        "loss": 0.6172504425048828,
+        "decisions": 9489,
+        "angle_accuracy": 0.8980925281905364,
+        "buttons_accuracy": 0.9640636526504374,
+        "joint_accuracy": 0.8682685214458847,
+        "nonneutral_direction_mae_degrees": 0.6969612489545581,
+        "neutral_accuracy": 0.9654336600274002
+      },
+      "validation": {
+        "loss": 5.205773830413818,
+        "decisions": 2616,
+        "angle_accuracy": 0.30313455657492355,
+        "buttons_accuracy": 0.7729357798165137,
+        "joint_accuracy": 0.2809633027522936,
+        "nonneutral_direction_mae_degrees": 15.679454390451832,
+        "neutral_accuracy": 0.8318042813455657
+      }
+    },
+    "persistence_baseline": {
+      "train": {
+        "decisions": 9489,
+        "angle_accuracy": 0.5652861207714195,
+        "buttons_accuracy": 0.9074718094635894,
+        "joint_accuracy": 0.5304036252502898,
+        "nonneutral_direction_mae_degrees": 5.249765747006768,
+        "neutral_accuracy": 0.9243334387185161
+      },
+      "validation": {
+        "decisions": 2616,
+        "angle_accuracy": 0.5741590214067278,
+        "buttons_accuracy": 0.9113149847094801,
+        "joint_accuracy": 0.5401376146788991,
+        "nonneutral_direction_mae_degrees": 4.8893174756241295,
+        "neutral_accuracy": 0.9181957186544343
+      }
+    }
+  },
+  "closed_loop": {
+    "checkpoints": {
+      "six": {
+        "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/six-replay/final.pt",
+        "sha256": "c5496a8ac4d1165729aff8651ea31dd211f23c5d1c67a7ff28c8d413ab9d65c7"
+      },
+      "thirtyseven": {
+        "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/human-imitation-batch/native/artifacts/rl/imitation/thirtyseven-replay/final.pt",
+        "sha256": "9dc582c1a53bc5275d90efac631560da4d2f1a59fcf06904e80d72bbd4bc9566"
+      }
+    },
+    "games": [
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/537.rep",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1138,
+        "requested_ticks": 1138,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          38,
+          46
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/537.rep",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1138,
+        "requested_ticks": 1138,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          40,
+          48
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/537.rep",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1138,
+        "requested_ticks": 1138,
+        "arrows_fired": 1,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          56
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/537.rep",
+        "replay_sha256": "9594bb89ac08ab6bcac049cdded2e57c199eac9568cfa918bf0be0fb4e000870",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1138,
+        "requested_ticks": 1138,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/538.rep",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 964,
+        "requested_ticks": 964,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          102,
+          37
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/538.rep",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 964,
+        "requested_ticks": 964,
+        "arrows_fired": 2,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          104,
+          40
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/538.rep",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "player": 2,
+        "mode": "six",
+        "ticks": 964,
+        "requested_ticks": 964,
+        "arrows_fired": 1,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          16
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/538.rep",
+        "replay_sha256": "6f6fe42248a8f87617ccf7ab606040c97d39133a5e7e1c41e665a6810db44c84",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 964,
+        "requested_ticks": 964,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/539.rep",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1223,
+        "requested_ticks": 1223,
+        "arrows_fired": 3,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          37,
+          48,
+          44
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/539.rep",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1223,
+        "requested_ticks": 1223,
+        "arrows_fired": 3,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          36,
+          48,
+          44
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/539.rep",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1223,
+        "requested_ticks": 1223,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          24
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/539.rep",
+        "replay_sha256": "0159e4202f678935a23c4977c661514019e7c9acae1d700b9d73781c130b6009",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1223,
+        "requested_ticks": 1223,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/540.rep",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1673,
+        "requested_ticks": 1673,
+        "arrows_fired": 3,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          62,
+          81,
+          38
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/540.rep",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1673,
+        "requested_ticks": 1673,
+        "arrows_fired": 3,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          60,
+          80,
+          40
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/540.rep",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1673,
+        "requested_ticks": 1673,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          4,
+          8
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/540.rep",
+        "replay_sha256": "f8a4472424ad3ac070176c12ff3f081b58f2a394da96770d30fc883f80e094ef",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1673,
+        "requested_ticks": 1673,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/541.rep",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1135,
+        "requested_ticks": 1135,
+        "arrows_fired": 3,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          48,
+          48,
+          62
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/541.rep",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1135,
+        "requested_ticks": 1135,
+        "arrows_fired": 3,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          48,
+          48,
+          60
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/541.rep",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1135,
+        "requested_ticks": 1135,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          16,
+          8
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/541.rep",
+        "replay_sha256": "a55ef062a633143b524ceeab06887a23e461e44fa0d6fca9e3176429f38ad085",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1135,
+        "requested_ticks": 1135,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/542.rep",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1331,
+        "requested_ticks": 1331,
+        "arrows_fired": 3,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          63,
+          221,
+          32
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/542.rep",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1331,
+        "requested_ticks": 1331,
+        "arrows_fired": 3,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          64,
+          220,
+          32
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/542.rep",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1331,
+        "requested_ticks": 1331,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/542.rep",
+        "replay_sha256": "08072c95a5b26aa94955d7a710f88010483250243fcf8ae0a3cf2e9ff0f4f0f7",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1331,
+        "requested_ticks": 1331,
+        "arrows_fired": 1,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          8
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/543.rep",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1159,
+        "requested_ticks": 1159,
+        "arrows_fired": 2,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          61,
+          39
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/543.rep",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1159,
+        "requested_ticks": 1159,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          60,
+          36
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/543.rep",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1159,
+        "requested_ticks": 1159,
+        "arrows_fired": 1,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 1,
+        "stocks": 0,
+        "completed_bow_holds_ticks": [
+          4,
+          4
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/543.rep",
+        "replay_sha256": "05be94ea1f52ae0a1ab5aafed5c90835fe1dd378400c50d31884c948093c1690",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1159,
+        "requested_ticks": 1159,
+        "arrows_fired": 0,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": []
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/544.rep",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "player": 2,
+        "mode": "human60",
+        "ticks": 1301,
+        "requested_ticks": 1301,
+        "arrows_fired": 3,
+        "arrow_hits": 2,
+        "kills": 2,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          36,
+          50,
+          30
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/544.rep",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "player": 2,
+        "mode": "human15",
+        "ticks": 1301,
+        "requested_ticks": 1301,
+        "arrows_fired": 3,
+        "arrow_hits": 1,
+        "kills": 1,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          36,
+          48,
+          28
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/544.rep",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "player": 2,
+        "mode": "six",
+        "ticks": 1301,
+        "requested_ticks": 1301,
+        "arrows_fired": 3,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          24,
+          60,
+          36
+        ]
+      },
+      {
+        "replay": "/home/mte/Documents/Coding/bopl-re/research-next-20260906/mac-replays/544.rep",
+        "replay_sha256": "6ebadb01f7bdd125a38bb4042a6cb2d25be4d7658ba29959d44e3e77ad2d689b",
+        "player": 2,
+        "mode": "thirtyseven",
+        "ticks": 1301,
+        "requested_ticks": 1301,
+        "arrows_fired": 2,
+        "arrow_hits": 0,
+        "kills": 0,
+        "deaths": 0,
+        "stocks": 1,
+        "completed_bow_holds_ticks": [
+          20,
+          288
+        ]
+      }
+    ]
+  }
+}

@@ -1,5 +1,7 @@
 # First human-imitation experiment — 2026-09-06
 
+Follow-up: [the completed 47-recording batch](COMPLETED_BATCH.md).
+
 The existing GRU can memorize a short human demonstration and reproduce a charged
 shot in the real game. It has not learned a transferable aiming policy. The next
 useful experiment is a small comparison of control rates and action prediction,

@@ -5,7 +5,8 @@ execute the learned policy in the real game. It does not yet transfer well to
 other demonstrations. Resampling the human's controls is itself a substantial
 source of changed behavior, before any model is involved.
 
-[Measured results and figure](evidence/human-imitation-001/REPORT.md).
+[Initial results](evidence/human-imitation-001/REPORT.md) and
+[completed 47-recording batch](evidence/human-imitation-001/COMPLETED_BATCH.md).
 
 ## Data contract
 
@@ -83,3 +84,9 @@ bit-for-bit, including startup delay, previous input, and episode-clock scaling.
 `verify_demonstration.py` separately compares full managed gameplay traces with
 ordinary replay playback, using the existing audited presentation exclusions.
 The former is an observation-contract test; the latter checks reconstruction.
+
+To score a frozen imitation checkpoint on additional recordings without fitting
+to them, use `research/score_demonstrations.py <dataset.npz> ... --checkpoint
+<final.pt> --output <scores.json>`. It rejects replays that appear in the
+checkpoint's training manifest, and reports the previous-action baseline on the
+identical frames.

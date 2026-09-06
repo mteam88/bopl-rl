@@ -2,6 +2,10 @@
 
 ## Human imitation — 2026-09-06
 
+The completed batch has 47 controller recordings across 47 maps. A 37-replay fit
+improves held-out action accuracy from 19.9% to 28.1%, but lands no hits on eight
+held-out game setups. [Completed batch results](evidence/human-imitation-001/COMPLETED_BATCH.md).
+
 The first eight solo recordings support exact replay-to-policy extraction and a
 100% single-demonstration fit with the existing GRU. Transfer is still poor. A
 control-rate probe preserves 8 arrow hits at 60 Hz, 6 at 30 Hz, and 2 at 15 Hz
