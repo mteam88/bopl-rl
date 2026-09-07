@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import numpy as np
-from replay_data import ReplayWorld, ROOT, decode, previous
+from replay_data import ReplayWorld, ROOT, decode, previous, player_sources
 
 def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
     if repeat not in (2,4): raise ValueError("Repeat must be 2 or 4")
@@ -23,6 +23,8 @@ def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
     rows, labels, ticks, alive, events = [], [], [], [], []
     history = deque(maxlen=10)
     with ReplayWorld(meta, output/(destination.stem+'.log')) as world:
+        sources = player_sources(world.game)
+        runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
         for t in range(meta['ticks']):
             if world.ended: break
             if t >= origin:
@@ -38,6 +40,8 @@ def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
             world.step(list(zip(inputs[t]['angle'],inputs[t]['buttons'])))
         replayed_ticks = world.state.header.episode_ticks
         final_events = [world.state.telemetry[index].arrows_fired,world.state.telemetry[index].arrow_hits]
+    if runtime != {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}:
+        raise ValueError('Player changed during replay extraction')
     if not rows: raise ValueError('No post-warmup samples')
     labels = np.asarray(labels, np.int64)
     # Report what sample-and-hold would lose. Source playback itself is
@@ -51,7 +55,7 @@ def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
         episode_limit=episode_limit, replayed_ticks=replayed_ticks, decisions=len(rows),
         alive_decisions=int(sum(alive)), action_resampling_mismatch=changed/max(1,total),
         final_arrows_fired=int(final_events[0]),final_arrow_hits=int(final_events[1]),
-        assembly_sha256=hashlib.sha256((ROOT/'Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll').read_bytes()).hexdigest(),
+        game_runtime=runtime,
         encoder_sha256=hashlib.sha256((ROOT/'native/rl/puffer/bopl_puffer.h').read_bytes()).hexdigest())
     np.savez_compressed(destination, observations=np.stack(rows), actions=labels,
                         ticks=np.asarray(ticks), alive=np.asarray(alive), events=np.asarray(events),

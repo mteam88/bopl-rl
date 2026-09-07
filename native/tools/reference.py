@@ -128,6 +128,11 @@ def compare(left, right, gameplay=False):
     return 0
 
 
+def resolve_game(game=None):
+    return Path(game or os.environ.get("BOPL_RL_GAME")
+                or ROOT / "Builds/LinuxIL2CPP/BoplBattle.x86_64").resolve()
+
+
 def player_sources(binary):
     """Identify the runtime actually launched, including IL2CPP metadata."""
     sources = {"player_binary_sha256": binary,
@@ -148,8 +153,7 @@ def capture(args):
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or Path(str(output) + ".failure.json").exists():
         raise ValueError(f"refusing to overwrite {output}")
-    binary = Path(getattr(args, "game", None) or os.environ.get("BOPL_RL_GAME")
-                  or ROOT / "Builds/Linux/BoplBattle.x86_64").resolve()
+    binary = resolve_game(getattr(args, "game", None))
     env = dict(os.environ, BOPL_TRACE=str(output), BOPL_TRACE_TICKS=str(args.ticks), BOPL_TRACE_BATCH=str(args.batch))
     physics = getattr(args, "physics", False)
     if physics: env["BOPL_TRACE_PHYSICS"] = "1"
