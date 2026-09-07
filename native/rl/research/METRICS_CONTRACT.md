@@ -58,7 +58,12 @@ Required (all currently written by `train.py`):
 - `policy_loss`, `value_loss`, `entropy` (joint, nats), `kl`, `clip_fraction`,
   `gradient_norm`, `explained_variance`, `mean_reward`
 - `action_rates` ({jump,dash,arrow,platform}: fraction of learner decisions)
-- `behavior` = `telemetry.summarize` over learner decisions:
+- `behavior` — accumulated from learner decision telemetry directly, as
+  dedicated cumulative counters that include unfinished episodes. Episode-log
+  derived numbers (e.g. Puffer's `static_vec_log`, which drops unfinished
+  episodes and clears env logs once any `n>0`) are not acceptable here; only
+  `episodes`, `wins` and `timeouts` count completed episodes. Shape matches
+  `telemetry.summarize` over learner decisions:
   `{schema:1, decisions, seconds, totals:{dash_activations, bow_activations,
   platform_activations, arrows_fired, arrow_hits, deaths_environment,
   deaths_opponent, deaths_self, deaths_other, reward_outcome, reward_kills,
