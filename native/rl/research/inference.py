@@ -11,19 +11,25 @@ Random numbers: warm-up and capture run under a saved RNG state that is
 restored afterwards, and replay advances the default CUDA generator by the
 same Philox offset the eager kernels use, so a graphed step draws the same
 samples as the eager step from the same generator state (checked by
-check_pipeline.py). Historical policies are captured forward-only (sample=False)
-and sampled eagerly on their real rows, because their padded batch would
-otherwise consume more draws than the eager path. Recurrent state flows through the static input/output
-buffers and stays owned by the trainer.
+check_pipeline.py). Historical policies (sample='actions') sample inside the
+graph on their padded batch: torch's one-sample multinomial draws element i
+from Philox subsequence i (first component) and advances the generator by a
+fixed 4 counters whatever the batch size, so the real rows' draws and the
+generator offset match eager sampling of the unpadded rows exactly (checked by
+check_padded_sampling.py). sample=False captures the forward only, for the
+eager fallback. Recurrent state flows through the static input/output buffers
+and stays owned by the trainer.
 """
 import torch
-from policy import distribution
+from policy import distribution,sample
 
 class Stepper:
     def __init__(self,policy,batch,device,graph=False,warmup=3,sample=True):
-        """sample=False captures only the network forward (logits, value, state);
-        the caller samples outside the graph. Historical policies use this so
-        their padded fixed-shape batch draws no extra random numbers."""
+        """sample=True: learner step (actions, log-probabilities, value, state).
+        sample='actions': actions only, drawn with policy.sample (historical
+        opponents; returns actions, value, state). sample=False: the network
+        forward only (logits, value, state); the caller samples."""
+        if sample not in (True,False,'actions'): raise ValueError(sample)
         self.policy=policy; self.batch=batch; self.graph=None; self.sample=sample
         if not graph: return
         self.obs=torch.zeros(batch,policy.obs_size,device=device)
@@ -40,6 +46,7 @@ class Stepper:
     def _run(self,obs=None,state=None):
         logits,value,state=self.policy.step(self.obs if obs is None else obs,self.state if state is None else state)
         if not self.sample: return logits,value,state
+        if self.sample=='actions': return sample(logits),value,state
         actions,logp,_=distribution(logits)
         return actions,logp,value,state
     def __call__(self,obs,state):

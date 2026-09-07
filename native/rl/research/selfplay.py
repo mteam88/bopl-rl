@@ -14,17 +14,24 @@ are bit-identical to the original loop under the same seed.
 
 One instance covers one pipeline group of `workers` consecutive workers
 starting at global worker `first`; indices are local to that group's agent
-slice. With CUDA-graph steppers (fixed batch, forward only) each version's rows are
-padded to the group's historical agent count by repeating real rows; sampling
-happens eagerly on the real rows so random-number use matches the eager path.
+slice. With CUDA-graph steppers (fixed batch) each version's rows are padded to the
+group's historical agent count by repeating real rows. A stepper captured with
+sample='actions' draws the real rows' actions inside the graph, bit-identically
+to eager sampling of the unpadded rows (see inference.py); a forward-only
+stepper is sampled eagerly on its real rows.
 """
 import os
 import torch
 from policy import distribution,sample
 
-# BOPL_OPPONENT_SAMPLING=distribution restores the original Categorical-based
-# sampling for historical opponents (bit-identical draws; slower).
-SAMPLE=distribution if os.environ.get('BOPL_OPPONENT_SAMPLING','slim')=='distribution' else lambda logits:(sample(logits),None,None)
+# BOPL_OPPONENT_SAMPLING selects how historical opponents' actions are drawn
+# (all three give bit-identical draws from the same generator state):
+#   graph        sampled inside each historical stepper's CUDA graph (default)
+#   slim         eager policy.sample on the real rows (no Distribution objects)
+#   distribution eager Categorical-based sampling (the original loop)
+OPPONENT_SAMPLING=os.environ.get('BOPL_OPPONENT_SAMPLING','graph')
+if OPPONENT_SAMPLING not in ('graph','slim','distribution'): raise ValueError(f'BOPL_OPPONENT_SAMPLING={OPPONENT_SAMPLING}')
+SAMPLE=distribution if OPPONENT_SAMPLING=='distribution' else lambda logits:(sample(logits),None,None)
 
 class Opponents:
     def __init__(self,workers,device,first=0):
@@ -56,8 +63,12 @@ class Opponents:
                 opponent_logits,_,next_state=pool[version].step(obs.index_select(0,ids),frozen_state.index_select(1,ids))
                 opponent_actions,_,_=SAMPLE(opponent_logits)
             else:
-                k=len(ids)
-                opponent_logits,_,next_state=steppers[version](obs.index_select(0,padded),frozen_state.index_select(1,padded))
-                opponent_actions,_,_=SAMPLE(opponent_logits[:k]); next_state=next_state[:,:k]
+                k=len(ids); stepper=steppers[version]
+                if stepper.sample=='actions':
+                    opponent_actions,_,next_state=stepper(obs.index_select(0,padded),frozen_state.index_select(1,padded))
+                    opponent_actions=opponent_actions[:k]; next_state=next_state[:,:k]
+                else:
+                    opponent_logits,_,next_state=stepper(obs.index_select(0,padded),frozen_state.index_select(1,padded))
+                    opponent_actions,_,_=SAMPLE(opponent_logits[:k]); next_state=next_state[:,:k]
             chosen.index_copy_(0,ids,opponent_actions); frozen_state.index_copy_(1,ids,next_state)
         return self.active

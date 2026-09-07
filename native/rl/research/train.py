@@ -107,7 +107,7 @@ def main():
     from ppo import update as ppo_update
     from vector import Vector
     from telemetry import FIELDS,summarize
-    from selfplay import Opponents
+    from selfplay import Opponents,OPPONENT_SAMPLING
     from inference import Stepper
     torch.set_num_threads(opt.workers)
     torch.manual_seed(opt.seed); np.random.seed(opt.seed)
@@ -238,7 +238,7 @@ def main():
         if not graphs: return
         for g in range(groups):
             capacity=opponents[g].capacity
-            if capacity: steppers[version,g]=Stepper(pool[version],capacity,device,graph=True,sample=False)
+            if capacity: steppers[version,g]=Stepper(pool[version],capacity,device,graph=True,sample='actions' if OPPONENT_SAMPLING=='graph' else False)
     def prune_steppers():
         for key in [k for k in steppers if k[0] not in pool]: steppers.pop(key).close()
     def group_steppers(g):

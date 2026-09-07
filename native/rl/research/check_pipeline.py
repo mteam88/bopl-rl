@@ -18,7 +18,9 @@ a reset, and segment memories equal the state at segment starts.
 Phase D: --cuda-graphs 1 must reproduce --cuda-graphs 0 bit-exactly (rollout
 buffers and metrics), for 1 and 2 groups, across a checkpoint that adds a
 second historical policy. Phase E: groups=1 metrics equal a reference run of
-the original loop (which is run-to-run deterministic).
+the original loop (which is run-to-run deterministic). Phase F: the three
+historical-opponent sampling modes (BOPL_OPPONENT_SAMPLING=graph, slim,
+distribution) give bit-identical rollouts and metrics with 2 groups and graphs.
 """
 import argparse
 import json
@@ -191,6 +193,12 @@ def main():
         if comparable(mine)!=comparable(reference): raise AssertionError('groups=1 metrics differ from the original-loop reference')
         report['phases']['E_original_loop']=dict(status='exact',updates=len(mine),reference=str(opt.reference_metrics)); save()
         print('E original loop: exact',flush=True)
+    for mode in ('slim','distribution'):
+        runs[f'g2-graphs-{mode}']=train(out,f'g2-graphs-{mode}',w,steps,['--pipeline-groups','2','--cuda-graphs','1'],env={'BOPL_OPPONENT_SAMPLING':mode})
+        same_dump(runs['g2-graphs']['dump'],runs[f'g2-graphs-{mode}']['dump'],f'g2-graphs vs {mode}')
+        if comparable(runs['g2-graphs']['metrics'])!=comparable(runs[f'g2-graphs-{mode}']['metrics']): raise AssertionError(f'opponent sampling {mode}: metrics differ')
+    report['phases']['F_opponent_sampling']=dict(status='exact',modes=['graph','slim','distribution']); save()
+    print('F opponent sampling modes: exact',flush=True)
     report['status']='pass'; save(); print(json.dumps(report['phases'],default=str)[:2000])
 
 if __name__=='__main__': main()
