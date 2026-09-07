@@ -136,3 +136,25 @@ Build attribution: `train.py` used to hash `Builds/Linux/.../Assembly-CSharp.dll
 `BOPL_RL_GAME`, and `verify_replay.py` assumed the Mono layout. Both now record the selected player
 and its runtime payload (Mono: Assembly-CSharp.dll; IL2CPP: GameAssembly.so + global-metadata.dat)
 through `environment.game_identity()`; IL2CPP results are only build-attributable with that in place.
+
+### Cleanup requirement (Matthew, 2026-09-07 evening, after the native decision)
+
+Matthew: "I want you to strip out the old optimizer and any old stuff as if it had never existed.
+its in git as a backup, you don't need to save it anywhere". This supersedes the earlier suggestion
+to retain the old trainer for reproduction. Finish the approved IL2CPP comparison using its current
+baseline, then make PufferLib native the ONLY shipped training path. Delete the custom PyTorch PPO
+optimizer/trainer, old CUDA-graph helpers and obsolete scripts/config/docs/compatibility paths that
+the native integration replaces; do not create legacy/archive copies or keep a backend switch to the
+old implementation. Update callers and docs around the final native design. Git is the fallback. Use
+existing git revisions only as needed for qualification, then remove temporary comparison
+implementations. Preserve necessary real-game environment, native evaluation and replay
+functionality; avoid sweeping unrelated gameplay/source files. Apply this before calling the
+migration complete.
+
+Dependency audit from Matthew: many retained evaluators/video helpers import `ROOT`/`atomic_json`
+from the old `research/train.py`; move those utilities to a small shared module rather than
+retaining the old trainer to satisfy imports. Old `train_bow.py`, `imitate.py`,
+imitation/league/extension launchers and old `check_*` scripts directly depend on the custom
+Policy/PPO; remove obsolete ones or migrate genuinely needed callers. `puffer/train.py` has a
+`--backend torch` fallback and `puffer/smoke.py` imports `torch_pufferl` too: the final entrypoints
+exercise native only. Matthew will audit dangling imports and stale docs after the cleanup.
