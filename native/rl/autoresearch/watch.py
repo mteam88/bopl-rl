@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 import subprocess
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 HERE = Path(__file__).resolve().parent
 
@@ -30,8 +30,11 @@ def read_results(path):
             if timestamp.tzinfo is None:
                 raise ValueError('timestamp needs timezone')
             score = float(row['learner_dps_wall']) if row['learner_dps_wall'] else None
+            active = float(row['learner_dps_active']) if row.get('learner_dps_active') else None
             if score is not None and (not math.isfinite(score) or score <= 0):
                 raise ValueError('score must be positive and finite')
+            if active is not None and (not math.isfinite(active) or active <= 0):
+                raise ValueError('active score must be positive and finite')
             if row['status'] not in ('baseline', 'keep', 'discard', 'invalid'):
                 raise ValueError('unknown status')
             if not row['workload'] or not row['experiment']:
@@ -41,7 +44,7 @@ def read_results(path):
             rows.append({**{k: row.get(k, '') for k in (
                 'commit', 'experiment', 'workload', 'status', 'description')},
                 'timestamp_utc': timestamp.astimezone(timezone.utc).isoformat(),
-                'learner_dps_wall': score})
+                'learner_dps_wall': score, 'learner_dps_active': active})
         except (ValueError, KeyError, TypeError) as error:
             errors.append(f'Row {line}: {error}')
     return sorted(rows, key=lambda row: row['timestamp_utc']), errors
@@ -68,12 +71,13 @@ def process_status(config):
 
 
 @lru_cache(maxsize=8)
-def chart(serialized, extension):
+def chart(serialized, extension, metric='active'):
     import matplotlib
     matplotlib.use('Agg')
     from matplotlib import dates as mdates
     from matplotlib.figure import Figure
     rows = json.loads(serialized)
+    key = 'learner_dps_active' if metric == 'active' else 'learner_dps_wall'
     groups = {}
     for row in rows:
         groups.setdefault(row['workload'], []).append(row)
@@ -87,11 +91,11 @@ def chart(serialized, extension):
                 ha='center', va='center', fontsize=13, color='#66685e', transform=ax.transAxes)
     for index, (workload, values) in enumerate(groups.items(), 1):
         ax = fig.add_subplot(len(groups), 1, index, facecolor='#f7f5ed')
-        points = [r for r in values if r['learner_dps_wall'] is not None and r['status'] != 'invalid']
+        points = [r for r in values if r.get(key) is not None and r['status'] != 'invalid']
         best, times, scores = 0, [], []
         for row in points:
             stamp = datetime.fromisoformat(row['timestamp_utc'])
-            score = row['learner_dps_wall']
+            score = row[key]
             retained = row['status'] in ('baseline', 'keep')
             ax.scatter(stamp, score, color='#286248' if retained else '#b58243',
                        s=45, zorder=3, marker='o' if retained else 'x')
@@ -104,7 +108,9 @@ def chart(serialized, extension):
             ax.step(times, scores, where='post', color='#286248', linewidth=2, label='Best retained')
             ax.legend(frameon=False, loc='upper left')
         ax.set_title(workload, loc='left', fontsize=13, color='#244f3f')
-        ax.set_ylabel('Learner decisions / second')
+        if not points:
+            ax.text(.5, .5, f'{metric.capitalize()} timing not yet logged', ha='center', transform=ax.transAxes)
+        ax.set_ylabel(f'Learner decisions / second ({metric})')
         ax.set_xlabel('Experiment completed · UTC')
         ax.set_ylim(bottom=0)
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d %b', tz=timezone.utc))
@@ -167,7 +173,10 @@ def main():
                         payload, mime = json.dumps(report).encode(), 'application/json'
                     else:
                         extension = name.split('.')[-1]
-                        payload = chart(json.dumps(report['experiments']), extension)
+                        metric = parse_qs(urlparse(self.path).query).get('metric', ['active'])[0]
+                        if metric not in ('active', 'wall'):
+                            return self.send_error(400, 'Unknown metric')
+                        payload = chart(json.dumps(report['experiments']), extension, metric)
                         mime = 'image/svg+xml' if extension == 'svg' else 'image/png'
                 else:
                     return self.send_error(404)
