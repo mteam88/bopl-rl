@@ -74,6 +74,10 @@ def main():
     parser.add_argument('--continuation-context',type=Path,help='Restore a declared recent opponent pool; requires --load, fresh games')
     parser.add_argument('--initialize',type=Path,help='Weights only, fresh optimizer and decision count')
     parser.add_argument('--lr',type=float,default=3e-4)
+    parser.add_argument('--entropy-coefficient',type=float,default=0.01)
+    parser.add_argument('--entropy-halflife',type=int,default=None,
+                        help='Learner decisions per halving of the entropy coefficient (exponential decay); constant when omitted')
+    parser.add_argument('--entropy-floor',type=float,default=0.0,help='Lower bound for the decayed entropy coefficient')
     parser.add_argument('--learner-steps',type=int,help='Stop by actions included in PPO, rather than all player actions')
     parser.add_argument('--scripted-opponents',type=Path)
     parser.add_argument('--scripted-fraction',type=float,default=2/3,
@@ -423,8 +427,10 @@ def main():
             optimize_started=time.monotonic()
             # Each segment retains its rollout-start memory and all internal
             # reset masks. Historical opponents never become learner samples.
+            entropy_coefficient=opt.entropy_coefficient
+            if opt.entropy_halflife: entropy_coefficient=max(opt.entropy_floor,entropy_coefficient*0.5**(learner_steps/opt.entropy_halflife))
             losses=ppo_update(policy,optimizer,obs,actions,old_logp,values,returns,adv,
-                              masks,resets,memories,length,opt.epochs,minibatch)
+                              masks,resets,memories,length,opt.epochs,minibatch,entropy_coefficient=entropy_coefficient)
             torch.cuda.synchronize()
             train_seconds=time.monotonic()-optimize_started
             step+=tmax*n; updates+=1
@@ -448,7 +454,7 @@ def main():
                 map_matches={key.removeprefix('map_').removesuffix('_fraction'):round(value*env['n']/2)
                              for key,value in env.items() if key.startswith('map_') and key.endswith('_fraction')},
                 rollout_seconds=rollout_seconds,train_seconds=train_seconds,
-                policy_loss=float(loss[0]),value_loss=float(loss[1]),entropy=float(loss[2]),
+                policy_loss=float(loss[0]),value_loss=float(loss[1]),entropy=float(loss[2]),entropy_coefficient=entropy_coefficient,
                 kl=float(loss[3]),clip_fraction=float(loss[4]),gradient_norm=float(loss[5]),explained_variance=explained,
                 action_rates={name:float(np.mean((buttons&(1<<i))!=0)) for i,name in enumerate(['jump','dash','arrow','platform'])},
                 behavior=behavior,

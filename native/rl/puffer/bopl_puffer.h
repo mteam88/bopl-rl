@@ -14,6 +14,9 @@ enum { BOPL_OBS_ENTITIES=96, BOPL_OBS_SLIMES=12, BOPL_ABILITY_COUNT=39,
 enum { BOPL_EVENT_FIELDS=9, BOPL_TELEMETRY_SIZE=16,
        BOPL_REWARD_OUTCOME=9, BOPL_REWARD_KILLS, BOPL_REWARD_DEATHS,
        BOPL_EPISODES, BOPL_WINS, BOPL_TIMEOUTS, BOPL_TICKS };
+#ifndef BOPL_TIMEOUT_REWARD
+#define BOPL_TIMEOUT_REWARD (-0.5f)
+#endif
 typedef struct {
     float perf, score, episode_return, episode_length, environment_ticks, observation_overflow, game_errors, n;
     float map_fraction[31];
@@ -354,15 +357,18 @@ static void c_step(BoplPuffer *env) {
         }
         stats[BOPL_REWARD_KILLS]=0.1f*(float)((int64_t)player->kills-env->kills[i]);
         stats[BOPL_REWARD_DEATHS]=-0.1f*(float)((int64_t)player->deaths-env->deaths[i]);
-        stats[BOPL_REWARD_OUTCOME]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED)?((player->flags&2)?1.0f:-1.0f):0;
+        stats[BOPL_REWARD_OUTCOME]=terminal?((state->header.flags&BOPL_RL_TRUNCATED)?BOPL_TIMEOUT_REWARD:((player->flags&2)?1.0f:-1.0f)):0;
         stats[BOPL_EPISODES]=(float)terminal;
         stats[BOPL_WINS]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED) && (player->flags&2);
         stats[BOPL_TIMEOUTS]=terminal && (state->header.flags&BOPL_RL_TRUNCATED);
         stats[BOPL_TICKS]=(float)(state->header.episode_ticks-ticks);
         env->previous_telemetry[i]=state->telemetry[i];
-        /* Retain the original arithmetic/order for the actual PPO reward. */
+        /* Retain the original arithmetic/order for the actual PPO reward.
+         * A timeout is a draw; with win +1 / loss -1 it was worth 0, the same
+         * as a coin flip, so a player expecting to lose should stall. It now
+         * costs both players BOPL_TIMEOUT_REWARD. */
         float reward=0.1f*((float)((int64_t)player->kills-env->kills[i])-(float)((int64_t)player->deaths-env->deaths[i]));
-        if (terminal && !(state->header.flags&BOPL_RL_TRUNCATED)) reward+=(player->flags&2)?1.0f:-1.0f;
+        if (terminal) reward+=(state->header.flags&BOPL_RL_TRUNCATED)?BOPL_TIMEOUT_REWARD:((player->flags&2)?1.0f:-1.0f);
         env->rewards[i]=reward; env->returns[i]+=reward;
         env->deaths[i]=player->deaths; env->kills[i]=player->kills;
         if (terminal) {
