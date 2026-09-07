@@ -163,7 +163,10 @@ one simply don't show the panel (no torch backfill).
 fixed anchors (random, scripted opponents, a frozen reference checkpoint). Only
 native `.bin` checkpoints are playable (via `native_policy.load()`); `.pt`
 checkpoints appear in listings but never as ladder participants, so the
-"best old checkpoint" anchor requires a native re-export or is dropped. Ladder
+"best old checkpoint" anchor is dropped: the old torch GRU (standard recurrent
+matrices/biases, Tanh encoder) has no faithful export to the native
+MinGRU/bias-free layout. Anchors are random, scripted bots and frozen native
+reference checkpoints. Ladder
 output lives in `<run>/ladder/ladder.json` (dashboard-read-only):
 
 ```json
