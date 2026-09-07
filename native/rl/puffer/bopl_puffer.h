@@ -22,6 +22,18 @@ typedef struct {
     float map_fraction[31];
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
+enum { BOPL_COUNTER_MAPS=31, BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+BOPL_COUNTER_MAPS };
+typedef struct {
+    double learner_steps;            /* learner decisions (self-play: every player; historical: the learner side) */
+    double game_steps;               /* physical decisions of every player, learner or frozen */
+    double matches;                  /* completed matches, once each */
+    double opponent_game_decisions;  /* frozen-opponent decisions (game_steps - learner_steps) */
+    double kills;                    /* game-credited kills by learner players */
+    double buttons[4];               /* learner decisions holding jump, dash, arrow, platform */
+    double telemetry[BOPL_TELEMETRY_SIZE]; /* learner-only sums in telemetry FIELDS order */
+    double map_matches[BOPL_COUNTER_MAPS]; /* completed matches per map */
+} BoplCounters;
+_Static_assert(sizeof(BoplCounters)==BOPL_COUNTER_SIZE*sizeof(double), "BoplCounters layout");
 typedef struct {
     Log log;
     /* Base pointers assigned by PufferLib's vector (slot 0 of this environment).
@@ -80,6 +92,18 @@ typedef struct {
     float last_telemetry[6*BOPL_TELEMETRY_SIZE];
     BoplRlTelemetry previous_telemetry[6];
     uint32_t deaths[6], kills[6], steps;
+    /* Reward shaping. Phase-1 comparison keeps the old trainer's values (kill
+     * 0.1, timeout 0); the final trainer uses sparse outcome only, with a
+     * timeout penalty paid by both players. */
+    float reward_kill, reward_timeout;
+    /* Process-lifetime cumulative counters over decisions this environment
+     * actually played (warmup runs inside the game's reset and never reaches
+     * c_step, so it is excluded by construction). Unfinished episodes are
+     * included, unlike Log, whose unfinished-episode contributions PufferLib's
+     * static_vec_log drops. Learner-only where noted; frozen opponent rows
+     * never count as learner work. Read at the rollout barrier by
+     * bopl_vec_counters. */
+    BoplCounters counters;
     char error[512];
 } BoplPuffer;
 
@@ -285,6 +309,7 @@ static void init(BoplPuffer *env) {
     env->scratch=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
     if (!env->history || !env->sample || !env->scratch) abort();
     env->active_bank=-1;
+    if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
     const char *split=getenv("BOPL_SPLIT_STEP");
     env->split_step=split && *split && strcmp(split, "0")!=0;
@@ -415,18 +440,29 @@ static void c_step(BoplPuffer *env) {
             if (events[field]<previous[field]) bopl_failed(env, "telemetry counter regressed");
             stats[field]=(float)(events[field]-previous[field]);
         }
-        stats[BOPL_REWARD_KILLS]=0.1f*(float)((int64_t)player->kills-env->kills[i]);
-        stats[BOPL_REWARD_DEATHS]=-0.1f*(float)((int64_t)player->deaths-env->deaths[i]);
-        stats[BOPL_REWARD_OUTCOME]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED)?((player->flags&2)?1.0f:-1.0f):0;
+        int truncated=(state->header.flags&BOPL_RL_TRUNCATED)!=0;
+        stats[BOPL_REWARD_KILLS]=env->reward_kill*(float)((int64_t)player->kills-env->kills[i]);
+        stats[BOPL_REWARD_DEATHS]=-env->reward_kill*(float)((int64_t)player->deaths-env->deaths[i]);
+        /* Terminal reward as paid: the win/loss outcome, or the timeout penalty
+         * both players receive on truncation (0 in the phase-1 comparison). */
+        stats[BOPL_REWARD_OUTCOME]=terminal?(truncated?env->reward_timeout:((player->flags&2)?1.0f:-1.0f)):0;
         stats[BOPL_EPISODES]=(float)terminal;
         stats[BOPL_WINS]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED) && (player->flags&2);
         stats[BOPL_TIMEOUTS]=terminal && (state->header.flags&BOPL_RL_TRUNCATED);
         stats[BOPL_TICKS]=(float)(state->header.episode_ticks-ticks);
         env->previous_telemetry[i]=state->telemetry[i];
         /* Retain the original arithmetic/order for the actual PPO reward. */
-        float reward=0.1f*((float)((int64_t)player->kills-env->kills[i])-(float)((int64_t)player->deaths-env->deaths[i]));
-        if (terminal && !(state->header.flags&BOPL_RL_TRUNCATED)) reward+=(player->flags&2)?1.0f:-1.0f;
+        float reward=env->reward_kill*((float)((int64_t)player->kills-env->kills[i])-(float)((int64_t)player->deaths-env->deaths[i]));
+        if (terminal) reward+=truncated?env->reward_timeout:((player->flags&2)?1.0f:-1.0f);
         *env->reward_ptr[slot]=reward; env->returns[i]+=reward;
+        BoplCounters *c=&env->counters;
+        c->game_steps++;
+        if (learner) {
+            c->learner_steps++;
+            c->kills+=(double)((int64_t)player->kills-env->kills[i]);
+            for (int field=0; field<BOPL_TELEMETRY_SIZE; field++) c->telemetry[field]+=stats[field];
+            for (int bit=0; bit<4; bit++) c->buttons[bit]+=(actions[i].buttons>>bit)&1u;
+        } else c->opponent_game_decisions++;
         env->deaths[i]=player->deaths; env->kills[i]=player->kills;
         if (terminal) {
             if (env->config.map<31) env->log.map_fraction[env->config.map]++;
@@ -440,6 +476,7 @@ static void c_step(BoplPuffer *env) {
             }
         }
     }
+    if (terminal) { env->counters.matches++; if (env->config.map<BOPL_COUNTER_MAPS) env->counters.map_matches[env->config.map]++; }
     if (terminal && !env->no_autoreset) { c_reset(env); return; }
     if (env->observation_delay) {
         size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);

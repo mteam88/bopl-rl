@@ -23,6 +23,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / 'native/tools'))
 import reference  # noqa: E402  (player selection: explicit > BOPL_RL_GAME > IL2CPP)
+sys.path.insert(0, str(HERE))
+import counters  # noqa: E402
 
 OBS = 10 + 6*148 + 96*21 + 12*28 + 7
 PLAYER0 = 10
@@ -83,6 +85,7 @@ def main():
     lib.bopl_vec_count_aligned.restype = ctypes.c_int; lib.bopl_vec_count_aligned.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.bopl_set_valid_banks.argtypes = [ctypes.c_uint]
     lib.bopl_vec_step_mode.restype = ctypes.c_int; lib.bopl_vec_step_mode.argtypes = [ctypes.c_void_p]
+    counters.bind(lib)
     report = dict(schema=1, game=os.environ['BOPL_RL_GAME'], checks=[])
     def check(name, ok, **info):
         report['checks'].append(dict(name=name, ok=bool(ok), **info)); print(('PASS ' if ok else 'FAIL ') + name, info if not ok else '')
@@ -150,10 +153,19 @@ def main():
         sides = {i: set() for i, e in enumerate(envs) if e['banks']}; bank_seen = {i: set() for i in sides}
         seen_apart = [False]*len(envs)
         aligned_total = 0; matches_before = [e['matches'] for e in envs]; last = envs
+        # Expected cumulative counters: every step decides for every player; learner rows are the
+        # self-play rows and slot 0 of historical environments; buttons are the low four action bits.
+        learner_rows = [r for e in envs for r in (e['slots'][:1] if e['banks'] else e['slots'])]
+        expect = dict(steps=0, buttons=[0]*4, learner_episodes=0)
+        def account():
+            expect['steps'] += 1
+            for r in learner_rows:
+                for b in range(4): expect['buttons'][b] += (int(actions[r, 1]) >> b) & 1
+            expect['learner_episodes'] += sum(int(terminals[r]) for r in learner_rows)
         action_echo_ok = True; blank_after_ok = True; terminal_pairs_ok = True; previous_active = {i: active_rows(e) for i, e in enumerate(envs)}
         for step in range(args.steps):
             for r in range(total): actions[r] = (1 + (r*37+step) % 255, (r+step) % 16)
-            vec.cpu_step(actions.ctypes.data)
+            vec.cpu_step(actions.ctypes.data); account()
             cur = layout(lib, vec, 4)
             for i, e in enumerate(cur):
                 rows = active_rows(e)
@@ -196,14 +208,47 @@ def main():
         lib.bopl_set_valid_banks(0b10)
         picked = set()
         for step in range(args.steps//2):
-            vec.cpu_step(actions.ctypes.data)
+            vec.cpu_step(actions.ctypes.data); account()
             cur = layout(lib, vec, 4)
             for i, e in enumerate(cur):
                 if e['banks'] and e['matches'] != last[i]['matches']: picked.add(e['bank'])
             last = cur
         check('b1: valid-bank mask restricts new matches', picked == {1}, picked=sorted(picked))
-        report['log'] = vec.log()
+        # Cumulative counters (what the metrics helper differences): physical and learner decisions,
+        # held buttons, completed matches (once each, per map), learner-only telemetry, kills.
+        snap = counters.snapshot(lib, vec); completed = sum(e['matches']-1 for e in cur)
+        n = expect['steps']
+        check('b1: counters count physical and learner decisions', snap['game_steps'] == 8*n and snap['learner_steps'] == 6*n
+              and snap['opponent_game_decisions'] == 2*n, snap=snap, steps=n)
+        check('b1: counters count learner held buttons', snap['buttons'] == expect['buttons'], got=snap['buttons'], want=expect['buttons'])
+        check('b1: counters count completed matches once per map', snap['matches'] == completed and snap['map_matches'] == {'0': completed},
+              matches=snap['matches'], completed=completed, maps=snap['map_matches'])
+        tel = snap['telemetry']
+        check('b1: counters keep learner-only telemetry', tel[12] == expect['learner_episodes'] and tel[13]+tel[14] <= tel[12]
+              and tel[15] > 0 and abs(tel[10] - 0.1*snap['kills']) < 1e-6, telemetry=tel, kills=snap['kills'], episodes=expect['learner_episodes'])
+        report['log'] = vec.log(); report['counters'] = snap
         vec.close()
+    # Final-trainer reward: no kill shaping, timeout -0.5 paid by both players of a truncated match.
+    vec = _C.create_vec(dict(vec=dict(total_agents=4, num_buffers=1), env=dict(env_kwargs, banks=0, historical_every=0,
+                             reward_kill_milli=0, reward_timeout_milli=-500)), True)
+    vec.reset()
+    rewards = np.ctypeslib.as_array((ctypes.c_float*4).from_address(vec.rewards_ptr))
+    terminals = np.ctypeslib.as_array((ctypes.c_float*4).from_address(vec.terminals_ptr))
+    actions = np.zeros((4, 2), dtype=np.float32); seen = 0; both = True; nonterminal_zero = True
+    for step in range(60):
+        vec.cpu_step(actions.ctypes.data)
+        for pair in ((0, 1), (2, 3)):
+            t = [terminals[r] for r in pair]
+            if any(t):
+                seen += 1
+                if not (all(t) and all(abs(rewards[r] + 0.5) < 1e-6 for r in pair)): both = False
+            elif any(rewards[r] != 0 for r in pair): nonterminal_zero = False
+    snap = counters.snapshot(lib, vec)
+    check('timeout reward: both players of a truncated match receive -0.5 and nothing otherwise', seen >= 2 and both and nonterminal_zero, seen=seen)
+    check('timeout reward: telemetry reports timeouts, outcome -0.5 each, no kill reward',
+          snap['telemetry'][14] == snap['telemetry'][12] == 2*snap['matches'] > 0 and abs(snap['telemetry'][9] + 0.5*snap['telemetry'][12]) < 1e-6
+          and snap['telemetry'][10] == 0 and snap['telemetry'][11] == 0, telemetry=snap['telemetry'], matches=snap['matches'])
+    vec.close()
     report['ok'] = all(c['ok'] for c in report['checks'])
     (args.output/'result.json').write_text(json.dumps(report, indent=2, default=str))
     print('ROUTING', 'PASS' if report['ok'] else 'FAIL', args.output/'result.json')

@@ -69,6 +69,12 @@ void my_init(Env *env, Dict *kwargs) {
     env->config.mode=(uint32_t)option(kwargs, "mode", 0);
     env->config.warmup_ticks=(uint32_t)option(kwargs, "warmup_ticks", 240);
     env->config.max_episode_ticks=(uint32_t)option(kwargs, "max_episode_ticks", 3600);
+    /* Rewards arrive scaled by 1000 because PufferLib's kwargs are integers
+     * once they pass through its ini/argparse layer: reward_kill_milli=100 is
+     * the old trainer's 0.1 kill/death shaping, reward_timeout_milli=-500 the
+     * final trainer's timeout penalty. */
+    env->reward_kill=(float)option(kwargs, "reward_kill_milli", 100)/1000.0f;
+    env->reward_timeout=(float)option(kwargs, "reward_timeout_milli", 0)/1000.0f;
     if (env->players<1 || env->players>6 || env->repeat<1 || env->repeat>16) abort();
     for (int i=0; i<env->players; i++) {
         env->config.player[i].abilities[0]=(uint32_t)option(kwargs, "ability1", 2);
@@ -194,6 +200,22 @@ int bopl_vec_set_tags(const void *gpu_observations, const int *tags) {
     if (!vec) return -1;
     static_vec_set_env_tags(vec, tags); return 0;
 }
+/* Cumulative counters summed over the vector's environments (BOPL_COUNTER_SIZE
+ * doubles in BoplCounters order: learner_steps, game_steps, matches,
+ * opponent_game_decisions, kills, buttons[4], telemetry[16], map_matches[31]).
+ * Read between rollouts, when no environment thread is stepping. */
+int bopl_vec_counters(const void *gpu_observations, double *out, int capacity) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec || capacity<BOPL_COUNTER_SIZE) return -1;
+    Env *envs=(Env*)vec->envs;
+    memset(out, 0, BOPL_COUNTER_SIZE*sizeof(double));
+    for (int i=0; i<vec->size; i++) {
+        const double *c=(const double*)&envs[i].counters;
+        for (int k=0; k<BOPL_COUNTER_SIZE; k++) out[k]+=c[k];
+    }
+    return BOPL_COUNTER_SIZE;
+}
+int bopl_counter_size(void) { return BOPL_COUNTER_SIZE; }
 int bopl_vec_count_aligned(const void *gpu_observations, int tag, int reset_flags) {
     StaticVec *vec=bopl_find_vec(gpu_observations);
     if (!vec) return -1;
