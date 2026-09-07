@@ -103,6 +103,9 @@ def compare(left, right, gameplay=False):
     for key in ("replay_sha256", "game_assembly_sha256", "unity_player_sha256"):
         if pa[key] != pb[key]:
             raise ValueError(f"incompatible provenance {key}")
+    for key in ("player_binary_sha256", "il2cpp_metadata_sha256"):
+        if pa.get(key) != pb.get(key):
+            raise ValueError(f"incompatible provenance {key}")
     a, b = read_trace(left), read_trace(right)
     header_a, header_b = next(a), next(b)
     for key in ("schema", "reference", "unity", "scope"):
@@ -125,6 +128,19 @@ def compare(left, right, gameplay=False):
     return 0
 
 
+def player_sources(binary):
+    """Identify the runtime actually launched, including IL2CPP metadata."""
+    sources = {"player_binary_sha256": binary,
+               "unity_player_sha256": binary.parent / "UnityPlayer.so"}
+    native = binary.parent / "GameAssembly.so"
+    if native.exists():
+        sources["game_assembly_sha256"] = native
+        sources["il2cpp_metadata_sha256"] = binary.parent / "BoplBattle_Data/il2cpp_data/Metadata/global-metadata.dat"
+    else:
+        sources["game_assembly_sha256"] = binary.parent / "BoplBattle_Data/Managed/Assembly-CSharp.dll"
+    return sources
+
+
 def capture(args):
     if args.ticks <= 0 or args.batch <= 0:
         raise ValueError("ticks and batch must be positive")
@@ -132,16 +148,15 @@ def capture(args):
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or Path(str(output) + ".failure.json").exists():
         raise ValueError(f"refusing to overwrite {output}")
-    binary = ROOT / "Builds/Linux/BoplBattle.x86_64"
+    binary = Path(getattr(args, "game", None) or os.environ.get("BOPL_RL_GAME")
+                  or ROOT / "Builds/Linux/BoplBattle.x86_64").resolve()
     env = dict(os.environ, BOPL_TRACE=str(output), BOPL_TRACE_TICKS=str(args.ticks), BOPL_TRACE_BATCH=str(args.batch))
     physics = getattr(args, "physics", False)
     if physics: env["BOPL_TRACE_PHYSICS"] = "1"
     else: env.pop("BOPL_TRACE_PHYSICS", None)
     for name in ("BOPL_KERNEL_INPUT", "BOPL_KERNEL_OUTPUT"):
         env.pop(name, None)
-    sources = {"replay_sha256": args.replay,
-        "game_assembly_sha256": binary.parent / "BoplBattle_Data/Managed/Assembly-CSharp.dll",
-        "unity_player_sha256": binary.parent / "UnityPlayer.so"}
+    sources = {"replay_sha256": args.replay, **player_sources(binary)}
     before = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
     log = output.with_suffix(".unity.log")
     command = [str(binary), str(args.replay.resolve()), "-batchmode", "-nographics", "-logFile", str(log)]
@@ -181,6 +196,7 @@ def main():
     run.add_argument("--ticks", type=int, default=600)
     run.add_argument("--batch", type=int, default=1)
     run.add_argument("--timeout", type=int, default=180)
+    run.add_argument("--game", type=Path, help="Player executable (default: BOPL_RL_GAME or Builds/Linux)")
     run.add_argument("--physics", action="store_true", help="capture full rigid-body stages before gameplay callbacks")
     diff = sub.add_parser("compare")
     diff.add_argument("left", type=Path)
