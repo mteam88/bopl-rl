@@ -7,7 +7,9 @@ caller, so independent games cannot leak memory into one another.
 
 Checkpoint sidecar: <weights.bin>.json, schema 1, backend=pufferlib-native,
 architecture=puffernet-mingru or bopl-set-mingru-v1, precision=float32, obs_size, hidden, num_layers,
-action_sizes=[256,16], weights_sha256, and step (learner_steps recommended).
+action_sizes=[256,16], weights_sha256, and step (physical player decisions,
+matching dashboard metrics and evaluation reports). Record learner_steps
+separately for checkpoint cadence and the training budget.
 """
 import argparse
 import ctypes
