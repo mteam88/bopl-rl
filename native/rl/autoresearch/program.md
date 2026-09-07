@@ -72,3 +72,37 @@ The prepared Rift has the existing proxy credentials in a private, gitignored
 `native/rl/autoresearch/.env`, so launching from a fresh SSH shell works too.
 In an interactive session, `/ralph-loop:cancel-ralph` cancels the repeat hook.
 Ralph repeats when Claude finishes a turn; its iterations are not experiments.
+
+## Priority change (Matthew, 2026-09-07)
+
+Matthew: "we should definitely use puffer's native trainer, we never should
+have made our own in the first place." The research continues in this order,
+recorded here so the Ralph loop keeps pursuing it:
+
+1. **IL2CPP player.** Install the Linux IL2CPP support module for the
+   installed editor (2022.3.60f1, revision 5f63fdee6d95, at
+   `/home/mte/Documents/Coding/bopl-re/unity-editor`; module
+   `https://download.unity3d.com/download_unity/5f63fdee6d95/LinuxEditorTargetInstaller/UnitySetup-Linux-IL2CPP-Support-for-Editor-2022.3.60f1.tar.xz`),
+   build the headless game with the IL2CPP backend, and benchmark it with the
+   current trainer: game stepping first, then full training on the sustained
+   workload. Tool installation on this dev box is authorized.
+2. **PufferLib native CUDA trainer.** Move the main training path onto
+   PufferLib's native trainer (`native/rl/puffer/`), preserving the real game,
+   delayed observations, held inputs, match-long historical-opponent ownership,
+   learner-only updates and the reset semantics. Known audit findings to
+   qualify or fix during integration: the native prioritised sampling adds
+   1e-6 to every row including frozen rows and alpha=0 gives zero-advantage
+   rows weight 1, so `zero_frozen_advantages` alone does not guarantee
+   learner-only updates; `count_aligned`-style boundary tracking means every
+   tagged env has hit *some* boundary, not that all are between matches, and
+   Bopl needs match-long ownership rather than bank-weight swaps mid-match;
+   recurrent resets need checking. Then qualify throughput **and** strength per
+   wall hour against the existing trainer. Do not stop at a plan or a smoke run.
+3. **Standalone simulator.** Assess that investment from the results of 1 and
+   2; no full rewrite is requested now.
+
+The measurement discipline above still applies (one perf run at a time,
+distinct workload names, results.tsv + notes.md, raw runs under
+`native/artifacts/rl/autoresearch/`). The in-flight exp13 (parallel branches
+inside the turn graph) is finished or checkpointed first, not abandoned
+mid-measurement.
