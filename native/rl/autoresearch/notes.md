@@ -156,3 +156,45 @@ Per-run active: incumbent 10054/10314/10374, gather 10356/10323/10389, both 1038
 Lesson: the trainer's Python launch overhead per group step is no longer on the critical path; the group thread's game step (~48 s of a ~57 s loop) dominates, and the main thread mostly waits in `wait_group`. Remaining levers are the game tick itself, the worker count / group count shape, and the ~7.8 s PPO update.
 
 Next (exp11): explicit semantic-change workload with `--pipeline-groups 4` (distinct workload name; groups=4 changes the (t,group) inference order, so it is not the same training program even though check_pipeline shows g4 exact against g4-serial). Then the default-on flip of the seven kept flags with an exactness re-check.
+
+### exp11 — trainer GPU-path trims and PM QoS (commit d4c64b6) — KEEP the three GPU trims, DISCARD PM QoS
+
+Profiling first (no scores; scripts under the job tmp dir, `exp11-gpu` microbench):
+- Isolated graph replays on the idle GPU: learner stepper (batch 16) 0.111 ms / 75 kernels; historical stepper (capacity 4) 0.094 ms / 63 kernels; the per-group serial chain learner + 4 historical replays 0.504 ms. `torch.multinomial(probs,1,True)` inside `Categorical.sample` is 13 kernels per head (two of them `_assert_async` argument checks); the entropy computed by `distribution()` during collection is discarded (`inference.Stepper._run` throws it away).
+- PPO update at the real shapes (tmax 128, n 32, sequence 32, 3 epochs, minibatch 32 segments): ≈84 ms isolated (≈40 ms in-run per `train_seconds`), 5425 kernels but only 31.6 ms of GPU time — CPU-bound: `cudnn_rnn_backward` 21 ms CPU, `cudaLaunchKernel` 20.7 ms, 217 `cudaStreamSynchronize` and 336 `aten::item` (the per-minibatch `losses.append(...item())` row plus the two `isfinite` checks). Not changed in this experiment (deferring the reads changes when a nonfinite abort fires).
+
+Changes (all env-gated, default off, trainer only, no game rebuild):
+- A `BOPL_FAST_MULTINOMIAL=1` (`policy.multinomial1`): `q=empty_like(probs).exponential_(1); div(probs,q,out=q); argmax(q,-1,keepdim=True)`. This is exactly the kernel sequence torch's `multinomial(…,1,replacement=True)` runs internally (exponential race), so the draws and the generator offset are identical — verified 200 trials × 5 shapes bit-equal — but without the two `_assert_async` checks and the wrapping copies: 13 → 3 kernels per head. Used by `distribution()` (learner) and `sample()` (historical, graph-sampled).
+- B `BOPL_ROLLOUT_ENTROPY=0` (`inference.py`): the learner stepper calls `distribution(logits,entropy=False)`; actions/log-probabilities/values unchanged, the PPO update still computes entropy from its own `distribution` call.
+- C `BOPL_OPPONENT_STREAMS=1` (`selfplay.Opponents.act`): each historical version's graph replay is issued on its own persistent side stream (`wait_stream` in, `wait_stream` out before the `index_copy_`), so the four historical replays overlap on the GPU instead of running serially after the learner replay. CPU issue order — and with it each generator offset a replay consumes — is unchanged. Isolated chain: 0.504 → 0.234 ms (A+B+C: 0.175 ms).
+- D `BOPL_CPU_DMA_LATENCY_US=100` (`train.py`): hold a `/dev/cpu_dma_latency` PM QoS request for the run so idle cores stay out of C3 (350 µs exit latency) while 32 game threads and the trainer ping-pong. Runtime-only. (`/dev/cpu_dma_latency` was made `o+rw` with sudo; the value reverts when the fd closes.)
+
+Exactness: `exp11-check-pipeline` with A+B+C+D set — phases A–F exact, and all 11 rollout dumps + 11 metrics files byte-identical to `exp09-check-pipeline` (`compare_pipeline_dumps.py`).
+
+Benchmark 1 (`exp11-gpu/`, incumbent / gpu(A+B+C) / gpuqos(A+B+C+D) × 3, interleaved) was **disturbed** and is not scored: incumbent-2 and gpu-2 ran with busy cores 7.4/6.95 and load1 14–15 from outside processes, gpu-3 saw ~15 s of foreign GPU utilisation (65–87%) and a 10.4 s train phase. Medians incumbent 10027/8100, gpu 9836/7902, gpuqos 10383/8347 (active/wall); the only arm with three consistent runs was gpuqos (10383/10364/10395). Kept as evidence of what interference looks like; a `.trackerignore` now sits in `native/artifacts/` so localsearch does not index bench output while it is written.
+
+Benchmark 2 (`exp11-gpu2/`, quiet machine, 4 arms × 4 repeats, interleaved, incumbent = game-exp09 + seven kept flags):
+
+| arm | active (4 runs) | median active | wall (4 runs) | median wall | wall s | GPU util |
+|---|---|---|---|---|---|---|
+| incumbent | 10185 / 10286 / 10359 / 10305 | 10295 | 8169 / 8235 / 8316 / 8306 | 8270 | 71.3 | 36.8% |
+| qos (D) | 10193 / 10317 / 10302 / 10335 | 10310 | 8281 / 8312 / 8351 / 8355 | 8331 | 70.8 | 37.1% |
+| gpu (A+B+C) | 10387 / 10471 / 10491 / 10488 | **10479** | 8341 / 8419 / 8467 / 8430 | **8425** | 70.0 | 28.9% |
+| gpuqos (A+B+C+D) | 10380 / 10284 / 10179 / 10462 | 10332 | 8291 / 8305 / 8197 / 8453 | 8298 | 71.1 | 28.6% |
+
+Learner rates for A+B+C: **active 10295 → 10479 (+1.8%)**, **wall 8270 → 8425 (+1.9%)**; every gpu run above every incumbent run on both rates (worst gpu 10387 > best incumbent 10359). GPU utilisation 37 → 29% for the same work (the removed kernels and the overlap are real). PM QoS alone is inside noise (+0.1% active) and on top of the trims it was worse than the trims alone with higher busy cores (6.5 vs 6.4) — discard; the code stays gated off.
+
+Cumulative over the new-unit control (3848 active / 2979 wall): **active +172% (10479)**, **wall +183% (8425)**.
+
+Where the time goes now (from `pipeline` in `metrics.jsonl`; per decision step t with 2 groups, per-launch group-thread total G, env E, and the main-thread turnaround X = P − G where P = rollout seconds / (updates × 128)):
+
+| arm | P ms/t | G ms/launch | E ms/launch | X = P − G |
+|---|---|---|---|---|
+| incumbent | 1.98 | 1.36 | 1.18 | 0.61 |
+| gpu (A+B+C) | 1.95 | 1.19 | 1.15 | 0.75 |
+
+The step cadence P only fell 0.03 ms although the group thread's own cycle G fell 0.17 ms: the trims shortened the group thread's wait on the *actions* copy (G includes the `cudaStreamWaitEvent` on the trainer's stream, so a faster inference chain shows up inside G), and the cycle is now the sum of one game tick (E ≈ 1.15 ms, its slowest of 8 games) plus ~0.75 ms of main-thread work per group turn. That 0.75 ms — two `wait_group` handoffs, `collect` (six small device ops plus a host read of `cpu_dones`), the obs/reset copies, the learner replay, `Opponents.act`, and the `step_group` launch — is now ~40% of the per-step critical path and is the next lever, together with the game tick.
+
+Lesson: `Opponents.act` and the learner replay were each cheap, but they ran *serially* after each group's game step on the only stream the group thread waits on; overlapping the four historical replays and deleting the argument-check kernels was worth ~2% end to end. The GPU is far from saturated (29%); what matters is the latency of the short chain between `wait_group` returning and `step_group` launching.
+
+Next (exp12): cut the main-thread turnaround X. Candidates, each exact: (1) capture the whole per-group inference chain — learner replay + gathers + historical replays + index_copy — as one CUDA graph per (group, pool key) so a group turn is one launch instead of ~30; (2) move `collect`'s device work off the critical path (bank rewards/dones after `step_group`, since the game only needs actions); (3) `--pipeline-groups 4` as an explicit semantic-change workload (distinct workload name). Then the default-on flip of all ten kept flags with an exactness re-check.
