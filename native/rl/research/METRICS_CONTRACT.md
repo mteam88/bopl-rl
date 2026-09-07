@@ -150,7 +150,19 @@ fixed anchors (random, scripted opponents, a frozen reference checkpoint). Only
 native `.bin` checkpoints are playable (via `native_policy.load()`); `.pt`
 checkpoints appear in listings but never as ladder participants, so the
 "best old checkpoint" anchor requires a native re-export or is dropped. Ladder
-output lives in `<run>/ladder/` and is dashboard-read-only.
+output lives in `<run>/ladder/ladder.json` (dashboard-read-only):
+
+```json
+{"schema": 1, "updated": 0.0, "games": 980, "games_per_pair": 8, "maps": [0],
+ "seed_base": 50001, "episode_ticks": 7200, "note": "…",
+ "ratings": [{"name": "checkpoint-000000000", "kind": "checkpoint|anchor",
+              "step": 0, "sha256": "…", "rating": 0.0,
+              "games": 0, "wins": 0, "losses": 0, "draws": 0}],
+ "matches": [{"a": "…", "b": "…", "wins_a": 0, "wins_b": 0, "draws": 0}]}
+```
+
+Ratings are a Bradley-Terry MLE with timeouts as draws and the random anchor
+pinned at 0 Elo.
 
 ## Asks that are trainer configuration (not dashboard code)
 
