@@ -70,6 +70,8 @@ def run_once(python,out,workers,decisions,seed,extra,env):
     finished=time.monotonic(); sampler.stop.set(); sampler.join(); log.close()
     if process.returncode: raise RuntimeError(f'{out.name} failed with {process.returncode}; see {log.name}')
     records=[json.loads(line) for line in metrics.read_text().splitlines()]
+    # Count only samples actually consumed by PPO, including on resumed runs.
+    learner_decisions=sum(r['behavior']['decisions'] for r in records)
     loop=sum(r['rollout_seconds']+r['train_seconds'] for r in records)
     rollout=sum(r['rollout_seconds'] for r in records)
     snapshot=sum(r.get('snapshot_seconds',0) for r in records)
@@ -79,6 +81,9 @@ def run_once(python,out,workers,decisions,seed,extra,env):
     # active_seconds: train.py's own clock from pool/graph setup through the
     # final update (result.elapsed), including snapshot and graph-capture cost.
     return dict(name=out.name,workers=workers,seed=seed,decisions=steps,updates=len(records),matches=result['matches'],
+                learner_decisions=learner_decisions,
+                learner_dps_active=learner_decisions/result['elapsed'],
+                learner_dps_wall=learner_decisions/(finished-started),
                 loop_seconds=loop,rollout_seconds=rollout,train_seconds=loop-rollout,snapshot_seconds=snapshot,
                 active_seconds=result['elapsed'],pool_versions=records[-1].get('pool_versions'),steppers=records[-1].get('steppers'),
                 decisions_per_second=steps/loop,decisions_per_second_active=steps/result['elapsed'],
@@ -116,6 +121,8 @@ def main():
                 rows=[r for r in runs if r['workers']==w and r['arm']==arm]
                 if not rows: continue
                 table[f'{arm}-w{w}']=dict(arm=arm,workers=w,runs=[r['name'] for r in rows],
+                    median_learner_dps_active=statistics.median(r['learner_dps_active'] for r in rows),
+                    median_learner_dps_wall=statistics.median(r['learner_dps_wall'] for r in rows),
                     decisions_per_second=[r['decisions_per_second'] for r in rows],
                     median_decisions_per_second=statistics.median(r['decisions_per_second'] for r in rows),
                     median_decisions_per_second_active=statistics.median(r['decisions_per_second_active'] for r in rows),

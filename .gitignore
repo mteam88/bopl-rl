@@ -8,3 +8,4 @@ bin/
 *.csproj
 *.sln
 build.log
+.claude/ralph-loop.local.md
