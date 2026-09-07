@@ -110,6 +110,13 @@ def sample(logits):
     return torch.stack([a,b],dim=-1)
 
 def load(path,device='cpu'):
+    """Load a policy for evaluation: a Torch checkpoint (.pt) or a native
+    PufferLib checkpoint (.bin flat float32 weights + <path>.json sidecar,
+    see native_policy.py). Both return (policy, metadata) where policy has
+    initial()/step()/eval()/obs_size and metadata carries step and config."""
+    if str(path).endswith('.bin'):
+        from native_policy import load as load_native
+        return load_native(path,device)
     checkpoint=torch.load(path,map_location=device,weights_only=False)
     policy=Policy(checkpoint['obs_size'],checkpoint['hidden'],checkpoint.get('input_mode','full'),checkpoint.get('action_mode','absolute')).to(device)
     policy.load_state_dict(checkpoint['policy'])

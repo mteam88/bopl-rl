@@ -257,3 +257,28 @@ historical GRU steps really do overlap with the learner step; the gap is small b
 only ~0.2 ms of kernel time and the launch/join overhead of five streams eats part of it. Reserved
 CUDA memory stayed flat (shared pool), no prune-related growth. The incumbent is now the thirteen
 flags (`BOPL_TURN_GRAPH_BRANCHES=1` added). check_pipeline identical 11/11 against the reference dump.
+
+### IL2CPP player (`builds/game-il2cpp`, Matthew's priority 1)
+
+The Linux IL2CPP module for 2022.3.60f1 was installed and the headless game rebuilt with
+`scriptingBackend Standalone=IL2CPP`, `il2cppCompilerConfiguration Release` (ProjectSettings
+diff, plus the linux toolchain/sysroot packages in packages-lock.json and `Assets/link.xml` to keep
+the reflection-driven RL bridge types from being stripped). Same source as game-exp09.
+
+Exactness: `check_game_variant` Mono exp09 vs IL2CPP, 16 workers x 2000 decisions, 2 groups:
+`status exact, matches 416` (observations, rewards, dones, telemetry, episode logs identical).
+Env stepping alone 4.52 -> 3.29 s (-27 %), setup 10.3 -> 7.1 s (`il2cpp-check.log`).
+
+Sustained bench (`il2cpp-bench/`, 4 runs per arm alternating, thirteen flags on both, commit 223388b):
+
+| arm | median active | median wall | runs active | wall s | startup s |
+|---|---|---|---|---|---|
+| incumbent (Mono exp09) | 11044 | 8736 | 10931-11133 | 66.9-68.6 | 10.7-11.5 |
+| il2cpp | 13352 | 10595 | 13207-13387 | 55.4-56.2 | 8.3-8.6 |
+
+**Keep: +20.9 % active, +21.3 % wall.** Every IL2CPP run beats every Mono run by a wide margin
+(the four-run spread is ~1.5 % on each arm). Matthew's independent audit of the eight runs
+confirmed 589824 learner samples and 192 updates each, with 18 learning/gameplay metrics equal
+across each pair and the runtime payload hashes matching the files. The IL2CPP build is now the
+incumbent game (`BOPL_RL_GAME=.../builds/game-il2cpp/BoplBattle.x86_64`). Cumulative over the
+new-unit control (3848 active / 2979 wall): active +247 %, wall +256 %.
