@@ -282,3 +282,40 @@ confirmed 589824 learner samples and 192 updates each, with 18 learning/gameplay
 across each pair and the runtime payload hashes matching the files. The IL2CPP build is now the
 incumbent game (`BOPL_RL_GAME=.../builds/game-il2cpp/BoplBattle.x86_64`). Cumulative over the
 new-unit control (3848 active / 2979 wall): active +247 %, wall +256 %.
+
+### Native PufferLib trainer migration: status (2026-09-07, pre-implementation)
+
+Chosen approach (all upstream changes go through `build.py` overlay patches on the pinned
+PufferLib 42f70d6; the Bopl binding opts into the upstream routing hooks):
+
+- **Routing.** `binding.c` defines `MY_USES_PERM` and `MY_USES_TAGS`; `BoplPuffer` gets per-slot
+  pointer arrays (`obs_ptr/action_ptr/reward_ptr/terminal_ptr[6]`), `tag`, `boundary_reached`,
+  and a per-match `side` drawn from the env rng in `c_reset`. Observations are written into an
+  env-owned scratch block and copied per player into its slot row, so the physical rows can live
+  anywhere in the buffer. The trainer's permutation maps every historical env to one primary row
+  and one frozen-bank row; `side` chooses which player the frozen row drives, so side swaps are a
+  per-env relabeling that needs no host round trip. Match end sets `boundary_reached` so bank
+  weight swaps only happen between matches (match-long historical ownership).
+- **Opponent pool.** Four frozen banks hold the last four snapshots (old `recent` window), each
+  bank owning two of the eight historical envs at 16 envs; at every checkpoint the oldest bank is
+  reloaded with the newest snapshot once its envs are aligned (`count_aligned`). Differs from the
+  old trainer only in that an env keeps one snapshot until its bank rotates instead of resampling
+  per match; the expected opponent mix per learner sample is unchanged.
+- **Per-episode recurrent reset.** Overlay patch: before each rollout forward, zero state rows
+  whose terminal flag from the previous step is set (primary and frozen banks); training gets a
+  reset-mask channel in `TrainGraph` copied by `select_copy`, and the MinGRU log-space scan
+  (forward and backward recompute) restarts at masked steps. `reset_state` stays off so state
+  carries across horizon boundaries like the old trainer.
+- **Learner-only updates.** Frozen-row advantages are already zeroed upstream; minibatch selection
+  must only draw learner rows (patch the selection range to the primary slice), and the reward
+  clamp to [-1, 1] is removed for Bopl (win+kill in one step is +/-1.1).
+- **Outputs.** `puffer/train.py` becomes native-only, writes `policy-<step>.bin` plus the sidecar
+  (`config.training_maps`, `config.episode_ticks`, learner steps), and `smoke.py` drops
+  `torch_pufferl`.
+
+Next concrete step: edit `bopl_puffer.h`/`binding.c`/`eval_binding.c` for the per-slot pointers
+and side/tag fields, rebuild with `build.py`, and run a routing test (a C harness through the
+research library plus a Python check on the CUDA vec with a non-identity permutation, side swaps
+and a two-buffer layout) before touching the overlay kernels. No blocker at this point; the two
+root commits (e339892 applied as f9896cb; 6a6dcaf pending until the old-runtime qualification is
+done) are known.
