@@ -2,10 +2,13 @@
 import ctypes as C
 import os
 from pathlib import Path
+import sys
 import numpy as np
 from telemetry import EVENT_FIELDS,FIELDS
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'native/tools'))
+from reference import resolve_game
 
 class Player(C.Structure):
     _fields_ = [(name, C.c_uint32) for name in ('id','team','flags','alive_bodies','stocks','kills','deaths','cause_of_death')] + [(name,C.c_int64) for name in ('x','y','scale','invisible_time','ability_time')]
@@ -38,9 +41,9 @@ STEP_MODES={2:'sampled',1:'split',0:'fallback'}
 LIB.research_close.argtypes = [C.c_void_p]
 OBS_SIZE = LIB.research_obs_size()
 
-def configure(logs):
+def configure(logs, game=None):
     logs=Path(logs).resolve(); logs.mkdir(parents=True,exist_ok=True)
-    os.environ['BOPL_RL_GAME']=str(ROOT/'Builds/Linux/BoplBattle.x86_64')
+    os.environ['BOPL_RL_GAME']=str(resolve_game(game))
     os.environ['BOPL_RL_BOOTSTRAP']=str(ROOT/'native/fixtures/movement.rep')
     os.environ['BOPL_RL_LOG_DIR']=str(logs)
 

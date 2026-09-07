@@ -11,6 +11,7 @@ import torch
 from environment import Environment,configure
 from native_policy import load
 from common import atomic_json
+import decision_dump
 from telemetry import FIELDS,summarize
 from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
 
@@ -41,6 +42,7 @@ def main():
     parser.add_argument('--selfplay-seed',type=int,default=30001)
     parser.add_argument('--suite',choices=('diagnostic','final'),default='diagnostic')
     parser.add_argument('--workers',type=int,default=2)
+    parser.add_argument('--game',type=Path,help='Unity player (otherwise BOPL_RL_GAME or LinuxIL2CPP)')
     args=parser.parse_args()
     if min(args.games_per_opponent,args.heldout_games,args.workers)<1:
         parser.error('Positive game and worker counts required')
@@ -70,11 +72,12 @@ def main():
         if (previous.get('schema') != 2 or expected!=actual or len(previous['games'])!=len(tasks)
             or previous.get('checkpoint_identity') != checkpoint_id
             or previous.get('baseline_identity') != baseline_id
-            or previous.get('frozen_opponents') != frozen):
+            or previous.get('frozen_opponents') != frozen
+            or previous.get('decision_dump_schema') != 1):
             raise ValueError('Existing evaluation differs from the requested checkpoint, opponents or schedule')
         print(f'Evaluation {step} already complete',flush=True); return
     out.mkdir(parents=True,exist_ok=True)
-    configure(out/'workers')
+    configure(out/'workers', args.game)
     started=time.monotonic()
     # Each thread owns its game and its sampling generator; the model weights
     # are immutable. Reuse each game process across tasks to avoid startup cost.
@@ -90,11 +93,12 @@ def main():
                 generator=torch.Generator().manual_seed(task['seed']*7+task['side'])
                 rng=np.random.default_rng(task['seed']*11+task['side'])
                 frames=[env.frame()] if task['save'] else []
+                mind=[]
                 button_counts=np.zeros(4,dtype=np.int64); decisions=0; events=[]
                 while not env.ended:
                     observation=torch.from_numpy(env.obs.copy())
                     with torch.no_grad():
-                        logits,_,state=policy.step(observation,state)
+                        logits,values,state=policy.step(observation,state)
                         actions=sample(logits,generator)
                         other=1-task['side']
                         if opponent is not None:
@@ -102,24 +106,32 @@ def main():
                             actions[other]=sample(old_logits,generator)[other]
                         elif task['opponent']=='random':
                             actions[other]=torch.tensor([rng.integers(256),rng.integers(16)])
+                    if task['save']:
+                        side=task['side']
+                        mind.append(decision_dump.decision(env.state.header.episode_ticks,
+                                    logits[side],values[side],actions[side]))
                     env.step(actions.numpy())
                     events.append(env.telemetry[task['side']].copy())
                     buttons=int(actions[task['side'],1])
                     for i in range(4): button_counts[i]+=bool(buttons&(1<<i))
                     decisions+=1
                     if task['save']:
-                        frame=env.frame(); frame['actions']=actions.tolist(); frames.append(frame)
+                        frames[-1]['actions']=actions.tolist()
+                        frames.append(env.frame())
                 final=env.frame(); me=final['players'][task['side']]
                 timeout=bool(final['flags']&2); win=bool(me['flags']&2) and not timeout
                 result={**task,'win':win,'timeout':timeout,'kills':me['kills'],'deaths':me['deaths'],
-                        'ticks':final['t'],'behavior':summarize(np.asarray(events)),
+                        'ticks':final['t'],'final_players':final['players'],'behavior':summarize(np.asarray(events)),
                         'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist()))}
                 if task['save']:
                     replay=out/(task['name']+'.rep'); env.replay(replay)
                     visual=out/(task['name']+'.json')
+                    dump=out/(task['name']+'.mind.json.gz')
+                    decision_dump.write(dump,step,task['side'],mind,checkpoint_id)
                     atomic_json(visual,dict(schema=1,step=step,task=task,result=result,frames=frames,
-                                           rendering='physics state replay',tick_rate=60,decision_rate=15))
-                    result.update(replay=replay.name,visual=visual.name,
+                                           rendering='physics state replay',tick_rate=60,decision_rate=15,
+                                           actions_timing='observation-before-action'))
+                    result.update(replay=replay.name,visual=visual.name,mind=dump.name,
                                   replay_sha256=hashlib.sha256(replay.read_bytes()).hexdigest())
                 results.append(result)
                 print(json.dumps(dict(step=step,**result)),flush=True)
@@ -141,7 +153,7 @@ def main():
     if (checkpoint_identity(args.checkpoint) != checkpoint_id
         or checkpoint_identity(args.initial) != baseline_id or opponents(args.opponents) != frozen):
         raise ValueError('Checkpoint or frozen opponents changed during evaluation')
-    report=dict(schema=2,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
+    report=dict(schema=2,decision_dump_schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
                 checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
                 frozen_opponents=frozen,evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
                 training_maps=config['training_maps'],
