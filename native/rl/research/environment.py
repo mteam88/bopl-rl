@@ -1,6 +1,7 @@
 """Small read-only evaluator interface around the same C environment used by PufferLib."""
 import ctypes as C
 import os
+import math
 from pathlib import Path
 import sys
 import numpy as np
@@ -76,9 +77,24 @@ def configure(logs, game=None):
     os.environ['BOPL_RL_LOG_DIR']=str(logs)
 
 class Environment:
-    def __init__(self, seed=73, map_id=0, limit=3600, delay=9):
+    def __init__(self, seed=73, map_id=0, limit=3600, delay=9, reward=None):
+        setter = None
+        if reward is not None:
+            kill, timeout = float(reward['kill']), float(reward['timeout'])
+            if (not math.isfinite(kill) or not math.isfinite(timeout) or timeout > 0
+                    or reward.get('win') != 1 or reward.get('loss') != -1
+                    or reward.get('death') != -kill):
+                raise ValueError('Unsupported evaluation reward configuration')
+            setter = getattr(LIB, 'research_rewards', None)
+            if setter is None:
+                raise RuntimeError('Rebuild the evaluator to configure native checkpoint rewards')
+            setter.argtypes = [C.c_void_p, C.c_float, C.c_float]
+            setter.restype = C.c_int
         self.handle=LIB.research_open(seed,map_id,limit,delay)
         if not self.handle: raise RuntimeError('Could not open Bopl evaluator')
+        if setter is not None and setter(self.handle, kill, timeout):
+            self.close()
+            raise ValueError('Evaluation reward values are outside native float range')
         self.obs=np.ctypeslib.as_array(LIB.research_obs(self.handle),shape=(2*OBS_SIZE,)).reshape(2,OBS_SIZE)
         self.telemetry=np.ctypeslib.as_array(LIB.research_telemetry(self.handle),shape=(2*len(FIELDS),)).reshape(2,len(FIELDS))
         try: self.check()

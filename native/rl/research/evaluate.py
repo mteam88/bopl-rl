@@ -85,7 +85,7 @@ def main():
     buckets=[tasks[i::args.workers] for i in range(min(args.workers,len(tasks)))]
     def work(bucket):
         results=[]
-        with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay) as env:
+        with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay, reward=config.get('reward')) as env:
             for task in bucket:
                 env.reset(task['seed'],task['map'])
                 state=policy.initial(2,'cpu')
