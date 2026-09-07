@@ -16,12 +16,8 @@ public static class RlBridge
     public static bool Enabled => !string.IsNullOrEmpty(endpoint);
     private static Socket socket;
     private static BinaryReader reader;
-    private static BinaryWriter writer;
     private static readonly MemoryStream response = new MemoryStream(65536);
-    // BOPL_RL_COALESCE=1: one socket write per response (header and body
-    // together) and buffered command reads, instead of five small writes and
-    // five small reads per step. The byte stream is unchanged.
-    private static readonly bool coalesce = Environment.GetEnvironmentVariable("BOPL_RL_COALESCE") == "1";
+    // Assemble each framed response before sending; command reads are buffered.
     private static byte[] sendBuffer = new byte[65536 + 16];
     private static readonly BinaryWriter payload = new BinaryWriter(response, Encoding.UTF8, true);
     private static bool loading, ready, started, terminal, failed;
@@ -32,26 +28,16 @@ public static class RlBridge
     private static byte[] pendingStep;
     private static uint pendingSequence, pendingOperation;
     private static ReplayArchive recording;
-    // Simulation ticks the bridge runs before returning to Unity for a frame. The
-    // original 16 costs one Unity frame (~3 ms of Update/LateUpdate/animator work
-    // with nothing to render) every 16 ticks; gameplay is frame-independent by
-    // design (lockstep multiplayer), so a larger value only changes when Unity's
-    // deferred bookkeeping runs. BOPL_RL_TICKS_PER_FRAME overrides it.
-    private static readonly int CommandsPerFrame = TicksPerFrame();
-
-    private static int TicksPerFrame()
-    {
-        string text = Environment.GetEnvironmentVariable("BOPL_RL_TICKS_PER_FRAME");
-        return int.TryParse(text, out int ticks) && ticks >= 16 && ticks <= 65536 ? ticks : 16;
-    }
+    // Gameplay is driven by simulation ticks. Yield periodically so Unity can
+    // finish deferred object destruction and scene bookkeeping.
+    private const int CommandsPerFrame = 4096;
 
     private static void Connect()
     {
         socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         socket.Connect(new UnixDomainSocketEndPoint(endpoint));
         var stream = new NetworkStream(socket, true);
-        reader = new BinaryReader(coalesce ? new BufferedStream(stream, 65536) : (Stream)stream, Encoding.UTF8, true);
-        writer = new BinaryWriter(stream, Encoding.UTF8, true);
+        reader = new BinaryReader(new BufferedStream(stream, 65536), Encoding.UTF8, true);
         Application.targetFrameRate = -1;
         QualitySettings.vSyncCount = 0;
         RlProfile.Install();
@@ -71,17 +57,12 @@ public static class RlBridge
     {
         RlProfile.Enter("bridge:send");
         payload.Flush();
-        if (coalesce) {
-            int length = checked((int)response.Length), total = 16 + length;
-            if (sendBuffer.Length < total) sendBuffer = new byte[Math.Max(total, sendBuffer.Length * 2)];
-            WriteUInt32(sendBuffer, 0, Magic); WriteUInt32(sendBuffer, 4, operation);
-            WriteUInt32(sendBuffer, 8, sequence); WriteUInt32(sendBuffer, 12, (uint)length);
-            Buffer.BlockCopy(response.GetBuffer(), 0, sendBuffer, 16, length);
-            for (int sent = 0; sent < total; ) sent += socket.Send(sendBuffer, sent, total - sent, SocketFlags.None);
-            return;
-        }
-        writer.Write(Magic); writer.Write(operation); writer.Write(sequence); writer.Write((uint)response.Length);
-        writer.Write(response.GetBuffer(), 0, checked((int)response.Length)); writer.Flush();
+        int length = checked((int)response.Length), total = 16 + length;
+        if (sendBuffer.Length < total) sendBuffer = new byte[Math.Max(total, sendBuffer.Length * 2)];
+        WriteUInt32(sendBuffer, 0, Magic); WriteUInt32(sendBuffer, 4, operation);
+        WriteUInt32(sendBuffer, 8, sequence); WriteUInt32(sendBuffer, 12, (uint)length);
+        Buffer.BlockCopy(response.GetBuffer(), 0, sendBuffer, 16, length);
+        for (int sent = 0; sent < total; ) sent += socket.Send(sendBuffer, sent, total - sent, SocketFlags.None);
     }
 
     private static void WriteUInt32(byte[] buffer, int offset, uint value)

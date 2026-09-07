@@ -1,11 +1,9 @@
-using System;
+using UnityEngine;
+using UnityEngine.Rendering;
 
-// BOPL_RL_HEADLESS=1 skips work that only feeds rendering (debug lines,
-// material/shader parameters, sprite tints). Simulation state is untouched, so
-// the headless game must stay bit-exact with the default build; the RL harness
-// checks that with check_game_variant.py. Off by default so the desktop game
-// and replay viewer behave exactly as before.
+// Skip presentation-only work when the player has no graphics device. Desktop
+// play and rendered replays retain their graphics without a separate switch.
 internal static class RlHeadless
 {
-    internal static readonly bool Render = Environment.GetEnvironmentVariable("BOPL_RL_HEADLESS") != "1";
+    internal static readonly bool Render = SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null;
 }
