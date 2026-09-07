@@ -40,7 +40,8 @@ OBS_SIZE = LIB.research_obs_size()
 
 def configure(logs):
     logs=Path(logs).resolve(); logs.mkdir(parents=True,exist_ok=True)
-    os.environ['BOPL_RL_GAME']=str(ROOT/'Builds/Linux/BoplBattle.x86_64')
+    # An explicit BOPL_RL_GAME (a bench arm or exactness check pointing at another build) wins.
+    os.environ.setdefault('BOPL_RL_GAME',str(ROOT/'Builds/Linux/BoplBattle.x86_64'))
     os.environ['BOPL_RL_BOOTSTRAP']=str(ROOT/'native/fixtures/movement.rep')
     os.environ['BOPL_RL_LOG_DIR']=str(logs)
 
