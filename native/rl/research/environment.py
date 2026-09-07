@@ -2,10 +2,13 @@
 import ctypes as C
 import os
 from pathlib import Path
+import sys
 import numpy as np
 from telemetry import EVENT_FIELDS,FIELDS
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'native/tools'))
+from reference import resolve_game
 
 class Player(C.Structure):
     _fields_ = [(name, C.c_uint32) for name in ('id','team','flags','alive_bodies','stocks','kills','deaths','cause_of_death')] + [(name,C.c_int64) for name in ('x','y','scale','invisible_time','ability_time')]
@@ -38,11 +41,9 @@ STEP_MODES={2:'sampled',1:'split',0:'fallback'}
 LIB.research_close.argtypes = [C.c_void_p]
 OBS_SIZE = LIB.research_obs_size()
 
-DEFAULT_GAME=ROOT/'Builds/Linux/BoplBattle.x86_64'
-
 def selected_game():
-    """The player the C environment will actually launch (BOPL_RL_GAME, else the default Mono build)."""
-    return Path(os.environ.get('BOPL_RL_GAME') or DEFAULT_GAME).resolve()
+    """The player the C environment will actually launch (explicit > BOPL_RL_GAME > IL2CPP default)."""
+    return resolve_game()
 
 def game_identity(game=None):
     """Identify the selected player by its runtime payload, so a run is attributable to a build.
@@ -68,10 +69,9 @@ def game_identity(game=None):
             **{name+'_sha256':digest for name,digest in digests.items()},
             'payload':{name:str(path) for name,path in payload.items()}}
 
-def configure(logs):
+def configure(logs, game=None):
     logs=Path(logs).resolve(); logs.mkdir(parents=True,exist_ok=True)
-    # An explicit BOPL_RL_GAME (a bench arm or exactness check pointing at another build) wins.
-    os.environ.setdefault('BOPL_RL_GAME',str(DEFAULT_GAME))
+    os.environ['BOPL_RL_GAME']=str(resolve_game(game))
     os.environ['BOPL_RL_BOOTSTRAP']=str(ROOT/'native/fixtures/movement.rep')
     os.environ['BOPL_RL_LOG_DIR']=str(logs)
 
