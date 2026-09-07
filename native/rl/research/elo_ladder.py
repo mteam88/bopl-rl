@@ -35,17 +35,20 @@ def atomic_json(path,payload):
 
 class Model:
     """A native checkpoint participant (research/native_policy.py contract)."""
-    def __init__(self,name,path,kind,step=None):
+    def __init__(self,name,path,kind,step=None,library=None):
         from native_policy import load
         self.name=name; self.kind=kind; self.step=step; self.path=Path(path)
-        self.policy,self.meta=load(self.path)
+        self.policy,self.meta=load(self.path,**(dict(library=library) if library else {}))
         self.sha256=hashlib.sha256(self.path.read_bytes()).hexdigest()
 
     def start(self,task,side,rng):
+        import torch
         state=self.policy.initial(2,'cpu')
         def act(observation):
             nonlocal state
-            logits,_,state=self.policy.step(observation,state)
+            with torch.no_grad():
+                batch=torch.from_numpy(np.ascontiguousarray(observation,dtype=np.float32))
+                logits,_,state=self.policy.step(batch,state)
             row=as_numpy(logits)[side]
             action=[]
             for part in (row[:256],row[256:272]):
@@ -117,6 +120,7 @@ def main():
     parser.add_argument('--scripts',type=Path,help='Scripted bot manifest; each bot becomes an anchor')
     parser.add_argument('--seed-base',type=int,default=50001)
     parser.add_argument('--episode-ticks',type=int,default=None,help='Defaults to the run config value')
+    parser.add_argument('--library',type=Path,default=None,help='CPU evaluation library for native_policy.load')
     parser.add_argument('--workers',type=int,default=2)
     args=parser.parse_args()
     if args.games_per_pair%2 or args.games_per_pair<2:
@@ -129,9 +133,9 @@ def main():
         from scripted_opponents import load_specs
         participants+=[Scripted(spec) for spec in load_specs(args.scripts)]
     for item in opponents(args.anchors) if args.anchors else []:
-        participants.append(Model(item['name'],item['path'],'anchor'))
+        participants.append(Model(item['name'],item['path'],'anchor',library=args.library))
     for step,path in select_checkpoints(args.run,args.checkpoints):
-        participants.append(Model(f'checkpoint-{step:09d}',path,'checkpoint',step))
+        participants.append(Model(f'checkpoint-{step:09d}',path,'checkpoint',step,library=args.library))
     if sum(p.kind=='checkpoint' for p in participants)<2:
         raise SystemExit('Need at least two native .bin checkpoints to rate')
     by_name={p.name:p for p in participants}
