@@ -60,6 +60,7 @@ def main():
     if any(model.obs_size!=policy.obs_size for model in models.values()):
         raise ValueError('Frozen opponent observation contract differs')
     step=checkpoint['step']; config=checkpoint['config']
+    observation_delay=config.get('observation_delay_ticks',9)
     if set(args.heldout_maps)&set(config['training_maps']):
         raise ValueError('A held-out map was used for training')
     tasks,group_keys=schedule(args.evaluation_maps,args.heldout_maps,frozen,args.games_per_opponent,
@@ -84,7 +85,7 @@ def main():
     buckets=[tasks[i::args.workers] for i in range(min(args.workers,len(tasks)))]
     def work(bucket):
         results=[]
-        with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks']) as env:
+        with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay) as env:
             for task in bucket:
                 env.reset(task['seed'],task['map'])
                 state=policy.initial(2,'cpu')
@@ -127,7 +128,7 @@ def main():
                     replay=out/(task['name']+'.rep'); env.replay(replay)
                     visual=out/(task['name']+'.json')
                     dump=out/(task['name']+'.mind.json.gz')
-                    decision_dump.write(dump,step,task['side'],mind,checkpoint_id)
+                    decision_dump.write(dump,step,task['side'],mind,checkpoint_id,observation_delay)
                     atomic_json(visual,dict(schema=1,step=step,task=task,result=result,frames=frames,
                                            rendering='physics state replay',tick_rate=60,decision_rate=15,
                                            actions_timing='observation-before-action'))
