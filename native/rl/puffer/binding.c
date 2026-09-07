@@ -152,6 +152,36 @@ void static_vec_close(StaticVec *vec) {
     pthread_mutex_unlock(&bopl_registry_lock);
     bopl_upstream_static_vec_close(vec);
 }
+/* Vectors alive in this process, as the device observation pointers that key
+ * every other ctypes entry point; the trainer's PuffeRL object does not expose
+ * its vector, so the trainer looks it up here (exactly one vector while
+ * training). Returns the count, filling up to `capacity` handles. */
+int bopl_vec_handles(const void **out, int capacity) {
+    int n=0;
+    pthread_mutex_lock(&bopl_registry_lock);
+    for (int i=0; i<BOPL_MAX_VECS; i++) if (bopl_registered[i]) { if (n<capacity) out[n]=bopl_registered[i]->gpu_observations; n++; }
+    pthread_mutex_unlock(&bopl_registry_lock);
+    return n;
+}
+/* Start every environment again, after the trainer installed its agent
+ * permutation and tags: PufferLib resets the vector inside create_pufferl with
+ * identity routing, so the first observations sit on the wrong rows until the
+ * games are reset once more. Only between rollouts. */
+int bopl_vec_reset(const void *gpu_observations) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    static_vec_reset(vec);
+    /* Every row starts a fresh episode: flag it so the first rollout step
+     * zeroes the recurrent state of every bank before consuming observation 0
+     * (the trainer's warmup/capture passes leave those states dirty, and the
+     * upstream reset drops the opponent-row flags c_reset raised). */
+    for (int i=0; i<vec->total_agents; i++) vec->terminals[i]=1;
+    if (vec->gpu) {
+        if (cudaMemcpy(vec->gpu_terminals, vec->terminals, (size_t)vec->total_agents*sizeof(float), cudaMemcpyHostToDevice)!=cudaSuccess) return -2;
+        cudaDeviceSynchronize();
+    }
+    return 0;
+}
 /* Step transport actually in use by the vector's games (sampled after real
  * stepping so an old game build cannot be mistaken for the new path):
  *  2 = every game steps through the single-roundtrip sampled command
