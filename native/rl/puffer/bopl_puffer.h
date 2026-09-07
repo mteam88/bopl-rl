@@ -36,6 +36,14 @@ typedef struct {
     pthread_t spare_thread;
     int spare_opening;
     char spare_log[4096];
+    /* BOPL_PARALLEL_OPEN: the world process too is opened on a thread at init
+     * and joined at the first reset, so a vector's games boot concurrently
+     * instead of one after another (PufferLib calls my_init serially). Which
+     * process an episode runs on never affects its outcome, and the log path
+     * and rng advance are fixed before the thread starts. */
+    pthread_t world_thread;
+    int world_opening, world_checked;
+    char world_log[4096], world_error[512];
     int repeat, random_maps, random_loadouts, failed;
     uint32_t training_map_mask;
     int observation_delay, delay_cursor, no_autoreset, split_step;
@@ -194,22 +202,41 @@ static void *bopl_spare_open(void *arg) {
     env->spare=bopl_rl_open(game, replay, env->spare_log, 30000, env->error, sizeof(env->error));
     return NULL;
 }
-static void init(BoplPuffer *env) {
-    const char *game=getenv("BOPL_RL_GAME"), *replay=getenv("BOPL_RL_BOOTSTRAP"), *logs=getenv("BOPL_RL_LOG_DIR");
-    if (!game || !replay || !logs) { fprintf(stderr, "Set BOPL_RL_GAME, BOPL_RL_BOOTSTRAP and BOPL_RL_LOG_DIR to absolute paths\n"); abort(); }
-    char log_path[4096];
-    int length=snprintf(log_path, sizeof(log_path), "%s/worker-%ld-%u.log", logs, (long)getpid(), env->rng);
-    if (length<0 || (size_t)length>=sizeof(log_path)) abort();
-    env->world=bopl_rl_open(game, replay, log_path, 30000, env->error, sizeof(env->error));
-    if (!env->world) { fprintf(stderr, "Bopl RL startup: %s\n", env->error); abort(); }
+static void *bopl_world_open(void *arg) {
+    BoplPuffer *env=(BoplPuffer*)arg;
+    const char *game=getenv("BOPL_RL_GAME"), *replay=getenv("BOPL_RL_BOOTSTRAP");
+    env->world=bopl_rl_open(game, replay, env->world_log, 30000, env->world_error, sizeof(env->world_error));
+    return NULL;
+}
+/* The world process is usable: joined if it was opened on a thread, and its
+ * catalog checked once (formerly inline in init). */
+static void bopl_world_ready(BoplPuffer *env) {
+    if (env->world_opening) { pthread_join(env->world_thread, NULL); env->world_opening=0; }
+    if (!env->world) { fprintf(stderr, "Bopl RL startup: %s\n", env->world_error); abort(); }
+    if (env->world_checked) return;
+    env->world_checked=1;
     for (uint32_t map=0; map<31; map++)
         if ((env->training_map_mask&(1u<<map)) && map>=bopl_rl_map_count(env->world)) {
             fprintf(stderr, "Training map outside game catalog\n"); abort();
         }
+    if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
+}
+static void init(BoplPuffer *env) {
+    const char *game=getenv("BOPL_RL_GAME"), *replay=getenv("BOPL_RL_BOOTSTRAP"), *logs=getenv("BOPL_RL_LOG_DIR");
+    if (!game || !replay || !logs) { fprintf(stderr, "Set BOPL_RL_GAME, BOPL_RL_BOOTSTRAP and BOPL_RL_LOG_DIR to absolute paths\n"); abort(); }
+    int length=snprintf(env->world_log, sizeof(env->world_log), "%s/worker-%ld-%u.log", logs, (long)getpid(), env->rng);
+    if (length<0 || (size_t)length>=sizeof(env->world_log)) abort();
     if (env->training_map_mask && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
-    if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
+    const char *parallel=getenv("BOPL_PARALLEL_OPEN");
+    if (parallel && *parallel && strcmp(parallel, "0")!=0) {
+        if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
+        env->world_opening=1;
+    } else {
+        bopl_world_open(env);
+        bopl_world_ready(env);
+    }
     env->history=calloc((size_t)2*env->num_agents*BOPL_OBS_SIZE, sizeof(float));
     env->sample=calloc((size_t)env->num_agents*BOPL_OBS_SIZE, sizeof(float));
     if (!env->history || !env->sample) abort();
@@ -250,6 +277,7 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
         config->player[i].abilities[j]=1+bopl_random(env)%(BOPL_ABILITY_COUNT-1); // Exclude the source's NullAbility placeholder.
 }
 static void c_reset(BoplPuffer *env) {
+    bopl_world_ready(env);
     bopl_spare_ready(env);
     if (env->spare && bopl_rl_reset_pending(env->spare)) {
         /* The spare has been loading this episode's setup since the previous
@@ -362,6 +390,7 @@ static void c_render(BoplPuffer *env) {
     fprintf(stderr, "This worker is headless; export an episode with bopl_rl_replay and play it in the game.\n");
 }
 static void c_close(BoplPuffer *env) {
+    if (env->world_opening) { pthread_join(env->world_thread, NULL); env->world_opening=0; }
     if (env->spare_opening) { pthread_join(env->spare_thread, NULL); env->spare_opening=0; }
     bopl_rl_close(env->world); env->world=NULL;
     bopl_rl_close(env->spare); env->spare=NULL;
