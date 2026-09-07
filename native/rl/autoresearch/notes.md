@@ -283,39 +283,65 @@ across each pair and the runtime payload hashes matching the files. The IL2CPP b
 incumbent game (`BOPL_RL_GAME=.../builds/game-il2cpp/BoplBattle.x86_64`). Cumulative over the
 new-unit control (3848 active / 2979 wall): active +247 %, wall +256 %.
 
-### Native PufferLib trainer migration: status (2026-09-07, pre-implementation)
+### Native PufferLib trainer migration: design (2026-09-07, revised after review)
 
-Chosen approach (all upstream changes go through `build.py` overlay patches on the pinned
-PufferLib 42f70d6; the Bopl binding opts into the upstream routing hooks):
+Program order (program.md, 07d6ff9): native trainer with the upstream linear encoder first,
+qualified for throughput and strength per wall hour against the old trainer on sustained-w16;
+then the native CUDA Bopl set encoder against the linear native baseline; then the simulator
+assessment. All upstream changes go through `build.py` overlay patches on the pinned PufferLib
+42f70d6; the Bopl binding opts into the upstream routing hooks.
 
-- **Routing.** `binding.c` defines `MY_USES_PERM` and `MY_USES_TAGS`; `BoplPuffer` gets per-slot
-  pointer arrays (`obs_ptr/action_ptr/reward_ptr/terminal_ptr[6]`), `tag`, `boundary_reached`,
-  and a per-match `side` drawn from the env rng in `c_reset`. Observations are written into an
-  env-owned scratch block and copied per player into its slot row, so the physical rows can live
-  anywhere in the buffer. The trainer's permutation maps every historical env to one primary row
-  and one frozen-bank row; `side` chooses which player the frozen row drives, so side swaps are a
-  per-env relabeling that needs no host round trip. Match end sets `boundary_reached` so bank
-  weight swaps only happen between matches (match-long historical ownership).
-- **Opponent pool.** Four frozen banks hold the last four snapshots (old `recent` window), each
-  bank owning two of the eight historical envs at 16 envs; at every checkpoint the oldest bank is
-  reloaded with the newest snapshot once its envs are aligned (`count_aligned`). Differs from the
-  old trainer only in that an env keeps one snapshot until its bank rotates instead of resampling
-  per match; the expected opponent mix per learner sample is unchanged.
-- **Per-episode recurrent reset.** Overlay patch: before each rollout forward, zero state rows
-  whose terminal flag from the previous step is set (primary and frozen banks); training gets a
-  reset-mask channel in `TrainGraph` copied by `select_copy`, and the MinGRU log-space scan
-  (forward and backward recompute) restarts at masked steps. `reset_state` stays off so state
-  carries across horizon boundaries like the old trainer.
-- **Learner-only updates.** Frozen-row advantages are already zeroed upstream; minibatch selection
-  must only draw learner rows (patch the selection range to the primary slice), and the reward
-  clamp to [-1, 1] is removed for Bopl (win+kill in one step is +/-1.1).
-- **Outputs.** `puffer/train.py` becomes native-only, writes `policy-<step>.bin` plus the sidecar
-  (`config.training_maps`, `config.episode_ticks`, learner steps), and `smoke.py` drops
-  `torch_pufferl`.
+Matthew's review findings (2026-09-07) and how the design answers them:
 
-Next concrete step: edit `bopl_puffer.h`/`binding.c`/`eval_binding.c` for the per-slot pointers
-and side/tag fields, rebuild with `build.py`, and run a routing test (a C harness through the
-research library plus a Python check on the CUDA vec with a non-identity permutation, side swaps
-and a two-buffer layout) before touching the overlay kernels. No blocker at this point; the two
-root commits (e339892 applied as f9896cb; 6a6dcaf pending until the old-runtime qualification is
-done) are known.
+1. **Boundary-safe opponent ownership.** `count_aligned` only proves that every env has seen
+   some match boundary, and `c_reset` starts the next match immediately, so a host-side bank swap
+   after alignment would change an env's opponent mid-match. Fix: the trainer never swaps a bank's
+   weights while any env of that bank is mid-match; instead each frozen bank owns a fixed set of
+   historical envs, and a bank reload is a two-phase per-env latch. The host stages the new
+   snapshot in a bank-local pending slot and marks the bank's envs `pending`; each env applies the
+   pending switch inside its own `c_reset` (that is, exactly at its own match end) by flipping to
+   the staged weights slot. Concretely the bank holds two weight slots (active, staged) and each
+   env carries `slot` (0/1) that selects which slot its forward uses; the host flips the staged
+   slot into use only after all envs of the bank report `applied`. Side (which player the frozen
+   row drives) is drawn per match in `c_reset`, so side swaps are boundary-aligned by construction.
+   This keeps match-long ownership exactly.
+2. **Recurrent state for sampled sequences.** `select_copy` never fills `TrainGraph.mb_state`;
+   `reset_state=false` merely leaves whatever the previous minibatch left in it. Fix: a per-row
+   rollout-start state buffer `{layers, total_agents, hidden}` is snapshotted before each rollout
+   (all banks, primary rows are what matter), and a new `select_copy` channel gathers the rows of
+   the sampled segments into `mb_state`. Together with the terminal reset-mask channel and the
+   MinGRU scan restart at masked steps (forward and backward recompute), each sampled segment
+   starts from the same hidden state its rollout forward used, and episodes still reset the
+   state. Rollout `buffer_states` are zeroed at terminals for every bank before the next forward.
+3. **Learner-only sampling per buffer.** Learner rows are the primary slice of every buffer
+   (B=16 per buffer with 12 primary rows means rows 0..11 and 16..27, not 0..23). Fix: the prio
+   weights of rows with `row % agents_per_buffer >= bank_layout[1]` are zeroed before the
+   normalise/CDF step, so frozen rows can never be sampled; `zero_frozen_advantages_cuda` already
+   uses the same per-buffer test. `learner_steps` counts primary rows times horizon per rollout.
+
+Declared semantic differences vs the old trainer (to be identified in the qualification report):
+- Opponent assignment: fixed bank per env with bank rotation, instead of resampling a snapshot per
+  match. With four banks holding the four most recent snapshots and equal env counts per bank the
+  per-time-slice mix over snapshots is uniform like the old `recent` draw, but which env faces
+  which snapshot is correlated across matches. Not proven equivalent; measured by strength.
+- Recurrent core MinGRU (upstream, log-space scan) instead of standard GRU; optimizer Muon
+  instead of Adam; GAE without bootstrap past the horizon (upstream `puff_advantage`) plus
+  prioritised segment replay; upstream reward clamp to [-1, 1] removed for Bopl (win plus kill in
+  one step is +/-1.1 and must stay distinct from a bare win).
+- Rollout horizon/minibatch come from `bopl.ini` (horizon 64 vs old 128 with sequence 32).
+
+Outputs: `puffer/train.py` becomes native-only, writes `policy-<step>.bin` plus the sidecar
+(`config.training_maps`, `config.episode_ticks`, learner steps), keeps the snapshot pool for the
+frozen banks, and `smoke.py` drops `torch_pufferl`. Old-trainer comparisons use Git revisions.
+
+Ownership while this lands: Matthew owns `policy_eval.c`, `native_policy.py`,
+`test_native_policy.py` (CPU set encoder later, weight layout to be coordinated), the C# game
+cleanup (bd76347 fix math, 836428b incumbent toggles, both to go into the combined IL2CPP
+rebuild), the obsolete UI/report family (5960253) and monitor cleanup (21577dd), and the
+replay/runtime-path cleanup (reference.py, replay_data.py, render_video.py,
+extract_demonstrations.py, verify_demonstration.py). 6a6dcaf (Bow/imitation/league/extension/
+series deletions) applies once the old-runtime qualification no longer needs those files.
+
+Next concrete step: edit `bopl_puffer.h`/`binding.c`/`eval_binding.c` for per-slot pointers,
+tag/boundary/latch fields and the per-match side; rebuild with `build.py`; run a routing test
+(non-identity permutation, side swaps, two-buffer layout) before the overlay kernels.
