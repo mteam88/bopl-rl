@@ -140,7 +140,16 @@ Aim encoding: index 0 is "no joystick direction" (rendered apart, in gray);
 indices 1..255 map to `(index-1)*360/255` degrees. `aim_bins` may be 256 or
 a uniform downsample to 64. Floats may be rounded to 4 significant digits.
 `decisions[i]` aligns with the i-th decision of the game (with
-`actions_timing: observation-before-action`, that is `frames[i]`). The
+`actions_timing: observation-before-action`, that is `frames[i]`).
+Optional per-decision extras the dashboard will render when present:
+`action_probability` (probability of the sampled joint action) and
+`entropy: {aim, buttons}` (nats). Unknown fields are ignored. Full
+distributions stay in this gzipped sidecar rather than embedded in the visual
+JSON: 256+16 floats per decision would grow an uncompressed 1800-decision
+replay fetch by megabytes, and the replay browser loads visuals far more often
+than the mind strip needs distributions. A compact per-frame
+`decision: {index, value}` in visual schema 2 is fine as a convenience, but
+the sidecar remains the transport of record. The
 dashboard shows V(s) and the action distribution under the match video,
 synchronized to playback. Implemented natively (native-evaluation rift commit
 037a9c8, fixture
