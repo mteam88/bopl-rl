@@ -1,0 +1,2 @@
+timestamp_utc	commit	experiment	workload	learner_dps_wall	status	description	learner_dps_active	wall_seconds
+2026-09-07T03:47:00Z	5931f7c	baseline	w16-393216-r3	2502	baseline	fresh baseline of starting commit; three runs 2454-2540 wall dps, active 3906-3995; startup ~41 s of ~118 s wall	3965	117.9
