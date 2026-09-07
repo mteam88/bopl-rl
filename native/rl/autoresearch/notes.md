@@ -241,3 +241,19 @@ Idea: exp12 showed the single turn graph serialises the learner step and the his
 First 16-worker bench (`exp13-branches/`, commit 4981af9) **failed**: incumbent-w16-1 finished (10652 active / 8463 wall; P 1.898 G 1.526 E 1.225 X 0.372 ms), branches-w16-1 died at update 86 of 192 (up to there P 1.846 G 1.428 E 1.268 X 0.419 — G 0.10 ms better, as intended). The reported error, `cudaErrorStreamCaptureUnjoined` from `capture_end`, was a mask: the log's first traceback is `torch.OutOfMemoryError` inside `policy.step` during a capture (GPU 11.16 GB in use by the trainer, 9.88 GB of it in CUDA-graph private pools), and the exception skipped the branch joins so `capture_end` reported unjoined work instead. Peak allocated memory in the metrics had grown 294 → 471 MB, but reserved memory (not logged then; `cuda_reserved_mb` is logged from now on) is what filled the card: every `CUDAGraph` keeps its own private pool holding every block its capture touched (cuBLAS workspace, cuDNN GRU scratch, one segment per stream used) until the graph is destroyed, and a freed pool is only unmapped by `empty_cache` or an allocation failure. A standalone test (job tmp `graphmem.py`) measures ~110 MB reserved per plain turn graph and ~320 MB per branched graph (five streams); with ~20 live graphs per group and two groups the branched run needed ~10 GB.
 
 Fix (this commit): all graphs of one `TurnGraph` share one memory pool (`graph_pool_handle()`, forced on with BRANCHES, `BOPL_TURN_GRAPH_POOL=1` for plain graphs). Safe because the graphs of a group replay one at a time on one stream and every output is consumed before the next replay. The standalone test then holds reserved memory flat at 416 MB across 12 branched captures and confirms each graph's replay outputs are unaffected by replaying the others. Also a dedicated capture stream per `TurnGraph` (torch hands streams out round-robin from a pool of 32, so a fresh `Stream()` per capture would eventually alias a branch stream), asserted distinct at construction.
+
+**Second bench (after the shared-pool fix, commit 09ac67b, `exp13-branches2`, 4 runs per arm alternating):**
+
+| arm | median active | median wall | runs active | roll s | train/upd ms | P ms/t | G | E | X=P-G | gpu util |
+|---|---|---|---|---|---|---|---|---|---|---|
+| incumbent (12 flags) | 10414 | 8296 | 10048-10576 | 46.8-49.5 | 41.0-41.7 | 1.90-2.01 | 1.53-1.62 | 1.22-1.32 | 0.37-0.39 | 31 % |
+| branches | 10763 | 8538 | 9175-11042 | 44.6-52.5 | 40.9-43.7 | 1.81-2.14 | 1.42-1.70 | 1.26-1.35 | 0.39-0.43 | 22-41 % |
+
+Kept: +3.4 % active, +2.9 % wall on the paired medians. The three good branches runs are the fastest
+sustained runs recorded so far (11021, 11042 active); run 2 was a low outlier (9175, load1 14.9, its
+GPU util 41 % and train/upd 43.7 ms say the machine was contended, not the graph). The branched
+graph's own time per turn (G) drops from ~1.55 to ~1.42 ms when it is not contended, i.e. the five
+historical GRU steps really do overlap with the learner step; the gap is small because each step is
+only ~0.2 ms of kernel time and the launch/join overhead of five streams eats part of it. Reserved
+CUDA memory stayed flat (shared pool), no prune-related growth. The incumbent is now the thirteen
+flags (`BOPL_TURN_GRAPH_BRANCHES=1` added). check_pipeline identical 11/11 against the reference dump.
