@@ -24,11 +24,12 @@ trainer.
 <run>/video-status.json     optional {status, step, rendered}
 ```
 
-Checkpoint loading: legacy `.pt` via `research/policy.py load()`; native `.bin`
-via `research/native_policy.py load(path) -> policy, meta` with
+Checkpoint loading: only native `.bin` checkpoints are executable, via
+`research/native_policy.py load(path) -> policy, meta` with
 `policy.initial(batch, 'cpu')` and `policy.step(obs, state) -> logits, values,
-state`. Tools that discover checkpoints (ELO ladder, decision dumps) must glob
-both patterns, never `.pt` alone.
+state`. Legacy `.pt` files are display-only artifacts (listed, never loaded —
+the old torch model classes are deleted and must not be revived). Tools that
+discover checkpoints must glob both patterns for listing, `.bin` for play.
 
 ## config.json (required keys the dashboard uses)
 
@@ -131,18 +132,18 @@ a uniform downsample to 64. Floats may be rounded to 4 significant digits.
 dashboard shows V(s) and the action distribution under the match video,
 synchronized to playback. Implemented natively (native-evaluation rift commit
 037a9c8, fixture
-`native/artifacts/rl/native-migration-audit/eval-mind-smoke/evaluations/000000000`);
-`research/dump_decisions.py` backfills old-format checkpoints by re-simulating
-saved actions.
+`native/artifacts/rl/native-migration-audit/eval-mind-smoke/evaluations/000000000`).
+Mind dumps are produced only by the native evaluator; historical games without
+one simply don't show the panel (no torch backfill).
 
 ## Checkpoints and the ELO ladder
 
 `research/elo_ladder.py` plays round-robin pools among recent checkpoints plus
-fixed anchors (random, scripted opponents, a frozen reference checkpoint). It
-discovers `checkpoints/policy-%09d.pt` **and** `policy-%09d.bin`, loading the
-former with `policy.load()` and the latter with `native_policy.load()` (CPU
-step interface as described above). Ladder output lives in `<run>/ladder/` and
-is dashboard-read-only.
+fixed anchors (random, scripted opponents, a frozen reference checkpoint). Only
+native `.bin` checkpoints are playable (via `native_policy.load()`); `.pt`
+checkpoints appear in listings but never as ladder participants, so the
+"best old checkpoint" anchor requires a native re-export or is dropped. Ladder
+output lives in `<run>/ladder/` and is dashboard-read-only.
 
 ## Asks that are trainer configuration (not dashboard code)
 
