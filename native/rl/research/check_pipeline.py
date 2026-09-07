@@ -101,7 +101,7 @@ def train(out,name,workers,steps,extra,env=None):
     return dict(dump=torch.load(dump,map_location='cuda'),metrics=records,seconds=time.monotonic()-started,
                 sps=float(np.mean([r['sps'] for r in records])),config=json.loads((run/'config.json').read_text()))
 
-STRIP={'elapsed','sps','rollout_seconds','train_seconds','snapshot_seconds','steppers','cuda_memory_mb','pipeline','env'}
+STRIP={'elapsed','sps','rollout_seconds','train_seconds','snapshot_seconds','steppers','cuda_memory_mb','cuda_reserved_mb','pipeline','env'}
 ENV_STRIP={'sps','step_mode','sampled_native'}   # timing and transport metadata, absent from the original loop
 def comparable(records):
     return [{k:v for k,v in r.items() if k not in STRIP}|{'env':{k:v for k,v in r['env'].items() if k not in ENV_STRIP}} for r in records]

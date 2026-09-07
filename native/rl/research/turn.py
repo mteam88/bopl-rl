@@ -35,6 +35,19 @@ DEBUG=os.environ.get('BOPL_TURN_GRAPH_DEBUG')=='1'
 NOPRUNE=os.environ.get('BOPL_TURN_GRAPH_NOPRUNE')=='1'   # diagnostic: never drop stale graphs
 OWN_WORKSPACE=os.environ.get('BOPL_TURN_GRAPH_SHARED_WORKSPACE')!='1'   # diagnostic: '1' reproduces the freed-workspace crash
 BRANCHES=os.environ.get('BOPL_TURN_GRAPH_BRANCHES')=='1'   # exp13: historical steps as parallel graph branches
+# exp13: one private memory pool per TurnGraph shared by all its graphs instead of
+# one pool per graph. A graph's pool holds every block its capture touched
+# (cuBLAS workspaces, cuDNN/GRU scratch, one segment per stream it used) until
+# the graph dies, and freed pools are only unmapped by empty_cache or an
+# allocation failure, so with ~20 live graphs per group the reserved memory
+# grew by ~110 MB per plain graph and ~320 MB per branched graph (five streams):
+# the first branched 16-worker run died of CUDA OOM during a capture. Sharing
+# is safe here because graphs of one TurnGraph replay one at a time on one
+# stream and every output is consumed before the next replay (the hazard torch
+# documents for shared pools is a later capture reusing an earlier graph's
+# still-needed output memory). Forced on for BRANCHES; BOPL_TURN_GRAPH_POOL=1
+# enables it for plain turn graphs.
+SHARED_POOL=BRANCHES or os.environ.get('BOPL_TURN_GRAPH_POOL')=='1'
 
 class TurnGraph:
     def __init__(self,policy,pool,opponents,obs,state,frozen_state,device,slots=4):
@@ -47,7 +60,14 @@ class TurnGraph:
         self.source=torch.zeros(slots,n,dtype=torch.long,device=device)
         self.mask=torch.zeros(slots,n,dtype=torch.bool,device=device)
         self.graphs={}; self.key=None; self.current=None
+        # A dedicated capture stream, distinct from the branch streams: torch hands
+        # out streams round-robin from a pool of 32, so a fresh Stream() per capture
+        # would eventually alias a branch stream and that branch would silently
+        # fork onto the capturing stream itself.
+        self.capture_stream=torch.cuda.Stream()
         self.streams=[torch.cuda.Stream() for _ in range(slots)] if BRANCHES else []
+        if len({s.cuda_stream for s in self.streams+[self.capture_stream]})!=len(self.streams)+1: raise RuntimeError('turn-graph streams alias')
+        self.mempool=torch.cuda.graph_pool_handle() if SHARED_POOL else None
         self.captures=0; self.capture_seconds=0.
     def refresh(self):
         """Call after opponents.refresh: refill the index buffers if the group's
@@ -111,7 +131,7 @@ class TurnGraph:
     def capture(self,versions):
         started=time.perf_counter()
         rng=torch.cuda.get_rng_state(); state=self.state.clone(); frozen=self.frozen.clone()
-        main=torch.cuda.current_stream(); stream=torch.cuda.Stream(); stream.wait_stream(main)
+        main=torch.cuda.current_stream(); stream=self.capture_stream; stream.wait_stream(main)
         with torch.cuda.stream(stream), torch.no_grad():
             self._run(versions)   # warm-up: lazy library initialisation happens outside the capture
             graph=torch.cuda.CUDAGraph()
@@ -123,7 +143,7 @@ class TurnGraph:
             # Clearing the cache right before capture makes each graph allocate, own
             # and free its own workspace. Stepper (inference.py) does the same.
             if OWN_WORKSPACE: torch._C._cuda_clearCublasWorkspaces()
-            graph.capture_begin(capture_error_mode='thread_local')
+            graph.capture_begin(pool=self.mempool,capture_error_mode='thread_local')
             try: out=self._run(versions)
             finally: graph.capture_end()
         main.wait_stream(stream); torch.cuda.synchronize()

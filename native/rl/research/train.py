@@ -450,7 +450,7 @@ def main():
                 action_rates={name:float(np.mean((buttons&(1<<i))!=0)) for i,name in enumerate(['jump','dash','arrow','platform'])},
                 behavior=behavior,
                 pool_steps=recent,learner_fraction=float(masks.float().mean().item()),opponent_game_decisions=game_decisions,
-                cuda_memory_mb=torch.cuda.max_memory_allocated()/1048576)
+                cuda_memory_mb=torch.cuda.max_memory_allocated()/1048576,cuda_reserved_mb=torch.cuda.memory_reserved()/1048576)
             if groups>1: record['pipeline']=vec.group_profile()
             if turns: record['pipeline']={**record.get('pipeline',{}),'turn_graphs':[turn.stats() for turn in turns]}   # runtime bookkeeping, stripped by check_pipeline
             if TRACE and trace_sum[7]:
