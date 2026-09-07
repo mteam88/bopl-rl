@@ -96,8 +96,19 @@ recorded here so the Ralph loop keeps pursuing it:
    learner-only updates; `count_aligned`-style boundary tracking means every
    tagged env has hit *some* boundary, not that all are between matches, and
    Bopl needs match-long ownership rather than bank-weight swaps mid-match;
-   recurrent resets need checking. Then qualify throughput **and** strength per
-   wall hour against the existing trainer. Do not stop at a plan or a smoke run.
+   recurrent resets need checking. Further source-inspection findings from
+   Matthew: `net_callback_wrapper` copies terminals but calls `policy_forward`
+   without clearing learner/frozen RNN state at episode boundaries; `TrainGraph`
+   stores `mb_state` but no segment-start rollout state or reset mask, and
+   `train_impl` only zeroes `mb_state` when `hypers.reset_state` is set while
+   `mingru_forward_train` scans across internal episode boundaries (both differ
+   from the current GRU contract); `train_impl` hard-clamps rewards to [-1,1]
+   while Bopl's round+kill reward can exceed 1; native throughput counters
+   include frozen rows and possibly a final unlearned transition, so report
+   learner samples actually used by completed updates separately. Account for
+   these explicitly with focused upstream adaptations, not another replacement
+   trainer. Then qualify throughput **and** strength per wall hour against the
+   existing trainer. Do not stop at a plan or a smoke run.
 3. **Standalone simulator.** Assess that investment from the results of 1 and
    2; no full rewrite is requested now.
 
