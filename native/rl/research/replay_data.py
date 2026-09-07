@@ -8,8 +8,11 @@ import hashlib
 import os
 from pathlib import Path
 import struct
+import sys
 import numpy as np
 from environment import LIB, ROOT, OBS_SIZE, State
+sys.path.insert(0, str(ROOT / "native/tools"))
+from reference import resolve_game, player_sources
 
 INPUT_DTYPE = np.dtype([('seq','<u4'),('angle','u1'),('buttons','<u2'),('delay','u1')])
 
@@ -82,7 +85,8 @@ def previous(observations, actions):
     LIB.research_previous(observations.ctypes.data_as(C.POINTER(C.c_float)), action_array(actions), len(actions))
 
 class ReplayWorld:
-    def __init__(self, meta, log, limit=None):
+    def __init__(self, meta, log, limit=None, game=None):
+        self.game = resolve_game(game)
         self.meta = meta
         self.config = config = Config()
         config.seed, config.map, config.players = meta['seed'], meta['level'], len(meta['players'])
@@ -98,7 +102,7 @@ class ReplayWorld:
                                            (C.c_uint32*3)(*player['abilities']))
         log = Path(log).resolve(); log.parent.mkdir(parents=True, exist_ok=True)
         error = C.create_string_buffer(512)
-        self.handle = LIB.bopl_rl_open(os.fsencode(ROOT/'Builds/Linux/BoplBattle.x86_64'),
+        self.handle = LIB.bopl_rl_open(os.fsencode(self.game),
             os.fsencode(ROOT/'native/fixtures/movement.rep'), os.fsencode(log), 60000, error, len(error))
         if not self.handle:
             raise RuntimeError(error.value.decode())

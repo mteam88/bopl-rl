@@ -6,9 +6,12 @@ from pathlib import Path
 import select
 import signal
 import subprocess
+import sys
 import time
 
 ROOT=Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "native/tools"))
+from reference import resolve_game
 
 def stop(process):
     if process is None or process.poll() is not None: return
@@ -21,7 +24,10 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('replay',type=Path); parser.add_argument('output',type=Path)
     parser.add_argument('--seconds',type=float,default=40)
+    parser.add_argument('--game', type=Path, help='Unity player; defaults to BOPL_RL_GAME or the IL2CPP build')
     args=parser.parse_args()
+    player = resolve_game(args.game)
+    if not player.is_file(): raise FileNotFoundError(player)
     replay=args.replay.resolve(); output=args.output.resolve()
     if not replay.is_file(): raise FileNotFoundError(replay)
     if output.exists(): raise FileExistsError(output)
@@ -39,7 +45,7 @@ def main():
             env=dict(os.environ,DISPLAY=display,__NV_PRIME_RENDER_OFFLOAD='1',__GLX_VENDOR_LIBRARY_NAME='nvidia')
             env.pop('BOPL_RL_SOCKET',None); env.pop('BOPL_TRACE',None)
             game_log=output.with_suffix('.game.log')
-            game=subprocess.Popen([str(ROOT/'Builds/Linux/BoplBattle.x86_64'),str(replay),
+            game=subprocess.Popen([str(player),str(replay),
                 '-screen-width','960','-screen-height','540','-screen-fullscreen','0','-logFile',str(game_log)],
                 env=env,stdout=log,stderr=log,start_new_session=True)
             # The replay starts from a saved round setup and contains four seconds
@@ -60,7 +66,7 @@ def main():
             subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-hwaccel','cuda',
                             '-ss',str(min(7,args.seconds/2)),'-i',str(output),'-frames:v','1','-y',
                             str(output.with_suffix('.jpg'))],stdout=log,stderr=log,check=True)
-            output.with_suffix('.video.json').write_text(json.dumps(dict(replay=str(replay),seconds=args.seconds,probe=info),indent=2)+'\n')
+            output.with_suffix('.video.json').write_text(json.dumps(dict(replay=str(replay),player=str(player),seconds=args.seconds,probe=info),indent=2)+'\n')
             print(json.dumps(dict(status='VIDEO_READY',path=str(output),seconds=args.seconds)),flush=True)
         finally:
             stop(encoder); stop(game); stop(xvfb)
