@@ -126,6 +126,46 @@ class NativePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "divisible by eight"):
             NativePolicy(weights, 11, hidden=7)
 
+    def test_set_policy_is_invariant_to_slot_order_and_absent_features(self):
+        # These are properties of the game's set observation contract; the
+        # independent full encoder oracle is kept outside the shipped code.
+        hidden, batch = 16, 4
+        rng = np.random.default_rng(91)
+        shapes = ((hidden, 905), (64, 21), (64, 28), (hidden, hidden + 128),
+                  (273, hidden), (3 * hidden, hidden))
+        weights = np.concatenate([(rng.standard_normal(shape) * .025).astype(np.float32).ravel()
+                                  for shape in shapes])
+        policy = NativePolicy(weights, 3257, hidden, architecture="bopl-set-mingru-v1")
+        obs = rng.standard_normal((batch, 3257)).astype(np.float32)
+        for lo, hi, rows, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+            slots = obs[:, lo:hi].reshape(batch, rows, width)
+            slots[:, :, 0] = rng.integers(2, size=(batch, rows))
+            slots[0, :, 0] = 0
+            slots[1, :, 0] = 1
+
+        def step(value):
+            return policy.step(torch.from_numpy(value.copy()), policy.initial(batch))
+
+        expected = step(obs)
+        permuted, poisoned, empty = (obs.copy() for _ in range(3))
+        for lo, hi, rows, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+            slots = obs[:, lo:hi].reshape(batch, rows, width)
+            for row in range(batch):
+                permuted[row, lo:hi] = slots[row, rng.permutation(rows)].ravel()
+            poison = poisoned[:, lo:hi].reshape(batch, rows, width)
+            poison[:, :, 1:][slots[:, :, 0] == 0] = 1e9
+            empty[:, lo:hi] = 0
+        for variant in (permuted, poisoned):
+            for actual, reference in zip(step(variant), expected):
+                torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+        # Reusing activations across populated and empty sets must not retain
+        # an entity's previous pooled output.
+        fresh = NativePolicy(weights, 3257, hidden, architecture="bopl-set-mingru-v1")
+        empty_result = fresh.step(torch.from_numpy(empty.copy()), fresh.initial(batch))
+        step(obs)
+        for actual, reference in zip(step(empty), empty_result):
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+
 
 if __name__ == "__main__":
     unittest.main()
