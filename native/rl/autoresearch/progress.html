@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<base href="/autoresearch/"><title>Bopl · Throughput research</title>
+<style>
+:root{color-scheme:light;--ink:#243d33;--muted:#697064;--paper:#f7f5ed;--line:#d9ddce}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px Georgia,serif}
+main{max-width:1120px;margin:0 auto;padding:42px 28px}header{display:flex;justify-content:space-between;gap:24px;align-items:start}
+.eyebrow,small,th,.meta{font:12px 'Courier New',monospace;letter-spacing:.04em}.eyebrow{color:var(--muted);margin:0 0 12px}
+h1{font-size:clamp(30px,5vw,52px);font-weight:400;letter-spacing:-.035em;margin:0 0 12px}p{line-height:1.5}
+a{color:inherit;text-underline-offset:3px}.meta{line-height:1.9;text-align:right;white-space:nowrap}.meta span{display:block}
+.stats{display:flex;gap:40px;margin:26px 0;padding:19px 0;border-block:1px solid var(--line)}.stats strong{display:block;font-size:31px;font-weight:400}.stats small{color:var(--muted)}
+figure{margin:0}figure img{width:100%;display:block;min-height:250px}figcaption{color:var(--muted);font-size:14px}
+.table{overflow-x:auto;margin-top:28px}table{width:100%;border-collapse:collapse;text-align:left}td,th{padding:12px 10px;border-bottom:1px solid var(--line)}td{font-size:14px}th{color:var(--muted)}
+#errors{color:#93442e}footer{margin-top:30px;display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
+@media(max-width:640px){main{padding:25px 16px}header{display:block}.meta{text-align:left;margin-top:18px}.stats{gap:23px}.stats strong{font-size:24px}footer{display:block}}
+</style>
+<main><header><div><p class="eyebrow">BOPL / AUTONOMOUS RESEARCH</p><h1>More practice. Less waiting.</h1><p>Fable’s search for faster training, one measured experiment at a time.</p></div><div class="meta"><span id="state">Checking Fable…</span><span id="settings">5.1 · high · full access</span><span id="checked">Hourly monitor pending</span></div></header>
+<section class="stats"><div><strong id="count">0</strong><small>EXPERIMENTS</small></div><div><strong id="gain">—</strong><small>BEST RETAINED GAIN</small></div><div><strong id="rate">—</strong><small>LEARNER DECISIONS / S</small></div></section>
+<figure><img id="plot" src="progress.svg" alt="Throughput hillclimbing over time, with a separate panel for each workload"><figcaption>Green: baseline and retained changes. Ochre: discarded candidates. Lines show the best retained score within each workload. Results are reported by Fable; the hourly monitor reviews the evidence.</figcaption></figure>
+<p id="errors" role="status"></p><div class="table"><table><thead><tr><th>UTC</th><th>EXPERIMENT</th><th>WORKLOAD</th><th>DECISIONS/S</th><th>RESULT</th><th>WHAT CHANGED</th></tr></thead><tbody id="rows"></tbody></table></div>
+<footer><span id="updated">Waiting for measurements</span><span><a href="progress.png">Download graph</a> · <a href="data.json">Results JSON</a> · <a href="/">Game studies</a></span></footer></main>
+<script>
+const put=(id,text)=>document.getElementById(id).textContent=text;
+let previous='';
+async function refresh(){try{
+ const r=await fetch('data.json',{cache:'no-store'});if(!r.ok)throw Error('Monitor unavailable');const data=await r.json(), rows=data.experiments;
+ put('state',`Fable · ${data.session.state}`);put('settings',data.session.settings_verified?'5.1 · high · full access · verified':'Session settings not verified');
+ put('checked',data.last_hourly_check?`Last check ${new Date(data.last_hourly_check).toLocaleTimeString()}`:'Hourly monitor pending');put('count',rows.length);
+ const groups=new Map();for(const row of rows){if(!groups.has(row.workload))groups.set(row.workload,[]);groups.get(row.workload).push(row)}
+ if(groups.size===1){const values=[...groups.values()][0],baseline=values.find(x=>x.status==='baseline'),kept=values.filter(x=>['baseline','keep'].includes(x.status));
+  const best=kept.length?Math.max(...kept.map(x=>x.learner_dps_wall)):null;put('rate',best?Math.round(best).toLocaleString():'—');put('gain',best&&baseline?`${(best/baseline.learner_dps_wall).toFixed(2)}×`:'—');
+ }else{put('rate',groups.size?'See panels':'—');put('gain',groups.size?'Per workload':'—')}
+ put('errors',data.errors.join(' · '));put('updated',`Updated ${new Date(data.updated_at).toLocaleString()} · refreshes every 15 seconds`);
+ const signature=JSON.stringify(rows);if(signature!==previous){document.getElementById('plot').src=`progress.svg?t=${Date.now()}`;previous=signature}
+ const tbody=document.getElementById('rows');tbody.replaceChildren();for(const row of [...rows].reverse()){const tr=document.createElement('tr');for(const value of [row.timestamp_utc.slice(11,19),row.experiment,row.workload,row.learner_dps_wall===null?'—':Math.round(row.learner_dps_wall).toLocaleString(),row.status,row.description]){const td=document.createElement('td');td.textContent=value;tr.append(td)}tbody.append(tr)}
+}catch(e){put('state','Monitor unavailable');put('errors',e.message)}}refresh();setInterval(refresh,15000);
+</script></html>
