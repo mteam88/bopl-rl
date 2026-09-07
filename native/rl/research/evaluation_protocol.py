@@ -12,13 +12,29 @@ def map_ids(value):
     return maps
 
 
+def checkpoint_identity(path):
+    """Freeze both halves of a native checkpoint, without loading a model."""
+    path = Path(path)
+    if path.suffix != '.bin':
+        raise ValueError('Native checkpoints must use .bin weights and a .bin.json sidecar')
+    data = path.read_bytes()
+    sidecar = Path(str(path) + '.json').read_bytes()
+    meta = json.loads(sidecar)
+    digest = hashlib.sha256(data).hexdigest()
+    if meta.get('schema') != 1 or meta.get('backend') != 'pufferlib-native':
+        raise ValueError('Unsupported native checkpoint metadata')
+    if meta.get('weights_sha256') != digest:
+        raise ValueError('Native checkpoint weights differ from metadata hash')
+    return dict(sha256=digest, metadata_sha256=hashlib.sha256(sidecar).hexdigest())
+
+
 def opponents(path):
     if path is None:
         return []
     path=Path(path).resolve()
     manifest=json.loads(path.read_text())
-    if manifest.get('schema')!=1 or not manifest.get('opponents'):
-        raise ValueError('Expected schema 1 and a nonempty frozen opponent list')
+    if manifest.get('schema')!=2 or not manifest.get('opponents'):
+        raise ValueError('Expected schema 2 and a nonempty native frozen opponent list')
     result=[]; names={'initial','random','selfplay'}
     for item in manifest['opponents']:
         name=item['name']
@@ -26,10 +42,10 @@ def opponents(path):
             raise ValueError('Frozen opponents need distinct safe names')
         names.add(name)
         checkpoint=(path.parent/item['path']).resolve()
-        digest=hashlib.sha256(checkpoint.read_bytes()).hexdigest()
-        if digest!=item['sha256']:
-            raise ValueError(f'Frozen opponent changed: {name}')
-        result.append(dict(name=name,path=str(checkpoint),sha256=digest))
+        identity = checkpoint_identity(checkpoint)
+        if any(identity[key] != item.get(key) for key in identity):
+            raise ValueError(f'Frozen opponent weights or metadata changed: {name}')
+        result.append(dict(name=name,path=str(checkpoint),**identity))
     return result
 
 

@@ -9,10 +9,10 @@ import time
 import numpy as np
 import torch
 from environment import Environment,configure
-from policy import load
-from train import atomic_json
+from native_policy import load
+from common import atomic_json
 from telemetry import FIELDS,summarize
-from evaluation_protocol import map_ids,opponents,schedule
+from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
 
 def sample(logits,generator):
     return torch.stack([torch.multinomial(part.softmax(-1),1,generator=generator).squeeze(-1)
@@ -47,6 +47,8 @@ def main():
     if args.games_per_opponent%2 or args.heldout_games%2:
         parser.error('An even number of games is required for side-swapped seed pairs')
     torch.set_num_threads(1)
+    checkpoint_id = checkpoint_identity(args.checkpoint)
+    baseline_id = checkpoint_identity(args.initial)
     policy,checkpoint=load(args.checkpoint)
     initial,_=load(args.initial)
     frozen=opponents(args.opponents)
@@ -65,11 +67,10 @@ def main():
         previous=json.loads((out/'result.json').read_text())
         expected={(t['opponent'],t['map'],t['seed'],t['side']) for t in tasks}
         actual={(t['opponent'],t['map'],t['seed'],t['side']) for t in previous['games']}
-        old_frozen=[(p['name'],p['sha256']) for p in previous.get('frozen_opponents',[])]
-        if (expected!=actual or len(previous['games'])!=len(tasks)
-            or previous['checkpoint_sha256']!=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest()
-            or previous['baseline_sha256']!=hashlib.sha256(args.initial.read_bytes()).hexdigest()
-            or old_frozen!=[(p['name'],p['sha256']) for p in frozen]):
+        if (previous.get('schema') != 2 or expected!=actual or len(previous['games'])!=len(tasks)
+            or previous.get('checkpoint_identity') != checkpoint_id
+            or previous.get('baseline_identity') != baseline_id
+            or previous.get('frozen_opponents') != frozen):
             raise ValueError('Existing evaluation differs from the requested checkpoint, opponents or schedule')
         print(f'Evaluation {step} already complete',flush=True); return
     out.mkdir(parents=True,exist_ok=True)
@@ -137,9 +138,11 @@ def main():
                            mean_kills=float(np.mean([r['kills'] for r in selected])),
                            mean_deaths=float(np.mean([r['deaths'] for r in selected])),
                            mean_duration=float(np.mean([r['ticks']/60 for r in selected]))))
-    report=dict(schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
-                checkpoint_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
-                baseline_sha256=hashlib.sha256(args.initial.read_bytes()).hexdigest(),
+    if (checkpoint_identity(args.checkpoint) != checkpoint_id
+        or checkpoint_identity(args.initial) != baseline_id or opponents(args.opponents) != frozen):
+        raise ValueError('Checkpoint or frozen opponents changed during evaluation')
+    report=dict(schema=2,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
+                checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
                 frozen_opponents=frozen,evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
                 training_maps=config['training_maps'],
                 seed_base=args.seed_base,heldout_seed_base=args.heldout_seed_base,selfplay_seed=args.selfplay_seed,
