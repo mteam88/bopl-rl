@@ -16,6 +16,6 @@ if [[ -f .claude/ralph-loop.local.md ]]; then
   exit 1
 fi
 prompt='Read native/rl/autoresearch/program.md and pursue the research. Keep making and testing improvements until Matthew stops you.'
-exec claude --model claude-fable-5-1 --plugin-dir "$plugin" \
+exec claude --model claude-fable-5-1 --effort high --plugin-dir "$plugin" \
   --name bopl-throughput --dangerously-skip-permissions "$@" \
   "First use Bash to initialize Ralph Loop: bash \"$plugin/scripts/setup-ralph-loop.sh\" \"$prompt\". Then follow that research prompt."

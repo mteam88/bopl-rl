@@ -16,6 +16,14 @@ commit experiments and keep a small `results.tsv` and `notes.md` here with the
 hypothesis, revision, workload, speed, memory, validation, and keep/discard
 decision. Keep raw runs under `native/artifacts/rl/autoresearch/`.
 
+Matthew wants a live progress graph. Write results to
+`native/rl/autoresearch/results.tsv` with these tab-separated columns:
+`timestamp_utc`, `commit`, `experiment`, `workload`, `learner_dps_wall`, `status`,
+`description`. Use ISO UTC timestamps and status `baseline`, `keep`, `discard`,
+or `invalid`; the score is the measured median. Give changed workloads distinct
+names so the graph compares like with like. Extra columns are welcome. A BB
+monitor checks hourly; keep researching between checks without waiting for it.
+
 ## Starting measurement
 
 From the repository root, use a new output directory for every invocation:
