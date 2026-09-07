@@ -6,7 +6,8 @@ import mimetypes
 import re
 import os
 from pathlib import Path
-from urllib.parse import unquote,urlparse
+from urllib.parse import unquote,urlparse,parse_qs
+import study_data
 
 HERE=Path(__file__).resolve().parent
 
@@ -18,7 +19,13 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,default=HERE.parents[1]/'artifacts/rl')
     parser.add_argument('--host',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8876)
+    parser.add_argument('--study-root',action='append',default=[],metavar='NAME=PATH',help='Read a live study from an isolated workspace')
     args=parser.parse_args(); root=args.root.resolve()
+    extra={}
+    for value in args.study_root:
+        name,separator,path=value.partition('=')
+        if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+',name):parser.error('Study roots require NAME=PATH')
+        extra[name]=Path(path).resolve()
     def runs():
         candidates=[]
         for file in root.glob('*/config.json'):
@@ -42,6 +49,13 @@ def main():
             if self.command!='HEAD': self.wfile.write(payload)
         def do_GET(self):
             path=unquote(urlparse(self.path).path)
+            studies=study_data.catalog(root,extra)
+            if path=='/api/studies':
+                return self.json([dict(name=name,title='A/B continuation' if 'total_learner_target' in study_data.read(directory/'protocol.json') else 'Scripted opponents + Bow initialization') for name,directory in reversed(list(studies.items()))])
+            if path.startswith('/api/study/'):
+                name=path[len('/api/study/'):]
+                if name not in studies:return self.send_error(404)
+                return self.json(study_data.payload(name,studies[name],root))
             if path=='/api/runs': return self.json(runs())
             if path=='/api/series':
                 series=[]
@@ -89,14 +103,22 @@ def main():
                                       metrics=metrics,evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
                                       final_evaluation=latest_report(directory,'final-evaluations/*/result.json'),
                                       validation_evaluation=latest_report(directory,'validation/evaluations/*/result.json')))
-            if path.startswith('/runs/'):
+            if path.startswith('/studies/'):
+                parts=path[len('/studies/'):].split('/')
+                if not parts or parts[0] not in studies:return self.send_error(404)
+                study_root=studies[parts[0]].resolve();file=(study_root/'/'.join(parts[1:])).resolve()
+                if not file.is_relative_to(study_root) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg','.png','.svg','.pdf','.md','.gz'):
+                    return self.send_error(403)
+            elif path.startswith('/runs/'):
                 parts=path[len('/runs/'):].split('/')
                 if not parts or parts[0] not in {r['name'] for r in runs()}: return self.send_error(404)
                 file=(root/'/'.join(parts)).resolve()
                 if not file.is_relative_to(root/parts[0]) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg'):
                     return self.send_error(403)
-            elif path in ('/','/index.html','/app.js','/style.css'):
-                file=HERE/'web'/('index.html' if path=='/' else path[1:])
+            elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css'):
+                query=parse_qs(urlparse(self.path).query)
+                study_home=path=='/' and studies and not any(k in query for k in ('run','series','history'))
+                file=HERE/'web'/('study.html' if study_home or path=='/study' else 'index.html' if path=='/' else path[1:])
             else: return self.send_error(404)
             if not file.is_file(): return self.send_error(404)
             size=file.stat().st_size; start=0; end=size-1
@@ -110,7 +132,9 @@ def main():
                 else: start=max(0,size-int(b))
                 if start>end or start>=size: return self.send_error(416)
             self.send_response(206 if requested else 200)
-            self.send_header('Content-Type',mimetypes.guess_type(file)[0] or 'application/octet-stream')
+            self.send_header('Content-Type','application/json' if file.name.endswith('.json.gz') else mimetypes.guess_type(file)[0] or 'application/octet-stream')
+            if file.name.endswith('.json.gz'):self.send_header('Content-Encoding','gzip')
+            if file.suffix in ('.html','.js','.css'):self.send_header('Cache-Control','no-cache')
             self.send_header('Accept-Ranges','bytes')
             self.send_header('Content-Length',str(max(0,end-start+1)))
             if requested: self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
