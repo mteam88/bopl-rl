@@ -1,13 +1,26 @@
-# Fix div/sqrt exactness harness (exp08)
+# Fixed-point arithmetic correctness
 
-`Ref` is the game's original bit-serial `Fix.operator/` and digit-by-digit `Fix.Sqrt`
-copied verbatim (raw `long` in, raw `long` out). `Cand` is the fast replacement now in
-`Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs`. `test N` compares them on special
-values, saturation boundaries, 2^60/2^61 edges, near-perfect squares and N random pairs
-drawn from five magnitude distributions; `bench` times both.
+The project compiles the actual `Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs`.
+`Cand` is a thin call wrapper; it contains no arithmetic implementation. `Ref` is
+an independent test oracle containing the original bit-serial division and
+digit-by-digit square root. The game itself uses one implementation for all inputs.
+
+`test N E` checks exceptions, special values, saturation boundaries, large-operand
+edges, square-root rounding boundaries constructed with wide integers, E batches
+of boundary cases, and N random pairs from five magnitude distributions. E defaults
+to 2,000,000. Any mismatch makes the process fail. The standalone profiling stub
+only disables counters; it does not replace any arithmetic.
+
+For large square-root inputs, the original result is the rounded integer square
+root of `(raw << 32) - 2^30` when `raw - floor(sqrt(raw))^2 > UInt32.MaxValue`.
+Otherwise it is the rounded integer square root of `raw << 32`. The implementation
+preserves that exact high-range rule with a corrected floating-point estimate and
+integer product comparisons. Division uses exact 128-bit product comparisons when
+a signed residual cannot safely represent the correction.
 
 ```
 dotnet build -c Release
-dotnet bin/Release/net8.0/fixtest.dll test 100000000   # 2026-09-07: 224223723 cases, 0 mismatches
-dotnet bin/Release/net8.0/fixtest.dll bench            # div 21 -> 6.5 ns, sqrt 106 -> 10 ns (7600X3D, .NET 8)
+dotnet bin/Release/net8.0/fixtest.dll test 100000000
+dotnet bin/Release/net8.0/fixtest.dll test 100000 10000
+dotnet bin/Release/net8.0/fixtest.dll bench
 ```

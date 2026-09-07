@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <StartupObject>Program</StartupObject>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>disable</Nullable>
     <Optimize>true</Optimize>
@@ -8,4 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../../Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs" Link="Fix.cs" />
+  </ItemGroup>
 </Project>

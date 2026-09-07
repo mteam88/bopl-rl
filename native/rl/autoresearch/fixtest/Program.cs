@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 static class Ref
@@ -70,79 +71,20 @@ static class Ref
     }
 }
 
+// The candidate is the actual game source linked by the project, not a copy.
 static class Cand
 {
-    const ulong DivFallback = 1UL << 61;
+    public static long Div(long x, long y) =>
+        (new BoplFixedMath.Fix { m_rawValue = x } / new BoplFixedMath.Fix { m_rawValue = y }).m_rawValue;
+    public static long Sqrt(long x) => BoplFixedMath.Fix.Sqrt(new BoplFixedMath.Fix { m_rawValue = x }).m_rawValue;
+}
 
-    // Exact replacement for Fix.operator/: q = floor(|x| * 2^33 / |y|), result = (q+1)>>1 with sign,
-    // saturating when q >= 2^64. One hardware division for the integer part; the 33 fraction bits come
-    // from a second hardware division when it cannot overflow, else from a double estimate corrected
-    // exactly with a signed residual (|residual| < 2^62 because d < 2^60 and the estimate is within 1).
-    public static long Div(long rawValue, long rawValue2)
-    {
-        if (rawValue2 == 0L) throw new DivideByZeroException();
-        ulong n = (ulong)((rawValue >= 0) ? rawValue : (-rawValue));
-        ulong d = (ulong)((rawValue2 >= 0) ? rawValue2 : (-rawValue2));
-        bool negative = ((rawValue ^ rawValue2) & long.MinValue) != 0L;
-        if (d >= (1UL << 60) || n >= (1UL << 60)) return Ref.Div(rawValue, rawValue2);
-        ulong hi = n / d;
-        if (hi >= (1UL << 31)) return negative ? long.MinValue : long.MaxValue;
-        ulong r = n - hi * d;
-        ulong lo;
-        if (d < (1UL << 31))
-        {
-            lo = (r << 33) / d;
-        }
-        else
-        {
-            lo = (ulong)((double)(long)r * 8589934592.0 / (double)(long)d);
-            long t = (long)((r << 33) - lo * d);
-            while (t < 0) { lo--; t += (long)d; }
-            while (t >= (long)d) { lo++; t -= (long)d; }
-        }
-        ulong q = (hi << 33) + lo;
-        q++;
-        long result = (long)(q >> 1);
-        return negative ? -result : result;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static ulong Mul128(ulong a, ulong b, out ulong lo)
-    {
-        ulong a0 = (uint)a, a1 = a >> 32, b0 = (uint)b, b1 = b >> 32;
-        ulong p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
-        ulong mid = (p00 >> 32) + (uint)p01 + (uint)p10;
-        lo = (mid << 32) | (uint)p00;
-        return p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
-    }
-
-    // Exact replacement for Fix.Sqrt: r = floor(sqrt(N * 2^32)), +1 if remainder > r.
-    public static long Sqrt(long rawValue)
-    {
-        if (rawValue < 0) throw new ArgumentOutOfRangeException();
-        // Above 2^62 the original's second pass takes its overflow branch, whose final rounding
-        // compare is not the ideal one; keep the original there (never reached by gameplay values).
-        if (rawValue >= (1L << 61)) return Ref.Sqrt(rawValue);
-        ulong n = (ulong)rawValue;
-        ulong r = (ulong)Math.Sqrt((double)rawValue * 4294967296.0);
-        ulong xhi = n >> 32, xlo = n << 32;
-        // bring r to floor(sqrt(X)) with exact 128-bit compares
-        while (true) {
-            ulong rhi = Mul128(r, r, out ulong rlo);
-            if (rhi > xhi || (rhi == xhi && rlo > xlo)) { r--; continue; }
-            break;
-        }
-        while (true) {
-            ulong s = r + 1;
-            ulong shi = Mul128(s, s, out ulong slo);
-            if (shi < xhi || (shi == xhi && slo <= xlo)) { r = s; continue; }
-            break;
-        }
-        ulong r2hi = Mul128(r, r, out ulong r2lo);
-        ulong rem = xlo - r2lo;   // remainder < 2r+1 < 2^49, fits
-        if (rem > r) r++;
-        return (long)r;
-    }
+// Profiling is orthogonal to arithmetic; keep this standalone harness independent
+// of the Unity runtime while compiling the exact game implementation above.
+static class RlProfile
+{
+    public static bool Enabled => false;
+    public static readonly long[] Counters = new long[2];
 }
 
 static class Program
@@ -163,11 +105,42 @@ static class Program
     {
         string what = args.Length > 0 ? args[0] : "test";
         long iters = args.Length > 1 ? long.Parse(args[1]) : 20_000_000;
+        int edgeCases = args.Length > 2 ? int.Parse(args[2]) : 2_000_000;
         var rng = new Random(12345);
         if (what == "test") {
             long[] specials = { 0, 1, -1, 2, -2, 3, 4294967296L, -4294967296L, 4294967295L, 4294967297L, long.MaxValue, long.MinValue, long.MaxValue - 1, long.MinValue + 1,
                 (1L << 62), -(1L << 62), (1L << 61), (1L << 61) - 1, (1L << 61) + 1, (1L << 31), (1L << 31) - 1, (1L << 31) + 1, (1L << 32) + 1, 6148914691236517205L, 6148914691236517206L, 0x7FFFFFFF00000000L, 0x00000000FFFFFFFFL, 0x100000000L * 100, 42949672960L, 13493037704L };
             long bad = 0, n = 0;
+            void CheckSqrt(long value) {
+                long expected = Ref.Sqrt(value), actual = Cand.Sqrt(value);
+                n++;
+                if (expected != actual) {
+                    bad++;
+                    if (bad < 20) Console.WriteLine($"SQRT BOUNDARY MISMATCH value={value} ref={expected} game={actual}");
+                }
+            }
+            // The large-input rounding rule changes precisely when the remainder
+            // after the integer square root exceeds UInt32.MaxValue.
+            foreach (ulong root in new ulong[]{2147483647,2147483648,2147483649,3037000498,3037000499}) {
+                foreach (ulong remainder in new ulong[]{0,1,uint.MaxValue-1UL,uint.MaxValue,uint.MaxValue+1UL,2*root-1,2*root}) {
+                    ulong value = root*root + remainder;
+                    if (remainder <= 2*root && value <= long.MaxValue) CheckSqrt((long)value);
+                }
+            }
+            // Construct rounding ties with wide test arithmetic; multiplying two
+            // 48-bit roots in ulong would silently miss these cases.
+            for (int i = 0; i < 10000; i++) {
+                BigInteger root = NextU(rng) >> 16;
+                foreach (long bias in new long[]{0,1L<<30}) {
+                    BigInteger at = (root*root + root + bias) >> 32;
+                    for (int delta = -2; delta <= 2; delta++) {
+                        BigInteger value = at + delta;
+                        if (value >= 0 && value <= long.MaxValue) CheckSqrt((long)value);
+                    }
+                }
+            }
+            try { Cand.Div(1,0); bad++; } catch (DivideByZeroException) { n++; }
+            try { Cand.Sqrt(-1); bad++; } catch (ArgumentOutOfRangeException) { n++; }
             foreach (var a in specials) foreach (var b in specials) {
                 if (b == 0) continue; n++;
                 long r = Ref.Div(a, b), c = Cand.Div(a, b);
@@ -175,7 +148,7 @@ static class Program
             }
             foreach (var a in specials) { if (a < 0) continue; n++; long r = Ref.Sqrt(a), c = Cand.Sqrt(a); if (r != c) { bad++; Console.WriteLine($"SQRT MISMATCH a={a} ref={r} cand={c}"); } }
             // saturation borderline: n*2^33/d ~ 2^64  <=> n ~ d*2^31
-            for (int k = 0; k < 2000000; k++) {
+            for (int k = 0; k < edgeCases; k++) {
                 ulong d = (NextU(rng) >> (64 - rng.Next(1, 31))) | 1UL; if (d >= (1UL<<30)) d >>= 1; if (d==0) d=1;
                 long nb = (long)(d << 31) + rng.Next(-4, 5);
                 foreach (var (a, b) in new[]{ (nb, (long)d), (-nb, (long)d), (nb, -(long)d), (-nb, -(long)d) }) {
@@ -205,6 +178,7 @@ static class Program
                 n += 2;
             }
             Console.WriteLine($"checked {n} cases, mismatches {bad}");
+            Environment.ExitCode = bad == 0 ? 0 : 1;
         } else if (what == "bench") {
             int N = 1 << 20;
             var xs = new long[N]; var ys = new long[N];

@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "scope": "Actual game Fix.cs compiled under .NET; IL2CPP player validation remains required after integration",
+  "checked_cases": 224294806,
+  "mismatches": 0,
+  "random_seed": 12345,
+  "random_pairs": 100000000,
+  "edge_batches": 2000000,
+  "command": "dotnet bin/Release/net8.0/fixtest.dll test 100000000 2000000",
+  "dotnet_sdk": "8.0.130",
+  "fix_source_sha256": "bcccb002c7eaad0b0c071413a451c28f1f32c480a87d6f4319e8f42a60cf56ab",
+  "harness_sha256": "c4559de71242efa6384e3253cfbcb8095007889d8d0f1bf2c0559d8f19cc5617",
+  "elapsed_seconds": 22.15
+}
