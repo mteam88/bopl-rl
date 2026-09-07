@@ -158,3 +158,111 @@ imitation/league/extension launchers and old `check_*` scripts directly depend o
 Policy/PPO; remove obsolete ones or migrate genuinely needed callers. `puffer/train.py` has a
 `--backend torch` fallback and `puffer/smoke.py` imports `torch_pufferl` too: the final entrypoints
 exercise native only. Matthew will audit dangling imports and stale docs after the cleanup.
+
+## Matthew's additional decision, relayed by his Cursor thread, 2026-09-07
+
+PufferLib native is the only trainer. Add a native Bopl set encoder and completely
+remove the old implementation. This extends the priority above and is required
+before the finite migration task is complete. Keep one heavy job at a time.
+
+### Required order
+
+1. Finish the native migration with the upstream default linear encoder first:
+   routing, historical opponent ownership, per-episode resets and learner-only
+   updates. Qualify throughput and strength per wall hour against the old trainer
+   on the sustained-w16 workload. Use Git revisions for temporary comparisons.
+2. Then land the Bopl set encoder specified below and qualify its strength per
+   wall hour against that linear native baseline. Record the two native workloads
+   distinctly in results.tsv and notes.md.
+3. Assess the standalone simulator investment using the resulting evidence, as
+   previously requested; a full simulator rewrite is not requested now.
+
+Comparison clarification from the parent: the old trainer uses a standard GRU,
+whereas the native trainer uses upstream MinGRU. The first comparison retains a
+linear encoder, but it is not an identical-model or pure execution-engine
+comparison. Identify the architecture/algorithm differences in its report.
+The set-versus-linear native comparison keeps the qualified native recurrent
+core, decoder, optimizer and environment unchanged.
+
+### Native Bopl set encoder
+
+Implement a custom CUDA encoder through `create_custom_encoder(env_name,
+&encoder)` in the pinned PufferLib `src/ocean.cu`: add the Bopl branch through
+the build.py overlay mechanism. Follow the nmmo3 encoder's Encoder vtable:
+forward, backward, init_weights, reg_params, reg_train, reg_rollout,
+create_weights, free_weights, free_activations and activation_size. Keep the
+upstream MinGRU and decoder architectures unchanged.
+
+Observation layout from bopl_puffer.h (3257 floats): 10 header, 6 x 148 players,
+96 x 21 entities, 12 x 28 slimes, 7 previous-action values. Presence is column
+zero in each entity/slime row. The initial architecture is:
+
+- Flat block: header + players + previous action = 905 floats, Linear then
+  ReLU. Self remains player slot zero, so the player block is positional.
+- Entities: reshape to (B*96) x 21; shared Linear(21 -> E) then ReLU using one
+  puf_mm; masked max pool over 96 rows to E. Invalid rows cannot win the max;
+  an empty set pools to zero.
+- Slimes: analogous shared Linear(28 -> S), ReLU, masked max pool over 12
+  rows, with the same mask/empty-set behavior.
+- Concatenate flat features, entity pool and slime pool; Linear then ReLU
+  to hidden_size=128 for the upstream MinGRU. Start with E=S=64.
+
+There is no native autograd. Implement every backward: ReLU, masked max pooling
+(save argmax in activations and route gradient only to the winning valid row),
+concat splitting, and matmul gradients using puf_mm_tn/puf_mm_nn. Register
+rollout B and train B_TT activations and gradient scratch following nmmo3.
+Prove the implementation with finite-difference gradients on a small batch and
+comparison to a throwaway Torch implementation of the identical encoder. That
+reference is only a test oracle, never a shipped fallback beside the trainer.
+
+Implement the matching CPU encoder forward for policy_eval.c/native_policy.py
+and upstream puffernet.h evaluation, and prove CPU versus CUDA forward parity
+on saved inputs. This CPU support is now explicitly part of the parent's work;
+coordinate the implementation boundary before editing those evaluator files.
+Trained set-encoder checkpoints must be evaluable and crossplayable.
+
+### Complete removal of the old implementation
+
+Matthew: "completely rip out any old stuff." No archive copies, backend switches,
+compatibility shims or legacy directories. Git is the backup. On completion,
+remove all of the following from the shipped tree:
+
+- Custom research/train.py, ppo.py, inference.py/Stepper, selfplay.py, turn.py,
+  policy.py's Torch Policy/distribution/input_mode/action_mode variants,
+  continuation.py, scripted_opponents.py and the scripted-opponent path. Remove
+  the Python Vector pipeline-group layer if native training does not use it.
+- Trainer-side flags BOPL_TURN_GRAPH*, BOPL_COLLECT_GRAPH, BOPL_FAST_MULTINOMIAL,
+  BOPL_OPPONENT_STREAMS, BOPL_ROLLOUT_ENTROPY, --pipeline-groups,
+  --pipeline-serial and --cuda-graphs.
+- --backend torch, torch_pufferl imports, and imports of the old Torch Policy.
+- Old comparison oracles/checks after qualification: check_pipeline.py,
+  check_selfplay.py, check_padded_sampling.py, BOPL_SPLIT_STEP's two-roundtrip
+  path, step_mode fallback plumbing for old players, and sampled_check if it
+  exists only to test that fallback.
+- Game-side incumbent toggles BOPL_SPARE_GAME, BOPL_RL_HEADLESS,
+  BOPL_RL_RAYCULL, BOPL_RL_COALESCE, BOPL_RL_EAGER_IO, BOPL_PARALLEL_OPEN,
+  BOPL_RL_TICKS_PER_FRAME and the exact fast Fix div/sqrt fallbacks. Make kept
+  behavior unconditional; remove off branches and tests solely comparing on
+  versus off. Retain correctness checks for replay parity, telemetry
+  conservation and reset semantics. Arithmetic must remain exact over its full
+  supported domain; replace required numerical handling equivalently rather
+  than silently narrowing that domain.
+- Old .pt GRU checkpoint loading. Use a Git revision for the old-trainer
+  qualification, then remove temporary comparison code and .pt dispatch.
+- Docs, README sections, dashboard serve.py/web code and metrics.jsonl readers
+  for the old outputs: update them to native or delete them. Move shared ROOT
+  and atomic_json out of the deleted trainer into a small common module.
+
+Keep: the real game and bridge (RlBridge.cs, bopl_rl.c/h), the Bopl native
+environment/bindings, puffer/train.py, native checkpoint evaluation/crossplay,
+replay export and video, series.py and the evaluation protocol retargeted to
+native checkpoints, the autoresearch harness, and correctness checks for kept
+environment behavior. The parent's deletion of old series.py in 6a6dcaf removes
+its old implementation; provide its native replacement as required here.
+
+Final audit: rg for torch_pufferl, `from policy import`, Stepper, TurnGraph,
+BOPL_SPLIT_STEP, --backend and every deleted flag name. Resolve all shipped-tree
+hits, including stale docs and harness instructions. Once these migration
+instructions are fulfilled, rewrite this program around the final native design
+so completed removal checklists do not preserve obsolete workflows or tokens.
+Matthew will independently audit dangling imports and stale docs after completion.
