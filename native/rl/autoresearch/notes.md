@@ -29,7 +29,14 @@ train.py's own clock). `learner_dps_wall` (includes startup) is recorded alongsi
 
 ## Noise
 w16-393216-r3 baseline, 3 runs: wall 2466.52-2516.03 (2.0% spread), active 3923.69-3994.89 (1.8%).
-Sustained workload: see the rows below once measured.
+sustained-w16-786432-r3 baseline, 3 runs: active 3578.20-3868.54 (7.8% spread, median 3717.7),
+wall 2821.05-3000.65 (median 2901.2). The sustained workload is noisier than the
+short one; run 2 was slowest and overlapped a 10-15 s /proc sampling script of mine
+(light, but noted). Treat single-run differences under ~8% as noise on this workload;
+confirm candidates with alternating incumbent/candidate runs.
+Sustained active is *lower* than from-scratch (3718 vs 3965): the full pool runs
+8 historical steppers from update 1 and matches are longer, so it is the harder,
+more honest target.
 
 ## Baseline profile (5931f7c, 16 workers, 2 pipeline groups, CUDA graphs)
 Per update: rollout ~0.73-0.78 s, PPO ~0.04 s; collection ~94% of loop time.
