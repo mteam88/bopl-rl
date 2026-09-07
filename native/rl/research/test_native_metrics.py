@@ -46,5 +46,13 @@ class NativeMetricsTests(unittest.TestCase):
             update({},now,empty_counters(),elapsed=1,previous_elapsed=0,
                    entropy_coefficient=.01,learning_rate=.001)
 
+    def test_nonfinite_training_loss_is_failure_not_missing_data(self):
+        now=empty_counters();now.update(learner_steps=1,game_steps=2)
+        kwargs=dict(elapsed=1,previous_elapsed=0,entropy_coefficient=.01,learning_rate=.001)
+        with self.assertRaises(FloatingPointError):
+            update({'loss':{'policy':float('nan')}},now,empty_counters(),**kwargs)
+        row=update({'loss':{'explained_variance':float('nan')}},now,empty_counters(),**kwargs)
+        self.assertIsNone(row['explained_variance'])
+
 
 if __name__=='__main__':unittest.main()
