@@ -7,6 +7,7 @@ import re
 import os
 from pathlib import Path
 from urllib.parse import unquote,urlparse,parse_qs
+import run_insights
 import study_data
 from replay_library import ReplayLibrary
 
@@ -21,22 +22,30 @@ def main():
     parser.add_argument('--root',type=Path,default=HERE.parents[1]/'artifacts/rl')
     parser.add_argument('--host',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8876)
     parser.add_argument('--study-root',action='append',default=[],metavar='NAME=PATH',help='Read a live study from an isolated workspace')
+    parser.add_argument('--run-root',action='append',default=[],metavar='NAME=PATH',help='Read a live training run directory from an isolated workspace')
     args=parser.parse_args(); root=args.root.resolve()
     library=ReplayLibrary(root)
-    extra={}
-    for value in args.study_root:
-        name,separator,path=value.partition('=')
-        if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+',name):parser.error('Study roots require NAME=PATH')
-        extra[name]=Path(path).resolve()
+    extra={};extra_runs={}
+    for attribute,target in (('study_root',extra),('run_root',extra_runs)):
+        for value in getattr(args,attribute):
+            name,separator,path=value.partition('=')
+            if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+',name):parser.error(f'{attribute} requires NAME=PATH')
+            target[name]=Path(path).resolve()
     def runs():
         candidates=[]
-        for file in root.glob('*/config.json'):
+        for file in [*root.glob('*/config.json'),*(path/'config.json' for path in extra_runs.values())]:
             try: config=read_json(file,{})
             except (OSError,ValueError): continue
-            if config.get('schema')==1 and config.get('algorithm')=='recurrent PPO':
-                candidates.append(dict(name=file.parent.name,created=file.stat().st_mtime,
+            if config and config.get('schema')==1 and config.get('algorithm')=='recurrent PPO':
+                name=next((n for n,p in extra_runs.items() if p==file.parent),file.parent.name)
+                candidates.append(dict(name=name,created=file.stat().st_mtime,
+                                       workspace=str(file.parent) if name in extra_runs else None,
                                        status=read_json(file.parent/'status.json',{})))
         return sorted(candidates,key=lambda r:r['created'],reverse=True)
+    def run_directory(name):
+        if name in extra_runs: return extra_runs[name]
+        if re.fullmatch(r'[A-Za-z0-9_.-]+',name) and (root/name/'config.json').is_file(): return root/name
+        return None
     def latest_report(directory, pattern):
         reports=sorted(directory.glob(pattern))
         return read_json(reports[-1]) if reports else None
@@ -94,10 +103,18 @@ def main():
                     series.append(dict(name=plan['name'],steps=plan['steps'],runs=members,
                                        status=read_json(file.parent/'status.json',{})))
                 return self.json(series)
+            if path.startswith('/api/insights/'):
+                parts=path[len('/api/insights/'):].split('/')
+                directory=run_directory(parts[0]) if len(parts)==2 else None
+                if not directory or not re.fullmatch(r'\d+',parts[1]): return self.send_error(404)
+                value=read_json(directory/'evaluations'/parts[1]/'insights.json')
+                if not value: return self.send_error(404)
+                return self.json(value)
             if path.startswith('/api/run/'):
                 name=path[len('/api/run/'):]
-                if name not in {r['name'] for r in runs()}: return self.send_error(404)
-                directory=root/name; status=read_json(directory/'status.json',{'status':'starting'})
+                directory=run_directory(name)
+                if directory is None: return self.send_error(404)
+                status=read_json(directory/'status.json',{'status':'starting'})
                 if status.get('status')=='running':
                     try: os.kill(status['pid'],0)
                     except (ProcessLookupError,KeyError): status['status']='interrupted'
@@ -117,9 +134,14 @@ def main():
                         if video.exists(): game['video']=video.name
                         poster=video.with_suffix('.jpg')
                         if poster.exists(): game['poster']=poster.name
+                        mind=file.parent/(game['name']+'.mind.json.gz')
+                        if mind.exists(): game['mind']=mind.name
                     evaluations.append(report)
+                insights=[{key:row[key] for key in ('step','directory','games','gauges')}
+                          for row in run_insights.collect(directory)]
                 return self.json(dict(name=name,config=read_json(directory/'config.json'),status=status,
                                       metrics=metrics,evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
+                                      insights=insights,ladder=read_json(directory/'ladder/ladder.json'),
                                       final_evaluation=latest_report(directory,'final-evaluations/*/result.json'),
                                       validation_evaluation=latest_report(directory,'validation/evaluations/*/result.json')))
             if path.startswith('/studies/'):
@@ -130,9 +152,10 @@ def main():
                     return self.send_error(403)
             elif path.startswith('/runs/'):
                 parts=path[len('/runs/'):].split('/')
-                if not parts or parts[0] not in {r['name'] for r in runs()}: return self.send_error(404)
-                file=(root/'/'.join(parts)).resolve()
-                if not file.is_relative_to(root/parts[0]) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg'):
+                directory=run_directory(parts[0]) if parts else None
+                if directory is None: return self.send_error(404)
+                file=(directory/'/'.join(parts[1:])).resolve()
+                if not file.is_relative_to(directory) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg','.gz'):
                     return self.send_error(403)
             elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css','/arena.js','/matches.js'):
                 query=parse_qs(urlparse(self.path).query)
