@@ -44,7 +44,7 @@ OPPONENT_STREAMS=os.environ.get('BOPL_OPPONENT_STREAMS')=='1'
 class Opponents:
     def __init__(self,workers,device,first=0):
         self.workers=workers; self.device=device; self.first=first; self.key=None
-        self.groups=[]; self.active=torch.ones(2*workers,dtype=torch.bool,device=device)
+        self.groups=[]; self.lists=[]; self.active=torch.ones(2*workers,dtype=torch.bool,device=device)
         self.capacity=sum(1 for w in range(first,first+workers) if w%2==1)
         self.streams=[]
     def refresh(self,versions,historical,side):
@@ -53,14 +53,15 @@ class Opponents:
         span=range(self.first,self.first+self.workers)
         key=(tuple(versions[w] for w in span),tuple(side[w] for w in span),tuple(historical[w] for w in span))
         if key==self.key: return
-        self.key=key; groups=[]
+        self.key=key; groups=[]; lists=[]
         for version in set(versions[w] for w in span):
             ids=[2*(w-self.first)+side[w] for w in span if historical[w] and versions[w]==version]
             if ids:
                 padded=(ids*self.capacity)[:self.capacity]
+                lists.append((version,ids,padded))
                 groups.append((version,torch.tensor(ids,dtype=torch.long,device=self.device),
                                torch.tensor(padded,dtype=torch.long,device=self.device)))
-        self.groups=groups
+        self.groups=groups; self.lists=lists   # lists: the same assignments as host lists (turn.py)
         self.active=torch.ones(2*self.workers,dtype=torch.bool,device=self.device)
         for _,ids,_ in groups: self.active[ids]=False
     def act(self,pool,obs,frozen_state,chosen,steppers=None):
