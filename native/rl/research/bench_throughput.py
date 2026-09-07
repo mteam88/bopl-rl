@@ -60,6 +60,11 @@ def summarize(values):
 
 def run_once(python,out,workers,decisions,seed,extra,env,start_step=0):
     metrics=out/'metrics.jsonl'
+    # Leading KEY=VALUE tokens of an arm set environment variables for that arm
+    # (code-path toggles such as BOPL_OPPONENT_SAMPLING); the rest are train.py flags.
+    env=dict(env); extra=list(extra)
+    while extra and '=' in extra[0] and not extra[0].startswith('-'):
+        key,value=extra.pop(0).split('=',1); env[key]=value
     # train.py's --steps is an absolute all-player step target, so a resumed
     # run (--load at start_step) needs start_step added to the budget.
     command=[python,str(HERE/'train.py'),'--output',str(out),'--workers',str(workers),'--steps',str(start_step+decisions),
@@ -111,7 +116,7 @@ def main():
     parser.add_argument('--seed',type=int,default=73)
     parser.add_argument('--label',default='')
     parser.add_argument('--start-step',type=int,default=0,help='All-player step of the checkpoint passed with --load in the extra args; decision counts and the --steps target are relative to it')
-    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Pass flags explicitly; an empty arm uses train.py defaults')
+    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Leading KEY=VALUE tokens set environment variables for the arm. Pass flags explicitly; an empty arm uses train.py defaults')
     parser.add_argument('extra',nargs='*',help='extra train.py arguments for every run (after --)')
     opt=parser.parse_args()
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)

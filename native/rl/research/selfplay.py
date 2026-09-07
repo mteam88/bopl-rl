@@ -18,8 +18,13 @@ slice. With CUDA-graph steppers (fixed batch, forward only) each version's rows 
 padded to the group's historical agent count by repeating real rows; sampling
 happens eagerly on the real rows so random-number use matches the eager path.
 """
+import os
 import torch
-from policy import distribution
+from policy import distribution,sample
+
+# BOPL_OPPONENT_SAMPLING=distribution restores the original Categorical-based
+# sampling for historical opponents (bit-identical draws; slower).
+SAMPLE=distribution if os.environ.get('BOPL_OPPONENT_SAMPLING','slim')=='distribution' else lambda logits:(sample(logits),None,None)
 
 class Opponents:
     def __init__(self,workers,device,first=0):
@@ -49,10 +54,10 @@ class Opponents:
         for version,ids,padded in self.groups:
             if steppers is None:
                 opponent_logits,_,next_state=pool[version].step(obs.index_select(0,ids),frozen_state.index_select(1,ids))
-                opponent_actions,_,_=distribution(opponent_logits)
+                opponent_actions,_,_=SAMPLE(opponent_logits)
             else:
                 k=len(ids)
                 opponent_logits,_,next_state=steppers[version](obs.index_select(0,padded),frozen_state.index_select(1,padded))
-                opponent_actions,_,_=distribution(opponent_logits[:k]); next_state=next_state[:,:k]
+                opponent_actions,_,_=SAMPLE(opponent_logits[:k]); next_state=next_state[:,:k]
             chosen.index_copy_(0,ids,opponent_actions); frozen_state.index_copy_(1,ids,next_state)
         return self.active

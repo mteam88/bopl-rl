@@ -74,6 +74,18 @@ def distribution(logits,actions=None):
     if actions is None: actions=torch.stack([a.sample(),b.sample()],dim=-1)
     return actions,a.log_prob(actions[...,0])+b.log_prob(actions[...,1]),a.entropy()+b.entropy()
 
+def sample(logits):
+    """Actions only, drawn with exactly the kernels Categorical(logits).sample()
+    issues (normalise by logsumexp, softmax, multinomial with replacement), so
+    the draws are bit-identical to distribution(logits)[0] from the same
+    generator state. Skips the Distribution objects, log-probabilities and
+    entropies that historical opponents never use."""
+    angle,buttons=logits.split([256,16],dim=-1)
+    angle=angle-angle.logsumexp(dim=-1,keepdim=True); buttons=buttons-buttons.logsumexp(dim=-1,keepdim=True)
+    a=torch.multinomial(torch.softmax(angle,dim=-1).reshape(-1,256),1,True).T.reshape(angle.shape[:-1])
+    b=torch.multinomial(torch.softmax(buttons,dim=-1).reshape(-1,16),1,True).T.reshape(buttons.shape[:-1])
+    return torch.stack([a,b],dim=-1)
+
 def load(path,device='cpu'):
     checkpoint=torch.load(path,map_location=device,weights_only=False)
     policy=Policy(checkpoint['obs_size'],checkpoint['hidden'],checkpoint.get('input_mode','full'),checkpoint.get('action_mode','absolute')).to(device)
