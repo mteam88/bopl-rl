@@ -467,7 +467,7 @@ static void c_step(BoplPuffer *env) {
         if (terminal) {
             if (env->config.map<31) env->log.map_fraction[env->config.map]++;
             *env->terminal_ptr[slot]=1;
-            int won=(player->flags&2)!=0;
+            int won=!truncated && (player->flags&2)!=0;
             env->log.perf+=won; env->log.score+=player->kills;
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;
             if (learner) {

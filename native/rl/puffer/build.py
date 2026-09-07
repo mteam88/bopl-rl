@@ -34,6 +34,13 @@ if args.device == "cuda":
     overlay = out / "puffer-overlay"
     shutil.copytree(source / "src", overlay, dirs_exist_ok=True)
     subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=overlay, check=True)
+    # Bopl trainer semantics on top of the pinned trainer: episode-boundary
+    # resets of the MinGRU state (rollout and training scan), training
+    # sequences start from the real rollout-start state, learner-only replay
+    # sampling, no reward clamp, per-head entropy / gradient-norm / advantage
+    # statistics. See pufferlib-bopl.patch (generated with diff -ruN against the
+    # pristine overlay).
+    subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
     nvidia = Path(sysconfig.get_path("purelib")) / "nvidia"
     cuda = nvidia / "cu13"
     includes = [overlay, source / "src", Path(sysconfig.get_path("include")), Path(pybind11.get_include()),
