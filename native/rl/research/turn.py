@@ -34,6 +34,7 @@ from inference import ROLLOUT_ENTROPY
 DEBUG=os.environ.get('BOPL_TURN_GRAPH_DEBUG')=='1'
 NOPRUNE=os.environ.get('BOPL_TURN_GRAPH_NOPRUNE')=='1'   # diagnostic: never drop stale graphs
 OWN_WORKSPACE=os.environ.get('BOPL_TURN_GRAPH_SHARED_WORKSPACE')!='1'   # diagnostic: '1' reproduces the freed-workspace crash
+BRANCHES=os.environ.get('BOPL_TURN_GRAPH_BRANCHES')=='1'   # exp13: historical steps as parallel graph branches
 
 class TurnGraph:
     def __init__(self,policy,pool,opponents,obs,state,frozen_state,device,slots=4):
@@ -46,6 +47,7 @@ class TurnGraph:
         self.source=torch.zeros(slots,n,dtype=torch.long,device=device)
         self.mask=torch.zeros(slots,n,dtype=torch.bool,device=device)
         self.graphs={}; self.key=None; self.current=None
+        self.streams=[torch.cuda.Stream() for _ in range(slots)] if BRANCHES else []
         self.captures=0; self.capture_seconds=0.
     def refresh(self):
         """Call after opponents.refresh: refill the index buffers if the group's
@@ -68,6 +70,7 @@ class TurnGraph:
             self.graphs[versions]=self.capture(versions)
         self.current=self.graphs[versions]
     def _run(self,versions):
+        if BRANCHES: return self._run_branches(versions)
         logits,value,next_state=self.policy.step(self.obs,self.state)
         chosen,logp,_=distribution(logits,entropy=ROLLOUT_ENTROPY)
         self.state.copy_(next_state)
@@ -75,6 +78,32 @@ class TurnGraph:
             padded=self.padded[i]
             opponent_logits,_,next_frozen=self.pool[version].step(self.obs.index_select(0,padded),self.frozen.index_select(1,padded))
             opponent_actions,_,_=SAMPLE(opponent_logits)
+            source=self.source[i]; mask=self.mask[i]
+            chosen=torch.where(mask.unsqueeze(-1),opponent_actions.index_select(0,source),chosen)
+            self.frozen.copy_(torch.where(mask.view(1,-1,1),next_frozen.index_select(1,source),self.frozen))
+        return chosen,logp,value
+    def _run_branches(self,versions):
+        # Same kernels in the same CPU issue order as _run (so the same Philox
+        # offsets and the same values), but each historical step is forked onto
+        # its own stream from an event recorded before the learner step: in the
+        # captured graph the historical branches depend only on the turn's inputs
+        # and run alongside the learner chain instead of after it (what
+        # BOPL_OPPONENT_STREAMS=1 did eagerly). All branches join on the main
+        # stream before the scatters write chosen/frozen.
+        main=torch.cuda.current_stream(); start=torch.cuda.Event(); start.record(main)
+        logits,value,next_state=self.policy.step(self.obs,self.state)
+        chosen,logp,_=distribution(logits,entropy=ROLLOUT_ENTROPY)
+        self.state.copy_(next_state)
+        pending=[]
+        for i,version in enumerate(versions):
+            stream=self.streams[i]; stream.wait_event(start)
+            with torch.cuda.stream(stream):
+                padded=self.padded[i]
+                opponent_logits,_,next_frozen=self.pool[version].step(self.obs.index_select(0,padded),self.frozen.index_select(1,padded))
+                opponent_actions,_,_=SAMPLE(opponent_logits)
+            pending.append((i,opponent_actions,next_frozen))
+            main.wait_stream(stream)
+        for i,opponent_actions,next_frozen in pending:
             source=self.source[i]; mask=self.mask[i]
             chosen=torch.where(mask.unsqueeze(-1),opponent_actions.index_select(0,source),chosen)
             self.frozen.copy_(torch.where(mask.view(1,-1,1),next_frozen.index_select(1,source),self.frozen))
