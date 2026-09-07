@@ -34,13 +34,15 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
 
     decisions, game_decisions = delta('learner_steps'), delta('game_steps')
     dt = elapsed - previous_elapsed
-    if decisions <= 0 or game_decisions < decisions or dt <= 0:
+    if decisions <= 0 or game_decisions < decisions or not math.isfinite(dt) or dt <= 0:
         raise ValueError('Expected positive elapsed time and learner decisions within physical decisions')
     if len(counters['telemetry']) != len(FIELDS) or len(previous['telemetry']) != len(FIELDS):
         raise ValueError('Unexpected native telemetry width')
     totals = {key: float(now - before) for key, now, before in
               zip(FIELDS, counters['telemetry'], previous['telemetry'])}
     totals['kills'] = delta('kills')
+    if not all(math.isfinite(value) for value in totals.values()):
+        raise FloatingPointError('Nonfinite cumulative learner telemetry')
     seconds = totals['ticks']/60
     if seconds < 0:
         raise ValueError('Cumulative learner ticks moved backwards')
@@ -73,5 +75,11 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
                           explained_variance='explained_variance', entropy_aim='entropy_aim',
                           entropy_buttons='entropy_buttons', advantage_std='advantage_std').items():
         value = loss.get(src)
-        result[dest] = float(value) if value is not None and math.isfinite(value) else None
+        if value is not None and not math.isfinite(value):
+            # Explained variance is undefined when return variance is zero.
+            # Nonfinite optimization diagnostics instead indicate a failed update.
+            if src != 'explained_variance':
+                raise FloatingPointError(f'Nonfinite native training diagnostic: {src}')
+            value = None
+        result[dest] = float(value) if value is not None else None
     return result
