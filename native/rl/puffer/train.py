@@ -178,6 +178,7 @@ def main():
             raise RuntimeError('Setup unexpectedly counted game decisions')
         config['evaluation_baseline'] = str(a.evaluation_baseline.resolve() if a.evaluation_baseline else initial)
         atomic_json(output/'config.json', config)
+        evaluated_steps = set()
         def evaluate(checkpoint):
             command = [sys.executable, str(ROOT/'native/rl/research/evaluate.py'), '--run', str(output),
                        '--checkpoint', str(checkpoint), '--initial', config['evaluation_baseline'],
@@ -189,6 +190,7 @@ def main():
                 command += ['--opponents', str(a.evaluation_opponents.resolve())]
             with (output/'evaluation.log').open('a') as log:
                 subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+            evaluated_steps.add(counts['game_steps'])
         next_checkpoint, next_eval = a.checkpoint_every, a.eval_every
         previous, previous_elapsed = counts, 0.
         training_started = time.monotonic()
@@ -225,7 +227,7 @@ def main():
                     evaluate(save())
                     next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
             final = save()
-            if not a.no_eval and not stop and counts['learner_steps'] % a.eval_every:
+            if not a.no_eval and not stop and counts['game_steps'] not in evaluated_steps:
                 evaluate(final)
         status('stopped' if stop else 'complete', checkpoint=str(final))
     except BaseException as error:
