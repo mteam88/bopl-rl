@@ -1,7 +1,22 @@
 """Shared recurrent actor/critic for training and replay evaluation."""
+import os
 import torch
 from torch import nn
 from torch.distributions import Categorical
+
+# BOPL_FAST_MULTINOMIAL=1: draw one sample per row with the three kernels torch's
+# own n_sample==1 path issues (q ~ Exp(1) per element, argmax(probs/q)), skipping
+# only its finiteness / non-negativity / zero-row assert kernels (ten launches per
+# call). Softmax outputs are already valid; a non-finite logit surfaces in the
+# trainer's finiteness checks instead of a CUDA assert. Same generator advance.
+FAST_MULTINOMIAL=os.environ.get('BOPL_FAST_MULTINOMIAL')=='1'
+
+def multinomial1(probs):
+    """torch.multinomial(probs,1,True) for a 2-D probability tensor: identical draws."""
+    if not FAST_MULTINOMIAL: return torch.multinomial(probs,1,True)
+    q=torch.empty_like(probs).exponential_(1)
+    torch.div(probs,q,out=q)
+    return torch.argmax(q,dim=-1,keepdim=True)
 
 class Policy(nn.Module):
     def __init__(self, obs_size, hidden=128, input_mode="full", action_mode="absolute"):
@@ -64,15 +79,23 @@ def previous_actions(obs):
     buttons=((history[...,3:]>.5).long()*bits).sum(-1)
     return torch.stack([angle,buttons],-1)
 
-def distribution(logits,actions=None):
+def distribution(logits,actions=None,entropy=True):
     # validate_args=False skips torch's per-call finiteness check, which forces
     # a GPU sync and roughly doubles the cost of each sampling call. Samples,
     # log-probabilities and entropies are computed identically; train.py still
     # checks observations, losses and gradients for finite values.
     angle,buttons=logits.split([256,16],dim=-1)
     a,b=Categorical(logits=angle,validate_args=False),Categorical(logits=buttons,validate_args=False)
-    if actions is None: actions=torch.stack([a.sample(),b.sample()],dim=-1)
-    return actions,a.log_prob(actions[...,0])+b.log_prob(actions[...,1]),a.entropy()+b.entropy()
+    if actions is None:
+        if FAST_MULTINOMIAL:
+            # Categorical.sample: multinomial over probs reshaped to rows, transposed back.
+            actions=torch.stack([multinomial1(a.probs.reshape(-1,256)).T.reshape(angle.shape[:-1]),
+                                 multinomial1(b.probs.reshape(-1,16)).T.reshape(buttons.shape[:-1])],dim=-1)
+        else: actions=torch.stack([a.sample(),b.sample()],dim=-1)
+    logp=a.log_prob(actions[...,0])+b.log_prob(actions[...,1])
+    # entropy=False (rollout steppers): the same actions and log-probabilities, without
+    # the entropy kernels nobody reads during collection.
+    return actions,logp,(a.entropy()+b.entropy()) if entropy else None
 
 def sample(logits):
     """Actions only, drawn with exactly the kernels Categorical(logits).sample()
@@ -82,8 +105,8 @@ def sample(logits):
     entropies that historical opponents never use."""
     angle,buttons=logits.split([256,16],dim=-1)
     angle=angle-angle.logsumexp(dim=-1,keepdim=True); buttons=buttons-buttons.logsumexp(dim=-1,keepdim=True)
-    a=torch.multinomial(torch.softmax(angle,dim=-1).reshape(-1,256),1,True).T.reshape(angle.shape[:-1])
-    b=torch.multinomial(torch.softmax(buttons,dim=-1).reshape(-1,16),1,True).T.reshape(buttons.shape[:-1])
+    a=multinomial1(torch.softmax(angle,dim=-1).reshape(-1,256)).T.reshape(angle.shape[:-1])
+    b=multinomial1(torch.softmax(buttons,dim=-1).reshape(-1,16)).T.reshape(buttons.shape[:-1])
     return torch.stack([a,b],dim=-1)
 
 def load(path,device='cpu'):

@@ -20,8 +20,13 @@ check_padded_sampling.py). sample=False captures the forward only, for the
 eager fallback. Recurrent state flows through the static input/output buffers
 and stays owned by the trainer.
 """
+import os
 import torch
 from policy import distribution,sample
+
+# BOPL_ROLLOUT_ENTROPY=0: the learner stepper does not compute the entropy term
+# (its output is discarded during collection; actions/log-probabilities unchanged).
+ROLLOUT_ENTROPY=os.environ.get('BOPL_ROLLOUT_ENTROPY','1')!='0'
 
 class Stepper:
     def __init__(self,policy,batch,device,graph=False,warmup=3,sample=True):
@@ -47,7 +52,7 @@ class Stepper:
         logits,value,state=self.policy.step(self.obs if obs is None else obs,self.state if state is None else state)
         if not self.sample: return logits,value,state
         if self.sample=='actions': return sample(logits),value,state
-        actions,logp,_=distribution(logits)
+        actions,logp,_=distribution(logits,entropy=ROLLOUT_ENTROPY)
         return actions,logp,value,state
     def __call__(self,obs,state):
         if self.graph is None: return self._run(obs,state)

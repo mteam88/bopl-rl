@@ -97,6 +97,14 @@ def main():
         parser.error('Held-out maps must be excluded from training and primary evaluation maps')
     frozen=frozen_opponents(opt.evaluation_opponents)
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
+    # BOPL_CPU_DMA_LATENCY_US=<us>: hold a kernel PM QoS request (/dev/cpu_dma_latency)
+    # for the life of the run so idle CPUs stay out of deep C-states with wake-up
+    # latency above the cap. Runtime only; the games and trainer compute nothing differently.
+    if os.environ.get('BOPL_CPU_DMA_LATENCY_US'):
+        import struct
+        global dma_latency_request
+        dma_latency_request=open('/dev/cpu_dma_latency','wb',buffering=0)
+        dma_latency_request.write(struct.pack('i',int(os.environ['BOPL_CPU_DMA_LATENCY_US'])))
     os.environ['OMP_NUM_THREADS']=str(opt.workers)
     os.environ.setdefault('OMP_WAIT_POLICY','PASSIVE')
     from environment import configure

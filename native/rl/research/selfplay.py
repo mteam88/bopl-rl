@@ -35,12 +35,18 @@ SAMPLE=distribution if OPPONENT_SAMPLING=='distribution' else lambda logits:(sam
 # BOPL_OPPONENT_GATHER=direct: index_select straight into each historical
 # stepper's static graph inputs (default 'copy': gather to a temporary, then copy).
 GATHER_DIRECT=os.environ.get('BOPL_OPPONENT_GATHER','copy')=='direct'
+# BOPL_OPPONENT_STREAMS=1: replay each historical stepper on its own CUDA stream
+# (forked from and joined back to the trainer stream) so the versions' small
+# graphs run concurrently on the GPU. CPU issue order, and with it every
+# generator offset a replay consumes, is unchanged, so the draws are identical.
+OPPONENT_STREAMS=os.environ.get('BOPL_OPPONENT_STREAMS')=='1'
 
 class Opponents:
     def __init__(self,workers,device,first=0):
         self.workers=workers; self.device=device; self.first=first; self.key=None
         self.groups=[]; self.active=torch.ones(2*workers,dtype=torch.bool,device=device)
         self.capacity=sum(1 for w in range(first,first+workers) if w%2==1)
+        self.streams=[]
     def refresh(self,versions,historical,side):
         """Rebuild cached indices if any of this group's assignments changed.
         Arguments are the global per-worker lists."""
@@ -61,6 +67,26 @@ class Opponents:
         """Replace historical agents' rows of `chosen` in place, advance their
         frozen recurrent state in place, and return the learner-active mask.
         `steppers` maps version -> Stepper of batch `capacity` (graph mode)."""
+        if OPPONENT_STREAMS and steppers is not None and self.groups:
+            main=torch.cuda.current_stream()
+            while len(self.streams)<len(self.groups): self.streams.append(torch.cuda.Stream())
+            pending=[]
+            for (version,ids,padded),stream in zip(self.groups,self.streams):
+                k=len(ids); stepper=steppers[version]
+                stream.wait_stream(main)
+                with torch.cuda.stream(stream):
+                    out=stepper(obs.index_select(0,padded),frozen_state.index_select(1,padded))
+                    if stepper.sample=='actions':
+                        opponent_actions,_,next_state=out
+                        opponent_actions=opponent_actions[:k]; next_state=next_state[:,:k]
+                    else:
+                        opponent_logits,_,next_state=out
+                        opponent_actions,_,_=SAMPLE(opponent_logits[:k]); next_state=next_state[:,:k]
+                pending.append((ids,opponent_actions,next_state,stream))
+            for ids,opponent_actions,next_state,stream in pending:
+                main.wait_stream(stream)
+                chosen.index_copy_(0,ids,opponent_actions); frozen_state.index_copy_(1,ids,next_state)
+            return self.active
         for version,ids,padded in self.groups:
             if steppers is None:
                 opponent_logits,_,next_state=pool[version].step(obs.index_select(0,ids),frozen_state.index_select(1,ids))
