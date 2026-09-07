@@ -266,3 +266,47 @@ hits, including stale docs and harness instructions. Once these migration
 instructions are fulfilled, rewrite this program around the final native design
 so completed removal checklists do not preserve obsolete workflows or tokens.
 Matthew will independently audit dangling imports and stale docs after completion.
+
+
+## Latest Matthew instructions: preserve Learning Lab and queue the long native run
+
+These instructions supersede the earlier request to delete the dashboard.
+Full native-only cutover remains mandatory after the sustained-w16 comparison
+against the old trainer. The old trainer, its flags, and checkpoint loading go.
+
+Learning Lab is required: retain research/serve.py, research/web/,
+study_data.py, replay_library.py, the dashboard checks, and port 8876. Preserve
+learning-health curves, fixed-opponent win rates, throughput, entropy, button
+rates, match video and physics playback, the existing replay browser, and the
+study view. Native training must provide the metrics.jsonl and behavior data
+these panels require, either directly or through an explicit native-output
+adapter. Native checkpoints must remain playable through evaluation and
+replay/video export. Root owns dashboard adaptation and has restored the UI
+files in its separate Rift. Do not apply UI-deletion commit 5960253. The live
+base dashboard has not been retired. New panels will be specified separately.
+
+After the native-versus-old sanity comparison and full cutover, the first long
+native training experiment is:
+
+- 400,000,000 LEARNER decisions, seed 73, maps 0, 1, 2, sixteen workers.
+- Checkpoint every 1,000,000 learner decisions, recording the actual step.
+- Sparse terminal outcome reward only: win +1, loss -1, timeout -0.5 for BOTH
+  players. No kill/death shaping. Keep kill/death event telemetry as behavior
+  statistics, but its reward contribution must be zero.
+- Entropy coefficient starts at 0.01 and anneals to a floor near 0.0005.
+  Use the pinned native anneal_ent_coef / min_ent_coef_ratio support with ratio
+  0.05, and record the effective coefficient in the training metrics.
+
+Commit 361c7bb in the null-hypothesis Rift provides the timeout-reward and
+reward_outcome telemetry change as a reference. Its environment hunk still
+contains kill/death shaping, so it is not sufficient for the sparse-only
+experiment; its train.py hunk belongs to the old trainer and must not be used.
+Keep the earlier reward unchanged during the native-versus-old comparison so
+that this new reward and entropy treatment do not contaminate that comparison.
+Root has asked Matthew whether the 400M run should wait for the qualified set
+encoder or start on native linear; model choice is pending his answer.
+
+The previous warning that bopl-null-hypothesis.service owns the machine was
+retracted by Matthew. It was inactive when checked. This migration and its
+qualification retain the machine until handoff; the long experiment is now
+requested ON the native trainer. Continue to allow only one heavy job at a time.
