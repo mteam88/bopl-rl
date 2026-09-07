@@ -38,7 +38,8 @@ struct BoplRl {
     int socket, listener;
     pid_t child;
     uint32_t timeout_ms, sequence, maps, abilities;
-    bool valid, broken, sample_valid, sampled_unsupported;
+    bool valid, broken, sample_valid, sampled_unsupported, reset_pending;
+    uint32_t reset_sequence;
     char directory[64], endpoint[108], error[512], source[65], catalog[65];
     unsigned char *buffer;
     size_t capacity;
@@ -250,7 +251,7 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
 cleanup:
     error_text(error, capacity, w->error); bopl_rl_close(w); return NULL;
 }
-int bopl_rl_reset(BoplRl *w, const BoplRlConfig *config) {
+int bopl_rl_reset_begin(BoplRl *w, const BoplRlConfig *config) {
     if (!w || !config || config->players<1 || config->players>6 || config->slots<1 || config->slots>3
         || config->map>=w->maps || config->mode>3 || config->warmup_ticks>3600
         || config->max_episode_ticks<1 || config->max_episode_ticks>2160000 || config->stocks>INT32_MAX) return BOPL_RL_ARGUMENT;
@@ -259,11 +260,33 @@ int bopl_rl_reset(BoplRl *w, const BoplRlConfig *config) {
         for (uint32_t j=0; j<config->slots; j++)
             if (!config->player[i].abilities[j] || config->player[i].abilities[j]>=w->abilities) return BOPL_RL_ARGUMENT;
     }
+    if (w->reset_pending) { errno=EBUSY; return fail(w, "RL reset already in progress"); }
+    if (w->broken) return BOPL_RL_IO;
+    /* The game answers only after loading the scene and running the warmup
+     * ticks; a caller may do other work in between (see bopl_rl_reset_finish). */
+    int64_t deadline=now_ms()+w->timeout_ms;
+    Frame frame={MAGIC, 1, ++w->sequence, sizeof(*config)};
+    w->sample_valid=false; w->valid=false;
+    int result=transfer(w, &frame, sizeof(frame), true, deadline);
+    if (!result) result=transfer(w, (void*)config, sizeof(*config), true, deadline);
+    if (result) return result;
+    w->reset_pending=true; w->reset_sequence=frame.sequence;
+    return BOPL_RL_OK;
+}
+int bopl_rl_reset_finish(BoplRl *w) {
+    if (!w) return BOPL_RL_ARGUMENT;
+    if (w->broken) return BOPL_RL_IO;
+    if (!w->reset_pending) { errno=EINVAL; return fail(w, "No RL reset in progress"); }
+    w->reset_pending=false;
     uint32_t length;
-    w->sample_valid=false;
-    int result=command(w, 1, config, sizeof(*config), &length);
+    int result=receive_frame(w, 1, w->reset_sequence, &length, now_ms()+w->timeout_ms);
     if (!result) result=decode_state(w, length);
     return result;
+}
+int bopl_rl_reset_pending(const BoplRl *w) { return w && w->reset_pending; }
+int bopl_rl_reset(BoplRl *w, const BoplRlConfig *config) {
+    int result=bopl_rl_reset_begin(w, config);
+    return result?result:bopl_rl_reset_finish(w);
 }
 static int check_actions(const BoplRl *w, const BoplRlAction *actions, size_t count, BoplRlAction *out) {
     if (!w || !actions || !w->valid || count!=w->main.state.header.player_count) return BOPL_RL_ARGUMENT;
@@ -346,7 +369,11 @@ void bopl_rl_close(BoplRl *w) {
     if (!w) return;
     if (w->socket>=0 && !w->broken) {
         uint32_t length; uint32_t timeout=w->timeout_ms;
-        w->timeout_ms=1000; (void)command(w, 4, NULL, 0, &length); w->timeout_ms=timeout;
+        w->timeout_ms=1000;
+        /* Drain an unfinished reset so the close reply is the next frame. */
+        if (w->reset_pending) (void)bopl_rl_reset_finish(w);
+        if (!w->broken) (void)command(w, 4, NULL, 0, &length);
+        w->timeout_ms=timeout;
     }
     if (w->socket>=0) close(w->socket);
     if (w->listener>=0) close(w->listener);

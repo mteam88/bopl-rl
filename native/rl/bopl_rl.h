@@ -61,6 +61,13 @@ void bopl_rl_default_config(BoplRlConfig *config, uint32_t players);
 BoplRl *bopl_rl_open(const char *executable, const char *bootstrap_replay,
                      const char *log_path, uint32_t timeout_ms, char *error, size_t capacity);
 int bopl_rl_reset(BoplRl *world, const BoplRlConfig *config);
+/* bopl_rl_reset split in two: begin sends the configuration and returns while
+ * the game loads the scene and runs its warmup ticks; finish waits for the
+ * reply and installs the state. Between the two, the state is invalid and no
+ * other command may be issued; close finishes a pending reset itself. */
+int bopl_rl_reset_begin(BoplRl *world, const BoplRlConfig *config);
+int bopl_rl_reset_finish(BoplRl *world);
+int bopl_rl_reset_pending(const BoplRl *world);
 int bopl_rl_step(BoplRl *world, const BoplRlAction *actions, size_t count, uint32_t repeat);
 /* One roundtrip for two consecutive phases of the same actions: `first` ticks,
  * then, unless the episode ended, `second` more ticks (first+second <= 16).
