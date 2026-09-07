@@ -36,7 +36,7 @@ def main():
         for file in [*root.glob('*/config.json'),*(path/'config.json' for path in extra_runs.values())]:
             try: config=read_json(file,{})
             except (OSError,ValueError): continue
-            if config and config.get('schema')==1 and config.get('algorithm')=='recurrent PPO':
+            if config and config.get('schema') in (1,2) and config.get('algorithm')=='recurrent PPO':
                 name=next((n for n,p in extra_runs.items() if p==file.parent),file.parent.name)
                 candidates.append(dict(name=name,created=file.stat().st_mtime,
                                        workspace=str(file.parent) if name in extra_runs else None,
