@@ -281,15 +281,22 @@ rates, match video and physics playback, the existing replay browser, and the
 study view. Native training must provide the metrics.jsonl and behavior data
 these panels require, either directly or through an explicit native-output
 adapter. Native checkpoints must remain playable through evaluation and
-replay/video export. Root owns dashboard adaptation and has restored the UI
-files in its separate Rift. Do not apply UI-deletion commit 5960253. The live
+replay/video export. Thread thr_iiychwrq9p owns the dashboard UI in its dashboard Rift. Root restored
+the UI files and made no UI adaptation edits. Trainer/evaluator/metric output
+remain owned by this migration team. Do not apply UI-deletion commit 5960253. The live
 base dashboard has not been retired. New panels will be specified separately.
 
-After the native-versus-old sanity comparison and full cutover, the first long
-native training experiment is:
+After the native-versus-old sanity comparison, full cutover, and qualification
+of the SET encoder (correctness, throughput, short strength comparison with
+linear), hand off to thr_wq22hezkbf. That thread owns launch, configuration,
+monitoring, and reporting of the long run; DO NOT launch it from this migration
+session. Its requested configuration is:
 
 - 400,000,000 LEARNER decisions, seed 73, maps 0, 1, 2, sixteen workers.
 - Checkpoint every 1,000,000 learner decisions, recording the actual step.
+- Use the qualified native SET encoder.
+- Default episode cap is 7200 ticks (two minutes), configurable. Preserve
+  truncation counts and truncations per completed episode in telemetry.
 - Sparse terminal outcome reward only: win +1, loss -1, timeout -0.5 for BOTH
   players. No kill/death shaping. Keep kill/death event telemetry as behavior
   statistics, but its reward contribution must be zero.
@@ -303,10 +310,30 @@ contains kill/death shaping, so it is not sufficient for the sparse-only
 experiment; its train.py hunk belongs to the old trainer and must not be used.
 Keep the earlier reward unchanged during the native-versus-old comparison so
 that this new reward and entropy treatment do not contaminate that comparison.
-Root has asked Matthew whether the 400M run should wait for the qualified set
-encoder or start on native linear; model choice is pending his answer.
+Matthew explicitly corrected the intermediate linear-run proposal: the long
+run uses the NEW set encoder and starts only after handoff. Give thr_wq22hezkbf
+the exact launch command/config, Rift path, commit, validation evidence, and
+any remaining unverified behavior.
 
 The previous warning that bopl-null-hypothesis.service owns the machine was
 retracted by Matthew. It was inactive when checked. This migration and its
 qualification retain the machine until handoff; the long experiment is now
 requested ON the native trainer. Continue to allow only one heavy job at a time.
+
+
+### Native metrics and evaluation ownership
+
+The dashboard team will provide the exact metrics.jsonl/config/evaluation
+contract. Write it natively or through a data-format adapter. Requested new
+statistics are entropy per aim/button head, advantage standard deviation BEFORE
+normalization, and per-decision evaluation value/action-probability records.
+Root owns evaluator dump wiring and the Python metric-format helper; this Fable
+session owns the native kernel/C counters and trainer integration. Coordinate
+with thr_iiychwrq9p if a requested field is impractical; do not silently invent
+missing measurements.
+
+Do not place learner behavior counters only in PufferLib's episode Log: pinned
+static_vec_log excludes unfinished-episode contributions and clears all env logs
+when any episode log has n>0. Keep separate cumulative learner-only counters,
+including unfinished episodes, excluding frozen players and warmup, and export
+interval differences. Preserve reward/telemetry conservation and timeout counts.
