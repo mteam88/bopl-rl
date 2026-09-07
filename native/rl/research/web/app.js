@@ -1011,12 +1011,14 @@ function drawMind() {
         ["J", "D", "A", "P"].filter((_, bit) => i & (1 << bit)).join("") ||
         "·",
     );
+    // Aim index 0 is "no joystick direction", not zero degrees; bins 1..255
+    // map to (index-1)*360/255 degrees. Bin 0 is drawn apart in gray.
     drawDistribution("mindAim", decision.aim, decision.action
       ? Math.round((decision.action[0] * decision.aim.length) / 256)
-      : undefined);
+      : undefined, (i) => (i === 0 ? "∅" : ""), 0);
   }
 }
-function drawDistribution(id, probabilities, chosen, label) {
+function drawDistribution(id, probabilities, chosen, label, special) {
   const canvas = $(id),
     r = canvas.getBoundingClientRect(),
     dpr = devicePixelRatio || 1;
@@ -1031,7 +1033,8 @@ function drawDistribution(id, probabilities, chosen, label) {
   const bar = w / probabilities.length;
   probabilities.forEach((p, i) => {
     const height = (h - bottom - 4) * (p / peak);
-    ctx.fillStyle = i === chosen ? "#e87350" : "#2846d4";
+    ctx.fillStyle =
+      i === chosen ? "#e87350" : i === special ? "#868b7c" : "#2846d4";
     ctx.fillRect(i * bar + 0.5, h - bottom - height, Math.max(1, bar - 1), height);
   });
   if (label) {
@@ -1040,7 +1043,7 @@ function drawDistribution(id, probabilities, chosen, label) {
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     probabilities.forEach((_, i) => {
-      if (bar >= 14 || i === chosen)
+      if ((bar >= 14 || i === chosen || i === special) && label(i))
         ctx.fillText(label(i), i * bar + bar / 2, h - 1);
     });
   }

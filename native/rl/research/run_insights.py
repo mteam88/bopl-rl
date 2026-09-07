@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 import threading
 
-SCHEMA=2
+SCHEMA=3
 ARROW_BIT=2
 # World-coordinate occupancy grid: 2 game units per cell.
 GRID_X0,GRID_Y0,GRID_W,GRID_H,GRID_CELL=-60,-36,60,36,2
@@ -19,8 +19,9 @@ _lock=threading.Lock()
 
 
 def circular_degrees(a,b):
-    delta=abs(a-b)%256
-    return min(delta,256-delta)*360/256
+    """Aim indices 1..255 are (index-1)*360/255 degrees; 0 is "no direction"."""
+    delta=abs(a-b)*360/255%360
+    return min(delta,360-delta)
 
 
 def median(values):
@@ -39,9 +40,14 @@ def game_insights(visual,side):
         action=frame.get('actions')
         if action:
             angle,buttons=action[side]
-            if previous_angle is not None:
-                aim_changes.append(circular_degrees(angle,previous_angle))
-            previous_angle=angle
+            # Index 0 means the stick is released, not an angle; the aim-change
+            # gauge only compares consecutive decisions that both aim somewhere.
+            if angle:
+                if previous_angle is not None:
+                    aim_changes.append(circular_degrees(angle,previous_angle))
+                previous_angle=angle
+            else:
+                previous_angle=None
             if buttons>>ARROW_BIT&1: run_length+=1
             elif run_length: holds.append(run_length/15); run_length=0
         me=frame['players'][side]

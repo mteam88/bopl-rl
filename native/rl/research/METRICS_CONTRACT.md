@@ -107,7 +107,10 @@ evaluator must keep writing it. Action timing: legacy files record the action
 that led *into* a frame (`frames[0]` has none); native files set top-level
 `actions_timing: "observation-before-action"`, meaning `frames[i].actions` is
 the action taken *from* frame i and the terminal frame has none. Readers use
-the tag to align actions, decisions and mind records.
+the tag to align actions, decisions and mind records. Action encoding: the
+aim byte's index 0 means "no joystick direction"; 1..255 map to
+`(index-1)*360/255` degrees. The aim-change gauge only compares consecutive
+decisions that both aim somewhere.
 
 ## New: per-decision policy dump for saved evaluation games
 
@@ -124,8 +127,12 @@ For each saved game, write `<game>.mind.json.gz` next to the `.rep`:
  ]}
 ```
 
-`t` is the episode clock of the decision's observation; `value` is V(s) from
-the learner's critic; probabilities are post-softmax. `aim_bins` may be 256 or
+`t` is the game tick of the action decision; note the policy's world
+observation is delayed 9 ticks (own action-history is immediate), which the
+native evaluator labels in metadata — keep that in mind when reading V(s).
+`value` is V(s) from the learner's critic; probabilities are post-softmax.
+Aim encoding: index 0 is "no joystick direction" (rendered apart, in gray);
+indices 1..255 map to `(index-1)*360/255` degrees. `aim_bins` may be 256 or
 a uniform downsample to 64. Floats may be rounded to 4 significant digits.
 `decisions[i]` aligns with the i-th decision of the game (with
 `actions_timing: observation-before-action`, that is `frames[i]`). The
