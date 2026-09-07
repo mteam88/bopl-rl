@@ -76,6 +76,8 @@ def payload(name,directory,root):
     parent=root/'opponent-league' if extension else directory
     target=protocol.get('total_learner_target',protocol.get('learner_decisions',1000000))
     fallback=read(directory/'fallback-checkpoint.json',{}) if extension else {}
+    incidents=read(directory/'training-incidents.json',{})
+    failures={i['run']:i for i in incidents.get('incidents',[])}
     rows=[]
     for run in sorted(protocol['runs'],key=lambda r:(r['condition'],r['seed'])):
         path=directory/'runs'/run['name'];source=parent/'runs'/run['name']
@@ -108,7 +110,7 @@ def payload(name,directory,root):
                          source_learner_steps=run.get('source_learner_steps',0),
                          sps=latest.get('sps',0)*latest.get('learner_fraction',.75) if s['status']=='running' else None,
                          elapsed=s.get('elapsed',0),update_age_seconds=age,
-                         failure=s.get('failure'),action_rates=latest.get('action_rates',{}),
+                         failure=s.get('failure') or failures.get(run['name'],{}).get('note'),action_rates=latest.get('action_rates',{}),
                          kl=latest.get('kl'),entropy=latest.get('entropy'),
                          curve=curve,checkpoints=checkpoints,
                          config_url=f'/studies/{name}/runs/{run["name"]}/config.json' if (path/'config.json').exists() else None))
@@ -144,7 +146,8 @@ def payload(name,directory,root):
         if (directory/'videos'/(stem+'.mp4')).exists():
             clips.append(dict(title=title,detail=detail,url=f'/studies/{name}/videos/{stem}.mp4',poster=f'/studies/{name}/videos/{stem}.jpg'))
     failure=read(directory/'dashboard/failure-summary.json')
-    failure_final=read(directory/'dashboard/failure-summary-4m.json')
+    failure_milestone=fallback.get('milestone',4000000)
+    failure_final=read(directory/f'dashboard/failure-summary-{failure_milestone//1000000}m.json')
     retention=[]
     if not extension:
         for r in rows:
@@ -158,6 +161,6 @@ def payload(name,directory,root):
                 training=training,evaluation=dict(status=evaluating.get('status','queued'),completed_suites=len(evaluating.get('completed',[])),
                 expected_suites=evaluating.get('expected_suites',42 if extension else 18),completed_games=completed_games,active_games=active_games,
                 expected_games=evaluating.get('expected_games',6624 if extension else 4752),unavailable_games=sum(j.get('games',0) for j in evaluating.get('unavailable',[])),error=evaluating.get('error')),
-                crossplay=crossplays,fallback=fallback,incidents=read(directory/'training-incidents.json',{}),clips=clips,failure_groups=failure['groups'] if failure else None,
-                failure_groups_4m=failure_final['groups'] if failure_final else None,retention=retention,links=links,
+                crossplay=crossplays,fallback=fallback,incidents=incidents,clips=clips,failure_groups=failure['groups'] if failure else None,
+                failure_groups_later=failure_final['groups'] if failure_final else None,failure_milestone=failure_milestone,retention=retention,links=links,
                 training_maps=protocol['training_maps'],transfer_maps=protocol.get('transfer',protocol.get('final',{})).get('maps',[]),updated_at=time.time())

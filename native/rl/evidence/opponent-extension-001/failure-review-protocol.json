@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "primary_count": 12,
+  "cases": [
+    {
+      "run": "A-s73",
+      "case": "archer-test-m1-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s73/final/archer-test-m1-p0-s1.json",
+      "sha256": "bb9c4ea89162957261bbe355187094dd88cc624cce62cec66901c6ceb6a77d52",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "B-s73",
+      "case": "archer-test-m1-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s73/final/archer-test-m1-p0-s1.json",
+      "sha256": "0c4ff1bac46549064e3887aa5b4d1e3f47d87091f50e1f24d3e97723b46da540",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "A-s73",
+      "case": "evasive-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s73/final/evasive-test-m1-p0-s0.json",
+      "sha256": "204ae7f9e337431067e85ee4ea0f1f09b0861477b579f157cef0845cd104ae9b",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "B-s73",
+      "case": "evasive-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s73/final/evasive-test-m1-p0-s0.json",
+      "sha256": "f7cbaa0128f6edd3fdd5e68ef3148899bc894bded78cc10d38a19ee0d348a615",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "A-s173",
+      "case": "archer-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s173/final/archer-test-m1-p0-s0.json",
+      "sha256": "ec3ae2169c813a7cc17d3e232ebed0c85a5b861a37ac55d7876976821d0dc5a9",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "B-s173",
+      "case": "archer-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s173/final/archer-test-m1-p0-s0.json",
+      "sha256": "3a694be2371652596f06e4cb1f55d8775b1c1b8e5d73fe67139c1b5c9a387ff4",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "A-s173",
+      "case": "evasive-test-m1-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s173/final/evasive-test-m1-p0-s1.json",
+      "sha256": "05f7ba91e1043b611e0c767efb9ee027bc6c34848905f3b1193a3c932f009388",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "B-s173",
+      "case": "evasive-test-m1-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s173/final/evasive-test-m1-p0-s1.json",
+      "sha256": "ed91f2264c647fa0733027dbfeda793ba980b99642597ea76abb9ff7117c1ee4",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "A-s273",
+      "case": "archer-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s273/final/archer-test-m1-p0-s0.json",
+      "sha256": "f4736a2835eddbc83c4b0b93487186acdf76b991fa58a126d5b9c5a0f0e0198d",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "B-s273",
+      "case": "archer-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s273/final/archer-test-m1-p0-s0.json",
+      "sha256": "4554d95758e235b40ab54fd51144efc4bed89c99078e965482670c2279eb1469",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "A-s273",
+      "case": "evasive-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s273/final/evasive-test-m1-p0-s0.json",
+      "sha256": "43f9606bdeaef89f07474473d83e551f1473fb8e6978a0d29800efc7e442a044",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "B-s273",
+      "case": "evasive-test-m1-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s273/final/evasive-test-m1-p0-s0.json",
+      "sha256": "4c5f6ae2164d984c88d38b9bd0a09f3eefaf3f5b1c76fb570c73520d5306c949",
+      "selection": "First B loss by map, action-seed, side for each seed and ranged style; matched A case regardless of its outcome"
+    },
+    {
+      "run": "A-s73",
+      "case": "archer-test-m2-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s73/final/archer-test-m2-p0-s0.json",
+      "sha256": "d5e6896b3d04655dc16d6954e7365f714c5ebfd6fdaca497e986f4b5f2f572bf",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s73",
+      "case": "archer-test-m2-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s73/final/archer-test-m2-p0-s0.json",
+      "sha256": "46583d651ec3ff2a3d18f7deeb8fb63cf33abfc14f22689d4a79cf9c2d7824f8",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s73",
+      "case": "evasive-test-m2-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s73/final/evasive-test-m2-p0-s1.json",
+      "sha256": "7ef37c9e0e25af541f37a879286e139996287b7f4f2ddffa5fa324d9423f1daf",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s73",
+      "case": "evasive-test-m2-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s73/final/evasive-test-m2-p0-s1.json",
+      "sha256": "f9c6454faeb5a54a3f5ea43c1f3250d242664d42a4334a0e2f8595456aee72c0",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s73",
+      "case": "archer-test-m5-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s73/final/archer-test-m5-p0-s0.json",
+      "sha256": "8c876081a5ea32459be33094a3a47bcfb618635fcc2d73aef7c0218c226cda14",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s73",
+      "case": "archer-test-m5-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s73/final/archer-test-m5-p0-s0.json",
+      "sha256": "8448a6b1dd037e521791ab207469b3472bd10596030a80a944e2e6d0387c6c63",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s73",
+      "case": "evasive-test-m5-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s73/final/evasive-test-m5-p1-s0.json",
+      "sha256": "747aba217b2faaeab543e8ec8279c4f0cad0576c7f884ee92f79fb5dd92df282",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s73",
+      "case": "evasive-test-m5-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s73/final/evasive-test-m5-p1-s0.json",
+      "sha256": "12d2cb57371afca2d89ae38a0a12d4dfb89f2bb7b2870cde48a24f4cdcab15b9",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s173",
+      "case": "archer-test-m2-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s173/final/archer-test-m2-p0-s0.json",
+      "sha256": "5ecda22fa30786569b12a6490bd5c2786a523bdcf2d3b01ae37adec7ebbf2021",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s173",
+      "case": "archer-test-m2-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s173/final/archer-test-m2-p0-s0.json",
+      "sha256": "bc6ec79e488afc039addc4acaec60276a08126c47b99679b2a6f5e9ebaf24e39",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s173",
+      "case": "evasive-test-m2-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s173/final/evasive-test-m2-p0-s0.json",
+      "sha256": "e3d1cdf552d92b167f623cb2857dfeecf848877e9a6bc01130e8e63fafe272ac",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s173",
+      "case": "evasive-test-m2-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s173/final/evasive-test-m2-p0-s0.json",
+      "sha256": "97c78f699db58e2641c4657124ec8179ab9f8a241b5e7606c45b41fc3c7131d8",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s173",
+      "case": "archer-test-m5-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s173/final/archer-test-m5-p0-s0.json",
+      "sha256": "af02f7d3aee0dbc29ed85ad422fd2a79dbb4f8593bcd56899c0773e0e8a80558",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s173",
+      "case": "archer-test-m5-p0-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s173/final/archer-test-m5-p0-s0.json",
+      "sha256": "24cadfb212c5361fe3951ceb22413bb85c02ffc21fd3399d935b1094df2f38b5",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s173",
+      "case": "evasive-test-m5-p1-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s173/final/evasive-test-m5-p1-s1.json",
+      "sha256": "48682d5d6247734ce606a3bff94384a80b90a94f0a553b2253bc219c25e5ba86",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s173",
+      "case": "evasive-test-m5-p1-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s173/final/evasive-test-m5-p1-s1.json",
+      "sha256": "f20a8b39b79294675511804f92a70653b21b47a10d13c7c9b11475da7b5b36d5",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s273",
+      "case": "archer-test-m2-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s273/final/archer-test-m2-p1-s0.json",
+      "sha256": "5e8182717c35a9784501b5fa2c8fc9984c9210c9ab981755490f1230376eac66",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s273",
+      "case": "archer-test-m2-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s273/final/archer-test-m2-p1-s0.json",
+      "sha256": "e002639377344fb606f313791c459ad9ea732b40710892bbaf1e528fb2e9b18e",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s273",
+      "case": "evasive-test-m2-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s273/final/evasive-test-m2-p1-s0.json",
+      "sha256": "452d0fb0619cdcc47915fa884946bdcfa9daffc16ed095ec93b40d3f11624d33",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s273",
+      "case": "evasive-test-m2-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s273/final/evasive-test-m2-p1-s0.json",
+      "sha256": "f5706ecc7da472673e98ca1d542906e98740f307a42158693acca33a25a22d1a",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s273",
+      "case": "archer-test-m5-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s273/final/archer-test-m5-p0-s1.json",
+      "sha256": "0bd222dfe93f2a35c6396241acd7b9dd0bdfb5cdea6330ebc8d4e726f8044224",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s273",
+      "case": "archer-test-m5-p0-s1",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s273/final/archer-test-m5-p0-s1.json",
+      "sha256": "b8fe0cb3ae6e3d2c9656c4dd67654c67454a1a55a721024e12a601c369649b0f",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "A-s273",
+      "case": "evasive-test-m5-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/A-s273/final/evasive-test-m5-p1-s0.json",
+      "sha256": "e316dca0efa150b003d94d977ee6571b6bea1abad38c5f5d0b06eed52caa5499",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    },
+    {
+      "run": "B-s273",
+      "case": "evasive-test-m5-p1-s0",
+      "original": "native/artifacts/rl/opponent-league/evaluations/B-s273/final/evasive-test-m5-p1-s0.json",
+      "sha256": "f52de6c998c8dc4d999dbac1f7535ae1a0d082f44e4cb1b5419f8e15cbb90bfd",
+      "selection": "Supplemental fixed first B loss per seed/style on maps 2 and 5; matched A case regardless of outcome"
+    }
+  ],
+  "note": "Primary first-loss selection landed entirely on map 1. Supplemental cases declared before tracing/review, while extension training runs; no change to training or primary evaluation protocol."
+}

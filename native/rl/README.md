@@ -2,7 +2,9 @@
 
 Completed runs and measured outcomes: [experiment log](EXPERIMENTS.md).
 
-Current skill-learning step: [Bow curriculum and long-term goal](BOW_CURRICULUM.md).
+Latest comparison: [A/B continuation and direct crossplay](evidence/opponent-extension-001/REPORT.md).
+
+Long-term goal and initial skill diagnostic: [Bow curriculum](BOW_CURRICULUM.md).
 
 Human demonstration extraction, supervised GRU fits and replay diagnostics:
 [imitation workflow](IMITATION.md).

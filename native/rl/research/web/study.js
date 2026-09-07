@@ -52,7 +52,7 @@ function render() {
   const active = d.runs.filter((r) => r.status === "running"), completed = d.runs.filter((r) => r.status === "complete");
   const stale = active.filter((r) => r.update_age_seconds > 90);
   $("studyNotice").classList.toggle("error", d.status === "needs attention" || stale.length > 0);
-  $("studyNotice").textContent = (d.runs.some((r) => r.name === "B-s73" && ["failed","interrupted"].includes(r.status)) ? "B seed 73 stopped at 3.84M: 99 entities exceeded its 96-entity observation capacity. Its 4M results are unavailable. The largest shared checkpoint will provide the balanced comparison." : "") || d.evaluation.error || d.training.error || (stale.length
+  $("studyNotice").textContent = (d.runs.some((r) => r.name === "B-s73" && ["failed","interrupted"].includes(r.status)) ? `B seed 73 stopped at 3.84M: 99 entities exceeded its 96-entity observation capacity. Its 4M results are unavailable. ${d.fallback.milestone && d.crossplay[String(d.fallback.milestone)]?.complete ? `The shared ${d.fallback.milestone/1e6}M direct comparison is complete.` : "The largest shared checkpoint will provide the balanced comparison."}` : "") || d.evaluation.error || d.training.error || (stale.length
     ? `No new training metrics for ${stale.map((r) => r.name).join(", ")} in over 90 seconds.`
     : extension ? "Continuation keeps weights, Adam and recent opponents. Matches and recurrent memories restart at the 1M boundary."
     : "Completed comparison. Every final checkpoint was evaluated; none was selected for having the best score.");
@@ -64,7 +64,7 @@ function render() {
   $("evaluationCount").textContent = count.format(d.evaluation.completed_games + d.evaluation.active_games);
   $("evaluationProgress").textContent = `of ${count.format(d.evaluation.expected_games)} scheduled matches · ${d.evaluation.completed_suites}/${d.evaluation.expected_suites} suites complete${d.evaluation.unavailable_games ? ` · ${d.evaluation.unavailable_games} unavailable` : ""}`;
   $("runsHeading").textContent = extension ? "Two conditions. Three seeds." : "Three conditions. Three seeds.";
-  $("budgetTag").textContent = extension ? "4M learner decisions per run" : "1M learner decisions per run";
+  $("budgetTag").textContent = extension ? "4M target per run" : "1M learner decisions per run";
   $("conditionNote").textContent = "A: current and historical policies. B: adds scripted opponents." + (extension ? " Same model, reward, learning rate and opponent settings as before." : " C: Bow teacher initialization with the same mixture as B.");
   $("studyRuns").replaceChildren(...d.runs.map((r) => {
     const card = element("article", "", `study-run ${r.status}`);card.style.setProperty("--condition", palette[r.condition]);
@@ -100,16 +100,16 @@ function render() {
   options($("detailRun"), d.runs.map((r) => [r.name, r.name]));options($("detailMilestone"), milestones.map((m) => [String(m*1e6), `${m}M`]));renderDetails();
   const previousClip = $("studyClip").value;
   options($("studyClip"), d.clips.length ? d.clips.map((c) => [c.url, c.title]) : [["", "No clips yet"]]);
-  if (!d.clips.some((c) => c.url === previousClip)) { const latest = d.clips.find((c) => c.url.endsWith("crossplay-4m.mp4"));if (latest) $("studyClip").value = latest.url; }
+  if (!d.clips.some((c) => c.url === previousClip)) { const latest = [...d.clips].reverse().find((c) => /crossplay-[34]m\.mp4$/.test(c.url));if (latest) $("studyClip").value = latest.url; }
   renderClip();
   $("failureSection").hidden = !d.failure_groups;
   if (d.failure_groups) {
-    const b = d.failure_groups.B, later = d.failure_groups_4m?.B;
-    const shown = later || b, scripts = (d.failure_groups_4m || d.failure_groups).script;
+    const b = d.failure_groups.B, later = d.failure_groups_later?.B, laterLabel = `${d.failure_milestone/1e6}M`;
+    const shown = later || b, scripts = (d.failure_groups_later || d.failure_groups).script;
     const findings = [
-      [later ? `${b.activation_to_fire.median} → ${later.activation_to_fire.median} ticks` : `${b.activation_to_fire.median} ticks`, later ? "Bow timing · 1M to 4M" : "Bow is released very quickly", `Median activation-to-shot time in the selected B cases; scripts take ${scripts.activation_to_fire.median} ticks. Median held-Bow input runs last ${shown.holds.median} ticks${later ? " at 4M" : ""}.`],
-      [later ? `${b.projectile_speeds.median.toFixed(1)} → ${later.projectile_speeds.median.toFixed(1)}` : `${b.projectile_speeds.median.toFixed(1)} vs ${scripts.projectile_speeds.median.toFixed(1)}`, later ? "Arrow speed · 1M to 4M" : "Arrows are much slower", `Median observed projectile speeds in world units per second. ${later ? "The same cases are used at both checkpoints. Scripts at 4M: " + scripts.projectile_speeds.median.toFixed(1) + "." : "B versus scripts; brief charging is a weakness to investigate."}`],
-      [`${shown.environment_deaths} environment · ${shown.self_deaths} self`, later ? "Deaths at 4M in the same cases" : "Survival remains unreliable", `${shown.opponent_deaths} deaths were credited to the opponent. ${later ? "At 1M: " + b.environment_deaths + " environment, " + b.self_deaths + " self, " + b.opponent_deaths + " opponent. " : ""}Credits do not establish the full cause: an uncredited shove can still be environmental.`],
+      [later ? `${b.activation_to_fire.median} → ${later.activation_to_fire.median} ticks` : `${b.activation_to_fire.median} ticks`, later ? `Bow timing · 1M to ${laterLabel}` : "Bow is released very quickly", `Median activation-to-shot time in the selected B cases; scripts take ${scripts.activation_to_fire.median} ticks. Median held-Bow input runs last ${shown.holds.median} ticks${later ? ` at ${laterLabel}` : ""}.`],
+      [later ? `${b.projectile_speeds.median.toFixed(1)} → ${later.projectile_speeds.median.toFixed(1)}` : `${b.projectile_speeds.median.toFixed(1)} vs ${scripts.projectile_speeds.median.toFixed(1)}`, later ? `Arrow speed · 1M to ${laterLabel}` : "Arrows are much slower", `Median observed projectile speeds in world units per second. ${later ? `The same cases are used at both checkpoints. Scripts at ${laterLabel}: ` + scripts.projectile_speeds.median.toFixed(1) + "." : "B versus scripts; brief charging is a weakness to investigate."}`],
+      [`${shown.environment_deaths} environment · ${shown.self_deaths} self`, later ? `Deaths at ${laterLabel} in the same cases` : "Survival remains unreliable", `${shown.opponent_deaths} deaths were credited to the opponent. ${later ? "At 1M: " + b.environment_deaths + " environment, " + b.self_deaths + " self, " + b.opponent_deaths + " opponent. " : ""}Credits do not establish the full cause: an uncredited shove can still be environmental.`],
     ];
     $("failureFindings").replaceChildren(...findings.map(([value,title,detail]) => { const a = element("article");a.append(element("strong",value),element("h3",title),element("p",detail));return a; }));
   }

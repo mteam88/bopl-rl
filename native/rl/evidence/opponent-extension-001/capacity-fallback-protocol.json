@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "reason": "B-s73 hit the fixed 96-entity observation limit at 3.84M learner decisions. Preserve every original outcome and complete the untouched trials with unchanged code/model/settings. Do not retry or truncate overflowing state.",
+  "selection_rule": "After all six trial attempts finish, choose the highest originally planned milestone in [1M,2M,3M] for which all six checkpoint files exist. This is chosen by checkpoint availability, never by score.",
+  "supplemental_evaluation": "At that common milestone, run all nine direct A/B seed pairings and the reserved-map script suite for all six policies. Original planned 4M jobs without a checkpoint remain explicitly unavailable.",
+  "primary_protocol_sha256": "5c6d9977bd81da83b124d8f0e9ce527a1062e178fa7372532f5214555af6ce6c",
+  "interrupted_runs": [
+    "B-s73"
+  ]
+}

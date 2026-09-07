@@ -1,0 +1,152 @@
+{
+  "schema": 1,
+  "description": "Reproduce the identical selected case names at 4M, regardless of new outcome. Adds diagnostic traces of already scheduled matches, not new primary evaluation games.",
+  "source_selection_sha256": "ca2be0ca3719a0b28b15f575e86d988c1659f99c7bd61ae9880772631751e31d",
+  "milestone": 4000000,
+  "cases": [
+    {
+      "run": "A-s73",
+      "case": "archer-test-m1-p0-s1"
+    },
+    {
+      "run": "B-s73",
+      "case": "archer-test-m1-p0-s1"
+    },
+    {
+      "run": "A-s73",
+      "case": "evasive-test-m1-p0-s0"
+    },
+    {
+      "run": "B-s73",
+      "case": "evasive-test-m1-p0-s0"
+    },
+    {
+      "run": "A-s173",
+      "case": "archer-test-m1-p0-s0"
+    },
+    {
+      "run": "B-s173",
+      "case": "archer-test-m1-p0-s0"
+    },
+    {
+      "run": "A-s173",
+      "case": "evasive-test-m1-p0-s1"
+    },
+    {
+      "run": "B-s173",
+      "case": "evasive-test-m1-p0-s1"
+    },
+    {
+      "run": "A-s273",
+      "case": "archer-test-m1-p0-s0"
+    },
+    {
+      "run": "B-s273",
+      "case": "archer-test-m1-p0-s0"
+    },
+    {
+      "run": "A-s273",
+      "case": "evasive-test-m1-p0-s0"
+    },
+    {
+      "run": "B-s273",
+      "case": "evasive-test-m1-p0-s0"
+    },
+    {
+      "run": "A-s73",
+      "case": "archer-test-m2-p0-s0"
+    },
+    {
+      "run": "B-s73",
+      "case": "archer-test-m2-p0-s0"
+    },
+    {
+      "run": "A-s73",
+      "case": "evasive-test-m2-p0-s1"
+    },
+    {
+      "run": "B-s73",
+      "case": "evasive-test-m2-p0-s1"
+    },
+    {
+      "run": "A-s73",
+      "case": "archer-test-m5-p0-s0"
+    },
+    {
+      "run": "B-s73",
+      "case": "archer-test-m5-p0-s0"
+    },
+    {
+      "run": "A-s73",
+      "case": "evasive-test-m5-p1-s0"
+    },
+    {
+      "run": "B-s73",
+      "case": "evasive-test-m5-p1-s0"
+    },
+    {
+      "run": "A-s173",
+      "case": "archer-test-m2-p0-s0"
+    },
+    {
+      "run": "B-s173",
+      "case": "archer-test-m2-p0-s0"
+    },
+    {
+      "run": "A-s173",
+      "case": "evasive-test-m2-p0-s0"
+    },
+    {
+      "run": "B-s173",
+      "case": "evasive-test-m2-p0-s0"
+    },
+    {
+      "run": "A-s173",
+      "case": "archer-test-m5-p0-s0"
+    },
+    {
+      "run": "B-s173",
+      "case": "archer-test-m5-p0-s0"
+    },
+    {
+      "run": "A-s173",
+      "case": "evasive-test-m5-p1-s1"
+    },
+    {
+      "run": "B-s173",
+      "case": "evasive-test-m5-p1-s1"
+    },
+    {
+      "run": "A-s273",
+      "case": "archer-test-m2-p1-s0"
+    },
+    {
+      "run": "B-s273",
+      "case": "archer-test-m2-p1-s0"
+    },
+    {
+      "run": "A-s273",
+      "case": "evasive-test-m2-p1-s0"
+    },
+    {
+      "run": "B-s273",
+      "case": "evasive-test-m2-p1-s0"
+    },
+    {
+      "run": "A-s273",
+      "case": "archer-test-m5-p0-s1"
+    },
+    {
+      "run": "B-s273",
+      "case": "archer-test-m5-p0-s1"
+    },
+    {
+      "run": "A-s273",
+      "case": "evasive-test-m5-p1-s0"
+    },
+    {
+      "run": "B-s273",
+      "case": "evasive-test-m5-p1-s0"
+    }
+  ]
+}

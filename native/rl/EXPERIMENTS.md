@@ -1,5 +1,20 @@
 # Dash / Arrow / Platform experiments
 
+## A/B continuation and direct play — 2026-09-06
+
+Five runs reach 4M learner decisions; B seed 73 stops at 3.84M when 99 entities
+exceed the unchanged 96-entity observation capacity. The declared common 3M
+comparison puts B at 48.0% direct wins versus A at 45.5%, down from B's 60.1%
+at 1M. This does not establish a clear remaining B advantage. The complete
+six-run 4M comparison is unavailable; individual available results remain shown.
+The study finishes 8,976 new benchmark games across 52 available suites and
+repeats the same selected failure cases at 3M. A separate operator-interrupted
+A seed 173 attempt is preserved; its replacement matches the original 2M and
+3M states exactly. The live dashboard now browses full saved native replays,
+including matches without rendered videos.
+[Report, plots and audit](evidence/opponent-extension-001/REPORT.md) ·
+[Methods, failure boundaries and reproduction](OPPONENT_EXTENSION.md).
+
 ## Scripted opponents — 2026-09-06
 
 Nine equal-budget runs complete 9.013M learner decisions and 4,752 frozen

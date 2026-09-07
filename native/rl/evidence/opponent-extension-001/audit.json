@@ -1,0 +1,496 @@
+{
+  "schema": 1,
+  "complete": false,
+  "available_work_verified": true,
+  "common_checkpoint": 3000000,
+  "unavailable_evaluation_suites": [
+    {
+      "name": "crossplay-4000000-A73-B73",
+      "kind": "crossplay",
+      "milestone": 4000000,
+      "a": 73,
+      "b": 73,
+      "games": 96,
+      "reason": "Required checkpoint unavailable after interrupted training"
+    },
+    {
+      "name": "crossplay-4000000-A173-B73",
+      "kind": "crossplay",
+      "milestone": 4000000,
+      "a": 173,
+      "b": 73,
+      "games": 96,
+      "reason": "Required checkpoint unavailable after interrupted training"
+    },
+    {
+      "name": "crossplay-4000000-A273-B73",
+      "kind": "crossplay",
+      "milestone": 4000000,
+      "a": 273,
+      "b": 73,
+      "games": 96,
+      "reason": "Required checkpoint unavailable after interrupted training"
+    },
+    {
+      "name": "B-s73-4000000-development",
+      "kind": "script",
+      "run": "B-s73",
+      "milestone": 4000000,
+      "suite": "development",
+      "games": 144,
+      "reason": "Required checkpoint unavailable after interrupted training"
+    },
+    {
+      "name": "B-s73-4000000-transfer",
+      "kind": "script",
+      "run": "B-s73",
+      "milestone": 4000000,
+      "suite": "transfer",
+      "games": 384,
+      "reason": "Required checkpoint unavailable after interrupted training"
+    }
+  ],
+  "incidents": {
+    "incidents": [
+      {
+        "schema": 1,
+        "recorded_utc": "2026-09-07T02:23:21.107087+00:00",
+        "run": "B-s73",
+        "kind": "observation_capacity",
+        "visible_entities": 99,
+        "capacity": 96,
+        "exit_code": -6,
+        "last_completed_learner_steps": 3841536,
+        "checkpoint_learner_steps": 3838464,
+        "log": "B-s73.train.log",
+        "note": "The observation guard aborted during collection. No incomplete rollout was optimized and no 4M result exists. Preserve the fixed model; no silent truncation, reset or retry."
+      },
+      {
+        "run": "A-s173",
+        "kind": "operator_queue_cleanup",
+        "last_completed_learner_steps": 3150336,
+        "note": "Closing the failed supervisor session terminated its still-running child process group. No native abort or OOM evidence. Operator-caused interruption; a replacement repeats the original 1M continuation with identical settings.",
+        "retry_protocol": "A-s173-retry-protocol.json",
+        "retry_status": "complete",
+        "original_attempt": "incidents/orchestration-A-s173/run",
+        "comparison": "incidents/orchestration-A-s173/checkpoint-comparison.json"
+      }
+    ]
+  },
+  "protocol_sha256": "5c6d9977bd81da83b124d8f0e9ce527a1062e178fa7372532f5214555af6ce6c",
+  "runs": [
+    {
+      "name": "A-s73",
+      "status": "complete",
+      "learner_steps": 4001280,
+      "new_learner_steps": 2999808,
+      "source_snapshots": 71,
+      "milestones": {
+        "2000000": {
+          "learner_steps": 2001408,
+          "sha256": "19fb6d93e0c7aa1cd28ad517cd86b2487e6ecf380f16373c536f62124b832216"
+        },
+        "3000000": {
+          "learner_steps": 3001344,
+          "sha256": "894934a603277b06367607fe2e4664b8c985d1b4822f8093228b86a5d157a17b"
+        },
+        "4000000": {
+          "learner_steps": 4001280,
+          "sha256": "d7cfa14d336af5ac961212092e7c8daaeea665160b0eb38d16c324c709c99bf8"
+        }
+      }
+    },
+    {
+      "name": "B-s173",
+      "status": "complete",
+      "learner_steps": 4001280,
+      "new_learner_steps": 2999808,
+      "source_snapshots": 77,
+      "milestones": {
+        "2000000": {
+          "learner_steps": 2001408,
+          "sha256": "e4b7519f9904e3ee99f372b9ac9ad4e64319067f28fc8fe4c89982bf0a22c246"
+        },
+        "3000000": {
+          "learner_steps": 3001344,
+          "sha256": "b89cc1b26a5ccac8e502688c94d6faa434d5024c516399a33fd61c5b1f81be4f"
+        },
+        "4000000": {
+          "learner_steps": 4001280,
+          "sha256": "092e93b760281e1ae21b5bc6c10e5b45dc0b492656ec484dbe6b9b147c985a45"
+        }
+      }
+    },
+    {
+      "name": "A-s273",
+      "status": "complete",
+      "learner_steps": 4001280,
+      "new_learner_steps": 2999808,
+      "source_snapshots": 79,
+      "milestones": {
+        "2000000": {
+          "learner_steps": 2001408,
+          "sha256": "b68f1718278579a6714cc345ac025eb964b7ee59f77df213c2dca124ae42bc30"
+        },
+        "3000000": {
+          "learner_steps": 3001344,
+          "sha256": "c5a665d8c08f143e9dc24b8e53283f34c4d74bd8b76a2e9e0b4495238f743ce8"
+        },
+        "4000000": {
+          "learner_steps": 4001280,
+          "sha256": "feab9f7414aa2dada12de66cd4b566132806fd8195a8db0da38532e025d501df"
+        }
+      }
+    },
+    {
+      "name": "B-s73",
+      "status": "interrupted",
+      "learner_steps": 3841536,
+      "new_learner_steps": 2840064,
+      "source_snapshots": 81,
+      "milestones": {
+        "2000000": {
+          "learner_steps": 2001408,
+          "sha256": "7b23a847405e5a249a9e3fce3a4907bcb8adc193e1afa4e819a7d0e5b0201b28"
+        },
+        "3000000": {
+          "learner_steps": 3001344,
+          "sha256": "0e3c8102914d16094d160e82f28d5329fbfb8ba26f7b2272de1c27526ed9d914"
+        }
+      }
+    },
+    {
+      "name": "A-s173",
+      "status": "complete",
+      "learner_steps": 4001280,
+      "new_learner_steps": 2999808,
+      "source_snapshots": 85,
+      "milestones": {
+        "2000000": {
+          "learner_steps": 2001408,
+          "sha256": "823e60afbca5e3d8d8ee67eb0c64eb8ca502f2fdc45cc1f6a61f1aed1b49d618"
+        },
+        "3000000": {
+          "learner_steps": 3001344,
+          "sha256": "0ebc879d75b27955705b362b6ba04666fa9fabcf04b55514a29ac9b3873975d8"
+        },
+        "4000000": {
+          "learner_steps": 4001280,
+          "sha256": "5095c2dda0681882e7bde5fdc4edec2c303d29738615c4fc7cd99c17795be0af"
+        }
+      }
+    },
+    {
+      "name": "B-s273",
+      "status": "complete",
+      "learner_steps": 4001280,
+      "new_learner_steps": 2999808,
+      "source_snapshots": 82,
+      "milestones": {
+        "2000000": {
+          "learner_steps": 2001408,
+          "sha256": "9585819a14f9ac382f5ef82d468f07a382958ee7bfdbda40bed95568312cfaa0"
+        },
+        "3000000": {
+          "learner_steps": 3001344,
+          "sha256": "12c7c1d0959b8f8d1774134d74d2087d3537936418da76f50f48a3e2a21e334e"
+        },
+        "4000000": {
+          "learner_steps": 4001280,
+          "sha256": "cab08d0133a86a6c407f1854c8afdf0173bb1041dcd965f5ed5cd6ec557dbe2e"
+        }
+      }
+    }
+  ],
+  "completed_run_budget": [
+    4001280,
+    5335040,
+    2605
+  ],
+  "restored_policy_optimizer_rng_counts_bit_exact": true,
+  "immutable_source_snapshots": true,
+  "binary_identities_match": true,
+  "evaluation_suites": [
+    {
+      "name": "crossplay-1000000-A73-B73",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A73-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A73-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A173-B73",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A173-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A173-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A273-B73",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A273-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-1000000-A273-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-4000000-A73-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-4000000-A73-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-4000000-A173-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-4000000-A173-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-4000000-A273-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-4000000-A273-B273",
+      "games": 96
+    },
+    {
+      "name": "A-s73-2000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s73-3000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s73-4000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s73-4000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "B-s173-2000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s173-3000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s173-4000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s173-4000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "A-s273-2000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s273-3000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s273-4000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s273-4000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "B-s73-2000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s73-3000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s173-2000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s173-3000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s173-4000000-development",
+      "games": 144
+    },
+    {
+      "name": "A-s173-4000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "B-s273-2000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s273-3000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s273-4000000-development",
+      "games": 144
+    },
+    {
+      "name": "B-s273-4000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "crossplay-3000000-A73-B73",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A73-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A73-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A173-B73",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A173-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A173-B273",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A273-B73",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A273-B173",
+      "games": 96
+    },
+    {
+      "name": "crossplay-3000000-A273-B273",
+      "games": 96
+    },
+    {
+      "name": "A-s73-3000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "B-s173-3000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "A-s273-3000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "B-s73-3000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "A-s173-3000000-transfer",
+      "games": 384
+    },
+    {
+      "name": "B-s273-3000000-transfer",
+      "games": 384
+    }
+  ],
+  "new_evaluation_games": 8976,
+  "verified_replays": 858,
+  "verified_failure_traces": 36,
+  "original_failure_replays_matched": 26,
+  "verified_matched_final_traces": 36,
+  "original_final_replays_matched": 26,
+  "archived_operator_attempt_evaluations": [
+    {
+      "name": "A-s173-2000000-development",
+      "games": 144,
+      "replacement_outcomes_events_and_replays_identical": true
+    },
+    {
+      "name": "A-s173-3000000-development",
+      "games": 144,
+      "replacement_outcomes_events_and_replays_identical": true
+    },
+    {
+      "name": "crossplay-3000000-A173-B73",
+      "games": 96,
+      "replacement_outcomes_events_and_replays_identical": true
+    },
+    {
+      "name": "crossplay-3000000-A173-B173",
+      "games": 96,
+      "replacement_outcomes_events_and_replays_identical": true
+    },
+    {
+      "name": "crossplay-3000000-A173-B273",
+      "games": 96,
+      "replacement_outcomes_events_and_replays_identical": true
+    },
+    {
+      "name": "A-s173-3000000-transfer",
+      "games": 384,
+      "replacement_outcomes_events_and_replays_identical": true
+    }
+  ],
+  "operator_retry_milestones_bit_exact": {
+    "policy-002668544.pt": {
+      "checks": {
+        "policy": true,
+        "optimizer": true,
+        "torch_rng": true,
+        "cuda_rng": true,
+        "step": true,
+        "learner_steps": true,
+        "updates": true
+      },
+      "original_sha256": "24e82c0b03a4704046e77b308853bcfd524b7c4032eed973b9697c012c2a6688",
+      "replacement_sha256": "823e60afbca5e3d8d8ee67eb0c64eb8ca502f2fdc45cc1f6a61f1aed1b49d618"
+    },
+    "policy-004001792.pt": {
+      "checks": {
+        "policy": true,
+        "optimizer": true,
+        "torch_rng": true,
+        "cuda_rng": true,
+        "step": true,
+        "learner_steps": true,
+        "updates": true
+      },
+      "original_sha256": "832a716b5dab7c6b5701ed203d565e801189613051a336fc4c5ff17aa9c01ed9",
+      "replacement_sha256": "0ebc879d75b27955705b362b6ba04666fa9fabcf04b55514a29ac9b3873975d8"
+    }
+  },
+  "analysis_source_sha256": {
+    "audit_extension.py": "dea20ddead11ef412a403d6a224d1a9031e0503606bc4110a482c8a4464b8fff",
+    "plot_extension.py": "0fb649356bc877285753183fc4f0d61c1c0922f32cb5ec7cb0526bd206557526",
+    "trace_league_failures.py": "e5664d8198b0071d2fc491a8bc6da5f91c7c939cf2b1706e99f50f7608955226",
+    "analyze_league_failures.py": "fdf27c819a79506ca20b4e53fd4aedb0fc1026852c6735ecb87384ec488a3316",
+    "review_extension_final.py": "7b19141a0e53776003354c692e5926efc10f5e6231291c069c3ed26714cc5f02"
+  }
+}

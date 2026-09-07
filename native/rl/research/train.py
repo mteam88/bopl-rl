@@ -71,6 +71,7 @@ def main():
     parser.add_argument('--no-eval',action='store_true')
     parser.add_argument('--no-video',action='store_true')
     parser.add_argument('--load',type=Path)
+    parser.add_argument('--continuation-context',type=Path,help='Restore a declared recent opponent pool; requires --load, fresh games')
     parser.add_argument('--initialize',type=Path,help='Weights only, fresh optimizer and decision count')
     parser.add_argument('--lr',type=float,default=3e-4)
     parser.add_argument('--learner-steps',type=int,help='Stop by actions included in PPO, rather than all player actions')
@@ -78,6 +79,7 @@ def main():
     parser.add_argument('--scripted-fraction',type=float,default=2/3,
                         help='Fraction of historical-opponent assignments replaced by scripts')
     opt=parser.parse_args()
+    if opt.continuation_context and not opt.load: parser.error('Continuation context requires --load')
     if opt.load and opt.initialize: parser.error('Choose resume or weights-only initialization')
     if opt.lr<=0 or not 0<=opt.scripted_fraction<=1: parser.error('Invalid learning rate or scripted fraction')
     if opt.learner_steps is not None and opt.learner_steps<1: parser.error('Positive learner budget required')
@@ -128,7 +130,15 @@ def main():
         learner_steps=previous.get('learner_steps',0)
         if opt.learner_steps and 'learner_steps' not in previous:
             raise ValueError('Cannot resume a learner budget without its saved count')
+    continuation=None
+    if opt.continuation_context:
+        from continuation import read_context
+        continuation=read_context(opt.continuation_context,opt.load,step)
+        if continuation['checkpoint_every']!=opt.checkpoint_every:
+            raise ValueError('Continuation must preserve historical snapshot cadence')
     config={**vars(opt),'output':str(out),'load':str(opt.load) if opt.load else None,
+            'continuation_context':str(opt.continuation_context.resolve()) if opt.continuation_context else None,
+            'continuation':continuation,
             'initialize':str(opt.initialize.resolve()) if opt.initialize else None,
             'initialize_sha256':hashlib.sha256(opt.initialize.read_bytes()).hexdigest() if opt.initialize else None,
             'scripted_opponents':str(opt.scripted_opponents.resolve()) if opt.scripted_opponents else None,
@@ -185,6 +195,15 @@ def main():
         return frozen
     pool={step:frozen_copy()}
     recent=[step]; versions=[step]*opt.workers
+    if continuation:
+        pool={}
+        for record in continuation['historical']:
+            opponent=frozen_copy()
+            saved=torch.load(record['path'],map_location=device,weights_only=False)
+            if saved['step']!=record['step']:raise ValueError('Historical step mismatch')
+            opponent.load_state_dict(saved['policy']);pool[record['step']]=opponent
+        recent=sorted(pool);versions=[recent[-1]]*opt.workers
+        next_checkpoint=continuation['next_checkpoint']
     historical=[w%2==1 for w in range(opt.workers)]
     side=[w%2 for w in range(opt.workers)]
     random=np.random.default_rng(opt.seed)
@@ -225,7 +244,12 @@ def main():
     def group_steppers(g):
         if not graphs: return None
         return {version:stepper for (version,gg),stepper in steppers.items() if gg==g}
-    add_steppers(step)
+    for version in pool:add_steppers(version)
+    if continuation:
+        # Game and private NumPy RNG state were not in the old checkpoint.
+        # They restart from --seed; Torch sampling continues from saved state.
+        torch.set_rng_state(previous['torch_rng'].cpu())
+        torch.cuda.set_rng_state(previous['cuda_rng'].cpu())
     reset_before=torch.ones(n,dtype=torch.bool,device=device)
     completed_matches=0
     evaluation_milestones=sorted(set(opt.eval_at or []))

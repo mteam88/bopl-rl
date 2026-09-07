@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--seconds',type=float,default=40)
     args=parser.parse_args()
     replay=args.replay.resolve(); output=args.output.resolve()
+    if not replay.is_file(): raise FileNotFoundError(replay)
     if output.exists(): raise FileExistsError(output)
     output.parent.mkdir(parents=True,exist_ok=True)
     log_path=output.with_suffix('.render.log')
