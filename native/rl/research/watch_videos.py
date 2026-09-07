@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from train import atomic_json
+from common import atomic_json
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run',type=Path,required=True)

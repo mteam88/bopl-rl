@@ -6,11 +6,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from evaluation_protocol import map_ids,opponents,schedule
+from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
 
 
 class EvaluationProtocolTests(unittest.TestCase):
-    def test_legacy_schedule_is_unchanged(self):
+    def test_paired_schedule_covers_each_group(self):
         tasks,groups=schedule([0],[1,2],[],8,4,16,10001,20001,30001)
         self.assertEqual(groups,[('random',0),('initial',0),('random',1),('random',2)])
         self.assertEqual(len(tasks),25)
@@ -45,17 +45,42 @@ class EvaluationProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError): schedule([0,1],[1],[],8,4,16,1,2,3)
         with self.assertRaises(ValueError): schedule([0],[1],[],7,4,16,1,2,3)
 
-    def test_manifest_detects_changed_weights_and_duplicate_names(self):
+    def test_manifest_freezes_weights_and_metadata_and_rejects_duplicate_names(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); weights=root/'policy.pt';weights.write_bytes(b'frozen checkpoint')
-            item=dict(name='trained-s73',path=weights.name,sha256=hashlib.sha256(weights.read_bytes()).hexdigest())
-            manifest=root/'opponents.json';manifest.write_text(json.dumps(dict(schema=1,opponents=[item])))
-            self.assertEqual(opponents(manifest)[0]['path'],str(weights))
-            weights.write_bytes(b'changed checkpoint')
-            with self.assertRaisesRegex(ValueError,'changed'): opponents(manifest)
+            root = Path(directory)
+            weights = root / 'policy.bin'
             weights.write_bytes(b'frozen checkpoint')
-            manifest.write_text(json.dumps(dict(schema=1,opponents=[item,item])))
-            with self.assertRaisesRegex(ValueError,'distinct'): opponents(manifest)
+            sidecar = root / 'policy.bin.json'
+            metadata = dict(schema=1, backend='pufferlib-native', hidden=128,
+                            weights_sha256=hashlib.sha256(weights.read_bytes()).hexdigest())
+            sidecar.write_text(json.dumps(metadata))
+            item = dict(name='trained-s73', path=weights.name, **checkpoint_identity(weights))
+            manifest = root / 'opponents.json'
+            manifest.write_text(json.dumps(dict(schema=2, opponents=[item])))
+            self.assertEqual(opponents(manifest)[0]['path'], str(weights))
+            weights.write_bytes(b'changed checkpoint')
+            with self.assertRaisesRegex(ValueError, 'metadata hash'):
+                opponents(manifest)
+            weights.write_bytes(b'frozen checkpoint')
+            sidecar.write_text(json.dumps(dict(metadata, hidden=256)))
+            with self.assertRaisesRegex(ValueError, 'metadata changed'):
+                opponents(manifest)
+            sidecar.write_text(json.dumps(metadata))
+            manifest.write_text(json.dumps(dict(schema=2, opponents=[item, item])))
+            with self.assertRaisesRegex(ValueError, 'distinct'):
+                opponents(manifest)
+
+    def test_native_identity_requires_a_valid_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'policy.bin'
+            path.write_bytes(b'weights')
+            with self.assertRaises(FileNotFoundError):
+                checkpoint_identity(path)
+            Path(str(path) + '.json').write_text(json.dumps(dict(schema=1, backend='unknown')))
+            with self.assertRaisesRegex(ValueError, 'Unsupported'):
+                checkpoint_identity(path)
+            with self.assertRaisesRegex(ValueError, 'Native checkpoints'):
+                checkpoint_identity(path.with_suffix('.weights'))
 
 
 if __name__=='__main__': unittest.main()
