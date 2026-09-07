@@ -70,6 +70,30 @@ def process_status(config):
         return {'state': 'check failed', 'settings_verified': False, 'error': str(error)}
 
 
+def initial_baseline(config):
+    """Show the completed raw baseline while Fable prepares its experiment log."""
+    path = config.get('initial_baseline')
+    if not path:
+        return []
+    path = Path(path)
+    try:
+        summary = json.loads((path / 'summary.json').read_text())
+        runs = summary['runs']
+        if len(runs) != 3 or any(r['learner_decisions'] != 294912 for r in runs):
+            return []
+        results = [path / r['name'] / 'result.json' for r in runs]
+        if any(json.loads(file.read_text())['status'] != 'complete' for file in results):
+            return []
+        table = summary['table']['base-w16']
+        return [{'timestamp_utc': datetime.fromtimestamp(max(f.stat().st_mtime for f in results), timezone.utc).isoformat(),
+                 'commit': '5931f7c', 'experiment': 'Initial baseline', 'workload': 'Initial short run · map 0 · 16 workers',
+                 'learner_dps_wall': table['median_learner_dps_wall'],
+                 'learner_dps_active': table['median_learner_dps_active'], 'status': 'baseline',
+                 'description': 'Three completed repeats; read directly from saved runs. About 41s startup + 74s active training. Representative-workload redesign pending.'}]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 @lru_cache(maxsize=8)
 def chart(serialized, extension, metric='active'):
     import matplotlib
@@ -124,6 +148,8 @@ def chart(serialized, extension, metric='active'):
 
 def snapshot(config, output, check=False):
     rows, errors = read_results(Path(config['research_root']) / 'native/rl/autoresearch/results.tsv')
+    if not rows and not errors:
+        rows = initial_baseline(config)
     report = {'updated_at': datetime.now(timezone.utc).isoformat(), 'experiments': rows,
               'errors': errors, 'session_id': config['session_id'], 'session': process_status(config),
               'graph_url': config['graph_url'], 'last_hourly_check': None}

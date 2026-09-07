@@ -4,6 +4,19 @@ Matthew authorized Fable to research Bopl throughput overnight, with this Codex
 thread watching hourly. Keep it running until Matthew stops it; no invented
 morning deadline. Fable owns optimization and has full access and broad freedom.
 
+Matthew challenged the initial benchmark's representativeness: it trains only
+map 0 from scratch, with ~41s startup versus ~74s active training. Its baseline
+is 3965 learner/s active versus 2502 including startup. The earlier 4008/s was
+aggregate across two concurrent eight-worker jobs, not this single 16-worker
+workload. A supervisor message asks Fable to redesign toward sustained,
+representative training and log `learner_dps_active` as well as wall throughput.
+Do not celebrate startup-only gains as equivalent to faster long training.
+
+BB terminal `term_tq7tapubt5` attaches to the live Claude session for supervision.
+`bb terminal send --enter` sends LF: a pasted message may need a separate CR
+(`--text $'\r'`) to submit. Verify receipt in the actual conversation, not merely
+the terminal-send acknowledgment. Never interrupt a useful benchmark casually.
+
 Run identity lives in `native/artifacts/rl/autoresearch-monitor/config.json`.
 Fable runs in the dedicated `throughput-autoresearch` Rift. Its required flags
 are `--model claude-fable-5-1 --effort high --dangerously-skip-permissions`.
