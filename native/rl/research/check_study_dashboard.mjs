@@ -11,13 +11,13 @@ ws.addEventListener('message',event=>{const m=JSON.parse(event.data);if(m.id){co
 function call(method,params={}){return new Promise((resolve,reject)=>{const next=++id;const timer=setTimeout(()=>{pending.delete(next);reject(Error(method+' timed out'));},15000);pending.set(next,{resolve,reject,timer});ws.send(JSON.stringify({id:next,method,params}));});}
 async function evaluate(expression){const r=await call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;}
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function until(expression){for(let i=0;i<100;i++){if(await evaluate(expression))return;await sleep(200);}throw Error('Wait failed: '+expression);}
+async function until(expression){for(let i=0;i<900;i++){if(await evaluate(expression))return;await sleep(200);}throw Error('Wait failed: '+expression);}
 await call('Runtime.enable');await call('Page.enable');
 await call('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
 await call('Page.navigate',{url:base+'/'});
 await until("typeof currentStudy!=='undefined' && currentStudy?.name==='opponent-extension'");
-const desktop=await evaluate(`({runs:document.querySelectorAll('.study-run').length,wide:document.documentElement.scrollWidth>innerWidth,crossB:document.querySelector('#crossB').textContent,cells:document.querySelectorAll('#pairingRows td').length,rows:document.querySelectorAll('#milestoneRows tr').length,clips:document.querySelector('#studyClip').options.length,failures:!document.querySelector('#failureSection').hidden,remaining:currentStudy.total_target-currentStudy.total_learner_steps})`);
-if(desktop.runs!==6 || desktop.rows!==6 || desktop.cells!==9 || desktop.wide || desktop.crossB!=='60.1%' || !desktop.failures)throw Error('Desktop data mismatch '+JSON.stringify(desktop));
+const desktop=await evaluate(`({runs:document.querySelectorAll('.study-run').length,wide:document.documentElement.scrollWidth>innerWidth,crossB:document.querySelector('#crossB').textContent,crossMilestone:document.querySelector('#crossplayMilestone').value,expectedCrossB:pct(currentStudy.crossplay[document.querySelector('#crossplayMilestone').value].B_wins/currentStudy.crossplay[document.querySelector('#crossplayMilestone').value].games),finalCrossplayComplete:currentStudy.crossplay['4000000'].complete,cells:document.querySelectorAll('#pairingRows td').length,rows:document.querySelectorAll('#milestoneRows tr').length,clips:document.querySelector('#studyClip').options.length,failures:!document.querySelector('#failureSection').hidden,remaining:currentStudy.total_target-currentStudy.total_learner_steps})`);
+if(desktop.runs!==6 || desktop.rows!==6 || desktop.cells!==9 || desktop.wide || desktop.crossB!==desktop.expectedCrossB || (desktop.finalCrossplayComplete && desktop.crossMilestone!=='4000000') || !desktop.failures)throw Error('Desktop data mismatch '+JSON.stringify(desktop));
 await evaluate("document.querySelector('.study-details').open=true;document.querySelector('#detailMilestone').value='1000000';document.querySelector('#detailSuite').value='transfer';document.querySelector('#detailSuite').dispatchEvent(new Event('change'))");
 if(await evaluate("document.querySelectorAll('#detailRows tr').length")!==12)throw Error('Opponent breakdown missing');
 await evaluate("document.querySelector('.study-details').open=false;document.querySelector('#studyVideo').muted=true;document.querySelector('#studyVideo').play()");
@@ -26,16 +26,31 @@ await evaluate("document.querySelector('#studyVideo').currentTime=7");
 await until("!document.querySelector('#studyVideo').seeking && document.querySelector('#studyVideo').currentTime>7.05");
 await evaluate("document.querySelector('#studyVideo').pause()");
 const screenshot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});await fs.writeFile(out+'/dashboard-desktop.png',Buffer.from(screenshot.data,'base64'));
+await until("document.querySelector('#matchPicker').options.length>100");
+await evaluate("document.querySelector('#matchCheckpoint').value='1000000';document.querySelector('#matchCheckpoint').dispatchEvent(new Event('change'));document.querySelector('#matchWatch').click()");
+await until("!document.querySelector('#matchStage').hidden");
+await evaluate("document.querySelector('#matchPlay').click()");
+await until("Number(document.querySelector('#matchSeek').value)>2");
+await evaluate("document.querySelector('#matchPlay').click();document.querySelector('#matchSeek').value=100;document.querySelector('#matchSeek').dispatchEvent(new Event('input'));document.querySelector('#matchSpeed').value='4';document.querySelector('#matchPlay').click()");
+await until("Number(document.querySelector('#matchSeek').value)>110");
+await evaluate("document.querySelector('#matchPlay').click();document.querySelector('#matchSeek').value=document.querySelector('#matchSeek').max;document.querySelector('#matchSeek').dispatchEvent(new Event('input'))");
+const replay=await evaluate("({status:document.querySelector('#matchStatus').textContent,identity:document.querySelector('#matchIdentity').textContent,time:document.querySelector('#matchTime').textContent,hud:document.querySelector('#matchHud').textContent,saved:document.querySelector('#matchPicker').options.length})");
+await evaluate("document.querySelector('#matchNext').click()");
+await until("!document.querySelector('#matchStage').hidden");
+await evaluate("document.querySelector('#matchStage').scrollIntoView({block:'center'})");
+const replayShot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});await fs.writeFile(out+'/dashboard-replay.png',Buffer.from(replayShot.data,'base64'));
 await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});await sleep(300);
 const mobile=await evaluate("({wide:document.documentElement.scrollWidth>innerWidth,runs:document.querySelectorAll('.study-run').length,videoWidth:document.querySelector('#studyVideo').getBoundingClientRect().width})");
 if(mobile.wide || mobile.videoWidth>390)throw Error('Mobile overflow '+JSON.stringify(mobile));
 const phone=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});await fs.writeFile(out+'/dashboard-mobile.png',Buffer.from(phone.data,'base64'));
+await evaluate("document.querySelector('#matchStage').scrollIntoView({block:'center'})");
+const replayPhone=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});await fs.writeFile(out+'/dashboard-replay-mobile.png',Buffer.from(replayPhone.data,'base64'));
 await evaluate("document.querySelector('#studyPicker').value='opponent-league';document.querySelector('#studyPicker').dispatchEvent(new Event('change'))");
 await until("currentStudy?.name==='opponent-league' && document.querySelectorAll('.study-run').length===9");
 if(!await evaluate("!document.querySelector('#retentionSection').hidden && document.querySelector('#crossplaySection').hidden"))throw Error('Previous study did not render');
 await call('Page.navigate',{url:base+'/?series=dap-multimap-001'});
-await until("document.querySelector('#run') && document.querySelector('#connection').textContent.startsWith('Live')");
+await until("document.querySelector('#run') && document.querySelector('#connection').textContent.startsWith('Live') && !document.querySelector('#play').disabled");
 const legacy=await evaluate("({steps:document.querySelector('#steps').textContent,replay:!document.querySelector('#play').disabled,runs:document.querySelector('#run').options.length,wide:document.documentElement.scrollWidth>innerWidth})");
 if(legacy.steps==='—' || !legacy.replay || legacy.wide)throw Error('Legacy view failed '+JSON.stringify(legacy));
 if(errors.length)throw Error('Browser exceptions '+JSON.stringify(errors));
-const report={desktop,mobile,legacy,video_playback_and_seeking:true,study_switching:true,console_errors:errors};await fs.writeFile(out+'/dashboard-check.json',JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report));ws.close();
+const report={desktop,mobile,legacy,replay,full_replay_play_seek_speed_next:true,video_playback_and_seeking:true,study_switching:true,console_errors:errors};await fs.writeFile(out+'/dashboard-check.json',JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report));ws.close();

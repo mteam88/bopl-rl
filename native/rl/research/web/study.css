@@ -92,3 +92,9 @@
   .study-page footer nav { margin-left:0; }
 }
 @media(prefers-reduced-motion:reduce) { .score-bar span { transition:none; } }
+
+.match-filters {flex-wrap:wrap}.match-filters label {flex:1 1 120px;min-width:0}.match-filters select {width:100%}
+.match-selection {display:flex;gap:12px;align-items:end;margin-top:18px}.match-selection label {flex:1;min-width:0}.match-selection select {width:100%;max-width:100%}
+.match-library button {border:1px solid #a8ad9a;background:#f5f2e8;padding:10px 14px;border-radius:6px;color:#283c35;cursor:pointer;font:inherit}.match-library button:disabled {opacity:.5;cursor:wait}
+#matchCanvas {display:block;width:100%;height:auto;border-radius:9px;background:#18263a}.match-identity {font-weight:700}.match-hud {display:flex;gap:20px;justify-content:space-between;font-size:13px;margin:12px 0}.match-controls {display:flex;align-items:center;gap:12px;flex-wrap:wrap}.match-controls label {display:flex;gap:8px;align-items:center}.match-controls a {margin-left:auto}#matchSeek {width:100%;margin:18px 0;accent-color:#287f72}
+@media(max-width:650px){.match-selection {flex-wrap:wrap}.match-selection label {flex-basis:100%}.match-hud {flex-direction:column;gap:4px}.match-controls {gap:8px}.match-controls a {margin-left:0}.match-library .section-top {align-items:start;gap:12px}}

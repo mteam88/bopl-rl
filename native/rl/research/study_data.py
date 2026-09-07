@@ -75,9 +75,12 @@ def payload(name,directory,root):
     protocol=read(directory/'protocol.json');extension='total_learner_target' in protocol
     parent=root/'opponent-league' if extension else directory
     target=protocol.get('total_learner_target',protocol.get('learner_decisions',1000000))
+    fallback=read(directory/'fallback-checkpoint.json',{}) if extension else {}
     rows=[]
     for run in sorted(protocol['runs'],key=lambda r:(r['condition'],r['seed'])):
         path=directory/'runs'/run['name'];source=parent/'runs'/run['name']
+        retry=directory/('retry-'+run['name'])
+        if extension and (retry/'status.json').exists():path=retry
         old_metrics=metrics(source/'metrics.jsonl') if extension else []
         current=metrics(path/'metrics.jsonl');all_metrics=old_metrics+current
         s=status(path,run.get('source_learner_steps',0));latest=current[-1] if current else old_metrics[-1] if old_metrics else {}
@@ -89,7 +92,7 @@ def payload(name,directory,root):
             else:
                 dev=read(directory/'evaluations'/f"{run['name']}-{milestone}-development"/'result.json')
                 transfer=read(directory/'evaluations'/f"{run['name']}-{milestone}-transfer"/'result.json')
-            checkpoints[str(milestone)]=dict(development=aggregate(dev),transfer=aggregate(transfer))
+            checkpoints[str(milestone)]=dict(development=aggregate(dev),transfer=aggregate(transfer),unavailable=milestone>s.get('learner_steps',0) and s['status'] in ('failed','interrupted'))
         curve=[];hits=shots=env_deaths=self_deaths=combat_deaths=0
         stride=max(1,len(all_metrics)//180)
         for index,m in enumerate(all_metrics):
@@ -111,24 +114,28 @@ def payload(name,directory,root):
                          config_url=f'/studies/{name}/runs/{run["name"]}/config.json' if (path/'config.json').exists() else None))
     crossplays={}
     if extension:
-        for milestone in protocol['crossplay']['milestones']:
+        for milestone in sorted(set(protocol['crossplay']['milestones']+[fallback['milestone']] if fallback else protocol['crossplay']['milestones'])):
             cells=[];a_wins=b_wins=draws=games=0
             for a in protocol['crossplay']['seeds']:
                 for b in protocol['crossplay']['seeds']:
                     r=aggregate(read(directory/'evaluations'/f'crossplay-{milestone}-A{a}-B{b}'/'result.json'))
-                    cells.append(dict(a=a,b=b,result=r))
+                    unavailable=any(row['name'] in (f'A-s{a}',f'B-s{b}') and row['checkpoints'][str(milestone)]['unavailable'] for row in rows)
+                    cells.append(dict(a=a,b=b,result=r,unavailable=unavailable))
                     if r:a_wins+=r['wins'];b_wins+=r['losses'];draws+=r['draws'];games+=r['games']
-            crossplays[str(milestone)]=dict(cells=cells,games=games,expected_games=864,A_wins=a_wins,B_wins=b_wins,draws=draws,complete=games==864)
+            crossplays[str(milestone)]=dict(cells=cells,games=games,expected_games=864,A_wins=a_wins,B_wins=b_wins,draws=draws,complete=games==864,unavailable=any(c['unavailable'] for c in cells))
     training=read(directory/'training-status.json',{}) if extension else read(directory/'series-status.json',{})
     evaluating=read(directory/'evaluation-status.json',{}) if extension else read(directory/'parallel-status.json',{})
     state='complete' if all(r['status']=='complete' for r in rows) and evaluating.get('status')=='complete' else 'evaluating' if all(r['status']=='complete' for r in rows) else 'training'
     if any(r['status'] in ('failed','interrupted') for r in rows) or training.get('status')=='failed' or evaluating.get('status')=='failed':state='needs attention'
+    if any(r['status']=='running' for r in rows):state='training'
+    elif training.get('status')=='complete_with_failures':state='finished with an interrupted run' if evaluating.get('status','').startswith('complete') else 'evaluating available checkpoints'
     active_games=0
     for job in evaluating.get('active',[]):
         active_games+=sum(p.name not in ('result.json','schedule.json') for p in (directory/'evaluations'/job['name']).glob('*.json'))
     completed_games=sum(j.get('games',0) for j in evaluating.get('completed',[]))
     clips=[]
     candidates=[('crossplay-1m','1M · A seed 73 vs B seed 73','Yellow: A · Purple: B · Map 0'),
+                ('crossplay-3m','3M · A seed 73 vs B seed 73','Yellow: A · Purple: B · Map 0'),
                 ('crossplay-4m','4M · A seed 73 vs B seed 73','Yellow: A · Purple: B · Map 0'),
                 ('b-archer-failure','1M · B seed 73 vs archer','Purple: B · Yellow: script · Map 1'),
                 ('b-evasive-failure','1M · B seed 73 vs evasive','Yellow: B · Purple: script · Map 1')]
@@ -137,6 +144,7 @@ def payload(name,directory,root):
         if (directory/'videos'/(stem+'.mp4')).exists():
             clips.append(dict(title=title,detail=detail,url=f'/studies/{name}/videos/{stem}.mp4',poster=f'/studies/{name}/videos/{stem}.jpg'))
     failure=read(directory/'dashboard/failure-summary.json')
+    failure_final=read(directory/'dashboard/failure-summary-4m.json')
     retention=[]
     if not extension:
         for r in rows:
@@ -148,7 +156,8 @@ def payload(name,directory,root):
     return dict(name=name,kind='extension' if extension else 'league',title='A/B continuation' if extension else 'Scripted opponents + Bow initialization',
                 status=state,runs=rows,total_learner_steps=sum(r['learner_steps'] for r in rows),total_target=len(rows)*target,
                 training=training,evaluation=dict(status=evaluating.get('status','queued'),completed_suites=len(evaluating.get('completed',[])),
-                expected_suites=42 if extension else 18,completed_games=completed_games,active_games=active_games,
-                expected_games=6624 if extension else 4752,error=evaluating.get('error')),
-                crossplay=crossplays,clips=clips,failure_groups=failure['groups'] if failure else None,retention=retention,links=links,
+                expected_suites=evaluating.get('expected_suites',42 if extension else 18),completed_games=completed_games,active_games=active_games,
+                expected_games=evaluating.get('expected_games',6624 if extension else 4752),unavailable_games=sum(j.get('games',0) for j in evaluating.get('unavailable',[])),error=evaluating.get('error')),
+                crossplay=crossplays,fallback=fallback,incidents=read(directory/'training-incidents.json',{}),clips=clips,failure_groups=failure['groups'] if failure else None,
+                failure_groups_4m=failure_final['groups'] if failure_final else None,retention=retention,links=links,
                 training_maps=protocol['training_maps'],transfer_maps=protocol.get('transfer',protocol.get('final',{})).get('maps',[]),updated_at=time.time())

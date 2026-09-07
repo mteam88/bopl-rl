@@ -1,4 +1,4 @@
-"""Read-only local dashboard for research runs, metrics, and replays."""
+"""Local research dashboard with on-demand saved replay playback."""
 import argparse
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 import json
@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from urllib.parse import unquote,urlparse,parse_qs
 import study_data
+from replay_library import ReplayLibrary
 
 HERE=Path(__file__).resolve().parent
 
@@ -21,6 +22,7 @@ def main():
     parser.add_argument('--host',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8876)
     parser.add_argument('--study-root',action='append',default=[],metavar='NAME=PATH',help='Read a live study from an isolated workspace')
     args=parser.parse_args(); root=args.root.resolve()
+    library=ReplayLibrary(root)
     extra={}
     for value in args.study_root:
         name,separator,path=value.partition('=')
@@ -47,9 +49,26 @@ def main():
             self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(payload)))
             self.end_headers()
             if self.command!='HEAD': self.wfile.write(payload)
+        def replay_request(self, path, prepare=False):
+            parts=path.split('/')
+            studies=study_data.catalog(root,extra)
+            if len(parts)!=5 or parts[3] not in studies:return self.send_error(404)
+            try:return self.json(library.replay(parts[3],studies[parts[3]],parts[4],prepare))
+            except KeyError:return self.send_error(404)
+        def do_POST(self):
+            origin=self.headers.get('Origin')
+            if origin and urlparse(origin).netloc!=self.headers.get('Host'):return self.send_error(403)
+            path=unquote(urlparse(self.path).path)
+            if path.startswith('/api/replay/'):return self.replay_request(path,True)
+            return self.send_error(404)
         def do_GET(self):
             path=unquote(urlparse(self.path).path)
             studies=study_data.catalog(root,extra)
+            if path.startswith('/api/replay/'):return self.replay_request(path)
+            if path.startswith('/api/matches/'):
+                name=path[len('/api/matches/'):]
+                if name not in studies:return self.send_error(404)
+                return self.json(library.catalog(name,studies[name]))
             if path=='/api/studies':
                 return self.json([dict(name=name,title='A/B continuation' if 'total_learner_target' in study_data.read(directory/'protocol.json') else 'Scripted opponents + Bow initialization') for name,directory in reversed(list(studies.items()))])
             if path.startswith('/api/study/'):
@@ -115,7 +134,7 @@ def main():
                 file=(root/'/'.join(parts)).resolve()
                 if not file.is_relative_to(root/parts[0]) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg'):
                     return self.send_error(403)
-            elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css'):
+            elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css','/arena.js','/matches.js'):
                 query=parse_qs(urlparse(self.path).query)
                 study_home=path=='/' and studies and not any(k in query for k in ('run','series','history'))
                 file=HERE/'web'/('study.html' if study_home or path=='/study' else 'index.html' if path=='/' else path[1:])

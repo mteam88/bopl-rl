@@ -44,6 +44,7 @@ async function refresh() {
 }
 function render() {
   const d = currentStudy, extension = d.kind === "extension";
+  window.dispatchEvent(new CustomEvent("study-data", {detail:{name:d.name}}));
   $("studyDescription").textContent = extension
     ? "Continue A and B to four million learner decisions each. Keep the settings fixed. Check the games along the way."
     : "Three starting conditions, three seeds each. Scripted opponents helped; this Bow initialization did not.";
@@ -51,7 +52,7 @@ function render() {
   const active = d.runs.filter((r) => r.status === "running"), completed = d.runs.filter((r) => r.status === "complete");
   const stale = active.filter((r) => r.update_age_seconds > 90);
   $("studyNotice").classList.toggle("error", d.status === "needs attention" || stale.length > 0);
-  $("studyNotice").textContent = d.evaluation.error || d.training.error || (stale.length
+  $("studyNotice").textContent = (d.runs.some((r) => r.name === "B-s73" && ["failed","interrupted"].includes(r.status)) ? "B seed 73 stopped at 3.84M: 99 entities exceeded its 96-entity observation capacity. Its 4M results are unavailable. The largest shared checkpoint will provide the balanced comparison." : "") || d.evaluation.error || d.training.error || (stale.length
     ? `No new training metrics for ${stale.map((r) => r.name).join(", ")} in over 90 seconds.`
     : extension ? "Continuation keeps weights, Adam and recent opponents. Matches and recurrent memories restart at the 1M boundary."
     : "Completed comparison. Every final checkpoint was evaluated; none was selected for having the best score.");
@@ -59,9 +60,9 @@ function render() {
   $("studyBudget").textContent = `${count.format(d.total_learner_steps)} / ${count.format(d.total_target)} learner decisions${extension ? " · includes the first 1M per run" : ""}`;
   $("studyProgress").style.width = `${Math.min(100, 100 * d.total_learner_steps / d.total_target)}%`;
   $("trainingCount").textContent = `${completed.length} / ${d.runs.length}`;
-  $("activeTraining").textContent = active.length ? `${active.map((r) => r.name).join(", ")} training · ${d.runs.filter((r) => r.status === "queued").length} queued` : completed.length === d.runs.length ? "All training runs complete" : "Waiting for the next run";
+  $("activeTraining").textContent = active.length ? `${active.map((r) => r.name).join(", ")} training · ${d.runs.filter((r) => r.status === "queued").length} queued` : completed.length === d.runs.length ? "All training runs complete" : `${d.runs.filter((r) => ["failed","interrupted"].includes(r.status)).length} interrupted · see run details`;
   $("evaluationCount").textContent = count.format(d.evaluation.completed_games + d.evaluation.active_games);
-  $("evaluationProgress").textContent = `of ${count.format(d.evaluation.expected_games)} scheduled matches · ${d.evaluation.completed_suites}/${d.evaluation.expected_suites} suites complete`;
+  $("evaluationProgress").textContent = `of ${count.format(d.evaluation.expected_games)} scheduled matches · ${d.evaluation.completed_suites}/${d.evaluation.expected_suites} suites complete${d.evaluation.unavailable_games ? ` · ${d.evaluation.unavailable_games} unavailable` : ""}`;
   $("runsHeading").textContent = extension ? "Two conditions. Three seeds." : "Three conditions. Three seeds.";
   $("budgetTag").textContent = extension ? "4M learner decisions per run" : "1M learner decisions per run";
   $("conditionNote").textContent = "A: current and historical policies. B: adds scripted opponents." + (extension ? " Same model, reward, learning rate and opponent settings as before." : " C: Bow teacher initialization with the same mixture as B.");
@@ -76,7 +77,9 @@ function render() {
   }));
   $("crossplaySection").hidden = !extension;
   if (extension) {
-    options($("crossplayMilestone"), Object.entries(d.crossplay).map(([n, value]) => [n, `${Number(n) / 1e6}M · ${value.complete ? "complete" : value.games ? "in progress" : "pending"}`]));
+    const previousCrossplay = $("crossplayMilestone").value;
+    options($("crossplayMilestone"), Object.entries(d.crossplay).map(([n, value]) => [n, `${Number(n) / 1e6}M · ${value.complete ? "complete" : value.unavailable ? "incomplete · unavailable pairings" : value.games ? "in progress" : "pending"}`]));
+    if (!previousCrossplay) $("crossplayMilestone").value = Object.entries(d.crossplay).filter(([,c]) => c.complete).at(-1)?.[0] || "1000000";
     renderCrossplay();
   }
   const conditions = [...new Set(d.runs.map((r) => r.condition))];
@@ -84,22 +87,29 @@ function render() {
   chart("milestoneChart", d.runs.map((r) => ({color:palette[r.condition],points:Object.entries(r.checkpoints).flatMap(([m,e]) => e.development ? [{x:Number(m),y:e.development.win_rate}] : [])})), 1, pct, extension ? 4e6 : 1e6);
   chart("trainingHitsChart", d.runs.map((r) => ({color:palette[r.condition],points:r.curve.map((p) => ({x:p.steps,y:p.hits}))})), null, (n) => count.format(Math.round(n)), extension ? 4e6 : 1e6);
   const milestones = extension ? [1,2,3,4] : [1];
-  const header = element("tr");["Run", ...milestones.map((m) => `Dev ${m}M`), "Reserved 1M", ...(extension ? ["Reserved 4M"] : [])].forEach((s) => header.append(element("th", s)));$("milestoneHead").replaceChildren(header);
+  const header = element("tr");["Run", ...milestones.map((m) => `Dev ${m}M`), "Reserved 1M", ...(extension ? [...(d.fallback.milestone ? [`Reserved ${d.fallback.milestone/1e6}M`] : []), "Reserved 4M"] : [])].forEach((s) => header.append(element("th", s)));$("milestoneHead").replaceChildren(header);
   $("milestoneRows").replaceChildren(...d.runs.map((r) => {
     const tr = element("tr");tr.append(element("th", r.name));
-    [...milestones.map((m) => r.checkpoints[String(m*1e6)].development), r.checkpoints["1000000"].transfer, ...(extension ? [r.checkpoints["4000000"].transfer] : [])].forEach((result) => tr.append(element("td", result ? `${pct(result.win_rate)} · ${result.wins}/${result.games}` : "Pending", result ? "" : "pending")));
+    [...milestones.map((m) => [m*1e6,"development"]), [1000000,"transfer"], ...(extension ? [...(d.fallback.milestone ? [[d.fallback.milestone,"transfer"]] : []), [4000000,"transfer"]] : [])].forEach(([milestone,suite]) => {
+      const cell=r.checkpoints[String(milestone)], result=cell[suite];
+      tr.append(element("td", result ? `${pct(result.win_rate)} · ${result.wins}/${result.games}` : cell.unavailable ? "Unavailable" : "Pending", result ? "" : "pending"));
+    });
     return tr;
   }));
   $("mapNote").textContent = `Training/development maps: ${d.training_maps.join(", ")}. Reserved maps: ${d.transfer_maps.join(", ")}. Draws count as non-wins. Reserve-map opponents differ from development opponents.`;
   options($("detailRun"), d.runs.map((r) => [r.name, r.name]));options($("detailMilestone"), milestones.map((m) => [String(m*1e6), `${m}M`]));renderDetails();
-  options($("studyClip"), d.clips.length ? d.clips.map((c) => [c.url, c.title]) : [["", "No clips yet"]]);renderClip();
+  const previousClip = $("studyClip").value;
+  options($("studyClip"), d.clips.length ? d.clips.map((c) => [c.url, c.title]) : [["", "No clips yet"]]);
+  if (!d.clips.some((c) => c.url === previousClip)) { const latest = d.clips.find((c) => c.url.endsWith("crossplay-4m.mp4"));if (latest) $("studyClip").value = latest.url; }
+  renderClip();
   $("failureSection").hidden = !d.failure_groups;
   if (d.failure_groups) {
-    const b = d.failure_groups.B, scripts = d.failure_groups.script;
+    const b = d.failure_groups.B, later = d.failure_groups_4m?.B;
+    const shown = later || b, scripts = (d.failure_groups_4m || d.failure_groups).script;
     const findings = [
-      [`${b.activation_to_fire.median} ticks`, "Bow is released very quickly", `Median activation-to-shot time in B’s selected failures; scripts take ${scripts.activation_to_fire.median} ticks. Median held-Bow input runs last ${b.holds.median} ticks.`],
-      [`${b.projectile_speeds.median.toFixed(1)} vs ${scripts.projectile_speeds.median.toFixed(1)}`, "Arrows are much slower", "Median observed projectile speeds, B versus scripts, in world units per second. Brief charging is a concrete weakness to investigate."],
-      [`${b.environment_deaths} environment · ${b.self_deaths} self`, "Survival remains unreliable", `${b.opponent_deaths} deaths were credited to the opponent. Credits do not establish the full cause: an uncredited shove can still be environmental.`],
+      [later ? `${b.activation_to_fire.median} → ${later.activation_to_fire.median} ticks` : `${b.activation_to_fire.median} ticks`, later ? "Bow timing · 1M to 4M" : "Bow is released very quickly", `Median activation-to-shot time in the selected B cases; scripts take ${scripts.activation_to_fire.median} ticks. Median held-Bow input runs last ${shown.holds.median} ticks${later ? " at 4M" : ""}.`],
+      [later ? `${b.projectile_speeds.median.toFixed(1)} → ${later.projectile_speeds.median.toFixed(1)}` : `${b.projectile_speeds.median.toFixed(1)} vs ${scripts.projectile_speeds.median.toFixed(1)}`, later ? "Arrow speed · 1M to 4M" : "Arrows are much slower", `Median observed projectile speeds in world units per second. ${later ? "The same cases are used at both checkpoints. Scripts at 4M: " + scripts.projectile_speeds.median.toFixed(1) + "." : "B versus scripts; brief charging is a weakness to investigate."}`],
+      [`${shown.environment_deaths} environment · ${shown.self_deaths} self`, later ? "Deaths at 4M in the same cases" : "Survival remains unreliable", `${shown.opponent_deaths} deaths were credited to the opponent. ${later ? "At 1M: " + b.environment_deaths + " environment, " + b.self_deaths + " self, " + b.opponent_deaths + " opponent. " : ""}Credits do not establish the full cause: an uncredited shove can still be environmental.`],
     ];
     $("failureFindings").replaceChildren(...findings.map(([value,title,detail]) => { const a = element("article");a.append(element("strong",value),element("h3",title),element("p",detail));return a; }));
   }
@@ -120,7 +130,7 @@ function renderCrossplay() {
 function renderDetails() {
   const run=currentStudy.runs.find((r) => r.name===$("detailRun").value);const report=run?.checkpoints[$("detailMilestone").value]?.[$("detailSuite").value];
   $("detailRows").replaceChildren(...(report?.cells || []).map((c) => { const tr=element("tr");[c.map,c.opponent,`${c.wins}/${c.games} (${pct(c.wins/c.games)})`,c.losses,c.draws,c.hits,c.deaths].forEach((v) => tr.append(element("td",String(v))));return tr; }));
-  $("detailNote").textContent=report ? "Both player sides are included in each row." : "This checkpoint/suite is pending or is not scheduled. Reserved-map evaluation runs at 1M and 4M.";
+  $("detailNote").textContent=report ? "Both player sides are included in each row." : "This checkpoint/suite is pending, unavailable, or not scheduled. Reserved-map evaluation includes the shared checkpoint when one is declared.";
 }
 function renderClip() {
   const clip=currentStudy.clips.find((c) => c.url===$("studyClip").value);const video=$("studyVideo");

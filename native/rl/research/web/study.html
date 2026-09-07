@@ -30,7 +30,7 @@
   </section>
   <section class="study-block">
     <div class="section-top"><div><p class="eyebrow">FIXED OPPONENTS, REPEATED MEASUREMENTS</p><h2>Improving—or leveling off?</h2></div><span class="tag">Wins / all matches</span></div>
-    <div class="milestone-layout"><div><div class="chart-title"><b>Development win rate</b><span>Each line is one training seed</span></div><canvas id="milestoneChart" class="chart tall" aria-label="Development win rate at one through four million learner decisions"></canvas><div id="conditionLegend" class="legend"></div><p class="caption">A missing point means evaluation is pending. This previously inspected benchmark tracks progress; it is not a new blind test.</p></div><div><div class="chart-title"><b>Learner arrow hits during training</b><span>Cumulative events</span></div><canvas id="trainingHitsChart" class="chart tall" aria-label="Learner arrow hits across training"></canvas><p class="caption">Opponent mixtures differ. Use the fixed matches to compare strength; training hit counts describe experience.</p></div></div>
+    <div class="milestone-layout"><div><div class="chart-title"><b>Development win rate</b><span>Each line is one training seed</span></div><canvas id="milestoneChart" class="chart tall" aria-label="Development win rate at one through four million learner decisions"></canvas><div id="conditionLegend" class="legend"></div><p class="caption">A missing point means evaluation is pending or unavailable. This previously inspected benchmark tracks progress; it is not a new blind test.</p></div><div><div class="chart-title"><b>Learner arrow hits during training</b><span>Cumulative events</span></div><canvas id="trainingHitsChart" class="chart tall" aria-label="Learner arrow hits across training"></canvas><p class="caption">Opponent mixtures differ. Use the fixed matches to compare strength; training hit counts describe experience.</p></div></div>
     <div class="evaluation-table-wrap"><table class="evaluation-table"><thead id="milestoneHead"></thead><tbody id="milestoneRows"></tbody></table></div>
     <p id="mapNote" class="caption"></p>
     <details class="study-details"><summary>Show every map and opponent</summary><div class="filter-row"><label>Run<select id="detailRun" aria-label="Run for opponent breakdown"></select></label><label>Checkpoint<select id="detailMilestone" aria-label="Checkpoint for opponent breakdown"></select></label><label>Suite<select id="detailSuite" aria-label="Evaluation suite"><option value="development">Development</option><option value="transfer">Reserved maps</option></select></label></div><div class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>Map</th><th>Opponent</th><th>Wins</th><th>Losses</th><th>Draws</th><th>Hits</th><th>Deaths</th></tr></thead><tbody id="detailRows"></tbody></table></div><p id="detailNote" class="caption"></p></details>
@@ -39,15 +39,39 @@
     <div><p class="eyebrow">WATCH THE ACTUAL GAME</p><h2>Keep the numbers honest.</h2><label>Saved match<select id="studyClip" aria-label="Saved game video"><option>No clips yet</option></select></label><p id="clipDetail" class="caption"></p><p class="caption">These are labeled excerpts from fixed saved matches, not a live camera or the strongest-looking games. The checkpoint and player colors are shown above.</p></div>
     <div class="study-video-stage"><video id="studyVideo" controls playsinline preload="metadata" hidden></video><div id="videoPending">Game videos will appear here as they are captured.</div></div>
   </section>
+  <section class="study-block match-library" aria-label="Saved match browser">
+    <div class="section-top"><div><p class="eyebrow">EVERY SAVED MATCH</p><h2>Watch beyond the clips.</h2></div><button id="matchRefresh" type="button">Refresh matches</button></div>
+    <p class="caption">Full matches replayed from recorded inputs in the native game, shown as a lightweight physics view. Colors identify players; artwork and effects are simplified.</p>
+    <p id="matchCoverage" class="caption" role="status">Loading saved matches.</p>
+    <div class="filter-row match-filters">
+      <label>Run<select id="matchRun" aria-label="Filter matches by run"></select></label>
+      <label>Checkpoint<select id="matchCheckpoint" aria-label="Filter matches by checkpoint"></select></label>
+      <label>Suite<select id="matchSuite" aria-label="Filter matches by suite"></select></label>
+      <label>Map<select id="matchMap" aria-label="Filter matches by map"></select></label>
+      <label>Opponent<select id="matchOpponent" aria-label="Filter matches by opponent"></select></label>
+      <label>Result<select id="matchOutcome" aria-label="Filter matches by result"></select></label>
+    </div>
+    <div class="match-selection"><label>Match<select id="matchPicker" aria-label="Choose a full saved match"></select></label><button id="matchWatch" type="button">Watch match</button><button id="matchNext" type="button">Next match →</button></div>
+    <p id="matchStatus" role="status" class="caption">Choose a match to prepare its replay.</p>
+    <div id="matchStage" hidden>
+      <p id="matchIdentity" class="match-identity"></p>
+      <canvas id="matchCanvas" width="960" height="540" aria-label="Native game replay physics view"></canvas>
+      <div id="matchHud" class="match-hud"></div>
+      <div class="match-controls"><button id="matchPlay" type="button">Play</button><button id="matchBack" type="button" aria-label="Previous replay frame">− frame</button><button id="matchForward" type="button" aria-label="Next replay frame">+ frame</button><label>Speed<select id="matchSpeed" aria-label="Replay playback speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label><span id="matchTime"></span><a id="matchDownload">Native replay ↗</a></div>
+      <input id="matchSeek" type="range" min="0" max="1" step="1" value="0" aria-label="Seek full match">
+    </div>
+  </section>
   <section id="failureSection" class="study-block" hidden>
-    <div class="section-top"><div><p class="eyebrow">WHAT STILL BREAKS</p><h2>Ranged combat needs work.</h2></div><span class="tag">Fixed failure review</span></div>
-    <p class="caption">18 selected B losses against archers and evasive fighters, plus their matched A cases. The sample covers three maps and three training seeds. It describes failures, not average performance.</p>
+    <div class="section-top"><div><p class="eyebrow">WHAT STILL BREAKS</p><h2>Review the hard cases.</h2></div><span class="tag">Fixed failure review</span></div>
+    <p class="caption">18 selected B losses against archers and evasive fighters, plus their matched A cases. The sample covers three maps and three training seeds. It describes failures, not average performance. The same cases can be repeated at a later common checkpoint regardless of their new outcomes.</p>
     <div id="failureFindings" class="finding-grid"></div><p class="caption">Input holds include time outside active Bow. Activation-to-shot timing has four-tick resolution. Projectile speeds come from the first observed state after firing. These observations identify problems to test; they do not isolate every cause.</p>
   </section>
   <section id="retentionSection" class="study-block" hidden><p class="eyebrow">SKILL RETENTION</p><h2>The original shot did not survive.</h2><p id="retentionText"></p></section>
   <section class="study-block study-health"><div><p class="eyebrow">LIVE TRAINING HEALTH</p><h2>Is the run moving?</h2><p id="healthDetail" class="caption"></p></div><div><canvas id="studySpeedChart" class="chart" aria-label="Learner decisions per second during training"></canvas><p class="caption">Collection and optimization time, converted to learner decisions. Concurrent evaluation can affect throughput.</p></div></section>
   <footer><span>BOPL / LEARNING LAB</span><nav id="studyLinks" aria-label="Research evidence"></nav><span id="studyUpdated">Waiting for data</span></footer>
 </main>
+<script src="/arena.js"></script>
 <script src="/study.js"></script>
+<script src="/matches.js"></script>
 </body>
 </html>
