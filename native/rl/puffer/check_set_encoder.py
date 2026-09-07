@@ -21,12 +21,14 @@ REVISION='42f70d6932c30ac977736f861006809c50168ba9'
 def build(output, source, compiler):
     nvidia=Path(sysconfig.get_path('purelib'))/'nvidia'
     cuda=nvidia/'cu13'
+    obj=output.with_suffix('.o')
     subprocess.run([str(cuda/'bin/nvcc'),'-O3','-std=c++17','-arch=sm_120',
                     '-ccbin',compiler,'-Xcompiler=-fPIC','-DPRECISION_FLOAT',
                     '-I'+str(source/'src'),'-I'+str(cuda/'include'),
-                    '--shared',str(HERE/'check_set_encoder.cu'),
+                    '-c',str(HERE/'check_set_encoder.cu'),'-o',str(obj)],check=True)
+    subprocess.run([compiler,'-shared',str(obj),
                     str(cuda/'lib/libcudart.so.13'),str(cuda/'lib/libcublas.so.13'),
-                    '-Xlinker=--disable-new-dtags','-Xlinker=-rpath','-Xlinker='+str(cuda/'lib'),
+                    '-Wl,--disable-new-dtags,-rpath,'+str(cuda/'lib'),
                     '-o',str(output)],check=True)
 
 
@@ -75,10 +77,13 @@ def main():
     parser.add_argument('--output',type=Path,default=ROOT/'native/artifacts/rl/native-migration-audit/cuda-set')
     parser.add_argument('--puffer',type=Path,default=ROOT/'native/artifacts/rl/dependencies'/f'PufferLib-{REVISION}')
     parser.add_argument('--build',action='store_true')
+    parser.add_argument('--build-only',action='store_true',help='Compile the harness without loading CUDA or running checks')
     parser.add_argument('--cuda-host-compiler',default='g++-15')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     library=args.output/'check_set_encoder.so'
-    if args.build:build(library,args.puffer,args.cuda_host_compiler)
+    if args.build or args.build_only:build(library,args.puffer,args.cuda_host_compiler)
+    if args.build_only:
+        print(library);return
     lib=ctypes.CDLL(str(library))
     array=np.ctypeslib.ndpointer(dtype=np.float32,flags='C_CONTIGUOUS')
     lib.bopl_set_check_create.argtypes=[ctypes.c_int,ctypes.c_int];lib.bopl_set_check_create.restype=ctypes.c_void_p
