@@ -88,8 +88,8 @@ internal static class RlProfile
     }
 
     // Call counters for hot arithmetic (Fix division / square root / multiply).
-    internal static readonly long[] Counters = new long[2];
-    private static readonly string[] counterNames = { "fix_div", "fix_sqrt" };
+    internal static readonly long[] Counters = new long[5];
+    private static readonly string[] counterNames = { "fix_div", "fix_sqrt", "rr_scanned", "rr_active", "rr_culled" };
 
     private static void Enter(Dictionary<string, long[]> table, string name)
     {
