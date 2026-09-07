@@ -58,9 +58,11 @@ def summarize(values):
     return dict(mean=statistics.fmean(values),median=statistics.median(values),
                 p10=values[int(.1*len(values))],p90=values[min(len(values)-1,int(.9*len(values)))],n=len(values))
 
-def run_once(python,out,workers,decisions,seed,extra,env):
+def run_once(python,out,workers,decisions,seed,extra,env,start_step=0):
     metrics=out/'metrics.jsonl'
-    command=[python,str(HERE/'train.py'),'--output',str(out),'--workers',str(workers),'--steps',str(decisions),
+    # train.py's --steps is an absolute all-player step target, so a resumed
+    # run (--load at start_step) needs start_step added to the budget.
+    command=[python,str(HERE/'train.py'),'--output',str(out),'--workers',str(workers),'--steps',str(start_step+decisions),
              '--seed',str(seed),'--no-eval','--no-video',*extra]
     log=out.with_suffix('.log').open('w')
     log.write(' '.join(shlex.quote(x) for x in command)+'\n'); log.flush()
@@ -75,7 +77,10 @@ def run_once(python,out,workers,decisions,seed,extra,env):
     loop=sum(r['rollout_seconds']+r['train_seconds'] for r in records)
     rollout=sum(r['rollout_seconds'] for r in records)
     snapshot=sum(r.get('snapshot_seconds',0) for r in records)
-    steps=records[-1]['step']
+    steps=records[-1]['step']-start_step
+    per_update=json.loads((out/'config.json').read_text())['decisions_per_update']
+    if records[0]['step']-per_update!=start_step:
+        raise RuntimeError(f'{out.name} started at step {records[0]["step"]-per_update}, expected {start_step}')
     result=json.loads((out/'result.json').read_text())
     window=[s for s in sampler.samples if sampler.loop_started is not None and s['t']>=sampler.loop_started]
     # active_seconds: train.py's own clock from pool/graph setup through the
@@ -105,6 +110,7 @@ def main():
     parser.add_argument('--decisions',type=int,default=98304)
     parser.add_argument('--seed',type=int,default=73)
     parser.add_argument('--label',default='')
+    parser.add_argument('--start-step',type=int,default=0,help='All-player step of the checkpoint passed with --load in the extra args; decision counts and the --steps target are relative to it')
     parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Pass flags explicitly; an empty arm uses train.py defaults')
     parser.add_argument('extra',nargs='*',help='extra train.py arguments for every run (after --)')
     opt=parser.parse_args()
@@ -134,14 +140,14 @@ def main():
                     median_wall_seconds=statistics.median(r['wall_seconds'] for r in rows),
                     collection_share=statistics.median(r['rollout_seconds']/r['loop_seconds'] for r in rows))
         summary.write_text(json.dumps(dict(schema=1,label=opt.label,gpu=gpu,cpu_count=os.cpu_count(),decisions=opt.decisions,
-            seed=opt.seed,repeats=opt.repeats,extra=opt.extra,arms={a:e for a,e in arms},table=table,
+            seed=opt.seed,repeats=opt.repeats,start_step=opt.start_step,extra=opt.extra,arms={a:e for a,e in arms},table=table,
             runs=[{k:v for k,v in r.items() if k!='samples'} for r in runs]),indent=2)+'\n')
     for repeat in range(opt.repeats):
         for w in workers:
             for arm,extra in arms:
                 name=f'{arm}-w{w}-{repeat+1}'
                 print(f'== {name}',flush=True)
-                result=run_once(python,out/name,w,opt.decisions,opt.seed,[*extra,*opt.extra],env); result['arm']=arm
+                result=run_once(python,out/name,w,opt.decisions,opt.seed,[*extra,*opt.extra],env,opt.start_step); result['arm']=arm
                 (out/f'{name}-samples.json').write_text(json.dumps(result['samples'])+'\n')
                 runs.append(result); write()
                 print(json.dumps({k:v for k,v in result.items() if k in ('name','decisions_per_second','decisions_per_second_active','decisions_per_second_wall','snapshot_seconds','pool_versions','wall_seconds','gpu_util','gpu_power_w','busy_cores')}),flush=True)

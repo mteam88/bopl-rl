@@ -1,0 +1,31 @@
+{
+ "schema": 1,
+ "checkpoint_sha256": "5fdabda8ee6198a09b83a2669b7b0828f557074c4ca194d02754a92c69dc6875",
+ "historical": [
+  {
+   "step": 4710400,
+   "path": "policy-004710400.pt",
+   "sha256": "1a53a0e4e82ad00649ebfbe9138383bc713bb19b129515ad5c7a5e1606763a6a"
+  },
+  {
+   "step": 4812800,
+   "path": "policy-004812800.pt",
+   "sha256": "bd136e0e5f95de9c0d1d8aaba743f5550b444baeafe3349955d1e96372b658e1"
+  },
+  {
+   "step": 4915200,
+   "path": "policy-004915200.pt",
+   "sha256": "05bdf2089897bfd4cb15db1bfaeaa993b147b9c37a5b0d3b89e1f05ff69c6a8f"
+  },
+  {
+   "step": 5017600,
+   "path": "policy-005017600.pt",
+   "sha256": "5fdabda8ee6198a09b83a2669b7b0828f557074c4ca194d02754a92c69dc6875"
+  }
+ ],
+ "checkpoint_every": 100000,
+ "next_checkpoint": 5117600,
+ "reset_note": "Sustained-training benchmark workload: resume dap-multimap-001-s73 at all-player step 5017600 (updates 1225) with its four most recent historical snapshots, maps 0,1,2, fresh games and NumPy RNG from --seed. Restores weights, Adam, Torch/CUDA RNG and the 100k snapshot cadence so checkpoint/frozen-copy/graph-capture costs recur at the real rate.",
+ "source_run": "native/artifacts/rl/dap-multimap-001-s73",
+ "source_checkpoint": "checkpoints/policy-005017600.pt"
+}
