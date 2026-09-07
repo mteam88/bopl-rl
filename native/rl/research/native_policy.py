@@ -6,7 +6,7 @@ Each thread and batch size owns a C context; recurrent state belongs to the
 caller, so independent games cannot leak memory into one another.
 
 Checkpoint sidecar: <weights.bin>.json, schema 1, backend=pufferlib-native,
-architecture=puffernet-mingru, precision=float32, obs_size, hidden, num_layers,
+architecture=puffernet-mingru or bopl-set-mingru-v1, precision=float32, obs_size, hidden, num_layers,
 action_sizes=[256,16], weights_sha256, and step (physical player decisions,
 matching dashboard metrics and evaluation reports). Record learner_steps
 separately for checkpoint cadence and the training budget.
@@ -25,6 +25,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 LIBRARY = ROOT / "native/artifacts/rl/libbopl_policy_eval.so"
+ARCHITECTURES = {"puffernet-mingru", "bopl-set-mingru-v1"}
 
 
 def build(output=LIBRARY):
@@ -51,9 +52,9 @@ def _library(path):
 
 
 class _Context:
-    def __init__(self, lib, weights, batch, observations, hidden, layers):
+    def __init__(self, lib, create, weights, batch, observations, hidden, layers):
         self.lib = lib
-        self.handle = lib.bopl_policy_eval_create(weights, weights.size, batch, observations, hidden, layers)
+        self.handle = create(weights, weights.size, batch, observations, hidden, layers)
         if not self.handle:
             raise ValueError("Invalid native policy dimensions or weights")
 
@@ -63,18 +64,32 @@ class _Context:
 
 
 class NativePolicy:
-    def __init__(self, weights, obs_size, hidden=128, num_layers=1, library=LIBRARY):
+    def __init__(self, weights, obs_size, hidden=128, num_layers=1, library=LIBRARY,
+                 architecture="puffernet-mingru"):
+        if architecture not in ARCHITECTURES:
+            raise ValueError(f"Unsupported native checkpoint architecture: {architecture!r}")
+        self.architecture = architecture
         self.obs_size = int(obs_size)
         self.hidden = int(hidden)
         self.num_layers = int(num_layers)
         if self.obs_size < 1 or self.hidden < 8 or self.hidden % 8 or self.num_layers < 1:
             raise ValueError("Positive dimensions and hidden size divisible by eight are required")
-        expected = self.hidden * (self.obs_size + 273) + self.num_layers * 3 * self.hidden**2
+        encoder_weights = self.hidden * self.obs_size
+        if self.architecture == "bopl-set-mingru-v1":
+            if self.obs_size != 3257:
+                raise ValueError("Bopl set checkpoints require 3257 observation features")
+            encoder_weights = self.hidden * 905 + 64 * (21 + 28) + self.hidden * (self.hidden + 128)
+        expected = encoder_weights + self.hidden * 273 + self.num_layers * 3 * self.hidden**2
         self.weights = np.asarray(weights, dtype=np.float32).reshape(-1).copy()
         if self.weights.size != expected or not np.isfinite(self.weights).all():
             raise ValueError(f"Expected {expected} finite native weights, got {self.weights.size}")
         self.weights.flags.writeable = False
         self.lib = _library(library)
+        self.create = self.lib.bopl_policy_eval_create
+        if self.architecture == "bopl-set-mingru-v1":
+            self.create = self.lib.bopl_policy_eval_create_set
+            self.create.argtypes = self.lib.bopl_policy_eval_create.argtypes
+            self.create.restype = ctypes.c_void_p
         self.local = threading.local()
 
     def eval(self):
@@ -100,7 +115,7 @@ class NativePolicy:
         if not hasattr(self.local, "contexts"):
             self.local.contexts = {}
         if batch not in self.local.contexts:
-            self.local.contexts[batch] = _Context(self.lib, self.weights, batch, self.obs_size,
+            self.local.contexts[batch] = _Context(self.lib, self.create, self.weights, batch, self.obs_size,
                                                 self.hidden, self.num_layers)
         context = self.local.contexts[batch]
         output = np.empty((batch, 273), dtype=np.float32)
@@ -116,7 +131,7 @@ def load(path, device="cpu", metadata=None, library=LIBRARY):
         raise ValueError("NativePolicy loading supports CPU evaluation only")
     path = Path(path)
     meta = dict(metadata) if metadata is not None else json.loads(Path(str(path) + ".json").read_text())
-    expected = {"schema": 1, "backend": "pufferlib-native", "architecture": "puffernet-mingru",
+    expected = {"schema": 1, "backend": "pufferlib-native",
                 "precision": "float32", "action_sizes": [256, 16]}
     for key, value in expected.items():
         if meta.get(key) != value:
@@ -130,7 +145,7 @@ def load(path, device="cpu", metadata=None, library=LIBRARY):
         if type(meta.get(key)) is not int or meta[key] < (0 if key == "step" else 1):
             raise ValueError(f"Invalid native checkpoint {key}")
     policy = NativePolicy(np.frombuffer(data, dtype="<f4"), meta["obs_size"], meta["hidden"],
-                          meta["num_layers"], library=library)
+                          meta["num_layers"], library=library, architecture=meta.get("architecture"))
     return policy, meta
 
 
