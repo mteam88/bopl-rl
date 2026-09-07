@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.."
+if [[ -f native/rl/autoresearch/.env ]]; then
+  set -a
+  source native/rl/autoresearch/.env
+  set +a
+fi
 plugin=${BOPL_RALPH_PLUGIN:-$HOME/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph-loop}
 if [[ ! -f "$plugin/.claude-plugin/plugin.json" ]]; then
   echo 'Set BOPL_RALPH_PLUGIN to the official Ralph Loop plugin directory.' >&2

@@ -9,3 +9,4 @@ bin/
 *.sln
 build.log
 .claude/ralph-loop.local.md
+native/rl/autoresearch/.env

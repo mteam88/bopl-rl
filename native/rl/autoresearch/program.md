@@ -60,5 +60,7 @@ Run `native/rl/autoresearch/run.sh` from a dedicated Rift checkout. It loads the
 locally available official Ralph Loop plugin for this session and selects
 `claude-fable-5-1`. No global plugin installation is needed. Pass `--bg` to run
 in the background; use `claude attach <id>` / `claude stop <id>` to manage it.
+The prepared Rift has the existing proxy credentials in a private, gitignored
+`native/rl/autoresearch/.env`, so launching from a fresh SSH shell works too.
 In an interactive session, `/ralph-loop:cancel-ralph` cancels the repeat hook.
 Ralph repeats when Claude finishes a turn; its iterations are not experiments.
