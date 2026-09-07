@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -70,7 +71,16 @@ def main():
     parser.add_argument('--no-eval',action='store_true')
     parser.add_argument('--no-video',action='store_true')
     parser.add_argument('--load',type=Path)
+    parser.add_argument('--initialize',type=Path,help='Weights only, fresh optimizer and decision count')
+    parser.add_argument('--lr',type=float,default=3e-4)
+    parser.add_argument('--learner-steps',type=int,help='Stop by actions included in PPO, rather than all player actions')
+    parser.add_argument('--scripted-opponents',type=Path)
+    parser.add_argument('--scripted-fraction',type=float,default=2/3,
+                        help='Fraction of historical-opponent assignments replaced by scripts')
     opt=parser.parse_args()
+    if opt.load and opt.initialize: parser.error('Choose resume or weights-only initialization')
+    if opt.lr<=0 or not 0<=opt.scripted_fraction<=1: parser.error('Invalid learning rate or scripted fraction')
+    if opt.learner_steps is not None and opt.learner_steps<1: parser.error('Positive learner budget required')
     if min(opt.steps,opt.workers,opt.horizon,opt.sequence,opt.epochs,opt.checkpoint_every,opt.episode_ticks)<1 or opt.horizon%opt.sequence:
         parser.error('Positive counts and horizon divisible by sequence are required')
     if opt.minibatch_segments is not None and opt.minibatch_segments<1: parser.error('Minibatch segments must be positive')
@@ -104,13 +114,25 @@ def main():
     device='cuda'
     vec=Vector(opt.workers,opt.seed,opt.episode_ticks,groups=opt.pipeline_groups,training_maps=opt.training_maps)
     policy=Policy(vec.obs_size).to(device)
-    optimizer=torch.optim.Adam(policy.parameters(),lr=3e-4,eps=1e-5)
-    step=0; updates=0
+    optimizer=torch.optim.Adam(policy.parameters(),lr=opt.lr,eps=1e-5)
+    step=0; updates=0; learner_steps=0
+    if opt.initialize:
+        initial=torch.load(opt.initialize,map_location=device,weights_only=False)
+        if initial.get('action_mode','absolute')!='absolute' or initial.get('input_mode','full')!='full' or initial.get('task')=='bow':
+            raise ValueError('Initialization must explicitly use the full-game action contract')
+        policy.load_state_dict(initial['policy'])
     if opt.load:
         previous=torch.load(opt.load,map_location=device,weights_only=False)
         policy.load_state_dict(previous['policy']); optimizer.load_state_dict(previous['optimizer'])
         step=previous['step']; updates=previous['updates']
+        learner_steps=previous.get('learner_steps',0)
+        if opt.learner_steps and 'learner_steps' not in previous:
+            raise ValueError('Cannot resume a learner budget without its saved count')
     config={**vars(opt),'output':str(out),'load':str(opt.load) if opt.load else None,
+            'initialize':str(opt.initialize.resolve()) if opt.initialize else None,
+            'initialize_sha256':hashlib.sha256(opt.initialize.read_bytes()).hexdigest() if opt.initialize else None,
+            'scripted_opponents':str(opt.scripted_opponents.resolve()) if opt.scripted_opponents else None,
+            'scripted_manifest_sha256':hashlib.sha256(opt.scripted_opponents.read_bytes()).hexdigest() if opt.scripted_opponents else None,
             'evaluation_opponents':str(opt.evaluation_opponents.resolve()) if opt.evaluation_opponents else None,
             'frozen_opponents':frozen,
             'evaluation_baseline':str(opt.evaluation_baseline.resolve()) if opt.evaluation_baseline else None,
@@ -121,10 +143,13 @@ def main():
             'gpu':torch.cuda.get_device_name(),
             'pipeline_groups':opt.pipeline_groups,'cuda_graphs':opt.cuda_graphs,'split_step_env':os.environ.get('BOPL_SPLIT_STEP','0'),
             'decisions_per_update':opt.horizon*vec.size,'minibatch_segments':max(4,opt.minibatch_segments if opt.minibatch_segments is not None else vec.size),
-            'algorithm':'recurrent PPO','gamma':.995,'gae_lambda':.95,'learning_rate':.0003,
+            'algorithm':'recurrent PPO','gamma':.995,'gae_lambda':.95,'learning_rate':opt.lr,
             'action_hz':15,'observation_delay_ticks':9,'own_previous_actions':'immediate','loadout':['dash','arrow','platform'],
             'training_maps':opt.training_maps,'eval_maps':opt.evaluation_maps+opt.heldout_maps,'stocks':3,'pool_size':4,
-            'historical_game_fraction':.5,'reward':{'win':1,'loss':-1,'kill':.1,'death':-.1,'timeout':0},
+            'fixed_opponent_game_fraction':.5,
+            'historical_game_fraction':.5*(1-opt.scripted_fraction if opt.scripted_opponents else 1),
+            'scripted_game_fraction':.5*opt.scripted_fraction if opt.scripted_opponents else 0,
+            'reward':{'win':1,'loss':-1,'kill':.1,'death':-.1,'timeout':0},
             'timeout_semantics':'finite-horizon match; no winner bonus; terminal value zero',
             'puffer_revision':'42f70d6932c30ac977736f861006809c50168ba9',
             'assembly_sha256':hashlib.sha256((ROOT/'Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll').read_bytes()).hexdigest()}
@@ -134,13 +159,18 @@ def main():
             if file.is_file() and file.suffix in ('.py','.c','.h','.ini','.patch','.html','.css','.js','.lock'):
                 relative=str(file.relative_to(ROOT)); sources[relative]=hashlib.sha256(file.read_bytes()).hexdigest()
     config['source_sha256']=sources
+    for relative in sources:
+        target=out/'source'/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(ROOT/relative,target)
     from pufferlib import _C
     config['puffer_library_sha256']=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest()
     config['bootstrap_sha256']=hashlib.sha256((ROOT/'native/fixtures/movement.rep').read_bytes()).hexdigest()
     config['research_library_sha256']=hashlib.sha256((ROOT/'native/artifacts/rl/libbopl_research.so').read_bytes()).hexdigest()
     config['git_revision']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     atomic_json(out/'config.json',config)
-    atomic_json(out/'status.json',dict(status='starting',pid=os.getpid(),step=step,target_steps=opt.steps))
+    atomic_json(out/'status.json',dict(status='starting',pid=os.getpid(),step=step,target_steps=opt.steps,
+                                     target_learner_steps=opt.learner_steps,learner_steps=learner_steps))
     (out/'checkpoints').mkdir(); (out/'evaluations').mkdir()
     stopping=False
     def stop(signum,frame):
@@ -158,6 +188,20 @@ def main():
     historical=[w%2==1 for w in range(opt.workers)]
     side=[w%2 for w in range(opt.workers)]
     random=np.random.default_rng(opt.seed)
+    from scripted_opponents import load_specs,ScriptedOpponent
+    script_specs=load_specs(opt.scripted_opponents) if opt.scripted_opponents else []
+    script_rng=np.random.default_rng(opt.seed+1000003)
+    scripts=[None]*opt.workers
+    script_assignments={spec.name:0 for spec in script_specs}
+    def assign_script(w):
+        scripts[w]=None
+        historical[w]=w%2==1
+        if historical[w] and script_specs and script_rng.random()<opt.scripted_fraction:
+            spec=script_specs[int(script_rng.integers(len(script_specs)))]
+            scripts[w]=ScriptedOpponent(spec,int(script_rng.integers(2**31)))
+            script_assignments[spec.name]+=1
+            historical[w]=False
+    for w in range(opt.workers): assign_script(w)
     n=vec.size; h=policy.hidden; tmax=opt.horizon; length=opt.sequence
     minibatch=max(4,opt.minibatch_segments if opt.minibatch_segments is not None else n)
     state=policy.initial(n,device); frozen_state=policy.initial(n,device)
@@ -190,7 +234,7 @@ def main():
     def checkpoint(label):
         path=out/'checkpoints'/f'{label}.pt'; tmp=path.with_suffix('.tmp')
         torch.save(dict(schema=1,policy=policy.state_dict(),optimizer=optimizer.state_dict(),
-                        obs_size=vec.obs_size,hidden=h,step=step,updates=updates,config=config,
+                        obs_size=vec.obs_size,hidden=h,step=step,learner_steps=learner_steps,updates=updates,config=config,
                         torch_rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state()),tmp)
         tmp.replace(path)
         return path
@@ -226,7 +270,7 @@ def main():
     service_evaluation(initial_path)
     status='running'; failure=None; result=None
     try:
-        while step<opt.steps and not stopping:
+        while (learner_steps<opt.learner_steps if opt.learner_steps else step<opt.steps) and not stopping:
             rollout_started=time.monotonic()
             obs=torch.empty(tmax,n,vec.obs_size,device=device)
             actions=torch.empty(tmax,n,2,dtype=torch.long,device=device)
@@ -236,6 +280,7 @@ def main():
             resets=torch.empty(tmax,n,dtype=torch.bool,device=device)
             events=np.empty((tmax,n,len(FIELDS)),dtype=np.float32)
             memories=torch.empty(tmax//length,1,n,h,device=device)
+            game_decisions={'current':0,'historical':0,**{spec.name:0 for spec in script_specs}}
             def collect(t,g):
                 """Bank group g's results of decision t (its step is complete) and
                 apply its episode boundaries before the group's next inference."""
@@ -250,6 +295,7 @@ def main():
                 for w in np.flatnonzero(ended):
                     w+=g*wpg; matches[0]+=1
                     versions[w]=int(random.choice(recent)); side[w]=int(random.integers(2))
+                    assign_script(w)
                 # No snapshot can disappear while a match is still using it.
                 keep=set(recent)|set(versions)
                 for version in list(pool):
@@ -271,6 +317,19 @@ def main():
                         state[:,sl].copy_(next_state)
                         opponents[g].refresh(versions,historical,side)
                         active=opponents[g].act(pool,group_obs,frozen_state[:,sl],chosen,group_steppers(g))
+                        script_workers=[w for w in range(g*wpg,(g+1)*wpg) if scripts[w] is not None]
+                        for w in range(g*wpg,(g+1)*wpg):
+                            kind=scripts[w].spec.name if scripts[w] is not None else 'historical' if historical[w] else 'current'
+                            game_decisions[kind]+=1
+                        if script_workers:
+                            # One device-to-host transfer per group. Scripts see
+                            # precisely the same delayed observations as policy.
+                            delayed=group_obs.cpu().numpy()
+                            active=active.clone()
+                            for w in script_workers:
+                                row=2*(w-g*wpg)+side[w]
+                                chosen[row]=torch.as_tensor(scripts[w].act(delayed[row]),device=device)
+                                active[row]=False
                         actions[t,sl]=chosen; old_logp[t,sl]=logp; values[t,sl]=value; masks[t,sl]=active
                         if groups>1:
                             vec.step_group(g,chosen)
@@ -300,6 +359,7 @@ def main():
             torch.cuda.synchronize()
             train_seconds=time.monotonic()-optimize_started
             step+=tmax*n; updates+=1
+            learner_steps+=int(masks.sum().item())
             learner_mask=masks.cpu().numpy()
             buttons=actions[:,:,1].cpu().numpy()[learner_mask]
             behavior=summarize(events[learner_mask])
@@ -314,7 +374,7 @@ def main():
             variance=target.var(unbiased=False)
             explained=(1-(target-prediction).var(unbiased=False)/variance).item() if variance>1e-12 else 0.0
             elapsed=time.monotonic()-started
-            record=dict(step=step,update=updates,elapsed=elapsed,sps=tmax*n/(rollout_seconds+train_seconds),
+            record=dict(step=step,learner_steps=learner_steps,script_assignments=script_assignments.copy(),update=updates,elapsed=elapsed,sps=tmax*n/(rollout_seconds+train_seconds),
                 mean_reward=float(mean),matches=completed_matches,env=env,
                 map_matches={key.removeprefix('map_').removesuffix('_fraction'):round(value*env['n']/2)
                              for key,value in env.items() if key.startswith('map_') and key.endswith('_fraction')},
@@ -323,7 +383,7 @@ def main():
                 kl=float(loss[3]),clip_fraction=float(loss[4]),gradient_norm=float(loss[5]),explained_variance=explained,
                 action_rates={name:float(np.mean((buttons&(1<<i))!=0)) for i,name in enumerate(['jump','dash','arrow','platform'])},
                 behavior=behavior,
-                pool_steps=recent,learner_fraction=float(masks.float().mean().item()),
+                pool_steps=recent,learner_fraction=float(masks.float().mean().item()),opponent_game_decisions=game_decisions,
                 cuda_memory_mb=torch.cuda.max_memory_allocated()/1048576)
             if groups>1: record['pipeline']=vec.group_profile()
             # Snapshot work (checkpoint file, frozen copy, historical graph
@@ -343,7 +403,8 @@ def main():
             record['snapshot_seconds']=time.monotonic()-snapshot_started
             record['pool_versions']=len(pool); record['steppers']=len(steppers)
             metrics.write(json.dumps(record,allow_nan=False)+'\n')
-            atomic_json(out/'status.json',dict(status='running',pid=os.getpid(),**record,target_steps=opt.steps))
+            atomic_json(out/'status.json',dict(status='running',pid=os.getpid(),**record,target_steps=opt.steps,
+                                              target_learner_steps=opt.learner_steps))
             if updates%5==0: print(json.dumps(record),flush=True)
         status='stopped' if stopping else 'complete'
         final=checkpoint(f'policy-{step:09d}')
@@ -351,7 +412,7 @@ def main():
         # Let the last evaluation finish so the run includes its final evidence.
         while evaluation or pending_evaluation:
             service_evaluation(); time.sleep(1)
-        result=dict(status=status,step=step,updates=updates,
+        result=dict(status=status,step=step,learner_steps=learner_steps,updates=updates,
                     elapsed=time.monotonic()-started,checkpoint=str(final),matches=completed_matches)
     except BaseException as error:
         status='failed'; failure=str(error); traceback.print_exc()
@@ -363,7 +424,8 @@ def main():
             except subprocess.TimeoutExpired: evaluation.kill(); evaluation.wait()
         metrics.close(); vec.close()
         atomic_json(out/'status.json',dict(status=status,pid=os.getpid(),step=step,updates=updates,
-                    target_steps=opt.steps,elapsed=time.monotonic()-started,failure=failure,matches=completed_matches))
+                    target_steps=opt.steps,target_learner_steps=opt.learner_steps,learner_steps=learner_steps,
+                    elapsed=time.monotonic()-started,failure=failure,matches=completed_matches))
         if video_process:
             try: video_code=video_process.wait(timeout=150)
             except subprocess.TimeoutExpired:

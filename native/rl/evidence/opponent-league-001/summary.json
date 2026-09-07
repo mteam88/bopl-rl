@@ -1,0 +1,2368 @@
+{
+  "schema": 1,
+  "protocol_sha256": "e5b16ba7ab00a58ea81d35c6f8779d7cbb5c5bb544a6c7cbe35af91755de25e2",
+  "runs": {
+    "A-s73": {
+      "condition": "A",
+      "seed": 73,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 1563,
+      "training_seconds": 378.39490996301174,
+      "wall_seconds": 400.7045338839962,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 333824
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "66acfe7fa63f8088d03bcaa011faa98eaa049f1fd230bd432a730b98305a7aef",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 21,
+        "losses": 87,
+        "timeouts": 36,
+        "draws": 36,
+        "win_rate": 0.14583333333333334,
+        "kills": 166,
+        "deaths": 343,
+        "hits": 75.0,
+        "shots": 1555.0,
+        "environment_deaths": 210.0,
+        "opponent_environment_deaths": 86.0,
+        "elapsed": 62.6534903980064,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 6
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.1875,
+            "games": 16,
+            "wins": 3,
+            "timeouts": 3
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 5
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 2
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.3125,
+            "games": 16,
+            "wins": 5,
+            "timeouts": 3
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 7
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 6
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.625,
+            "games": 16,
+            "wins": 10,
+            "timeouts": 0
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 4
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 108,
+        "losses": 242,
+        "timeouts": 34,
+        "draws": 34,
+        "win_rate": 0.28125,
+        "kills": 467,
+        "deaths": 910,
+        "hits": 274.0,
+        "shots": 3271.0,
+        "environment_deaths": 527.0,
+        "opponent_environment_deaths": 280.0,
+        "elapsed": 230.1103731040057,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 3
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.3125,
+            "games": 32,
+            "wins": 10,
+            "timeouts": 0
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 4
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.46875,
+            "games": 32,
+            "wins": 15,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 5
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.5,
+            "games": 32,
+            "wins": 16,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.125,
+            "games": 32,
+            "wins": 4,
+            "timeouts": 2
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.4375,
+            "games": 32,
+            "wins": 14,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 5
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.65625,
+            "games": 32,
+            "wins": 21,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 15
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.59375,
+            "games": 32,
+            "wins": 19,
+            "timeouts": 0
+          }
+        ]
+      }
+    },
+    "A-s173": {
+      "condition": "A",
+      "seed": 173,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 1611,
+      "training_seconds": 372.60637812399364,
+      "wall_seconds": 395.20306708100543,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 333824
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "8630a566296d060960a60abf9055784ecce0dc135add2c858903eb6e85b15ec2",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 20,
+        "losses": 115,
+        "timeouts": 9,
+        "draws": 9,
+        "win_rate": 0.1388888888888889,
+        "kills": 118,
+        "deaths": 384,
+        "hits": 66.0,
+        "shots": 1184.0,
+        "environment_deaths": 284.0,
+        "opponent_environment_deaths": 95.0,
+        "elapsed": 75.86219474500103,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 1
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.375,
+            "games": 16,
+            "wins": 6,
+            "timeouts": 1
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 2
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 0
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.375,
+            "games": 16,
+            "wins": 6,
+            "timeouts": 0
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 2
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 1
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.3125,
+            "games": 16,
+            "wins": 5,
+            "timeouts": 0
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 2
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 108,
+        "losses": 235,
+        "timeouts": 41,
+        "draws": 41,
+        "win_rate": 0.28125,
+        "kills": 392,
+        "deaths": 912,
+        "hits": 239.0,
+        "shots": 3247.0,
+        "environment_deaths": 607.0,
+        "opponent_environment_deaths": 303.0,
+        "elapsed": 181.54003703600029,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 5
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.53125,
+            "games": 32,
+            "wins": 17,
+            "timeouts": 1
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0625,
+            "games": 32,
+            "wins": 2,
+            "timeouts": 4
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.46875,
+            "games": 32,
+            "wins": 15,
+            "timeouts": 2
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 3
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.34375,
+            "games": 32,
+            "wins": 11,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.21875,
+            "games": 32,
+            "wins": 7,
+            "timeouts": 5
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.46875,
+            "games": 32,
+            "wins": 15,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 9
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.59375,
+            "games": 32,
+            "wins": 19,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 12
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.46875,
+            "games": 32,
+            "wins": 15,
+            "timeouts": 0
+          }
+        ]
+      }
+    },
+    "A-s273": {
+      "condition": "A",
+      "seed": 273,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 1614,
+      "training_seconds": 371.9562313679926,
+      "wall_seconds": 394.5918341910001,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 333824
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "b0c090e8f08daf3aa085c61aa4f93267a899ce10b516f3b31e6ce251b1edfb80",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 27,
+        "losses": 105,
+        "timeouts": 12,
+        "draws": 12,
+        "win_rate": 0.1875,
+        "kills": 126,
+        "deaths": 374,
+        "hits": 68.0,
+        "shots": 1267.0,
+        "environment_deaths": 267.0,
+        "opponent_environment_deaths": 90.0,
+        "elapsed": 79.82524246899993,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 0
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5625,
+            "games": 16,
+            "wins": 9,
+            "timeouts": 1
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 3
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 0
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.4375,
+            "games": 16,
+            "wins": 7,
+            "timeouts": 1
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 3
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 2
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.375,
+            "games": 16,
+            "wins": 6,
+            "timeouts": 0
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 2
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [
+          "switcher-test-m1-p8-s0"
+        ],
+        "wins": 100,
+        "losses": 249,
+        "timeouts": 34,
+        "draws": 35,
+        "win_rate": 0.2604166666666667,
+        "kills": 373,
+        "deaths": 947,
+        "hits": 211.0,
+        "shots": 3151.0,
+        "environment_deaths": 629.0,
+        "opponent_environment_deaths": 287.0,
+        "elapsed": 172.42321810900467,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 2
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.21875,
+            "games": 32,
+            "wins": 7,
+            "timeouts": 0
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0625,
+            "games": 32,
+            "wins": 2,
+            "timeouts": 6
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.375,
+            "games": 32,
+            "wins": 12,
+            "timeouts": 1
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 1
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.46875,
+            "games": 32,
+            "wins": 15,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 3
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.4375,
+            "games": 32,
+            "wins": 14,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.125,
+            "games": 32,
+            "wins": 4,
+            "timeouts": 8
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.625,
+            "games": 32,
+            "wins": 20,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 11
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.4375,
+            "games": 32,
+            "wins": 14,
+            "timeouts": 2
+          }
+        ]
+      }
+    },
+    "B-s73": {
+      "condition": "B",
+      "seed": 73,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 1364,
+      "training_seconds": 338.9100248270115,
+      "wall_seconds": 361.3501546579937,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 88375,
+        "archer": 49754,
+        "archer-patient": 35305,
+        "pursuer": 35512,
+        "pursuer-patient": 37081,
+        "evasive": 44612,
+        "evasive-patient": 43185
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "ef09f3617ae0b215fc66d86b7b90d5c6aa96c2716feeae47d1e7b3bb49203b91",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 38,
+        "losses": 62,
+        "timeouts": 44,
+        "draws": 44,
+        "win_rate": 0.2638888888888889,
+        "kills": 180,
+        "deaths": 283,
+        "hits": 97.0,
+        "shots": 1667.0,
+        "environment_deaths": 158.0,
+        "opponent_environment_deaths": 96.0,
+        "elapsed": 100.34745604300406,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 11
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.6875,
+            "games": 16,
+            "wins": 11,
+            "timeouts": 2
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.1875,
+            "games": 16,
+            "wins": 3,
+            "timeouts": 8
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 6
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5625,
+            "games": 16,
+            "wins": 9,
+            "timeouts": 2
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 5
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 6
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.4375,
+            "games": 16,
+            "wins": 7,
+            "timeouts": 2
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.1875,
+            "games": 16,
+            "wins": 3,
+            "timeouts": 2
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [
+          "pursuer-test-m5-p10-s0"
+        ],
+        "wins": 143,
+        "losses": 165,
+        "timeouts": 75,
+        "draws": 76,
+        "win_rate": 0.3723958333333333,
+        "kills": 528,
+        "deaths": 754,
+        "hits": 312.0,
+        "shots": 3765.0,
+        "environment_deaths": 351.0,
+        "opponent_environment_deaths": 337.0,
+        "elapsed": 191.87110423600825,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 12
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.53125,
+            "games": 32,
+            "wins": 17,
+            "timeouts": 3
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 11
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.53125,
+            "games": 32,
+            "wins": 17,
+            "timeouts": 2
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.25,
+            "games": 32,
+            "wins": 8,
+            "timeouts": 5
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.59375,
+            "games": 32,
+            "wins": 19,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 6
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.65625,
+            "games": 32,
+            "wins": 21,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 8
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.65625,
+            "games": 32,
+            "wins": 21,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.0625,
+            "games": 32,
+            "wins": 2,
+            "timeouts": 25
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.6875,
+            "games": 32,
+            "wins": 22,
+            "timeouts": 3
+          }
+        ]
+      }
+    },
+    "B-s173": {
+      "condition": "B",
+      "seed": 173,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 1476,
+      "training_seconds": 335.01986417399894,
+      "wall_seconds": 357.4054664580035,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 97399,
+        "archer": 47544,
+        "archer-patient": 31074,
+        "pursuer": 37497,
+        "pursuer-patient": 37756,
+        "evasive": 38770,
+        "evasive-patient": 43784
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "06ac2a4b23e5bffe8ddc0ddd68cc0faad533bb8e38d0baf078ae76530adeb4b6",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 35,
+        "losses": 82,
+        "timeouts": 27,
+        "draws": 27,
+        "win_rate": 0.24305555555555555,
+        "kills": 173,
+        "deaths": 328,
+        "hits": 93.0,
+        "shots": 1478.0,
+        "environment_deaths": 205.0,
+        "opponent_environment_deaths": 98.0,
+        "elapsed": 120.66199238599802,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 5
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5625,
+            "games": 16,
+            "wins": 9,
+            "timeouts": 0
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 6
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 1
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5,
+            "games": 16,
+            "wins": 8,
+            "timeouts": 2
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 3
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 5
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.6875,
+            "games": 16,
+            "wins": 11,
+            "timeouts": 1
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 4
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 123,
+        "losses": 206,
+        "timeouts": 55,
+        "draws": 55,
+        "win_rate": 0.3203125,
+        "kills": 456,
+        "deaths": 848,
+        "hits": 269.0,
+        "shots": 3466.0,
+        "environment_deaths": 496.0,
+        "opponent_environment_deaths": 302.0,
+        "elapsed": 212.66142774499895,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 4
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.4375,
+            "games": 32,
+            "wins": 14,
+            "timeouts": 3
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0625,
+            "games": 32,
+            "wins": 2,
+            "timeouts": 6
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.5,
+            "games": 32,
+            "wins": 16,
+            "timeouts": 4
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 3
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.40625,
+            "games": 32,
+            "wins": 13,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.25,
+            "games": 32,
+            "wins": 8,
+            "timeouts": 5
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.53125,
+            "games": 32,
+            "wins": 17,
+            "timeouts": 1
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 9
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.71875,
+            "games": 32,
+            "wins": 23,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.125,
+            "games": 32,
+            "wins": 4,
+            "timeouts": 18
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.5625,
+            "games": 32,
+            "wins": 18,
+            "timeouts": 2
+          }
+        ]
+      }
+    },
+    "B-s273": {
+      "condition": "B",
+      "seed": 273,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 1427,
+      "training_seconds": 341.07141116500134,
+      "wall_seconds": 363.5935365549958,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 100063,
+        "archer": 31469,
+        "archer-patient": 45954,
+        "pursuer": 37051,
+        "pursuer-patient": 31495,
+        "evasive": 42233,
+        "evasive-patient": 45559
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "73432f68e2b131b9380d5d28515b9d6aa54b58414a88a295749a1f1819d46d18",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 28,
+        "losses": 78,
+        "timeouts": 38,
+        "draws": 38,
+        "win_rate": 0.19444444444444445,
+        "kills": 169,
+        "deaths": 332,
+        "hits": 81.0,
+        "shots": 1509.0,
+        "environment_deaths": 187.0,
+        "opponent_environment_deaths": 95.0,
+        "elapsed": 97.2279681640066,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 4
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5625,
+            "games": 16,
+            "wins": 9,
+            "timeouts": 2
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 8
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 5
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.375,
+            "games": 16,
+            "wins": 6,
+            "timeouts": 1
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 6
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 7
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5,
+            "games": 16,
+            "wins": 8,
+            "timeouts": 1
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 4
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 131,
+        "losses": 187,
+        "timeouts": 66,
+        "draws": 66,
+        "win_rate": 0.3411458333333333,
+        "kills": 560,
+        "deaths": 823,
+        "hits": 292.0,
+        "shots": 3586.0,
+        "environment_deaths": 377.0,
+        "opponent_environment_deaths": 300.0,
+        "elapsed": 162.96135955199134,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 10
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.5625,
+            "games": 32,
+            "wins": 18,
+            "timeouts": 0
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0625,
+            "games": 32,
+            "wins": 2,
+            "timeouts": 9
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.625,
+            "games": 32,
+            "wins": 20,
+            "timeouts": 5
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 4
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.53125,
+            "games": 32,
+            "wins": 17,
+            "timeouts": 0
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.15625,
+            "games": 32,
+            "wins": 5,
+            "timeouts": 3
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.6875,
+            "games": 32,
+            "wins": 22,
+            "timeouts": 0
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 12
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.53125,
+            "games": 32,
+            "wins": 17,
+            "timeouts": 2
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.125,
+            "games": 32,
+            "wins": 4,
+            "timeouts": 18
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.625,
+            "games": 32,
+            "wins": 20,
+            "timeouts": 3
+          }
+        ]
+      }
+    },
+    "C-s73": {
+      "condition": "C",
+      "seed": 73,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 935,
+      "training_seconds": 264.3037573820038,
+      "wall_seconds": 286.8129301500012,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 102019,
+        "archer": 38630,
+        "archer-patient": 30026,
+        "pursuer": 37605,
+        "pursuer-patient": 38980,
+        "evasive": 45065,
+        "evasive-patient": 41499
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "b8d638efa67661f3967904b14c8946e2c5658bd897e4dbcd429d3bcaa65d505c",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 28,
+        "losses": 28,
+        "timeouts": 88,
+        "draws": 88,
+        "win_rate": 0.19444444444444445,
+        "kills": 44,
+        "deaths": 199,
+        "hits": 13.0,
+        "shots": 503.0,
+        "environment_deaths": 118.0,
+        "opponent_environment_deaths": 138.0,
+        "elapsed": 102.50988074101042,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 13
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5625,
+            "games": 16,
+            "wins": 9,
+            "timeouts": 6
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 14
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 8
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.3125,
+            "games": 16,
+            "wins": 5,
+            "timeouts": 5
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 16
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.1875,
+            "games": 16,
+            "wins": 3,
+            "timeouts": 9
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.5625,
+            "games": 16,
+            "wins": 9,
+            "timeouts": 5
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 12
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 95,
+        "losses": 74,
+        "timeouts": 215,
+        "draws": 215,
+        "win_rate": 0.24739583333333334,
+        "kills": 200,
+        "deaths": 518,
+        "hits": 65.0,
+        "shots": 1669.0,
+        "environment_deaths": 186.0,
+        "opponent_environment_deaths": 452.0,
+        "elapsed": 250.49353354600316,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 17
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.28125,
+            "games": 32,
+            "wins": 9,
+            "timeouts": 10
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 27
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.375,
+            "games": 32,
+            "wins": 12,
+            "timeouts": 16
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.28125,
+            "games": 32,
+            "wins": 9,
+            "timeouts": 14
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.59375,
+            "games": 32,
+            "wins": 19,
+            "timeouts": 11
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.0625,
+            "games": 32,
+            "wins": 2,
+            "timeouts": 27
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.625,
+            "games": 32,
+            "wins": 20,
+            "timeouts": 11
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 28
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.34375,
+            "games": 32,
+            "wins": 11,
+            "timeouts": 9
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 29
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.40625,
+            "games": 32,
+            "wins": 13,
+            "timeouts": 16
+          }
+        ]
+      }
+    },
+    "C-s173": {
+      "condition": "C",
+      "seed": 173,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 987,
+      "training_seconds": 269.6580913279904,
+      "wall_seconds": 292.04550172200834,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 109638,
+        "archer": 50975,
+        "archer-patient": 25331,
+        "pursuer": 44037,
+        "pursuer-patient": 34375,
+        "evasive": 29632,
+        "evasive-patient": 39836
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "07a2a252ed875924469d7a32488b5aa9e6ba67cf84e170d4c00cb47cef7711ae",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 15,
+        "losses": 22,
+        "timeouts": 107,
+        "draws": 107,
+        "win_rate": 0.10416666666666667,
+        "kills": 1,
+        "deaths": 168,
+        "hits": 0.0,
+        "shots": 3.0,
+        "environment_deaths": 88.0,
+        "opponent_environment_deaths": 116.0,
+        "elapsed": 108.2566752450075,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 14
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.4375,
+            "games": 16,
+            "wins": 7,
+            "timeouts": 6
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 14
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 14
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.125,
+            "games": 16,
+            "wins": 2,
+            "timeouts": 11
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 16
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 10
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.375,
+            "games": 16,
+            "wins": 6,
+            "timeouts": 7
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 15
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 85,
+        "losses": 55,
+        "timeouts": 244,
+        "draws": 244,
+        "win_rate": 0.22135416666666666,
+        "kills": 3,
+        "deaths": 363,
+        "hits": 0.0,
+        "shots": 8.0,
+        "environment_deaths": 149.0,
+        "opponent_environment_deaths": 494.0,
+        "elapsed": 259.620632938997,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 14
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.3125,
+            "games": 32,
+            "wins": 10,
+            "timeouts": 15
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 31
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.125,
+            "games": 32,
+            "wins": 4,
+            "timeouts": 22
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.25,
+            "games": 32,
+            "wins": 8,
+            "timeouts": 23
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.5,
+            "games": 32,
+            "wins": 16,
+            "timeouts": 16
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 28
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.4375,
+            "games": 32,
+            "wins": 14,
+            "timeouts": 16
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 22
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.5,
+            "games": 32,
+            "wins": 16,
+            "timeouts": 11
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.03125,
+            "games": 32,
+            "wins": 1,
+            "timeouts": 30
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.375,
+            "games": 32,
+            "wins": 12,
+            "timeouts": 16
+          }
+        ]
+      }
+    },
+    "C-s273": {
+      "condition": "C",
+      "seed": 273,
+      "learner_decisions": 1001472,
+      "all_player_decisions": 1335296,
+      "updates": 652,
+      "matches": 908,
+      "training_seconds": 260.7159016259975,
+      "wall_seconds": 282.9051857149898,
+      "opponent_game_decisions": {
+        "current": 333824,
+        "historical": 119008,
+        "archer": 31845,
+        "archer-patient": 39692,
+        "pursuer": 36469,
+        "pursuer-patient": 29794,
+        "evasive": 35296,
+        "evasive-patient": 41720
+      },
+      "retention": {
+        "schema": 1,
+        "checkpoint_sha256": "bb7e4145a4a837980e61fcf261aa5060a034a6d17b1ca4a034085c1e26fdf1a9",
+        "map": 0,
+        "side": 0,
+        "world_limit": 3600,
+        "trial_limit": 240,
+        "controls": "full, unrestricted",
+        "opponent": "idle",
+        "successes": 0,
+        "trials": 32,
+        "argmax": false
+      },
+      "development": {
+        "games": 144,
+        "shared_award_draws": [],
+        "wins": 15,
+        "losses": 34,
+        "timeouts": 95,
+        "draws": 95,
+        "win_rate": 0.10416666666666667,
+        "kills": 107,
+        "deaths": 215,
+        "hits": 57.0,
+        "shots": 1408.0,
+        "environment_deaths": 72.0,
+        "opponent_environment_deaths": 63.0,
+        "elapsed": 117.56999872400775,
+        "cells": [
+          {
+            "map": 0,
+            "opponent": "archer-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 16
+          },
+          {
+            "map": 0,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.1875,
+            "games": 16,
+            "wins": 3,
+            "timeouts": 8
+          },
+          {
+            "map": 0,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 14
+          },
+          {
+            "map": 3,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 7
+          },
+          {
+            "map": 3,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 8
+          },
+          {
+            "map": 3,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0,
+            "games": 16,
+            "wins": 0,
+            "timeouts": 12
+          },
+          {
+            "map": 6,
+            "opponent": "archer-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 13
+          },
+          {
+            "map": 6,
+            "opponent": "pursuer-dev",
+            "win_rate": 0.4375,
+            "games": 16,
+            "wins": 7,
+            "timeouts": 3
+          },
+          {
+            "map": 6,
+            "opponent": "evasive-dev",
+            "win_rate": 0.0625,
+            "games": 16,
+            "wins": 1,
+            "timeouts": 14
+          }
+        ]
+      },
+      "final": {
+        "games": 384,
+        "shared_award_draws": [],
+        "wins": 82,
+        "losses": 58,
+        "timeouts": 244,
+        "draws": 244,
+        "win_rate": 0.21354166666666666,
+        "kills": 260,
+        "deaths": 463,
+        "hits": 163.0,
+        "shots": 3398.0,
+        "environment_deaths": 115.0,
+        "opponent_environment_deaths": 279.0,
+        "elapsed": 245.88893331799773,
+        "cells": [
+          {
+            "map": 1,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 27
+          },
+          {
+            "map": 1,
+            "opponent": "pursuer-test",
+            "win_rate": 0.28125,
+            "games": 32,
+            "wins": 9,
+            "timeouts": 14
+          },
+          {
+            "map": 1,
+            "opponent": "evasive-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 28
+          },
+          {
+            "map": 1,
+            "opponent": "switcher-test",
+            "win_rate": 0.09375,
+            "games": 32,
+            "wins": 3,
+            "timeouts": 16
+          },
+          {
+            "map": 2,
+            "opponent": "archer-test",
+            "win_rate": 0.28125,
+            "games": 32,
+            "wins": 9,
+            "timeouts": 19
+          },
+          {
+            "map": 2,
+            "opponent": "pursuer-test",
+            "win_rate": 0.59375,
+            "games": 32,
+            "wins": 19,
+            "timeouts": 8
+          },
+          {
+            "map": 2,
+            "opponent": "evasive-test",
+            "win_rate": 0.125,
+            "games": 32,
+            "wins": 4,
+            "timeouts": 28
+          },
+          {
+            "map": 2,
+            "opponent": "switcher-test",
+            "win_rate": 0.59375,
+            "games": 32,
+            "wins": 19,
+            "timeouts": 10
+          },
+          {
+            "map": 5,
+            "opponent": "archer-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 28
+          },
+          {
+            "map": 5,
+            "opponent": "pursuer-test",
+            "win_rate": 0.375,
+            "games": 32,
+            "wins": 12,
+            "timeouts": 15
+          },
+          {
+            "map": 5,
+            "opponent": "evasive-test",
+            "win_rate": 0.0,
+            "games": 32,
+            "wins": 0,
+            "timeouts": 32
+          },
+          {
+            "map": 5,
+            "opponent": "switcher-test",
+            "win_rate": 0.21875,
+            "games": 32,
+            "wins": 7,
+            "timeouts": 19
+          }
+        ]
+      }
+    }
+  },
+  "comparisons": {
+    "development": {
+      "B-A": {
+        "mean": 0.0763888888888889,
+        "by_seed": [
+          0.11805555555555555,
+          0.10416666666666667,
+          0.006944444444444444
+        ],
+        "interval": [
+          0.004629629629629629,
+          0.1412037037037037
+        ],
+        "bootstrap_replicates": 5000
+      },
+      "C-B": {
+        "mean": -0.09953703703703703,
+        "by_seed": [
+          -0.06944444444444445,
+          -0.1388888888888889,
+          -0.09027777777777778
+        ],
+        "interval": [
+          -0.1527777777777778,
+          -0.04861111111111111
+        ],
+        "bootstrap_replicates": 5000
+      }
+    },
+    "final": {
+      "B-A": {
+        "mean": 0.0703125,
+        "by_seed": [
+          0.09114583333333333,
+          0.0390625,
+          0.08072916666666667
+        ],
+        "interval": [
+          0.029513888888888888,
+          0.1111111111111111
+        ],
+        "bootstrap_replicates": 5000
+      },
+      "C-B": {
+        "mean": -0.1171875,
+        "by_seed": [
+          -0.125,
+          -0.09895833333333333,
+          -0.12760416666666666
+        ],
+        "interval": [
+          -0.15104166666666666,
+          -0.08333333333333333
+        ],
+        "bootstrap_replicates": 5000
+      }
+    }
+  },
+  "development_references": {
+    "untrained-s73": {
+      "games": 144,
+      "shared_award_draws": [],
+      "wins": 14,
+      "losses": 123,
+      "timeouts": 7,
+      "draws": 7,
+      "win_rate": 0.09722222222222222,
+      "kills": 91,
+      "deaths": 398,
+      "hits": 47.0,
+      "shots": 1080.0,
+      "environment_deaths": 315.0,
+      "opponent_environment_deaths": 72.0,
+      "elapsed": 100.51718017399253,
+      "cells": [
+        {
+          "map": 0,
+          "opponent": "archer-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 0
+        },
+        {
+          "map": 0,
+          "opponent": "pursuer-dev",
+          "win_rate": 0.3125,
+          "games": 16,
+          "wins": 5,
+          "timeouts": 1
+        },
+        {
+          "map": 0,
+          "opponent": "evasive-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 2
+        },
+        {
+          "map": 3,
+          "opponent": "archer-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 0
+        },
+        {
+          "map": 3,
+          "opponent": "pursuer-dev",
+          "win_rate": 0.1875,
+          "games": 16,
+          "wins": 3,
+          "timeouts": 0
+        },
+        {
+          "map": 3,
+          "opponent": "evasive-dev",
+          "win_rate": 0.125,
+          "games": 16,
+          "wins": 2,
+          "timeouts": 0
+        },
+        {
+          "map": 6,
+          "opponent": "archer-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 2
+        },
+        {
+          "map": 6,
+          "opponent": "pursuer-dev",
+          "win_rate": 0.1875,
+          "games": 16,
+          "wins": 3,
+          "timeouts": 0
+        },
+        {
+          "map": 6,
+          "opponent": "evasive-dev",
+          "win_rate": 0.0625,
+          "games": 16,
+          "wins": 1,
+          "timeouts": 2
+        }
+      ]
+    },
+    "bow-initial": {
+      "games": 144,
+      "shared_award_draws": [],
+      "wins": 19,
+      "losses": 63,
+      "timeouts": 62,
+      "draws": 62,
+      "win_rate": 0.13194444444444445,
+      "kills": 65,
+      "deaths": 249,
+      "hits": 64.0,
+      "shots": 1460.0,
+      "environment_deaths": 225.0,
+      "opponent_environment_deaths": 60.0,
+      "elapsed": 106.14471633499488,
+      "cells": [
+        {
+          "map": 0,
+          "opponent": "archer-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 5
+        },
+        {
+          "map": 0,
+          "opponent": "pursuer-dev",
+          "win_rate": 0.3125,
+          "games": 16,
+          "wins": 5,
+          "timeouts": 1
+        },
+        {
+          "map": 0,
+          "opponent": "evasive-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 6
+        },
+        {
+          "map": 3,
+          "opponent": "archer-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 3
+        },
+        {
+          "map": 3,
+          "opponent": "pursuer-dev",
+          "win_rate": 0.25,
+          "games": 16,
+          "wins": 4,
+          "timeouts": 5
+        },
+        {
+          "map": 3,
+          "opponent": "evasive-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 9
+        },
+        {
+          "map": 6,
+          "opponent": "archer-dev",
+          "win_rate": 0.0,
+          "games": 16,
+          "wins": 0,
+          "timeouts": 14
+        },
+        {
+          "map": 6,
+          "opponent": "pursuer-dev",
+          "win_rate": 0.375,
+          "games": 16,
+          "wins": 6,
+          "timeouts": 7
+        },
+        {
+          "map": 6,
+          "opponent": "evasive-dev",
+          "win_rate": 0.25,
+          "games": 16,
+          "wins": 4,
+          "timeouts": 12
+        }
+      ]
+    }
+  },
+  "total_learner_decisions": 9013248,
+  "total_matches": 4752,
+  "interval_note": "Descriptive hierarchical bootstrap of three training seeds and paired action-seed blocks within fixed map/opponent cells. Three training seeds limit uncertainty estimates."
+}

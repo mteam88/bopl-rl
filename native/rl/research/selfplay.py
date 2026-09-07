@@ -30,7 +30,7 @@ class Opponents:
         """Rebuild cached indices if any of this group's assignments changed.
         Arguments are the global per-worker lists."""
         span=range(self.first,self.first+self.workers)
-        key=(tuple(versions[w] for w in span),tuple(side[w] for w in span))
+        key=(tuple(versions[w] for w in span),tuple(side[w] for w in span),tuple(historical[w] for w in span))
         if key==self.key: return
         self.key=key; groups=[]
         for version in set(versions[w] for w in span):

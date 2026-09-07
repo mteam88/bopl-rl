@@ -1,5 +1,15 @@
 # Dash / Arrow / Platform experiments
 
+## Scripted opponents — 2026-09-06
+
+Nine equal-budget runs complete 9.013M learner decisions and 4,752 frozen
+benchmark matches. Script mixtures improve final win rate from 27.4% to 34.5%,
+with a positive difference in all three seeds. Bow initialization reduces it
+to 22.7% and loses the taught shot in all seeds. The scripts remain weak and
+combat against ranged/evasive opponents is poor.
+[Report, plots, audit and clips](evidence/opponent-league-001/REPORT.md) ·
+[Implementation and reproduction](OPPONENT_LEAGUE.md).
+
 ## Bow curriculum — 2026-09-06
 
 A 38-decision teaching example seeds an unassisted Bow controller. Two PPO runs

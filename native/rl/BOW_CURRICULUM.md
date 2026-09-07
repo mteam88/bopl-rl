@@ -1,6 +1,7 @@
 # Bow curriculum within the full-game research goal
 
 [First completed experiment: results and video](evidence/bow-curriculum-001/REPORT.md).
+[Full-game opponent comparison and retention test](evidence/opponent-league-001/REPORT.md).
 
 The long-term goal is a bot capable of superhuman play across all of Bopl Battle,
 including discovering new combinations and strategies and adapting to defend
@@ -8,7 +9,7 @@ against them. A fixed opponent, one map, or one successful ability is only a
 learning diagnostic. Human demonstrations can help exploration without defining
 the ceiling of the final policy.
 
-The current next step is a small task in the reconstructed Unity game: hit an
+The first experiment used a small task in the reconstructed Unity game: hit an
 idle opponent with Bow. The opponent still obeys normal gravity and platform
 motion. Training uses the same 3,257 delayed observations, GRU128 and recurrent
 PPO update as the full-game experiment. The raw controls in this stage are the
