@@ -45,6 +45,10 @@ class Stepper:
             for _ in range(warmup): self._run()
         torch.cuda.current_stream().wait_stream(stream)
         self.graph=torch.cuda.CUDAGraph()
+        # Every graph must own the cuBLAS workspace its kernels use (see turn.py):
+        # torch.cuda.graph captures on one shared stream, so without this the
+        # first stepper captured owns the workspace of every later one.
+        torch._C._cuda_clearCublasWorkspaces()
         with torch.cuda.graph(self.graph), torch.no_grad(): self.out=self._run()
         torch.cuda.synchronize()
         torch.cuda.set_rng_state(rng)

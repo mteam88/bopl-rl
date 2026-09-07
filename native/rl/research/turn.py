@@ -23,11 +23,17 @@ capture, so a handful of graphs per pool composition covers a run. Captures use
 capture_error_mode='thread_local' because the other group's C thread issues
 its own CUDA calls while this one is captured.
 """
+import os
+import sys
 import time
 import torch
 from policy import distribution
 from selfplay import SAMPLE
 from inference import ROLLOUT_ENTROPY
+
+DEBUG=os.environ.get('BOPL_TURN_GRAPH_DEBUG')=='1'
+NOPRUNE=os.environ.get('BOPL_TURN_GRAPH_NOPRUNE')=='1'   # diagnostic: never drop stale graphs
+OWN_WORKSPACE=os.environ.get('BOPL_TURN_GRAPH_SHARED_WORKSPACE')!='1'   # diagnostic: '1' reproduces the freed-workspace crash
 
 class TurnGraph:
     def __init__(self,policy,pool,opponents,obs,state,frozen_state,device,slots=4):
@@ -57,7 +63,9 @@ class TurnGraph:
             for j,row in enumerate(ids): source[i,row]=j; mask[i,row]=True
         self.padded.copy_(padded); self.source.copy_(source); self.mask.copy_(mask)
         versions=tuple(version for version,_,_ in opp.lists)
-        if versions not in self.graphs: self.graphs[versions]=self.capture(versions)
+        if versions not in self.graphs:
+            if DEBUG: print(f'turn-graph capture {versions}',file=sys.stderr,flush=True)
+            self.graphs[versions]=self.capture(versions)
         self.current=self.graphs[versions]
     def _run(self,versions):
         logits,value,next_state=self.policy.step(self.obs,self.state)
@@ -78,6 +86,14 @@ class TurnGraph:
         with torch.cuda.stream(stream), torch.no_grad():
             self._run(versions)   # warm-up: lazy library initialisation happens outside the capture
             graph=torch.cuda.CUDAGraph()
+            # cuBLAS caches one workspace per (handle,stream). Left alone, the first
+            # graph captured on a stream allocates it inside its private pool and every
+            # later capture on that stream (torch recycles streams) bakes the same
+            # pointer into its kernels; dropping the first graph then frees memory the
+            # others still use (illegal memory access once the pool is unmapped).
+            # Clearing the cache right before capture makes each graph allocate, own
+            # and free its own workspace. Stepper (inference.py) does the same.
+            if OWN_WORKSPACE: torch._C._cuda_clearCublasWorkspaces()
             graph.capture_begin(capture_error_mode='thread_local')
             try: out=self._run(versions)
             finally: graph.capture_end()
@@ -96,7 +112,9 @@ class TurnGraph:
         return out
     def prune(self):
         """Drop graphs that reference a snapshot no longer in the pool."""
+        if NOPRUNE: return
         for versions in [k for k in self.graphs if any(v not in self.pool for v in k)]:
+            if DEBUG: print(f'turn-graph prune {versions}',file=sys.stderr,flush=True)
             if self.current is self.graphs[versions]: self.current=None; self.key=None
             del self.graphs[versions]
     def stats(self):
