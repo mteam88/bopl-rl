@@ -68,6 +68,29 @@ internal static class RlProfile
     // Names are string literals (no allocation); the dictionary lookup is the only cost.
     internal static void Enter(string name) { if (Enabled) Enter(buckets, name); }
 
+    // Nested sub-buckets: Push attributes time to `name` until the matching Pop
+    // restores whatever bucket (tick phase, component phase) was active before.
+    private static readonly long[][] stackSlots = new long[32][];
+    private static readonly int[] stackIndex = new int[32];
+    private static int depth;
+    internal static void Push(string name)
+    {
+        if (!Enabled) return;
+        if (depth < stackSlots.Length) { stackSlots[depth] = current; stackIndex[depth] = index; }
+        depth++;
+        Enter(buckets, name);
+    }
+    internal static void Pop()
+    {
+        if (!Enabled) return;
+        depth--;
+        if (depth >= 0 && depth < stackSlots.Length && stackSlots[depth] != null) Switch(stackSlots[depth], stackIndex[depth]);
+    }
+
+    // Call counters for hot arithmetic (Fix division / square root / multiply).
+    internal static readonly long[] Counters = new long[2];
+    private static readonly string[] counterNames = { "fix_div", "fix_sqrt" };
+
     private static void Enter(Dictionary<string, long[]> table, string name)
     {
         if (!table.TryGetValue(name, out var slot)) table[name] = slot = new long[2];
@@ -97,12 +120,14 @@ internal static class RlProfile
         Enter("dump");
         double ms = 1000.0 / Stopwatch.Frequency;
         var text = new StringBuilder();
-        text.Append("{\"ticks\":").Append(ticks).Append(",\"counted_ticks\":").Append(countedTicks).Append(",\"buckets\":{");
+        text.Append("{\"ticks\":").Append(ticks).Append(",\"counted_ticks\":").Append(countedTicks).Append(",\"push_depth\":").Append(depth).Append(",\"buckets\":{");
         bool first = true;
         foreach (var entry in Rows()) {
             text.Append(first ? "" : ",").Append('"').Append(entry.Key).Append("\":[").Append((entry.Value[0] * ms).ToString("F3")).Append(',').Append(entry.Value[1]).Append(']');
             first = false;
         }
+        text.Append("},\"counters\":{");
+        for (int c = 0; c < Counters.Length; c++) text.Append(c == 0 ? "" : ",").Append('"').Append(counterNames[c]).Append("\":").Append(Counters[c]);
         text.Append("},\"components\":{");
         first = true;
         foreach (var entry in components) {
