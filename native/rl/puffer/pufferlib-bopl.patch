@@ -205,6 +205,35 @@ diff -ruN a/models.cu b/models.cu
          mingru_scan_forward<<<grid_size(B*m->hidden), BLOCK_SIZE, 0, stream>>>(a->scan_bufs[i]);
          x = a->scan_bufs[i].out;
      }
+diff -ruN a/ocean.cu b/ocean.cu
+--- a/ocean.cu
++++ b/ocean.cu
+@@ -3,6 +3,8 @@
+ 
+ #include "cudnn_conv2d.cu"
+ #include "nethack.cu"
++#include "bopl_set_encoder.cu"
++#include <cstdlib>
+ 
+ // ---- NMMO3 constants ----
+ 
+@@ -589,6 +591,16 @@
+         };
+     } else if (env_name == "nethack") {
+         create_nethack_encoder(enc);
++    } else if (env_name == "bopl") {
++        // Runtime encoder selection for Bopl (train.py --encoder sets this before
++        // the native trainer is created). Unset/"linear" keeps the upstream
++        // bias-free linear encoder; "set" installs the Bopl SET encoder
++        // (bopl_set_encoder.cu). Anything else is a configuration error.
++        const char* choice = std::getenv("BOPL_NATIVE_ENCODER");
++        std::string encoder = choice ? choice : "linear";
++        if (encoder == "set") bopl_create_set_encoder(enc);
++        else if (encoder != "linear")
++            throw std::runtime_error("BOPL_NATIVE_ENCODER must be 'linear' or 'set', got '" + encoder + "'");
+     }
+ }
+ 
 diff -ruN a/pufferlib.cu b/pufferlib.cu
 --- a/pufferlib.cu
 +++ b/pufferlib.cu
