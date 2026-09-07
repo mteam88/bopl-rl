@@ -117,3 +117,22 @@ distinct workload names, results.tsv + notes.md, raw runs under
 `native/artifacts/rl/autoresearch/`). The in-flight exp13 (parallel branches
 inside the turn graph) is finished or checkpointed first, not abandoned
 mid-measurement.
+
+### Division of work (Matthew, 2026-09-07 evening)
+
+Matthew owns, in a separate root Rift: native checkpoint evaluation support using the upstream CPU
+PufferNet (`src/puffernet.h`), so native MinGRU policies can enter the existing real-game evaluator
+and crossplay against GRU checkpoints. Their files, which this Rift must not create or edit:
+`native/rl/puffer/policy_eval.c`, `native/rl/research/native_policy.py`, and their focused parity
+checks. They will return the local commit and API. This Rift keeps IL2CPP and the native
+trainer/self-play integration. Do not run GPU validation runs alongside Matthew's benchmark-free
+work; one heavy job at a time still holds.
+
+Native detail from Matthew: `bindings.cu:140` resets learner/frozen RNN state at whole rollout
+boundaries when `reset_state=true`, which is distinct from episode resets. The Bopl contract needs
+per-episode resets, so the integration has to add that rather than rely on `reset_state`.
+
+Build attribution: `train.py` used to hash `Builds/Linux/.../Assembly-CSharp.dll` regardless of
+`BOPL_RL_GAME`, and `verify_replay.py` assumed the Mono layout. Both now record the selected player
+and its runtime payload (Mono: Assembly-CSharp.dll; IL2CPP: GameAssembly.so + global-metadata.dat)
+through `environment.game_identity()`; IL2CPP results are only build-attributable with that in place.

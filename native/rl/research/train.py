@@ -107,7 +107,7 @@ def main():
         dma_latency_request.write(struct.pack('i',int(os.environ['BOPL_CPU_DMA_LATENCY_US'])))
     os.environ['OMP_NUM_THREADS']=str(opt.workers)
     os.environ.setdefault('OMP_WAIT_POLICY','PASSIVE')
-    from environment import configure
+    from environment import configure,game_identity
     TRACE=os.environ.get('BOPL_TRACE_TURN')=='1'
     configure(out/'workers')
     import numpy as np
@@ -179,7 +179,10 @@ def main():
             'reward':{'win':1,'loss':-1,'kill':.1,'death':-.1,'timeout':0},
             'timeout_semantics':'finite-horizon match; no winner bonus; terminal value zero',
             'puffer_revision':'42f70d6932c30ac977736f861006809c50168ba9',
-            'assembly_sha256':hashlib.sha256((ROOT/'Builds/Linux/BoplBattle_Data/Managed/Assembly-CSharp.dll').read_bytes()).hexdigest()}
+            # The selected player (BOPL_RL_GAME) and its runtime payload; assembly_sha256 is only
+            # present for Mono players, IL2CPP players are identified by GameAssembly.so + metadata.
+            'game_identity':game_identity()}
+    config['assembly_sha256']=config['game_identity'].get('assembly_sha256')
     sources={}
     for directory in (ROOT/'native/rl/puffer',Path(__file__).parent):
         for file in sorted(directory.rglob('*')):
