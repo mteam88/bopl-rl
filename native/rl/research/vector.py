@@ -11,11 +11,14 @@ stepped by the same code, once per decision.
 """
 import sys
 import ctypes
+import os
 import numpy as np
 import torch
 from telemetry import FIELDS
 from pufferlib import _C,pufferl
 from pufferlib.torch_pufferl import _CudaPtr, _cpu_tensor
+
+STREAM_CACHE=os.environ.get('BOPL_VECTOR_STREAM_CACHE')=='1'
 
 class Vector:
     def __init__(self,workers,seed,limit=3600,delay=9,groups=1,*,training_maps=(0,)):
@@ -53,6 +56,7 @@ class Vector:
         self.cpu_dones=_cpu_tensor(self.vec.terminals_ptr,(self.size,),torch.float32)
         self.vec.reset()
         self.workers=workers; self.group_count=groups; self.handle=None; self.groups=[]; self.actions=[]
+        self._stream_ptr=None
         if groups>1:
             lib=self.lib
             lib.bopl_groups_open.restype=ctypes.c_void_p
@@ -83,18 +87,24 @@ class Vector:
         actions=actions.to(dtype=torch.float32).contiguous()
         torch.cuda.synchronize()
         self.vec.gpu_step(actions.data_ptr())
+    def _stream(self):
+        # BOPL_VECTOR_STREAM_CACHE=1: the rollout launches and waits on one torch
+        # stream, so resolve its raw handle once instead of on every call
+        # (torch.cuda.current_stream() builds a new Stream object each time).
+        if self._stream_ptr is not None: return self._stream_ptr
+        ptr=ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
+        if STREAM_CACHE: self._stream_ptr=ptr
+        return ptr
     def step_group(self,g,actions):
         """Start stepping group g with `actions` (rows for that group only).
         Returns immediately; the group's slices of obs/rewards/dones/cpu_dones/
         telemetry are undefined until wait_group(g)."""
-        stream=torch.cuda.current_stream()
         self.actions[g].copy_(actions)
-        self.lib.bopl_group_launch(self.handle,g,ctypes.c_void_p(stream.cuda_stream))
+        self.lib.bopl_group_launch(self.handle,g,self._stream())
     def wait_group(self,g):
         """Block until group g's step is complete on the host and make the
         current torch stream wait for its device uploads."""
-        stream=torch.cuda.current_stream()
-        return bool(self.lib.bopl_group_wait(self.handle,g,ctypes.c_void_p(stream.cuda_stream)))
+        return bool(self.lib.bopl_group_wait(self.handle,g,self._stream()))
     def wait_all(self):
         for g in range(len(self.groups)): self.wait_group(g)
     def pending(self,g): return bool(self.lib.bopl_group_pending(self.handle,g))

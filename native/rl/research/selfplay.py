@@ -32,6 +32,9 @@ from policy import distribution,sample
 OPPONENT_SAMPLING=os.environ.get('BOPL_OPPONENT_SAMPLING','graph')
 if OPPONENT_SAMPLING not in ('graph','slim','distribution'): raise ValueError(f'BOPL_OPPONENT_SAMPLING={OPPONENT_SAMPLING}')
 SAMPLE=distribution if OPPONENT_SAMPLING=='distribution' else lambda logits:(sample(logits),None,None)
+# BOPL_OPPONENT_GATHER=direct: index_select straight into each historical
+# stepper's static graph inputs (default 'copy': gather to a temporary, then copy).
+GATHER_DIRECT=os.environ.get('BOPL_OPPONENT_GATHER','copy')=='direct'
 
 class Opponents:
     def __init__(self,workers,device,first=0):
@@ -64,11 +67,19 @@ class Opponents:
                 opponent_actions,_,_=SAMPLE(opponent_logits)
             else:
                 k=len(ids); stepper=steppers[version]
+                if stepper.graph is not None and GATHER_DIRECT:
+                    # Gather straight into the graph's static inputs (one launch
+                    # each instead of index_select + copy_). Same values.
+                    torch.index_select(obs,0,padded,out=stepper.obs)
+                    torch.index_select(frozen_state,1,padded,out=stepper.state)
+                    stepper.graph.replay(); out=stepper.out
+                else:
+                    out=stepper(obs.index_select(0,padded),frozen_state.index_select(1,padded))
                 if stepper.sample=='actions':
-                    opponent_actions,_,next_state=stepper(obs.index_select(0,padded),frozen_state.index_select(1,padded))
+                    opponent_actions,_,next_state=out
                     opponent_actions=opponent_actions[:k]; next_state=next_state[:,:k]
                 else:
-                    opponent_logits,_,next_state=stepper(obs.index_select(0,padded),frozen_state.index_select(1,padded))
+                    opponent_logits,_,next_state=out
                     opponent_actions,_,_=SAMPLE(opponent_logits[:k]); next_state=next_state[:,:k]
             chosen.index_copy_(0,ids,opponent_actions); frozen_state.index_copy_(1,ids,next_state)
         return self.active
