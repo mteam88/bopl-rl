@@ -15,10 +15,12 @@ def decision(tick, logits, value, action):
                 aim=aim.tolist(), action=action.tolist())
 
 
-def write(path, step, side, decisions, checkpoint_identity):
+def write(path, step, side, decisions, checkpoint_identity, observation_delay_ticks=9):
     temporary = path.with_suffix(path.suffix + '.tmp')
     with gzip.open(temporary, 'wt') as stream:
         json.dump(dict(schema=1, step=step, side=side, decision_ticks=4,
                        aim_bins=256, checkpoint_identity=checkpoint_identity,
+                       tick_semantics='action-decision time', observation_delay_ticks=observation_delay_ticks,
+                       own_previous_actions='immediate', aim_zero='no joystick direction',
                        decisions=decisions), stream, allow_nan=False, separators=(',', ':'))
     temporary.replace(path)
