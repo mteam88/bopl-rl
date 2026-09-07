@@ -133,3 +133,26 @@ Startup 41 s = `my_vec_init` opening games serially.
 - Cumulative over the new-unit control (3848 active / 2979 wall): **active +168% (10321)**, **wall +179% (8301)**.
 - What I learned: the whole change is about ten fewer syscalls per decision on each of the 32 game main threads plus four fewer on the trainer, and it bought ~2%: the per-step floor is the sum of one game tick's compute (~0.6–0.8 ms) and the trainer's own per-group turnaround (~0.2 ms + inference), and small syscalls were only ~2% of that. Audio and Unity job workers are already idle; the remaining game-side per-step cost is genuine simulation, and the remaining trainer-side cost is `Opponents.act` (five tensor launches per historical version per group step) and the cond-wait in `wait_group` (the game tick itself).
 - Next (exp10): trainer main-thread trims that keep the values bit-identical — gather straight into the historical steppers' static inputs (`index_select(out=)`, halving the launches in `Opponents.act`), cache the torch stream handle in `vector.py`, and try `--pipeline-groups 4` as an explicit semantic-change workload (a slow game then gates a quarter of the batch). Then the default-on flip of all seven kept flags.
+
+### exp10 — trainer main-thread trims: direct gather, cached stream handle (commit 9148677) — DISCARD both
+
+Two small changes aimed at the per-group Python overhead in `Opponents.act` and `Vector.step_group/wait_group`, both env-gated and off by default:
+
+- A `BOPL_OPPONENT_GATHER=direct`: when a historical stepper has a captured graph, gather the group's observations and recurrent state straight into the stepper's static inputs (`index_select(..., out=)`) instead of building temporaries and copying them in. Two launches instead of four per historical version per group step.
+- B `BOPL_VECTOR_STREAM_CACHE=1`: resolve `torch.cuda.current_stream().cuda_stream` once per `Vector` instead of on every launch/wait (`current_stream()` builds a fresh Python object each call).
+
+Exactness: `exp10-check-pipeline` with both flags set passed phases A–F, and its 11 rollout dumps and 11 metric files are byte-identical to `exp09-check-pipeline`.
+
+Benchmark `exp10-gather` (workload sustained-w16-786432-r3, incumbent = game-exp09 + seven kept flags, arms interleaved, 3 repeats each):
+
+| arm | median active | median wall | wall s |
+|---|---|---|---|
+| incumbent | 10314 | 8357 | 70.6 |
+| gather (A) | 10356 | 8364 | 70.5 |
+| both (A+B) | 10381 | 8379 | 70.4 |
+
+Per-run active: incumbent 10054/10314/10374, gather 10356/10323/10389, both 10383/10378/10381. The incumbent's first run was a slow outlier (11.6 s startup); excluding it the arms are indistinguishable. Rollout seconds 48.3–48.6 for every non-outlier run. Both arms are within the ~2% noise band, so neither is a measured gain. The code stays in the tree, env-gated and off, since it is exact and may matter once the pool holds more historical versions (the sustained workload carries the full pool already, so that is not expected).
+
+Lesson: the trainer's Python launch overhead per group step is no longer on the critical path; the group thread's game step (~48 s of a ~57 s loop) dominates, and the main thread mostly waits in `wait_group`. Remaining levers are the game tick itself, the worker count / group count shape, and the ~7.8 s PPO update.
+
+Next (exp11): explicit semantic-change workload with `--pipeline-groups 4` (distinct workload name; groups=4 changes the (t,group) inference order, so it is not the same training program even though check_pipeline shows g4 exact against g4-serial). Then the default-on flip of the seven kept flags with an exactness re-check.
