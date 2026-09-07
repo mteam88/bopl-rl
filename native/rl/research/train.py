@@ -108,6 +108,7 @@ def main():
     os.environ['OMP_NUM_THREADS']=str(opt.workers)
     os.environ.setdefault('OMP_WAIT_POLICY','PASSIVE')
     from environment import configure
+    TRACE=os.environ.get('BOPL_TRACE_TURN')=='1'
     configure(out/'workers')
     import numpy as np
     import torch
@@ -259,6 +260,8 @@ def main():
         torch.set_rng_state(previous['torch_rng'].cpu())
         torch.cuda.set_rng_state(previous['cuda_rng'].cpu())
     reset_before=torch.ones(n,dtype=torch.bool,device=device)
+    # BOPL_TRACE_TURN=1: per-group-turn main-thread phase times (ms per turn, per update) in metrics.jsonl.
+    trace_sum=[0.0]*7+[0]
     completed_matches=0
     evaluation_milestones=sorted(set(opt.eval_at or []))
     metrics=(out/'metrics.jsonl').open('a',buffering=1)
@@ -338,8 +341,11 @@ def main():
             for t in range(tmax):
                 for g in range(groups):
                     sl=slices[g]
+                    if TRACE: trace_t0=time.perf_counter()
                     if groups>1: vec.wait_group(g)
+                    if TRACE: trace_t1=time.perf_counter()
                     if t: collect(t-1,g)
+                    if TRACE: trace_t2=time.perf_counter()
                     if t%length==0: memories[t//length][:,sl].copy_(state[:,sl])
                     if dump: states_seen[t][:,sl].copy_(state[:,sl])
                     group_obs=vec.obs[sl]
@@ -347,8 +353,11 @@ def main():
                     with torch.no_grad():
                         chosen,logp,value,next_state=learner_stepper(group_obs,state[:,sl])
                         state[:,sl].copy_(next_state)
+                        if TRACE: trace_t3=time.perf_counter()
                         opponents[g].refresh(versions,historical,side)
+                        if TRACE: trace_t4=time.perf_counter()
                         active=opponents[g].act(pool,group_obs,frozen_state[:,sl],chosen,group_steppers(g))
+                        if TRACE: trace_t5=time.perf_counter()
                         script_workers=[w for w in range(g*wpg,(g+1)*wpg) if scripts[w] is not None]
                         for w in range(g*wpg,(g+1)*wpg):
                             kind=scripts[w].spec.name if scripts[w] is not None else 'historical' if historical[w] else 'current'
@@ -363,10 +372,16 @@ def main():
                                 chosen[row]=torch.as_tensor(scripts[w].act(delayed[row]),device=device)
                                 active[row]=False
                         actions[t,sl]=chosen; old_logp[t,sl]=logp; values[t,sl]=value; masks[t,sl]=active
+                        if TRACE: trace_t6=time.perf_counter()
                         if groups>1:
                             vec.step_group(g,chosen)
                             if opt.pipeline_serial: vec.wait_group(g)
                         else: vec.step(chosen)
+                        if TRACE:
+                            trace_t7=time.perf_counter()
+                            for i,(a,b) in enumerate(((trace_t0,trace_t1),(trace_t1,trace_t2),(trace_t2,trace_t3),(trace_t3,trace_t4),(trace_t4,trace_t5),(trace_t5,trace_t6),(trace_t6,trace_t7))):
+                                trace_sum[i]+=b-a
+                            trace_sum[7]+=1
             if groups>1: vec.wait_all()
             for g in range(groups): collect(tmax-1,g)
             completed_matches=matches[0]
@@ -418,6 +433,9 @@ def main():
                 pool_steps=recent,learner_fraction=float(masks.float().mean().item()),opponent_game_decisions=game_decisions,
                 cuda_memory_mb=torch.cuda.max_memory_allocated()/1048576)
             if groups>1: record['pipeline']=vec.group_profile()
+            if TRACE and trace_sum[7]:
+                record['turn_ms']=dict(zip(('wait','collect','learner','refresh','act','stores','launch'),[1000*x/trace_sum[7] for x in trace_sum[:7]]))
+                record['turn_ms']['turns']=trace_sum[7]; trace_sum[:]=[0.0]*7+[0]
             # Snapshot work (checkpoint file, frozen copy, historical graph
             # capture) happens outside rollout/train time; time it explicitly
             # so loop sps cannot hide it. Evaluation launches are asynchronous.
