@@ -16,12 +16,38 @@ enum { BOPL_EVENT_FIELDS=9, BOPL_TELEMETRY_SIZE=16,
        BOPL_EPISODES, BOPL_WINS, BOPL_TIMEOUTS, BOPL_TICKS };
 typedef struct {
     float perf, score, episode_return, episode_length, environment_ticks, observation_overflow, game_errors, n;
+    /* Learner-player outcomes, split by opponent kind (each averaged by n like
+     * every other field, so win rate = wins/episodes). */
+    float learner_episodes, learner_wins, historical_episodes, historical_wins;
     float map_fraction[31];
 } Log;
+enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
 typedef struct {
     Log log;
+    /* Base pointers assigned by PufferLib's vector (slot 0 of this environment).
+     * Everything is routed through the per-slot pointers below instead, filled
+     * by my_setup_perm from the vector's agent permutation. */
     float *observations, *actions, *rewards, *terminals;
-    int num_agents;
+    /* Vector slots this environment consumes (PufferLib's "num_agents"). A
+     * self-play or evaluation environment uses one slot per player. A
+     * historical environment (banks>0, two players) uses slot 0 for the
+     * learner and slots 1..banks for its opponent, one per frozen weight bank;
+     * exactly one opponent slot is active per match (1+active_bank), the rest
+     * idle. Player p writes to and reads from slot bopl_slot(env, p). */
+    int num_agents, players, banks;
+    float *obs_ptr[BOPL_MAX_SLOTS], *action_ptr[BOPL_MAX_SLOTS], *reward_ptr[BOPL_MAX_SLOTS], *terminal_ptr[BOPL_MAX_SLOTS];
+    /* PufferLib alignment protocol (MY_USES_TAGS): tag 0 self-play, 1 historical. */
+    int tag, boundary_reached;
+    /* Per match, drawn in c_reset from a stream separate from the game setup
+     * draws so the map/seed/loadout sequence is unaffected: which player the
+     * learner controls (side) and which frozen bank the opponent runs on
+     * (uniform over the vector's currently valid banks). */
+    int side, active_bank;
+    unsigned int side_rng;
+    const unsigned int *valid_banks;
+    unsigned long matches, stepped;
+    /* Player-ordered observation block; rows are published to the slots. */
+    float *scratch;
     unsigned int rng;
     BoplRl *world;
     BoplRlConfig config;
@@ -85,11 +111,11 @@ static int bopl_hidden(const BoplRlState *state, uint32_t owner, uint32_t self) 
     return 0;
 }
 static void compute_observations_from(BoplPuffer *env, const BoplRlState *state) {
-    memset(env->observations, 0, (size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float));
+    memset(env->scratch, 0, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
     if (!state) return;
-    for (int a=0; a<env->num_agents; a++) {
+    for (int a=0; a<env->players; a++) {
         const BoplRlPlayer *self=&state->players[a];
-        float *obs=env->observations+(size_t)a*BOPL_OBS_SIZE;
+        float *obs=env->scratch+(size_t)a*BOPL_OBS_SIZE;
         double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
         uint32_t nearest[BOPL_OBS_ENTITIES]; double distances[BOPL_OBS_ENTITIES];
         int count=0, active_count=0;
@@ -188,6 +214,19 @@ static void bopl_previous_action(float *previous, BoplRlAction action) {
     previous[1]=action.angle?cos(angle):0; previous[2]=action.angle?sin(angle):0;
     for (int bit=0; bit<4; bit++) previous[3+bit]=(action.buttons&(1<<bit))!=0;
 }
+/* The vector slot player p is routed through this match. */
+static int bopl_slot(const BoplPuffer *env, int player) {
+    if (!env->banks) return player;
+    return player==env->side?0:1+env->active_bank;
+}
+static uint32_t bopl_side_random(BoplPuffer *env) {
+    uint32_t x=env->side_rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->side_rng=x;
+}
+/* Copy the player-ordered observations into the routed vector slots. */
+static void bopl_publish(BoplPuffer *env) {
+    for (int p=0; p<env->players; p++)
+        memcpy(env->obs_ptr[bopl_slot(env, p)], env->scratch+(size_t)p*BOPL_OBS_SIZE, BOPL_OBS_SIZE*sizeof(float));
+}
 static void bopl_failed_world(BoplPuffer *env, const BoplRl *world, const char *operation) {
     env->failed=1; env->log.game_errors++;
     snprintf(env->error, sizeof(env->error), "%s: %s", operation, bopl_rl_error(world));
@@ -237,9 +276,15 @@ static void init(BoplPuffer *env) {
         bopl_world_open(env);
         bopl_world_ready(env);
     }
-    env->history=calloc((size_t)2*env->num_agents*BOPL_OBS_SIZE, sizeof(float));
-    env->sample=calloc((size_t)env->num_agents*BOPL_OBS_SIZE, sizeof(float));
-    if (!env->history || !env->sample) abort();
+    if (env->players<1 || env->players>BOPL_MAX_PLAYERS || env->banks<0 || env->banks>BOPL_MAX_BANKS
+        || (env->banks && env->players!=2) || env->num_agents!=(env->banks?1+env->banks:env->players)) {
+        fprintf(stderr, "Bopl RL slot layout: players %d, banks %d, slots %d\n", env->players, env->banks, env->num_agents); abort();
+    }
+    env->history=calloc((size_t)2*env->players*BOPL_OBS_SIZE, sizeof(float));
+    env->sample=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
+    env->scratch=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
+    if (!env->history || !env->sample || !env->scratch) abort();
+    env->active_bank=-1;
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
     const char *split=getenv("BOPL_SPLIT_STEP");
     env->split_step=split && *split && strcmp(split, "0")!=0;
@@ -273,7 +318,7 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
             selected--;
         }
     } else if (env->random_maps) config->map=bopl_random(env)%bopl_rl_map_count(env->world);
-    if (env->random_loadouts) for (int i=0; i<env->num_agents; i++) for (uint32_t j=0; j<config->slots; j++)
+    if (env->random_loadouts) for (int i=0; i<env->players; i++) for (uint32_t j=0; j<config->slots; j++)
         config->player[i].abilities[j]=1+bopl_random(env)%(BOPL_ABILITY_COUNT-1); // Exclude the source's NullAbility placeholder.
 }
 static void c_reset(BoplPuffer *env) {
@@ -298,21 +343,38 @@ static void c_reset(BoplPuffer *env) {
     const BoplRlState *state=bopl_rl_state(env->world);
     memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
-    for (int i=0; i<env->num_agents; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
+    for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
+    if (env->banks) {
+        /* Opponent ownership changes only here, between matches: the finished
+         * match's opponent row goes idle (blank observation, its state was
+         * reset by the terminal flag) and the new match draws its side and one
+         * of the banks the trainer currently declares valid. */
+        if (env->active_bank>=0) memset(env->obs_ptr[1+env->active_bank], 0, BOPL_OBS_SIZE*sizeof(float));
+        unsigned int valid=*env->valid_banks&((1u<<env->banks)-1u);
+        if (!valid) { fprintf(stderr, "Bopl RL: no valid opponent bank\n"); abort(); }
+        env->side=(int)(bopl_side_random(env)&1u);
+        int count=__builtin_popcount(valid), pick=(int)(bopl_side_random(env)%(uint32_t)count);
+        for (int bank=0; bank<env->banks; bank++) if (valid&(1u<<bank)) { if (pick==0) { env->active_bank=bank; break; } pick--; }
+        /* A fresh recurrent state for the row this match's opponent runs on. */
+        *env->terminal_ptr[1+env->active_bank]=1;
+    }
+    env->boundary_reached=1; env->matches++;
     compute_observations(env);
-    size_t bytes=(size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float);
-    for (int i=0; i<2; i++) memcpy(env->history+i*env->num_agents*BOPL_OBS_SIZE, env->observations, bytes);
+    size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
+    for (int i=0; i<2; i++) memcpy(env->history+i*env->players*BOPL_OBS_SIZE, env->scratch, bytes);
     env->delay_cursor=0;
-    for (int i=0; i<env->num_agents; i++) env->observations[(i+1)*BOPL_OBS_SIZE-7]=1;
+    for (int i=0; i<env->players; i++) env->scratch[(i+1)*BOPL_OBS_SIZE-7]=1;
+    bopl_publish(env);
 }
 static void c_step(BoplPuffer *env) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
-    memset(telemetry, 0, (size_t)env->num_agents*BOPL_TELEMETRY_SIZE*sizeof(float));
-    memset(env->rewards, 0, (size_t)env->num_agents*sizeof(float));
-    memset(env->terminals, 0, (size_t)env->num_agents*sizeof(float));
+    memset(telemetry, 0, (size_t)env->players*BOPL_TELEMETRY_SIZE*sizeof(float));
+    for (int s=0; s<env->num_agents; s++) { *env->reward_ptr[s]=0; *env->terminal_ptr[s]=0; }
+    env->stepped++;
     BoplRlAction actions[6]={{0}};
-    for (int i=0; i<env->num_agents; i++) {
-        float angle=env->actions[2*i], buttons=env->actions[2*i+1];
+    for (int i=0; i<env->players; i++) {
+        const float *action=env->action_ptr[bopl_slot(env, i)];
+        float angle=action[0], buttons=action[1];
         if (!isfinite(angle) || !isfinite(buttons) || angle<0 || angle>255 || buttons<0 || buttons>15
             || floorf(angle)!=angle || floorf(buttons)!=buttons) { fprintf(stderr, "Invalid PufferLib action\n"); abort(); }
         actions[i].angle=(uint8_t)angle; actions[i].buttons=(uint16_t)buttons;
@@ -326,24 +388,25 @@ static void c_step(BoplPuffer *env) {
     if (env->observation_delay && !env->split_step) {
         // Both phases in one game roundtrip: the phase-3 state is returned
         // alongside the final state (identical when the episode ends in phase 1).
-        if (bopl_rl_step_sampled(env->world, actions, env->num_agents, first, 1)) bopl_failed(env, "sampled step");
+        if (bopl_rl_step_sampled(env->world, actions, env->players, first, 1)) bopl_failed(env, "sampled step");
         compute_observations_from(env, bopl_rl_sample(env->world));
-        memcpy(env->sample, env->observations, (size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float));
+        memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
     } else {
         // Original two-roundtrip path (BOPL_SPLIT_STEP=1), retained as the parity oracle.
-        if (bopl_rl_step(env->world, actions, env->num_agents, first)) bopl_failed(env, "step");
+        if (bopl_rl_step(env->world, actions, env->players, first)) bopl_failed(env, "step");
         if (env->observation_delay) {
             compute_observations(env);
-            memcpy(env->sample, env->observations, (size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float));
+            memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
             if (!(bopl_rl_state(env->world)->header.flags&BOPL_RL_TERMINAL)
-                && bopl_rl_step(env->world, actions, env->num_agents, 1)) bopl_failed(env, "step phase");
+                && bopl_rl_step(env->world, actions, env->players, 1)) bopl_failed(env, "step phase");
         }
     }
     const BoplRlState *state=bopl_rl_state(env->world);
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
-    for (int i=0; i<env->num_agents; i++) {
+    for (int i=0; i<env->players; i++) {
         const BoplRlPlayer *player=&state->players[i];
+        int slot=bopl_slot(env, i), learner=!env->banks || i==env->side;
         float *stats=telemetry+i*BOPL_TELEMETRY_SIZE;
         uint32_t events[BOPL_EVENT_FIELDS], previous[BOPL_EVENT_FIELDS];
         memcpy(events, &state->telemetry[i], sizeof(events));
@@ -363,27 +426,33 @@ static void c_step(BoplPuffer *env) {
         /* Retain the original arithmetic/order for the actual PPO reward. */
         float reward=0.1f*((float)((int64_t)player->kills-env->kills[i])-(float)((int64_t)player->deaths-env->deaths[i]));
         if (terminal && !(state->header.flags&BOPL_RL_TRUNCATED)) reward+=(player->flags&2)?1.0f:-1.0f;
-        env->rewards[i]=reward; env->returns[i]+=reward;
+        *env->reward_ptr[slot]=reward; env->returns[i]+=reward;
         env->deaths[i]=player->deaths; env->kills[i]=player->kills;
         if (terminal) {
             if (env->config.map<31) env->log.map_fraction[env->config.map]++;
-            env->terminals[i]=1;
-            env->log.perf+=(player->flags&2)!=0; env->log.score+=player->kills;
+            *env->terminal_ptr[slot]=1;
+            int won=(player->flags&2)!=0;
+            env->log.perf+=won; env->log.score+=player->kills;
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;
+            if (learner) {
+                env->log.learner_episodes++; env->log.learner_wins+=won;
+                if (env->banks) { env->log.historical_episodes++; env->log.historical_wins+=won; }
+            }
         }
     }
-    if (terminal && !env->no_autoreset) c_reset(env);
-    else if (env->observation_delay) {
-        size_t bytes=(size_t)env->num_agents*BOPL_OBS_SIZE*sizeof(float);
-        float *old=env->history+(size_t)env->delay_cursor*env->num_agents*BOPL_OBS_SIZE;
-        memcpy(env->observations, old, bytes); memcpy(old, env->sample, bytes);
+    if (terminal && !env->no_autoreset) { c_reset(env); return; }
+    if (env->observation_delay) {
+        size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
+        float *old=env->history+(size_t)env->delay_cursor*env->players*BOPL_OBS_SIZE;
+        memcpy(env->scratch, old, bytes); memcpy(old, env->sample, bytes);
         env->delay_cursor=(env->delay_cursor+1)%2;
     } else compute_observations(env);
-    if (!terminal) for (int i=0; i<env->num_agents; i++) {
+    if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
-        float *previous=env->observations+(size_t)(i+1)*BOPL_OBS_SIZE-7;
+        float *previous=env->scratch+(size_t)(i+1)*BOPL_OBS_SIZE-7;
         bopl_previous_action(previous, actions[i]);
     }
+    bopl_publish(env);
 }
 static void c_render(BoplPuffer *env) {
     (void)env;
@@ -394,6 +463,6 @@ static void c_close(BoplPuffer *env) {
     if (env->spare_opening) { pthread_join(env->spare_thread, NULL); env->spare_opening=0; }
     bopl_rl_close(env->world); env->world=NULL;
     bopl_rl_close(env->spare); env->spare=NULL;
-    free(env->history); free(env->sample);
+    free(env->history); free(env->sample); free(env->scratch);
 }
 #endif

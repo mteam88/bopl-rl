@@ -345,3 +345,58 @@ series deletions) applies once the old-runtime qualification no longer needs tho
 Next concrete step: edit `bopl_puffer.h`/`binding.c`/`eval_binding.c` for per-slot pointers,
 tag/boundary/latch fields and the per-match side; rebuild with `build.py`; run a routing test
 (non-identity permutation, side swaps, two-buffer layout) before the overlay kernels.
+
+### 2026-09-07 21:30 UTC — routing lands (env side of the native migration)
+
+`bopl_puffer.h`, `binding.c`, `eval_binding.c` now implement the per-slot design and
+`native/rl/puffer/check_routing.py` proves it (artifact `native-routing/result.json`, all 27
+checks pass on the IL2CPP player, host stepping):
+- Every env owns `num_agents` adjacent vector slots (self-play: `players`; historical:
+  `1 + banks`, slot 0 = learner, slot 1+b = bank b). `MY_USES_PERM` + `my_setup_perm` route each
+  slot to the physical row `agent_perm` names, so a trainer-built permutation packs every buffer
+  as `[primary rows | bank 0 rows | bank 1 rows ...]`, which is exactly what upstream
+  `bank_layout` slices. Verified with a non-identity permutation on 1 and 2 buffers: observations,
+  actions (previous-action echo), rewards and terminals all land in the permuted rows.
+- Ownership changes only in `c_reset`: side and bank are drawn from a separate xorshift stream
+  (`side_rng`), so the game setup draws (seed/map/loadouts from `env->rng`) are unchanged with
+  or without banks. The bank is drawn uniformly from the trainer's valid-bank mask
+  (`bopl_set_valid_banks`, atomic, process-wide); an empty mask aborts visibly. The chosen
+  opponent row gets `terminal=1` at match start (fresh recurrent state), the previous opponent
+  row is blanked and stays all-zero while idle. Sides and banks both vary across matches per env.
+- `MY_USES_TAGS`: historical envs carry tag 1 and set `boundary_reached` in `c_reset`;
+  `count_aligned` reported exactly one boundary per historical match, which is the handshake the
+  trainer uses to swap a bank: mark it invalid, wait until every historical env has crossed a
+  boundary since (so no live match still uses it), load weights, mark valid.
+- Restricting the mask to one bank made every new match pick that bank (checked).
+- Log gains learner/historical episodes and wins (learner = self-play rows, or the learner side
+  of a historical env). Per Matthew: `static_vec_log` averages finished episodes only and clears
+  env logs whenever any env reported, so behaviour telemetry for the dashboard must come from
+  independent cumulative learner counters (unfinished episodes included, warmup/frozen excluded),
+  not from these Log averages. To be added with the trainer output.
+- `eval_binding.c` routes slots identity to its own buffers (`research_route`); evaluation still
+  steps in sampled mode and resets cleanly (smoke: 200 steps, two episode ends, pairs consistent).
+
+Matthew's constraints received today (supersede earlier text above where they differ):
+- Deliverable ends at a QUALIFIED native SET trainer and handoff (to thr_wq22hezkbf); we do not
+  launch the 400M run. Sequence: native build/correctness -> native-vs-old sustained-w16 sanity
+  -> full native-only cutover -> set encoder correctness + throughput + short strength vs linear
+  -> handoff.
+- Final trainer reward: sparse terminal +1/-1, timeout -0.5 for both players, no 0.1 kill/death
+  shaping; entropy 0.01 annealed to 0.0005; episode cap 7200 ticks default and configurable;
+  truncation/episode telemetry retained. Comparison arms stay matched on reward/cap/entropy
+  before treatments change (phase-1 native-vs-old keeps the old reward).
+- Learning Lab (serve.py, web/, study_data.py, replay_library.py, port 8876) stays; the
+  dashboard UI is owned by thr_iiychwrq9p in the dashboard Rift. We own trainer output, eval and
+  checkpoints; a short metrics contract is coming. New native stats requested: per-head entropy
+  (aim/buttons), advantage std before normalisation, per-decision evaluation value and
+  action-probability dumps. Root owns eval-dump wiring and the Python metric-format helper.
+- Do not cherry-pick 5960253. The null-hypothesis service deferral was retracted.
+- Stage 2 set encoder ABI (Matthew, CPU side on research/cpu-set cc58b70): bias-free weights in
+  order flat[H,905], entity[64,21], slime[64,28], fusion[H,H+128], then upstream decoder and
+  MinGRU; H=128; presence != 0; absent sets contribute zero; metadata architecture
+  `bopl-set-mingru-v1`. CUDA parity vs the CPU oracle and layout agreement are required before
+  integration.
+
+Next: overlay patches in `build.py` (rollout-start state gather into `mb_state`, MinGRU terminal
+masking, learner-only prio, learner-step counter, reward clamp removal), then `bopl.ini` banks and
+the native-only `puffer/train.py` with sidecars, snapshot pool, bank swaps and metrics output.
