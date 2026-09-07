@@ -182,6 +182,17 @@ int bopl_vec_reset(const void *gpu_observations) {
     }
     return 0;
 }
+/* Host mirrors of the observation, reward and terminal rows (the games write
+ * them; the vector uploads them each step), for checks between rollouts.
+ * Returns total_agents, or -1 for an unknown vector. */
+int bopl_vec_host(const void *gpu_observations, const void **obs, const void **rewards, const void **terminals) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    if (obs) *obs=vec->observations;
+    if (rewards) *rewards=vec->rewards;
+    if (terminals) *terminals=vec->terminals;
+    return vec->total_agents;
+}
 /* Step transport actually in use by the vector's games (sampled after real
  * stepping so an old game build cannot be mistaken for the new path):
  *  2 = every game steps through the single-roundtrip sampled command
