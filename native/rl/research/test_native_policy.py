@@ -126,6 +126,102 @@ class NativePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "divisible by eight"):
             NativePolicy(weights, 11, hidden=7)
 
+    def test_set_policy_is_invariant_to_slot_order_and_absent_features(self):
+        # These are properties of the game's set observation contract; the
+        # independent full encoder oracle is kept outside the shipped code.
+        hidden, batch = 16, 4
+        rng = np.random.default_rng(91)
+        shapes = ((hidden, 905), (64, 21), (64, 28), (hidden, hidden + 128),
+                  (273, hidden), (3 * hidden, hidden))
+        weights = np.concatenate([(rng.standard_normal(shape) * .025).astype(np.float32).ravel()
+                                  for shape in shapes])
+        policy = NativePolicy(weights, 3257, hidden, architecture="bopl-set-mingru-v1")
+        obs = rng.standard_normal((batch, 3257)).astype(np.float32)
+        for lo, hi, rows, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+            slots = obs[:, lo:hi].reshape(batch, rows, width)
+            slots[:, :, 0] = rng.integers(2, size=(batch, rows))
+            slots[0, :, 0] = 0
+            slots[1, :, 0] = 1
+
+        def step(value):
+            return policy.step(torch.from_numpy(value.copy()), policy.initial(batch))
+
+        expected = step(obs)
+        permuted, poisoned, empty = (obs.copy() for _ in range(3))
+        for lo, hi, rows, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+            slots = obs[:, lo:hi].reshape(batch, rows, width)
+            for row in range(batch):
+                permuted[row, lo:hi] = slots[row, rng.permutation(rows)].ravel()
+            poison = poisoned[:, lo:hi].reshape(batch, rows, width)
+            poison[:, :, 1:][slots[:, :, 0] == 0] = 1e9
+            empty[:, lo:hi] = 0
+        for variant in (permuted, poisoned):
+            for actual, reference in zip(step(variant), expected):
+                torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+        # Reusing activations across populated and empty sets must not retain
+        # an entity's previous pooled output.
+        fresh = NativePolicy(weights, 3257, hidden, architecture="bopl-set-mingru-v1")
+        empty_result = fresh.step(torch.from_numpy(empty.copy()), fresh.initial(batch))
+        step(obs)
+        for actual, reference in zip(step(empty), empty_result):
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+
+    def test_set_policy_recurrent_outputs_match_independent_reference(self):
+        # Qualify the complete checkpoint layout, including SET -> MinGRU ->
+        # decoder, nonzero carried state, staggered resets and empty sets.
+        for hidden, layers in ((16, 2), (128, 1)):
+            with self.subTest(hidden=hidden, layers=layers):
+                batch = 3
+                rng = np.random.default_rng(193)
+                shapes = [(hidden, 905), (64, 21), (64, 28),
+                          (hidden, hidden + 128), (273, hidden)]
+                shapes += [(3 * hidden, hidden)] * layers
+                matrices = [(rng.standard_normal(shape) * .03).astype(np.float32)
+                            for shape in shapes]
+                weights = np.concatenate([matrix.ravel() for matrix in matrices])
+                policy = NativePolicy(weights, 3257, hidden, layers,
+                                      architecture="bopl-set-mingru-v1")
+                flat, entity, slime, fusion, decoder = map(torch.from_numpy, matrices[:5])
+                recurrent = self.upstream.MinGRU(hidden, layers).eval()
+                with torch.no_grad():
+                    for layer, matrix in zip(recurrent.layers, matrices[5:]):
+                        layer.weight.copy_(torch.from_numpy(matrix))
+                state = torch.from_numpy(rng.standard_normal((layers, batch, hidden)).astype(np.float32))
+                reference = recurrent.initial_state(batch, "cpu")
+                reference[0].copy_(state)
+
+                def pooled(rows, projection):
+                    present = rows[:, :, 0] != 0
+                    safe = rows.masked_fill(~present[:, :, None], 0)
+                    projected = F.linear(safe, projection).relu()
+                    projected = projected.masked_fill(~present[:, :, None], -float("inf"))
+                    return torch.where(present.any(1, keepdim=True),
+                                       projected.max(1).values, 0)
+
+                for tick in range(20):
+                    if tick in (3, 8, 15):
+                        row = tick % batch
+                        state[:, row] = 0
+                        reference[0][:, row] = 0
+                    obs = rng.standard_normal((batch, 3257)).astype(np.float32)
+                    for lo, hi, count, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+                        rows = obs[:, lo:hi].reshape(batch, count, width)
+                        rows[:, :, 0] = 0 if tick == 10 else rng.integers(2, size=(batch, count))
+                        rows[:, :, 1:][rows[:, :, 0] == 0] = 1e9
+                    observations = torch.from_numpy(obs)
+                    logits, values, state = policy.step(observations, state)
+                    with torch.no_grad():
+                        flat_input = torch.cat((observations[:, :898], observations[:, 3250:]), 1)
+                        joined = torch.cat((F.linear(flat_input, flat).relu(),
+                                            pooled(observations[:, 898:2914].reshape(batch, 96, 21), entity),
+                                            pooled(observations[:, 2914:3250].reshape(batch, 12, 28), slime)), 1)
+                        encoded = F.linear(joined, fusion).relu()
+                        out, reference = recurrent.forward_eval(encoded, reference)
+                        decoded = F.linear(out, decoder)
+                    torch.testing.assert_close(logits, decoded[:, :272], rtol=2e-5, atol=2e-6)
+                    torch.testing.assert_close(values, decoded[:, 272], rtol=2e-5, atol=2e-6)
+                    torch.testing.assert_close(state, reference[0], rtol=2e-5, atol=2e-6)
+
 
 if __name__ == "__main__":
     unittest.main()
