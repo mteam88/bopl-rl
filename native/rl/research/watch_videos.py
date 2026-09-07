@@ -26,10 +26,11 @@ def main():
         if candidates:
             # Preserve the beginning, then keep the latest available policy.
             step,directory,game,video=candidates[0] if not rendered else candidates[-1]
-            seconds=game['ticks']/60+6
             atomic_json(run/'video-status.json',dict(status='rendering',step=step,rendered=rendered))
+            # render_video derives the duration from the replay itself, so the
+            # whole match (warmup through end) is covered.
             subprocess.run([sys.executable,str(Path(__file__).with_name('render_video.py')),
-                            str(directory/game['replay']),str(video),'--seconds',str(seconds)],check=True)
+                            str(directory/game['replay']),str(video)],check=True)
             rendered.append(step)
             if status in ('complete','stopped','failed') and step==max(r[0] for r in candidates): break
         elif status in ('complete','stopped','failed'): break
