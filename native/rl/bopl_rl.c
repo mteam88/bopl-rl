@@ -38,7 +38,7 @@ struct BoplRl {
     int socket, listener;
     pid_t child;
     uint32_t timeout_ms, sequence, maps, abilities;
-    bool valid, broken, sample_valid, sampled_unsupported, reset_pending;
+    bool valid, broken, sample_valid, sampled_unsupported, reset_pending, eager;
     uint32_t reset_sequence;
     char directory[64], endpoint[108], error[512], source[65], catalog[65];
     unsigned char *buffer;
@@ -75,14 +75,29 @@ static int wait_ready(int fd, short events, int64_t deadline) {
 }
 static int transfer(BoplRl *w, void *data, size_t size, bool send_data, int64_t deadline) {
     unsigned char *bytes=data;
+    /* BOPL_RL_EAGER_IO=1: try the non-blocking syscall first and poll only
+     * when it would block, instead of polling before every chunk. */
+    bool ready=w->eager;
     while (size) {
-        if (wait_ready(w->socket, send_data?POLLOUT:POLLIN, deadline)<0) return fail(w, "RL transport wait");
+        if (!ready && wait_ready(w->socket, send_data?POLLOUT:POLLIN, deadline)<0) return fail(w, "RL transport wait");
         ssize_t count=send_data?send(w->socket, bytes, size, MSG_NOSIGNAL):recv(w->socket, bytes, size, 0);
-        if (count<0 && (errno==EINTR || errno==EAGAIN)) continue;
+        if (count<0 && (errno==EINTR || errno==EAGAIN)) { ready=false; continue; }
         if (count<=0) { if (!count) errno=ECONNRESET; return fail(w, "RL transport transfer"); }
         bytes+=count; size-=(size_t)count;
     }
     return BOPL_RL_OK;
+}
+/* Sends a request frame and its payload; as one write when eager I/O is on. */
+static int send_request(BoplRl *w, const Frame *frame, const void *data, int64_t deadline) {
+    unsigned char packed[sizeof(*frame)+4096];
+    if (w->eager && frame->length<=sizeof(packed)-sizeof(*frame)) {
+        memcpy(packed, frame, sizeof(*frame));
+        if (frame->length) memcpy(packed+sizeof(*frame), data, frame->length);
+        return transfer(w, packed, sizeof(*frame)+frame->length, true, deadline);
+    }
+    int result=transfer(w, (void*)frame, sizeof(*frame), true, deadline);
+    if (!result && frame->length) result=transfer(w, (void*)data, frame->length, true, deadline);
+    return result;
 }
 static int receive_frame(BoplRl *w, uint32_t operation, uint32_t sequence, uint32_t *length, int64_t deadline) {
     Frame frame;
@@ -111,8 +126,7 @@ static int command(BoplRl *w, uint32_t operation, const void *data, uint32_t len
     if (w->broken) return BOPL_RL_IO;
     int64_t deadline=now_ms()+w->timeout_ms;
     Frame frame={MAGIC, operation, ++w->sequence, length};
-    int result=transfer(w, &frame, sizeof(frame), true, deadline);
-    if (!result) result=transfer(w, (void*)data, length, true, deadline);
+    int result=send_request(w, &frame, data, deadline);
     if (!result) result=receive_frame(w, operation, frame.sequence, response_length, deadline);
     return result;
 }
@@ -202,6 +216,8 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
     BoplRl *w=calloc(1, sizeof(*w));
     if (!w) { error_text(error, capacity, "RL handle allocation failed"); return NULL; }
     w->socket=w->listener=-1; w->timeout_ms=timeout_ms;
+    const char *eager=getenv("BOPL_RL_EAGER_IO");
+    w->eager=eager && !strcmp(eager, "1");
     snprintf(w->directory, sizeof(w->directory), "/tmp/bopl-rl-XXXXXX");
     if (!mkdtemp(w->directory)) { fail(w, "RL socket directory"); goto cleanup; }
     snprintf(w->endpoint, sizeof(w->endpoint), "%s/game.sock", w->directory);
@@ -267,8 +283,7 @@ int bopl_rl_reset_begin(BoplRl *w, const BoplRlConfig *config) {
     int64_t deadline=now_ms()+w->timeout_ms;
     Frame frame={MAGIC, 1, ++w->sequence, sizeof(*config)};
     w->sample_valid=false; w->valid=false;
-    int result=transfer(w, &frame, sizeof(frame), true, deadline);
-    if (!result) result=transfer(w, (void*)config, sizeof(*config), true, deadline);
+    int result=send_request(w, &frame, config, deadline);
     if (result) return result;
     w->reset_pending=true; w->reset_sequence=frame.sequence;
     return BOPL_RL_OK;
