@@ -1,7 +1,7 @@
 """Read Fable's experiment log; serve a live chart or perform one hourly check."""
 import argparse
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
@@ -137,6 +137,11 @@ def chart(serialized, extension, metric='active'):
         ax.set_ylabel(f'Learner decisions / second ({metric})')
         ax.set_xlabel('Experiment completed · UTC')
         ax.set_ylim(bottom=0)
+        if points:
+            timestamps = [datetime.fromisoformat(row['timestamp_utc']) for row in points]
+            padding = max((max(timestamps) - min(timestamps)) / 12, timedelta(minutes=2))
+            ax.set_xlim(min(timestamps) - padding, max(timestamps) + padding)
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=6))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d %b', tz=timezone.utc))
         ax.grid(axis='y', alpha=.18)
         ax.spines[['top', 'right']].set_visible(False)
