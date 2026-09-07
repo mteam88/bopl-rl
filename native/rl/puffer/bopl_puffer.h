@@ -370,11 +370,14 @@ static void c_reset(BoplPuffer *env) {
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
     for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
     if (env->banks) {
-        /* Opponent ownership changes only here, between matches: the finished
-         * match's opponent row goes idle (blank observation, its state was
-         * reset by the terminal flag) and the new match draws its side and one
-         * of the banks the trainer currently declares valid. */
-        if (env->active_bank>=0) memset(env->obs_ptr[1+env->active_bank], 0, BOPL_OBS_SIZE*sizeof(float));
+        /* Opponent ownership changes only here, between matches: every bank
+         * row goes idle (blank observation; the finished match's opponent state
+         * was reset by the terminal flag) and the new match draws its side and
+         * one of the banks the trainer currently declares valid. Blanking all
+         * rows, not just the previously active one, also clears rows that held
+         * another slot's observation before the trainer's agent permutation
+         * was installed (create_pufferl resets under identity routing). */
+        for (int bank=0; bank<env->banks; bank++) memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float));
         unsigned int valid=*env->valid_banks&((1u<<env->banks)-1u);
         if (!valid) { fprintf(stderr, "Bopl RL: no valid opponent bank\n"); abort(); }
         env->side=(int)(bopl_side_random(env)&1u);

@@ -39,6 +39,13 @@ BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay
     research_route(env);
     init(env); c_reset(env); return env;
 }
+/* Reward telemetry configuration for an open evaluator: the kill/death
+ * shaping magnitude and the timeout outcome (<=0, both finite). Takes effect
+ * from the next step; research_open keeps the phase-1 defaults (0.1, 0). */
+int research_rewards(BoplPuffer *env, float kill, float timeout) {
+    if (!isfinite(kill) || !isfinite(timeout) || timeout>0) return -1;
+    env->reward_kill=kill; env->reward_timeout=timeout; return 0;
+}
 void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
     env->rng=seed; env->config.map=map; c_reset(env);
     memset(env->last_telemetry, 0, sizeof(env->last_telemetry));

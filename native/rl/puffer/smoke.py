@@ -151,7 +151,8 @@ try:
     def rows_ok(label):
         current = layout(lib, vec, games)
         check(f'{label}: active rows are two mutually visible players', all(pair_ok(obs, *active_rows(e)) for e in current))
-        check(f'{label}: idle bank rows are blank', all(not obs[r].any() for e in current for r in idle_rows(e)))
+        stale = [(i, r, int(np.count_nonzero(obs[r]))) for i, e in enumerate(current) for r in idle_rows(e) if obs[r].any()]
+        check(f'{label}: idle bank rows are blank', not stale, stale=stale[:16], stale_count=len(stale))
         check(f'{label}: observations finite', bool(np.isfinite(obs).all()))
         return current
     rows_ok('after reset')
