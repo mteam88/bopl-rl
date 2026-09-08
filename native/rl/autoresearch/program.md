@@ -124,7 +124,7 @@ encoder (evidence layout: `native/artifacts/rl/autoresearch/final-core-checks/`)
 3. **Handoff: written.** `native/rl/NATIVE_HANDOFF.md` (root-owned) carries the
    400M launch configuration for thread thr_wq22hezkbf, the qualification
    evidence and the limits. This session does NOT launch that run.
-4. **Standalone simulator: not assessed yet** (see open items).
+4. **Standalone simulator: assessed, not started** (notes.md, 2026-09-08). The game process is at its floor and collection is ~98 % of wall; a training-loadout simulator (dash/bow/platform, two players) in `bopl-sim` could raise throughput 5–10× but is not on the critical path until the 400M run shows collection rate is what limits learning.
 
 Ownership while root's Rift is active: root owns `train.py`, `native_pool.py`,
 `native_vector.py`, `policy_eval.c`, `native_policy.py`, `evaluate.py`,
@@ -150,8 +150,10 @@ the slot is negotiated explicitly between the Rifts.
   of 56 s; train ~1 s). Leads: game stepping cost inside the IL2CPP player,
   worker count vs GPU utilization (34–38%), observation packing, and the
   synchronous evaluation cadence (root: 5M cadence, 57 games per suite).
-- **Standalone simulator.** Assess from the IL2CPP and native evidence
-  whether a game-free simulator is worth it; a full rewrite is not requested.
+- **Standalone simulator.** Assessed in notes.md (2026-09-08): worth it only
+  once the 400M run shows more decisions per hour would change the outcome, and
+  then scoped to the training loadout, mechanic by mechanic with Unity goldens,
+  arrows first. No rewrite now.
 - **Native scripted evaluation opponents** (archer/pursuer/evasive) as fixed
   anchors after launch; the ladder grows a scripted-anchor option then.
 - **Visibility review** before any experiment with invisibility or smoke.
