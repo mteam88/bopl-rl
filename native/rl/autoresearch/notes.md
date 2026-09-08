@@ -991,6 +991,14 @@ and 4 have level spawns (y within 1 unit). The first evaluation of each run
 (6.7M physical, policy near uniform) already shows the asymmetry: 14/28 vs
 11/28 and 16/28 vs 9/28.
 
+Update 2026-09-07 22:37 EDT: per evaluation on the stocks-0 run, side 0 / side 1 wins
+out of 28 fixed-opponent games each, and pairs where only one side won:
+6.7M 16/9 (11:4), 13.3M 16/10 (11:5), 20.0M 15/11 (9:5), 26.7M 13/11 (7:5),
+33.3M 16/11 (9:4), 40.0M 17/15 (5:3, both sides won 12 pairs). The gap
+narrowed at 40M physical because more pairs were won from both sides, which is
+what a stronger policy would do to a side handicap; one evaluation is not
+enough to call a trend. The initial-vs-initial check remains the clean test.
+
 **Checkpoint-to-checkpoint game outcomes are mostly stable.** The four evaluations share the same 57
 (opponent, map, seed, side) tasks. Outcomes flip on 9/57, 16/57 and 7/57 tasks between consecutive
 evaluations, and 25-30 of 57 games end at the identical tick. Sampled action sequences of the saved
