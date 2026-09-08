@@ -400,3 +400,39 @@ Matthew's constraints received today (supersede earlier text above where they di
 Next: overlay patches in `build.py` (rollout-start state gather into `mb_state`, MinGRU terminal
 masking, learner-only prio, learner-step counter, reward clamp removal), then `bopl.ini` banks and
 the native-only `puffer/train.py` with sidecars, snapshot pool, bank swaps and metrics output.
+
+## 2026-09-08 native trainer 16w timing (harness retargeted, commit 60632d3)
+
+`bench_throughput.py` now drives `puffer/train.py` (learner-decision budget in `--steps`, no
+`--load`/`--no-video`/`--start-step`; `learner_dps_active` uses `result.elapsed`, the same span
+the old harness measured; `training_seconds` is the metrics clock from the first rollout).
+Workload `native-w16-786432-fresh-sparse`: IL2CPP game, 16 workers, 4 banks, horizon 128, random
+init, sparse reward (+-1, timeout -0.5), cap 3600, maps 0,1,2, 786432 learner decisions
+(1048576 physical) in 256 updates, incumbent game flags + BOPL_PARALLEL_OPEN. Medians of 3:
+
+| arm | learner dps active | learner dps wall | wall s | rollout s | train s |
+| passes 1 (default) | 14689 | 13756 | 57.2 | 44.5 | 0.9 |
+| passes 3 | 14396 | 13510 | 58.2 | 44.2 | 2.6 |
+
+Old trainer on sustained-w16 (il2cpp-w16, same game build and flags): 13352 active / 10595 wall,
+55.7 s wall for 589824 learner decisions (786432 physical) in 192 updates; rollout 35.4 s, train
+8.0 s, start-up 8.4 s. The old run resumed the 5.0M checkpoint with the kill/death +-0.1 reward,
+constant lr 3e-4, Adam, GAE 0.95, and did 3 epochs x 4 minibatches of 1024 learner decisions
+(12 gradient steps) per 3072-learner-decision update. The native run trains from random weights
+with Muon + cosine lr, GAE 0.90 + vtrace, prioritized replay, and 1 (or 3) passes over one
+3072-row minibatch per update. So these are different workloads, not a matched speedup:
+the native trainer's per-update optimizer work is much smaller (the train phase is 0.9-2.6 s vs
+8.0 s) and its rollout phase is slower per learner decision (44.5 s / 786432 vs 35.4 s / 589824,
+i.e. 17.7k vs 16.7k learner decisions per rollout second, roughly equal). The wall-rate gain
+(+30%) is mostly start-up (3.6 s vs 8.4 s) and the shorter train phase. Cross-run noise is small
+(active 14282-14795 across both arms). Passes 3 costs 1.7 s per 786k learner decisions.
+
+Observed on all native 16w runs: joint entropy flat at 8.299 (max 8.318) for the whole 786k
+budget, explained variance 0-0.08, lr cosine-annealed to 1e-8 by the last update (`anneal_lr` is
+left at PufferLib's default 1 by train.py). These are short random-init runs so no learning is
+expected; the lr anneal to zero over a benchmark budget is a config issue reported to root.
+
+Correctness on this branch: SET encoder core hook (`BOPL_NATIVE_ENCODER` read in the overlay's
+`create_custom_encoder`, fail-closed on bad values), full CUDA build, `check_set_encoder`
+pass_all (forward <= 2.4e-7, grad <= 2.9e-6, graph replay / permutation / masked poison / empty
+set), unit tests 6+2+3 OK, smokes linear/set/set16 86 PASS, SET 4w CLI run with two evaluations.
