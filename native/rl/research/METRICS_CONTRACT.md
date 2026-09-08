@@ -88,9 +88,14 @@ New — the dashboard renders these once present (per update):
   **before** any normalization, once per update over the whole rollout.
   (Rationale: sparse reward + per-minibatch normalization makes "no signal"
   gradients look full-size; this is the direct detector.)
-- `behavior.totals.kills` — kills credited to the learning player by the game
-  (opponent deaths the learner caused). Today only `reward_kills` exists and it
-  becomes unusable when the kill reward is 0.
+- `behavior.totals.kills` — the game's credited-kill counter for learner
+  players, **including self-kills**. `Player.Kill` increments the credited
+  player's `Kills` even when killer equals victim. Native training records
+  this directly, independently of `reward_kills` and its reward coefficient.
+  It is not an opponent-kill count. Learner-only totals need not equal
+  `deaths_self + deaths_opponent`, since kills and deaths concern different
+  players and frozen opponents are excluded from learner totals. Per-game
+  evaluation `kills` and group `mean_kills` use the same game counter.
 
 ## Evaluation result.json (required)
 
