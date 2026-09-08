@@ -50,10 +50,23 @@ namespace UnityEngine
 		internal void UseRectTransform()
 		{
 			if (transform is RectTransform) return;
+			var old = transform;
 			var rt = new RectTransform();
 			rt.AttachTo(this);
-			rt.isAsset = transform.isAsset;
-			components[components.IndexOf(transform)] = rt;
+			rt.isAsset = old.isAsset;
+			// Carry the hierarchy links and pose: GraphBuilder parents the GO
+			// before it reaches the RectTransform component entry, so the swap
+			// must not orphan it (WinnerTriangle: charStatsList.transform.parent).
+			rt.localPositionField = old.localPositionField;
+			rt.localRotationField = old.localRotationField;
+			rt.localScaleField = old.localScaleField;
+			rt.parentField = old.parentField;
+			if (old.parentField != null)
+				old.parentField.children[old.parentField.children.IndexOf(old)] = rt;
+			rt.children.AddRange(old.children);
+			foreach (var child in old.children) child.parentField = rt;
+			old.children.Clear();
+			components[components.IndexOf(old)] = rt;
 			transform = rt;
 		}
 

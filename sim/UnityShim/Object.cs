@@ -155,6 +155,8 @@ namespace UnityEngine
 			if (original == null) throw new ArgumentException("The Object you want to instantiate is null.");
 			if (original is ScriptableObject so)
 				return CloneRules.CloneScriptableObject(so);
+			if (original is Material mat)
+				return new Material(mat) { name = mat.name + "(Clone)" };
 			GameObject sourceGo = original as GameObject ?? (original as Component)?.gameObject;
 			if (sourceGo == null) throw new ArgumentException("Instantiate of unsupported type " + original.GetType().Name);
 			GameObject clone = CloneRules.CloneHierarchy(sourceGo, parent);

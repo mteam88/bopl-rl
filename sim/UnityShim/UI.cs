@@ -79,7 +79,15 @@ namespace UnityEngine.UI
 	public class Graphic : Behaviour
 	{
 		public virtual Color color { get; set; } = Color.white;
-		public Material material { get; set; }
+		// Unity's Graphic.material never returns null: unset means the shared
+		// default UI material (AbilitySelectController clones it via Instantiate).
+		internal static readonly Material defaultGraphicMaterial = new Material { name = "Default UI Material" };
+		private Material materialField;
+		public Material material
+		{
+			get => materialField != null ? materialField : defaultGraphicMaterial;
+			set => materialField = value;
+		}
 		public Material materialForRendering => material;
 		public RectTransform rectTransform => transform as RectTransform;
 		public bool raycastTarget { get; set; } = true;

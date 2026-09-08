@@ -19,6 +19,7 @@ namespace UnityEngine
 
 	public class Texture2D : Texture
 	{
+		internal Texture2D() { } // Export placeholder path (Activator.CreateInstance)
 		public Texture2D(int width, int height) { this.width = width; this.height = height; }
 		public Texture2D(int width, int height, TextureFormat format, bool mipChain) : this(width, height) { }
 		public static Texture2D whiteTexture { get; } = new Texture2D(4, 4);
@@ -467,7 +468,9 @@ namespace UnityEngine
 		public int frequency { get; set; } = 44100;
 	}
 
-	public static class AudioListener
+	// A Behaviour in Unity (component on the boot AudioManager / cameras) with
+	// static global volume controls; gameplay only touches the statics.
+	public class AudioListener : Behaviour
 	{
 		public static float volume { get; set; } = 1f;
 		public static bool pause { get; set; }

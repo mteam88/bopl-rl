@@ -71,6 +71,9 @@ namespace UnityShim
 		private static GameObject CloneGameObjectRecursive(GameObject source, Dictionary<UnityEngine.Object, UnityEngine.Object> map)
 		{
 			var clone = GameObject.CreateDetached(source.objectName, false);
+			// UI prefabs: the clone's transform kind must match the source's
+			// (AbilitySelectCircle.trans is a serialized RectTransform field).
+			if (source.transform is RectTransform) clone.UseRectTransform();
 			map[source] = clone;
 			map[source.transform] = clone.transform;
 			clone.layer = source.layer;
