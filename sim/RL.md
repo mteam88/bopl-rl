@@ -125,30 +125,60 @@ CPU-saturated by the game processes. The port reaches the same rate with 8
 workers, at `nice -n 19` in a `CPUWeight=10` scope, on a box already running
 other work — the trainer, not the sim, is now the ceiling to look at.
 
+### Worker sweep (unthrottled, 2026-09-08, after the memory fix)
+
+`train.py --steps 2000000 --no-eval --encoder set --hidden 128 --layers 1
+--banks 4 --horizon 128 --training-maps 0,1,2 --stocks 0 --seed 73`, no
+`nice`, no scope, box otherwise idle (12 threads, 32 GB, ~11 GB used by
+other processes). "run" = whole run incl. startup; peak RSS = sum over the
+trainer and its game processes, sampled every 2 s.
+
+| workers | buffers | game procs | learner/s run | learner/s median | physical/s run | peak RSS total | per game proc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 8 | 1 | 16 | 13,335 | 14,359 | 17,780 | 4.66 GB | 231 MB |
+| 8 | 2 | 16 | 14,345 | 15,600 | 19,126 | 4.72 GB | 230 MB |
+| 16 | 1 | 32 | 20,574 | 22,677 | 27,432 | 8.61 GB | 239 MB |
+| **16** | **2** | 32 | **22,850** | 25,394 | 30,467 | **8.23 GB** | 224 MB |
+| 24 | 1 (+eval) | 48 | 19,412* | 25,435 | 25,883 | 11.24 GB | 220 MB |
+| 24 | 2 | 48 | 25,265 | 29,155 | 33,687 | 11.84 GB | 226 MB |
+| 32 | 1 / 2 | 64 | — | — | — | — | startup timeout |
+
+\* with `--checkpoint-every 1000000 --eval-every 1000000` and the 500M
+recipe's evaluation flags (8/4/16 games, 2 eval workers): two evaluation
+cycles ran (4.4 s and 4.7 s each, 8 groups, pool still empty) and two
+checkpoints were written; the run-level rate includes them.
+
+Reading: buffers 2 is worth ~10% at every width; 8 → 16 workers scales
++70%, 16 → 24 only +10% (rollout 0.116 → 0.152 s per update — the trainer's
+per-step latency is the limit now, not the sim). 64 game processes do not
+come up within `bopl_puffer.h`'s 30 s startup timeout: 64 boots × ~260 MB
+transient on a box with 11 GB already in use swaps (by hand, 48 boots under
+24 CPU spinners take 13 s; 64 boots alone did not finish in 2 min). Chosen
+for the 500M run: **16 workers, 2 buffers** — 24 is not clearly better for
+40% more memory on a shared box. Projected: 500M / 22,850 = 6.1 h of
+training, plus evaluations (5 s each with an empty pool, growing with
+`--frozen-games` × pool size) — call it ~7 h. Launch recipe:
+`native/artifacts/rl/long-run-500m/launch-002-s73-dotnet.sh` (MemoryMax
+15G = 8.6 GB peak + 6 GB).
+
 ## Known gaps
 
-- **Memory: ~570 MB RSS per game process at rest** (Unity player: ~250–330 MB),
-  of which ~360 MB is live managed heap — the export's Newtonsoft `JObject`
-  trees (`assets.json` 37 MB on disk → `JProperty` 115 MB, strings 139 MB,
-  `JToken.LineInfoAnnotation` 53 MB, …) retained by `ExportDatabase` for
-  scene/asset builds. Touching every ability (as `reset_check` does) grows
-  the live heap to ~745 MB; it is bounded, not a leak (200 same-map resets:
-  flat 363 MB). A forced compacting GC after boot returns ~6 MB, so `RlMode`
-  does not bother. Consequences: `--workers 16` = 32 processes ≈ 18 GB; the
-  two `check_routing` startup timeouts seen while developing were swap thrash
-  from that footprint on a loaded box, not protocol failures. Fix belongs in
-  `sim/Export` (parse with `JsonLoadSettings.LineInfoHandling = Ignore` for
-  an immediate −53 MB; longer term convert to compact records and drop the
-  `JObject`s after the assets are built).
-- **`native/rl/research/check_telemetry.py`** records
-  `environment.game_identity()`, which requires a Mono `Assembly-CSharp.dll`
-  or IL2CPP `GameAssembly.so` next to the binary and raises
-  `FileNotFoundError` for the port. Not touched. (`evaluate.py` does not use
-  it: run directly on the smoke's final checkpoint with `--game <AOT Host>`,
-  `--workers 2`, 4/2/4 games, it completed in 3.7 s and wrote
-  `evaluations/004001792/result.json` with replays, visuals and mind dumps —
-  so `train.py` without `--no-eval` should work too; the smoke used
-  `--no-eval` only to isolate throughput.)
+- **Memory** (fixed 2026-09-08, `602709e` + `2c0b01c`): the export's
+  `assets.json` (37 MB) used to be held as a ~300 MB Newtonsoft tree per game
+  process — 570 MB RSS at rest, 745 MB after touching every ability. Now
+  `JsonSliceIndex` keeps the file bytes plus a key → byte-range index and
+  parses one entry when `BuildAsset` asks; scene trees drop line info, the
+  boot scene is not cached, the level cache is capped at 8 maps; `RlMode`
+  runs one compacting GC after boot. At ready: heap 389 → 59 MiB, RSS
+  548 → 208 MiB; during training ~225 MB/process; `reset_check` (38
+  abilities × maps) peak RSS 475 → 359 MiB. Boot still allocates ~260 MB
+  transiently, which is what limits how many processes can start at once
+  (see the sweep). Oracle unchanged: l0-p2-g4 720/720, l1–l4 as before.
+- **Game identity** (`7e0ca2c`): `environment.game_identity` reports
+  `backend: dotnet-aot` with the player hash only when neither a Mono nor an
+  IL2CPP payload sits next to the binary; `train.py` likewise records only
+  `player_binary_sha256`. `evaluate.py` needed no change; `train.py` with
+  evaluation enabled completed its eval cycles on the port (below).
 - **Bootstrap replay is not actually played.** The player loads the legacy
   `.rep` through its "Replay" scene; the port substitutes a default setup
   (see above). Only the reached state matters for RL and it is identical.
