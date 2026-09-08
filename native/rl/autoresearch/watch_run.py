@@ -114,6 +114,9 @@ def weight_slices(meta):
 
 def drift(run):
     """Per-slice displacement statistics over the run's checkpoints, oldest to newest."""
+    import os
+    for var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+        os.environ.setdefault(var, '1')  # never compete with a live training run's workers
     import numpy as np
     files = sorted(Path(run, 'checkpoints').glob('policy-*.bin'))
     if len(files) < 3: raise SystemExit(f'{run}: need at least three native checkpoints for drift')
