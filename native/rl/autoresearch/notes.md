@@ -787,7 +787,7 @@ Row norms are about 0.57 at initialization; the value row has grown to 1.22 whil
 - Caveat for the `--learner-passes 3` A/B: three Muon steps on the same rollout take three nearly parallel steps (same data, same noise direction), so per-rollout displacement roughly triples for noise and signal alike. It only wins if the extra passes extract signal that the first pass left; judge it with `--drift` on both arms, not with entropy alone.
 - Projected noise drift over the full run: 0.24 per checkpoint x sqrt(400) = about 4.8 for the aim rows against an initial norm of 9.2 (aim slice), so noise alone reshapes about half the aim head by 400M, with weight decay 0 and nothing pulling it back. Lowering the learning rate shrinks noise and signal steps alike, so it is not a signal-to-noise lever; reward density is.
 
-## 2026-09-07 22:40 EDT: the prioritized sampler sees only ~64% of each rollout at one pass (source read)
+## 2026-09-07 22:08 EDT: the prioritized sampler sees only ~64% of each rollout at one pass (source read)
 
 `src/pufferlib.cu` `prio_replay_cuda`: per minibatch it weights each of the 56 rollout rows by (sum of |advantage| over the 128-step segment)^0.8 (frozen-bank rows are zeroed first, so the 32 opponent rows get weight 1e-6 and are effectively never drawn), normalizes, and draws `minibatch_segments` = 3072/128 = 24 indices by multinomial sampling **with replacement** (`multinomial_sample`, cuRAND, binary search on a CDF). It never de-duplicates. So with 24 learner rows and 24 draws per pass:
 

@@ -169,7 +169,7 @@ the slot is negotiated explicitly between the Rifts.
   400M run shows entropy stuck near uniform, this is the first matched
   comparison to run (same seed, same budget, `strength_check.py`-style
   fail-closed protocol with `--learner-passes` in the plan). Specific
-  hypothesis (notes.md 2026-09-07 22:40): the sampler draws 24 segments with
+  hypothesis (notes.md 2026-09-07 22:08): the sampler draws 24 segments with
   replacement from 24 learner rows, so one pass trains on ~64% of each
   rollout and three passes on ~95%; judge the A/B with `watch_run.py --drift`
   on both arms as well as evaluations. Cheaper post-run alternative: sample
