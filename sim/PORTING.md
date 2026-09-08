@@ -158,12 +158,11 @@ name, so the shim must match Unity's internal layouts wherever captured:
   `AudioClip.length` defaults to 1 (PlayPrefixWithInterrupts divides by it).
 
 Result on `sim/Oracle/fixtures/l0-p2` (480 ticks, batch 16): **480/480 ticks
-match** once two known-blocked field classes are filtered
-(`Keyframe.m_InWeight/m_OutWeight` - the exporter drops curve key weights;
-`Player.playerDied/playerWon` - HandleAbilitySelectUI lives in the
-unexported WinnerTriangle scene). Unfiltered: 0 ticks (first diff is
-playerDied at tick 0). Blocked on oracle: re-export with per-key weights
-(f32 bits ideally) + export WinnerTriangle.unity.
+match** with one known-blocked field class filtered
+(`Player.playerDied/playerWon` - HandleAbilitySelectUI lives in the
+unexported WinnerTriangle scene; export in progress on the oracle thread).
+Curve key weights initially diverged too, but the flattened f32 leaves in
+the existing export carry them exactly (see TODO) - no re-export needed.
 
 ## Host bootstrap deviations (boot scene is not exported)
 
@@ -199,13 +198,17 @@ Host reconstructs the DontDestroyOnLoad singletons that flow leaves behind:
 
 - [x] OnAfterDeserialize: not needed — only implementer (`FixTransform`) has
       an empty body (see deviation 19).
-- [ ] settings.json reader (layers/tags/collision matrix) — blocked on oracle
-      thread; falls back loudly.
-- [ ] GameObject tag from export — blocked on oracle thread re-export;
-      defaults "Untagged".
-- [ ] Oracle: export `Assets/Scenes/WinnerTriangle.unity` (round-end UI) and
-      the boot-scene AudioManager sound-name list (SoundCapture parity for
-      sounds whose Play sites the sim reaches).
+- [x] settings.json reader — shipped and consumed (`LoadSettings`: layers,
+      tags, collision matrix, fixedDeltaTime, timeScale).
+- [x] GameObject tag — in the v2 export, applied by GraphBuilder ("Untagged"
+      fallback can only trigger on a v1 export).
+- [x] Curve keyframes decode from the flattened `m_Curve.Array.data[N]` f32
+      leaves (exact player bits incl. ±Infinity constant-mode tangents and
+      key weights; REVIEW-loader-2 L1/L2) — the Fix-raw summary is applied
+      first, leaves overwrite.
+- [ ] Oracle: export `Assets/Scenes/WinnerTriangle.unity` — the last known
+      trace gap (Player.playerDied/playerWon subscriber lists +
+      round-end UI). In progress on the oracle thread.
 - [ ] F8 items (ParticleSystem.MainModule.duration, timeSinceLevelLoad reset,
       LayerMask.NameToLayer throw, UnloadSceneAsync, AsyncOperation frame
       gap, Instantiate worldSpace throw) — after first trace diff.
