@@ -202,7 +202,12 @@ function update() {
     ? `${initial.wins} / ${initial.games} wins · ${final ? "fresh final seeds · " : data.validation_evaluation ? "expanded evaluation · " : ""}95% interval ${percent(initial.interval[0])}–${percent(initial.interval[1])}`
     : "Fixed evaluation · both player sides";
   const evals = data.evaluations;
-  replaceOptions($("winMap"), (c.eval_maps || [0, 1, 2]).map((m) => [String(m), `Map ${m}`]));
+  const evalMaps =
+    c.eval_maps ||
+    (c.evaluation_maps
+      ? c.evaluation_maps.concat(c.heldout_maps || [])
+      : [0, 1, 2]);
+  replaceOptions($("winMap"), evalMaps.map((m) => [String(m), `Map ${m}`]));
   const chartMap = Number($("winMap").value);
   const makeSeries = (opponent, map, color) => ({
     color,

@@ -26,7 +26,7 @@ ws.addEventListener("message", (event) => {
     clearTimeout(item.timer);
     message.type === "error" ? item.reject(Error(JSON.stringify(message))) : item.resolve(message);
   } else if (message.method === "log.entryAdded" && message.params.level === "error")
-    consoleErrors.push(message.params.text);
+    consoleErrors.push({ context: message.params.source?.context, text: message.params.text });
 });
 function call(method, params = {}) {
   return new Promise((resolve, reject) => {
@@ -130,7 +130,7 @@ if (expectReplay && (await evaluate("!document.querySelector('#viewVideo').disab
 const matrix = await evaluate(`(() => {
   if (!(data.evaluations || []).length) return null;
   const maps = [...document.querySelector('#winMap').options].map(o => Number(o.value));
-  const expected = data.config.eval_maps || [0, 1, 2];
+  const expected = data.config.eval_maps || (data.config.evaluation_maps ? data.config.evaluation_maps.concat(data.config.heldout_maps || []) : [0, 1, 2]);
   const report = data.final_evaluation || data.validation_evaluation || data.evaluations.at(-1);
   return {maps, expected, rows: document.querySelectorAll('#evaluationRows tr').length,
     groups: report?.groups.length || 0, coverage: document.querySelector('#mapCoverage').textContent,
@@ -194,7 +194,9 @@ await sleep(400);
 const overflow = await evaluate("document.documentElement.scrollWidth > innerWidth");
 if (overflow) throw Error("Mobile horizontal overflow");
 await screenshot(out + "/dashboard-mobile.png");
-if (consoleErrors.length) throw Error("Browser errors: " + JSON.stringify(consoleErrors));
+// Only errors from our own page; the browser's startup tab logs its own noise.
+const pageErrors = consoleErrors.filter((e) => e.context === context).map((e) => e.text);
+if (pageErrors.length) throw Error("Browser errors: " + JSON.stringify(pageErrors));
 console.log(
   JSON.stringify({
     status: "DASHBOARD_OK",
@@ -209,7 +211,7 @@ console.log(
     ladder,
     mind,
     mobile_overflow: overflow,
-    console_errors: consoleErrors.length,
+    console_errors: pageErrors.length,
   }),
 );
 ws.close();

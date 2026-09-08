@@ -34,14 +34,16 @@ discover checkpoints must glob both patterns for listing, `.bin` for play.
 ## config.json (required keys the dashboard uses)
 
 `schema:1`, `algorithm:"recurrent PPO"` (the run listing filters on these two),
-`steps`, `learner_steps` (target, nullable), `training_maps`, `eval_maps`,
-`episode_ticks`, `telemetry_schema:1`, `frozen_opponents:[{name,path,sha256}]`,
-`evaluation_baseline` (nullable), `reward` (dict incl. `kill`, `timeout`).
+`steps`, `learner_steps` (target, nullable), `training_maps`, `eval_maps`
+(legacy) or `evaluation_maps` + `heldout_maps` (native; the dashboard combines
+them), `episode_ticks`, `telemetry_schema:1`,
+`frozen_opponents:[{name,path,sha256}]`, `evaluation_baseline` (nullable),
+`reward` (dict incl. `kill`, `timeout`).
 
 ## status.json (required)
 
 `status` (starting|running|complete|stopped|failed), `pid`, `step`,
-`learner_steps`, `elapsed`, `matches`, `failure` (nullable),
+`learner_steps`, `elapsed`, `matches`, `failure` (nullable or absent),
 `target_steps`, `target_learner_steps`. Liveness is checked via `pid`.
 
 ## metrics.jsonl — one record per update
