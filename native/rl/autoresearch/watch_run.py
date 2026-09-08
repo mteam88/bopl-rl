@@ -124,6 +124,9 @@ def weight_slices(meta):
 
 def drift(run):
     """Stream validated checkpoints using elementwise reductions, without BLAS calls."""
+    import os
+    for var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+        os.environ[var] = '1'  # Cap this summary process even when the shell specifies more.
     import numpy as np
     files = sorted(Path(run, 'checkpoints').glob('policy-*.bin'))
     # Checkpoint publishing writes the .bin before its sidecar. Ignore only an
