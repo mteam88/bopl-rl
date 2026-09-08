@@ -111,18 +111,16 @@ native/artifacts/rl/venv/bin/python native/rl/puffer/build.py --device cuda
 native/artifacts/rl/venv/bin/python native/rl/research/native_policy.py --build
 ```
 
-Select the exact reconstructed player for the experiment. The optimized local
-IL2CPP build is commonly under the path used below; its hashes are saved in the
-run configuration. Keep the chosen runtime options fixed during comparisons.
+Select the exact reconstructed player for the experiment; its hashes are saved
+in the run configuration. The sampled transport, spare game processes and
+parallel startup are always enabled. Headless rendering work is skipped when
+Unity uses its null graphics device; replay video keeps normal rendering.
 
 ```sh
-export BOPL_SPARE_GAME=1 BOPL_RL_HEADLESS=1 BOPL_RL_RAYCULL=1
-export BOPL_RL_COALESCE=1 BOPL_RL_EAGER_IO=1 BOPL_RL_TICKS_PER_FRAME=4096
-export BOPL_SPLIT_STEP=0
 native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
   --output native/artifacts/rl/native-smoke \
-  --game native/artifacts/rl/autoresearch/builds/game-il2cpp/BoplBattle.x86_64 \
-  --encoder linear --workers 16 --banks 4 --steps 100000 \
+  --game Builds/LinuxIL2CPP/BoplBattle.x86_64 \
+  --encoder set --workers 16 --banks 4 --steps 100000 \
   --training-maps 0,1,2 --heldout-maps 3,4 --episode-ticks 7200
 ```
 
