@@ -272,6 +272,10 @@ namespace BoplSim.Host
 			SetPrivateField(host, "playerColors", db.LoadAssetByPath("Assets/MonoBehaviour/PlayerColors.asset"));
 			UnityEngine.Object.DontDestroyOnLoad(hostGo);
 			steam.networkClient = host; // boot scene wires this serialized reference
+			// PROFILING PATCH (oracle rift): surface loader warnings accumulated
+			// during bootstrap asset loads (normally only dumped at scene load) -
+			// under NativeAOT reflection failures land here silently.
+			db.DumpWarnings("bootstrap");
 			return host;
 		}
 

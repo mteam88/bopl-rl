@@ -330,7 +330,7 @@ namespace BoplSim.Export
 			WarningCounts[key] = count + 1;
 		}
 
-		internal void DumpWarnings(string context)
+		public void DumpWarnings(string context)
 		{
 			if (WarningCounts.Count == 0) return;
 			var lines = new List<string>();
