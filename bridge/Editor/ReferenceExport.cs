@@ -10,10 +10,18 @@ using UnityEngine;
 
 public static class ReferenceExport
 {
+    // Every Sprite seen as an object reference during the export (assets and
+    // scenes). Written to sprites.json (v5): gameplay reads sprite/texture
+    // metrics (ResizablePlatform, GrowthFlare, StretchableLightning,
+    // DuplicatePlatformEffect...), so the shim needs real values, not stubs.
+    private static readonly System.Collections.Generic.Dictionary<string, Sprite> seenSprites
+        = new System.Collections.Generic.Dictionary<string, Sprite>();
+
     public static void Export()
     {
         string directory = Path.GetFullPath("native/reference-export");
         Directory.CreateDirectory(directory);
+        seenSprites.Clear();
         var assets = new JObject();
         foreach (string guid in AssetDatabase.FindAssets("t:Prefab").Concat(AssetDatabase.FindAssets("t:ScriptableObject")).Distinct().OrderBy(s => s, StringComparer.Ordinal))
         {
@@ -53,7 +61,11 @@ public static class ReferenceExport
                 ["path"] = paths[buildIndex], ["file"] = file, ["loadedBy"] = loadedBy });
         }
         Write(directory, "scenes.json", extraScenes);
-        var manifest = new JObject { ["schema"] = "bopl-assets-v4", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
+        var sprites = new JObject();
+        foreach (var pair in seenSprites.OrderBy(p => p.Key, StringComparer.Ordinal))
+            sprites[pair.Key] = SpriteMetadata(pair.Value);
+        Write(directory, "sprites.json", sprites);
+        var manifest = new JObject { ["schema"] = "bopl-assets-v5", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
         var hashes = new JObject();
         foreach (string path in Directory.GetFiles(directory, "*.json").Where(p => Path.GetFileName(p) != "manifest.json").OrderBy(p => p, StringComparer.Ordinal))
         {
@@ -102,6 +114,8 @@ public static class ReferenceExport
                     // instance id, which changes every editor session; skip them so
                     // re-exports are deterministic.
                     enterChildren = false;
+                    if (property.objectReferenceValue is Sprite sprite)
+                        seenSprites[Id(sprite)] = sprite;
                     item = property.objectReferenceValue == null ? JValue.CreateNull() : new JValue(Id(property.objectReferenceValue)); break;
                 case SerializedPropertyType.Enum: item = property.intValue; break;
                 case SerializedPropertyType.LayerMask: item = property.intValue; break;
@@ -136,6 +150,35 @@ public static class ReferenceExport
         }
         result["properties"] = properties;
         return result;
+    }
+
+    private static JObject F32(float value) => new JObject { ["f32"] = BitConverter.ToInt32(BitConverter.GetBytes(value), 0) };
+
+    private static JObject Vec(Vector2 v) => new JObject { ["x"] = F32(v.x), ["y"] = F32(v.y) };
+
+    private static JObject Vec(Vector3 v) => new JObject { ["x"] = F32(v.x), ["y"] = F32(v.y), ["z"] = F32(v.z) };
+
+    private static JObject Rect(Rect r) => new JObject { ["x"] = F32(r.x), ["y"] = F32(r.y), ["w"] = F32(r.width), ["h"] = F32(r.height) };
+
+    // v5: sprite metrics the sim path derives gameplay values from. Floats are
+    // f32 bits like every other exported float. textureId keys the texture so
+    // the shim can share one Texture2D instance between sprites of an atlas.
+    private static JObject SpriteMetadata(Sprite sprite)
+    {
+        return new JObject {
+            ["path"] = AssetDatabase.GetAssetPath(sprite),
+            ["name"] = sprite.name,
+            ["textureWidth"] = sprite.texture == null ? 0 : sprite.texture.width,
+            ["textureHeight"] = sprite.texture == null ? 0 : sprite.texture.height,
+            ["pixelsPerUnit"] = F32(sprite.pixelsPerUnit),
+            ["rect"] = Rect(sprite.rect),
+            ["pivot"] = Vec(sprite.pivot),
+            ["bounds"] = new JObject { ["center"] = Vec(sprite.bounds.center), ["extents"] = Vec(sprite.bounds.extents) },
+            ["textureRect"] = Rect(sprite.textureRect),
+            ["border"] = new JObject { ["x"] = F32(sprite.border.x), ["y"] = F32(sprite.border.y), ["z"] = F32(sprite.border.z), ["w"] = F32(sprite.border.w) },
+            ["packed"] = sprite.packed,
+            ["textureId"] = sprite.texture == null ? JValue.CreateNull() : new JValue(Id(sprite.texture))
+        };
     }
 
     private static string Id(UnityEngine.Object value) => GlobalObjectId.GetGlobalObjectIdSlow(value).ToString();
