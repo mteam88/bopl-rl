@@ -31,6 +31,11 @@ def maps(value):
     return result
 
 
+def entropy_coefficient(learner_steps, initial, floor, half_life):
+    """Exponential decay in learner decisions, independent of the run budget."""
+    return max(floor, initial * math.exp2(-learner_steps / half_life))
+
+
 def arguments():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, required=True)
@@ -48,6 +53,8 @@ def arguments():
     p.add_argument('--learning-rate', type=float, default=.0003)
     p.add_argument('--entropy', type=float, default=.01)
     p.add_argument('--entropy-floor', type=float, default=.0005)
+    p.add_argument('--entropy-half-life', type=int, default=30_000_000,
+                   help='Learner decisions per halving of the entropy coefficient, until its floor')
     p.add_argument('--episode-ticks', type=int, default=7200)
     p.add_argument('--training-maps', type=maps, default=[0])
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
@@ -64,7 +71,7 @@ def arguments():
     p.add_argument('--evaluation-workers', type=int, default=2)
     a = p.parse_args()
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
-                 'checkpoint_every', 'eval_every', 'evaluation_workers'):
+                 'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life'):
         if getattr(a, name) < 1:
             p.error(f'{name.replace("_", "-")} must be positive')
     a.buffers = a.buffers or (2 if a.workers % 4 == 0 else 1)
@@ -129,8 +136,9 @@ def main():
     args['policy'].update(hidden_size=a.hidden, num_layers=a.layers)
     args['train'].update(total_timesteps=updates*native_batch, seed=a.seed,
                          horizon=a.horizon, minibatch_size=learner_batch, replay_ratio=ratio,
-                         learning_rate=a.learning_rate, ent_coef=a.entropy,
-                         anneal_ent_coef=1, min_ent_coef_ratio=a.entropy_floor/a.entropy)
+                         learning_rate=a.learning_rate, anneal_lr=1, min_lr_ratio=0.0,
+                         ent_coef=a.entropy, anneal_ent_coef=0,
+                         min_ent_coef_ratio=a.entropy_floor/a.entropy)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
@@ -144,7 +152,9 @@ def main():
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks,
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=-.5, kill=0, death=0),
-                  entropy=a.entropy, entropy_floor=a.entropy_floor, learner_passes=a.learner_passes,
+                  entropy=a.entropy, entropy_floor=a.entropy_floor,
+                  entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
+                  learning_rate_schedule='cosine', learner_passes=a.learner_passes,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
@@ -217,6 +227,13 @@ def main():
                 before = time.monotonic()
                 _C.rollouts(trainer)
                 rolled = time.monotonic()
+                # Configure the native loss before training. Native train_impl
+                # copies this scalar into a device buffer each update, so CUDA
+                # graph replay observes the new coefficient. Count only the
+                # learner decisions completed before this rollout; warmup and
+                # frozen/padded rows never advance the schedule.
+                trainer.hypers.ent_coef = entropy_coefficient(
+                    counts['learner_steps'], a.entropy, a.entropy_floor, a.entropy_half_life)
                 _C.train(trainer)
                 trained = time.monotonic()
                 native = _C.log(trainer)
