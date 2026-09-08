@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AssemblyName>Host</AssemblyName>
+    <RootNamespace>BoplSim.Host</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../UnityShim/UnityShim.csproj" />
+    <ProjectReference Include="../Gameplay/Gameplay.csproj" />
+    <ProjectReference Include="../Export/Export.csproj" />
+  </ItemGroup>
+
+</Project>

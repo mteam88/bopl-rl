@@ -10,3 +10,8 @@ bin/
 build.log
 .claude/ralph-loop.local.md
 native/rl/autoresearch/.env
+# dotnet sim port: keep project files, drop build output
+!sim/BoplSim.sln
+!sim/**/*.csproj
+sim/**/bin/
+sim/**/obj/
