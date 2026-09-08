@@ -13,8 +13,8 @@ trainer.
 <run>/status.json           rewritten every update (atomic)
 <run>/metrics.jsonl         one JSON object per optimizer update, append-only;
                             a torn final line is tolerated, torn middle lines are not
-<run>/checkpoints/policy-%09d.pt                 legacy torch checkpoints, or
 <run>/checkpoints/policy-%09d.bin + .bin.json    native checkpoints
+<run>/checkpoints/policy-%09d.pt                 historical runs only (read-only)
 <run>/evaluations/%09d/result.json      diagnostic evaluation reports
 <run>/evaluations/%09d/<game>.rep       saved native replays (BOPLREP2)
 <run>/evaluations/%09d/<game>.json      physics frames for saved games
@@ -24,19 +24,20 @@ trainer.
 <run>/video-status.json     optional {status, step, rendered}
 ```
 
-Checkpoint loading: only native `.bin` checkpoints are executable, via
+Checkpoint loading: native `.bin` is the only checkpoint format, loaded via
 `research/native_policy.py load(path) -> policy, meta` with
 `policy.initial(batch, 'cpu')` and `policy.step(obs, state) -> logits, values,
-state`. Legacy `.pt` files are display-only artifacts (listed, never loaded —
-the old torch model classes are deleted and must not be revived). Tools that
-discover checkpoints must glob both patterns for listing, `.bin` for play.
+state`. New runs never write `.pt`; the files exist only in prior experiments,
+where the dashboard lists and serves them as read-only evidence (the old torch
+model classes are deleted and must not be revived to load them).
 
 ## config.json (required keys the dashboard uses)
 
 `schema:1`, `algorithm:"recurrent PPO"` (the run listing filters on these two),
-`steps`, `learner_steps` (target, nullable), `training_maps`, `eval_maps`
-(legacy) or `evaluation_maps` + `heldout_maps` (native; the dashboard combines
-them), `episode_ticks`, `telemetry_schema:1`,
+`steps`, `learner_steps` (target, nullable), `training_maps`,
+`evaluation_maps` + `heldout_maps` (the dashboard combines them; historical
+runs wrote a combined `eval_maps` instead, still read), `episode_ticks`,
+`telemetry_schema:1`,
 `frozen_opponents:[{name,path,sha256}]`, `evaluation_baseline` (nullable),
 `reward` (dict incl. `kill`, `timeout`).
 
@@ -110,8 +111,8 @@ The saved-game physics file `<game>.json` keeps
 `{schema:1, frames:[{t, players, slimes, entities, actions:[[angle,buttons] x2]}],
 tick_rate:60, decision_rate:15}`; `frames[i].actions` (both players' sampled
 actions) powers the human-comparison gauges and heatmaps, so the native
-evaluator must keep writing it. Action timing: legacy files record the action
-that led *into* a frame (`frames[0]` has none); native files set top-level
+evaluator must keep writing it. Action timing: historical files record the
+action that led *into* a frame (`frames[0]` has none); native files set top-level
 `actions_timing: "observation-before-action"`, meaning `frames[i].actions` is
 the action taken *from* frame i and the terminal frame has none. Readers use
 the tag to align actions, decisions and mind records. Action encoding: the
@@ -161,10 +162,9 @@ one simply don't show the panel (no torch backfill).
 
 ## Checkpoints and the ELO ladder
 
-`research/elo_ladder.py` plays round-robin pools among recent checkpoints plus
-fixed anchors (random, scripted opponents, a frozen reference checkpoint). Only
-native `.bin` checkpoints are playable (via `native_policy.load()`); `.pt`
-checkpoints appear in listings but never as ladder participants, so the
+`research/elo_ladder.py` plays round-robin pools among evenly spaced native
+`.bin` checkpoints (via `native_policy.load()`) plus fixed anchors. Historical
+`.pt` checkpoints appear in listings but never as ladder participants, and the
 "best old checkpoint" anchor is dropped: the old torch GRU (standard recurrent
 matrices/biases, Tanh encoder) has no faithful export to the native
 MinGRU/bias-free layout. Anchors are random, the initial native checkpoint and

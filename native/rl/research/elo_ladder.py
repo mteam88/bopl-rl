@@ -1,8 +1,7 @@
 """Round-robin ELO ladder over a run's checkpoints plus fixed anchors.
 
 Plays side-swapped fixed-seed pools among evenly spaced native checkpoints
-(policy-%09d.bin; legacy .pt files are display-only and never loaded), plus
-anchors: the random policy and optional frozen native
+(policy-%09d.bin), plus anchors: the random policy and optional frozen native
 reference checkpoints. Ratings come from a Bradley-Terry maximum-likelihood
 fit (timeouts count as draws) anchored at random = 0 Elo, so numbers are
 comparable across reruns of the same pool. Output is written atomically to

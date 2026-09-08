@@ -187,14 +187,15 @@ def main():
                 parts=path[len('/studies/'):].split('/')
                 if not parts or parts[0] not in studies:return self.send_error(404)
                 study_root=studies[parts[0]].resolve();file=(study_root/'/'.join(parts[1:])).resolve()
-                if not file.is_relative_to(study_root) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg','.png','.svg','.pdf','.md','.gz'):
+                if not file.is_relative_to(study_root) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.bin','.pt','.jpg','.png','.svg','.pdf','.md','.gz'):
                     return self.send_error(403)
             elif path.startswith('/runs/'):
                 parts=path[len('/runs/'):].split('/')
                 directory=run_directory(parts[0]) if parts else None
                 if directory is None: return self.send_error(404)
                 file=(directory/'/'.join(parts[1:])).resolve()
-                if not file.is_relative_to(directory) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.pt','.jpg','.gz'):
+                # .bin serves native checkpoints; .pt stays readable for historical runs.
+                if not file.is_relative_to(directory) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.bin','.pt','.jpg','.gz'):
                     return self.send_error(403)
             elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css','/arena.js','/matches.js'):
                 query=parse_qs(urlparse(self.path).query)
