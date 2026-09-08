@@ -50,7 +50,11 @@ Read `native/rl/README.md` first; it is the reference for the contract below.
   default, recorded as native `anneal_lr=0`; `--anneal-lr 1 --min-lr-ratio`
   selects the native cosine decay over the run budget). Constant matches the
   old trainer and keeps the late sparse-reward signal from being frozen. Both
-  effective values are written per update.
+  effective values are written per update. With `--learner-passes 1` each
+  update is one optimizer step on prioritized sampled rollout segments. Its
+  pre-step `kl` is near zero (subject to roundoff) and `clip_fraction` is zero;
+  neither measures the policy change caused by that optimizer step. Additional
+  passes can reveal changes from preceding steps.
 - **Budgets.** `--steps`, `--checkpoint-every` and `--eval-every` count learner
   decisions; `step` and checkpoint filenames count physical decisions. With 16
   workers one update holds 3072 learner rows (24 learner rows × horizon 128).
