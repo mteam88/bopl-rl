@@ -62,7 +62,7 @@ namespace BoplSim.Host
 				Path.Combine(repoRoot, "sim", "Export", "settings.json"),
 				repoRoot);
 			db.Install();
-			var host = Bootstrap();
+			var host = Bootstrap(db);
 
 			ReplayArchive setup;
 			if (mode == "replay")
@@ -157,7 +157,7 @@ namespace BoplSim.Host
 		// LocalizedText.localizationTable), AudioManager (136-sound bank) - and
 		// the serialized references wire themselves (SteamManager.networkClient,
 		// Host.playerColors...). Menu UI roots die at the first Single level load.
-		private static global::Host Bootstrap()
+		private static global::Host Bootstrap(ExportDatabase db)
 		{
 			SceneManager.LoadScene(0);
 			var host = UnityEngine.Object.FindObjectOfType<global::Host>();
@@ -175,6 +175,9 @@ namespace BoplSim.Host
 			// (DontDestroyOnLoad.Start among them), deferred destroys drain.
 			World.Current.FlushPendingStarts();
 			World.Current.FlushDestroyQueue();
+			// Surface loader warnings not yet dumped by a scene load - under
+			// NativeAOT reflection failures land here silently (54fe47a).
+			db.DumpWarnings("bootstrap");
 			return host;
 		}
 
