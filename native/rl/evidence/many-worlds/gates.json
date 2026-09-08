@@ -115,5 +115,44 @@
   "new_flags": {
     "train_py": "--worlds-per-process N (workers must be divisible by 2*buffers*N; N>1 disables the spare process)",
     "smoke_py": "--worlds N"
+  },
+  "merge_main_adb6f50": {
+    "commit": "10a12acc1d36a2144023d9946c6d639f1c204847",
+    "merged": "main adb6f50 (2101317 Elo self-play pool, adb6f50 pool dedupe)",
+    "conflicts": 0,
+    "test_native_selfplay": "5 tests OK",
+    "check_routing": "PASS native/artifacts/rl/many-worlds/merged/routing/result.json",
+    "smoke_worlds1": {
+      "status": "passed",
+      "matches": 80,
+      "entropy": [
+        8.300210952758789,
+        8.299436569213867,
+        8.29904556274414,
+        8.298873901367188,
+        8.298739433288574
+      ]
+    },
+    "smoke_worlds2": {
+      "status": "passed",
+      "matches": 80,
+      "entropy": [
+        8.300210952758789,
+        8.299436569213867,
+        8.29904556274414,
+        8.298873901367188,
+        8.298739433288574
+      ]
+    },
+    "metrics_identical_first_updates": true,
+    "compared": [
+      "entropy",
+      "policy_loss",
+      "value_loss",
+      "kl",
+      "advantage_std",
+      "gradient_norm",
+      "counters"
+    ]
   }
 }
