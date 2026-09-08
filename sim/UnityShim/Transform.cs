@@ -53,9 +53,22 @@ namespace UnityEngine
 			if (parentField != null) parentField.children.Remove(this);
 			else if (manageRoots && !isAsset) World.Current.roots.Remove(gameObject);
 			parentField = newParent;
-			if (newParent != null) newParent.children.Add(this);
+			if (newParent != null)
+			{
+				newParent.children.Add(this);
+				// Reparenting moves scene membership (matters for children attached
+				// under DontDestroyOnLoad roots - ReferenceCapture prints scene names).
+				if (!isAsset && !newParent.isAsset && gameObject.scene != newParent.gameObject.scene)
+					StampScene(this, newParent.gameObject.scene);
+			}
 			else if (manageRoots && !isAsset && !gameObject.destroyed && !World.Current.roots.Contains(gameObject))
 				World.Current.roots.Add(gameObject);
+		}
+
+		private static void StampScene(Transform t, UnityEngine.SceneManagement.Scene scene)
+		{
+			t.gameObject.scene = scene;
+			for (int i = 0; i < t.children.Count; i++) StampScene(t.children[i], scene);
 		}
 
 		public int childCount => children.Count;

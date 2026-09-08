@@ -89,7 +89,9 @@ namespace UnityShim
 			for (int i = 0; i < source.transform.childCount; i++)
 			{
 				var childClone = CloneGameObjectRecursive(source.transform.GetChild(i).gameObject, map);
-				childClone.transform.SetParentInternal(clone.transform, false);
+				// manageRoots: CreateDetached(asset:false) root-registers the child;
+				// parenting must remove it or FindObjectsOfType visits it twice.
+				childClone.transform.SetParentInternal(clone.transform, true);
 			}
 			return clone;
 		}

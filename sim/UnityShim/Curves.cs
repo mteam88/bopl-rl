@@ -10,27 +10,39 @@ namespace UnityEngine
 	[Serializable]
 	public struct Keyframe
 	{
-		public float time;
-		public float value;
-		public float inTangent;
-		public float outTangent;
-		public float inWeight;
-		public float outWeight;
-		public int weightedMode;
+		// Field names/order match Unity's struct exactly: ReferenceCapture reflects
+		// private instance fields and prints them by name (Keyframe.m_Time ...).
+		private float m_Time;
+		private float m_Value;
+		private float m_InTangent;
+		private float m_OutTangent;
+		private int m_WeightedMode;
+		private float m_InWeight;
+		private float m_OutWeight;
+
+		public float time { get => m_Time; set => m_Time = value; }
+		public float value { get => m_Value; set => m_Value = value; }
+		public float inTangent { get => m_InTangent; set => m_InTangent = value; }
+		public float outTangent { get => m_OutTangent; set => m_OutTangent = value; }
+		public float inWeight { get => m_InWeight; set => m_InWeight = value; }
+		public float outWeight { get => m_OutWeight; set => m_OutWeight = value; }
+		public WeightedMode weightedMode { get => (WeightedMode)m_WeightedMode; set => m_WeightedMode = (int)value; }
 
 		public Keyframe(float time, float value)
 		{
-			this.time = time; this.value = value;
-			inTangent = 0f; outTangent = 0f; inWeight = 0f; outWeight = 0f; weightedMode = 0;
+			m_Time = time; m_Value = value;
+			m_InTangent = 0f; m_OutTangent = 0f; m_InWeight = 0f; m_OutWeight = 0f; m_WeightedMode = 0;
 		}
 
 		public Keyframe(float time, float value, float inTangent, float outTangent)
 		{
-			this.time = time; this.value = value;
-			this.inTangent = inTangent; this.outTangent = outTangent;
-			inWeight = 0f; outWeight = 0f; weightedMode = 0;
+			m_Time = time; m_Value = value;
+			m_InTangent = inTangent; m_OutTangent = outTangent;
+			m_InWeight = 0f; m_OutWeight = 0f; m_WeightedMode = 0;
 		}
 	}
+
+	public enum WeightedMode { None = 0, In = 1, Out = 2, Both = 3 }
 
 	// Gameplay's deterministic path is AnimationCurveFixed, which only reads
 	// keys/length/preWrapMode/postWrapMode. Float Evaluate below mirrors the

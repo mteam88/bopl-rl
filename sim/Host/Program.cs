@@ -61,7 +61,7 @@ namespace BoplSim.Host
 				Path.Combine(repoRoot, "sim", "Export", "settings.json"),
 				repoRoot);
 			db.Install();
-			var host = Bootstrap(db);
+			var host = Bootstrap(db, repoRoot);
 
 			ReplayArchive setup;
 			if (mode == "replay")
@@ -96,6 +96,12 @@ namespace BoplSim.Host
 			}
 
 			host.ResetRl(setup);
+			if (Environment.GetEnvironmentVariable("BOPL_DEBUG_ABIL") != null)
+			{
+				var p0 = PlayerHandler.Get().PlayerList()[0];
+				foreach (var abilityGo in p0.Abilities)
+					Console.Error.WriteLine($"[debug] ability go={abilityGo.name} isAsset={abilityGo.isAsset} sceneValid={abilityGo.scene.IsValid()} sceneName='{abilityGo.scene.name}' updatables={string.Join(",", Array.ConvertAll(abilityGo.GetComponents<MonoUpdatable>(), m => m.GetType().Name + "#" + m.HierarchyNumber))}");
+			}
 			// RlBridge lets Unity finish the frame after LoadScene: scene Starts run
 			// before the first simulation tick.
 			World.Current.FlushPendingStarts();
@@ -197,7 +203,7 @@ namespace BoplSim.Host
 		// menu scenes are not exported, so SteamManager/Host are constructed
 		// directly (no Awake: it only does Steam/netcode/command-line work).
 		// Deviations recorded in sim/PORTING.md.
-		private static global::Host Bootstrap(ExportDatabase db)
+		private static global::Host Bootstrap(ExportDatabase db, string repoRoot)
 		{
 			// Settings singleton (SettingsInitializer.Awake equivalent).
 			var settings = (Settings)db.LoadAssetByPath("Assets/MonoBehaviour/Settings.asset");
@@ -210,7 +216,24 @@ namespace BoplSim.Host
 			// bank -> every Play logs "non-existent sound" and returns null.
 			var audioGo = new GameObject("AudioManager");
 			var audio = (AudioManager)audioGo.AddComponentSilent(typeof(AudioManager));
-			audio.sounds = Array.Empty<Sound>();
+			// Sound bank ripped from the boot AudioManager (MainMenu.unity ->
+			// sim/Export/sound-bank.json): InterruptableAudio stores bank INDICES
+			// (Dash.dashSound.index = 14 = "dash") which the trace captures, so the
+			// order must be the player's. Clips are placeholders (audio never plays).
+			string bankPath = Path.Combine(repoRoot, "sim", "Export", "sound-bank.json");
+			var bank = Newtonsoft.Json.Linq.JArray.Parse(File.ReadAllText(bankPath));
+			var sounds = new Sound[bank.Count];
+			for (int i = 0; i < bank.Count; i++)
+				sounds[i] = new Sound
+				{
+					name = (string)bank[i]["name"],
+					volume = (float)bank[i]["volume"],
+					pitch = (float)bank[i]["pitch"],
+					loop = (bool)bank[i]["loop"],
+					fadeLoop = (bool)bank[i]["fadeLoop"],
+					clip = new AudioClip { name = (string)bank[i]["name"] },
+				};
+			audio.sounds = sounds;
 			// Music paths (OnMatchStarted/StartMusic) index songs[] unconditionally;
 			// one placeholder keeps them running. Music never reaches the trace.
 			audio.songs = new[] { new Song { name = "placeholder", volume = 1f, pitch = 1f, introLength = 1f, intro = new AudioClip(), songLoop = new AudioClip() } };
@@ -233,9 +256,9 @@ namespace BoplSim.Host
 			// instance.charStatsList.transform.parent.gameObject. Stub that shape;
 			// the stats GO stays inactive so its round-end UI OnEnable never runs.
 			// TODO(oracle): export WinnerTriangle.unity for round-end fidelity.
-			var winnerCanvasGo = new GameObject("WinnerTriangleCanvas");
+			var winnerCanvasGo = new GameObject("WinnerTriangleCanvas_leaveEnabled");
 			var winnerCanvas = (WinnerTriangleCanvas)winnerCanvasGo.AddComponentSilent(typeof(WinnerTriangleCanvas));
-			var triangleGo = new GameObject("WinnerTriangle");
+			var triangleGo = new GameObject("WinnerCelebration_leaveDisabled");
 			triangleGo.transform.SetParent(winnerCanvasGo.transform, false);
 			var statsGo = new GameObject("CharacterStatsList");
 			statsGo.SetActive(false);

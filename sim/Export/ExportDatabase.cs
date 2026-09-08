@@ -33,6 +33,8 @@ namespace BoplSim.Export
 		internal readonly Dictionary<string, UnityEngine.Object> BuiltAssets = new Dictionary<string, UnityEngine.Object>();
 		internal readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
 		internal readonly Dictionary<string, int> WarningCounts = new Dictionary<string, int>();
+		internal readonly Dictionary<string, string> AssetNames = new Dictionary<string, string>();
+		private readonly Dictionary<string, JArray> sceneJsonCache = new Dictionary<string, JArray>();
 		private readonly Dictionary<string, Type> typeCache = new Dictionary<string, Type>();
 		private readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
 		private readonly HashSet<string> warnedScenes = new HashSet<string>();
@@ -83,6 +85,12 @@ namespace BoplSim.Export
 
 			// Script execution order (from the script .meta files) - decides
 			// Awake/Start batch order, hence RegisterUpdatable/HierarchyNumber.
+			string namesPath = settingsPath == null ? null
+				: Path.Combine(Path.GetDirectoryName(settingsPath), "asset-names.json");
+			if (namesPath != null && File.Exists(namesPath))
+				foreach (var pair in JObject.Parse(File.ReadAllText(namesPath)))
+					db.AssetNames[pair.Key] = (string)pair.Value;
+
 			string orderPath = settingsPath == null ? null
 				: Path.Combine(Path.GetDirectoryName(settingsPath), "execution-order.json");
 			if (orderPath != null && File.Exists(orderPath))
@@ -147,7 +155,17 @@ namespace BoplSim.Export
 			var map = Maps[level];
 			if (mode == LoadSceneMode.Single) World.Current.UnloadCurrentScene();
 
-			var sceneJson = JArray.Parse(File.ReadAllText(Path.Combine(exportDir, map.File)));
+			// Set the active scene before building so every GameObject the load (or
+			// anything after it) creates inherits it; then stamp the loaded subtrees
+			// explicitly (children created before roots would otherwise carry the
+			// previous scene).
+			var scene = new Scene(buildIndex, map.SceneName);
+			World.Current.activeScene = scene;
+
+			// PERF-1 fix 1 (minimum): the parse dominated warm resets (~10 of 15 ms);
+			// the JArray is only read by GraphBuilder/PropertyApplier, never mutated.
+			if (!sceneJsonCache.TryGetValue(map.File, out var sceneJson))
+				sceneJsonCache[map.File] = sceneJson = JArray.Parse(File.ReadAllText(Path.Combine(exportDir, map.File)));
 			var pending = new List<PendingProperties>();
 			var roots = new List<GameObject>();
 			foreach (var node in sceneJson)
@@ -155,11 +173,18 @@ namespace BoplSim.Export
 			foreach (var item in pending)
 				PropertyApplier.Apply(item.Target, item.Properties, this);
 
-			var scene = new Scene(buildIndex, map.SceneName);
-			foreach (var root in roots) root.scene = scene;
+			foreach (var root in roots) StampScene(root, scene);
 			World.Current.ActivateLoadedObjects(roots);
 			SceneManager.NotifySceneLoaded(scene, mode);
 			DumpWarnings("scene " + map.SceneName);
+		}
+
+		private static void StampScene(GameObject go, Scene scene)
+		{
+			go.scene = scene;
+			var t = go.transform;
+			for (int i = 0; i < t.childCount; i++)
+				StampScene(t.GetChild(i).gameObject, scene);
 		}
 
 		// ---- assets ------------------------------------------------------------
@@ -250,7 +275,13 @@ namespace BoplSim.Export
 			if (!ns.StartsWith("UnityEngine") && !ns.StartsWith("TMPro")) return null; // gameplay assets are exported; a miss is real
 			var placeholder = (UnityEngine.Object)Activator.CreateInstance(type, true);
 			placeholder.isAsset = true;
-			placeholder.name = "external:" + id.Substring("GlobalObjectId_V1-".Length);
+			// ReferenceCapture.Identity prints asset names ("UnityEngine.Sprite:
+			// AbilityIconsSheet_3"); the rip stores one asset file per guid, so the
+			// real Unity name is the ripped file name (sim/Export/asset-names.json).
+			var parts = id.Split('-');
+			placeholder.name = parts.Length >= 3 && AssetNames.TryGetValue(parts[2], out var known)
+				? known
+				: "external:" + id.Substring("GlobalObjectId_V1-".Length);
 			return placeholder;
 		}
 

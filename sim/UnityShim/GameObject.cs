@@ -39,7 +39,9 @@ namespace UnityEngine
 		{
 			var go = new GameObject(name);
 			go.isAsset = asset;
-			if (asset) { go.transform.isAsset = true; World.Current.roots.Remove(go); }
+			// Assets live outside any scene: scene.IsValid() is false and scene.name
+			// is null (ReferenceCapture.PathOf renders them as "/Name[i]").
+			if (asset) { go.transform.isAsset = true; go.scene = default; World.Current.roots.Remove(go); }
 			return go;
 		}
 
