@@ -760,12 +760,20 @@ Same picture as the aborted stocks-3 run at 19M: the critic row moves in one dir
 
 Rate: trailing 12.4k learner decisions/s; the run-average 9.0k/s still carries the 5-minute slowdown I caused and the other sessions' load.
 
-### Why the policy heads must random-walk under Muon (source read, PufferLib `src/models.cu`, `src/muon.cu`)
+### Why the policy heads random-walk under Muon (source read, PufferLib `src/models.cu`, `src/muon.cu`; per-row numbers checked at 8M)
 
-The decoder is registered as one parameter of shape `(output_dim+1, hidden)` = 273 x 128 (`decoder_reg_params`), with the value row as row 272 (`assemble_decoder_grad` appends the value gradient as the last column). Muon treats each registered >=2-D tensor as a unit: momentum, then normalize the whole 273 x 128 gradient to unit Frobenius norm, then 5 Newton-Schulz iterations, which push all 128 singular values to about 1, then `w -= lr * sqrt(273/128) * update`. Consequences:
+The decoder is registered as one parameter of shape `(output_dim+1, hidden)` = 273 x 128 (`decoder_reg_params`), with the value row as row 272 (`assemble_decoder_grad` appends the value gradient as the last column). Muon treats each registered >=2-D tensor as a unit: momentum, then normalize the whole 273 x 128 gradient to unit Frobenius norm, then 5 Newton-Schulz iterations toward the nearest semi-orthogonal matrix (all 128 singular values about 1, total Frobenius norm about sqrt(128)), then `w -= lr * sqrt(273/128) * update`. So the decoder as a whole moves a fixed distance per update, about 3e-4 x 1.46 x 11.3 = 0.005, regardless of gradient size; how that budget splits across rows depends on the gradient's row structure, and a consistent direction keeps its share update after update.
 
-- The per-update step of every decoder row is fixed at about lr x 1.46 x (row norm of a semi-orthogonal 273 x 128 matrix, about sqrt(128/273) = 0.68), i.e. about 3e-4 per row per update, whatever that row's gradient magnitude was. Orthogonalization whitens: a pure-noise gradient in the aim rows becomes a full-size step, and a strong consistent critic gradient in the value row is capped to the same size. That is what the drift table shows: all rows move at the same pace, only their direction consistency differs (value row cosine .90, policy rows .05).
-- Checkpoint-level random-walk check: 3e-4 x 16 (256 aim rows) x sqrt(140 updates per checkpoint) x sqrt((1+.95)/(1-.95)) for the momentum-correlated steps = 0.36, against the measured 0.23 per checkpoint. The mechanism accounts for the number; nothing is wrong with the trainer.
-- Learning signal therefore shows up only as a rising lag-1 cosine and net/rw for the policy rows, never as a change in mean|dw|. The watch rule keys on the right statistic.
-- Caveat for the `--learner-passes 3` A/B: three Muon steps on the same rollout take three nearly parallel noise steps (same data, same noise direction), so noise displacement per rollout roughly triples instead of growing by sqrt(3). It only wins if the extra passes extract consistent signal that the clipped first pass left. Judge it with `--drift` on both arms, not with entropy alone.
-- Projected noise drift over the full run: 0.23 per checkpoint x sqrt(400 checkpoints) = about 4.6 for the aim rows against an initial norm of 9.2, so noise alone reshapes about half the aim head by 400M. Weight decay is 0, so nothing pulls it back. A lower learning rate reduces noise and signal steps alike (Muon normalizes both), so it is not a signal-to-noise lever; reward density is.
+Measured per-row displacement per checkpoint (326 updates) on the stocks-0 run, 9 checkpoints, single-threaded numpy:
+
+| rows | mean abs dw per row per checkpoint | lag-1 cosine (slice) |
+|---|---|---|
+| aim (256) | 0.015 | 0.05 |
+| buttons (16) | 0.036 | 0.04 |
+| value (1) | 0.109 | 0.90 |
+
+Row norms are about 0.57 at initialization; the value row has grown to 1.22 while aim and button rows stay at 0.57. So the whitening does not equalize rows: the value row's consistent gradient claims the largest single-row share of the fixed step, and the 256 aim rows share a noise budget that sums to 0.24 per checkpoint (sqrt(256) x 0.015, matching the slice table). Consequences:
+
+- Learning signal in the policy rows shows up as a rising lag-1 cosine and net/rw, and as growing row norms, not as a change in the slice's mean|dw| (the total step is fixed). The watch rule keys on the right statistics; row norms of the aim/button rows are a third one worth printing.
+- Caveat for the `--learner-passes 3` A/B: three Muon steps on the same rollout take three nearly parallel steps (same data, same noise direction), so per-rollout displacement roughly triples for noise and signal alike. It only wins if the extra passes extract signal that the first pass left; judge it with `--drift` on both arms, not with entropy alone.
+- Projected noise drift over the full run: 0.24 per checkpoint x sqrt(400) = about 4.8 for the aim rows against an initial norm of 9.2 (aim slice), so noise alone reshapes about half the aim head by 400M, with weight decay 0 and nothing pulling it back. Lowering the learning rate shrinks noise and signal steps alike, so it is not a signal-to-noise lever; reward density is.
