@@ -750,5 +750,9 @@ uncertainty as well. `learner-passes 3` (program.md top lead) is the matched A/B
 
 Provenance: numbers from `aborted-001-s73-stocks3/checkpoints` and metrics.jsonl in the aborted and
 relaunched runs; simulation reported by Fable (numpy, single thread, exact SVD in place of the five
-Newton–Schulz steps). A first version of that simulation briefly ran multi-threaded BLAS next to the
-live run and was killed after ~5 min; no other load was added.
+Newton–Schulz steps). A first version ran multi-threaded BLAS on about seven cores for roughly
+5.3 minutes next to the live run before it was killed (PID 3727028). This materially slowed
+training: canonical metrics show 13,852 learner decisions/s before the interval versus
+4,647/s across 318 seconds at elapsed 143–461 s (updates 639–1120), costing about 211 seconds
+against the preceding rate. A later 60-second sample recovered to 13,632/s. The SVD process
+was confirmed absent. Fable reported no other competing load from its session.
