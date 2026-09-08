@@ -920,3 +920,21 @@ policy that only had to stop falling would already move these numbers. The
 `deaths_environment` rate per episode is therefore the most direct
 behavior-level progress signal for this run, ahead of win rate (self-play) and
 arrow hits (near zero). Source-only, no jobs run; single-threaded, niced.
+
+## 2026-09-07 22:21 EDT: 19M drift read (20 checkpoints, read-only)
+
+| slice | |w0| | |w| | mean|dw| | lag1 | net/rw | row0 | row |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| encoder | 15.96 | 17.01 | .505 | .619 | 2.49 | - | - |
+| decoder.aim | 9.23 | 9.28 | .262 | .082 | 1.35 | .576 | .579 |
+| decoder.buttons | 2.30 | 2.32 | .149 | .052 | 1.09 | .575 | .578 |
+| decoder.value | .57 | 1.90 | .090 | .938 | 3.68 | .570 | 1.896 |
+| mingru | 11.35 | 12.25 | .468 | .438 | 2.18 | - | - |
+
+Against the 6.6M read: aim net/rw 1.07 to 1.35 with lag-1 cosine .05 to .08,
+buttons 1.03 to 1.09, value 2.24 to 3.68 (cosine .90 to .94), encoder 1.83 to
+2.49, MinGRU 1.59 to 2.18. Policy-head row norms are flat (.576 to .579).
+Trailing entropy 8.270 at coefficient .0064 (uniform 8.318); explained
+variance .60; gradient norm rising .24 to .52 across the four 5M marks.
+Watch rule (policy-head net/rw > ~1.5 with a rising cosine before 30M) is not
+triggered. Next read at ~30M.
