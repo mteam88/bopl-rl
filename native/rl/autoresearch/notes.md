@@ -994,6 +994,14 @@ and 4 have level spawns (y within 1 unit). The first evaluation of each run
 (6.7M physical, policy near uniform) already shows the asymmetry: 14/28 vs
 11/28 and 16/28 vs 9/28.
 
+Update 2026-09-07 22:37 EDT: per evaluation on the stocks-0 run, side 0 / side 1 wins
+out of 28 fixed-opponent games each, and pairs where only one side won:
+6.7M 16/9 (11:4), 13.3M 16/10 (11:5), 20.0M 15/11 (9:5), 26.7M 13/11 (7:5),
+33.3M 16/11 (9:4), 40.0M 17/15 (5:3, both sides won 12 pairs). The gap
+narrowed at 40M physical because more pairs were won from both sides, which is
+what a stronger policy would do to a side handicap; one evaluation is not
+enough to call a trend. The initial-vs-initial check remains the clean test.
+
 **Checkpoint-to-checkpoint game outcomes are mostly stable.** The four evaluations share the same 57
 (opponent, map, seed, side) tasks. Outcomes flip on 9/57, 16/57 and 7/57 tasks between consecutive
 evaluations, and 25-30 of 57 games end at the identical tick. Sampled action sequences of the saved
@@ -1148,3 +1156,76 @@ on 24 games each) is inside noise. The behavior counters aggregate many more epi
 changes, but those samples remain dependent and are not strength evaluations. Next check at ~40M: whether env deaths keep falling and
 whether aim entropy keeps declining; retain self-deaths, total losses, duration and fixed-opponent results alongside
 environment deaths, as specified in the reviewed 22:16 section.
+
+## 2026-09-07 22:45 EDT: 40M drift and behavior read (41 checkpoints, read-only)
+
+Run at 40.7M learner decisions (54.1M physical), 0.90 h, ~15,300 learner/s
+trailing. Same reads as at 30M.
+
+Drift over 41 checkpoints, 0 to 40.0M:
+
+| slice | \|w0\| | \|w\| | mean\|dw\| | lag-1 cos | net | net/rw | row0 → row |
+|---|---|---|---|---|---|---|---|
+| encoder | 15.96 | 18.31 | .431 | .483 | 8.59 | 3.09 | – |
+| decoder.aim | 9.23 | 9.52 | .272 | .083 | 2.74 | 1.58 | .576 → .594 |
+| decoder.buttons | 2.30 | 2.38 | .151 | .039 | 1.07 | 1.12 | .575 → .594 |
+| decoder.value | .57 | 2.01 | .058 | .695 | 1.61 | 3.78 | .570 → 2.013 |
+| mingru | 11.35 | 13.40 | .427 | .356 | 6.93 | 2.55 | – |
+
+Against the 30M read: aim net/rw 1.53 → 1.58 with lag-1 cosine .089 → .083,
+so the aim head still looks like a random walk (net grows roughly with the
+square root of the checkpoint count; cosine flat). Buttons unchanged. The
+critic row stopped growing (|w| 2.04 → 2.01, mean step .071 → .058, cosine
+.82 → .70): it moved one way for 25M and is now settling. Encoder and mingru
+persistence keep rising slowly (3.09, 2.55). Watch rule (net/rw above ~1.8
+with cosine above ~.15 for a policy head) not met.
+
+Trailing signals at 40.7M: entropy 8.175 nats at coefficient .0039 (the
+watch script now reports "entropy moving"; uniform is 8.318), explained
+variance .47 (30M: .51), gradient norm .60, advantage std .186, kl and clip
+0 as expected at one pass.
+
+Behavior per learner episode, 2M windows (28M row repeated for reference):
+
+| window | ticks | env deaths | self | opponent-credited | credited kills | arrows | lethal arrow contacts | dash | platform | H(aim) | H(buttons) | ev | value loss |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 28-30M | 469 | .351 | .114 | .033 | .147 | 2.48 | .033 | 1.33 | .74 | 5.482 | 2.753 | .517 | .0230 |
+| 32-34M | 507 | .328 | .128 | .043 | .171 | 2.67 | .042 | 1.44 | .84 | 5.461 | 2.750 | .476 | .0224 |
+| 36-38M | 526 | .319 | .125 | .055 | .179 | 2.75 | .054 | 1.48 | .89 | 5.440 | 2.751 | .472 | .0221 |
+| 38-40M | 531 | .313 | .124 | .057 | .182 | 2.79 | .057 | 1.51 | .90 | 5.434 | 2.748 | .469 | .0219 |
+| 40M+ (partial, 343 updates) | 535 | .313 | .132 | .057 | .189 | 2.81 | .057 | 1.51 | .90 | 5.428 | 2.748 | .449 | .0222 |
+
+The trends from 18-30M continue but are decelerating: round length rose 469
+→ 535 (30-40M) after 333 → 469 (0-30M); environment deaths fell .351 → .313;
+opponent-credited deaths and lethal arrow contacts rose .033 → .057 together
+(per fired arrow, .0133 → .0204). Aim entropy fell another .054 nats to
+5.428, buttons flat at 2.748. Value loss is flat at ~.022 while ev slid
+.52 → .45, the pattern flagged at 30M.
+
+Evaluations since the 30M read (24 fixed-opponent games each; per side out of
+28 including held-out maps; pairs where only one side won):
+
+| physical step | vs random | vs initial | held-out vs random | side 0 / side 1 | only-0 : only-1 | both sides won |
+|---|---|---|---|---|---|---|
+| 40.0M | .625 | .458 | .750 | 17/28 vs 15/28 | 5:3 | 12 |
+| 46.7M | .625 | .542 | .750 | 18/28 vs 16/28 | 8:6 | 10 |
+| 53.3M | .667 | .583 | .750 | 18/28 vs 18/28 | 6:6 | 12 |
+
+Three consecutive evaluations at or above .625 vs random and a rising vs
+initial rate (.29 at 20-27M → .58 at 53M) are the first evaluation movement
+outside the noise band of 24-game groups; the pooled last three vs random are
+46/72 = .64 (Wilson 95% .52-.74), pooled vs initial 38/72 = .53 (.41-.64),
+against .40 (.29-.52) for the first four evaluations vs initial. The side gap
+closed over the same three evaluations (17/15, 18/16, 18/18), with about half
+the pairs won from both sides. Losses vs the initial checkpoint are still
+mostly environment deaths (11 of 13, 8 of 11, 7 of 10) with 1-2 opponent
+kills per evaluation; losses vs random now include self deaths (4 of 11 at
+40M, 3 of 10 at 53M), which did not appear before.
+
+Reading. Everything is consistent: fewer falls, slightly more lethal arrows,
+longer rounds, a policy head that has not started moving directionally, a
+critic that has settled, and evaluations that began to separate from the
+initial checkpoint around 40-50M physical. The drift table says the strength
+gain so far is carried by the encoder and mingru (persistent motion) rather
+than the decoder heads, whose row norms grew 3% while random-walking; the
+decoder change that matters may be small in norm. Next read at ~50M learner.
