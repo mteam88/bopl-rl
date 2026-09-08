@@ -147,9 +147,6 @@ def main():
                   entropy=a.entropy, entropy_floor=a.entropy_floor, learner_passes=a.learner_passes,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
-                  runtime_options={name: os.environ.get(name) for name in (
-                      'BOPL_SPARE_GAME', 'BOPL_RL_HEADLESS', 'BOPL_RL_RAYCULL', 'BOPL_RL_COALESCE',
-                      'BOPL_RL_EAGER_IO', 'BOPL_RL_TICKS_PER_FRAME', 'BOPL_SPLIT_STEP')},
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
     atomic_json(output/'config.json', config)
     started = time.monotonic()

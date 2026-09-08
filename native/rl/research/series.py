@@ -102,7 +102,7 @@ def run(plan_path):
         nonlocal process
         with log.open('a') as stream:
             process=subprocess.Popen(command,cwd=ROOT,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True,
-                                     env=dict(os.environ,BOPL_RL_GAME=str(game),BOPL_SPLIT_STEP='0'))
+                                     env=dict(os.environ,BOPL_RL_GAME=str(game)))
             while process.poll() is None:
                 if monitor is not None and monitor.poll() is not None:
                     raise RuntimeError('Resource sampler failed; see resource-monitor.log')
