@@ -47,9 +47,22 @@ namespace UnityEngine
 
 		public static void DontDestroyOnLoad(Object target)
 		{
-			// Marks the root GameObject; single-mode scene loads spare it.
+			// Marks the root GameObject; single-mode scene loads spare it. Unity
+			// moves the object into the "DontDestroyOnLoad" pseudo-scene (buildIndex
+			// -1) - ReferenceCapture.PathOf prints it as the path root.
 			var go = target as GameObject ?? (target as Component)?.gameObject;
-			if (go != null) go.transform.root.gameObject.dontDestroyOnLoad = true;
+			if (go == null) return;
+			var root = go.transform.root.gameObject;
+			root.dontDestroyOnLoad = true;
+			StampSceneRecursive(root, new UnityEngine.SceneManagement.Scene(-1, "DontDestroyOnLoad"));
+		}
+
+		private static void StampSceneRecursive(GameObject go, UnityEngine.SceneManagement.Scene scene)
+		{
+			go.scene = scene;
+			var t = go.transform;
+			for (int i = 0; i < t.childCount; i++)
+				StampSceneRecursive(t.GetChild(i).gameObject, scene);
 		}
 
 		public static void Destroy(Object obj) => Destroy(obj, 0f);
