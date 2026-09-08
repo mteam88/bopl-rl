@@ -28,6 +28,8 @@ namespace BoplSim.Host
 
 		private static int Run(string[] args)
 		{
+			// Headless-player replacement under native/rl/bopl_rl.c (BOPL_RL_SOCKET set, or "rl").
+			if (RlMode.Requested(args)) return RlMode.Run(args);
 			string mode = args.Length > 0 ? args[0] : "reset";
 			string replayPath = null;
 			int level = 0, players = 2, ticks = 240, stocks = 0, gameMode = 0;
@@ -162,7 +164,7 @@ namespace BoplSim.Host
 		// LocalizedText.localizationTable), AudioManager (136-sound bank) - and
 		// the serialized references wire themselves (SteamManager.networkClient,
 		// Host.playerColors...). Menu UI roots die at the first Single level load.
-		private static global::Host Bootstrap(ExportDatabase db)
+		internal static global::Host Bootstrap(ExportDatabase db)
 		{
 			SceneManager.LoadScene(0);
 			var host = UnityEngine.Object.FindObjectOfType<global::Host>();
@@ -196,7 +198,7 @@ namespace BoplSim.Host
 			throw new MissingFieldException(target.GetType().Name, name);
 		}
 
-		private static string FindRepoRoot()
+		internal static string FindRepoRoot()
 		{
 			for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir != null; dir = dir.Parent)
 				if (Directory.Exists(Path.Combine(dir.FullName, "native", "reference-export")))
