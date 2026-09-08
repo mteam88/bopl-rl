@@ -2,7 +2,7 @@ CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Werror
 OUT ?= ../artifacts/rl
 
-all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/warmup_check $(OUT)/sampled_check $(OUT)/reset_profile $(OUT)/frame_profile
+all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/warmup_check $(OUT)/sampled_check $(OUT)/reset_profile $(OUT)/frame_profile $(OUT)/world_check
 
 # Standalone evaluation/extraction binding; does not require rebuilding CUDA.
 research: $(OUT)/libbopl_research.so
@@ -32,6 +32,8 @@ $(OUT)/warmup_check: warmup_check.c bopl_rl.h $(OUT)/libbopl_rl.so
 
 $(OUT)/sampled_check: sampled_check.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) sampled_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/world_check: world_check.c bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -pthread world_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
 $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 reset_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
