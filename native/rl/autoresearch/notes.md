@@ -1792,3 +1792,38 @@ Expect `WARMUP_SEED_INDEPENDENT_OK` and `"control":"random_ability"` with
 `post_warmup_identical` vs `after_120_ticks_identical` says whether the
 dependence is in the warmup state or only surfaces once inputs are applied.
 No heavy jobs were launched for this note.
+
+## 2026-09-08 01:17 EDT: warmup_check ran (in the many-worlds Rift) and confirms the seed-independent post-warmup state
+
+thr_nzrpteey2z cherry-picked `warmup_check.c` into `.rifts/ExportedProject/many-worlds`
+(bf4c780), built it, and ran it at 01:15 EDT against the IL2CPP player with
+`native/fixtures/movement.rep` as bootstrap. Output kept there in
+`native/artifacts/rl/many-worlds/warmup-check/warmup-check.out`:
+
+- 5 maps x 4 seeds (seeds `17+map*7919+k*1000003`, 2 players, default loadout 2/4/14):
+  every pair reports `post_warmup_identical: true` and `after_120_ticks_identical: true`.
+- Control with all three abilities set to catalog id 1 (`Random`), seeds 901 vs 1000904:
+  `post_warmup_identical: false`, `after_120_ticks_identical: false`, as predicted
+  (`RandomAbility.GetRandomAbilityPrefab` draws at `SpawnPlayers`).
+- Final line `{"status":"WARMUP_SEED_INDEPENDENT_OK","maps":5,"seeds":4}`.
+
+First attempt exited 1 with no output: `action()` (copied from `reset_check.c`) passed
+6 actions, and `check_actions` in `bopl_rl.c:305` returns `BOPL_RL_ARGUMENT` when the
+count differs from `header.player_count` (reset_check uses 6 players, this check uses
+2). Fixed on `autoresearch/warmup-check` (120feb2): the helper reads
+`bopl_rl_state(world)->header.player_count`. The check still prints nothing on a step
+error other than the status line; a `bopl_rl_error` message on failure would have saved
+a round trip and is worth adding before it becomes a gate.
+
+What this settles for item D of `MANY_WORLDS.md`: outcome A. The design text there
+still says the post-warmup state is seed-dependent (written before the 01:10 read);
+the recipe in the 01:10 note stands: one master per (map, players, fixed loadout),
+restore = clone + `Updater.InitSeed(seed)` + one `RandomFix(Fix.Zero, Fix.One)` per
+non-destroyed ground in `grounds[]` order, which also recomputes `randomDelay[i]` for
+the clone. `randomDelay[]` is read again only by `AnimateOutLoop`
+(`GameSessionHandler.cs:722-743`) after the winner triangle, which the RL path never
+reaches (`RlBridge` marks the episode terminal at `HasGameEnded()` and requires a
+reset), so a restored world that recomputes the delays from the new seed is exact for
+both the RNG stream and the field values. Loadouts with catalog id 1 need the ordinary
+load+warmup path; `random_loadouts` (`bopl_puffer.h:347`) can draw it, so the restore
+must fall back (or `random_loadouts` must exclude id 1) if that flag is ever used.
