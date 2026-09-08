@@ -162,13 +162,16 @@ the slot is negotiated explicitly between the Rifts.
 - **Learner passes (post-launch A/B, top lead).** The 400M run does one
   gradient step per 3072-decision rollout (`--learner-passes 1`); the old
   trainer did 12 (3 epochs × 4 minibatches). Train time is ~4.4 ms per pass
-  against ~170 ms of rollout per update: two extra passes would add about
-  8.8 / 174.4 = 5% to training-loop wall time if costs scale linearly. This is
-  an estimate, not a measured three-pass result. Later passes let `kl`/clip
-  reflect preceding optimizer steps; nonzero clipping is not guaranteed. If the
-  400M run shows entropy stuck near uniform, this is the first matched
-  comparison to run (same seed, same budget, `strength_check.py`-style
-  fail-closed protocol with `--learner-passes` in the plan). Specific
+  against ~170 ms of rollout per update. Measured on the 786k bench workload
+  (results.tsv `native-linear-passes3`, medians of 3): 13,510 vs 13,756
+  learner decisions/s wall, train 2.6 vs 0.9 s of 58 s, about 2% slower. At
+  that budget the three-pass runs' `kl` stayed ~1e-7 and `clip_fraction` 0,
+  so the extra passes made no visible policy change there; whether they do
+  at 10M+ is the question. This is the first matched comparison to run
+  once the GPU is free: `strength_check.py --compare learner-passes`
+  (candidate `passes3`, reference `passes1`, both arms SET, same seeds and
+  budget, fail-closed reuse checks `learner_passes` per arm, report carries
+  per-run drift). Specific
   hypothesis (notes.md 2026-09-07 22:08): the sampler draws 24 segments with
   replacement. With uniform learner priorities, expected unique coverage is
   ~64% for one pass and ~95% for three fixed-probability passes; actual
@@ -193,8 +196,9 @@ the slot is negotiated explicitly between the Rifts.
   with larger pooled gaps on maps 1, 2 and 4. Two follow-ups when
   game jobs are allowed: (a) evaluate the initial checkpoint against itself on
   both sides (no GPU; shows whether the effect survives identical weights),
-  (b) report evaluation results per side in `watch_run.py` and the dashboard
-  summary so pooled rates do not hide the observed side effect.
+  (b) done in `watch_run.py` (3413a3d: pooled and per-map left/right win
+  rate under every evaluation line, self-play excluded); the dashboard
+  summary is root's. On the stocks-0 run the gap is map 1 only.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code

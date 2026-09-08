@@ -1311,3 +1311,41 @@ map 1 spawn-height asymmetry; (4) one learner pass leaves kl/clip at zero by
 construction, so the learner-passes A/B (program.md open item) is still the
 first matched comparison to run once the GPU is free; (5) explained variance
 can fall while value loss falls, so neither alone is a critic health signal.
+
+## 2026-09-07 23:36 EDT: source-only tooling while Gate 0 owns the machine
+
+Root thread thr_6bmdfjijez is archived (`bb thread tell` returns 409), so the
+closing read went to the parent thread thr_wq22hezkbf instead. Nothing was
+launched from here; the Gate 0 sweep (many-worlds Rift) had finished w40-b2 at
+13,552 learner/s steady, GPU 16%, still flat against 16 workers.
+
+`watch_run.py` (3413a3d) now prints, under every evaluation line, the
+learner's win rate by spawn side pooled over opponents and maps plus the
+per-map left/right split, self-play excluded (its opponent label is
+`selfplay`, and the first draft counted it as a left game). On the stopped
+run's last four evaluations: 40.0M physical left .64 / right .54, 46.7M
+.68 / .57, 53.3M .64 / .64, 60.0M .71 / .64; map 1 reads .75/.25, .75/.50,
+.88/.50, .88/.50 while maps 0, 2 and 3 are even within their 8 or 4 games.
+
+`strength_check.py` (8961c54) gained `--compare learner-passes`: the same
+pre-registered protocol (fresh matched runs per seed, final evaluation,
+side-swapped round robin with a random anchor, Bradley-Terry Elo, pooled
+Wilson score, fail-closed reuse) with arms `passes1` (reference) and
+`passes3` (candidate, `--candidate-passes`), both on `--encoder set`. The
+plan (schema 2) records per-arm `encoder` and `learner_passes`; reuse checks
+them per arm, so a one-pass run cannot be reused as the three-pass arm
+(checked against the self-test runs: the mismatch names `learner_passes`).
+Each run's `watch_run.drift` table goes into the report, since the program
+says to judge this A/B by drift on both arms as well as by evaluations. The
+verdict rule is unchanged (candidate `qualified` iff the upper Wilson bound
+of candidate-vs-reference is >= .5 and its pool score vs random is within
+.05 of the reference); `better` (lower bound > .5) is reported separately.
+The old self-test runs are rejected by the current reuse check (no entropy
+schedule, stocks 3, annealed lr), as before; the GPU training stage of the
+learner-passes comparison is unexercised until the GPU is released.
+
+Measured three-pass cost is on record already (results.tsv
+`native-linear-passes3`, 786k bench): about 2% fewer learner decisions per
+wall second, with `kl` ~1e-7 and `clip_fraction` 0 throughout, so at that
+budget the extra passes changed nothing visible. program.md's learner-passes
+item now cites the measurement instead of the earlier 5% estimate.
