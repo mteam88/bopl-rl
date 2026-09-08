@@ -152,40 +152,53 @@ name, so the shim must match Unity's internal layouts wherever captured:
 - **Clone roots leak (bug)**: clone children were root-registered and never
   removed (SetParentInternal manageRoots:false), so FindObjectsOfType
   visited them twice - "facing" section doubled at player spawn.
-- **Sound bank**: `sim/Export/sound-bank.json` ripped from MainMenu.unity's
-  AudioManager (136 entries, order preserved): `InterruptableAudio` stores
-  bank indices (Dash.dashSound.index = 14 = "dash") and they are captured.
-  `AudioClip.length` defaults to 1 (PlayPrefixWithInterrupts divides by it).
+- **AudioClip.length** defaults to 1 (PlayPrefixWithInterrupts divides by it;
+  clip assets are placeholders - audio never plays).
 
-Result on `sim/Oracle/fixtures/l0-p2` (480 ticks, batch 16): **480/480 ticks
-match** with one known-blocked field class filtered
-(`Player.playerDied/playerWon` - HandleAbilitySelectUI lives in the
-unexported WinnerTriangle scene; export in progress on the oracle thread).
-Curve key weights initially diverged too, but the flattened f32 leaves in
-the existing export carry them exactly (see TODO) - no re-export needed.
+Result (v3 export, real boot + WinnerTriangle scenes): **all five fixtures
+match UNFILTERED** - l0 480, l1 444, l2 480, l3 480, l4 418 ticks, including
+the early-terminating death episodes. No filtered fields remain.
 
-## Host bootstrap deviations (boot scene is not exported)
+## Host bootstrap (v3 export: the boot scene IS exported)
 
-The Unity player reaches gameplay through the boot scene → menus; the sim
-Host reconstructs the DontDestroyOnLoad singletons that flow leaves behind:
+`Program.Bootstrap` loads MainMenu.unity (build index 0, scene-boot.json)
+exactly as the player boots: the real `SteamManager` (Steam init fails
+headless, matching the batchmode oracle), `Host` on the "networkClient"
+root, `SettingsInitializer` (Settings.Init + LocalizedText wiring),
+`AudioManager` (136-sound bank in serialized order), all wired through
+serialized references. The `winnerTriangle` scene loads through the game's
+own `ForceStartGame` → `LoadScene("winnerTriangle", Additive)` path;
+`HandleAbilitySelectUI.Init` subscribes `Player.playerDied/playerWon` from
+its `sceneLoaded` handler - the former stub hierarchy, hand-rolled
+AudioManager, and `sim/Export/sound-bank.json` are gone (git history).
 
-- **Settings** loaded from `Settings.asset` + `Init()`;
-  `LocalizedText.localizationTable` from `LocalizationTable.asset`
-  (SettingsInitializer.Awake equivalent).
-- **SteamManager** with `abilityIconsFull/Demo` assets and
-  `networkClient = Host` (boot-scene serialized wiring).
-- **AudioManager** with an EMPTY sound bank and one placeholder song: the
-  audio bank is not exported (presentation) but `Play()` must run because it
-  feeds `ReferencePlayerController.SoundCapture` (trace-captured). Every
-  play logs "non-existent sound" and returns null; music paths index the
-  placeholder song.
-- **WinnerTriangleCanvas** stub hierarchy (canvas → triangle →
-  inactive CharacterStatsList): the additive `winnerTriangle` scene
-  (201-object UI, DontDestroyOnLoad root) is not exported.
-  `GameSessionHandler.prepareWinnerTriangle` needs the two GameObjects at
-  round start. Round-END UI (`ActivateWinnerTriangle` →
-  `CharacterStatsList.OnEnable` player rows) will NOT reproduce until the
-  oracle exports `Assets/Scenes/WinnerTriangle.unity`. TODO(oracle).
+One deviation: `Host.Awake` early-returns when process argv carries a
+`.rep` path (the player's command-line replay flow through the unexported
+"Replay" scene). The sim Host takes the RL/ResetRl path instead and
+re-applies the `DontDestroyOnLoad(host/DebugTextRenderer)` calls the
+no-argv branch would have made (idempotent when Awake did them).
+
+Shim/loader fixes the real scenes forced (all trace-verified):
+
+- **UseRectTransform orphaned the GameObject** (bug): GraphBuilder parents
+  the GO before reaching the RectTransform component entry; the swap now
+  carries parentField/children/local pose (charStatsList.transform.parent
+  was null → prepareWinnerTriangle NRE).
+- **Clones lose RectTransform** (bug): CloneGameObjectRecursive now mirrors
+  the source transform kind (AbilitySelectCircle.trans is a serialized
+  RectTransform field; assigning a Transform threw ArgumentException).
+- **Graphic.material never returns null** - unset means the shared
+  "Default UI Material" (AbilitySelectController clones it).
+- **Instantiate(Material)** supported: copy named "<name>(Clone)".
+- **AudioListener** is a Behaviour (component on the boot AudioManager)
+  with the static volume/pause API preserved.
+- **Texture2D** gained a parameterless ctor for the loader's placeholder
+  path (Activator.CreateInstance failed → CursorUpdater.originalTexture
+  null → boot Start crash).
+- **scenes.json**: non-level scenes (boot 0, WinnerTriangle 4) load by
+  buildIndex or name; name lookup is OrdinalIgnoreCase (the game calls
+  LoadScene("winnerTriangle") for WinnerTriangle.unity); Additive loads
+  leave the active scene untouched and stamp loaded roots explicitly.
 
 ## Open questions for the oracle
 
@@ -206,9 +219,11 @@ Host reconstructs the DontDestroyOnLoad singletons that flow leaves behind:
       leaves (exact player bits incl. ±Infinity constant-mode tangents and
       key weights; REVIEW-loader-2 L1/L2) — the Fix-raw summary is applied
       first, leaves overwrite.
-- [ ] Oracle: export `Assets/Scenes/WinnerTriangle.unity` — the last known
-      trace gap (Player.playerDied/playerWon subscriber lists +
-      round-end UI). In progress on the oracle thread.
+- [x] WinnerTriangle + boot scenes (v3 export) loaded for real — all five
+      fixtures match unfiltered.
 - [ ] F8 items (ParticleSystem.MainModule.duration, timeSinceLevelLoad reset,
       LayerMask.NameToLayer throw, UnloadSceneAsync, AsyncOperation frame
       gap, Instantiate worldSpace throw) — after first trace diff.
+- [ ] AOT residual risk (coordinator): serialized `List<T>` fields without
+      inline initializers on not-yet-exercised maps/loadouts may need rd.xml
+      entries — a serialized-field scan generating rd.xml would close it.
