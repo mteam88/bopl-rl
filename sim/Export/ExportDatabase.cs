@@ -28,6 +28,9 @@ namespace BoplSim.Export
 		private readonly string projectDir;   // Unity project root, for Assets/Resources text files
 
 		internal readonly List<MapEntry> Maps = new List<MapEntry>();
+		// Non-level scenes from scenes.json (v3 export): boot MainMenu (0) and
+		// WinnerTriangle (4). Same file shape as map-N.json.
+		internal readonly Dictionary<int, MapEntry> ExtraScenes = new Dictionary<int, MapEntry>();
 		internal readonly Dictionary<string, JObject> AssetData = new Dictionary<string, JObject>();
 		internal readonly Dictionary<string, string> GuidByResourcePath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		internal readonly Dictionary<string, UnityEngine.Object> BuiltAssets = new Dictionary<string, UnityEngine.Object>();
@@ -63,6 +66,16 @@ namespace BoplSim.Export
 					SceneName = (string)entry["scene"],
 					File = (string)entry["file"],
 				});
+
+			string scenesPath = Path.Combine(exportDir, "scenes.json");
+			if (File.Exists(scenesPath))
+				foreach (var entry in JArray.Parse(File.ReadAllText(scenesPath)))
+					db.ExtraScenes[(int)entry["buildIndex"]] = new MapEntry
+					{
+						Level = (int)entry["buildIndex"],
+						SceneName = (string)entry["scene"],
+						File = (string)entry["file"],
+					};
 
 			var assets = JObject.Parse(File.ReadAllText(Path.Combine(exportDir, "assets.json")));
 			foreach (var pair in assets)
@@ -134,9 +147,13 @@ namespace BoplSim.Export
 			world.resourceLoader = LoadResource;
 			SceneManager.nameToBuildIndex = name =>
 			{
+				// Unity's name lookup is case-insensitive - the game does
+				// LoadScene("winnerTriangle") for WinnerTriangle.unity.
+				foreach (var pair in ExtraScenes)
+					if (string.Equals(pair.Value.SceneName, name, StringComparison.OrdinalIgnoreCase)) return pair.Key;
 				foreach (var map in Maps)
-					if (map.SceneName == name) return map.Level + LevelSceneOffset;
-				// Menu/UI scenes are not exported; loads become warned no-ops.
+					if (string.Equals(map.SceneName, name, StringComparison.OrdinalIgnoreCase)) return map.Level + LevelSceneOffset;
+				// Menu/UI scenes not in the export; loads become warned no-ops.
 				return -1;
 			};
 		}
@@ -145,22 +162,27 @@ namespace BoplSim.Export
 
 		private void LoadSceneByBuildIndex(int buildIndex, LoadSceneMode mode)
 		{
-			int level = buildIndex - LevelSceneOffset;
-			if (level < 0 || level >= Maps.Count)
+			MapEntry map;
+			if (!ExtraScenes.TryGetValue(buildIndex, out map))
 			{
-				if (warnedScenes.Add(buildIndex.ToString()))
-					Debug.LogError("Export: scene " + buildIndex + " is not exported (menu/UI scene) - LoadScene ignored");
-				return;
+				int level = buildIndex - LevelSceneOffset;
+				if (level < 0 || level >= Maps.Count)
+				{
+					if (warnedScenes.Add(buildIndex.ToString()))
+						Debug.LogError("Export: scene " + buildIndex + " is not exported (menu/UI scene) - LoadScene ignored");
+					return;
+				}
+				map = Maps[level];
 			}
-			var map = Maps[level];
 			if (mode == LoadSceneMode.Single) World.Current.UnloadCurrentScene();
 
-			// Set the active scene before building so every GameObject the load (or
-			// anything after it) creates inherits it; then stamp the loaded subtrees
-			// explicitly (children created before roots would otherwise carry the
-			// previous scene).
+			// Single: set the active scene before building so every GameObject the
+			// load (or anything after it) creates inherits it; then stamp the loaded
+			// subtrees explicitly (children created before roots would otherwise
+			// carry the previous scene). Additive: the active scene is untouched;
+			// StampScene alone puts the loaded objects in the new scene.
 			var scene = new Scene(buildIndex, map.SceneName);
-			World.Current.activeScene = scene;
+			if (mode == LoadSceneMode.Single) World.Current.activeScene = scene;
 
 			// PERF-1 fix 1 (minimum): the parse dominated warm resets (~10 of 15 ms);
 			// the JArray is only read by GraphBuilder/PropertyApplier, never mutated.
