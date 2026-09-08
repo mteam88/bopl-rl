@@ -692,61 +692,70 @@ Root owns train.py and parent owns the run; nothing to do from this Rift.
 
 ## 2026-09-07 21:50 EDT: parent relaunched the 400M run with `--stocks 0`; weight-drift check of the aborted 19M
 
-Root's 60d5773 makes one life per round the default (`--stocks 0` in train.py, binding.c, eval_binding.c,
-bopl.ini). Parent stopped the first attempt at 19.2M learner decisions (20 min, stocks 3) and moved it to
-`native/artifacts/rl/null-hypothesis-native/aborted-001-s73-stocks3`; the new `001-s73` (pid 3677451,
-binding 54bf2404…) restarted from scratch at 21:49. Merged as c97b659 here. First 1.2M learner decisions
-of the new run, read from disk: episodes last ~330 ticks instead of ~1,550 (36 finished episodes per
-update instead of 8), advantage std 0.24 instead of 0.11 (more terminal rewards per rollout), entropy
-8.292, explained variance 0.03 at 1–2M, ~13.9k learner decisions/s.
+Root's 60d5773 makes one life per round the default (`--stocks 0` in train.py, binding.c,
+eval_binding.c, bopl.ini). Parent stopped the first attempt at 19.2M learner decisions (20 min,
+stocks 3) and moved it to `native/artifacts/rl/null-hypothesis-native/aborted-001-s73-stocks3`; the
+new `001-s73` (pid 3677451, binding 54bf2404…) restarted from scratch at 21:49. Merged as c97b659
+here. First 1.2M learner decisions of the new run, read from disk: episodes last ~330 ticks instead
+of ~1,550 (36 finished episodes per update instead of 8), advantage std 0.24 instead of 0.11 (more
+terminal rewards per rollout), entropy 8.292, explained variance 0.03 at 1–2M, ~13.9k learner
+decisions/s.
 
-**What the aborted run's checkpoints say about the flat entropy.** Twenty-one native checkpoints
-(0 → 19.2M) let me measure how the weights moved, with no GPU or game involved
-(`watch_run.py --drift`, CPU numpy over the float32 `.bin` files). Per slice, `mean|dw|` is the norm
-of the change per 1M-decision interval, `lag1` the cosine between consecutive changes, and `net/rw`
-the total displacement divided by what a random walk of those step sizes would produce:
+**What the aborted run's checkpoints say about the flat entropy.** Twenty-one native checkpoints (0
+→ 19.2M) let me measure how the weights moved, with no GPU or game involved (`watch_run.py --drift`,
+CPU numpy over the float32 `.bin` files). Per slice, `mean|dw|` is the norm of the change per
+checkpoint interval (usually 1M learner decisions; the final interval is shorter), `lag1` the cosine
+between consecutive changes, and `net/rw` the displacement divided by a random-walk reference. The
+reviewed tool uses sqrt(sum(interval norm squared)), the independent-direction RMS reference that
+accounts for unequal lengths. The table below reflects that corrected calculation:
 
-| slice | \|w0\| | mean\|dw\| per 1M | lag1 cosine | net / random walk |
+| slice | \|w0\| | mean\|dw\| per checkpoint interval | lag1 cosine | net / random walk |
 |---|---|---|---|---|
 | encoder (SET) | 15.96 | 0.43 | 0.32 | 2.0 |
 | decoder aim head (256×128) | 9.23 | 0.27 | 0.06 | 1.2 |
 | decoder button head (16×128) | 2.30 | 0.15 | 0.04 | 1.1 |
-| decoder value row (1×128) | 0.57 | 0.10 | 0.94 | 4.1 |
+| decoder value row (1×128) | 0.57 | 0.10 | 0.94 | 4.0 |
 | MinGRU (3×128×128) | 11.35 | 0.44 | 0.23 | 1.8 |
 
-The value row moves in one consistent direction (cosine 0.94, four times a random walk, norm
-0.57 → 2.17): the critic is learning, matching explained variance 0.03 → 0.73 over the same span.
-The two policy heads are doing a random walk: consecutive updates are nearly orthogonal and the net
-motion equals the random-walk expectation. The step sizes are also what pure noise predicts for the
-optimizer in use. The native trainer's Muon step orthogonalizes each matrix update and applies
-`lr · sqrt(rows/cols)` of it regardless of gradient magnitude (muon.cu `muon_weight_update`; Nesterov
-momentum 0.95, PufferLib default `beta1`), so every update moves a 273×128 decoder by ~0.005 whether
-the gradient carries signal or not. A CPU simulation of that rule with unit random gradients gives
-0.47 of decoder motion per 325 updates (0.09 without momentum); the measured whole-decoder motion is
-0.32 per 1M. A persistent gradient direction would give 1.6. So at 19M the actor's weights were not
-frozen; they were being moved by noise at the optimizer's fixed step size, with the entropy bonus as
-the only consistent policy-side gradient. The old torch run (Adam, 12 steps per update, ±0.1 shaping)
-had actor lag1 cosine ≈ 0 too over 100k-decision intervals, but its actor norm grew 0.11 → 4.09 in
-1M decisions, i.e. sharpening driven by the dense kill/death signal.
+The value row moves in one consistent direction (cosine 0.94, four times a random walk, norm 0.57 →
+2.17): the critic is learning, matching explained variance 0.03 → 0.73 over the same span. The two
+policy heads have nearly orthogonal checkpoint-interval displacements and net motion close to the
+random-walk reference. This is consistent with noise, but does not establish that gradients are pure
+noise or exclude learning through other parameters. The following simulation is a rough scale
+comparison, not a gradient attribution test. The native trainer's Muon step orthogonalizes each
+matrix update and applies `lr · sqrt(rows/cols)` of it regardless of gradient magnitude (muon.cu
+`muon_weight_update`; Nesterov momentum 0.95, PufferLib default `beta1`), giving roughly 0.005 per
+update for a 273×128 decoder under ideal orthogonalization even when the gradient carries no useful
+signal. This is a scale estimate, not an exact per-update displacement guarantee. A CPU simulation
+of that rule with unit random gradients gives 0.47 of decoder motion per 325 updates (0.09 without
+momentum); the measured whole-decoder motion is 0.32 per 1M. A persistent gradient direction would
+give 1.6. The actor heads therefore were not frozen. Their low directional persistence does not
+identify how much motion came from policy reward, entropy, optimizer momentum, or changing features.
+In particular, it does not prove entropy was the only consistent policy gradient. The simulation
+uses exact SVD rather than the implementation's Newton–Schulz approximation, so its magnitude is
+only an approximate comparison. The old torch run (Adam, 12 steps per update, ±0.1 shaping) had
+actor lag1 cosine ≈ 0 too over 100k-decision intervals, but its actor norm grew 0.11 → 4.09 in 1M
+decisions, consistent with sharper outputs, though these runs differ in several settings and do not
+isolate the effect of dense kill/death rewards.
 
-Why this matters for reading the run: with sparse ±1 outcomes, gamma .995 and lambda .9, the
-per-rollout advantage on a 128-decision segment of a ~1,500-tick (stocks 3) episode was mostly the
-critic's own bootstrap noise, and the single Muon step per rollout turns that into a fixed-size random
-displacement of the policy heads. One life per round (stocks 0) puts a terminal reward inside almost
-every 128-decision segment (36 episode ends per 7,168-row rollout instead of 8), which is the
-best-case change for this signal-to-noise problem short of shaping. The read-only watch remains the
-same: policy-head `net/rw` climbing above ~1.5 with rising lag1 cosine, or entropy leaving 8.2, before
-the 30M coefficient checkpoint. `learner-passes 3` (program.md top lead) is the matched A/B if it does
-not.
+Why this matters for reading the run: with sparse ±1 outcomes, gamma .995 and lambda .9, bootstrap
+noise is one possible explanation to investigate; the checkpoint analysis does not measure its share
+of the advantage. One life per round (stocks 0) increases observed terminal rewards (36 episode ends
+per rollout instead of 8), but aggregate counts do not establish that almost every sampled sequence
+contains one. It may improve the available learning signal and also changes the task to Matthew's
+intended vanilla rounds. The read-only watch remains the same: policy-head `net/rw` climbing above
+~1.5 with rising lag1 cosine, or entropy leaving 8.2, before the 30M coefficient checkpoint. Those
+thresholds are heuristics, not validated evidence of strength; use match evaluations and their
+uncertainty as well. `learner-passes 3` (program.md top lead) is the matched A/B if it does not.
 
-Provenance: numbers from `aborted-001-s73-stocks3/checkpoints` and both runs' metrics.jsonl on
-2026-09-07 21:55–22:20 EDT; simulation in this session (numpy, single thread, exact SVD in place of
-the five Newton–Schulz steps). A first version of that simulation briefly ran multi-threaded BLAS
-next to the live run and was killed after ~5 min; no other load was added.
+Provenance: numbers from `aborted-001-s73-stocks3/checkpoints` and metrics.jsonl in the aborted and
+relaunched runs; simulation reported by Fable (numpy, single thread, exact SVD in place of the five
+Newton–Schulz steps). A first version of that simulation briefly ran multi-threaded BLAS next to the
+live run and was killed after ~5 min; no other load was added.
 
 ## 2026-09-07 22:02 EDT: stocks-0 run at 6.6M, first drift read (read-only)
 
-`watch_run.py --drift` over 7 checkpoints (0 to 6.0M learner decisions), BLAS pinned to one thread, niced:
+`watch_run.py --drift` over 7 checkpoints (0 to 6.0M learner decisions), niced and single-threaded (root's f6fc13f rewrite of `--drift` uses elementwise reductions only, no BLAS):
 
 | slice | mean abs dw | lag-1 cosine | net/rw |
 |---|---|---|---|
@@ -756,11 +765,11 @@ next to the live run and was killed after ~5 min; no other load was added.
 | decoder.value | 0.11 | 0.90 | 2.24 |
 | mingru | 0.49 | 0.43 | 1.59 |
 
-Same picture as the aborted stocks-3 run at 19M: the critic row moves in one direction (its norm doubled, 0.57 to 1.05; explained variance 0.39 to 0.48 between 5.0M and 6.6M), the encoder and MinGRU move consistently, and the two policy heads still random-walk at the fixed Muon step. Entropy 8.290, coefficient 0.0086, advantage std 0.23 (double the stocks-3 run). Evaluation at 6.7M: 0.46 vs random and 0.42 vs the initial checkpoint over 24 games each, no timeouts. Not a signal yet either way; the watch rule from 21:50 stands (policy-head net/rw above about 1.5 with rising cosine, or entropy leaving 8.2, before 30M).
+Same picture as the aborted stocks-3 run at 19M: the critic row moves in one direction (its norm doubled, 0.57 to 1.05; explained variance 0.39 to 0.48 between 5.0M and 6.6M), the encoder and MinGRU move consistently, and the two policy heads still show no interval-to-interval persistence (consistent with a random walk; the diagnostic does not identify the gradient source). Entropy 8.290, coefficient 0.0086, advantage std 0.23 (double the stocks-3 run). Evaluation at 6.7M: 0.46 vs random and 0.42 vs the initial checkpoint over 24 games each, no timeouts. Not a signal yet either way; the watch rule from 21:50 stands (policy-head net/rw above about 1.5 with rising cosine, or entropy leaving 8.2, before 30M).
 
 Rate: trailing 12.4k learner decisions/s; the run-average 9.0k/s still carries the 5-minute slowdown I caused and the other sessions' load.
 
-### Why the policy heads random-walk under Muon (source read, PufferLib `src/models.cu`, `src/muon.cu`; per-row numbers checked at 8M)
+### Why non-persistent policy-head motion keeps a fixed pace under Muon (source read, PufferLib `src/models.cu`, `src/muon.cu`; per-row numbers checked at 8M)
 
 The decoder is registered as one parameter of shape `(output_dim+1, hidden)` = 273 x 128 (`decoder_reg_params`), with the value row as row 272 (`assemble_decoder_grad` appends the value gradient as the last column). Muon treats each registered >=2-D tensor as a unit: momentum, then normalize the whole 273 x 128 gradient to unit Frobenius norm, then 5 Newton-Schulz iterations toward the nearest semi-orthogonal matrix (all 128 singular values about 1, total Frobenius norm about sqrt(128)), then `w -= lr * sqrt(273/128) * update`. So the decoder as a whole moves a fixed distance per update, about 3e-4 x 1.46 x 11.3 = 0.005, regardless of gradient size; how that budget splits across rows depends on the gradient's row structure, and a consistent direction keeps its share update after update.
 
