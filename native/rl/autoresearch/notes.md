@@ -1266,3 +1266,48 @@ now state-dependent even though its mean entropy is still 98% of maximum.
 The button head barely moved (2.741 vs 2.773 max). The critic's spread grew
 (.155 → .201) while its mean returned to zero, matching the settled critic
 row in the drift table.
+
+## 2026-09-07 23:27 EDT: run 001-s73 stopped at 46.5M learner decisions (closing read)
+
+The parent thread (thr_wq22hezkbf) stopped `bopl-null-hypothesis.service` at
+22:50:32 EDT to hand the machine to the Gate 0 scale-out benchmark
+(`many-worlds` Rift, `native/rl/many_worlds/gate0.py`); the journal shows a
+systemd stop followed by SIGABRT of the trainer, not an out-of-memory kill.
+Final state: 46,522,368 learner decisions, 62.0M physical, 15,144 updates,
+1.01 h. Last checkpoint `policy-061333504.bin`; last evaluation at 60.0M
+physical. Everything below is read from the artifacts; nothing was launched.
+
+Final evaluation (60.0M physical): vs random 16/24, vs initial 16/24,
+held-out vs random 6/8, no timeouts. Side split 20/28 vs 18/28, pairs
+only-0 : only-1 = 8:6, both sides won 12 pairs; map 1 alone 7/8 vs 4/8 for
+the second evaluation running. Sequence vs initial over the nine
+evaluations: .42 .46 .29 .29 .38 .46 .54 .58 .67; vs random: .46 .38 .58 .46
+.54 .63 .63 .67 .67. Root's caution stands: 24-game groups, same 57 tasks
+every time, so the last three evaluations pooled (vs initial 46/72 = .64,
+Wilson .52-.74; first four 38/96 = .40, .30-.50) are suggestive, not a
+verdict.
+
+Final behavior window (44M to end, 822 updates), per learner episode: rounds
+549 ticks, environment deaths .306, self .133, opponent-credited .060,
+arrows fired 2.87, lethal arrow contacts .060 (.021 per arrow, from .0044 at
+0-2M), aim entropy 5.414, buttons 2.738, explained variance .465, value loss
+.0215.
+
+Final drift (47 checkpoints, 0 to 46.0M): encoder net/rw 3.17 (cos .445),
+mingru 2.59 (.331), value 3.73 (|w| 2.00, cos .614, still settling), aim
+1.58 (cos .080, row .576 → .597), buttons 1.12 (cos .036, row .575 → .601).
+Policy heads never left the random-walk regime by this measure over 46M
+decisions while the encoder and recurrent core moved persistently and
+behavior changed. Whatever the heads learned is small in norm relative to
+the Muon step size; if the run is resumed or repeated, the 50M+ reads should
+watch whether that ever changes, and a resumed run can start from
+`policy-061333504.bin` with the same config.
+
+What this run established for the program, in order of confidence: (1) the
+pipeline trains: behavior moved monotonically from ~18M, evaluations
+followed from ~40M physical; (2) rounds end by falling in the water, and the
+first thing learned is to fall less; (3) the evaluation suite's side gap is a
+map 1 spawn-height asymmetry; (4) one learner pass leaves kl/clip at zero by
+construction, so the learner-passes A/B (program.md open item) is still the
+first matched comparison to run once the GPU is free; (5) explained variance
+can fall while value loss falls, so neither alone is a critic health signal.
