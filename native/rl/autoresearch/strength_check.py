@@ -1,6 +1,14 @@
-"""Matched short strength comparison of two native encoders (SET vs linear).
+"""Matched short strength comparison of two native trainer settings.
 
-Protocol (pre-registered; every arm gets identical settings except --encoder):
+Two comparisons share one protocol, selected by --compare:
+  encoder        SET vs linear encoder (candidate `set`, reference `linear`); both
+                 arms use --learner-passes (default 1).
+  learner-passes three vs one gradient step per rollout (candidate `passes3`,
+                 reference `passes1`, override with --candidate-passes); both arms
+                 use --encoder (default set, the 400M run's encoder).
+The candidate is the setting under test; the verdict compares it with the reference.
+
+Protocol (pre-registered; every arm gets identical settings except the compared one):
 
 1. Training. For each encoder and each seed, one fresh `puffer/train.py` run:
    16 games, 4 banks, horizon 128, learner passes 1, sparse reward (+1/-1,
@@ -22,19 +30,25 @@ Protocol (pre-registered; every arm gets identical settings except --encoder):
    cap 7200. Timeouts are draws. Bradley-Terry ratings anchored at random =
    0 Elo (same fit as research/elo_ladder.py).
 
-Primary metric: the pooled SET-vs-linear score (win = 1, draw = 1/2) over all
-cross-arm pairs, maps and seed pairs, with a descriptive Wilson interval.
-Verdict rule (fixed before any run): SET is `qualified` when the interval's
-upper bound is >= 0.5 (SET is not significantly worse than linear) AND SET's
-pooled score against random is >= linear's minus 0.05; `not-qualified`
-otherwise. The report also gives per-seed scores, Elo, win/timeout rates from
-training telemetry, and the training wall-hours of each arm so strength per
-wall-hour can be read off directly.
+Primary metric: the pooled candidate-vs-reference score (win = 1, draw = 1/2)
+over all cross-arm pairs, maps and seed pairs, with a descriptive Wilson interval.
+Verdict rule (fixed before any run): the candidate is `qualified` when the
+interval's upper bound is >= 0.5 (not significantly worse than the reference)
+AND its pooled score against random is >= the reference's minus 0.05;
+`not-qualified` otherwise. `better` is reported separately: the interval's
+lower bound is > 0.5. The report also gives per-seed scores, Elo, win/timeout
+rates from training telemetry, per-slice weight drift of every run
+(`watch_run.drift`, the same random-walk statistics as `watch_run.py --drift`)
+and the training wall-hours of each arm so strength per wall-hour can be read
+off directly.
 
 Usage (from the repository root, no other heavy job running):
 
     native/artifacts/rl/venv/bin/python native/rl/autoresearch/strength_check.py \
         --output native/artifacts/rl/autoresearch/strength-set-vs-linear \
+        --game <player> --steps 10000000 --seeds 73,173,273
+    native/artifacts/rl/venv/bin/python native/rl/autoresearch/strength_check.py \
+        --compare learner-passes --output native/artifacts/rl/autoresearch/strength-passes3-vs-1 \
         --game <player> --steps 10000000 --seeds 73,173,273
 
 Resuming is fail-closed: an existing output directory must carry an identical
@@ -63,14 +77,30 @@ ROOT = HERE.parents[2]
 RESEARCH = ROOT/'native/rl/research'
 sys.path.insert(0, str(RESEARCH))
 sys.path.insert(0, str(ROOT/'native/tools'))
+sys.path.insert(0, str(HERE))
 from common import atomic_json  # noqa: E402
 from evaluation_protocol import checkpoint_identity, map_ids, schedule  # noqa: E402
 from reference import resolve_game, player_sources  # noqa: E402
+from watch_run import drift  # noqa: E402
 
 TRAINER = ROOT/'native/rl/puffer/train.py'
 EVALUATOR = RESEARCH/'evaluate.py'
 OPENSSL = Path('/home/mte/Documents/Coding/bopl-re/openssl-unity-sha1.cnf')
-ARMS = ('linear', 'set')
+
+
+def arm_settings(args):
+    """Per-arm train.py settings and (candidate, reference) names for the chosen comparison."""
+    if args.compare == 'encoder':
+        arms = {'linear': dict(encoder='linear', learner_passes=args.learner_passes),
+                'set': dict(encoder='set', learner_passes=args.learner_passes)}
+        return arms, 'set', 'linear'
+    if args.compare == 'learner-passes':
+        if args.candidate_passes == 1: raise ValueError('--candidate-passes must differ from the reference (1)')
+        candidate = f'passes{args.candidate_passes}'
+        arms = {'passes1': dict(encoder=args.encoder, learner_passes=1),
+                candidate: dict(encoder=args.encoder, learner_passes=args.candidate_passes)}
+        return arms, candidate, 'passes1'
+    raise ValueError(args.compare)
 
 
 def wilson(successes, total, z=1.96):
@@ -88,14 +118,15 @@ def environment():
 
 def complete(run, plan, arm, seed):
     """The run's result when it finished its budget under the planned settings; None when absent."""
+    settings = plan['arms'][arm]
     result = run/'result.json'
     if not result.exists(): return None
     data = json.loads(result.read_text())
     if data.get('status') != 'complete' or data.get('learner_steps', 0) < plan['steps']:
         raise RuntimeError(f'{run} exists but did not complete its budget; remove it to retrain')
     config = json.loads((run/'config.json').read_text())
-    expected = dict(encoder=arm, seed=seed, workers=plan['workers'], banks=plan['banks'],
-                    learner_passes=plan['learner_passes'], episode_ticks=plan['episode_ticks'],
+    expected = dict(encoder=settings['encoder'], seed=seed, workers=plan['workers'], banks=plan['banks'],
+                    learner_passes=settings['learner_passes'], episode_ticks=plan['episode_ticks'],
                     training_maps=plan['training_maps'], learner_steps=plan['steps'],
                     entropy=plan['entropy'], entropy_floor=plan['entropy_floor'],
                     entropy_schedule='exponential', entropy_half_life=plan['entropy_half_life'],
@@ -126,8 +157,8 @@ def train(args, plan, arm, seed, game):
     if run.exists(): raise RuntimeError(f'{run} exists without a result; remove it to retrain')
     command = [sys.executable, str(TRAINER), '--output', str(run), '--game', str(game),
                '--steps', str(args.steps), '--workers', str(args.workers), '--banks', str(args.banks),
-               '--horizon', str(args.horizon), '--seed', str(seed), '--encoder', arm,
-               '--learner-passes', str(args.learner_passes),
+               '--horizon', str(args.horizon), '--seed', str(seed), '--encoder', plan['arms'][arm]['encoder'],
+               '--learner-passes', str(plan['arms'][arm]['learner_passes']),
                '--learning-rate', repr(args.learning_rate), '--anneal-lr', str(args.anneal_lr),
                '--min-lr-ratio', repr(args.min_lr_ratio), '--stocks', str(args.stocks), '--entropy', str(args.entropy),
                '--entropy-floor', str(args.entropy_floor), '--entropy-half-life', str(args.entropy_half_life),
@@ -264,13 +295,16 @@ def score(games, a_names, b_names):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--compare', choices=('encoder', 'learner-passes'), default='encoder')
+    parser.add_argument('--encoder', choices=('linear', 'set'), default='set', help='Both arms of --compare learner-passes')
+    parser.add_argument('--candidate-passes', type=int, default=3, help='Candidate arm of --compare learner-passes (reference is 1)')
     parser.add_argument('--game', type=Path)
     parser.add_argument('--steps', type=int, default=10_000_000, help='Learner decisions per run')
     parser.add_argument('--seeds', type=lambda s: [int(x) for x in s.split(',')], default=[73, 173, 273])
     parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--banks', type=int, default=4)
     parser.add_argument('--horizon', type=int, default=128)
-    parser.add_argument('--learner-passes', type=int, default=1)
+    parser.add_argument('--learner-passes', type=int, default=1, help='Both arms of --compare encoder')
     parser.add_argument('--learning-rate', type=float, default=.0003, help='train.py default')
     parser.add_argument('--anneal-lr', type=int, choices=(0, 1), default=0,
                         help='0 keeps the learning rate constant (train.py default); 1 uses the native cosine decay over each run budget')
@@ -298,12 +332,13 @@ def main():
     if set(args.training_maps) & set(args.heldout_maps): parser.error('held-out maps overlap training maps')
     if len(set(args.seeds)) != len(args.seeds): parser.error('distinct seeds required')
     game = resolve_game(args.game)
+    arms, candidate, reference = arm_settings(args)
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
-    plan = dict(schema=1, kind='bopl-native-strength-check', created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    plan = dict(schema=2, kind='bopl-native-strength-check', created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                 git_revision=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                 game=str(game), game_identity={k: hashlib.sha256(p.read_bytes()).hexdigest() for k, p in player_sources(game).items()},
-                arms=list(ARMS), **{k: v for k, v in vars(args).items() if k not in ('output', 'game')},
-                verdict_rule='qualified iff upper Wilson bound of pooled SET-vs-linear score >= 0.5 and SET score vs random >= linear score vs random - 0.05')
+                arms=arms, candidate=candidate, reference=reference, **{k: v for k, v in vars(args).items() if k not in ('output', 'game')},
+                verdict_rule=f'qualified iff upper Wilson bound of pooled {candidate}-vs-{reference} score >= 0.5 and {candidate} score vs random >= {reference} score vs random - 0.05; better iff lower bound > 0.5')
     existing = args.output/'plan.json'
     if existing.exists():
         previous = json.loads(existing.read_text())
@@ -315,7 +350,7 @@ def main():
 
     runs = {}
     for seed in args.seeds:            # interleave arms so drift in the machine affects both equally
-        for arm in ARMS:
+        for arm in arms:
             print(f'== train {arm} seed {seed} {time.strftime("%H:%M:%S")}', flush=True)
             run, result = train(args, plan, arm, seed, game)
             runs[(arm, seed)] = dict(run=run, result=result)
@@ -323,6 +358,8 @@ def main():
         print(f'== final evaluation {arm} seed {seed} {time.strftime("%H:%M:%S")}', flush=True)
         item['final'] = final_evaluation(args, item['run'], item['result'], game)
         item['telemetry'] = telemetry(item['run'])
+        try: item['drift'] = drift(item['run'])
+        except SystemExit as reason: item['drift'] = dict(unavailable=str(reason))
     participants = {f'{arm}-s{seed}': item['result']['checkpoint'] for (arm, seed), item in runs.items()}
     print(f'== pool {len(participants)+1} participants {time.strftime("%H:%M:%S")}', flush=True)
     games = play_pool(args, participants, game)
@@ -332,20 +369,21 @@ def main():
     for g in games:
         row = records.setdefault((g['a'], g['b']), [0, 0, 0]); row[{'a': 0, 'b': 1, 'draw': 2}[g['outcome']]] += 1
     ratings = bradley_terry(sorted({'random', *participants}), records, 'random')
-    by_arm = {arm: {n for n in participants if n.startswith(arm+'-')} for arm in ARMS}
-    head_to_head = score(games, by_arm['set'], by_arm['linear'])
-    per_seed = {str(seed): score(games, {f'set-s{seed}'}, {f'linear-s{seed}'}) for seed in args.seeds}
-    vs_random = {arm: score(games, by_arm[arm], {'random'}) for arm in ARMS}
+    by_arm = {arm: {n for n in participants if n.startswith(arm+'-')} for arm in arms}
+    head_to_head = score(games, by_arm[candidate], by_arm[reference])
+    per_seed = {str(seed): score(games, {f'{candidate}-s{seed}'}, {f'{reference}-s{seed}'}) for seed in args.seeds}
+    vs_random = {arm: score(games, by_arm[arm], {'random'}) for arm in arms}
     qualified = (head_to_head['interval'][1] >= .5
-                 and vs_random['set']['score'] >= vs_random['linear']['score']-.05)
-    arms = {}
-    for arm in ARMS:
+                 and vs_random[candidate]['score'] >= vs_random[reference]['score']-.05)
+    better = head_to_head['interval'][0] > .5
+    report_arms = {}
+    for arm in arms:
         items = [runs[(arm, s)] for s in args.seeds]
-        arms[arm] = dict(
+        report_arms[arm] = dict(settings=arms[arm],
             runs=[dict(seed=s, checkpoint=runs[(arm, s)]['result']['checkpoint'],
                        checkpoint_identity=checkpoint_identity(Path(runs[(arm, s)]['result']['checkpoint'])),
                        training_wall_hours=runs[(arm, s)]['result']['elapsed']/3600, matches=runs[(arm, s)]['result']['matches'],
-                       elo=round(ratings[f'{arm}-s{s}'], 1), telemetry=runs[(arm, s)]['telemetry'],
+                       elo=round(ratings[f'{arm}-s{s}'], 1), telemetry=runs[(arm, s)]['telemetry'], drift=runs[(arm, s)]['drift'],
                        final_groups=runs[(arm, s)]['final']['groups']) for s in args.seeds],
             mean_training_wall_hours=float(np.mean([i['result']['elapsed'] for i in items]))/3600,
             mean_elo=float(np.mean([ratings[f'{arm}-s{s}'] for s in args.seeds])),
@@ -353,15 +391,17 @@ def main():
             final_win_rate_vs_random_heldout=float(np.mean([g['win_rate'] for i in items for g in i['final']['groups'] if g['opponent'] == 'random' and g['map'] in args.heldout_maps])),
             final_win_rate_vs_initial=float(np.mean([g['win_rate'] for i in items for g in i['final']['groups'] if g['opponent'] == 'initial'])),
             pool_score_vs_random=vs_random[arm])
-    report = dict(schema=1, plan=plan, verdict='qualified' if qualified else 'not-qualified',
-                  set_vs_linear=head_to_head, set_vs_linear_per_seed=per_seed, ratings={k: round(v, 1) for k, v in ratings.items()},
-                  pool_games=len(games), pool_timeouts=sum(g['outcome'] == 'draw' for g in games), arms=arms)
+    report = dict(schema=2, plan=plan, candidate=candidate, reference=reference,
+                  verdict='qualified' if qualified else 'not-qualified', better=better,
+                  candidate_vs_reference=head_to_head, candidate_vs_reference_per_seed=per_seed,
+                  ratings={k: round(v, 1) for k, v in ratings.items()},
+                  pool_games=len(games), pool_timeouts=sum(g['outcome'] == 'draw' for g in games), arms=report_arms)
     atomic_json(args.output/'result.json', report)
     print(json.dumps({k: v for k, v in report.items() if k != 'plan'}, indent=1))
-    print(f"VERDICT {report['verdict']}: SET vs linear score {head_to_head['score']:.3f} "
+    print(f"VERDICT {report['verdict']}{' (better)' if better else ''}: {candidate} vs {reference} score {head_to_head['score']:.3f} "
           f"[{head_to_head['interval'][0]:.3f}, {head_to_head['interval'][1]:.3f}] over {head_to_head['games']} games; "
-          f"Elo set {arms['set']['mean_elo']:.0f} vs linear {arms['linear']['mean_elo']:.0f}; "
-          f"wall-hours per run set {arms['set']['mean_training_wall_hours']:.2f} vs linear {arms['linear']['mean_training_wall_hours']:.2f}")
+          f"Elo {candidate} {report_arms[candidate]['mean_elo']:.0f} vs {reference} {report_arms[reference]['mean_elo']:.0f}; "
+          f"wall-hours per run {candidate} {report_arms[candidate]['mean_training_wall_hours']:.2f} vs {reference} {report_arms[reference]['mean_training_wall_hours']:.2f}")
 
 
 if __name__ == '__main__':
