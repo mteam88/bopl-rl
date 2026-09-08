@@ -1,6 +1,6 @@
-"""Matched throughput benchmark for research/train.py with GPU and CPU sampling.
+"""Matched throughput benchmark for the native trainer (puffer/train.py) with GPU and CPU sampling.
 
-Runs the actual training loop (`--no-eval --no-video`) for a fixed decision
+Runs the actual training loop (`--no-eval`) for a fixed learner-decision
 budget at each worker count, interleaving worker counts across repeats so that
 slow drift of the machine affects every arm equally. While each run executes,
 a sampler polls nvidia-smi (utilization, power, memory, SM clock) and /proc/stat
@@ -8,9 +8,11 @@ a sampler polls nvidia-smi (utilization, power, memory, SM clock) and /proc/stat
 window, which starts when the first metrics record appears and ends when the
 trainer exits.
 
-Throughput is reported as decisions per second of collection-plus-PPO loop
-time (the same quantity train.py logs as `sps`), plus wall time per run.
-Use a new --output directory per benchmark.
+Throughput is reported as learner decisions per second of active training
+time (`learner_dps_active`: metrics `elapsed`, the trainer's own clock from
+the first rollout through the final update) and of process wall time
+(`learner_dps_wall`, including game start-up and trainer creation), plus the
+physical all-player decision rate. Use a new --output directory per benchmark.
 """
 import argparse
 import json
@@ -24,6 +26,7 @@ import threading
 import time
 
 HERE=Path(__file__).resolve().parent
+TRAINER=HERE.parent/'puffer'/'train.py'
 
 def proc_stat():
     with open('/proc/stat') as f: fields=f.readline().split()
@@ -70,17 +73,16 @@ def summarize(values):
     return dict(mean=statistics.fmean(values),median=statistics.median(values),
                 p10=values[int(.1*len(values))],p90=values[min(len(values)-1,int(.9*len(values)))],n=len(values))
 
-def run_once(python,out,workers,decisions,seed,extra,env,start_step=0):
+def run_once(python,out,workers,decisions,seed,extra,env):
     metrics=out/'metrics.jsonl'
     # Leading KEY=VALUE tokens of an arm set environment variables for that arm
-    # (code-path toggles such as BOPL_OPPONENT_SAMPLING); the rest are train.py flags.
+    # (game runtime toggles, BOPL_RL_GAME); the rest are puffer/train.py flags.
     env=dict(env); extra=list(extra)
     while extra and '=' in extra[0] and not extra[0].startswith('-'):
         key,value=extra.pop(0).split('=',1); env[key]=value
-    # train.py's --steps is an absolute all-player step target, so a resumed
-    # run (--load at start_step) needs start_step added to the budget.
-    command=[python,str(HERE/'train.py'),'--output',str(out),'--workers',str(workers),'--steps',str(start_step+decisions),
-             '--seed',str(seed),'--no-eval','--no-video',*extra]
+    # puffer/train.py's --steps is the learner-decision budget of a fresh run.
+    command=[python,str(TRAINER),'--output',str(out),'--workers',str(workers),'--steps',str(decisions),
+             '--seed',str(seed),'--no-eval',*extra]
     log=out.with_suffix('.log').open('w')
     log.write(' '.join(shlex.quote(x) for x in command)+'\n'); log.flush()
     sampler=Sampler(metrics); sampler.start()
@@ -89,29 +91,32 @@ def run_once(python,out,workers,decisions,seed,extra,env,start_step=0):
     finished=time.monotonic(); sampler.stop.set(); sampler.join(); log.close()
     if process.returncode: raise RuntimeError(f'{out.name} failed with {process.returncode}; see {log.name}')
     records=[json.loads(line) for line in metrics.read_text().splitlines()]
-    # Count only samples actually consumed by PPO, including on resumed runs.
-    learner_decisions=sum(r['behavior']['decisions'] for r in records)
+    result=json.loads((out/'result.json').read_text())
+    if result['status']!='complete' or result['learner_steps']<decisions:
+        raise RuntimeError(f'{out.name} ended {result["status"]} at {result["learner_steps"]} learner decisions')
+    # Learner decisions are the rows PPO actually consumed (frozen-bank players
+    # excluded); `step` counts physical all-player decisions.
+    learner_decisions=records[-1]['learner_steps']
     loop=sum(r['rollout_seconds']+r['train_seconds'] for r in records)
     rollout=sum(r['rollout_seconds'] for r in records)
-    snapshot=sum(r.get('snapshot_seconds',0) for r in records)
-    steps=records[-1]['step']-start_step
-    per_update=json.loads((out/'config.json').read_text())['decisions_per_update']
-    if records[0]['step']-per_update!=start_step:
-        raise RuntimeError(f'{out.name} started at step {records[0]["step"]-per_update}, expected {start_step}')
-    result=json.loads((out/'result.json').read_text())
+    steps=records[-1]['step']
+    # active_seconds: train.py's own clock from pool/trainer set-up through the
+    # final update (result.elapsed, same span the old benchmark used); the
+    # metrics clock (training_seconds) starts at the first rollout. Start-up is
+    # game launch plus interpreter/CUDA import time before that clock.
+    active=result['elapsed']; training=records[-1]['elapsed']
     window=[s for s in sampler.samples if sampler.loop_started is not None and s['t']>=sampler.loop_started]
-    # active_seconds: train.py's own clock from pool/graph setup through the
-    # final update (result.elapsed), including snapshot and graph-capture cost.
+    config=json.loads((out/'config.json').read_text())
     return dict(name=out.name,workers=workers,seed=seed,decisions=steps,updates=len(records),matches=result['matches'],
                 learner_decisions=learner_decisions,
-                learner_dps_active=learner_decisions/result['elapsed'],
+                learner_dps_active=learner_decisions/active,
                 learner_dps_wall=learner_decisions/(finished-started),
-                loop_seconds=loop,rollout_seconds=rollout,train_seconds=loop-rollout,snapshot_seconds=snapshot,
-                active_seconds=result['elapsed'],pool_versions=records[-1].get('pool_versions'),steppers=records[-1].get('steppers'),
-                decisions_per_second=steps/loop,decisions_per_second_active=steps/result['elapsed'],
+                loop_seconds=loop,rollout_seconds=rollout,train_seconds=loop-rollout,snapshot_seconds=0.0,
+                active_seconds=active,training_seconds=training,pool_banks=config.get('banks'),learner_passes=config.get('learner_passes'),
+                encoder=config.get('encoder'),
+                decisions_per_second=steps/loop,decisions_per_second_active=steps/active,
                 decisions_per_second_wall=steps/(finished-started),wall_seconds=finished-started,
-                startup_seconds=json.loads((out/'config.json').read_text())['startup_seconds'],
-                step_mode=json.loads((out/'config.json').read_text()).get('step_mode'),
+                startup_seconds=(finished-started)-active,
                 cuda_memory_mb=records[-1]['cuda_memory_mb'],
                 window_seconds=(window[-1]['t']-window[0]['t']) if len(window)>1 else 0,
                 gpu_util=summarize([s['gpu_util'] for s in window]),gpu_power_w=summarize([s['gpu_power_w'] for s in window]),
@@ -128,12 +133,11 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--workers',default='16,24,32')
     parser.add_argument('--repeats',type=int,default=3)
-    parser.add_argument('--decisions',type=int,default=98304)
+    parser.add_argument('--decisions',type=int,default=98304,help='Learner decisions per run (puffer/train.py --steps)')
     parser.add_argument('--seed',type=int,default=73)
     parser.add_argument('--label',default='')
-    parser.add_argument('--start-step',type=int,default=0,help='All-player step of the checkpoint passed with --load in the extra args; decision counts and the --steps target are relative to it')
-    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Leading KEY=VALUE tokens set environment variables for the arm. Pass flags explicitly; an empty arm uses train.py defaults')
-    parser.add_argument('extra',nargs='*',help='extra train.py arguments for every run (after --)')
+    parser.add_argument('--arms',default='',help='name=extra puffer/train.py args; comma separated, e.g. "p1=--learner-passes 1,p3=--learner-passes 3". Leading KEY=VALUE tokens set environment variables for the arm. Pass flags explicitly; an empty arm uses train.py defaults')
+    parser.add_argument('extra',nargs='*',help='extra puffer/train.py arguments for every run (after --)')
     opt=parser.parse_args()
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
     workers=[int(x) for x in opt.workers.split(',')]
@@ -163,17 +167,17 @@ def main():
                     cgroup_memory_high_events=sum(r.get('cgroup_memory_high_events') or 0 for r in rows),
                     collection_share=statistics.median(r['rollout_seconds']/r['loop_seconds'] for r in rows))
         summary.write_text(json.dumps(dict(schema=1,label=opt.label,gpu=gpu,cpu_count=os.cpu_count(),decisions=opt.decisions,
-            seed=opt.seed,repeats=opt.repeats,start_step=opt.start_step,extra=opt.extra,arms={a:e for a,e in arms},table=table,
+            seed=opt.seed,repeats=opt.repeats,extra=opt.extra,arms={a:e for a,e in arms},table=table,
             runs=[{k:v for k,v in r.items() if k!='samples'} for r in runs]),indent=2)+'\n')
     for repeat in range(opt.repeats):
         for w in workers:
             for arm,extra in arms:
                 name=f'{arm}-w{w}-{repeat+1}'
                 print(f'== {name}',flush=True)
-                result=run_once(python,out/name,w,opt.decisions,opt.seed,[*extra,*opt.extra],env,opt.start_step); result['arm']=arm
+                result=run_once(python,out/name,w,opt.decisions,opt.seed,[*extra,*opt.extra],env); result['arm']=arm
                 (out/f'{name}-samples.json').write_text(json.dumps(result['samples'])+'\n')
                 runs.append(result); write()
-                print(json.dumps({k:v for k,v in result.items() if k in ('name','decisions_per_second','decisions_per_second_active','decisions_per_second_wall','snapshot_seconds','pool_versions','wall_seconds','gpu_util','gpu_power_w','busy_cores','cgroup_memory_peak_mb','cgroup_memory_high_events')}),flush=True)
+                print(json.dumps({k:v for k,v in result.items() if k in ('name','learner_dps_active','learner_dps_wall','decisions_per_second_active','startup_seconds','wall_seconds','gpu_util','gpu_power_w','busy_cores','cgroup_memory_peak_mb','cgroup_memory_high_events')}),flush=True)
     print(summary.read_text())
 
 if __name__=='__main__': main()
