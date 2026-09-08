@@ -101,6 +101,9 @@ def complete(run, plan, arm, seed):
                     entropy_schedule='exponential', entropy_half_life=plan['entropy_half_life'],
                     learning_rate_schedule='cosine' if plan['anneal_lr'] else 'constant', stocks=plan['stocks'])
     mismatch = {k: (config.get(k), v) for k, v in expected.items() if config.get(k) != v}
+    native_env = (config.get('native') or {}).get('env') or {}
+    if native_env.get('stocks') != plan['stocks']:
+        mismatch['native_stocks'] = (native_env.get('stocks'), plan['stocks'])
     native_train = (config.get('native') or {}).get('train') or {}
     for k, v in dict(horizon=plan['horizon'], learning_rate=plan['learning_rate'],
                      anneal_lr=plan['anneal_lr'], min_lr_ratio=plan['min_lr_ratio']).items():
@@ -277,7 +280,8 @@ def main():
     parser.add_argument('--entropy-half-life', type=int, default=30_000_000,
                         help='Learner decisions per halving of the entropy coefficient (train.py default)')
     parser.add_argument('--episode-ticks', type=int, default=7200)
-    parser.add_argument('--stocks', type=int, default=0, help='0 = vanilla one-life rounds (train.py default since 60d5773); recorded in the plan and checked on reuse')
+    parser.add_argument('--stocks', type=int, choices=(0,), default=0,
+                        help='Only 0 is supported: the CPU evaluator uses vanilla one-life rounds; checked on reuse')
     parser.add_argument('--training-maps', type=map_ids, default=[0, 1, 2])
     parser.add_argument('--heldout-maps', type=map_ids, default=[3, 4])
     parser.add_argument('--checkpoint-every', type=int, default=2_500_000)

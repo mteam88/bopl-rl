@@ -14,11 +14,13 @@ so the last row prints both against the schedule's coefficient.
 and prints, per weight slice, how far the weights moved between consecutive
 checkpoints and how persistent that motion is: `lag1` is the mean cosine
 between consecutive increments, `net/rw` the net displacement over the whole
-series divided by the random-walk expectation sqrt(n)*mean|increment|. Near
-1 and ~0 means the slice is doing a random walk (noise-dominated gradient);
-well above 1 with a high cosine means it is moving in a consistent direction.
+series divided by sqrt(sum(|increment|²)), the RMS displacement of independent,
+zero-mean directions with those lengths. A ratio near 1 and cosine near 0 is
+consistent with a random walk; it does not identify the gradient's source.
+Higher ratios and cosines indicate directional persistence, not policy strength.
 """
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -100,11 +102,19 @@ def summarize(run, every):
 
 def weight_slices(meta):
     """Named slices of the flat native weight vector (layout: encoder, decoder [aim 256 | buttons 16 | value 1] x hidden, MinGRU)."""
+    for key in ('hidden', 'obs_size', 'num_layers'):
+        if type(meta.get(key)) is not int or meta[key] < 1:
+            raise ValueError(f'Invalid checkpoint dimension: {key}')
     hidden, obs, layers = meta['hidden'], meta['obs_size'], meta['num_layers']
+    if hidden < 8 or hidden % 8:
+        raise ValueError('Native hidden size must be divisible by eight')
     if meta.get('architecture') == 'bopl-set-mingru-v1':
+        if obs != 3257: raise ValueError('SET requires 3257 observation features')
         encoder = hidden*905 + 64*49 + hidden*(hidden+128)
-    else:
+    elif meta.get('architecture') == 'puffernet-mingru':
         encoder = hidden*obs
+    else:
+        raise ValueError(f"Unsupported architecture: {meta.get('architecture')}")
     decoder = hidden*273
     total = encoder + decoder + layers*3*hidden**2
     return total, [('encoder', 0, encoder), ('decoder.aim', encoder, encoder+256*hidden),
@@ -113,30 +123,55 @@ def weight_slices(meta):
 
 
 def drift(run):
-    """Per-slice displacement statistics over the run's checkpoints, oldest to newest."""
+    """Stream validated checkpoints using elementwise reductions, without BLAS calls."""
     import numpy as np
     files = sorted(Path(run, 'checkpoints').glob('policy-*.bin'))
+    # Checkpoint publishing writes the .bin before its sidecar. Ignore only an
+    # unfinished newest checkpoint; a missing interior sidecar is corruption.
+    if files and not Path(str(files[-1])+'.json').exists(): files.pop()
     if len(files) < 3: raise SystemExit(f'{run}: need at least three native checkpoints for drift')
     metas = [json.loads(Path(str(f)+'.json').read_text()) for f in files]
     total, slices = weight_slices(metas[0])
-    weights = []
-    for f in files:
-        w = np.fromfile(f, dtype='<f4')
-        if w.size != total: raise SystemExit(f'{f}: {w.size} weights, expected {total}')
-        weights.append(w)
-    rows = []
-    for name, lo, hi in slices:
-        inc = np.stack([weights[i][lo:hi]-weights[i-1][lo:hi] for i in range(1, len(weights))])
-        norms = np.linalg.norm(inc, axis=1)
-        unit = inc/np.maximum(norms, 1e-12)[:, None]
-        lag1 = float(np.mean(np.sum(unit[:-1]*unit[1:], axis=1)))
-        net = float(np.linalg.norm(weights[-1][lo:hi]-weights[0][lo:hi]))
-        walk = math.sqrt(len(inc))*float(norms.mean())
-        rows.append(dict(slice=name, size=hi-lo, initial_norm=float(np.linalg.norm(weights[0][lo:hi])),
-                         final_norm=float(np.linalg.norm(weights[-1][lo:hi])), increments=len(inc),
-                         mean_increment=float(norms.mean()), lag1_cosine=lag1, net=net, net_over_random_walk=net/walk if walk else float('nan')))
-    return dict(checkpoints=len(files), first_learner_steps=metas[0].get('learner_steps'),
-                last_learner_steps=metas[-1].get('learner_steps'), slices=rows)
+    expected = dict(schema=1, backend='pufferlib-native', precision='float32', action_sizes=[256, 16],
+                    **{k: metas[0][k] for k in ('architecture', 'hidden', 'obs_size', 'num_layers')})
+    steps = []
+    for f, meta in zip(files, metas):
+        if any(meta.get(k) != v for k, v in expected.items()):
+            raise ValueError(f'{f}: incompatible checkpoint metadata')
+        step = meta.get('learner_steps')
+        if type(step) is not int or step < 0 or (steps and step <= steps[-1]):
+            raise ValueError(f'{f}: learner counts must increase strictly')
+        steps.append(step)
+    rows = [dict(slice=name, size=hi-lo, increments=len(files)-1) for name, lo, hi in slices]
+    lengths = [[] for _ in slices]
+    cosines = [[] for _ in slices]
+    first = previous = previous_delta = None
+    def norm(v): return math.sqrt(float(np.sum(v*v, dtype=np.float64)))
+    for f, meta in zip(files, metas):
+        data = f.read_bytes()
+        if len(data) != total*4 or hashlib.sha256(data).hexdigest() != meta.get('weights_sha256'):
+            raise ValueError(f'{f}: checkpoint size or hash mismatch')
+        w = np.frombuffer(data, dtype='<f4').astype(np.float64)
+        if not np.isfinite(w).all(): raise ValueError(f'{f}: nonfinite weights')
+        if first is None:
+            first = previous = w
+            continue
+        delta = w-previous
+        for i, (_, lo, hi) in enumerate(slices):
+            length = norm(delta[lo:hi])
+            if previous_delta is not None and length and lengths[i][-1]:
+                cosines[i].append(float(np.sum(delta[lo:hi]*previous_delta[lo:hi])) / (length*lengths[i][-1]))
+            lengths[i].append(length)
+        previous, previous_delta = w, delta
+    for i, (_, lo, hi) in enumerate(slices):
+        net = norm(previous[lo:hi]-first[lo:hi])
+        walk = math.sqrt(sum(v*v for v in lengths[i]))
+        rows[i].update(initial_norm=norm(first[lo:hi]), final_norm=norm(previous[lo:hi]),
+                       mean_increment=sum(lengths[i])/len(lengths[i]),
+                       lag1_cosine=sum(cosines[i])/len(cosines[i]) if cosines[i] else float('nan'),
+                       net=net, net_over_random_walk=net/walk if walk else float('nan'))
+    return dict(checkpoints=len(files), first_learner_steps=steps[0], last_learner_steps=steps[-1],
+                interval_learner_steps=[b-a for a, b in zip(steps, steps[1:])], slices=rows)
 
 
 def fmt(value, digits=3):
@@ -182,6 +217,7 @@ def main():
     if 'drift' in s:
         d = s['drift']
         print(f"drift over {d['checkpoints']} checkpoints ({d['first_learner_steps']:,} to {d['last_learner_steps']:,} learner decisions):")
+        print('Directional persistence only; does not identify gradient sources or establish strength.')
         print(f"{'slice':>16} {'|w0|':>7} {'|w|':>7} {'mean|dw|':>8} {'lag1':>6} {'net':>6} {'net/rw':>6}")
         for r in d['slices']:
             print(f"{r['slice']:>16} {r['initial_norm']:7.3f} {r['final_norm']:7.3f} {r['mean_increment']:8.4f} {r['lag1_cosine']:6.3f} {r['net']:6.3f} {r['net_over_random_walk']:6.2f}")
