@@ -65,7 +65,7 @@ public class StockPips : MonoBehaviour
 		// player's new body so the pips keep mirroring it.
 		if ((slimeRef == null || slimeRef.IsDestroyed) && player != null && player.IsAlive)
 		{
-			SlimeController[] array = Object.FindObjectsOfType<SlimeController>();
+			SlimeController[] array = WorldScene.FindObjectsOfType<SlimeController>(this);
 			for (int k = 0; k < array.Length; k++)
 			{
 				if (array[k].playerNumber == player.Id && !array[k].IsDestroyed)
