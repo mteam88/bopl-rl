@@ -84,10 +84,23 @@ New — the dashboard renders these once present (per update):
 - `entropy_coefficient` — the coefficient actually applied this update
   (already written by the null-hypothesis branch; keep the name).
 - `learning_rate` — the optimizer learning rate actually applied this update.
-- `advantage_std` — standard deviation of GAE advantages for learner samples
-  **before** any normalization, once per update over the whole rollout.
-  (Rationale: sparse reward + per-minibatch normalization makes "no signal"
-  gradients look full-size; this is the direct detector.)
+- `advantage_std` — standard deviation of raw GAE advantages for learner
+  rollout samples, before normalization. Native `bopl_adv_stats` captures
+  population variances once per update before the first minibatch optimizer
+  step; frozen rows are excluded.
+- `explained_variance` — native `1 - var(A)/var(A+V)` over the same learner
+  samples, with raw GAE advantages `A` and collected rollout values `V`.
+  Emitted when both variances are finite and `var(A+V) > 0`. This is measured
+  before training on the rollout, whereas `value_loss` averages training
+  minibatches. For each valid record with ev < 1, the target variance can be
+  recovered as `advantage_std**2 / (1-explained_variance)`; aggregate after
+  this calculation. Neither metric alone establishes stronger play.
+- `behavior.totals.arrow_hits` — arrow contacts that killed another player,
+  credited to learner players. `PlayerCollision` calls `RlTelemetry.ArrowHit`
+  only for `killed && arrowForTelemetry`; owner hits are excluded. In the
+  two-player, stocks-0 Dash/Bow/Platform setup, an arrow can be counted at
+  most once for killing its sole opponent. The counter does not track
+  individual projectile identities or nonlethal contacts.
 - `behavior.totals.kills` — the game's credited-kill counter for learner
   players, **including self-kills**. `Player.Kill` increments the credited
   player's `Kills` even when killer equals victim. Native training records

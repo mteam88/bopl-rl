@@ -27,7 +27,7 @@ internal static class RlTelemetry
     }
 
     internal static void ArrowFired(int playerId) => Add(playerId, 3);
-    // Accepted damaging arrow collisions, excluding hits on the owner.
+    // Arrow collisions that killed the victim, excluding hits on the owner.
     // This is not all geometric contacts or a count of unique projectiles.
     internal static void ArrowHit(int owner, int victim)
     {

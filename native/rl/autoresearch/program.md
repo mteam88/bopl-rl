@@ -175,7 +175,7 @@ the slot is negotiated explicitly between the Rifts.
   coverage depends on priorities. Judge the A/B with `watch_run.py --drift`
   on both arms as well as evaluations. Post-run alternative: sample
   without replacement over eligible learner rows for full coverage at one
-  pass, with revised importance weighting and explicit frozen-row exclusion.
+  pass, with revised importance weighting while preserving frozen-row exclusion.
   This changes the sampling objective and needs correctness and timing checks.
 - **Throughput.** Collection is ~98% of wall time at 16 workers (rollout 44 s
   of 56 s; train ~1 s). Leads: game stepping cost inside the IL2CPP player,

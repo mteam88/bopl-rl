@@ -816,17 +816,20 @@ observation does not establish which gradient source drove each row. Interpretat
 
 ## 2026-09-07 22:08 EDT: replacement sampling and loss weighting (source review)
 
+Correction: the initial review read pristine upstream PufferLib and missed
+`pufferlib-bopl.patch`. `build.py` applies that patch before compiling the
+native overlay; the applied overlay agrees with the behavior below.
+
 The native `prio_replay_cuda` path draws 24 sequence indices with replacement from
-56 stored rows (24 learner rows, 32 frozen-bank rows). Each sequence contains 128
-steps. The priority is `(sum(abs(advantage)))**0.8`; `multinomial_sample` draws
-independent CDF samples with no deduplication. Frozen advantages are zeroed first,
-but `compute_prio_normalize` adds epsilon to every row. Their mathematical
-probability is therefore small, not strictly zero; float32 CDF rounding may erase
-some small intervals. This is not a hard frozen-row exclusion guarantee. Actual
-frozen draws have not been measured here and no live failure is inferred.
+24 eligible learner rows among 56 stored rows (32 are frozen-bank rows). Each
+sequence contains 128 steps. Priority is `(sum(abs(advantage)))**0.8` plus epsilon;
+`multinomial_sample` draws independent CDF samples with no deduplication. The
+Bopl patch sets frozen priorities to exactly zero and adds epsilon only to
+learner rows. Its sampler also backs off zero-probability rows at CDF boundaries.
+Frozen rows are excluded, including when all learner advantages are zero.
 
 For fixed probabilities p_i, expected unique learner sequences after m draws are
-`sum_i(1 - (1-p_i)**m)`. Ignoring tiny frozen probability, the closed-form results
+`sum_i(1 - (1-p_i)**m)`. The closed-form results
 below reproduce the reported simulation. Ratios in the first column refer to
 advantage sums BEFORE the 0.8 exponent, not final sampling probabilities:
 
@@ -843,14 +846,14 @@ more. Three-pass figures assume fixed probabilities across 72 draws; the real
 trainer recomputes advantages and priorities after each optimizer step. Sampling
 indices would need to be instrumented to measure actual per-rollout coverage.
 
-Importance weights are `(56*p_i)**(-beta)`, with beta progressing from 0.2 to 0.84.
-For uniform learner sampling, p_i is approximately 1/24 and the multiplier goes
-from 0.844 to 0.491. The fused PPO loss multiplies the normalized policy advantage
-by this weight AFTER advantage normalization; value and entropy terms do not use
-it. Relative to using 24 eligible rows, counting all 56 gives a common policy-term
-factor `(56/24)**(-beta)` at each update. It does not cancel in normalization and
-can change the balance among policy, value and entropy gradients before Muon.
-These uniform values are a reference, not the observed weight of every sample.
+Importance weights are `(24*p_i)**(-beta)`, with beta progressing from 0.2 to 0.84.
+The patched call passes the eligible learner-row count to `compute_prio_imp_weights`.
+For uniform learner sampling, p_i = 1/24 and the weight is 1 throughout. My
+previous 0.844 → 0.491 claim used the wrong row count and does not apply to this
+trainer. The fused PPO loss multiplies the normalized policy advantage by this
+weight AFTER advantage normalization; value and entropy terms do not use it.
+Nonuniform priorities still change individual policy-term weights, but there is
+no extra common decay from counting frozen rows.
 
 This provides a concrete coverage hypothesis for the post-run learner-passes A/B,
 not a conclusion that it will improve strength. Sampling without replacement over
@@ -858,8 +861,8 @@ eligible learner rows could cover all 24 at one pass without additional optimize
 steps. It is a separate algorithm change: when all rows are selected, priority no
 longer changes inclusion, and the current with-replacement importance weights
 must be reconsidered. Selection cost and end-to-end speed also need measurement;
-no-extra-training-time is not yet established. Any alternative should explicitly
-mask frozen rows and test the zero-advantage case. Judge with matched evaluations,
+no-extra-training-time is not yet established. Any alternative should preserve the existing
+frozen-row exclusion and test the zero-advantage case. Judge with matched evaluations,
 using drift only as supporting diagnostics. No live trainer or run changes.
 
 ## 2026-09-07 22:16 EDT: how rounds end on the stocks-0 run (behavior counters, 0-18M)
@@ -890,7 +893,7 @@ credited to the environment and ~8% with the learner
 killing itself; deaths credited to an opponent are ~1%. The remaining ~50% are
 learner wins, i.e. the opponent died first, against the same policy or frozen copies. These counters describe credited killers,
 not the complete causal chain of each death; they do not establish that every
-environment death was an unforced fall or uninfluenced by the opponent. Arrow hits are ~.01 per episode with ~1.9 arrows fired, so accepted damaging bow hits are rare in these windows. The apparent mismatch between `kills` (.09/ep) and `deaths_opponent` (.01/ep)
+environment death was an unforced fall or uninfluenced by the opponent. Arrow hits are ~.01 per episode with ~1.9 arrows fired, so lethal bow contacts are rare in these windows. The apparent mismatch between `kills` (.09/ep) and `deaths_opponent` (.01/ep)
 is largely explained by self-kill credit (.08/ep). Raw credited kills are not a
 clean combat-success metric. Learner-only aggregation with frozen opponents also
 means learner kills need not equal learner deaths credited to opponents.
@@ -1100,16 +1103,15 @@ episodes per update fell 36.8 → 25.1. Environment deaths per episode fell
 .416 → .349, the first sustained movement in that counter; it was flat
 through 14M. Opponent-credited deaths rose .008 → .035 and arrow hits
 .008 → .035 in step, both about 4x, while arrows fired rose only 43%
-(1.80 → 2.57), so damaging hit events per fired arrow roughly tripled. The complete
-0–2M and 28–30M windows give .004519 → .013375, a 2.96x increase. This is
-not a fraction of unique projectiles that hit: the event counter can count
-multiple accepted contacts from a projectile. (Source check: `PlayerCollision.cs` line 458 calls `RlTelemetry.ArrowHit`
-only when `killed && arrowForTelemetry`, i.e. the accepted arrow contact
-killed the victim, and `RlTelemetry.ArrowHit` skips owner hits. With one life
-per player at stocks 0, one projectile can therefore be counted at most once
-per opponent it kills; in two-player games the counter is arrow kills credited
-to the learner, which is why it tracks opponent-credited deaths under
-self-play.) Self deaths rose .078 → .122 and platform activations per episode
+(1.80 → 2.57), so lethal arrow contacts per fired arrow roughly tripled. The complete
+0–2M and 28–30M windows give .004519 → .013375, a 2.96x increase.
+`PlayerCollision.cs` calls `RlTelemetry.ArrowHit` only when
+`killed && arrowForTelemetry`, and the telemetry function skips owner hits.
+For this two-player, stocks-0 Dash/Bow/Platform setup, a projectile can be
+counted at most once for killing its sole opponent. My earlier claim about
+multiple accepted contacts was wrong for these games. The window ratio is
+lethal contacts divided by arrows fired, not a tracked per-projectile cohort.
+Self deaths rose .078 → .122 and platform activations per episode
 doubled (.39 → .79); dashes per episode rose 44%. Per decision, jump rate
 rose .503 → .550 and platform rate fell .530 → .508; dash and arrow rates are
 flat, so the per-episode increases are mostly the longer rounds. Aim head
@@ -1117,7 +1119,7 @@ entropy fell 5.530 → 5.474 (uniform 5.545), buttons 2.762 → 2.751 (uniform
 2.773): still near uniform, and joint entropy 8.236 at 30M matches.
 
 Reading. These windows show longer rounds, fewer environment-credited deaths per
-episode, and more accepted hits and opponent-credited deaths. They are
+episode, and more lethal arrow contacts and opponent-credited deaths. They are
 consistent with changing survival and combat behavior, without identifying its
 cause or establishing stronger play. It is small in absolute terms (the learner still dies to
 the environment in 35% of episodes and is killed by the opponent in 3.5%),
@@ -1129,14 +1131,18 @@ targets, but residual and target variances would need inspection to explain
 these metrics; the clipped loss and explained variance need not move together.
 Kill/death shaping remains exactly zero: there is no added kill-reward
 component. Wins per episode stayed near .50, but that is not guaranteed for
-learner-only totals containing historical-opponent games. (How ev is formed, pinned `torch_pufferl.py` end of `train`: `y_pred` is
-the value buffer with sampled rows overwritten by the post-step critic,
-`y_true` is GAE advantage plus that same buffer, so the residual is the
-advantage and ev = 1 − var(A)/var(A+V) over the whole rollout. The logged
-`advantage_std` is var(A)^½ and fell .226 → .193 over 6-30M, so the ev
-decline implies var(A+V) fell faster than var(A); γ is .995 (`bopl.ini`).
-That narrows what to inspect, it does not by itself say whether the critic
-or the target moved.) None of this is strength evidence against a fixed opponent; the
+learner-only totals containing historical-opponent games. The live native metric is defined by `bopl_adv_stats` and `bindings.cu`
+in the applied `pufferlib-bopl.patch`: `ev = 1 - var(A)/var(A+V)` and
+`advantage_std = sqrt(var(A))`, using population variances over all learner
+rollout samples. Statistics are captured once, before the first minibatch
+optimizer step, with raw GAE advantages and collected rollout values. Frozen
+rows are excluded. The Torch formula has the same algebra but its value-buffer
+update timing is not the definition of the live native metric. Gamma is .995
+in the saved run configuration. For a single update with finite ev < 1,
+`var(A+V) = advantage_std**2 / (1-ev)`; compute that per record before
+aggregating, since averages do not preserve this identity. This identifies
+what to inspect without establishing why the target or critic changed.
+None of this is strength evidence against a fixed opponent; the
 evaluation win rate vs random over the last three evaluations (.58, .46, .54
 on 24 games each) is inside noise. The behavior counters aggregate many more episodes and reveal distribution
 changes, but those samples remain dependent and are not strength evaluations. Next check at ~40M: whether env deaths keep falling and
