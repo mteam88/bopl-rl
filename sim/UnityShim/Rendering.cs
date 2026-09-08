@@ -100,9 +100,15 @@ namespace UnityEngine
 
 		public Material() { }
 		public Material(Shader shader) { this.shader = shader; }
+		// Renderer.material get marks its per-renderer clone (and names it
+		// "<source> (Instance)", trace-visible via ShakablePlatform.originalMaterial
+		// and SlimeController playerMaterial).
+		internal bool isRendererInstance;
+
 		public Material(Material source)
 		{
 			if (source == null) return;
+			objectName = source.objectName;
 			shader = source.shader; color = source.color; mainTexture = source.mainTexture;
 			foreach (var kv in source.floats) floats[kv.Key] = kv.Value;
 			foreach (var kv in source.colors) colors[kv.Key] = kv.Value;
@@ -148,8 +154,7 @@ namespace UnityEngine
 
 	public class Renderer : Component
 	{
-		private Material materialField;
-		private Material[] materialsField = Array.Empty<Material>();
+		private Material[] sharedMaterialsField = Array.Empty<Material>();
 
 		public bool enabled { get; set; } = true;
 		public int sortingOrder { get; set; }
@@ -158,22 +163,47 @@ namespace UnityEngine
 		public Bounds bounds { get; set; }
 		public bool isVisible => enabled;
 
-		// Unity's .material clones the shared material on first access.
+		// Unity's .material: setting stores the reference; getting returns the
+		// renderer-owned instance, cloning "<name> (Instance)" from whatever is
+		// currently assigned unless it is already such an instance.
 		public Material material
 		{
-			get => materialField ??= new Material(sharedMaterial);
-			set => materialField = value;
+			get
+			{
+				var current = sharedMaterial;
+				if (current != null && current.isRendererInstance) return current;
+				var instance = new Material(current) { isRendererInstance = true };
+				if (current != null) instance.name = current.name + " (Instance)";
+				sharedMaterial = instance;
+				return instance;
+			}
+			set => sharedMaterial = value;
 		}
 
-		public Material sharedMaterial { get; set; }
+		// The serialized m_Materials array IS the shared materials (the Export
+		// loader writes it through `materials`); `.material` above hands out the
+		// per-renderer instance clone.
+		public Material sharedMaterial
+		{
+			get => sharedMaterialsField.Length > 0 ? sharedMaterialsField[0] : null;
+			set
+			{
+				if (sharedMaterialsField.Length == 0) sharedMaterialsField = new Material[1];
+				sharedMaterialsField[0] = value;
+			}
+		}
 
 		public Material[] materials
 		{
-			get => materialsField;
-			set => materialsField = value;
+			get => sharedMaterialsField;
+			set => sharedMaterialsField = value ?? Array.Empty<Material>();
 		}
 
-		public Material[] sharedMaterials { get; set; } = Array.Empty<Material>();
+		public Material[] sharedMaterials
+		{
+			get => sharedMaterialsField;
+			set => sharedMaterialsField = value ?? Array.Empty<Material>();
+		}
 
 		public void GetPropertyBlock(MaterialPropertyBlock properties) { }
 		public void SetPropertyBlock(MaterialPropertyBlock properties) { }
@@ -429,7 +459,9 @@ namespace UnityEngine
 
 	public class AudioClip : Object
 	{
-		public float length { get; set; }
+		// Non-zero default: AudioManager.PlayPrefixWithInterrupts divides
+		// source.time by clip.length (0/0 = NaN would break its channel pick).
+		public float length { get; set; } = 1f;
 		public int samples { get; set; }
 		public int channels { get; set; }
 		public int frequency { get; set; } = 44100;
