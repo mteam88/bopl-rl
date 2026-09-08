@@ -921,7 +921,7 @@ policy that only had to stop falling would already move these numbers. The
 behavior-level progress signal for this run, ahead of win rate (self-play) and
 arrow hits (near zero). Source-only, no jobs run; single-threaded, niced.
 
-## 2026-09-07 22:21 EDT: 19M drift read (20 checkpoints, read-only)
+## 2026-09-07 22:18 EDT: 19M drift read (20 checkpoints, read-only)
 
 | slice | |w0| | |w| | mean|dw| | lag1 | net/rw | row0 | row |
 |---|---:|---:|---:|---:|---:|---:|---:|
