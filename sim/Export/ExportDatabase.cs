@@ -37,6 +37,11 @@ namespace BoplSim.Export
 		internal readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
 		internal readonly Dictionary<string, int> WarningCounts = new Dictionary<string, int>();
 		internal readonly Dictionary<string, string> AssetNames = new Dictionary<string, string>();
+		// v5 export: per-sprite texture/geometry metrics keyed by GlobalObjectId
+		// (ResizablePlatform reads sprite.texture.width + pixelsPerUnit on the
+		// sim path). Atlas sprites share one Texture2D via textureId.
+		internal readonly Dictionary<string, JObject> SpriteData = new Dictionary<string, JObject>();
+		private readonly Dictionary<string, Texture2D> spriteTextures = new Dictionary<string, Texture2D>();
 		private readonly Dictionary<string, JArray> sceneJsonCache = new Dictionary<string, JArray>();
 		private readonly Dictionary<string, Type> typeCache = new Dictionary<string, Type>();
 		private readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
@@ -103,6 +108,11 @@ namespace BoplSim.Export
 			if (namesPath != null && File.Exists(namesPath))
 				foreach (var pair in JObject.Parse(File.ReadAllText(namesPath)))
 					db.AssetNames[pair.Key] = (string)pair.Value;
+
+			string spritesPath = Path.Combine(exportDir, "sprites.json");
+			if (File.Exists(spritesPath))
+				foreach (var pair in JObject.Parse(File.ReadAllText(spritesPath)))
+					db.SpriteData[pair.Key] = (JObject)pair.Value;
 
 			string orderPath = settingsPath == null ? null
 				: Path.Combine(Path.GetDirectoryName(settingsPath), "execution-order.json");
@@ -274,7 +284,16 @@ namespace BoplSim.Export
 				Warn("unresolved id inside asset " + parts[2]);
 				return null;
 			}
-			// Textures, sprites, materials, audio, animator controllers: not exported.
+			// Sprites: v5 exports real metrics (sprites.json) - the sim path reads
+			// texture dims, pixelsPerUnit, pivot, bounds, textureRect
+			// (ResizablePlatform, GrowthFlare, StretchableLightning...).
+			if (SpriteData.TryGetValue(id, out var spriteJson))
+			{
+				var sprite = BuildSprite(spriteJson);
+				ObjectsById[id] = sprite;
+				return sprite;
+			}
+			// Textures, materials, audio, animator controllers: not exported.
 			// Asset IDENTITY can still be gameplay (abilityIcons.IndexOf(sprite) selects
 			// abilities - SEMANTICS.md §4): hand out one stable placeholder per id.
 			var placeholder = CreatePlaceholder(id, expectedType);
@@ -285,6 +304,51 @@ namespace BoplSim.Export
 			}
 			Warn("unresolved reference guid " + (parts.Length >= 3 ? parts[2] : id));
 			return null;
+		}
+
+		// sprites.json floats arrive as exact {f32:bits}.
+		private static float F32(JToken token)
+		{
+			if (token == null) return 0f;
+			if (token is JObject o && o["f32"] != null)
+				return BitConverter.Int32BitsToSingle((int)(long)o["f32"]);
+			return (float)token;
+		}
+
+		private static Vector2 Vec2(JToken t) => t == null ? default : new Vector2(F32(t["x"]), F32(t["y"]));
+		private static Vector3 Vec3(JToken t) => t == null ? default : new Vector3(F32(t["x"]), F32(t["y"]), F32(t["z"]));
+		private static Rect RectOf(JToken t) => t == null ? default : new Rect(F32(t["x"]), F32(t["y"]), F32(t["w"]), F32(t["h"]));
+
+		private Sprite BuildSprite(JObject data)
+		{
+			// Atlas sprites share the shim Texture2D their textureId names.
+			string texId = (string)data["textureId"];
+			Texture2D texture = null;
+			if (texId == null || !spriteTextures.TryGetValue(texId, out texture))
+			{
+				string path = (string)data["path"] ?? "";
+				texture = new Texture2D((int)data["textureWidth"], (int)data["textureHeight"])
+				{
+					name = Path.GetFileNameWithoutExtension(path),
+					isAsset = true,
+				};
+				if (texId != null) spriteTextures[texId] = texture;
+			}
+			var bounds = new Bounds { center = Vec3(data["bounds"]?["center"]), extents = Vec3(data["bounds"]?["extents"]) };
+			var border = data["border"] == null ? default
+				: new Vector4(F32(data["border"]["x"]), F32(data["border"]["y"]), F32(data["border"]["z"]), F32(data["border"]["w"]));
+			return new Sprite
+			{
+				name = (string)data["name"],
+				isAsset = true,
+				texture = texture,
+				rect = RectOf(data["rect"]),
+				textureRect = RectOf(data["textureRect"]),
+				pivot = Vec2(data["pivot"]),
+				pixelsPerUnit = F32(data["pixelsPerUnit"]),
+				bounds = bounds,
+				border = border,
+			};
 		}
 
 		private UnityEngine.Object CreatePlaceholder(string id, Type expectedType)
