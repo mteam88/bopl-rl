@@ -376,7 +376,8 @@ static void init(BoplPuffer *env) {
     if (env->training_map_mask && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
-    if (env->worlds<1 || env->worlds>64) { fprintf(stderr, "Bopl RL: 1..64 worlds per process\n"); abort(); }
+    if (env->worlds<1) env->worlds=1; // Callers that build the struct directly (eval binding) get one world per process.
+    if (env->worlds>64) { fprintf(stderr, "Bopl RL: 1..64 worlds per process\n"); abort(); }
     if (env->worlds>1) env->group=bopl_group_acquire(env, logs);
     else {
         if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
