@@ -35,6 +35,8 @@ static int option(Dict *kwargs, const char *name, int fallback) {
  * historical environment lands in bank b's slice of its buffer. */
 void my_init(Env *env, Dict *kwargs) {
     unsigned int index=env->rng; // PufferLib assigns the physical environment index before my_init.
+    env->index=index;
+    env->worlds=option(kwargs, "worlds", 1);
     env->rng^=(unsigned int)option(kwargs, "seed", 73);
     env->players=option(kwargs, "players", 6);
     int banks=option(kwargs, "banks", 0), every=option(kwargs, "historical_every", 0);
@@ -137,6 +139,9 @@ static StaticVec *bopl_find_vec(const void *gpu_observations) {
     return found;
 }
 StaticVec *create_static_vec(int total_agents, int num_buffers, int gpu, Dict *vec_kwargs, Dict *env_kwargs) {
+    pthread_mutex_lock(&bopl_registry_lock);
+    bopl_group_epoch++; // Environments of this vector share game processes only among themselves.
+    pthread_mutex_unlock(&bopl_registry_lock);
     StaticVec *vec=bopl_upstream_create_static_vec(total_agents, num_buffers, gpu, vec_kwargs, env_kwargs);
     pthread_mutex_lock(&bopl_registry_lock);
     int slot=-1;

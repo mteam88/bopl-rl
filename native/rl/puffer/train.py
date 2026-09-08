@@ -43,6 +43,8 @@ def arguments():
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
     p.add_argument('--buffers', type=int, choices=(1, 2))
+    p.add_argument('--worlds-per-process', type=int, default=1,
+                   help='Game worlds simulated per game process (1 = one process per worker plus a spare)')
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
     p.add_argument('--encoder', choices=('linear', 'set'), default='linear')
@@ -97,6 +99,8 @@ def arguments():
         p.error('workers must be divisible by twice the buffer count')
     if (a.workers // 2) % a.banks:
         p.error('half the workers must divide evenly among the banks')
+    if not 1 <= a.worlds_per_process <= 64 or a.workers % (2 * a.buffers * a.worlds_per_process):
+        p.error('workers must be divisible by 2 * buffers * worlds-per-process')
     if a.hidden < 8 or a.hidden % 8:
         p.error('hidden must be a positive multiple of eight')
     if a.cudagraphs != -1 and a.cudagraphs < 1:
@@ -144,7 +148,7 @@ def main():
     # PufferLib parses sys.argv itself; the wrapper owns this command's arguments.
     sys.argv = [sys.argv[0]]
     args = pufferl.load_config('bopl')
-    vector = NativeVector(_C, a.workers, a.buffers, a.banks)
+    vector = NativeVector(_C, a.workers, a.buffers, a.banks, a.worlds_per_process)
     learner_batch = vector.learner_rows * a.horizon
     native_batch = vector.total_agents * a.horizon
     updates = math.ceil(a.steps / learner_batch)
@@ -161,7 +165,7 @@ def main():
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
-    args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
+    args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed, worlds=a.worlds_per_process,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=0, reward_timeout_milli=-500)

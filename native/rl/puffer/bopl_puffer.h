@@ -92,6 +92,16 @@ typedef struct {
     pthread_t world_thread;
     int world_opening, world_checked;
     char world_log[4096], world_error[512];
+    /* Many worlds per game process (kwarg `worlds`, default 1): physical
+     * environment `index` runs world index%worlds of process index/worlds.
+     * The first environment of a process opens it (bopl_rl_open_worlds on a
+     * thread, so processes still boot concurrently); the others take their
+     * handle from the shared group at their first reset. Processes with
+     * several worlds have no spare: their resets overlap with the other
+     * worlds' play instead. */
+    unsigned int index;
+    int worlds;
+    struct BoplWorldGroup *group;
     int repeat, random_maps, random_loadouts, failed;
     uint32_t training_map_mask;
     int observation_delay, delay_cursor, no_autoreset;
@@ -269,6 +279,66 @@ static void bopl_failed_world(BoplPuffer *env, const BoplRl *world, const char *
     abort();
 }
 static void bopl_failed(BoplPuffer *env, const char *operation) { bopl_failed_world(env, env->world, operation); }
+/* One game process shared by `worlds` environments of one vector.
+ * bopl_group_epoch is bumped by every create_static_vec so environments of
+ * different vectors never share a process. */
+typedef struct BoplWorldGroup {
+    unsigned int epoch, id;
+    int worlds, refs, opening, ready;
+    pthread_t thread;
+    pthread_mutex_t lock;
+    BoplRl *handles[64];
+    char log[4096], error[512];
+    struct BoplWorldGroup *next;
+} BoplWorldGroup;
+static unsigned int bopl_group_epoch;
+static BoplWorldGroup *bopl_groups;
+static pthread_mutex_t bopl_groups_lock=PTHREAD_MUTEX_INITIALIZER;
+static void *bopl_group_open(void *arg) {
+    BoplWorldGroup *group=(BoplWorldGroup*)arg;
+    const char *game=getenv("BOPL_RL_GAME"), *replay=getenv("BOPL_RL_BOOTSTRAP");
+    bopl_rl_open_worlds(game, replay, group->log, 30000, (uint32_t)group->worlds, group->handles, group->error, sizeof(group->error));
+    return NULL;
+}
+/* Finds or creates the environment's process group (my_init is serial). */
+static BoplWorldGroup *bopl_group_acquire(BoplPuffer *env, const char *logs) {
+    unsigned int id=env->index/(unsigned)env->worlds;
+    pthread_mutex_lock(&bopl_groups_lock);
+    BoplWorldGroup *group=bopl_groups;
+    while (group && !(group->epoch==bopl_group_epoch && group->id==id && group->worlds==env->worlds)) group=group->next;
+    if (!group) {
+        group=calloc(1, sizeof(*group));
+        if (!group) abort();
+        group->epoch=bopl_group_epoch; group->id=id; group->worlds=env->worlds;
+        pthread_mutex_init(&group->lock, NULL);
+        int length=snprintf(group->log, sizeof(group->log), "%s/worker-%ld-%u-p%u.log", logs, (long)getpid(), bopl_group_epoch, id);
+        if (length<0 || (size_t)length>=sizeof(group->log)) abort();
+        if (pthread_create(&group->thread, NULL, bopl_group_open, group)) abort();
+        group->opening=1;
+        group->next=bopl_groups; bopl_groups=group;
+    }
+    group->refs++;
+    pthread_mutex_unlock(&bopl_groups_lock);
+    return group;
+}
+/* The group's process is open (joined once, by whichever environment asks first). */
+static void bopl_group_ready(BoplWorldGroup *group) {
+    pthread_mutex_lock(&group->lock);
+    if (group->opening) { pthread_join(group->thread, NULL); group->opening=0; }
+    if (!group->handles[0]) { fprintf(stderr, "Bopl RL startup (%d worlds): %s\n", group->worlds, group->error); abort(); }
+    pthread_mutex_unlock(&group->lock);
+}
+static void bopl_group_release(BoplWorldGroup *group) {
+    pthread_mutex_lock(&bopl_groups_lock);
+    int last=--group->refs==0;
+    if (last) {
+        BoplWorldGroup **link=&bopl_groups;
+        while (*link && *link!=group) link=&(*link)->next;
+        if (*link) *link=group->next;
+    }
+    pthread_mutex_unlock(&bopl_groups_lock);
+    if (last) { pthread_mutex_destroy(&group->lock); free(group); }
+}
 static void *bopl_spare_open(void *arg) {
     BoplPuffer *env=(BoplPuffer*)arg;
     const char *game=getenv("BOPL_RL_GAME"), *replay=getenv("BOPL_RL_BOOTSTRAP");
@@ -285,6 +355,10 @@ static void *bopl_world_open(void *arg) {
  * catalog checked once (formerly inline in init). */
 static void bopl_world_ready(BoplPuffer *env) {
     if (env->world_opening) { pthread_join(env->world_thread, NULL); env->world_opening=0; }
+    if (env->group && !env->world) {
+        bopl_group_ready(env->group);
+        env->world=env->group->handles[env->index%(unsigned)env->worlds];
+    }
     if (!env->world) { fprintf(stderr, "Bopl RL startup: %s\n", env->world_error); abort(); }
     if (env->world_checked) return;
     env->world_checked=1;
@@ -302,8 +376,12 @@ static void init(BoplPuffer *env) {
     if (env->training_map_mask && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
-    if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
-    env->world_opening=1;
+    if (env->worlds<1 || env->worlds>64) { fprintf(stderr, "Bopl RL: 1..64 worlds per process\n"); abort(); }
+    if (env->worlds>1) env->group=bopl_group_acquire(env, logs);
+    else {
+        if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
+        env->world_opening=1;
+    }
     if (env->players<1 || env->players>BOPL_MAX_PLAYERS || env->banks<0 || env->banks>BOPL_MAX_BANKS
         || (env->banks && env->players!=2) || env->num_agents!=(env->banks?1+env->banks:env->players)) {
         fprintf(stderr, "Bopl RL slot layout: players %d, banks %d, slots %d\n", env->players, env->banks, env->num_agents); abort();
@@ -315,7 +393,7 @@ static void init(BoplPuffer *env) {
     if (env->banks && (env->active_bank<0 || env->active_bank>=env->banks)) { fprintf(stderr, "Bopl RL: historical environment without a bank\n"); abort(); }
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
-    if (!env->no_autoreset) {
+    if (!env->no_autoreset && env->worlds==1) {
         length=snprintf(env->spare_log, sizeof(env->spare_log), "%s/worker-%ld-%u-spare.log", logs, (long)getpid(), env->rng);
         if (length<0 || (size_t)length>=sizeof(env->spare_log)) abort();
         /* Game start-up takes seconds; overlap it with the other workers' start-up. */
@@ -493,8 +571,10 @@ static void c_render(BoplPuffer *env) {
 static void c_close(BoplPuffer *env) {
     if (env->world_opening) { pthread_join(env->world_thread, NULL); env->world_opening=0; }
     if (env->spare_opening) { pthread_join(env->spare_thread, NULL); env->spare_opening=0; }
+    if (env->group && !env->world) { bopl_group_ready(env->group); env->world=env->group->handles[env->index%(unsigned)env->worlds]; }
     bopl_rl_close(env->world); env->world=NULL;
     bopl_rl_close(env->spare); env->spare=NULL;
+    if (env->group) { bopl_group_release(env->group); env->group=NULL; }
     free(env->history); free(env->sample); free(env->scratch);
 }
 #endif

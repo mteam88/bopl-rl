@@ -7,12 +7,14 @@ import counters
 
 
 class NativeVector:
-    def __init__(self, backend, workers, buffers, banks):
+    def __init__(self, backend, workers, buffers, banks, worlds=1):
         if workers < 2 or workers % (2 * buffers) or not 2 <= banks <= 8:
             raise ValueError('Each buffer requires complete self-play/historical pairs and 2..8 banks')
+        if not 1 <= worlds <= 64 or workers % (2 * buffers * worlds):
+            raise ValueError('Every game process (worlds per process) must lie inside one buffer')
         if (workers // 2) % banks:
             raise ValueError('Historical games must be dealt evenly to the banks')
-        self.backend, self.workers, self.buffers, self.banks = backend, workers, buffers, banks
+        self.backend, self.workers, self.buffers, self.banks, self.worlds = backend, workers, buffers, banks, worlds
         self.pairs = workers // (2 * buffers)
         self.agents_per_buffer = self.pairs * (3 + banks)
         self.total_agents = self.agents_per_buffer * buffers
