@@ -99,7 +99,7 @@ def complete(run, plan, arm, seed):
                     training_maps=plan['training_maps'], learner_steps=plan['steps'],
                     entropy=plan['entropy'], entropy_floor=plan['entropy_floor'],
                     entropy_schedule='exponential', entropy_half_life=plan['entropy_half_life'],
-                    learning_rate_schedule='cosine' if plan['anneal_lr'] else 'constant')
+                    learning_rate_schedule='cosine' if plan['anneal_lr'] else 'constant', stocks=plan['stocks'])
     mismatch = {k: (config.get(k), v) for k, v in expected.items() if config.get(k) != v}
     native_train = (config.get('native') or {}).get('train') or {}
     for k, v in dict(horizon=plan['horizon'], learning_rate=plan['learning_rate'],
@@ -126,7 +126,7 @@ def train(args, plan, arm, seed, game):
                '--horizon', str(args.horizon), '--seed', str(seed), '--encoder', arm,
                '--learner-passes', str(args.learner_passes),
                '--learning-rate', repr(args.learning_rate), '--anneal-lr', str(args.anneal_lr),
-               '--min-lr-ratio', repr(args.min_lr_ratio), '--entropy', str(args.entropy),
+               '--min-lr-ratio', repr(args.min_lr_ratio), '--stocks', str(args.stocks), '--entropy', str(args.entropy),
                '--entropy-floor', str(args.entropy_floor), '--entropy-half-life', str(args.entropy_half_life),
                '--episode-ticks', str(args.episode_ticks),
                '--training-maps', ','.join(map(str, args.training_maps)),
@@ -277,6 +277,7 @@ def main():
     parser.add_argument('--entropy-half-life', type=int, default=30_000_000,
                         help='Learner decisions per halving of the entropy coefficient (train.py default)')
     parser.add_argument('--episode-ticks', type=int, default=7200)
+    parser.add_argument('--stocks', type=int, default=0, help='0 = vanilla one-life rounds (train.py default since 60d5773); recorded in the plan and checked on reuse')
     parser.add_argument('--training-maps', type=map_ids, default=[0, 1, 2])
     parser.add_argument('--heldout-maps', type=map_ids, default=[3, 4])
     parser.add_argument('--checkpoint-every', type=int, default=2_500_000)

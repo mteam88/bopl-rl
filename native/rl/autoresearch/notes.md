@@ -689,3 +689,57 @@ a strength metric, and learning may emerge before or after the floor near 130M.
 Assess later evaluations with their sample uncertainty; the remaining wall time is
 a throughput projection rather than a fixed duration.
 Root owns train.py and parent owns the run; nothing to do from this Rift.
+
+## 2026-09-07 21:50 EDT: parent relaunched the 400M run with `--stocks 0`; weight-drift check of the aborted 19M
+
+Root's 60d5773 makes one life per round the default (`--stocks 0` in train.py, binding.c, eval_binding.c,
+bopl.ini). Parent stopped the first attempt at 19.2M learner decisions (20 min, stocks 3) and moved it to
+`native/artifacts/rl/null-hypothesis-native/aborted-001-s73-stocks3`; the new `001-s73` (pid 3677451,
+binding 54bf2404…) restarted from scratch at 21:49. Merged as c97b659 here. First 1.2M learner decisions
+of the new run, read from disk: episodes last ~330 ticks instead of ~1,550 (36 finished episodes per
+update instead of 8), advantage std 0.24 instead of 0.11 (more terminal rewards per rollout), entropy
+8.292, explained variance 0.03 at 1–2M, ~13.9k learner decisions/s.
+
+**What the aborted run's checkpoints say about the flat entropy.** Twenty-one native checkpoints
+(0 → 19.2M) let me measure how the weights moved, with no GPU or game involved
+(`watch_run.py --drift`, CPU numpy over the float32 `.bin` files). Per slice, `mean|dw|` is the norm
+of the change per 1M-decision interval, `lag1` the cosine between consecutive changes, and `net/rw`
+the total displacement divided by what a random walk of those step sizes would produce:
+
+| slice | \|w0\| | mean\|dw\| per 1M | lag1 cosine | net / random walk |
+|---|---|---|---|---|
+| encoder (SET) | 15.96 | 0.43 | 0.32 | 2.0 |
+| decoder aim head (256×128) | 9.23 | 0.27 | 0.06 | 1.2 |
+| decoder button head (16×128) | 2.30 | 0.15 | 0.04 | 1.1 |
+| decoder value row (1×128) | 0.57 | 0.10 | 0.94 | 4.1 |
+| MinGRU (3×128×128) | 11.35 | 0.44 | 0.23 | 1.8 |
+
+The value row moves in one consistent direction (cosine 0.94, four times a random walk, norm
+0.57 → 2.17): the critic is learning, matching explained variance 0.03 → 0.73 over the same span.
+The two policy heads are doing a random walk: consecutive updates are nearly orthogonal and the net
+motion equals the random-walk expectation. The step sizes are also what pure noise predicts for the
+optimizer in use. The native trainer's Muon step orthogonalizes each matrix update and applies
+`lr · sqrt(rows/cols)` of it regardless of gradient magnitude (muon.cu `muon_weight_update`; Nesterov
+momentum 0.95, PufferLib default `beta1`), so every update moves a 273×128 decoder by ~0.005 whether
+the gradient carries signal or not. A CPU simulation of that rule with unit random gradients gives
+0.47 of decoder motion per 325 updates (0.09 without momentum); the measured whole-decoder motion is
+0.32 per 1M. A persistent gradient direction would give 1.6. So at 19M the actor's weights were not
+frozen; they were being moved by noise at the optimizer's fixed step size, with the entropy bonus as
+the only consistent policy-side gradient. The old torch run (Adam, 12 steps per update, ±0.1 shaping)
+had actor lag1 cosine ≈ 0 too over 100k-decision intervals, but its actor norm grew 0.11 → 4.09 in
+1M decisions, i.e. sharpening driven by the dense kill/death signal.
+
+Why this matters for reading the run: with sparse ±1 outcomes, gamma .995 and lambda .9, the
+per-rollout advantage on a 128-decision segment of a ~1,500-tick (stocks 3) episode was mostly the
+critic's own bootstrap noise, and the single Muon step per rollout turns that into a fixed-size random
+displacement of the policy heads. One life per round (stocks 0) puts a terminal reward inside almost
+every 128-decision segment (36 episode ends per 7,168-row rollout instead of 8), which is the
+best-case change for this signal-to-noise problem short of shaping. The read-only watch remains the
+same: policy-head `net/rw` climbing above ~1.5 with rising lag1 cosine, or entropy leaving 8.2, before
+the 30M coefficient checkpoint. `learner-passes 3` (program.md top lead) is the matched A/B if it does
+not.
+
+Provenance: numbers from `aborted-001-s73-stocks3/checkpoints` and both runs' metrics.jsonl on
+2026-09-07 21:55–22:20 EDT; simulation in this session (numpy, single thread, exact SVD in place of
+the five Newton–Schulz steps). A first version of that simulation briefly ran multi-threaded BLAS
+next to the live run and was killed after ~5 min; no other load was added.

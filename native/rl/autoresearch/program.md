@@ -115,7 +115,11 @@ encoder (evidence layout: `native/artifacts/rl/autoresearch/final-core-checks/`)
 - Watching a run without touching it: `python native/rl/autoresearch/watch_run.py
   <run> --every 5000000` prints milestone rows (entropy against the uniform
   8.318 nats, schedule coefficient, explained variance, gradient norm, kl/clip)
-  and pooled evaluation win rates, reading only the run directory.
+  and pooled evaluation win rates, reading only the run directory. Add
+  `--drift` to also measure, from the saved checkpoints (CPU numpy), whether
+  each weight slice is moving in a consistent direction or doing a random
+  walk (notes.md 2026-09-07 21:50: at 19M the critic row moved consistently,
+  the policy heads walked at the Muon step size).
 
 ## Where things stand (2026-09-08)
 
