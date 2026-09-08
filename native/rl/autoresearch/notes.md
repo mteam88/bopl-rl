@@ -869,10 +869,13 @@ trainer, so summed per 2M learner-decision window) and the three evaluation
 reports. Death classification, from `RlTelemetry.Death(victim, killer)` in the
 game source: `deaths_environment` when the credited killer is the environmental
 player id, `deaths_self` when killer == victim, `deaths_opponent` when the
-killer is another player, `deaths_other` otherwise. `kills` are opponent deaths
-credited to the learner. All rates below are per completed learner episode.
+killer is another player, `deaths_other` otherwise. `kills` is the game's credited-kill counter and includes self-kills: `Player.Kill` increments
+`player.Kills` whenever the credited player exists, even when killer equals victim.
+The achievement path alone checks that those IDs differ. Rates below divide window
+event totals by completed learner episodes; ticks/episode is a window-flow estimate,
+not a duration average over an isolated cohort of completed rounds.
 
-| window | episodes | ticks/ep | kills | arrows | hits | env deaths | opp deaths | self deaths | dash | platform | H(aim) |
+| window | episodes | ticks/ep | credited kills (incl. self) | arrows | hits | env deaths | opp deaths | self deaths | dash | platform | H(aim) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 0-2M | 23951 | 333 | .086 | 1.80 | .008 | .416 | .008 | .078 | .96 | .39 | 5.530 |
 | 6-8M | 23656 | 337 | .086 | 1.82 | .009 | .414 | .009 | .078 | .97 | .40 | 5.527 |
@@ -880,26 +883,24 @@ credited to the learner. All rates below are per completed learner episode.
 | 16-18M | 21990 | 362 | .097 | 1.95 | .012 | .398 | .012 | .085 | 1.03 | .47 | 5.519 |
 
 Timeouts are zero in every window: no episode reaches the 7200-tick cap. A
-round lasts ~340 ticks (~6 s at 60 ticks/s, ~85 decisions), so the sparse
-terminal reward arrives often; the question is not reward frequency but what
-the outcome depends on. About 41% of learner episodes end with the learner
-credited to the environment (falling / stage hazards) and ~8% with the learner
+round lasts ~340 ticks (~6 s at 60 ticks/s, ~85 decisions), so terminal rewards arrive more frequently than in the stocks-3 attempt.
+That alone does not settle whether frequency, credit assignment or other training
+choices limit useful learning. About 41% of learner episodes end with the learner
+credited to the environment and ~8% with the learner
 killing itself; deaths credited to an opponent are ~1%. The remaining ~50% are
-learner wins, i.e. the opponent died first, and since the opponent rows are the
-same policy or frozen copies of it, those are mostly the mirror of the same
-falls. Arrow hits are ~.01 per episode with ~1.9 arrows fired, so the bow is
-essentially never landing. The `kills` counter (.09/ep) exceeds
-`deaths_opponent` (.01/ep); the learner rows are 24 of 56 and opponents include
-the frozen banks, and kill credit may follow the game's credited-killer rule
-after environment-assisted deaths. Not resolved here.
+learner wins, i.e. the opponent died first, against the same policy or frozen copies. These counters describe credited killers,
+not the complete causal chain of each death; they do not establish that every
+environment death was an unforced fall or uninfluenced by the opponent. Arrow hits are ~.01 per episode with ~1.9 arrows fired, so accepted damaging bow hits are rare in these windows. The apparent mismatch between `kills` (.09/ep) and `deaths_opponent` (.01/ep)
+is largely explained by self-kill credit (.08/ep). Raw credited kills are not a
+clean combat-success metric. Learner-only aggregation with frozen opponents also
+means learner kills need not equal learner deaths credited to opponents.
 
-Trends over 18M are small and monotone: episodes lengthen (333 to 362 ticks),
+Across the displayed windows, the changes are small and monotone: episodes lengthen (333 to 362 ticks),
 environment deaths fall slightly (.416 to .398), and dash, platform, arrow and
 kill counts per episode rise by 5-20%. Aim entropy drifts from 5.530 to 5.519
 nats (max 5.545); button entropy stays at 2.76 (max 2.77). The entropy
-coefficient is still ~.007 at 18M, so a near-uniform policy is the expected
-regime and these shifts are consistent with the small persistent motion seen in
-the drift statistics. They do not by themselves establish learning.
+coefficient is still ~.007 at 18M, but that coefficient alone does not imply the actor should remain near uniform
+or identify the cause of the observed drift. They do not by themselves establish learning.
 
 Evaluations (32 games vs random, 24 vs the initial checkpoint, maps 0-4 /
 0-2):
@@ -910,11 +911,18 @@ Evaluations (32 games vs random, 24 vs the initial checkpoint, maps 0-4 /
 | 13.3M | .47 | .46 | 2 | 12 env, 0 self, 1 opp |
 | 20.0M | .59 | .29 | 0 | 17 env, 0 self |
 
-Every learner loss against the initial checkpoint is an environment death.
-With these sample sizes a single step's win rate has a ~±.17 interval, so the
-.29 at 20M is not evidence of regression and the .59 is not evidence of
-strength. Reading: rounds are decided by who falls first, not by combat, and a
-policy that only had to stop falling would already move these numbers. The
-`deaths_environment` rate per episode is therefore the most direct
-behavior-level progress signal for this run, ahead of win rate (self-play) and
-arrow hits (near zero). Source-only, no jobs run; single-threaded, niced.
+Across these evaluations, 42 of 44 learner losses against the initial checkpoint
+were environment-credited deaths; one was self-credited and one opponent-credited.
+The 24-game groups provide limited precision and paired seeds can be correlated.
+The .29 score is worth watching for underperformance, but does not by itself
+establish a regression trend; the .59 aggregate against random does not establish
+strength. The random aggregate pools training and held-out maps, so retain their
+separate results when assessing progress. Physical steps above correspond to
+approximately 5M, 10M and 15M learner decisions.
+
+Environment-credited deaths per episode are a useful survival diagnostic here,
+alongside self-deaths, total loss rate and round duration. A decline can reflect
+longer rounds or a shift to other death categories; it need not indicate stronger
+play. Fixed-opponent evaluation remains useful even though training win rate
+contains self-play. Keep the sparse hit counter as a separate ability-use measure.
+Source-only observation and arithmetic checks; no training, build or game jobs.
