@@ -947,11 +947,11 @@ triggered. Next read at ~30M.
 
 ## 2026-09-07 22:26 EDT: evaluation side asymmetry, critic vs height, and what the policy sees of the water (read-only)
 
-Three more reads of the saved evaluation data and the game source, all
-single-threaded and niced; no jobs run.
+Three more reads of the saved evaluation data and the game source, all single-threaded and niced; no
+jobs run.
 
-**Side 0 wins more than side 1 in every evaluation of both runs.** Pooling the
-fixed-opponent games (random + initial, both sides of every seed pair):
+**Side 0 has more wins in each of the seven evaluations examined.** Pooling the fixed-opponent games
+(random + initial, both sides of every seed pair):
 
 | run | side 0 | side 1 |
 |---|---:|---:|
@@ -959,42 +959,49 @@ fixed-opponent games (random + initial, both sides of every seed pair):
 | stocks-0 001-s73 (4 evals, 224 games) | 60/112 = .54 [.44, .63] | 41/112 = .37 [.28, .46] |
 | pooled | 106/196 = .54 [.47, .61] | 71/196 = .36 [.30, .43] |
 
-Wilson intervals; seed pairs are correlated so treat the pooled interval as
-optimistic. Per map, pooled over both runs (side 0 / side 1 win rate, 64
-games per side on maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28,
-map 2 .42/.27, map 3 .50/.44, map 4 .94/.62. The gap is small on maps 0 and 3
-and large on maps 1, 2 and 4, which points at map geometry rather than a
-global id-order effect: map 1 spawns the left player 9 units higher than the
-right one (frame-0 y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns are mirrored
-(x -26.6/27.6, y 5.2/5.1) so its gap must come from the terrain layout, not the
-spawn point. Maps 0, 3 and 4 have level spawns (frame-0 y within 1 unit). The first evaluation of each run (6.7M physical,
-policy near uniform) already shows it: 14/28 vs 11/28 and 16/28 vs 9/28. Within a pair, "only side 0 wins" outnumbers "only side 1 wins"
-11:4, 11:5, 9:5, 7:5 across the four stocks-0 evaluations. The evaluator
-(`evaluate.py`) is side-swapped, so this is not a bookkeeping error; it means
-player slot 1 (spawn on the left of every map: x = -14, -11, -27, -14, -22 for
-maps 0-4) beats slot 2 (right spawn) regardless of which checkpoint sits in it.
-Candidate mechanisms, not distinguished here: the maps are not mirror
-symmetric (map 1 spawns at y 9.8 vs 0.8), the game resolves simultaneous
-events in player-id order, or the policy is left/right asymmetric in a way
-that interacts with the spawn. Training draws the learner side uniformly
-(`bopl_side_random`, xorshift), so training is balanced. Consequence for
-reading evaluations: per-side results should stay separated, and the side
-effect (~.17) is as large as any between-checkpoint difference seen so far.
-A sanity check that costs no GPU: evaluate initial vs initial (same weights
-both sides) and see whether side 0 still wins ~.55; if it does the asymmetry
-is in the game, not the policy. Recorded as a lead; not run.
+Descriptive Wilson intervals. Games are paired by seed, and the same tasks repeat across
+checkpoints, so treating all pooled games as independent understates uncertainty. Within a pair,
+"only side 0 wins" outnumbers "only side 1 wins" 11:4, 11:5, 9:5, 7:5 across the four stocks-0
+evaluations. The schedule in `evaluation_protocol.py` gives each fixed-opponent seed both learner
+sides. The observed advantage is associated with side 0 / player slot 1 (left spawn in the examined
+maps), but balanced scheduling alone does not rule out a slot, RNG or implementation effect. It also
+does not establish the result for arbitrary checkpoints. Candidate mechanisms, not distinguished
+here: the maps are not mirror symmetric (map 1 spawns at y 9.8 vs 0.8), the game resolves
+simultaneous events in player-id order, or the policy is left/right asymmetric in a way that
+interacts with the spawn. Historical matches randomize the learner side (`bopl_side_random`,
+xorshift), while self-play trains both sides; realized historical side counts are not recorded in
+these training metrics. Consequence for reading evaluations: per-side results should stay separated,
+and the side effect (~.17) is as large as any between-checkpoint difference seen so far. A sanity
+check that costs no GPU: evaluate initial vs initial (same weights both sides) and see whether side
+0 still wins ~.55; it would show the effect survives removing differences between checkpoints, not
+identify the game as its sole cause. A shared policy can itself be asymmetric, and slot-dependent
+RNG or game-policy interactions remain possible. Recorded as a lead; not run.
 
-**Checkpoint-to-checkpoint game outcomes are mostly stable.** The four
-evaluations share the same 57 (opponent, map, seed, side) tasks. Outcomes flip
-on 9/57, 16/57 and 7/57 tasks between consecutive evaluations, and 25-30 of 57
-games end at the identical tick. Sampled action sequences of the saved games
-diverge from the previous checkpoint's at decision 2-52 (median ~14 of ~70), so
-identical outcomes are not identical games; the trajectories differ early and
-the round still ends the same way. Win rate at this stage is a property of the
-(seed, side) task more than of the checkpoint.
+Per map, pooled over both runs (side 0 / side 1 win rate, 64 games per side on
+maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28, map 2 .42/.27,
+map 3 .50/.44, map 4 .94/.62. The gap is small on maps 0 and 3 and large on
+maps 1, 2 and 4, which is consistent with map geometry contributing, though the
+per-map counts are small and a slot effect could still vary by map. Frame-0
+spawn positions from the saved games: map 1 spawns the left player 9 units
+higher (y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns are mirrored
+(x -26.6/27.6, y 5.2/5.1) so its gap is not the spawn point itself; maps 0, 3
+and 4 have level spawns (y within 1 unit). The first evaluation of each run
+(6.7M physical, policy near uniform) already shows the asymmetry: 14/28 vs
+11/28 and 16/28 vs 9/28.
 
-**The critic has learned height, not combat.** From the per-decision mind
-dumps of the 9 saved games per evaluation, joined to the physics frames:
+**Checkpoint-to-checkpoint game outcomes are mostly stable.** The four evaluations share the same 57
+(opponent, map, seed, side) tasks. Outcomes flip on 9/57, 16/57 and 7/57 tasks between consecutive
+evaluations, and 25-30 of 57 games end at the identical tick. Sampled action sequences of the saved
+games diverge from the previous checkpoint's at decision 2-52 (median ~14 of ~70), so identical
+outcomes are not identical games; the trajectories differ early and the round still ends the same
+way. These sampled outcomes appear more sensitive to the task than to these nearby checkpoints; that
+is a descriptive observation, not a general decomposition of what determines win rate.
+
+**Critic outputs correlate strongly with relative height in the saved sample.** From the
+per-decision mind dumps of the 9 saved games per evaluation, joined by decision tick to physics
+frames. All saved games use side 0; successive decisions within a game are correlated. The policy
+sees a 9-tick delayed state, whereas these joins use current physics height, so this is not a direct
+input-feature attribution:
 
 | physical step | corr(V, own y) | corr(V, opponent y) | corr(V, own y - opponent y) |
 |---|---:|---:|---:|
@@ -1003,33 +1010,32 @@ dumps of the 9 saved games per evaluation, joined to the physics frames:
 | 20.0M | +.62 | -.24 | +.76 |
 | 26.7M | +.30 | -.44 | +.75 |
 
-Mean V rises monotonically with own height (about -.15 at y < -5 to +.3 at
-y > 25). In won saved games V averages +.1 to +.2 in the first five decisions
-and +.4 to +.9 in the last five; in lost games it goes from ~0 to -.2 to -.4.
-The value row's persistent drift (net/rw 3.7 at 19M) is this feature being
-learned. It is also the right feature: rounds end when someone reaches the
-water, and "relative height" predicts who. The critic is not yet the
-bottleneck; the actor is, and the evaluation losses show why below.
+Mean V rises monotonically with own height (about -.15 at y < -5 to +.3 at y > 25). In won saved
+games V averages +.1 to +.2 in the first five decisions and +.4 to +.9 in the last five; in lost
+games it goes from ~0 to -.2 to -.4. Height is a plausible correlate of survival in these maps. This
+analysis does not identify which weights encode it, explain the value-row drift causally, exclude
+other learned features, or establish that the critic is not a bottleneck. Those claims would require
+additional controlled analysis.
 
-**The water kill zone is in the observation.** `KillZone.cs` kills any player
-whose collider touches it, credited to `ENVIRONMENTAL_PLAYER_ID`
-(`CauseOfDeath.Accident`). The zone is a `DPhysicsBox` on Unity layer 4
-("Water"), so `RlObservation` exports it as a kind-1 (box) entity with flags
-active|enabled|trigger and owner 0; in map 0 it is the box at y = -18.95
-with half-extents 134 x 7 (top edge y = -11.95, matching
-`SceneBounds.WaterHeight` = -11.3 within the player radius). The encoder
-writes it as a normal entity row: relative position clipped at +-64 units,
-right/up vectors clipped at +-64, layer 4/32, trigger flag set. So the policy
-can see the water's relative height from the first decision; there is no
-observation gap to fix. Falling deaths are a policy failure, not a
-perception failure. In the 36 saved evaluation games the loser is below
-y = -5 for a median of 17 ticks (~4 decisions) before dying, so the last
-"save me" window is short; whatever the policy learns first has to be the
-earlier choice not to walk or dash off a platform.
+**Water geometry is exported and retained by the observation path.** `KillZone.cs` kills any player
+whose collider touches it, credited to `ENVIRONMENTAL_PLAYER_ID` (`CauseOfDeath.Accident`). The zone
+is a `DPhysicsBox` on Unity layer 4 ("Water"), so `RlObservation` exports it as a kind-1 (box)
+entity with flags active|enabled|trigger and owner 0; in map 0 it is the box at y = -18.95 with
+half-extents 134 x 7 (top edge y = -11.95, matching `SceneBounds.WaterHeight` = -11.3 within the
+player radius). The encoder writes it as a normal entity row: relative position clipped at +-64
+units, right/up vectors clipped at +-64, layer 4/32, trigger flag set. The water box is present at
+the first saved physics frame in all 36 inspected games, and its flags pass the encoder filter.
+Overflow would abort rather than silently omit it. This rules out simple absence of the water entity
+in these examples; it does not establish that delayed/clipped features are sufficient in every state
+or that the learned encoder uses them correctly. Falling deaths do not, on their own, separate
+representation from action-selection failures. In the 36 saved evaluation games the loser is below y
+= -5 for a median of 17 ticks (~4 decisions) before dying, so the last "save me" window is short;
+this motivates inspecting earlier decisions, but does not prove which recovery actions are possible
+or what the policy must learn first.
 
-Leads from this (none run): (1) initial-vs-initial evaluation to attribute
-the side effect; (2) an environment-death-rate curve per side from the training
-counters is not available (telemetry is per learner row, side not recorded in
-metrics), so the evaluator remains the place to measure it; (3) if a later
-checkpoint shows environment deaths per episode falling faster than round
-length grows, that is the first sign of the actor moving.
+Leads from this (none run): (1) initial-vs-initial evaluation to narrow possible explanations for
+the side effect; (2) an environment-death-rate curve per side from the training counters is not
+available (telemetry is per learner row, side not recorded in metrics), so the evaluator remains the
+place to measure it; (3) track environment deaths, other death categories and duration together with
+fixed-opponent scores. Death frequency and round length have different units; comparing their raw
+rates of change is not a validated progress threshold.
