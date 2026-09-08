@@ -128,6 +128,43 @@ decides the question (usually: the oracle trace).
   fidelity — done via `UseRectTransform`) are documented, unobserved by the
   sim set. F8 items deferred until after the first trace diff.
 
+## Trace-identity fidelity (first oracle diff, fixtures l0-p2)
+
+`ReferenceCapture` prints object identities and reflects PRIVATE fields by
+name, so the shim must match Unity's internal layouts wherever captured:
+
+- **Scene membership**: every GameObject carries its scene; scene loads stamp
+  the whole subtree, `new GameObject`/clones inherit the active scene, assets
+  have an invalid scene (renders as a bare "/Name[0]" path), reparenting
+  moves membership, and `DontDestroyOnLoad` moves the root into the
+  "DontDestroyOnLoad" pseudo-scene (buildIndex -1) - all visible in
+  `ReferenceCapture.PathOf`.
+- **Placeholder names**: the rip stores one asset file per guid, so
+  unexported assets (sprites, materials) get their real Unity name from
+  `sim/Export/asset-names.json` (generated from Assets/**/*.meta).
+- **`Keyframe`** and **`RaycastHit2D`** reimplemented with Unity's exact
+  private field names (m_Time/m_Value/... and m_Centroid/m_Collider(int)/...)
+  behind the public property API.
+- **Renderer.material**: get returns the renderer-owned clone named
+  "<source> (Instance)" (cloning whatever is assigned unless already such an
+  instance); set stores the reference. The serialized m_Materials array IS
+  sharedMaterials.
+- **Clone roots leak (bug)**: clone children were root-registered and never
+  removed (SetParentInternal manageRoots:false), so FindObjectsOfType
+  visited them twice - "facing" section doubled at player spawn.
+- **Sound bank**: `sim/Export/sound-bank.json` ripped from MainMenu.unity's
+  AudioManager (136 entries, order preserved): `InterruptableAudio` stores
+  bank indices (Dash.dashSound.index = 14 = "dash") and they are captured.
+  `AudioClip.length` defaults to 1 (PlayPrefixWithInterrupts divides by it).
+
+Result on `sim/Oracle/fixtures/l0-p2` (480 ticks, batch 16): **480/480 ticks
+match** once two known-blocked field classes are filtered
+(`Keyframe.m_InWeight/m_OutWeight` - the exporter drops curve key weights;
+`Player.playerDied/playerWon` - HandleAbilitySelectUI lives in the
+unexported WinnerTriangle scene). Unfiltered: 0 ticks (first diff is
+playerDied at tick 0). Blocked on oracle: re-export with per-key weights
+(f32 bits ideally) + export WinnerTriangle.unity.
+
 ## Host bootstrap deviations (boot scene is not exported)
 
 The Unity player reaches gameplay through the boot scene → menus; the sim
