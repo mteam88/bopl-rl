@@ -1392,3 +1392,97 @@ this without a one-off script; legacy runs without the env fields print
 gone (the stopped run's file was never rewritten). Verified on 001-s73
 (20M/40M/46.5M milestones .501/.512/.507), the aborted stocks-3 run (.505),
 and dap-001 (legacy, `-`).
+
+## 2026-09-08 00:08 EDT: where rollout time goes on 001-s73 (resets are a third of it)
+
+Source-only read of `metrics.jsonl` for the stopped stocks-0 run and the
+aborted stocks-3 run (`native/artifacts/rl/null-hypothesis-native/`), pinned
+BLAS threads, `nice 19`. Numbers are from `rollout_seconds`, `train_seconds`,
+`elapsed` and the env block's `n` (player-episodes ended in the update; two
+per match, checked against the `matches` counter delta).
+
+Wall-time split (001-s73, 15,144 updates, 3647 s): rollout 95.7 %, train
+1.9 %, everything else 2.5 % (89 s). Median update 0.2154 s (rollout 0.2103,
+train 0.0044) = 14,261 learner decisions/s. Seventeen pauses above 5× the
+median cost 85.8 s (2.4 % of wall): nine are the evaluations (7.3 to 9.2 s
+each, eval `elapsed` 6.1 to 7.9 s), eight are 1.1 to 1.4 s rollouts at 3.2 to
+4.4M physical that line up with neither checkpoints nor evaluations
+(unexplained, early run only). Evaluations at the 5M-learner cadence are the
+whole visible pause budget; nothing else is worth chasing in "other".
+
+Rollout time rises with the number of episodes that ended in the update.
+Least squares on the 14,851 updates under 3× the median rollout:
+
+    001-s73:  rollout = 0.143 s + 1.96 ms × player-episodes   (n mean 39.5, R² .13, residual sd .050)
+    stocks-3: rollout = 0.171 s + 1.17 ms × player-episodes   (n mean 10.5, R² .02, residual sd .031)
+
+    001-s73 quintile medians (n → rollout s): 26 → .186, 34 → .200, 40 → .207, 46 → .221, 52 → .236
+
+So on the stocks-0 run every match end costs about 4 ms of critical-path
+rollout time (2 player-episodes × ~2 ms), and at ~20 matches per update that
+is ~35 % of rollout (the unfiltered fit gives 1.6 to 3.0 ms per player-episode
+depending on outlier handling; the quintile medians, which need no fit, give
+(.236−.186)/(52−26) = 1.9 ms). The slope is the same-update effect only
+(lagged-n slope is small and unstable), it does not change with map mix,
+action rates or episode-length quartile, and it shrinks over the run
+(3.2 → 1.9 → 1.6 ms by thirds) as rounds get longer and n falls 48 → 31.
+Most of the residual variance is noise.
+
+Cross-check by workload: stocks-3 ends 3.8× fewer episodes per update
+(rounds of 385 decisions instead of ~100) and its median rollout is 0.175 s
+versus 0.210 s, i.e. the stocks-0 setting costs 14 to 17 % of throughput
+through resets alone (17,040 vs 14,261 learner decisions/s at otherwise
+identical settings). That is the price of the one-life format, not of the
+run.
+
+What a match end costs, from source (nothing here was measured live):
+
+- The spare process already hides the scene load. `c_reset`
+  (`bopl_puffer.h` ~350) takes over a spare that has been loading the next
+  episode since the previous episode began (`bopl_rl_reset_begin` is
+  send-only) and only waits in `bopl_rl_reset_finish` if that load is not
+  done. A stocks-0 round (~100 decisions ≈ 6.7 s at 15 Hz) is two orders
+  of magnitude longer than an isolated reset (~31 to 33 ms at warmup 240,
+  `evidence/throughput/reset-profile.txt`), so the wait should be ~0 unless
+  the spare's load is starved under the 16-worker load. Unknown, not
+  measurable from the logs.
+- The warmup is mostly required. `bopl_rl_default_config` sets
+  `warmup_ticks=240` and `binding.c:70` keeps that default (`train.py` has no
+  flag; `smoke.py` uses 60). Game side, `RlBridge` runs the warmup ticks
+  uncounted after the scene load, and `GameSessionHandler` spawns players
+  after `timeBeforeTwo` = 1 s (tick 60) and calls the GO handler after a
+  further `timeBeforeGO` = 2.5 s (tick 210); the level animate-in
+  (`LevelAnimationTime` 2 s + up to `MaxRandomDelay` 0.3 s) is inside that
+  window. All three FFA scenes checked carry the same constants. So ≥210
+  ticks are needed before both players exist and can act, and trimming 240
+  → 210 saves ~2 ms per reset (0.075 ms/tick), off the critical path
+  anyway thanks to the spare. Not a lead.
+- The per-terminal work that *is* on the critical path: the env's terminal
+  bookkeeping and bank draw in `c_step`/`c_reset` (microseconds), the
+  process swap plus `bopl_rl_reset_finish` (one round trip to the spare if
+  already loaded), the first observation of the new episode, and on the
+  trainer side the recurrent-state reset for the env's agent rows and the
+  bank-alignment accounting (`bopl_vec_count_aligned`). None of these is
+  obviously 4 ms. The remaining candidates are (a) the game's terminal tick
+  itself (`HasGameEnded` path: `DeclareGameUndecided`/win handling, winner
+  triangle, achievements, audio) which runs on the counted tick before the
+  bridge reports terminal, and (b) the spare not being finished after all
+  when 16 workers and 16 spares share six cores (the exp08 profile shows
+  `loop:EarlyUpdate.UpdatePreloading` at 425 ms over 46 frames, i.e. scene
+  loading is ~9 ms of main-thread time per frame while it runs, and that
+  competes with the playing process's ticks).
+
+Lead (program.md, throughput): attribute the ~4 ms per match. Cheapest
+measurement when the machine is free: an idle-machine `reset_profile`-style
+run that times the terminal tick and `bopl_rl_reset_finish` separately with
+the spare enabled, then the same under a 16-worker load. If (b) dominates,
+the fix is scheduling (lower the spare's priority or preload earlier), not
+warmup; if (a) dominates, the fix is skipping end-of-round UI work in RL
+mode on the game side (mine: `RlBridge.cs`).
+
+Also this segment: base main landed the PufferLib Elo self-play pool
+(2101317, merged clean as cbabbe7). The env log keeps
+`historical_episodes`/`historical_wins` with the same meaning, so
+`watch_run.py`'s `pool win` column survives; the binding now also exports
+per-bank `hist_n_bank_*`/`hist_score_bank_*`, and matches interrupted by a
+swap are excluded from the per-bank stats but not from the pooled column.

@@ -220,6 +220,17 @@ the slot is negotiated explicitly between the Rifts.
   `historical_episodes`/`historical_wins`; the self-play Rift's working
   tree (read 23:50 EDT) keeps both fields with the same meaning, so the
   column should survive the swap. Re-check on the first run with the new pool.
+- **Per-match reset cost on the critical path** (notes.md 2026-09-08 00:08).
+  Rollout time on 001-s73 rises ~2 ms per player-episode ended in the update
+  (~4 ms per match, ~35 % of rollout at stocks 0; stocks-3 runs 17 % faster
+  for this reason alone). The spare process already hides the scene load
+  and the 240-tick warmup, of which ≥210 ticks are required by the game's
+  spawn/GO timers, so warmup is not the lever. Unattributed: the game's
+  terminal tick (end-of-round UI/achievement work) versus the spare not
+  finishing its load under 16-worker contention. Measure both with a
+  `reset_profile`-style timing (spare on, idle then loaded) when the machine
+  is released; fix depends on which dominates (skip end-of-round work in RL
+  mode on the game side, or reschedule the spare's load).
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
