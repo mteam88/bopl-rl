@@ -170,11 +170,13 @@ the slot is negotiated explicitly between the Rifts.
   comparison to run (same seed, same budget, `strength_check.py`-style
   fail-closed protocol with `--learner-passes` in the plan). Specific
   hypothesis (notes.md 2026-09-07 22:08): the sampler draws 24 segments with
-  replacement from 24 learner rows, so one pass trains on ~64% of each
-  rollout and three passes on ~95%; judge the A/B with `watch_run.py --drift`
-  on both arms as well as evaluations. Cheaper post-run alternative: sample
-  without replacement in PufferLib (`multinomial_sample`), 100% coverage at
-  one pass.
+  replacement. With uniform learner priorities, expected unique coverage is
+  ~64% for one pass and ~95% for three fixed-probability passes; actual
+  coverage depends on priorities. Judge the A/B with `watch_run.py --drift`
+  on both arms as well as evaluations. Post-run alternative: sample
+  without replacement over eligible learner rows for full coverage at one
+  pass, with revised importance weighting and explicit frozen-row exclusion.
+  This changes the sampling objective and needs correctness and timing checks.
 - **Throughput.** Collection is ~98% of wall time at 16 workers (rollout 44 s
   of 56 s; train ~1 s). Leads: game stepping cost inside the IL2CPP player,
   worker count vs GPU utilization (34–38%), observation packing, and the
