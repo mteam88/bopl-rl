@@ -2,7 +2,7 @@ CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Werror
 OUT ?= ../artifacts/rl
 
-all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/sampled_check $(OUT)/reset_profile $(OUT)/frame_profile
+all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/warmup_check $(OUT)/sampled_check $(OUT)/reset_profile $(OUT)/frame_profile
 
 # Standalone evaluation/extraction binding; does not require rebuilding CUDA.
 research: $(OUT)/libbopl_research.so
@@ -26,6 +26,9 @@ $(OUT)/record: record.c bopl_rl.h $(OUT)/libbopl_rl.so
 
 $(OUT)/reset_check: reset_check.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) reset_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+
+$(OUT)/warmup_check: warmup_check.c bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) warmup_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
 $(OUT)/sampled_check: sampled_check.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) sampled_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
