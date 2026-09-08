@@ -1811,9 +1811,11 @@ First attempt exited 1 with no output: `action()` (copied from `reset_check.c`) 
 6 actions, and `check_actions` in `bopl_rl.c:305` returns `BOPL_RL_ARGUMENT` when the
 count differs from `header.player_count` (reset_check uses 6 players, this check uses
 2). Fixed on `autoresearch/warmup-check` (120feb2): the helper reads
-`bopl_rl_state(world)->header.player_count`. The check still prints nothing on a step
-error other than the status line; a `bopl_rl_error` message on failure would have saved
-a round trip and is worth adding before it becomes a gate.
+`bopl_rl_state(world)->header.player_count`. The failure line was printed but empty:
+argument errors return `BOPL_RL_ARGUMENT` without writing the handle's error string
+(`bopl_rl.c` only fills it for I/O and game errors), so `bopl_rl_error` was "". The
+check now names the status on failure (3c48808). Same caveat for any caller of the
+C API: a status of 1 carries no message.
 
 What this settles for item D of `MANY_WORLDS.md`: outcome A. The design text there
 still says the post-warmup state is seed-dependent (written before the 01:10 read);
