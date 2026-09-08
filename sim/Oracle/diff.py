@@ -16,6 +16,7 @@ uses).
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +27,27 @@ from reference import read_trace, first_difference  # noqa: E402
 
 def load_fields(name):
     return frozenset(json.loads((ROOT / "native/data" / name).read_text())["fields"])
+
+
+# "$type" values are .NET type names; for generic types they embed
+# assembly-qualified arguments (RingBuffer`1[[MonoUpdatable, Assembly-CSharp,
+# Version=0.0.0.0, ...]]). The assembly identity is build metadata - Unity says
+# Assembly-CSharp/mscorlib, the port says Gameplay/System.Private.CoreLib - so
+# strip ", assembly, Version=..." from every bracketed type argument before
+# comparing. Applied repeatedly for nested generics.
+_ASSEMBLY_QUALIFIER = re.compile(r"\[([^\[\],]+), [^\[\]]+\]")
+
+
+def normalize_types(node):
+    if isinstance(node, dict):
+        return {k: normalize_types(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [normalize_types(v) for v in node]
+    if isinstance(node, str) and "[[" in node:
+        previous = None
+        while previous != node:
+            previous, node = node, _ASSEMBLY_QUALIFIER.sub(r"[\1]", node)
+    return node
 
 
 def summarize(left, right, ignored):
@@ -50,9 +72,13 @@ def main():
                         help="Also exclude the audited cosmetic fields (presentation-fields.json)")
     parser.add_argument("--summary", action="store_true",
                         help="List which top-level sections differ at the first diverging row")
+    parser.add_argument("--exclude", action="append", default=[], metavar="FIELD",
+                        help="Additional field name to ignore (repeatable). Used for "
+                             "known export gaps, e.g. Player.playerDied/playerWon whose "
+                             "subscribers come from the unexported menu flow.")
     args = parser.parse_args()
 
-    ignored = load_fields("process-identity-fields.json")
+    ignored = load_fields("process-identity-fields.json") | frozenset(args.exclude)
     if args.ignore_presentation:
         ignored |= load_fields("presentation-fields.json")
 
@@ -68,6 +94,10 @@ def main():
     ticks = 0
     while True:
         a, b = next(left, None), next(right, None)
+        if a is not None:
+            a = normalize_types(a)
+        if b is not None:
+            b = normalize_types(b)
         if a and b and a.get("kind") == b.get("kind") == "end":
             a, b = dict(a), dict(b)
             a.pop("reason", None)  # transport-specific (tick-limit vs replay end)
