@@ -37,10 +37,18 @@ decides the question (usually: the oracle trace).
    refs into the cloned hierarchy are remapped, refs out of it kept;
    `[Serializable]` plain classes/structs deep-copied by value. Root clone name
    gets Unity's `"(Clone)"` suffix; children keep their names.
-5. **`FindObjectsOfType` order** = root creation order, depth-first. Unity's
-   order is unspecified but stable within a run; `Updater.ComputeChecksum` and
-   `Host.ResetRl` iterate results. If checksum/trace diffs appear, compare
-   orderings first.
+5. **`FindObjectsOfType` order** = Unity's `FindObjectsSortMode.InstanceID`
+   ascending (the 2022.3 legacy API maps to it): runtime-created objects have
+   negative, decreasing instance ids, scene-file objects positive in file
+   order — so clones enumerate newest-first, before scene objects. The shim
+   keeps its positive monotonic counter plus an `Object.persistent` flag set
+   by GraphBuilder for scene-file objects, and sorts with key
+   `persistent ? +id : -id`. Order is gameplay-visible
+   (Mjolnir/Portal/BananaPeel/FreezeRay iterate
+   `FindObjectsOfType<SlimeController>`) and trace-visible (ReferenceCapture
+   identity ties among same-named root clones). Root cause of the g3
+   Mjolnir/Portal divergence (l0 tick 372) and the l3-p2-g4 CursorArrow trace
+   tie (tick 649); fixing it took both fixtures to full match.
 6. **Destroy(obj, t)** ignores the delay; destruction happens at the host
    frame's destroy flush (gameplay uses `Updater.DestroyFix` for deterministic
    destruction anyway). `DestroyImmediate` is immediate, including the
@@ -222,12 +230,56 @@ Result: **l0-p2-g4 (Dash/Bow/Platform - the live RL training loadout)
 matches 720/720 unfiltered**; l0-p2, l4-p2, l0-p2-g0, l0-p3-g0 re-verified
 green after the change.
 
+## In-process C ABI (sim/Native -> BoplSimNative.so)
+
+`sim/Native` publishes a NativeAOT shared library exporting the full
+`native/rl/bopl_rl.h` ABI (version 2) via `[UnmanagedCallersOnly]`, replacing
+the worker process + unix socket with direct calls. Smoke test:
+`native/rl/native_check.c` (dlopen, open, reset, 240 zero-action steps).
+
+- **RlBridge's dispatch layer is reimplemented, not called**: all of
+  RlBridge's members are private, but everything it dispatches to is reused
+  verbatim (`Host.ResetRl`, `Updater.TickSimulation`, `RlObservation.Write`,
+  `RlTelemetry`, `ReplayArchive`, `ReferenceCapture`) via a new
+  InternalsVisibleTo(BoplSimNative) on Gameplay. The observation wire bytes
+  from `RlObservation.Write` are decoded into unmanaged `BoplRlState` blocks
+  exactly the way `bopl_rl.c decode_snapshot` does; bopl_rl.c's client-side
+  argument validation and status codes are mirrored verbatim.
+- **Frame cadence = the Unity RL runtime, not the trace fixtures**: RlBridge
+  runs up to `CommandsPerFrame` (4096) simulation ticks per engine frame and
+  defers a step that would cross the budget (`pendingStep`), so destroy
+  drains/Start flushes happen every ~4096 ticks — unlike the 16-tick cadence
+  of the BOPL_TRACE_BATCH=16 fixtures. The .so mirrors the 4096 model
+  (boundary after reset, deferral before an oversized step) for bit-parity
+  with the socket path, which is what the checksum comparison targets.
+- **`BOPL_RL_SOCKET=in-process` is set at open**: `RlTelemetry.Enabled`
+  requires `RlBridge.Enabled` (that env var). The only other consumers
+  (Host.Update -> Pump, Host.OnLevelWasLoaded) are never dispatched by the
+  shim host. Without it the telemetry section of the observation would stay
+  zero, unlike the socket path.
+- **One world per process**: gameplay statics; a second `bopl_rl_open`
+  returns an error (and close does not lift the latch).
+- **reset_begin/finish are synchronous**: no socket to overlap with, so begin
+  does all the work and finish reports the stashed result; the pending
+  protocol (EBUSY/EINVAL -> BOPL_RL_IO, close drains) is preserved.
+- **BOPL_TRACE works inside the .so** (`Tick` calls
+  `ReferenceCapture.BeforeReplayStep` like RlBridge.Tick, with the
+  `!Completed` truncation guard from sim/Host) and the open() log path is the
+  `-logFile` equivalent: stderr (shim Debug.Log*) is redirected there.
+- native_check on the default config (2 players, l0, Dash/Gust/Invisibility):
+  reset 59 ms, 240 steps in 5 ms (~48k ticks/s through the full ABI with
+  per-step observation encode/decode), checksum stable across runs and
+  unchanged with tracing on. The checksum awaits comparison against the same
+  sequence through the RL thread's socket path.
+
 ## Open questions for the oracle
 
 - Awake/OnEnable batching on Instantiate (deviation 3).
 - Scene-load Awake order: export loader awakes root-order-then-depth-first;
   Unity's order is officially unspecified (DOTNET_SIM.md says try this first).
-- FindObjectsOfType ordering (deviation 5).
+- ~~FindObjectsOfType ordering (deviation 5)~~ — resolved: InstanceID sort
+  mode with the negative-runtime-id model; confirmed by the l3-p2-g4
+  CursorArrow tie and the g3 fixture going green.
 
 ## TODO
 
@@ -254,3 +306,13 @@ green after the change.
       (10 manual + scripted). Suspect a `Dictionary<string,_>` iteration
       order leak (.NET randomizes string hash seeds per process) somewhere
       on a trace-observable path — audit sim-path dictionary iterations.
+- [x] l3-p2-g4 "divergence" at 649/720: NOT physics — both players entered
+      the Platform ability the same tick, spawning two root CursorArrow(Clone)
+      objects whose ReferenceCapture identities tie ("[0]" both: PathOf skips
+      the sibling ordinal for roots), so the trace order fell through to
+      FindObjectsOfType enumeration order. Fixed by deviation 5's InstanceID
+      sort; the same fix resolved the REAL g3 physics divergence
+      (Mjolnir/Portal iterate FindObjectsOfType<SlimeController> newest-first
+      in Unity). All 15 committed fixtures now match unfiltered.
+- [ ] native_check checksum vs the socket path (RL thread) — same 240-step
+      zero-action sequence, compare FNV-1a over the decoded states.

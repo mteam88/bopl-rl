@@ -12,6 +12,16 @@ namespace UnityEngine
 		// Assets (prefab templates, ScriptableObjects from the export) never get
 		// lifecycle callbacks and are not part of the live scene.
 		internal bool isAsset;
+		// Unity instance-id model: objects loaded from a file (scene objects,
+		// assets) have POSITIVE ids assigned in file order; objects created at
+		// runtime (Instantiate, new GameObject, AddComponent) have NEGATIVE ids
+		// that decrease over time. The shim keeps one positive monotonic counter
+		// and this flag; FindObjectsOfType sorts with key
+		// (persistent ? +instanceId : -instanceId) to reproduce Unity's
+		// FindObjectsSortMode.InstanceID ascending order: runtime clones first,
+		// newest to oldest, then scene objects in load order. Set by the export
+		// loader (GraphBuilder) for scene-file objects.
+		internal bool persistent;
 
 		public HideFlags hideFlags;
 
@@ -195,18 +205,14 @@ namespace UnityEngine
 			var result = new List<T>();
 			foreach (var root in World.Current.roots.ToArray())
 				CollectComponents(root, typeof(T), includeInactive, result);
+			SortByUnityInstanceId(result);
 			return result.ToArray();
 		}
 
 		public static Object FindObjectOfType(Type type)
 		{
-			var result = new List<Object>();
-			foreach (var root in World.Current.roots.ToArray())
-			{
-				CollectComponents(root, type, false, result);
-				if (result.Count > 0) return result[0];
-			}
-			return null;
+			var all = FindObjectsOfType(type);
+			return all.Length > 0 ? all[0] : null;
 		}
 
 		public static Object[] FindObjectsOfType(Type type)
@@ -214,7 +220,26 @@ namespace UnityEngine
 			var result = new List<Object>();
 			foreach (var root in World.Current.roots.ToArray())
 				CollectComponents(root, type, false, result);
+			SortByUnityInstanceId(result);
 			return result.ToArray();
+		}
+
+		// The 2022.3 legacy FindObjectsOfType maps to FindObjectsByType(...,
+		// FindObjectsSortMode.InstanceID): ascending instance id, where runtime
+		// instances are negative and decreasing. Order is gameplay-visible
+		// (Mjolnir/Portal/BananaPeel iterate FindObjectsOfType<SlimeController>)
+		// and trace-visible (ReferenceCapture identity ties among same-named
+		// root clones, e.g. two CursorArrow(Clone) roots on l3-p2-g4 tick 649).
+		private static void SortByUnityInstanceId<T>(List<T> objects) where T : class
+		{
+			objects.Sort((left, right) =>
+			{
+				var a = (Object)(object)left;
+				var b = (Object)(object)right;
+				long keyA = a.persistent ? a.instanceId : -(long)a.instanceId;
+				long keyB = b.persistent ? b.instanceId : -(long)b.instanceId;
+				return keyA.CompareTo(keyB);
+			});
 		}
 
 		private static void CollectComponents<T>(GameObject go, Type type, bool includeInactive, List<T> result) where T : class

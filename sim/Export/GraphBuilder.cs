@@ -17,6 +17,13 @@ namespace BoplSim.Export
 			go.layer = (int?)node["layer"] ?? 0;
 			go.tag = (string)node["tag"] ?? "Untagged";
 			go.activeSelfField = (bool?)node["active"] ?? true;
+			// Scene-file objects have positive Unity instance ids ("persistent");
+			// runtime Instantiate clones are negative. FindObjectsOfType order
+			// (InstanceID ascending) depends on the distinction. Prefab templates
+			// (asset=true) never enter the scene, so their flag is irrelevant,
+			// and their clones are runtime objects with fresh ids.
+			go.persistent = !asset;
+			go.transform.persistent = !asset;
 			if (parent != null) go.transform.SetParentInternal(parent);
 
 			string goId = (string)node["id"];
@@ -49,6 +56,7 @@ namespace BoplSim.Export
 						}
 						target = go.AddComponentSilent(type);
 					}
+					if (!asset && target is Object component) component.persistent = true;
 					if (id != null) db.ObjectsById[id] = target;
 					if (comp["properties"] is JObject props)
 						pending.Add(new PendingProperties { Target = target, Properties = props });
