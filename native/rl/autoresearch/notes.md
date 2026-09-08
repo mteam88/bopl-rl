@@ -944,3 +944,84 @@ Trailing entropy 8.270 at coefficient .0064 (uniform 8.318); explained
 variance .60; gradient norm rising .24 to .52 across the four 5M marks.
 Watch rule (policy-head net/rw > ~1.5 with a rising cosine before 30M) is not
 triggered. Next read at ~30M.
+
+## 2026-09-07 22:28 EDT: evaluation side asymmetry, critic vs height, and what the policy sees of the water (read-only)
+
+Three more reads of the saved evaluation data and the game source, all
+single-threaded and niced; no jobs run.
+
+**Side 0 wins more than side 1 in every evaluation of both runs.** Pooling the
+fixed-opponent games (random + initial, both sides of every seed pair):
+
+| run | side 0 | side 1 |
+|---|---:|---:|
+| aborted stocks-3 (3 evals, 168 games) | 46/84 = .55 [.44, .65] | 30/84 = .36 [.26, .46] |
+| stocks-0 001-s73 (4 evals, 224 games) | 60/112 = .54 [.44, .63] | 41/112 = .37 [.28, .46] |
+| pooled | 106/196 = .54 [.47, .61] | 71/196 = .36 [.30, .43] |
+
+Wilson intervals; seed pairs are correlated so treat the pooled interval as
+optimistic. Within a pair, "only side 0 wins" outnumbers "only side 1 wins"
+11:4, 11:5, 9:5, 7:5 across the four stocks-0 evaluations. The evaluator
+(`evaluate.py`) is side-swapped, so this is not a bookkeeping error; it means
+player slot 1 (spawn on the left of every map: x = -14, -11, -27, -14, -22 for
+maps 0-4) beats slot 2 (right spawn) regardless of which checkpoint sits in it.
+Candidate mechanisms, not distinguished here: the maps are not mirror
+symmetric (map 1 spawns at y 9.8 vs 0.8), the game resolves simultaneous
+events in player-id order, or the policy is left/right asymmetric in a way
+that interacts with the spawn. Training draws the learner side uniformly
+(`bopl_side_random`, xorshift), so training is balanced. Consequence for
+reading evaluations: per-side results should stay separated, and the side
+effect (~.17) is as large as any between-checkpoint difference seen so far.
+A sanity check that costs no GPU: evaluate initial vs initial (same weights
+both sides) and see whether side 0 still wins ~.55; if it does the asymmetry
+is in the game, not the policy. Recorded as a lead; not run.
+
+**Checkpoint-to-checkpoint game outcomes are mostly stable.** The four
+evaluations share the same 57 (opponent, map, seed, side) tasks. Outcomes flip
+on 9/57, 16/57 and 7/57 tasks between consecutive evaluations, and 25-30 of 57
+games end at the identical tick. Sampled action sequences of the saved games
+diverge from the previous checkpoint's at decision 2-52 (median ~14 of ~70), so
+identical outcomes are not identical games; the trajectories differ early and
+the round still ends the same way. Win rate at this stage is a property of the
+(seed, side) task more than of the checkpoint.
+
+**The critic has learned height, not combat.** From the per-decision mind
+dumps of the 9 saved games per evaluation, joined to the physics frames:
+
+| physical step | corr(V, own y) | corr(V, opponent y) | corr(V, own y - opponent y) |
+|---|---:|---:|---:|
+| 6.7M | +.81 | -.09 | +.87 |
+| 13.3M | +.59 | -.36 | +.83 |
+| 20.0M | +.62 | -.24 | +.76 |
+| 26.7M | +.30 | -.44 | +.75 |
+
+Mean V rises monotonically with own height (about -.15 at y < -5 to +.3 at
+y > 25). In won saved games V averages +.1 to +.2 in the first five decisions
+and +.4 to +.9 in the last five; in lost games it goes from ~0 to -.2 to -.4.
+The value row's persistent drift (net/rw 3.7 at 19M) is this feature being
+learned. It is also the right feature: rounds end when someone reaches the
+water, and "relative height" predicts who. The critic is not yet the
+bottleneck; the actor is, and the evaluation losses show why below.
+
+**The water kill zone is in the observation.** `KillZone.cs` kills any player
+whose collider touches it, credited to `ENVIRONMENTAL_PLAYER_ID`
+(`CauseOfDeath.Accident`). The zone is a `DPhysicsBox` on Unity layer 4
+("Water"), so `RlObservation` exports it as a kind-1 (box) entity with flags
+active|enabled|trigger and owner 0; in map 0 it is the box at y = -18.95
+with half-extents 134 x 7 (top edge y = -11.95, matching
+`SceneBounds.WaterHeight` = -11.3 within the player radius). The encoder
+writes it as a normal entity row: relative position clipped at +-64 units,
+right/up vectors clipped at +-64, layer 4/32, trigger flag set. So the policy
+can see the water's relative height from the first decision; there is no
+observation gap to fix. Falling deaths are a policy failure, not a
+perception failure. In the 36 saved evaluation games the loser is below
+y = -5 for a median of 17 ticks (~4 decisions) before dying, so the last
+"save me" window is short; whatever the policy learns first has to be the
+earlier choice not to walk or dash off a platform.
+
+Leads from this (none run): (1) initial-vs-initial evaluation to attribute
+the side effect; (2) an environment-death-rate curve per side from the training
+counters is not available (telemetry is per learner row, side not recorded in
+metrics), so the evaluator remains the place to measure it; (3) if a later
+checkpoint shows environment deaths per episode falling faster than round
+length grows, that is the first sign of the actor moving.
