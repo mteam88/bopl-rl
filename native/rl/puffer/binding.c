@@ -193,23 +193,6 @@ int bopl_vec_host(const void *gpu_observations, const void **obs, const void **r
     if (terminals) *terminals=vec->terminals;
     return vec->total_agents;
 }
-/* Step transport actually in use by the vector's games (sampled after real
- * stepping so an old game build cannot be mistaken for the new path):
- *  2 = every game steps through the single-roundtrip sampled command
- *  1 = the two-roundtrip oracle was forced with BOPL_SPLIT_STEP
- *  0 = at least one game fell back to two step commands (old game build)
- * -1 = unknown vector. */
-int bopl_vec_step_mode(const void *gpu_observations) {
-    StaticVec *vec=bopl_find_vec(gpu_observations);
-    if (!vec) return -1;
-    Env *envs=(Env*)vec->envs;
-    int split=0;
-    for (int i=0; i<vec->size; i++) {
-        if (envs[i].split_step) split++;
-        else if (!bopl_rl_sampled_native(envs[i].world)) return 0;
-    }
-    return split==vec->size?1:2;
-}
 /* Routing introspection for tests and the trainer's sidecar: per environment,
  * the physical agent index of each slot (-1 past num_agents), the current
  * side, active bank, tag, and counters. `out` holds 8+BOPL_MAX_SLOTS ints per

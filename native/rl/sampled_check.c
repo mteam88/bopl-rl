@@ -1,8 +1,7 @@
 /* The single-roundtrip sampled step must reproduce two step commands exactly:
  * the sample equals the state after the first phase, the final state equals
  * the state after the second phase, and an episode that ends during the first
- * phase yields identical terminal sample and final states. With an older game
- * build the client must fall back transparently and report it. */
+ * phase yields identical terminal sample and final states. */
 #include "bopl_rl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +36,7 @@ static int fail(const char *what) { fprintf(stderr, "FAIL: %s\n", what); return 
 
 /* Run one episode with the two-command reference, then the same episode with
  * sampled steps; every decision's (sample, final) pair must match exactly. */
-static int compare_episode(BoplRl *world, BoplRlConfig *config, int expect_native, unsigned int *decisions_out, int *phase1_terminal) {
+static int compare_episode(BoplRl *world, BoplRlConfig *config, unsigned int *decisions_out, int *phase1_terminal) {
     Snapshot phase[2][2048]; unsigned int count=0;
     if (bopl_rl_reset(world, config)) return fail(bopl_rl_error(world));
     while (!(bopl_rl_state(world)->header.flags&BOPL_RL_TERMINAL)) {
@@ -68,15 +67,13 @@ static int compare_episode(BoplRl *world, BoplRlConfig *config, int expect_nativ
         step++;
     }
     if (step!=count) return fail("sampled episode shorter than the reference");
-    if (bopl_rl_sampled_native(world)!=expect_native) return fail(expect_native?"client fell back to two commands on the new build":"client did not fall back on the old build");
     for (unsigned int i=0; i<count; i++) { free(phase[0][i].bytes); free(phase[1][i].bytes); }
     *decisions_out=count;
     return 0;
 }
 
 int main(int argc, char **argv) {
-    if (argc!=5) { fprintf(stderr, "sampled_check <absolute game> <absolute bootstrap.rep> <absolute game.log> <expect_native 0|1>\n"); return 2; }
-    int expect_native=atoi(argv[4]);
+    if (argc!=4) { fprintf(stderr, "sampled_check <absolute game> <absolute bootstrap.rep> <absolute game.log>\n"); return 2; }
     char error[512];
     BoplRl *world=bopl_rl_open(argv[1], argv[2], argv[3], 30000, error, sizeof(error));
     if (!world) { fprintf(stderr, "%s\n", error); return 1; }
@@ -96,13 +93,13 @@ int main(int argc, char **argv) {
     /* Full matches on three seeds (600-tick limit keeps this quick; timeouts end on a multiple of 4). */
     for (uint32_t seed=101; seed<104; seed++) {
         config.seed=seed; config.max_episode_ticks=600;
-        if (compare_episode(world, &config, expect_native, &decisions, &phase1_terminal)) return 1;
+        if (compare_episode(world, &config, &decisions, &phase1_terminal)) return 1;
         total+=decisions;
     }
     /* Episode limits that are not multiples of four end inside the first phase (3 ticks). */
     for (uint32_t limit=9; limit<=11; limit++) {
         config.seed=7; config.max_episode_ticks=limit; phase1_terminal=0;
-        if (compare_episode(world, &config, expect_native, &decisions, &phase1_terminal)) return 1;
+        if (compare_episode(world, &config, &decisions, &phase1_terminal)) return 1;
         if (!phase1_terminal) return fail("expected the episode to end during the first phase");
         if (!(bopl_rl_state(world)->header.flags&BOPL_RL_TRUNCATED)) return fail("expected truncation");
         seen_phase1++; total+=decisions;
@@ -110,7 +107,7 @@ int main(int argc, char **argv) {
     /* Stepping a finished episode is rejected the same way for both commands. */
     if (bopl_rl_step_sampled(world, actions, 2, 3, 1)!=BOPL_RL_ENDED) return fail("sampled step after terminal accepted");
     if (bopl_rl_step(world, actions, 2, 3)!=BOPL_RL_ENDED) return fail("step after terminal accepted");
-    printf("{\"status\":\"pass\",\"decisions\":%u,\"phase1_terminal_episodes\":%d,\"sampled_native\":%d}\n", total, seen_phase1, bopl_rl_sampled_native(world));
+    printf("{\"status\":\"pass\",\"decisions\":%u,\"phase1_terminal_episodes\":%d}\n", total, seen_phase1);
     bopl_rl_close(world);
     return 0;
 }

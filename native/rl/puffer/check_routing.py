@@ -84,7 +84,6 @@ def main():
     lib.bopl_vec_set_tags.restype = ctypes.c_int; lib.bopl_vec_set_tags.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_count_aligned.restype = ctypes.c_int; lib.bopl_vec_count_aligned.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.bopl_set_valid_banks.argtypes = [ctypes.c_uint]
-    lib.bopl_vec_step_mode.restype = ctypes.c_int; lib.bopl_vec_step_mode.argtypes = [ctypes.c_void_p]
     counters.bind(lib)
     report = dict(schema=1, game=os.environ['BOPL_RL_GAME'], checks=[])
     def check(name, ok, **info):
@@ -203,7 +202,6 @@ def main():
         check('b1: sides vary per historical env', all(len(s) == 2 for s in sides.values()), sides={k: sorted(v) for k, v in sides.items()})
         check('b1: banks vary per historical env', all(len(s) == 2 for s in bank_seen.values()), banks={k: sorted(v) for k, v in bank_seen.items()})
         check('b1: count_aligned reports each historical match boundary once', aligned_total == sum(matches[i] for i in sides), aligned=aligned_total, matches=matches)
-        check('b1: sampled step transport', lib.bopl_vec_step_mode(ctypes.c_void_p(vec.gpu_obs_ptr)) == 2)
         # Restrict the valid banks: new matches must only pick bank 1.
         lib.bopl_set_valid_banks(0b10)
         picked = set()

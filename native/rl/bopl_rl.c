@@ -38,7 +38,7 @@ struct BoplRl {
     int socket, listener;
     pid_t child;
     uint32_t timeout_ms, sequence, maps, abilities;
-    bool valid, broken, sample_valid, sampled_unsupported, reset_pending, eager;
+    bool valid, broken, sample_valid, reset_pending;
     uint32_t reset_sequence;
     char directory[64], endpoint[108], error[512], source[65], catalog[65];
     unsigned char *buffer;
@@ -75,9 +75,9 @@ static int wait_ready(int fd, short events, int64_t deadline) {
 }
 static int transfer(BoplRl *w, void *data, size_t size, bool send_data, int64_t deadline) {
     unsigned char *bytes=data;
-    /* BOPL_RL_EAGER_IO=1: try the non-blocking syscall first and poll only
-     * when it would block, instead of polling before every chunk. */
-    bool ready=w->eager;
+    /* Try the non-blocking syscall first and poll only when it would block,
+     * instead of polling before every chunk. */
+    bool ready=true;
     while (size) {
         if (!ready && wait_ready(w->socket, send_data?POLLOUT:POLLIN, deadline)<0) return fail(w, "RL transport wait");
         ssize_t count=send_data?send(w->socket, bytes, size, MSG_NOSIGNAL):recv(w->socket, bytes, size, 0);
@@ -87,10 +87,10 @@ static int transfer(BoplRl *w, void *data, size_t size, bool send_data, int64_t 
     }
     return BOPL_RL_OK;
 }
-/* Sends a request frame and its payload; as one write when eager I/O is on. */
+/* Sends a request frame and its payload as one write (two for oversized payloads). */
 static int send_request(BoplRl *w, const Frame *frame, const void *data, int64_t deadline) {
     unsigned char packed[sizeof(*frame)+4096];
-    if (w->eager && frame->length<=sizeof(packed)-sizeof(*frame)) {
+    if (frame->length<=sizeof(packed)-sizeof(*frame)) {
         memcpy(packed, frame, sizeof(*frame));
         if (frame->length) memcpy(packed+sizeof(*frame), data, frame->length);
         return transfer(w, packed, sizeof(*frame)+frame->length, true, deadline);
@@ -216,8 +216,6 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
     BoplRl *w=calloc(1, sizeof(*w));
     if (!w) { error_text(error, capacity, "RL handle allocation failed"); return NULL; }
     w->socket=w->listener=-1; w->timeout_ms=timeout_ms;
-    const char *eager=getenv("BOPL_RL_EAGER_IO");
-    w->eager=eager && !strcmp(eager, "1");
     snprintf(w->directory, sizeof(w->directory), "/tmp/bopl-rl-XXXXXX");
     if (!mkdtemp(w->directory)) { fail(w, "RL socket directory"); goto cleanup; }
     snprintf(w->endpoint, sizeof(w->endpoint), "%s/game.sock", w->directory);
@@ -329,44 +327,26 @@ int bopl_rl_step_sampled(BoplRl *w, const BoplRlAction *actions, size_t count, u
     if (result) return result;
     if (first<1 || first>16 || second<1 || second>16 || first+second>16) return BOPL_RL_ARGUMENT;
     w->sample_valid=false;
-    if (!w->sampled_unsupported) {
-        uint32_t length;
-        result=command(w, 6, &request, sizeof(request), &length);
-        if (result==BOPL_RL_GAME_ERROR && strstr(w->error, "Unknown RL command")) {
-            /* An older game build rejected the command before simulating anything. */
-            w->sampled_unsupported=true; w->valid=true; w->error[0]=0;
-        } else {
-            if (result) return result;
-            uint32_t consumed;
-            result=decode_snapshot(w, &w->sample, w->buffer, length, &consumed);
-            if (result) return result;
-            if (consumed==length) {
-                if (!(w->sample.state.header.flags & BOPL_RL_TERMINAL)) { errno=EPROTO; return fail(w, "Missing final RL state"); }
-                result=copy_snapshot(w, &w->main, &w->sample);
-            } else {
-                uint32_t rest;
-                result=decode_snapshot(w, &w->main, w->buffer+consumed, length-consumed, &rest);
-                if (!result && consumed+rest!=length) { errno=EPROTO; return fail(w, "Invalid RL state layout"); }
-            }
-            if (result) return result;
-            w->valid=true; w->sample_valid=true; w->error[0]=0;
-            return BOPL_RL_OK;
-        }
-    }
-    result=bopl_rl_step(w, actions, count, first);
+    uint32_t length;
+    result=command(w, 6, &request, sizeof(request), &length);
     if (result) return result;
-    result=copy_snapshot(w, &w->sample, &w->main);
+    uint32_t consumed;
+    result=decode_snapshot(w, &w->sample, w->buffer, length, &consumed);
     if (result) return result;
-    w->sample_valid=true;
-    if (!(w->main.state.header.flags & BOPL_RL_TERMINAL)) {
-        result=bopl_rl_step(w, actions, count, second);
-        w->sample_valid=!result;
+    if (consumed==length) {
+        if (!(w->sample.state.header.flags & BOPL_RL_TERMINAL)) { errno=EPROTO; return fail(w, "Missing final RL state"); }
+        result=copy_snapshot(w, &w->main, &w->sample);
+    } else {
+        uint32_t rest;
+        result=decode_snapshot(w, &w->main, w->buffer+consumed, length-consumed, &rest);
+        if (!result && consumed+rest!=length) { errno=EPROTO; return fail(w, "Invalid RL state layout"); }
     }
-    return result;
+    if (result) return result;
+    w->valid=true; w->sample_valid=true; w->error[0]=0;
+    return BOPL_RL_OK;
 }
 const BoplRlState *bopl_rl_state(const BoplRl *w) { return w && w->valid ? &w->main.state : NULL; }
 const BoplRlState *bopl_rl_sample(const BoplRl *w) { return w && w->valid && w->sample_valid ? &w->sample.state : NULL; }
-int bopl_rl_sampled_native(const BoplRl *w) { return w && !w->sampled_unsupported; }
 int bopl_rl_replay(BoplRl *w, const void **bytes, size_t *length) {
     if (!w || !bytes || !length) return BOPL_RL_ARGUMENT;
     uint32_t received=0;

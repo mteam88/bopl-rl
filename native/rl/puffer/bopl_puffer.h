@@ -63,19 +63,20 @@ typedef struct {
     unsigned int rng;
     BoplRl *world;
     BoplRlConfig config;
-    /* Optional second game process (BOPL_SPARE_GAME). While an episode runs
-     * on `world`, `spare` is already loading the following episode's setup so
-     * the terminal step swaps processes instead of waiting ~35 ms for a
-     * scene load. Setups are drawn one episode ahead from the same sequence
-     * of bopl_random draws, so every episode still gets exactly the setup it
-     * would have had on one process. */
+    /* Second game process of every auto-resetting (training) environment.
+     * While an episode runs on `world`, `spare` is already loading the
+     * following episode's setup so the terminal step swaps processes instead
+     * of waiting ~35 ms for a scene load. Setups are drawn one episode ahead
+     * from the same sequence of bopl_random draws, so every episode still
+     * gets exactly the setup it would have had on one process. Evaluation
+     * environments (no_autoreset) run a single process. */
     BoplRl *spare;
     BoplRlConfig spare_config;
     pthread_t spare_thread;
     int spare_opening;
     char spare_log[4096];
-    /* BOPL_PARALLEL_OPEN: the world process too is opened on a thread at init
-     * and joined at the first reset, so a vector's games boot concurrently
+    /* The world process too is opened on a thread at init and joined at the
+     * first reset, so a vector's games boot concurrently
      * instead of one after another (PufferLib calls my_init serially). Which
      * process an episode runs on never affects its outcome, and the log path
      * and rng advance are fixed before the thread starts. */
@@ -84,7 +85,7 @@ typedef struct {
     char world_log[4096], world_error[512];
     int repeat, random_maps, random_loadouts, failed;
     uint32_t training_map_mask;
-    int observation_delay, delay_cursor, no_autoreset, split_step;
+    int observation_delay, delay_cursor, no_autoreset;
     float *history, *sample;
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
@@ -292,14 +293,8 @@ static void init(BoplPuffer *env) {
     if (env->training_map_mask && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
-    const char *parallel=getenv("BOPL_PARALLEL_OPEN");
-    if (parallel && *parallel && strcmp(parallel, "0")!=0) {
-        if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
-        env->world_opening=1;
-    } else {
-        bopl_world_open(env);
-        bopl_world_ready(env);
-    }
+    if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
+    env->world_opening=1;
     if (env->players<1 || env->players>BOPL_MAX_PLAYERS || env->banks<0 || env->banks>BOPL_MAX_BANKS
         || (env->banks && env->players!=2) || env->num_agents!=(env->banks?1+env->banks:env->players)) {
         fprintf(stderr, "Bopl RL slot layout: players %d, banks %d, slots %d\n", env->players, env->banks, env->num_agents); abort();
@@ -311,10 +306,7 @@ static void init(BoplPuffer *env) {
     env->active_bank=-1;
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
-    const char *split=getenv("BOPL_SPLIT_STEP");
-    env->split_step=split && *split && strcmp(split, "0")!=0;
-    const char *spare=getenv("BOPL_SPARE_GAME");
-    if (!env->no_autoreset && spare && *spare && strcmp(spare, "0")!=0) {
+    if (!env->no_autoreset) {
         length=snprintf(env->spare_log, sizeof(env->spare_log), "%s/worker-%ld-%u-spare.log", logs, (long)getpid(), env->rng);
         if (length<0 || (size_t)length>=sizeof(env->spare_log)) abort();
         /* Game start-up takes seconds; overlap it with the other workers' start-up. */
@@ -412,23 +404,13 @@ static void c_step(BoplPuffer *env) {
     uint32_t ticks=before->header.episode_ticks;
     // Sample at phase 3 of each four-tick decision. At t=12 return the
     // observation from t=3, giving an exact nine-tick delay thereafter.
-    uint32_t first=env->observation_delay?3:(uint32_t)env->repeat;
-    if (env->observation_delay && !env->split_step) {
+    if (env->observation_delay) {
         // Both phases in one game roundtrip: the phase-3 state is returned
         // alongside the final state (identical when the episode ends in phase 1).
-        if (bopl_rl_step_sampled(env->world, actions, env->players, first, 1)) bopl_failed(env, "sampled step");
+        if (bopl_rl_step_sampled(env->world, actions, env->players, 3, 1)) bopl_failed(env, "sampled step");
         compute_observations_from(env, bopl_rl_sample(env->world));
         memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
-    } else {
-        // Original two-roundtrip path (BOPL_SPLIT_STEP=1), retained as the parity oracle.
-        if (bopl_rl_step(env->world, actions, env->players, first)) bopl_failed(env, "step");
-        if (env->observation_delay) {
-            compute_observations(env);
-            memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
-            if (!(bopl_rl_state(env->world)->header.flags&BOPL_RL_TERMINAL)
-                && bopl_rl_step(env->world, actions, env->players, 1)) bopl_failed(env, "step phase");
-        }
-    }
+    } else if (bopl_rl_step(env->world, actions, env->players, (uint32_t)env->repeat)) bopl_failed(env, "step");
     const BoplRlState *state=bopl_rl_state(env->world);
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;

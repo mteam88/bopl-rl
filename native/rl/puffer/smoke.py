@@ -75,7 +75,6 @@ lib.bopl_vec_host.argtypes = [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_v
 lib.bopl_vec_host.restype = C.c_int
 lib.bopl_set_valid_banks.argtypes = [C.c_uint]
 lib.bopl_vec_layout.argtypes = [C.c_void_p, C.POINTER(C.c_int), C.c_int]; lib.bopl_vec_layout.restype = C.c_int
-lib.bopl_vec_step_mode.argtypes = [C.c_void_p]; lib.bopl_vec_step_mode.restype = C.c_int
 
 games, buffers, banks, horizon = options.games, options.buffers, options.banks, options.horizon
 historical = games//2
@@ -191,7 +190,6 @@ try:
         return count
     for number in range(1, options.updates+1): count = one_update(number, [0])
     check('matches completed', count['matches'] > 0, matches=count['matches'])
-    check('sampled step transport', lib.bopl_vec_step_mode(C.c_void_p(vec.gpu_obs_ptr)) == 2)
     final, final_meta = save('final.bin', count)
     check('weights changed', initial_meta['weights_sha256'] != final_meta['weights_sha256'])
     # GPU round trip: reload the checkpoint into the trainer and save again.
