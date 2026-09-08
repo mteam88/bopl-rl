@@ -28,11 +28,12 @@ static Snapshot snapshot(const BoplRlState *state) {
 static int same(Snapshot a, Snapshot b) { return a.length==b.length && !memcmp(a.bytes, b.bytes, a.length); }
 static int action(BoplRl *world, unsigned int step, unsigned int repeat) {
     BoplRlAction actions[6]={{0}};
+    size_t players=bopl_rl_state(world)->header.player_count;
     for (uint32_t i=0; i<6; i++) {
         actions[i].angle=(uint8_t)(1+(step*17+i*39)%255);
         actions[i].buttons=(uint16_t)((step+3*i)%16);
     }
-    return bopl_rl_step(world, actions, 6, repeat);
+    return bopl_rl_step(world, actions, players, repeat);
 }
 /* Reset with the configuration, snapshot, play 120 ticks, snapshot again. */
 static int run(BoplRl *world, const BoplRlConfig *config, Snapshot *fresh, Snapshot *later) {

@@ -1,0 +1,17 @@
+{"map":0,"seed":1000020,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":0,"seed":2000023,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":0,"seed":3000026,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":1,"seed":1007939,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":1,"seed":2007942,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":1,"seed":3007945,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":2,"seed":1015858,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":2,"seed":2015861,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":2,"seed":3015864,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":3,"seed":1023777,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":3,"seed":2023780,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":3,"seed":3023783,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":4,"seed":1031696,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":4,"seed":2031699,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"map":4,"seed":3031702,"warmup_ticks":240,"post_warmup_identical":true,"after_120_ticks_identical":true}
+{"control":"random_ability","post_warmup_identical":false,"after_120_ticks_identical":false}
+{"status":"WARMUP_SEED_INDEPENDENT_OK","maps":5,"seeds":4}

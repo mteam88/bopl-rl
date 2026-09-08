@@ -298,46 +298,62 @@ Matthew's decision (00:26): the 500M run waits for both (a) and (b).
 #### D. Snapshot-restore of the post-warmup initial state (own item, own gate)
 
 Goal: a world's match reset costs neither the scene load nor the 240 warmup ticks.
-Facts that bound the design: the post-warmup state is seed-dependent (
-`GameSessionHandler.Init` draws `randomDelay[i] = Updater.RandomFix(0,1)*MaxRandomDelay`
-per ground at tick 1, which shifts platform arrival and therefore player landing
-times; `Updater.random` itself is seeded per match), the trainer draws a fresh 32-bit
-seed and (with `--random-loadouts`) fresh abilities per match, so a cache keyed on
-(map, seed, loadout) never hits. The only viable exact scheme is:
 
-1. Feasibility measurement first (1-2 h, no design commitment): dump the full sim
-   state (ReferenceCapture encoder: all `MonoUpdatable`/`FixTransform` fields, Updater
-   and session statics) at the end of warmup for >=8 seeds x 5 maps x 2 loadouts and
-   diff, excluding `Updater.random` and `randomDelay[]`. Outcome A: identical -> the
-   post-warmup state is seed-independent modulo the RNG and the delays, and a canonical
-   warm world per (map, players) can be restored and re-seeded. Outcome B: differs ->
-   only the scene load can be skipped (fresh-scene snapshot + warmup replay, ~15 of
-   ~32 ms), and the doc records which fields diverge.
-2. Mechanism (outcome A): live clone, not serialization. Keep one never-ticked
-   "master" world per (map, players) that completed warmup with a canonical seed;
-   restore = clone the master's object graph into world k's scene: instantiate the
-   hierarchy with `Awake` suppressed, reflectively copy every instance field mapping
-   master scene objects -> clones (assets shared, delegates re-targeted, closures deep
-   copied), rebuild `PhysicsBodyList.instanceIdToColliderIndex` from the clones'
-   instance IDs, rebuild `Updater.updatables` order and `HierarchyNumber`s from the
-   master, then `Updater.InitSeed(seed)` and replay the master's recorded warmup draw
-   sequence (`randomDelay[]` recomputed by re-executing the same draws). Loadouts:
-   the ability objects are inactive and freshly `Init`ed after warmup, so a requested
-   loadout replaces the master's ability objects in place (same `updatables` index,
-   same `HierarchyNumber` offsets, same `Init` call), which is the step gate 3 must
-   watch most closely.
-3. Gate: `native/rl/reset_check.c` extended to (a) N>=2 worlds, (b) every map 0-4 and
-   >=8 seeds, (c) loadouts covering the ability families, comparing every observed
-   state of a restored match against a match started by the ordinary load+warmup
-   path in a separate process, plus the section 4 replay-hash comparison. Bit-exact or
-   it does not ship; a hard blocker (native Unity component state such as `Animator`
-   feeding the sim, or closure/delegate graphs that cannot be re-targeted) is reported
-   to thr_wq22hezkbf with an estimate rather than worked around.
-4. Measurement contract for the remeasure: RlProfile reports per world `reset:load`
-   (scene load frames), `reset:warmup` (warmup tick time) and `reset:restore`
-   separately from `tick` time, and gate0.py reports reset ms/match next to learner
-   decisions/s. The operating-point recommendation for the 500M run is made after D
-   lands, not from the many-worlds-only remeasure.
+Feasibility (settled 2026-09-08 01:15 EDT): the post-warmup state does **not** depend on the
+episode seed. Source reading by thr_wq22hezkbf (autoresearch/throughput notes 01:10): the only
+`Updater.random` consumer before tick 240 is `GameSessionHandler.Init`, which draws one
+`RandomFix(0,1)` per non-destroyed ground (in `grounds[]` order) into `randomDelay[]`; the delay
+only shifts when each ground arrives (ticks 129-165) and the animate-in curve clamps to exactly
+1 at its last key, so every ground lands bit-exactly on `targetPositions`; `randomDelay[]` is
+re-read only by `AnimateOutLoop`, which the RL path never reaches. Evidence: their
+`native/rl/warmup_check.c` (cherry-picked as bf4c780, plus a fix: it sent 6 actions to a
+2-player world, which the C library rejects) run here on the incumbent build,
+`native/rl/evidence/many-worlds/warmup-check.out`: 5 maps x 4 seeds, reset state
+and state 120 scripted ticks later byte-identical across seeds for every map;
+`WARMUP_SEED_INDEPENDENT_OK`. The control with the Random ability (catalog id 1) in every slot
+differs, as expected: that ability draws from the seeded stream at `SpawnPlayers`.
+
+Design (outcome A):
+
+1. **Master worlds.** The first match with a given key `(map, players, per-player loadout,
+   stocks, mode)` runs the ordinary load+warmup path and, at the end of warmup, its scene is
+   promoted to a never-ticked *master* (kept loaded, never stepped) and a fresh clone is made
+   for the requesting world. Later resets with the same key restore from the master. Keys whose
+   loadout contains the Random ability are never cached (always the ordinary path). Masters
+   live in a small LRU (default 8 scenes; the 500M run has fixed loadouts, so at most one per
+   map). A miss takes the ordinary path, which stays available and gated, so random-loadout
+   runs simply get a lower hit rate.
+2. **Restore = live clone.** `Object.Instantiate` of every root of the master scene into world
+   k's (empty) scene gives a 1:1 object correspondence; then a reflective *total copy* of every
+   instance field of every component and every reachable plain object from master to clone,
+   with UnityEngine.Object references inside the master scene remapped to their clones (assets,
+   prefabs, DontDestroyOnLoad singletons and the shared WinnerTriangle objects kept), plain
+   objects deep-copied with an identity memo, dictionaries/hash sets rebuilt by re-insertion
+   (Unity object keys hash by instance id), delegates re-created with remapped targets, native
+   buffers (`RopeBodyList`, `RopeMesh` NativeArrays) copied by hand. The per-world statics
+   (WorldState record) are copied from the master's record through the same remap
+   (`updatables` order, `HierarchyNumber`s, `prefabsAdded`, `Rope.ropeNumber`, ...), and
+   `PhysicsBodyList.instanceIdToColliderIndex` plus each collider's `instanceId` are rebuilt
+   from the clones' ids. Awake/OnEnable/Start of the clones run before the copy (one frame
+   boundary after `Instantiate`), so their side effects are erased by it; the copy is total
+   over the world by construction.
+3. **RNG rebuild.** After the copy: `Updater.InitSeed(seed)`, then the same loop as
+   `GameSessionHandler.Init` (`randomDelay[i] = RandomFix(0,1) * MaxRandomDelay` for each
+   non-destroyed ground in `grounds[]` order), which leaves `Updater.random` in exactly the
+   state a fresh match has at tick 240 (no other draws before then; gate 3 checks this).
+4. **Gate 3** (`reset_check.c` extended, plus a new `restore_check.c`): every observed state of
+   a restored match must equal the state of a match started by the ordinary load+warmup path
+   in a separate process, for maps 0-4, >=8 seeds, 2 and 6 players, loadouts covering the
+   ability families (Mjolnir, Portal, PokeBall, BananaPeel, FreezeRayGun, SuperStar, ropes,
+   black hole, quantum tunnel), across repeated restores of the same world and across worlds
+   restored from the same master; plus the section 4 replay-hash comparison. Bit-exact or it
+   does not ship; a hard blocker (state the copy cannot reach, e.g. native engine state that
+   feeds the sim) is reported to thr_wq22hezkbf with an estimate rather than worked around.
+5. **Measurement contract** for the remeasure: RlProfile reports per world `reset:load` (scene
+   load frames), `reset:warmup` (warmup tick time) and `reset:restore` separately from `tick`
+   time, and gate0.py reports reset ms/match next to learner decisions/s. The operating-point
+   recommendation for the 500M run is made after D lands, not from the many-worlds-only
+   remeasure.
 
 #### E. Trainer plumbing
 
