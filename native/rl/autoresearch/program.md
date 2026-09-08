@@ -255,7 +255,6 @@ the slot is negotiated explicitly between the Rifts.
   queued unbuilt on branch `autoresearch/raycull-early` (3cadbe0: bounds
   cull before `IsActive`; notes.md 00:52) for a parity check + benchmark when
   the machine is free.
-- **Visibility review** before any experiment with invisibility or smoke.
   Snapshot-restore read (notes.md 2026-09-08 01:10): the post-warmup state is
   seed-independent per map and loadout; the only seed-carried state is the
   `Updater.random` stream position (two draws per ground in `GameSessionHandler.Init`),
@@ -263,6 +262,7 @@ the slot is negotiated explicitly between the Rifts.
   per map at tick 240 suffices; the `Random` ability (id 1) is the exception.
   Check binary queued unbuilt on branch `autoresearch/warmup-check` (edceb65,
   `native/rl/warmup_check.c`).
+- **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
 
