@@ -171,6 +171,191 @@ required for determinism (all `Parallel.ForEach` were already serialised), so us
 P processes x N worlds with P about the core count; the thread picks P, N by
 measurement.
 
+### Design decisions (2026-09-08 00:50 EDT, thr_nzrpteey2z; binding-protocol owner thr_6bmdfjijez is archived, so these are decided here)
+
+Inputs folded in from thr_wq22hezkbf (throughput rift, exp08 profiles): per stocks-0
+match the game main thread spends ~51 ms playing ~412 ticks and ~32 ms building the
+next round (240 warmup ticks ~18 ms + scene load 14-19 ms) = 38% of game CPU; the
+reset share grows with workers (3 ms/match at w16 -> 4-5 ms at w32, share .32 -> .49);
+per-tick sim cost is flat at ~67 us with no bit-exact trim worth >5%. So the work is
+(a) remove per-process overhead and the memory cap (many worlds), and (b) make a
+world's match reset cheap (snapshot-restore of the post-warmup state, item D below).
+Matthew's decision (00:26): the 500M run waits for both (a) and (b).
+
+#### A. Wire protocol (BRL1 v2 stays; world-addressed commands are added)
+
+- Frame header unchanged: `{magic, operation, sequence, length}`. Ops 0-6 keep their
+  exact payloads and semantics and always address world 0, so an old C client keeps
+  working against the new build and the new C library keeps working against the old
+  build (needed for the old-vs-new bit-exact check).
+- Handshake (op 0) payload grows from 140 to 144 bytes: `+u32 worlds` = number of
+  worlds this process allocated (from env `BOPL_RL_WORLDS`, default 1). The C library
+  accepts 140 (legacy build, 1 world, legacy ops only) or 144.
+- World-addressed ops = legacy op | 0x100, payload = `u32 world` + legacy payload:
+  0x101 reset(k) (180 B), 0x102 step(k) (32 B), 0x106 step_sampled(k) (36 B),
+  0x103 observe(k) (4 B), 0x105 replay(k) (4 B). Responses echo op and sequence;
+  the response payload is the legacy one. Op 4 (close) stays process-wide.
+- Responses may complete out of request order: a reset(k) reply is produced only after
+  k's scene has loaded (a Unity frame boundary) and its warmup ran, while steps of the
+  other worlds keep being answered. The C side therefore demultiplexes replies by
+  sequence number (B). Reply order for commands of the *same* world is always the
+  request order.
+- No batched step-all op in this iteration. Steps are one command per world (N
+  outstanding at most); PufferLib's `#pragma omp parallel for` over environments already
+  issues them concurrently. Revisit only if the remeasure attributes >10% of trainer CPU
+  to per-command syscalls.
+- Error frames (op 0xffffffff) carry the failing sequence; a game error in world k
+  invalidates only world k (`valid=false` on that handle); a transport error breaks the
+  whole process (all its handles).
+
+#### B. C library (`bopl_rl.h/.c`): one process, N handles, per-process demux
+
+- `BoplRl` stays the per-world handle and the whole existing API keeps its ABI and
+  contract ("serialize calls for one handle; separate handles can run concurrently").
+  New: `int bopl_rl_open_worlds(executable, bootstrap, log, timeout_ms, worlds, BoplRl **out, error, cap)`
+  spawns one process with `BOPL_RL_WORLDS=worlds` and fills `out[0..worlds-1]`.
+  `bopl_rl_open` == `open_worlds(1)`. `bopl_rl_close(handle)` releases a world; the
+  process (socket, child, directory) is closed when its last handle is released
+  (refcount under the process mutex). Closing is allowed in any order.
+- Process object: socket, child pid, `send_lock`, `reply_lock` + condvar, a table of
+  pending requests `{sequence -> handle, delivered flag}`, one "reader" at a time
+  (leader/follower: a waiter that finds no active reader receives the next frame,
+  copies the payload into the owning handle's buffer, marks it delivered, broadcasts,
+  and keeps reading until its own reply is in). Timeouts are per wait, per handle.
+- `bopl_rl_reset_begin/finish` map directly onto the pending table (begin registers the
+  sequence; finish waits for it). The single-world "spare process" pattern in
+  `bopl_puffer.h` is kept only for worlds==1; for worlds>=2 the in-process deferral of
+  reset replies hides the scene load the same way, without a second process.
+- Legacy build detection: handshake length 140 -> `worlds` must be 1 and the handle
+  uses ops 1-6; otherwise the k-ops are used for every world including 0.
+
+#### C. Unity side (`RlBridge`, `WorldState`, additive scenes)
+
+- `RlWorld` (per world, index k): today's RlBridge per-match statics (`loading, ready,
+  started, terminal, failed, warmup, remainingWarmup, episodeTicks, episodeLimit,
+  resetSequence, inputs, loadedFrame, pendingStep*, recording`) plus `scene` (the
+  world's level scene), `oldScene` (previous level scene awaiting unload), the
+  `RlObservation` id map and `RlTelemetry` counters.
+- `WorldState.Bind(k)`: copies the per-match statics out of the classes into the
+  currently bound world's record and the record of k back into the classes (reference
+  swap for lists/queues/arrays, value copy for scalars). Field list (all "P" rows of
+  A1): Updater 16 (`LoadedALevelThisUpdate, toDestroyBuffer, destroyedMonos,
+  destroyedObjects, updatables, toBeAddedUpdatables, addedUpdatables, toBeAddedPrefab,
+  prefabsAdded, registeringAPrefab, random, hitStopFrames, SimTimePassed,
+  SimTimeSinceLevelLoaded, SimulationTicks, gameHasStopped`), `DetPhysics.instance`,
+  `DetPhysics.levelTypeThisFrame`, `PlayerHandler.instance`, `GameTime.PlayerTimeScale`,
+  GameSessionHandler (`playerSpawns_readonly, selfRef, GameIsPaused,
+  SuddenDeathTimeStamp, SuddenDeathInProgress`), GameSession (`currentLevel,
+  isInitialized, playedLevelsBag`), `Constants.leveltype`, `Rope.ropeNumber`,
+  `BlackHole.BlackHoleIndex`, `HookshotInstant.player1Ropes`,
+  `ShootQuantum.spawnedQuantumTunnels`, `Host.level`, `Host.goToNextReplay`.
+  Left global (set at reset time, not read mid-match): `SteamManager.startParameters`,
+  `ReplaySession.Playing/Recording`, `GameLobby.*`, `Host.replayFrames`,
+  `WinnerTriangleCanvas.instance` (shared canvas, presentation only). Scratch statics
+  (`MagnetGun.parryHitboxes/hitBuffer`, the `PhysicsParent[]`/`Vec2[]` buffers) stay
+  shared because worlds tick serially inside one process.
+  Each swapped static gets an `internal` accessor where it is private today; no
+  gameplay call site changes.
+- Bind points: before every command handled for world k, before issuing world k's
+  scene load (and left bound across that frame boundary so the scene's `Awake` and
+  `Start` land in k), and while running k's warmup ticks. `SceneManager.SetActiveScene(k.scene)`
+  accompanies every bind of a world that has a scene, so `Object.Instantiate` without a
+  parent lands in k's scene (needed for scene-scoped Find and for unload).
+- Scene flow per reset(k): (1) bind k; (2) `Updater.PreLevelLoad`/`Host.Init`/
+  `ForceStartGame` exactly as today up to the scene load; (3) if k has a scene:
+  `DestroyImmediate` its root objects now (their `OnDestroy` bodies touch no per-world
+  static, verified for all gameplay classes), keep the empty scene loaded, remember it as
+  `oldScene`; (4) `SceneManager.LoadScene(6+level, LoadSceneMode.Additive)` (issued from
+  `ForceStartGame` when `RlBridge.Enabled`; the `winnerTriangle` additive load stays
+  once per process); (5) return to Unity for the frame boundary; (6) next frame:
+  `sceneLoaded` gives k its `Scene` and `loadedFrame`; `UnloadSceneAsync(oldScene)`;
+  one frame later (same `Time.frameCount > loadedFrame` rule as today) run k's warmup
+  ticks and reply. At most one world's load is issued per frame; further resets queue
+  and are issued on the following frames, in request order. The bootstrap match's
+  level scene (loaded Single by the `.rep` bootstrap) is the initial `scene` of world 0
+  and is unloaded by world 0's first reset like any other old scene.
+- `Host.Update` RL gate becomes `RlBridge.Enabled && hasBeenInitialized` (the active
+  scene is no longer the level).
+- Pump loop: (1) for every world whose load completed, run warmup within the per-frame
+  tick budget and reply; (2) pending deferred steps; (3) command reads. Reads are
+  blocking only while no world owes a reply that needs a frame boundary; otherwise the
+  loop drains what is already available (own receive buffer replaces `BufferedStream`)
+  and returns, which prevents the deadlock "game blocks on read while the trainer's
+  only unfinished environment waits for a reset reply".
+- Scene-scoped Find: the 20 sim-path `FindObjectsOfType<SlimeController|Ability|BoplBody>`
+  sites (BananaPeel, StockPips, FreezeRayGun, Mjolnir, Portal, PokeBall, SuperStarEffect)
+  and the `ShakableCamera`/`PlayerAverageCamera` sites go through `WorldScene.Find*<T>()`
+  = Unity's result filtered to `gameObject.scene == bound world's scene`. Filtering keeps
+  Unity's relative order, which is a property of the objects themselves, so N=1 is the
+  identity and N>=2 preserves single-world order; gate 2 must include loadouts that hit
+  these sites (Mjolnir, Portal, PokeBall, BananaPeel, FreezeRayGun, SuperStar).
+- Unity instance IDs stay process-global; they are only dictionary keys and equality
+  operands in the sim (verified: no ordering on `instanceId`), and `RlObservation`
+  remaps them per episode in first-seen order.
+- Same code path for N=1 and N>=2 (additive + WorldState always), so gate 1 (N=1 new
+  build vs old build) exercises the new machinery directly.
+
+#### D. Snapshot-restore of the post-warmup initial state (own item, own gate)
+
+Goal: a world's match reset costs neither the scene load nor the 240 warmup ticks.
+Facts that bound the design: the post-warmup state is seed-dependent (
+`GameSessionHandler.Init` draws `randomDelay[i] = Updater.RandomFix(0,1)*MaxRandomDelay`
+per ground at tick 1, which shifts platform arrival and therefore player landing
+times; `Updater.random` itself is seeded per match), the trainer draws a fresh 32-bit
+seed and (with `--random-loadouts`) fresh abilities per match, so a cache keyed on
+(map, seed, loadout) never hits. The only viable exact scheme is:
+
+1. Feasibility measurement first (1-2 h, no design commitment): dump the full sim
+   state (ReferenceCapture encoder: all `MonoUpdatable`/`FixTransform` fields, Updater
+   and session statics) at the end of warmup for >=8 seeds x 5 maps x 2 loadouts and
+   diff, excluding `Updater.random` and `randomDelay[]`. Outcome A: identical -> the
+   post-warmup state is seed-independent modulo the RNG and the delays, and a canonical
+   warm world per (map, players) can be restored and re-seeded. Outcome B: differs ->
+   only the scene load can be skipped (fresh-scene snapshot + warmup replay, ~15 of
+   ~32 ms), and the doc records which fields diverge.
+2. Mechanism (outcome A): live clone, not serialization. Keep one never-ticked
+   "master" world per (map, players) that completed warmup with a canonical seed;
+   restore = clone the master's object graph into world k's scene: instantiate the
+   hierarchy with `Awake` suppressed, reflectively copy every instance field mapping
+   master scene objects -> clones (assets shared, delegates re-targeted, closures deep
+   copied), rebuild `PhysicsBodyList.instanceIdToColliderIndex` from the clones'
+   instance IDs, rebuild `Updater.updatables` order and `HierarchyNumber`s from the
+   master, then `Updater.InitSeed(seed)` and replay the master's recorded warmup draw
+   sequence (`randomDelay[]` recomputed by re-executing the same draws). Loadouts:
+   the ability objects are inactive and freshly `Init`ed after warmup, so a requested
+   loadout replaces the master's ability objects in place (same `updatables` index,
+   same `HierarchyNumber` offsets, same `Init` call), which is the step gate 3 must
+   watch most closely.
+3. Gate: `native/rl/reset_check.c` extended to (a) N>=2 worlds, (b) every map 0-4 and
+   >=8 seeds, (c) loadouts covering the ability families, comparing every observed
+   state of a restored match against a match started by the ordinary load+warmup
+   path in a separate process, plus the section 4 replay-hash comparison. Bit-exact or
+   it does not ship; a hard blocker (native Unity component state such as `Animator`
+   feeding the sim, or closure/delegate graphs that cannot be re-targeted) is reported
+   to thr_wq22hezkbf with an estimate rather than worked around.
+4. Measurement contract for the remeasure: RlProfile reports per world `reset:load`
+   (scene load frames), `reset:warmup` (warmup tick time) and `reset:restore`
+   separately from `tick` time, and gate0.py reports reset ms/match next to learner
+   decisions/s. The operating-point recommendation for the 500M run is made after D
+   lands, not from the many-worlds-only remeasure.
+
+#### E. Trainer plumbing
+
+- `bopl_puffer.h`: env kwarg `worlds` (default 1). Environment i uses process i/worlds,
+  world i%worlds; the first environment of a process opens it with `bopl_rl_open_worlds`
+  and a vector-wide registry hands the other handles out; process startup stays
+  parallel across processes. `worlds>=2` disables the spare. `c_close` releases the
+  handle (the process closes with its last handle).
+- `native_vector.py`: require `workers % (2*buffers*worlds) == 0` so a process never
+  spans two buffers (a process serving two buffers would serialise their rollouts on
+  one game thread). With the Elo-pool layout (self-play, historical alternating) an
+  even `worlds` puts one of each into every process.
+- `train.py`: new flag `--worlds-per-process N` (default 1 = today). `--workers` stays
+  the number of games. Log dir gets one game log per process (`worker-<pid>.log`).
+- SourceHash: re-pin `Assets/Resources/SimulationReference.txt` with
+  `native/tools/pin_reference.py --commit <c>` after the C# commit; the parity gates
+  compare states through the C API, not replay files, so the hash change is expected.
+
 ## 4. Correctness gates (bit-exact or it does not ship)
 
 The evaluator, replays, videos and the Learning Lab all run the real game, so any
