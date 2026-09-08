@@ -18,6 +18,10 @@ series divided by sqrt(sum(|increment|²)), the RMS displacement of independent,
 zero-mean directions with those lengths. A ratio near 1 and cosine near 0 is
 consistent with a random walk; it does not identify the gradient's source.
 Higher ratios and cosines indicate directional persistence, not policy strength.
+`row0`/`row` is the mean per-row norm of a decoder slice (rows are hidden-wide)
+at the first and last checkpoint. Muon transforms the whole decoder jointly.
+Row norms describe parameter scale; either random or persistent motion can
+increase them, and growth does not by itself identify learning.
 """
 import argparse
 import hashlib
@@ -166,7 +170,12 @@ def drift(run):
                 cosines[i].append(float(np.sum(delta[lo:hi]*previous_delta[lo:hi])) / (length*lengths[i][-1]))
             lengths[i].append(length)
         previous, previous_delta = w, delta
-    for i, (_, lo, hi) in enumerate(slices):
+    hidden = metas[0]['hidden']
+    def row_norm(v): return float(np.sqrt(np.sum((v*v).reshape(-1, hidden), axis=1)).mean())
+    for i, (name, lo, hi) in enumerate(slices):
+        decoder = name.startswith('decoder')
+        rows[i].update(row_norm_initial=row_norm(first[lo:hi]) if decoder else float('nan'),
+                       row_norm_final=row_norm(previous[lo:hi]) if decoder else float('nan'))
         net = norm(previous[lo:hi]-first[lo:hi])
         walk = math.sqrt(sum(v*v for v in lengths[i]))
         rows[i].update(initial_norm=norm(first[lo:hi]), final_norm=norm(previous[lo:hi]),
@@ -221,9 +230,9 @@ def main():
         d = s['drift']
         print(f"drift over {d['checkpoints']} checkpoints ({d['first_learner_steps']:,} to {d['last_learner_steps']:,} learner decisions):")
         print('Directional persistence only; does not identify gradient sources or establish strength.')
-        print(f"{'slice':>16} {'|w0|':>7} {'|w|':>7} {'mean|dw|':>8} {'lag1':>6} {'net':>6} {'net/rw':>6}")
+        print(f"{'slice':>16} {'|w0|':>7} {'|w|':>7} {'mean|dw|':>8} {'lag1':>6} {'net':>6} {'net/rw':>6} {'row0':>6} {'row':>6}")
         for r in d['slices']:
-            print(f"{r['slice']:>16} {r['initial_norm']:7.3f} {r['final_norm']:7.3f} {r['mean_increment']:8.4f} {r['lag1_cosine']:6.3f} {r['net']:6.3f} {r['net_over_random_walk']:6.2f}")
+            print(f"{r['slice']:>16} {r['initial_norm']:7.3f} {r['final_norm']:7.3f} {r['mean_increment']:8.4f} {r['lag1_cosine']:6.3f} {r['net']:6.3f} {r['net_over_random_walk']:6.2f} {fmt(r['row_norm_initial']):>6} {fmt(r['row_norm_final']):>6}")
 
 
 if __name__ == '__main__':

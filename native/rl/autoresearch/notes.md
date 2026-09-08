@@ -756,3 +756,60 @@ training: canonical metrics show 13,852 learner decisions/s before the interval 
 4,647/s across 318 seconds at elapsed 143–461 s (updates 639–1120), costing about 211 seconds
 against the preceding rate. A later 60-second sample recovered to 13,632/s. The SVD process
 was confirmed absent. Fable reported no other competing load from its session.
+
+## 2026-09-07 22:02 EDT: stocks-0 run at 6.6M, first drift read (read-only)
+
+`watch_run.py --drift` over 7 checkpoints (0 to 6.0M learner decisions), niced and single-threaded
+(root's f6fc13f rewrite of `--drift` uses elementwise reductions only, no BLAS):
+
+| slice | mean abs dw | lag-1 cosine | net/rw |
+|---|---|---|---|
+| encoder | 0.61 | 0.64 | 1.83 |
+| decoder.aim | 0.23 | 0.05 | 1.07 |
+| decoder.buttons | 0.14 | 0.04 | 1.03 |
+| decoder.value | 0.11 | 0.90 | 2.24 |
+| mingru | 0.49 | 0.43 | 1.59 |
+
+Same picture as the aborted stocks-3 run at 19M: the critic row moves in one direction (its norm
+doubled, 0.57 to 1.05; explained variance 0.39 to 0.48 between 5.0M and 6.6M), the encoder and
+MinGRU move consistently, and the two policy heads still show no interval-to-interval persistence
+(consistent with a random walk; the diagnostic does not identify the gradient source). Entropy
+8.290, coefficient 0.0086, advantage std 0.23 (double the stocks-3 run). Evaluation at about 6.7M
+physical / 5M learner decisions: 0.46 vs random and 0.42 vs the initial checkpoint over 24 games
+each, no timeouts. Not a signal yet either way; the watch rule from 21:50 stands (policy-head net/rw
+above about 1.5 with rising cosine, or entropy leaving 8.2, before 30M).
+
+Rate: trailing 12.4k learner decisions/s; the run-average 9.0k/s still carries the 5-minute slowdown
+I caused and any other unisolated runtime variation. Subsequent supervision found 13.6k/s over a
+later minute; current load cannot be inferred from this earlier sample.
+
+### Decoder layout and approximate Muon update scale (source read, PufferLib `src/models.cu`, `src/muon.cu`; per-row numbers checked at 8M)
+
+The decoder is registered as one parameter of shape `(output_dim+1, hidden)` = 273 x 128
+(`decoder_reg_params`), with the value row as row 272 (`assemble_decoder_grad` appends the value
+gradient as the last column). Muon treats each registered >=2-D tensor as a unit: momentum, then
+normalize the whole 273 x 128 gradient to unit Frobenius norm, then 5 Newton-Schulz iterations
+toward the nearest semi-orthogonal matrix (all 128 singular values about 1, total Frobenius norm
+about sqrt(128)), then `w -= lr * sqrt(273/128) * update`. Under ideal full-rank orthogonalization
+this suggests a whole-decoder update norm near 3e-4 x 1.46 x 11.3 = 0.005. Five approximate
+iterations and the update spectrum need not produce exactly that norm. The rows are transformed
+jointly, so the scale of one row depends on the full matrix; a fixed row share is not guaranteed.
+
+Measured per-row displacement per checkpoint (326 updates) on the stocks-0 run, 9 checkpoints,
+single-threaded numpy:
+
+| rows | mean abs dw per row per checkpoint | lag-1 cosine (slice) |
+|---|---|---|
+| aim (256) | 0.015 | 0.05 |
+| buttons (16) | 0.036 | 0.04 |
+| value (1) | 0.109 | 0.90 |
+
+Row norms are about 0.57 at initialization; the value row has grown to 1.22 while aim and button
+rows stay at 0.57. The transformation does not equalize row norms. The value row has the largest
+measured displacement per row in this snapshot. Multiplying sqrt(256) by the mean aim-row
+displacement gives an approximate slice norm; equality requires equal row displacement lengths. The
+observation does not establish which gradient source drove each row. Interpretation limits:
+
+- Row norms add a parameter-scale diagnostic alongside lag-1 cosine and net/rw. A random walk can grow norms, and a persistent update can shrink them if it points toward the origin. None of these statistics is a necessary or sufficient test of useful learning; slice displacement can also change as the joint decoder update changes.
+- Caveat for the `--learner-passes 3` A/B: repeated steps may be correlated because they reuse rollout data. Near-parallel, equal-length steps would roughly triple displacement, for useful or noisy directions, but prioritized resampling, recomputed advantages and changed weights make this conditional rather than established. Compare drift on both arms, and judge strength with matched game evaluations and their uncertainty.
+- A stationary independent-increment model with interval norm 0.24 gives RMS displacement 0.24 x sqrt(400) = 4.8, against an initial aim-slice norm of 9.2. This is an illustrative extrapolation, not a prediction: the entropy schedule, correlations, state distribution and gradient structure can change. Absence of explicit weight decay does not imply absence of restoring gradients. Scaling the learning rate scales the immediate update but may change later optimization dynamics; this calculation does not rule it out as an A/B variable.
