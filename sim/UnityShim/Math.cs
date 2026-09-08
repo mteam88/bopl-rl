@@ -682,35 +682,97 @@ namespace UnityEngine
 		public override int GetHashCode() => ((Vector4)this).GetHashCode();
 		public override string ToString() => $"RGBA({r:F3}, {g:F3}, {b:F3}, {a:F3})";
 
-		public static Color HSVToRGB(float h, float s, float v)
+		// F6: verbatim from ilspycmd decompile of the game's
+		// UnityEngine.CoreModule (BeamColors.Mix runs these on the sim path and
+		// the results are trace-captured; float op order matters).
+		public static Color HSVToRGB(float H, float S, float V) => HSVToRGB(H, S, V, hdr: true);
+
+		public static Color HSVToRGB(float H, float S, float V, bool hdr)
 		{
-			if (s == 0f) return new Color(v, v, v, 1f);
-			h = Mathf.Repeat(h, 1f) * 6f;
-			int i = (int)h;
-			float f = h - i;
-			float p = v * (1f - s), q = v * (1f - s * f), t = v * (1f - s * (1f - f));
-			return i switch
+			Color result = white;
+			if (S == 0f)
 			{
-				0 => new Color(v, t, p, 1f),
-				1 => new Color(q, v, p, 1f),
-				2 => new Color(p, v, t, 1f),
-				3 => new Color(p, q, v, 1f),
-				4 => new Color(t, p, v, 1f),
-				_ => new Color(v, p, q, 1f),
-			};
+				result.r = V;
+				result.g = V;
+				result.b = V;
+			}
+			else if (V == 0f)
+			{
+				result.r = 0f;
+				result.g = 0f;
+				result.b = 0f;
+			}
+			else
+			{
+				result.r = 0f;
+				result.g = 0f;
+				result.b = 0f;
+				float num = H * 6f;
+				int num2 = (int)Mathf.Floor(num);
+				float num3 = num - (float)num2;
+				float num4 = V * (1f - S);
+				float num5 = V * (1f - S * num3);
+				float num6 = V * (1f - S * (1f - num3));
+				switch (num2)
+				{
+					case 0: result.r = V; result.g = num6; result.b = num4; break;
+					case 1: result.r = num5; result.g = V; result.b = num4; break;
+					case 2: result.r = num4; result.g = V; result.b = num6; break;
+					case 3: result.r = num4; result.g = num5; result.b = V; break;
+					case 4: result.r = num6; result.g = num4; result.b = V; break;
+					case 5: result.r = V; result.g = num4; result.b = num5; break;
+					case 6: result.r = V; result.g = num6; result.b = num4; break;
+					case -1: result.r = V; result.g = num4; result.b = num5; break;
+				}
+				if (!hdr)
+				{
+					result.r = Mathf.Clamp(result.r, 0f, 1f);
+					result.g = Mathf.Clamp(result.g, 0f, 1f);
+					result.b = Mathf.Clamp(result.b, 0f, 1f);
+				}
+			}
+			return result;
 		}
 
-		public static void RGBToHSV(Color rgbColor, out float h, out float s, out float v)
+		public static void RGBToHSV(Color rgbColor, out float H, out float S, out float V)
 		{
-			float max = Mathf.Max(rgbColor.r, rgbColor.g, rgbColor.b);
-			float min = Mathf.Min(rgbColor.r, rgbColor.g, rgbColor.b);
-			v = max;
-			float delta = max - min;
-			s = max == 0f ? 0f : delta / max;
-			if (delta == 0f) { h = 0f; return; }
-			if (max == rgbColor.r) h = Mathf.Repeat((rgbColor.g - rgbColor.b) / delta, 6f) / 6f;
-			else if (max == rgbColor.g) h = ((rgbColor.b - rgbColor.r) / delta + 2f) / 6f;
-			else h = ((rgbColor.r - rgbColor.g) / delta + 4f) / 6f;
+			if (rgbColor.b > rgbColor.g && rgbColor.b > rgbColor.r)
+				RGBToHSVHelper(4f, rgbColor.b, rgbColor.r, rgbColor.g, out H, out S, out V);
+			else if (rgbColor.g > rgbColor.r)
+				RGBToHSVHelper(2f, rgbColor.g, rgbColor.b, rgbColor.r, out H, out S, out V);
+			else
+				RGBToHSVHelper(0f, rgbColor.r, rgbColor.g, rgbColor.b, out H, out S, out V);
+		}
+
+		private static void RGBToHSVHelper(float offset, float dominantcolor, float colorone, float colortwo, out float H, out float S, out float V)
+		{
+			V = dominantcolor;
+			if (V != 0f)
+			{
+				float num = 0f;
+				num = ((!(colorone > colortwo)) ? colorone : colortwo);
+				float num2 = V - num;
+				if (num2 != 0f)
+				{
+					S = num2 / V;
+					H = offset + (colorone - colortwo) / num2;
+				}
+				else
+				{
+					S = 0f;
+					H = offset + (colorone - colortwo);
+				}
+				H /= 6f;
+				if (H < 0f)
+				{
+					H += 1f;
+				}
+			}
+			else
+			{
+				S = 0f;
+				H = 0f;
+			}
 		}
 	}
 

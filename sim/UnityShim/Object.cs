@@ -27,12 +27,17 @@ namespace UnityEngine
 
 		public override string ToString() => string.IsNullOrEmpty(objectName) ? GetType().Name : objectName;
 
+		// F3: a null literal equals any destroyed object, but two live references
+		// compare by identity even when both are destroyed - destroyedA ==
+		// destroyedB is FALSE unless they are the same object (Unity compares
+		// instance ids).
 		private static bool CompareBaseObjects(Object a, Object b)
 		{
-			bool an = a is null || a.destroyed;
-			bool bn = b is null || b.destroyed;
+			bool an = a is null;
+			bool bn = b is null;
 			if (an && bn) return true;
-			if (an || bn) return false;
+			if (an) return b.destroyed;
+			if (bn) return a.destroyed;
 			return ReferenceEquals(a, b);
 		}
 
@@ -40,7 +45,12 @@ namespace UnityEngine
 		public static bool operator !=(Object a, Object b) => !CompareBaseObjects(a, b);
 		public static implicit operator bool(Object o) => !(o is null) && !o.destroyed;
 
-		public static void DontDestroyOnLoad(Object target) { }
+		public static void DontDestroyOnLoad(Object target)
+		{
+			// Marks the root GameObject; single-mode scene loads spare it.
+			var go = target as GameObject ?? (target as Component)?.gameObject;
+			if (go != null) go.transform.root.gameObject.dontDestroyOnLoad = true;
+		}
 
 		public static void Destroy(Object obj) => Destroy(obj, 0f);
 

@@ -10,6 +10,7 @@ namespace UnityEngine
 		internal readonly List<Component> components = new List<Component>();
 		internal bool activeSelfField = true;
 		internal string tagField = "Untagged";
+		internal bool dontDestroyOnLoad;
 
 		public int layer;
 		public Scene scene;
@@ -40,6 +41,18 @@ namespace UnityEngine
 			go.isAsset = asset;
 			if (asset) { go.transform.isAsset = true; World.Current.roots.Remove(go); }
 			return go;
+		}
+
+		// Export loader: scenes serialize RectTransform as the transform component.
+		// Must be called before any children or references exist.
+		internal void UseRectTransform()
+		{
+			if (transform is RectTransform) return;
+			var rt = new RectTransform();
+			rt.AttachTo(this);
+			rt.isAsset = transform.isAsset;
+			components[components.IndexOf(transform)] = rt;
+			transform = rt;
 		}
 
 		public GameObject gameObject => this;
@@ -75,22 +88,37 @@ namespace UnityEngine
 			else NotifyActivation(this, false);
 		}
 
-		// Called when activeInHierarchy flips for this subtree.
+		// Called when activeInHierarchy flips for this subtree. The affected
+		// behaviours form one batch ordered by script execution order, like
+		// Unity's SetActive semantics (Awake for never-awoken ones first).
 		internal static void NotifyActivation(GameObject go, bool active)
 		{
-			foreach (var c in go.components.ToArray())
+			var batch = new List<MonoBehaviour>();
+			CollectActivationBatch(go, batch);
+			UnityShim.ScriptExecutionOrder.SortStable(batch);
+			if (active)
 			{
-				if (c is MonoBehaviour mb && !mb.destroyed)
-				{
-					if (active) mb.OnBecameActive();
-					else mb.OnBecameInactive();
-				}
+				foreach (var mb in batch)
+					if (!mb.destroyed && mb.gameObject.activeInHierarchy) mb.DispatchAwakeIfNeeded();
+				foreach (var mb in batch)
+					if (!mb.destroyed && mb.enabledSelf && mb.gameObject.activeInHierarchy) mb.DispatchEnable();
 			}
+			else
+			{
+				foreach (var mb in batch)
+					if (!mb.destroyed) mb.OnBecameInactive();
+			}
+		}
+
+		private static void CollectActivationBatch(GameObject go, List<MonoBehaviour> batch)
+		{
+			foreach (var c in go.components)
+				if (c is MonoBehaviour mb && !mb.destroyed) batch.Add(mb);
 			var t = go.transform;
 			for (int i = 0; i < t.childCount; i++)
 			{
 				var child = t.GetChild(i).gameObject;
-				if (child.activeSelfField) NotifyActivation(child, active);
+				if (child.activeSelfField) CollectActivationBatch(child, batch);
 			}
 		}
 
@@ -109,7 +137,9 @@ namespace UnityEngine
 				if (!isAsset)
 				{
 					World.Current.RegisterBehaviour(mb);
-					if (activeInHierarchy && mb.enabledSelf) mb.OnBecameActive();
+					// F9: Awake fires for components added to an active GameObject
+					// regardless of enabled; OnBecameActive gates OnEnable itself.
+					if (activeInHierarchy) mb.OnBecameActive();
 				}
 			}
 			return c;

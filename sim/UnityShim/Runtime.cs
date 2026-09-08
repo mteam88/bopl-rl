@@ -186,7 +186,21 @@ namespace UnityEngine
 		public static T CreateInstance<T>() where T : ScriptableObject => (T)CreateInstance(typeof(T));
 
 		public static ScriptableObject CreateInstance(Type type)
-			=> (ScriptableObject)Activator.CreateInstance(type, true);
+		{
+			var so = (ScriptableObject)Activator.CreateInstance(type, true);
+			DispatchOnEnable(so);
+			return so;
+		}
+
+		// Unity fires OnEnable when a ScriptableObject is created or its asset is
+		// loaded/deserialized (AnimationData builds lookup tables there). The
+		// Export loader calls this after populating serialized fields.
+		internal static void DispatchOnEnable(ScriptableObject so)
+		{
+			var method = so.GetType().GetMethod("OnEnable",
+				System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+			method?.Invoke(so, null);
+		}
 	}
 
 	public class TextAsset : Object
@@ -228,5 +242,13 @@ namespace UnityEngine.Rendering
 		OpenGL2 = 0, Direct3D9 = 1, Direct3D11 = 2, PlayStation3 = 3, Null = 4,
 		Xbox360 = 6, OpenGLES2 = 8, OpenGLES3 = 11, Metal = 16, OpenGLCore = 17,
 		Direct3D12 = 18, Vulkan = 21
+	}
+
+	// Present in exported scenes; sorting is presentation-only.
+	public class SortingGroup : Behaviour
+	{
+		public string sortingLayerName { get; set; } = "Default";
+		public int sortingLayerID { get; set; }
+		public int sortingOrder { get; set; }
 	}
 }

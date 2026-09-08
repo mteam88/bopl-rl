@@ -124,11 +124,12 @@ namespace UnityEngine
 		// ---- lifecycle -------------------------------------------------------
 
 		// GameObject became active in hierarchy (or component added/enabled on an active one).
+		// Awake runs even for disabled behaviours (Unity ties Awake to GameObject activity).
 		internal void OnBecameActive()
 		{
-			if (destroyed || !enabledSelf || isAsset) return;
+			if (destroyed || isAsset) return;
 			DispatchAwakeIfNeeded();
-			DispatchEnable();
+			if (enabledSelf) DispatchEnable();
 		}
 
 		internal void OnBecameInactive()

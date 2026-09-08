@@ -101,7 +101,10 @@ namespace UnityShim
 
 		public void FlushPendingStarts()
 		{
-			// Starts queued during a Start run after it, same frame (Unity does this).
+			// Start batches are ordered by script execution order, like Awake.
+			// Starts queued during a Start run after it, same frame (Unity does
+			// this); late arrivals keep queue order.
+			ScriptExecutionOrder.SortStable(pendingStarts);
 			for (int i = 0; i < pendingStarts.Count; i++)
 			{
 				var mb = pendingStarts[i];
@@ -123,6 +126,50 @@ namespace UnityShim
 				if (o != null && !o.destroyed) UnityEngine.Object.DestroyImmediate(o);
 			}
 			destroyQueue.Clear();
+		}
+
+		// Scene-load activation: Unity awakes freshly loaded objects before any
+		// Start runs. Batch = the whole load; behaviours collected depth-first in
+		// root/file order, then STABLE-sorted by script execution order (the game
+		// uses it heavily: FixTransform -80, PlayerBody 2, SlimeController 269...).
+		// All Awakes run in that order, then all OnEnables (see PORTING.md).
+		public void ActivateLoadedObjects(List<GameObject> newRoots)
+		{
+			var batch = new List<MonoBehaviour>();
+			foreach (var root in newRoots)
+				if (root != null && !root.destroyed) CollectActiveBehaviours(root, batch);
+			DispatchActivationBatch(batch);
+		}
+
+		internal static void CollectActiveBehaviours(GameObject go, List<MonoBehaviour> batch)
+		{
+			if (go.destroyed || !go.activeInHierarchy) return;
+			foreach (var c in go.components)
+				if (c is MonoBehaviour mb && !mb.destroyed) batch.Add(mb);
+			var t = go.transform;
+			for (int i = 0; i < t.childCount; i++)
+				CollectActiveBehaviours(t.GetChild(i).gameObject, batch);
+		}
+
+		internal static void DispatchActivationBatch(List<MonoBehaviour> batch)
+		{
+			ScriptExecutionOrder.SortStable(batch);
+			foreach (var mb in batch)
+				if (!mb.destroyed && mb.gameObject.activeInHierarchy) mb.DispatchAwakeIfNeeded();
+			foreach (var mb in batch)
+				if (!mb.destroyed && mb.enabledSelf && mb.gameObject.activeInHierarchy) mb.DispatchEnable();
+		}
+
+		// Single-mode scene load: destroy everything except DontDestroyOnLoad roots.
+		public void UnloadCurrentScene()
+		{
+			foreach (var root in roots.ToArray())
+			{
+				if (root == null || root.destroyed || root.dontDestroyOnLoad) continue;
+				UnityEngine.Object.DestroyImmediate(root);
+			}
+			FlushDestroyQueue();
+			Compact();
 		}
 
 		internal void Compact()

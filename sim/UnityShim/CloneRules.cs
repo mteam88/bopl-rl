@@ -140,29 +140,19 @@ namespace UnityShim
 			var clone = (ScriptableObject)Activator.CreateInstance(source.GetType(), true);
 			clone.objectName = source.objectName + "(Clone)";
 			CopySerializedFields(source, clone, null);
+			ScriptableObject.DispatchOnEnable(clone); // after fields, like Unity deserialization
 			return clone;
 		}
 
-		// Awake (all, depth-first, serialized component order) then OnEnable (same
-		// order), for a freshly instantiated or freshly loaded active hierarchy.
-		// PORTING.md: alternative reading is per-component Awake+OnEnable pairs;
-		// the oracle decides.
+		// Awake then OnEnable for a freshly instantiated active hierarchy:
+		// collected depth-first, stable-sorted by script execution order, all
+		// Awakes then all OnEnables (same batch semantics as scene load).
 		public static void DispatchAwake(GameObject root)
 		{
 			if (!root.activeInHierarchy || root.isAsset) return;
 			var behaviours = new List<MonoBehaviour>();
-			CollectActive(root, behaviours);
-			foreach (var mb in behaviours) mb.DispatchAwakeIfNeeded();
-			foreach (var mb in behaviours) if (mb.enabledSelf && !mb.destroyed) mb.DispatchEnable();
-		}
-
-		private static void CollectActive(GameObject go, List<MonoBehaviour> list)
-		{
-			if (!go.activeSelfField) return;
-			foreach (var c in go.components)
-				if (c is MonoBehaviour mb && !mb.destroyed) list.Add(mb);
-			for (int i = 0; i < go.transform.childCount; i++)
-				CollectActive(go.transform.GetChild(i).gameObject, list);
+			World.CollectActiveBehaviours(root, behaviours);
+			World.DispatchActivationBatch(behaviours);
 		}
 	}
 }
