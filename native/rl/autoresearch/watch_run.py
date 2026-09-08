@@ -19,9 +19,9 @@ zero-mean directions with those lengths. A ratio near 1 and cosine near 0 is
 consistent with a random walk; it does not identify the gradient's source.
 Higher ratios and cosines indicate directional persistence, not policy strength.
 `row0`/`row` is the mean per-row norm of a decoder slice (rows are hidden-wide)
-at the first and last checkpoint; Muon normalizes the whole 273-row decoder
-update, so a row with a persistent gradient direction grows while rows with
-non-persistent motion keep their initial norm (notes.md 2026-09-07 22:02).
+at the first and last checkpoint. Muon transforms the whole decoder jointly.
+Row norms describe parameter scale; either random or persistent motion can
+increase them, and growth does not by itself identify learning.
 """
 import argparse
 import hashlib
@@ -128,6 +128,9 @@ def weight_slices(meta):
 
 def drift(run):
     """Stream validated checkpoints using elementwise reductions, without BLAS calls."""
+    import os
+    for var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+        os.environ[var] = '1'  # Cap this summary process even when the shell specifies more.
     import numpy as np
     files = sorted(Path(run, 'checkpoints').glob('policy-*.bin'))
     # Checkpoint publishing writes the .bin before its sidecar. Ignore only an
