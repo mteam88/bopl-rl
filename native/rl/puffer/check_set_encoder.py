@@ -73,6 +73,52 @@ class Check:
         if self.context:self.lib.bopl_set_check_close(self.context);self.context=None
 
 
+def finite_differences(lib):
+    """Compare native backward with central differences of native forward.
+
+    Positive weights/inputs keep ReLUs away from zero, and strictly increasing
+    row magnitudes give each max pool a stable winner. The random mixed-sign
+    corpus above separately checks changing winners and inactive ReLUs against
+    autograd. Float64 loss accumulation limits cancellation of float32 outputs.
+    """
+    batch,hidden=2,8
+    rng=np.random.default_rng(91073)
+    obs=rng.uniform(.05,.2,size=(batch,3257)).astype(np.float32)
+    for start,stop,n,width in [(898,2914,96,21),(2914,3250,12,28)]:
+        rows=obs[:,start:stop].reshape(batch,n,width)
+        base=rng.uniform(.05,.2,size=(batch,1,width-1))
+        rows[:,:,1:]=base*np.linspace(.2,1.,n)[None,:,None]
+        rows[:,:,0]=1
+        rows[:,::3,0]=0
+    sizes=[hidden*905,64*21,64*28,hidden*(hidden+128)]
+    weights=rng.uniform(.01,.04,size=sum(sizes)).astype(np.float32)
+    incoming=rng.uniform(-1,1,size=(batch,hidden)).astype(np.float32)
+    check=Check(lib,batch,hidden)
+    rows=[]
+    try:
+        _,gradient=check.run(weights,obs,incoming)
+        offset=0
+        for name,size in zip(('flat','entity','slime','fusion'),sizes):
+            indices=offset+rng.choice(size,size=16,replace=False)
+            numerical=[]
+            for index in indices:
+                plus=weights.copy();minus=weights.copy()
+                plus[index]+=np.float32(.001);minus[index]-=np.float32(.001)
+                high,_=check.run(plus,obs,incoming)
+                low,_=check.run(minus,obs,incoming)
+                delta=float(plus[index])-float(minus[index])
+                numerical.append(np.sum((high.astype(np.float64)-low)*incoming)/delta)
+            numerical=np.asarray(numerical)
+            analytic=gradient[indices]
+            np.testing.assert_allclose(analytic,numerical,rtol=.003,atol=.0003,
+                                       err_msg=f'{name} native finite difference')
+            rows.append(dict(block=name,coordinates=len(indices),
+                             max_absolute_error=float(np.abs(analytic-numerical).max())))
+            offset+=size
+    finally:check.close()
+    return dict(batch=batch,hidden=hidden,epsilon=.001,blocks=rows)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,default=ROOT/'native/artifacts/rl/native-migration-audit/cuda-set')
@@ -138,7 +184,7 @@ def main():
                                 gradient_max_abs=float(np.abs(grad-expected_grad).max()),
                                 graph_replay=True,permutation=True,masked_poison=True,empty_after_populated=True))
         finally:check.close()
-    report=dict(schema=1,pass_all=True,cases=results)
+    report=dict(schema=1,pass_all=True,cases=results,finite_differences=finite_differences(lib))
     (args.output/'result.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report))
 
