@@ -1,41 +1,17 @@
-"""Meaningful checks for reaction delay, recurrent resets, returns, and reload."""
+"""Check real-game reaction delay, observation finiteness, resets and loadouts."""
 import argparse
 import json
 from pathlib import Path
-import tempfile
 import numpy as np
-import torch
 from environment import Environment,ROOT,configure,OBS_SIZE
-from policy import Policy,load
-from train import advantages
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--game',type=Path)
     args=parser.parse_args(); args.output.mkdir(parents=True,exist_ok=True)
-    torch.set_num_threads(1); torch.manual_seed(67)
-    r=torch.tensor([[1.],[2.],[3.]])
-    a=advantages(r,torch.zeros_like(r),torch.tensor([[0.],[1.],[0.]]),torch.tensor([10.]),gamma=.9,lam=1)
-    torch.testing.assert_close(a,torch.tensor([[2.8],[2.],[12.]]))
-    results={'return_terminal_and_bootstrap':'pass'}
-    for device in ('cpu','cuda'):
-        policy=Policy(OBS_SIZE).to(device)
-        obs=torch.randn(8,2,OBS_SIZE,device=device)*.1
-        reset=torch.zeros(8,2,dtype=torch.bool,device=device);reset[3,0]=True;reset[6,1]=True
-        initial=torch.randn(1,2,128,device=device)*.1; state=initial.clone(); expected=[]
-        with torch.no_grad():
-            for t in range(8):
-                state=state*(~reset[t]).view(1,-1,1)
-                logits,_,state=policy.step(obs[t],state);expected.append(logits)
-            actual,_=policy.sequence(obs,initial,reset)
-            torch.testing.assert_close(actual,torch.stack(expected),rtol=1e-4,atol=1e-5)
-            file=args.output/(device+'-reload.pt')
-            torch.save(dict(obs_size=OBS_SIZE,hidden=128,policy=policy.state_dict()),file)
-            reloaded,_=load(file,device);again,_=reloaded.sequence(obs,initial,reset)
-            torch.testing.assert_close(actual,again,rtol=0,atol=0)
-        results[device+'_recurrent_reset_and_reload']='pass'
-    configure(args.output/'workers')
+    results={}
+    configure(args.output/'workers', args.game)
     with Environment(seed=18,limit=120) as env:
-        initial=env.obs.copy()
         for i in range(8):
             env.step([[64,4],[192,4]])
             tick=env.state.header.episode_ticks

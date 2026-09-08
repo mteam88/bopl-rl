@@ -1,28 +1,32 @@
-// Run against an isolated Chrome --headless --remote-debugging-port=9224.
+// Dashboard smoke check over WebDriver BiDi (Firefox).
+//
+// Chrome 152 headless cannot commit any http(s) navigation on this machine,
+// so the check drives Firefox instead:
+//   firefox --headless --remote-debugging-port 9225 --profile <fresh> --no-remote
+// Firefox allows one BiDi session per browser process; restart it between runs.
+//   node check_dashboard.mjs <url> <output-dir>
 import fs from "node:fs/promises";
-const url =
-  process.argv[2] || "http://100.100.57.32:8876/?run=research-smoke-2";
+const url = process.argv[2] || "http://127.0.0.1:8876/?run=research-smoke-2";
 const out = process.argv[3] || "native/artifacts/rl";
-const pages = await (await fetch("http://127.0.0.1:9224/json/list")).json();
-const page = pages.find((p) => p.type === "page");
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-await new Promise((resolve) =>
-  ws.addEventListener("open", resolve, { once: true }),
-);
+const port = process.env.BIDI_PORT || "9225";
+
+const ws = new WebSocket(`ws://127.0.0.1:${port}/session`);
+await new Promise((resolve, reject) => {
+  ws.addEventListener("open", resolve, { once: true });
+  ws.addEventListener("error", () => reject(Error("BiDi port unreachable")), { once: true });
+});
 let id = 0;
-const pending = new Map(),
-  errors = [];
+const pending = new Map();
+const consoleErrors = [];
 ws.addEventListener("message", (event) => {
   const message = JSON.parse(event.data);
-  if (message.id) {
+  if (message.id && pending.has(message.id)) {
     const item = pending.get(message.id);
-    if (item) {
-      pending.delete(message.id);
-      clearTimeout(item.timer);
-      message.error ? item.reject(message.error) : item.resolve(message.result);
-    }
-  } else if (message.method === "Runtime.exceptionThrown")
-    errors.push(message.params.exceptionDetails);
+    pending.delete(message.id);
+    clearTimeout(item.timer);
+    message.type === "error" ? item.reject(Error(JSON.stringify(message))) : item.resolve(message);
+  } else if (message.method === "log.entryAdded" && message.params.level === "error")
+    consoleErrors.push({ context: message.params.source?.context, text: message.params.text });
 });
 function call(method, params = {}) {
   return new Promise((resolve, reject) => {
@@ -30,147 +34,185 @@ function call(method, params = {}) {
     const timer = setTimeout(() => {
       pending.delete(next);
       reject(Error(method + " timed out"));
-    }, 10000);
+    }, 30000);
     pending.set(next, { resolve, reject, timer });
     ws.send(JSON.stringify({ id: next, method, params }));
   });
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+await call("session.new", { capabilities: {} });
+await call("session.subscribe", { events: ["log.entryAdded"] });
+const context = (await call("browsingContext.getTree", {})).result.contexts[0].context;
 async function evaluate(expression) {
-  const result = await call("Runtime.evaluate", {
-    expression,
-    returnByValue: true,
+  const response = await call("script.evaluate", {
+    expression: `JSON.stringify((() => (${expression}))() ?? null)`,
+    target: { context },
     awaitPromise: true,
   });
-  if (result.exceptionDetails)
-    throw Error(JSON.stringify(result.exceptionDetails));
-  return result.result.value;
+  if (response.result.type !== "success")
+    throw Error("evaluate failed: " + JSON.stringify(response.result).slice(0, 500));
+  return JSON.parse(response.result.result.value);
 }
-await call("Page.stopLoading");
-await call("Page.navigate", { url: "about:blank" });
-await call("Runtime.enable");
-await call("Page.enable");
-await call("Emulation.setDeviceMetricsOverride", {
-  width: 1440,
-  height: 1400,
-  deviceScaleFactor: 1,
-  mobile: false,
-});
-await call("Page.navigate", { url });
-for (let i = 0; i < 30; i++) {
-  await sleep(200);
-  if (
-    await evaluate(
-      "document.querySelector('#play') && !document.querySelector('#play').disabled",
-    )
-  )
-    break;
+async function run(expression) {
+  const response = await call("script.evaluate", {
+    expression: `(async () => { ${expression} })()`,
+    target: { context },
+    awaitPromise: true,
+  });
+  if (response.result.type !== "success")
+    throw Error("run failed: " + JSON.stringify(response.result).slice(0, 500));
 }
+async function screenshot(path) {
+  const shot = await call("browsingContext.captureScreenshot", { context, origin: "document" });
+  await fs.writeFile(path, Buffer.from(shot.result.data, "base64"));
+}
+async function viewport(width, height) {
+  await call("browsingContext.setViewport", { context, viewport: { width, height } });
+}
+
+await viewport(1440, 1400);
+await call("browsingContext.navigate", { context, url, wait: "complete" });
+for (let i = 0; i < 40; i++) {
+  await sleep(250);
+  if (await evaluate("!!(typeof data !== 'undefined' && data && data.metrics)")) break;
+}
+// Runs without saved evaluation games legitimately have no replay to play.
+const expectReplay = await evaluate(
+  "(data.evaluations || []).some(e => (e.games || []).some(g => g.save))",
+);
+if (expectReplay)
+  for (let i = 0; i < 40; i++) {
+    await sleep(250);
+    if (await evaluate("!document.querySelector('#play').disabled")) break;
+  }
 const loaded = await evaluate(
-  "({steps:document.querySelector('#steps').textContent,replay:!document.querySelector('#play').disabled,wide:document.documentElement.scrollWidth>innerWidth})",
+  "({steps: document.querySelector('#steps').textContent, replay: !document.querySelector('#play').disabled, wide: document.documentElement.scrollWidth > innerWidth, truncations: document.querySelector('#truncations')?.textContent ?? null})",
 );
-if (!loaded.replay || loaded.wide)
+if ((expectReplay && !loaded.replay) || loaded.wide)
   throw Error("Desktop load failed: " + JSON.stringify(loaded));
-await evaluate(
-  "document.querySelector('#viewPhysics').click();document.querySelector('#scrub').value=60;document.querySelector('#scrub').dispatchEvent(new Event('input'))",
-);
-const before = await evaluate(
-  "document.querySelector('#replayTime').textContent",
-);
-await evaluate("document.querySelector('#play').click()");
-await sleep(400);
-const after = await evaluate(
-  "document.querySelector('#replayTime').textContent",
-);
-if ((await evaluate("Number(document.querySelector('#scrub').value)")) <= 60)
-  throw Error("Replay did not advance");
-await evaluate("document.querySelector('#play').click()");
-const videoAvailable = await evaluate(
-  "!document.querySelector('#viewVideo').disabled",
-);
-if (videoAvailable) {
-  await evaluate(
-    "document.querySelector('#viewVideo').click();document.querySelector('#video').muted=true;document.querySelector('#video').play()",
+
+// Physics replay advances.
+let before = null,
+  after = null;
+if (expectReplay) {
+  await run(
+    "document.querySelector('#viewPhysics').click(); const scrub = document.querySelector('#scrub'); scrub.value = 60; scrub.dispatchEvent(new Event('input'));",
   );
-  await sleep(600);
-  const targetTime = await evaluate("document.querySelector('#video').currentTime=Math.min(7,document.querySelector('#video').duration/2)");
-  let video;
+  before = await evaluate("document.querySelector('#replayTime').textContent");
+  await run("document.querySelector('#play').click()");
+  await sleep(400);
+  after = await evaluate("document.querySelector('#replayTime').textContent");
+  if ((await evaluate("Number(document.querySelector('#scrub').value)")) <= 60)
+    throw Error("Replay did not advance");
+  await run("document.querySelector('#play').click()");
+}
+
+// Native video, tolerant to a headless browser without the codec.
+let video = null;
+if (expectReplay && (await evaluate("!document.querySelector('#viewVideo').disabled"))) {
+  await run(
+    "document.querySelector('#viewVideo').click(); const v = document.querySelector('#video'); v.muted = true; v.play();",
+  );
   for (let i = 0; i < 50; i++) {
     await sleep(200);
     video = await evaluate(
-      "(() => {const v=document.querySelector('#video');return {time:v.currentTime,ready:v.readyState,seeking:v.seeking,paused:v.paused}})()",
+      "(() => { const v = document.querySelector('#video'); return { time: v.currentTime, ready: v.readyState, paused: v.paused, error: v.error?.code ?? null }; })()",
     );
-    if (video.ready >= 2 && !video.seeking && !video.paused && video.time > targetTime + .05) break;
+    if (video.error || (video.ready >= 2 && !video.paused && video.time > 0.5)) break;
   }
-  if (video.ready < 2 || video.seeking || video.paused || video.time <= targetTime + .05)
+  if (video.error) video = { skipped: "codec unsupported in this browser", ...video };
+  else if (video.ready < 2 || video.time <= 0.5)
     throw Error("Native video did not play: " + JSON.stringify(video));
-  await evaluate("document.querySelector('#video').pause()");
+  await run("document.querySelector('#video').pause()");
 }
+
+// Evaluation matrix consistency.
 const matrix = await evaluate(`(() => {
+  if (!(data.evaluations || []).length) return null;
   const maps = [...document.querySelector('#winMap').options].map(o => Number(o.value));
-  const expected = data.config.eval_maps || [0, 1, 2];
+  const expected = data.config.eval_maps || (data.config.evaluation_maps ? data.config.evaluation_maps.concat(data.config.heldout_maps || []) : [0, 1, 2]);
   const report = data.final_evaluation || data.validation_evaluation || data.evaluations.at(-1);
   return {maps, expected, rows: document.querySelectorAll('#evaluationRows tr').length,
     groups: report?.groups.length || 0, coverage: document.querySelector('#mapCoverage').textContent,
     frozen: (data.evaluations.at(-1)?.frozen_opponents || data.config.frozen_opponents || []).length,
     legend: document.querySelector('#thirdWinLegend').textContent};
 })()`);
-if (JSON.stringify(matrix.maps) !== JSON.stringify(matrix.expected) || matrix.rows !== matrix.groups)
+if (matrix && (JSON.stringify(matrix.maps) !== JSON.stringify(matrix.expected) || matrix.rows !== matrix.groups))
   throw Error("Evaluation matrix mismatch: " + JSON.stringify(matrix));
-if (matrix.frozen && !matrix.legend.includes("Previous trained policies"))
+if (matrix?.frozen && !matrix.legend.includes("Previous trained policies"))
   throw Error("Frozen opponent legend missing");
-if (matrix.maps.length > 1) {
-  await evaluate(`document.querySelector('#winMap').value='${matrix.maps[1]}';document.querySelector('#winMap').dispatchEvent(new Event('change'))`);
-  if (await evaluate("Number(document.querySelector('#winMap').value)") !== matrix.maps[1])
-    throw Error("Map selector did not retain selection");
-  await evaluate(`document.querySelector('#winMap').value='${matrix.maps[0]}';document.querySelector('#winMap').dispatchEvent(new Event('change'))`);
-}
-const desktop = await call("Page.captureScreenshot", { format: "png" });
-await fs.writeFile(
-  out + "/dashboard-desktop.png",
-  Buffer.from(desktop.data, "base64"),
+
+// Learning-health panels: entropy by head, schedules, advantage spread.
+const health = await evaluate(
+  "({hidden: document.querySelector('#healthSection').hidden, charts: ['entropyChart','scheduleChart','advantageChart','lossChart','episodeLengthChart'].map(id => document.getElementById(id).width > 0)})",
 );
+if (health.hidden || !health.charts.every(Boolean))
+  throw Error("Health panels did not render: " + JSON.stringify(health));
+
+// Behavior-over-time charts.
 const behavioral = await evaluate(
-  "document.querySelector('#behaviorSection') ? ({notice:document.querySelector('#behaviorNotice').textContent, charts:['abilitiesChart','arrowsChart','deathsChart','rewardsChart'].every(id=>document.getElementById(id).width>0&&document.getElementById(id).height>0)}) : null",
+  "document.querySelector('#behaviorSection') && !document.querySelector('#behaviorSection').hidden ? ({notice: document.querySelector('#behaviorNotice').textContent, charts: ['abilitiesChart','arrowsChart','deathsChart','rewardsChart','endingsChart','accuracyChart'].every(id => document.getElementById(id).width > 0)}) : null",
 );
-if (behavioral) {
-  if (!behavioral.charts) throw Error("Behavioral charts did not render");
-  await evaluate("document.querySelector('#behaviorSection').scrollIntoView()");
-  const behavior = await call("Page.captureScreenshot", { format: "png" });
-  await fs.writeFile(out + "/dashboard-behavior.png", Buffer.from(behavior.data, "base64"));
-  await evaluate("scrollTo(0,0)");
+if (behavioral && !behavioral.charts) throw Error("Behavioral charts did not render");
+
+// Human-comparison gauges and heatmaps follow insights availability.
+const insights = await evaluate(
+  "({available: (data.insights || []).length > 0, gauges: ['bowHoldChart','aimChangeChart'].map(id => document.getElementById(id).width > 0), heatmapHidden: document.querySelector('#heatmapSection').hidden, heatmapPainted: (() => { const c = document.getElementById('heatmap'); return c.width > 0 && c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some(v => v > 0); })()})",
+);
+if (insights.available && (!insights.gauges.every(Boolean) || insights.heatmapHidden || !insights.heatmapPainted))
+  throw Error("Insights panels did not render: " + JSON.stringify(insights));
+
+// ELO ladder renders when ladder.json exists.
+const ladder = await evaluate(
+  "data.ladder ? ({hidden: document.querySelector('#ladderSection').hidden, painted: document.getElementById('ladderChart').width > 0, tag: document.querySelector('#ladderTag').textContent}) : null",
+);
+if (ladder && (ladder.hidden || !ladder.painted))
+  throw Error("Ladder did not render: " + JSON.stringify(ladder));
+
+// Policy-mind strip renders when the selected game has a decision dump.
+let mind = null;
+if (await evaluate("(data.evaluations.at(-1)?.games || []).some(g => g.mind)")) {
+  await run(
+    "const match = document.getElementById('match'); const withMind = data.evaluations.at(-1).games.filter(g => g.mind && g.save).map(g => g.name); match.value = withMind[0]; match.dispatchEvent(new Event('change')); await new Promise(r => setTimeout(r, 2500)); const scrub = document.getElementById('scrub'); scrub.value = Math.floor(scrub.max / 2); scrub.dispatchEvent(new Event('input')); await new Promise(r => setTimeout(r, 400));",
+  );
+  mind = await evaluate(
+    "({hidden: document.getElementById('mindPanel').hidden, readout: document.getElementById('mindReadout').textContent, painted: ['mindValue','mindButtons','mindAim'].every(id => document.getElementById(id).width > 0)})",
+  );
+  if (mind.hidden || !mind.painted || !mind.readout.includes("V(s)"))
+    throw Error("Mind panel did not render: " + JSON.stringify(mind));
 }
-await call("Emulation.setDeviceMetricsOverride", {
-  width: 393,
-  height: 852,
-  deviceScaleFactor: 1,
-  mobile: true,
-});
-await sleep(300);
-const overflow = await evaluate(
-  "document.documentElement.scrollWidth>innerWidth",
-);
+
+await screenshot(out + "/dashboard-desktop.png");
+if (behavioral) {
+  await run("document.querySelector('#behaviorSection').scrollIntoView()");
+  await screenshot(out + "/dashboard-behavior.png");
+  await run("scrollTo(0, 0)");
+}
+
+await viewport(393, 852);
+await sleep(400);
+const overflow = await evaluate("document.documentElement.scrollWidth > innerWidth");
 if (overflow) throw Error("Mobile horizontal overflow");
-const mobile = await call("Page.captureScreenshot", {
-  format: "png",
-  captureBeyondViewport: true,
-});
-await fs.writeFile(
-  out + "/dashboard-mobile.png",
-  Buffer.from(mobile.data, "base64"),
-);
-if (errors.length) throw Error("Browser errors: " + JSON.stringify(errors));
+await screenshot(out + "/dashboard-mobile.png");
+// Only errors from our own page; the browser's startup tab logs its own noise.
+const pageErrors = consoleErrors.filter((e) => e.context === context).map((e) => e.text);
+if (pageErrors.length) throw Error("Browser errors: " + JSON.stringify(pageErrors));
 console.log(
   JSON.stringify({
     status: "DASHBOARD_OK",
     ...loaded,
     before,
     after,
-    video_playback: videoAvailable,
-    behavioral,
+    video,
     matrix,
+    health: !health.hidden,
+    behavioral: !!behavioral,
+    insights,
+    ladder,
+    mind,
     mobile_overflow: overflow,
-    console_errors: errors.length,
+    console_errors: pageErrors.length,
   }),
 );
 ws.close();
+process.exit(0);

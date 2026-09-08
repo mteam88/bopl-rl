@@ -89,6 +89,11 @@
           <strong id="win">—</strong
           ><small id="winDetail">Fixed evaluation · both player sides</small>
         </article>
+        <article>
+          <p>Matches cut by the clock</p>
+          <strong id="truncations">—</strong
+          ><small id="truncationDetail">Timeouts per episode · rolling 20 updates</small>
+        </article>
       </section>
       <div class="workspace">
         <section class="watch">
@@ -158,6 +163,26 @@
             </div>
             <a id="download" hidden>Download .rep ↗</a>
           </div>
+          <div id="mindPanel" hidden>
+            <div class="chart-title">
+              <b>The policy's mind</b><span id="mindReadout">V(s) and the action distribution</span>
+            </div>
+            <canvas id="mindValue" class="chart" aria-label="Value estimate across the match"></canvas>
+            <div class="mind-row">
+              <div>
+                <canvas id="mindButtons" class="mind-small" aria-label="Button combination probabilities at the current moment"></canvas>
+                <p class="caption">Button combos · J·D·A·P</p>
+              </div>
+              <div>
+                <canvas id="mindAim" class="mind-small" aria-label="Aim angle distribution at the current moment"></canvas>
+                <p class="caption">Aim direction probability · gray ∅ bin = stick released, then 0–360°</p>
+              </div>
+            </div>
+            <p class="caption">
+              Recorded from the policy during this evaluation game. The cursor
+              follows the physics replay; scrub to inspect any decision.
+            </p>
+          </div>
           <div id="players" class="players"></div>
           <p class="caption">
             The physics view shows recorded positions and collisions. Game
@@ -199,19 +224,98 @@
             aria-label="Training throughput chart"
           ></canvas>
           <div class="chart-title">
-            <b>Action variety</b><span>Policy entropy</span>
+            <b>Action variety</b><span>Entropy by head · nats</span>
           </div>
           <canvas
             id="entropyChart"
             class="chart"
-            aria-label="Policy entropy chart"
+            aria-label="Policy entropy by action head"
           ></canvas>
-          <p class="caption">
-            Falling entropy means more consistent choices. It does not prove
-            better play.
+          <div class="legend">
+            <span style="--series: #2846d4">Aim · max 5.55</span
+            ><span style="--series: #e87350">Buttons · max 2.77</span
+            ><span style="--series: #71816a">Joint · max 8.32</span>
+          </div>
+          <p id="entropyNote" class="caption">
+            Dotted lines are uniform-policy maxima. A head parked at its line is
+            not learning; falling entropy alone does not prove better play.
           </p>
         </section>
       </div>
+      <section id="healthSection" class="behavior-section">
+        <div class="section-top">
+          <div>
+            <p class="eyebrow">OPTIMIZATION</p>
+            <h2>Is the gradient real?</h2>
+          </div>
+          <div class="health">
+            <span>Policy change <b id="kl">—</b></span
+            ><span>Clipped updates <b id="clip">—</b></span
+            ><span>GPU memory <b id="memory">—</b></span>
+          </div>
+        </div>
+        <div class="behavior-grid">
+          <article>
+            <div class="chart-title">
+              <b>Schedules</b><span>Log scale</span>
+            </div>
+            <canvas
+              id="scheduleChart"
+              class="chart"
+              aria-label="Entropy coefficient and learning rate schedules"
+            ></canvas>
+            <div class="legend">
+              <span style="--series: #2846d4">Entropy coefficient</span
+              ><span style="--series: #e87350">Learning rate</span>
+            </div>
+            <p class="caption">
+              The values actually applied each update. Flat lines mean no decay
+              is configured.
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>Advantage spread</b><span>Std before normalization</span>
+            </div>
+            <canvas
+              id="advantageChart"
+              class="chart"
+              aria-label="Advantage standard deviation before normalization"
+            ></canvas>
+            <p class="caption">
+              Near zero means the reward carries no signal; per-minibatch
+              normalization would still make such gradients look full-size.
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>Value loss</b><span>Critic fit</span>
+            </div>
+            <canvas
+              id="lossChart"
+              class="chart"
+              aria-label="Value loss chart"
+            ></canvas>
+            <p class="caption">
+              Explained variance: <b id="explained">—</b>
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>Episode length</b><span>Seconds · mean per update</span>
+            </div>
+            <canvas
+              id="episodeLengthChart"
+              class="chart"
+              aria-label="Mean episode length in seconds"
+            ></canvas>
+            <p class="caption">
+              The dotted line is the episode cap; matches touching it were cut
+              off, not finished.
+            </p>
+          </article>
+        </div>
+      </section>
       <section id="evaluationMatrix" class="evaluation-matrix" hidden>
         <div class="section-top">
           <div><p class="eyebrow">EVERY OPPONENT. EVERY MAP.</p><h2>Where does it hold up?</h2></div>
@@ -314,7 +418,86 @@
               kill and death terms cancel. Win/loss reward still applies.
             </p>
           </article>
+          <article>
+            <div class="chart-title">
+              <b>How matches end</b><span>Per episode</span>
+            </div>
+            <canvas
+              id="endingsChart"
+              class="chart"
+              aria-label="Timeouts environment deaths and kills per episode"
+            ></canvas>
+            <div class="legend">
+              <span style="--series: #2846d4">Timeouts</span
+              ><span style="--series: #e87350">Environment deaths</span
+              ><span style="--series: #71816a">Credited kills</span>
+            </div>
+            <p class="caption">
+              Timeouts are matches the clock ended. Kills use the reward credit
+              when a kill bonus exists, or the game counter when recorded.
+            </p>
+          </article>
+          <article>
+            <div class="chart-title">
+              <b>Shot quality</b><span>Hits / arrows fired</span>
+            </div>
+            <canvas
+              id="accuracyChart"
+              class="chart"
+              aria-label="Fraction of fired arrows that hit"
+            ></canvas>
+            <p class="caption">
+              Damaging hits over released arrows in the rolling window.
+            </p>
+          </article>
         </div>
+      </section>
+      <section id="ladderSection" class="behavior-section" hidden>
+        <div class="section-top">
+          <div>
+            <p class="eyebrow">STRENGTH OVER TIME</p>
+            <h2>The ladder doesn't flatter.</h2>
+          </div>
+          <span id="ladderTag" class="tag">Checkpoint league</span>
+        </div>
+        <canvas
+          id="ladderChart"
+          class="chart tall"
+          aria-label="Elo ratings of checkpoints against fixed anchors"
+        ></canvas>
+        <div id="ladderLegend" class="legend"></div>
+        <p id="ladderNote" class="caption">
+          Round-robin games among recent checkpoints and fixed anchors, rated by
+          maximum likelihood with the random policy pinned at 0 Elo. Dotted lines
+          are the anchors. Bounded game counts; ratings move as games accumulate.
+        </p>
+      </section>
+      <section id="heatmapSection" class="behavior-section" hidden>
+        <div class="section-top">
+          <div>
+            <p class="eyebrow">WHERE IT LIVES AND DIES</p>
+            <h2>Ground truth on the map.</h2>
+          </div>
+          <div class="replay-select">
+            <label
+              >Checkpoint<select id="heatmapEval"></select></label
+            ><label
+              >Map<select id="heatmapMap"></select></label
+            >
+          </div>
+        </div>
+        <div class="heatmap-stage">
+          <canvas
+            id="heatmap"
+            width="960"
+            height="540"
+            aria-label="Position occupancy and death locations for the selected checkpoint and map"
+          ></canvas>
+        </div>
+        <p id="heatmapNote" class="caption">
+          Occupancy from every saved evaluation game on this map (policy player
+          only); crosses are where it died. Platforms drawn for reference.
+        </p>
       </section>
       <section class="details">
         <article>
@@ -327,18 +510,28 @@
           </p>
         </article>
         <article>
-          <p class="eyebrow">OPTIMIZATION</p>
-          <h3>Learning health</h3>
-          <canvas
-            id="lossChart"
-            class="chart"
-            aria-label="Value loss chart"
-          ></canvas>
-          <div class="health">
-            <span>Policy change <b id="kl">—</b></span
-            ><span>Clipped updates <b id="clip">—</b></span
-            ><span>GPU memory <b id="memory">—</b></span>
+          <p class="eyebrow">HUMAN COMPARISON</p>
+          <h3>Does it play like a person?</h3>
+          <div class="chart-title">
+            <b>Completed bow hold</b><span>Median seconds · human 0.84</span>
           </div>
+          <canvas
+            id="bowHoldChart"
+            class="chart"
+            aria-label="Median completed bow hold duration across checkpoints against the human reference"
+          ></canvas>
+          <div class="chart-title">
+            <b>Aim change per decision</b><span>Median degrees · human 2.8</span>
+          </div>
+          <canvas
+            id="aimChangeChart"
+            class="chart"
+            aria-label="Median aim direction change per decision against the human reference"
+          ></canvas>
+          <p id="gaugeNote" class="caption">
+            Measured from saved evaluation replays. Human references come from
+            the 47-recording demonstration batch (see IMITATION.md).
+          </p>
         </article>
         <article>
           <p class="eyebrow">RESEARCH DESIGN</p>
