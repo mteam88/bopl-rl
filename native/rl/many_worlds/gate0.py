@@ -212,7 +212,9 @@ def summarise(output, samples, oom, returncode, wall, startup_wall, events_befor
         if len(steady) > 5:
             steady = steady[len(steady) // 5:]
         def agg(key, fn, pool=None):
-            values = [s[key] for s in (pool or steady) if key in s and s[key] == s[key]]
+            # Drop NaN, and negative CPU rates (a sample taken while game
+            # processes exit sees the jiffies sum drop).
+            values = [s[key] for s in (pool or steady) if key in s and s[key] == s[key] and s[key] >= 0]
             return fn(values) if values else None
         result['game_processes_max'] = max(s['games'] for s in samples)
         result['rss_games_gb_max'] = max(s['rss_games_gb'] for s in samples)
@@ -222,7 +224,9 @@ def summarise(output, samples, oom, returncode, wall, startup_wall, events_befor
         result['pss_trainer_gb_max'] = agg('pss_trainer_gb', max, samples)
         result['mem_available_gb_min'] = min(s['mem_available_gb'] for s in samples)
         result['cores_games_mean'] = agg('cores_games', statistics.mean)
+        result['cores_games_median'] = agg('cores_games', statistics.median)
         result['cores_trainer_mean'] = agg('cores_trainer', statistics.mean)
+        result['cores_trainer_median'] = agg('cores_trainer', statistics.median)
         result['gpu_util_mean'] = agg('gpu_util', statistics.mean)
         result['gpu_util_max'] = agg('gpu_util', max)
         result['gpu_mem_gb_max'] = agg('gpu_mem_gb', max)
