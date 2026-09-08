@@ -3,7 +3,8 @@
 Reads <run>/status.json, config.json, metrics.jsonl and evaluations/*/result.json
 (a torn final metrics line is skipped) and prints milestone rows every
 --every learner decisions (physical decisions for legacy runs without learner counts)
-plus every evaluation. Never touches the run, the
+plus every evaluation, each with the learner's win rate by spawn side (pooled and
+per map: a persistent left/right gap is a map property, not strength). Never touches the run, the
 GPU or the game. Written for the sparse-reward null-hypothesis run: the
 watch rule is "joint entropy still near uniform and evaluation at chance",
 so the last row prints both against the schedule's coefficient.
@@ -77,7 +78,20 @@ def evaluations(run, config):
         yield dict(step=data.get('step'), games=len(data.get('games', [])),
                    random=pooled('random', training or None), initial=pooled('initial', training or None),
                    heldout=pooled('random', {g['map'] for g in groups}-training) if training else (float('nan'), 0),
-                   timeouts=sum(g.get('timeouts', 0) for g in groups))
+                   timeouts=sum(g.get('timeouts', 0) for g in groups), sides=sides(data.get('games', [])))
+
+
+def sides(games):
+    """Learner win rate by spawn side (schema-2 per-game `side`), pooled over opponents
+    and maps, plus the per-map split, so a side gap is not mistaken for strength.
+    Self-play games carry no learner side and are skipped."""
+    rows = [g for g in games if g.get('side') in (0, 1) and g.get('opponent') not in ('self', 'selfplay')]
+    def rate(block):
+        return (sum(bool(g['win']) for g in block)/len(block) if block else float('nan'), len(block))
+    by_side = {side: rate([g for g in rows if g['side'] == side]) for side in (0, 1)}
+    per_map = {m: {side: rate([g for g in rows if g['map'] == m and g['side'] == side]) for side in (0, 1)}
+               for m in sorted({g['map'] for g in rows})}
+    return dict(pooled=by_side, per_map=per_map)
 
 
 def summarize(run, every):
@@ -221,6 +235,10 @@ def main():
     for e in s['evaluations']:
         print(f"eval physical {e['step']:>12,}: vs random {fmt(e['random'][0])} ({e['random'][1]}g), vs initial {fmt(e['initial'][0])}"
               f" ({e['initial'][1]}g), held-out vs random {fmt(e['heldout'][0])} ({e['heldout'][1]}g), timeouts {e['timeouts']}, {e['games']} games")
+        sd = e['sides']['pooled']
+        if sd[0][1] or sd[1][1]:
+            per_map = ' '.join(f"m{m}:{fmt(v[0][0], 2)}/{fmt(v[1][0], 2)}" for m, v in e['sides']['per_map'].items())
+            print(f"      by side: left {fmt(sd[0][0])} ({sd[0][1]}g), right {fmt(sd[1][0])} ({sd[1][1]}g); per map left/right {per_map}")
     m = s['milestones'][-1]
     near_uniform = m['entropy'] > MAX_ENTROPY-0.1
     print(f"watch: entropy {'near uniform' if near_uniform else 'moving'} ({m['entropy']:.3f}), "
