@@ -217,8 +217,9 @@ the slot is negotiated explicitly between the Rifts.
   rather than a rolling window, pin the initial checkpoint as a permanent
   anchor, and log member ages, Elo and win rates to `pool.jsonl`.
   `watch_run.py`'s per-milestone `pool win` column reads the env log's
-  `historical_episodes`/`historical_wins`; re-check those fields once the
-  new pool lands.
+  `historical_episodes`/`historical_wins`; the self-play Rift's working
+  tree (read 23:50 EDT) keeps both fields with the same meaning, so the
+  column should survive the swap. Re-check on the first run with the new pool.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
