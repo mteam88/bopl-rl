@@ -45,11 +45,12 @@ parser.add_argument('--warmup-ticks', type=int, default=60)
 parser.add_argument('--threads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=73)
 parser.add_argument('--game', type=Path)
+parser.add_argument('--worlds', type=int, default=1, help='game worlds per process (games must be a multiple of 2*buffers*worlds)')
 parser.add_argument('--encoder', choices=('linear', 'set'), default='linear', help='native encoder (sets BOPL_NATIVE_ENCODER before the trainer is created)')
 options = parser.parse_args()
 os.environ['BOPL_NATIVE_ENCODER'] = options.encoder
 ARCHITECTURE = 'bopl-set-mingru-v1' if options.encoder == 'set' else 'puffernet-mingru'
-if options.games % (2*options.buffers) or options.banks < 1 or options.updates < 1 or options.graphs == 0:
+if options.games % (2*options.buffers*options.worlds) or options.banks < 1 or options.updates < 1 or options.graphs == 0:
     parser.error('games must be a multiple of 2*buffers, banks and updates positive, graphs >= 1 or -1')
 output = options.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
@@ -89,7 +90,7 @@ args['policy'].update(hidden_size=options.hidden, num_layers=1)
 args['train'].update(total_timesteps=(options.updates+1)*total_agents*horizon, horizon=horizon,
                      minibatch_size=minibatch, learning_rate=.003, ent_coef=.01,
                      anneal_ent_coef=1, min_ent_coef_ratio=.05)
-args['env'].update(players=2, banks=banks, historical_every=2, seed=options.seed, action_repeat=4,
+args['env'].update(players=2, banks=banks, historical_every=2, seed=options.seed, action_repeat=4, worlds=options.worlds,
                    observation_delay=9, map=0, training_map_mask=1, max_episode_ticks=options.episode_ticks,
                    warmup_ticks=options.warmup_ticks, reward_kill_milli=0, reward_timeout_milli=-500)
 pufferl.validate_config(args)

@@ -42,9 +42,15 @@ def capture(out,games,game=None):
                 env.step(actions); record();decisions+=1
                 events.append(env.telemetry.copy())
             replay=out/f'episode-{game}.rep';env.replay(replay)
+            replay_bytes=replay.read_bytes()
+            # BOPLREP2: magic(8) + source hash(64) + catalog hash(64) ... + SHA256 digest(32) of everything before it.
+            # The source pin changes with every C# commit, so the body hash masks the pin and its digest.
+            body=bytearray(replay_bytes);body[8:72]=b'\0'*64;body[-32:]=b'\0'*32
             row=dict(seed=seed,decisions=decisions,ticks=env.state.header.episode_ticks,
                      state_sha256=state_hash.hexdigest(),observations_sha256=obs_hash.hexdigest(),
-                     replay_sha256=hashlib.sha256(replay.read_bytes()).hexdigest())
+                     replay_sha256=hashlib.sha256(replay_bytes).hexdigest(),
+                     replay_body_sha256=hashlib.sha256(bytes(body)).hexdigest(),
+                     replay_source_pin=replay_bytes[8:72].decode('ascii'))
             if events:
                 total=np.asarray(events).sum(axis=0,dtype=np.float64)
                 actual=np.array([[getattr(env.state.telemetry[p],k) for k in EVENT_FIELDS] for p in range(2)])
@@ -101,10 +107,13 @@ def main():
     if args.baseline_game:
         baseline_capture=run('baseline',args.baseline_game)
         baseline=baseline_capture['episodes']
+        same_pin=all(old['replay_source_pin']==new['replay_source_pin'] for old,new in zip(baseline,candidate,strict=True))
         for old,new in zip(baseline,candidate,strict=True):
-            for k in ('seed','decisions','ticks','state_sha256','observations_sha256','replay_sha256'):
+            keys=['seed','decisions','ticks','state_sha256','observations_sha256','replay_body_sha256']+(['replay_sha256'] if same_pin else [])
+            for k in keys:
                 if old[k]!=new[k]: raise AssertionError(f'Baseline divergence for seed {old["seed"]}: {k}')
-        report['baseline_gameplay_observations_replays']='exact match'
+        report['baseline_gameplay_observations_replays']='exact match' if same_pin else 'exact match (replay bodies; source pin and its digest differ by construction)'
+        report['baseline_source_pin']=baseline[0]['replay_source_pin'];report['candidate_source_pin']=candidate[0]['replay_source_pin']
         report['baseline_game_identity']=baseline_capture['game_identity']
     (args.output/'result.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report),flush=True)
