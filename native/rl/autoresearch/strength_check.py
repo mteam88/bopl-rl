@@ -5,9 +5,12 @@ Protocol (pre-registered; every arm gets identical settings except --encoder):
 1. Training. For each encoder and each seed, one fresh `puffer/train.py` run:
    16 games, 4 banks, horizon 128, learner passes 1, sparse reward (+1/-1,
    timeout -0.5, no kill shaping), episode cap 7200, maps 0,1,2 sampled at
-   reset, entropy .01 -> .0005 (ratio .05), cudagraphs 1, the same game
-   binary, `--steps` learner decisions, `--no-eval` (evaluation is matched
-   below instead). Runs execute one at a time (one heavy job at a time).
+   reset, entropy coefficient .01 decaying exponentially in learner decisions
+   with a 30M half-life to the .0005 floor (train.py's default schedule, passed
+   explicitly so a short run is a prefix of the long run's entropy schedule;
+   the learning rate still cosine-anneals over each run's own budget),
+   cudagraphs 1, the same game binary, `--steps` learner decisions,
+   `--no-eval` (evaluation is matched below instead). Runs execute one at a time (one heavy job at a time).
 2. Final evaluation per run (`evaluate.py --suite final`, CPU): the last
    checkpoint against `random` and the run's own initial checkpoint on maps
    0,1,2 plus `random` on held-out maps 3,4, side-swapped seed pairs, the
@@ -92,7 +95,8 @@ def complete(run, plan, arm, seed):
     expected = dict(encoder=arm, seed=seed, workers=plan['workers'], banks=plan['banks'],
                     learner_passes=plan['learner_passes'], episode_ticks=plan['episode_ticks'],
                     training_maps=plan['training_maps'], learner_steps=plan['steps'],
-                    entropy=plan['entropy'], entropy_floor=plan['entropy_floor'])
+                    entropy=plan['entropy'], entropy_floor=plan['entropy_floor'],
+                    entropy_schedule='exponential', entropy_half_life=plan['entropy_half_life'])
     mismatch = {k: (config.get(k), v) for k, v in expected.items() if config.get(k) != v}
     horizon = ((config.get('native') or {}).get('train') or {}).get('horizon')
     if horizon != plan['horizon']: mismatch['horizon'] = (horizon, plan['horizon'])
@@ -116,7 +120,8 @@ def train(args, plan, arm, seed, game):
                '--steps', str(args.steps), '--workers', str(args.workers), '--banks', str(args.banks),
                '--horizon', str(args.horizon), '--seed', str(seed), '--encoder', arm,
                '--learner-passes', str(args.learner_passes), '--entropy', str(args.entropy),
-               '--entropy-floor', str(args.entropy_floor), '--episode-ticks', str(args.episode_ticks),
+               '--entropy-floor', str(args.entropy_floor), '--entropy-half-life', str(args.entropy_half_life),
+               '--episode-ticks', str(args.episode_ticks),
                '--training-maps', ','.join(map(str, args.training_maps)),
                '--checkpoint-every', str(args.checkpoint_every), '--cudagraphs', str(args.cudagraphs), '--no-eval']
     log = args.output/f'{arm}-s{seed}-train.log'
@@ -258,6 +263,8 @@ def main():
     parser.add_argument('--learner-passes', type=int, default=1)
     parser.add_argument('--entropy', type=float, default=.01)
     parser.add_argument('--entropy-floor', type=float, default=.0005)
+    parser.add_argument('--entropy-half-life', type=int, default=30_000_000,
+                        help='Learner decisions per halving of the entropy coefficient (train.py default)')
     parser.add_argument('--episode-ticks', type=int, default=7200)
     parser.add_argument('--training-maps', type=map_ids, default=[0, 1, 2])
     parser.add_argument('--heldout-maps', type=map_ids, default=[3, 4])
