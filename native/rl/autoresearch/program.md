@@ -111,6 +111,10 @@ encoder (evidence layout: `native/artifacts/rl/autoresearch/final-core-checks/`)
   `libbopl_research.so` needs `make -B -C native/rl research` to pick up
   header changes. Unity player launches need
   `OPENSSL_CONF=/home/mte/Documents/Coding/bopl-re/openssl-unity-sha1.cnf`.
+- Watching a run without touching it: `python native/rl/autoresearch/watch_run.py
+  <run> --every 5000000` prints milestone rows (entropy against the uniform
+  8.318 nats, schedule coefficient, explained variance, gradient norm, kl/clip)
+  and pooled evaluation win rates, reading only the run directory.
 
 ## Where things stand (2026-09-08)
 
