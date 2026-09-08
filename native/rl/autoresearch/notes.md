@@ -1574,3 +1574,77 @@ singletons. Fix belongs in root's `native_selfplay.py` (or a small patch to
 path already equals the new snapshot path, or collapse duplicates in
 `summary`. Not mine to change; reported to the parent. The listed/distinct
 column makes it visible on the live run.
+
+## 2026-09-08 00:40 EDT: root's pool fix merged; what is left inside a tick after raycull
+
+Source-only, machine still owned by the many-worlds thread.
+
+**Pool fix.** Base main adb6f50 ("Collapse duplicate pool entries when several
+banks swap in one update") routes the trainer through `native_selfplay.step`,
+which calls `pufferlib.selfplay.step` and then keeps the first occurrence of
+each snapshot path (the copy that received the Elo update). Merged here as
+2bb3948; `python -m unittest test_native_selfplay` (project venv) passes 5 of
+5 including root's new `test_simultaneous_bank_swaps_snapshot_once`.
+`watch_run.py` still reads the pre-fix smoke run and still flags its
+duplicates (the smoke data predates the fix, so the warning is correct there);
+on a run made after adb6f50 the listed/distinct column should read equal and
+the warning should never print. Residual root noted: with `--pool-size` below
+10 the colliding update can still evict one extra old entry.
+
+**Gate 0 reset share, all six points.** Same fit as 00:08 (rollout seconds per
+update against player-episodes ended, steady window, updates above 3× the
+median rollout dropped), on the many-worlds Rift's Gate 0 data
+(`many-worlds/gate0/*/run/metrics.jsonl`, commit f687d38):
+
+    point    updates  eps/update  rollout s  base s  ms/match  reset share
+    w16-b1     732       49.1       0.231     0.157    3.0        0.32
+    w16-b2     732       48.9       0.215     0.136    3.2        0.37
+    w24-b2     489       73.2       0.333     0.217    3.2        0.35
+    w32-b1     367       98.4       0.434     0.229    4.2        0.47
+    w32-b2     367       99.0       0.495     0.252    4.9        0.49
+    w40-b2     294      122.1       0.557     0.336    3.6        0.40
+
+The per-match cost is 3 ms at 16 workers and 4 to 5 ms at 32, and the reset
+share of rollout time rises from a third to a half as workers are added: on a
+saturated box the spare processes' scene loads and warmup ticks displace
+played ticks, so more workers buy more reset work rather than more decisions.
+This is the same conclusion as 00:17 from a second data set, and it is the
+quantitative case for the snapshot-restore requirement Matthew attached to
+the 500M gate (handoff.md 00:26).
+
+**Per-tick budget on the current build** (`exp08-profiles-raycull/`, 32 game
+processes, check workload w16 × 2000 decisions, 235,520 ticks of which
+128,000 counted; per *total* tick, warmup included, so these are CPU per
+simulated tick rather than per played tick):
+
+    main thread                 1069 µs/tick   100 %
+      bridge:read (trainer wait)   844          79 %
+      non-wait                     225          21 %
+        scene load (UpdatePreloading) 111  (49 % of non-wait; 58 ms per reset here, cold-start heavy: 14 resets per process)
+        sim buckets (det/tick/pp/slime) 67  (30 %)
+        bridge send/observe/reset/pump  37  (16 %)
+        Unity per-frame loop + unity:frame 10  ( 4 %)
+
+Sim work per tick after raycull, largest first (µs per tick, calls per tick):
+raycast_rr 12.5 (6.2 calls, 2.0 µs each: the cull loop over ~39 rects now
+costs as much as the ~1.5 rects it lets through), integrate 5.4, bounding
+boxes 4.7, sync_from_fixtrans 4.7, narrow_phase 4.5, beams 4.2, rope_mesh
+2.9, sync_to_gameobject 2.5, ropes 2.5, sweep 2.4, tick:physics 2.3 (11
+calls), collision_callbacks 2.1, gravity_raycasts 2.0, duplicates 1.9,
+raycast_remove_destroyed 1.6; everything else under 1 µs. Sim buckets fell
+from 187 µs/tick (pre-cull train profile) to 67 here. The distribution is
+flat: the largest item is 18 % of sim time and 6 % of non-wait time, so no
+single bit-exact trim left is worth more than ~5 % of the game's CPU per
+tick (a spatial index for the raycast cull would take ~6 µs, i.e. ~3 %).
+Gate 0's "cheaper ticks" beyond many-worlds therefore does not come from the
+simulation code any more; it comes from the two structural items that the
+per-tick numbers put at ~1.5 to 2× the sim work itself: the reset (scene
+load + 240 warmup ticks, table above) and the per-frame/bridge overhead that
+many-worlds amortises across worlds. Same as 00:17 in one sentence: after
+raycull, resets and process overhead outweigh the physics.
+
+Caveats: the check workload sends 122 µs per decision in `bridge:send`
+against 45 in the train profile (it ships telemetry), and its 58 ms per
+reset for scene load includes each process's cold start; use the train
+profile's 18.6 ms per reset for the reset budget, and only the sim buckets
+and call counts from the raycull profile.

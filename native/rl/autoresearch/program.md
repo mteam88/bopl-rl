@@ -225,8 +225,10 @@ the slot is negotiated explicitly between the Rifts.
   and swaps per milestone from the `pool` record. Open: `pufferlib.selfplay`
   appends one snapshot per bank that swaps in the same update (same path
   listed 2 to 4 times, each rated separately, duplicates evicted silently);
-  on the 500M defaults the synchronized early swaps will hit this. Fix is
-  root's (`native_selfplay.py` or a `selfplay.step` patch); reported.
+  on the 500M defaults the synchronized early swaps will hit this. Fixed by
+  root on main (adb6f50: `native_selfplay.step` keeps the first occurrence of
+  each path), merged here 2026-09-08 00:40 (notes.md); the listed/distinct
+  column should read equal on any run made after it.
 - **Per-match reset cost on the critical path** (notes.md 2026-09-08 00:08).
   Rollout time on 001-s73 rises ~2 ms per player-episode ended in the update
   (~4 ms per match, ~35 % of rollout at stocks 0; stocks-3 runs 17 % faster
@@ -242,7 +244,14 @@ the slot is negotiated explicitly between the Rifts.
   parent forwarded this to the many-worlds design (2026-09-08 00:1x EDT)
   and asked thr_nzrpteey2z to time reset ms/match separately from tick µs.
   `reset_check.c` is the acceptance test (reset after dirty play must
-  reproduce the fresh seeded trajectory).
+  reproduce the fresh seeded trajectory). Re-fitted on all six Gate 0 points
+  (notes.md 2026-09-08 00:40): 3 ms per match at 16 workers, 4 to 5 ms at
+  32, reset share of rollout .32 → .49 from 16 to 32 workers. Post-raycull
+  per-tick budget from `exp08-profiles-raycull`: sim buckets 67 µs per
+  simulated tick and flat (largest item 12.5 µs), against ~111 µs of scene
+  load and the 240 warmup ticks per reset; no single bit-exact sim trim
+  left is worth more than ~5 %, so "cheaper ticks" means cheaper resets and
+  per-process overhead (many-worlds), not physics.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
