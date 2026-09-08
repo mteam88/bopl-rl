@@ -36,7 +36,7 @@ public static class ReferenceExport
                 ["path"] = paths[index], ["file"] = filename });
         }
         Write(directory, "maps.json", scenes);
-        var manifest = new JObject { ["schema"] = "bopl-assets-v1", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
+        var manifest = new JObject { ["schema"] = "bopl-assets-v2", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
         var hashes = new JObject();
         foreach (string path in Directory.GetFiles(directory, "*.json").Where(p => Path.GetFileName(p) != "manifest.json").OrderBy(p => p, StringComparer.Ordinal))
         {
@@ -56,7 +56,7 @@ public static class ReferenceExport
         var children = new JArray();
         for (int i = 0; i < root.transform.childCount; i++) children.Add(Hierarchy(root.transform.GetChild(i).gameObject));
         return new JObject { ["name"] = root.name, ["id"] = Id(root), ["layer"] = root.layer,
-            ["active"] = root.activeSelf, ["components"] = components, ["children"] = children };
+            ["tag"] = root.tag, ["active"] = root.activeSelf, ["components"] = components, ["children"] = children };
     }
 
     private static JObject Properties(UnityEngine.Object value)
