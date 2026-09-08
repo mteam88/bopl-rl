@@ -200,6 +200,28 @@ Shim/loader fixes the real scenes forced (all trace-verified):
   LoadScene("winnerTriangle") for WinnerTriangle.unity); Additive loads
   leave the active scene untouched and stamp loaded roots explicitly.
 
+## v5 export: real sprites (g4 training loadout)
+
+- **Instantiate clones shim built-in component state** (bug, g2/g4): Unity
+  clones native-component state wholesale, but SerializationRules skipped
+  the shim's auto-property backing fields (private, no [SerializeField]) -
+  cloned SpriteRenderers reset color to white (g2 SimpleSparkNode.origColor
+  r=1 vs 0) and dropped their sprite (g4 ResizablePlatform NRE). Fields
+  declared by UnityShim-assembly types are now serialized when their TYPE
+  is serializable; non-serializable classes (ParticleSystem modules,
+  ctor-created with back-references) stay per-instance.
+- **sprites.json** (981 sprites keyed by GlobalObjectId): the loader builds
+  real Sprites - texture dims, pixelsPerUnit, rect, textureRect, pivot,
+  bounds, border, exact f32 bits - with atlas sprites sharing one Texture2D
+  per textureId. Sim-path readers: ResizablePlatform (texture.width/height,
+  pixelsPerUnit), GrowthFlare (pivot, bounds.size), StretchableLightning
+  (textureRect min/max), DuplicatePlatformEffect. Unmatched ids still get
+  named placeholders.
+
+Result: **l0-p2-g4 (Dash/Bow/Platform - the live RL training loadout)
+matches 720/720 unfiltered**; l0-p2, l4-p2, l0-p2-g0, l0-p3-g0 re-verified
+green after the change.
+
 ## Open questions for the oracle
 
 - Awake/OnEnable batching on Instantiate (deviation 3).
