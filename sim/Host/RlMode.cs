@@ -98,9 +98,11 @@ namespace BoplSim.Host
 				host.ResetRl(BootstrapSetup(replayPath));
 				// Bootstrap scene load completes its frame like every load below.
 				EndFrame();
-				// Memory baseline per game process (sim/RL.md "Known gaps"): the
-				// retained export JSON dominates; a forced compacting GC here was
-				// measured to return only ~6 MiB of working set, so none is done.
+				// Boot leaves ~110 MiB of dead parse trees (boot scene, built
+				// assets' JSON) behind a ~60 MiB live heap; with 16-32 game
+				// processes per trainer that is worth one blocking compaction
+				// before the harness starts timing us (sim/RL.md).
+				GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
 				Console.Error.WriteLine($"[rl] ready: heap {GC.GetTotalMemory(false) >> 20}MiB workingSet {Environment.WorkingSet >> 20}MiB");
 
 				int frames = 0;
