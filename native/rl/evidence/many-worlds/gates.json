@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "checked_at_utc": "2026-09-08T17:30:14Z",
+  "source_commit": "2aa946a9bf14f5478afcf986cf5710084034b1cf",
+  "game_build": {
+    "player": "Builds/LinuxIL2CPP-mw/BoplBattle.x86_64",
+    "player_sha256": "0bfe51325720c950b4ad75ce7c3b65595fd7e939908520ec33600919919327a8",
+    "game_assembly_sha256": "f75bc672564f9d2e1cd30cbc66dac13c8df2fddf2ba023d69ed2ce257adc9a7d",
+    "metadata_sha256": "9775f3e1ca534b66abaf428d7442adaadc04ed62f16e2ff8743b6637bb964ba8",
+    "backend": "IL2CPP",
+    "configuration": "Release",
+    "log": "build-mw.log",
+    "build_seconds_incremental": 240
+  },
+  "previous_build": {
+    "player": "Builds/LinuxIL2CPP/BoplBattle.x86_64",
+    "player_sha256": "0bfe51325720c950b4ad75ce7c3b65595fd7e939908520ec33600919919327a8",
+    "game_assembly_sha256": "67723a4b5427af191d8c16b6090f74ff523c6cf1401fea6273311e28f23b678d"
+  },
+  "gate1_single_world_parity": {
+    "status": "pass",
+    "games": 12,
+    "ticks": 7208.0,
+    "comparison": "exact match (replay bodies; source pin and its digest differ by construction)",
+    "fields": [
+      "fixed-point state",
+      "every delayed policy observation",
+      "replay bytes with the source pin and its digest masked"
+    ],
+    "event_conservation": "pass",
+    "reset": "pass",
+    "sparse_reward": "pass",
+    "forced_timeout": "pass",
+    "c_checks": {
+      "reset_check": "RESET_ISOLATION_OK 5738 snapshots",
+      "warmup_check": "WARMUP_SEED_INDEPENDENT_OK maps 5 seeds 4",
+      "sampled_check": "pass 459 decisions"
+    },
+    "report": "native/artifacts/rl/many-worlds/single-parity/result.json"
+  },
+  "gate2_multi_world_parity": {
+    "tool": "native/rl/world_check.c",
+    "runs": [
+      {
+        "worlds": 4,
+        "rounds": 3,
+        "matches": 12,
+        "exact_snapshots": 2058,
+        "episode_ticks": 4079,
+        "status": "MANY_WORLDS_PARITY_OK"
+      },
+      {
+        "worlds": 8,
+        "rounds": 4,
+        "matches": 32,
+        "exact_snapshots": 5700,
+        "episode_ticks": 11300,
+        "status": "MANY_WORLDS_PARITY_OK"
+      }
+    ],
+    "compares": [
+      "fixed-point state incl. entities/slimes/telemetry after every sampled step (both phases)",
+      "replay bytes"
+    ],
+    "loadouts": "Mjolnir/Portal gun/Poke ball/Tack/Freeze ray/Gold mushroom/Spike/Beam/Throw/Dash rotated per match",
+    "maps": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "concurrency": "one thread per world, resets desynchronised by differing episode limits, handles closed in mixed order",
+    "trainer_binding": {
+      "tool": "native/rl/puffer/check_worlds.py",
+      "worlds": 4,
+      "games": 8,
+      "steps": 600,
+      "matches": 81,
+      "map_matches": {
+        "0": 10,
+        "1": 20,
+        "2": 18,
+        "3": 20,
+        "4": 13
+      },
+      "ok": true,
+      "report": "native/artifacts/rl/many-worlds/trainer-worlds/result.json"
+    }
+  },
+  "gate3_native_trainer_smoke": {
+    "routing": "PASS native/artifacts/rl/many-worlds/routing/result.json",
+    "smoke_worlds1": {
+      "status": "passed",
+      "matches": 80,
+      "learner_dps_loop": 1811
+    },
+    "smoke_worlds2": {
+      "status": "passed",
+      "matches": 80,
+      "learner_dps_loop": 10877
+    },
+    "metrics_identical_first_updates": true,
+    "compared": [
+      "entropy",
+      "policy_loss",
+      "value_loss",
+      "kl",
+      "advantage_std",
+      "gradient_norm",
+      "counters"
+    ],
+    "note": "8 games, 2 buffers, 2 banks, 4 updates + 1 rotation, seed 73; dps from a 5-update smoke is not a throughput measurement"
+  },
+  "new_flags": {
+    "train_py": "--worlds-per-process N (workers must be divisible by 2*buffers*N; N>1 disables the spare process)",
+    "smoke_py": "--worlds N"
+  }
+}
