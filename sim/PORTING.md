@@ -37,10 +37,18 @@ decides the question (usually: the oracle trace).
    refs into the cloned hierarchy are remapped, refs out of it kept;
    `[Serializable]` plain classes/structs deep-copied by value. Root clone name
    gets Unity's `"(Clone)"` suffix; children keep their names.
-5. **`FindObjectsOfType` order** = root creation order, depth-first. Unity's
-   order is unspecified but stable within a run; `Updater.ComputeChecksum` and
-   `Host.ResetRl` iterate results. If checksum/trace diffs appear, compare
-   orderings first.
+5. **`FindObjectsOfType` order** = Unity's `FindObjectsSortMode.InstanceID`
+   ascending (the 2022.3 legacy API maps to it): runtime-created objects have
+   negative, decreasing instance ids, scene-file objects positive in file
+   order — so clones enumerate newest-first, before scene objects. The shim
+   keeps its positive monotonic counter plus an `Object.persistent` flag set
+   by GraphBuilder for scene-file objects, and sorts with key
+   `persistent ? +id : -id`. Order is gameplay-visible
+   (Mjolnir/Portal/BananaPeel/FreezeRay iterate
+   `FindObjectsOfType<SlimeController>`) and trace-visible (ReferenceCapture
+   identity ties among same-named root clones). Root cause of the g3
+   Mjolnir/Portal divergence (l0 tick 372) and the l3-p2-g4 CursorArrow trace
+   tie (tick 649); fixing it took both fixtures to full match.
 6. **Destroy(obj, t)** ignores the delay; destruction happens at the host
    frame's destroy flush (gameplay uses `Updater.DestroyFix` for deterministic
    destruction anyway). `DestroyImmediate` is immediate, including the
@@ -269,7 +277,9 @@ the worker process + unix socket with direct calls. Smoke test:
 - Awake/OnEnable batching on Instantiate (deviation 3).
 - Scene-load Awake order: export loader awakes root-order-then-depth-first;
   Unity's order is officially unspecified (DOTNET_SIM.md says try this first).
-- FindObjectsOfType ordering (deviation 5).
+- ~~FindObjectsOfType ordering (deviation 5)~~ — resolved: InstanceID sort
+  mode with the negative-runtime-id model; confirmed by the l3-p2-g4
+  CursorArrow tie and the g3 fixture going green.
 
 ## TODO
 
@@ -296,9 +306,13 @@ the worker process + unix socket with direct calls. Smoke test:
       (10 manual + scripted). Suspect a `Dictionary<string,_>` iteration
       order leak (.NET randomizes string hash seeds per process) somewhere
       on a trace-observable path — audit sim-path dictionary iterations.
-- [ ] l3-p2-g4 diverges at 649/720 on `FixTransform.position` Vec2.x (real
-      physics; left 65682363597 vs right -54114639920). Same level as the g3
-      Mjolnir/Portal divergence — likely a level-3 map mechanic. Owned by the
-      physics-divergence thread per the coordinator's scope cut.
+- [x] l3-p2-g4 "divergence" at 649/720: NOT physics — both players entered
+      the Platform ability the same tick, spawning two root CursorArrow(Clone)
+      objects whose ReferenceCapture identities tie ("[0]" both: PathOf skips
+      the sibling ordinal for roots), so the trace order fell through to
+      FindObjectsOfType enumeration order. Fixed by deviation 5's InstanceID
+      sort; the same fix resolved the REAL g3 physics divergence
+      (Mjolnir/Portal iterate FindObjectsOfType<SlimeController> newest-first
+      in Unity). All 15 committed fixtures now match unfiltered.
 - [ ] native_check checksum vs the socket path (RL thread) — same 240-step
       zero-action sequence, compare FNV-1a over the decoded states.
