@@ -1095,7 +1095,12 @@ episodes per update fell 36.8 → 25.1. Environment deaths per episode fell
 through 14M. Opponent-credited deaths rose .008 → .035 and arrow hits
 .008 → .035 in step, both about 4x, while arrows fired rose only 43%
 (1.80 → 2.57), so accuracy per arrow roughly tripled (.0044 → .0136 hits per
-arrow). Self deaths rose .078 → .122 and platform activations per episode
+arrow). Note what `arrow_hits` counts: `PlayerCollision.cs` line 458 records a
+hit only when the arrow collision actually killed (`killed &&
+arrowForTelemetry`), so at stocks 0 it is arrow kills credited to the learner,
+not contacts. Its near equality with opponent-credited deaths is the
+self-play symmetry (the learner's kills on itself-as-opponent are its own
+deaths), not a coincidence. Self deaths rose .078 → .122 and platform activations per episode
 doubled (.39 → .79); dashes per episode rose 44%. Per decision, jump rate
 rose .503 → .550 and platform rate fell .530 → .508; dash and arrow rates are
 flat, so the per-episode increases are mostly the longer rounds. Aim head
