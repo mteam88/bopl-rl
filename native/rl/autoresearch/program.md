@@ -187,14 +187,14 @@ the slot is negotiated explicitly between the Rifts.
   arrows first. No rewrite now.
 - **Native scripted evaluation opponents** (archer/pursuer/evasive) as fixed
   anchors after launch; the ladder grows a scripted-anchor option then.
-- **Evaluation side asymmetry** (notes.md 2026-09-07 22:26). Side 0 / left
-  spawn wins ~.54 vs ~.36 for side 1 in both runs at every evaluation, present
-  at the first evaluation and largest on maps 1, 2 and 4. Two follow-ups when
+- **Evaluation side asymmetry** (notes.md 2026-09-07 22:26). Across the examined
+  evaluations, pooled side-0 / left-spawn wins are ~.54 vs ~.36 for side 1.
+  Side 0 has more wins in each evaluated checkpoint, including the first,
+  with larger pooled gaps on maps 1, 2 and 4. Two follow-ups when
   game jobs are allowed: (a) evaluate the initial checkpoint against itself on
   both sides (no GPU; shows whether the effect survives identical weights),
   (b) report evaluation results per side in `watch_run.py` and the dashboard
-  summary, since the side gap exceeds any checkpoint-to-checkpoint difference
-  seen so far and pooled win rates hide it.
+  summary so pooled rates do not hide the observed side effect.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code

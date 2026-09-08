@@ -1081,7 +1081,9 @@ no timeouts.
 ## 2026-09-07 22:33 EDT: behavior is moving from ~18M (counters 0-30M, read-only)
 
 Same per-2M sums of `behavior.totals` as the 22:16 section, extended to
-30M learner decisions. Everything below is per learner episode unless marked.
+30M learner decisions. Event counts and ticks below are per completed learner episode; entropy and
+explained variance are means of update metrics. The 30M+ row is an historical
+partial window, so use the complete 28–30M window for matched comparisons.
 
 | window | ticks | env deaths | self | opponent-credited | credited kills | arrows | hits | dash | platform | H(aim) | H(buttons) | ev |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -1098,29 +1100,32 @@ episodes per update fell 36.8 → 25.1. Environment deaths per episode fell
 .416 → .349, the first sustained movement in that counter; it was flat
 through 14M. Opponent-credited deaths rose .008 → .035 and arrow hits
 .008 → .035 in step, both about 4x, while arrows fired rose only 43%
-(1.80 → 2.57), so accuracy per arrow roughly tripled (.0044 → .0136 hits per
-arrow). Self deaths rose .078 → .122 and platform activations per episode
+(1.80 → 2.57), so damaging hit events per fired arrow roughly tripled. The complete
+0–2M and 28–30M windows give .004519 → .013375, a 2.96x increase. This is
+not a fraction of unique projectiles that hit: the event counter can count
+multiple accepted contacts from a projectile. Self deaths rose .078 → .122 and platform activations per episode
 doubled (.39 → .79); dashes per episode rose 44%. Per decision, jump rate
 rose .503 → .550 and platform rate fell .530 → .508; dash and arrow rates are
 flat, so the per-episode increases are mostly the longer rounds. Aim head
 entropy fell 5.530 → 5.474 (uniform 5.545), buttons 2.762 → 2.751 (uniform
 2.773): still near uniform, and joint entropy 8.236 at 30M matches.
 
-Reading. This is the pattern one would expect from "fall in the water less,
-and occasionally hit the opponent": longer rounds, fewer environment deaths,
-more opponent kills. It is small in absolute terms (the learner still dies to
+Reading. These windows show longer rounds, fewer environment-credited deaths per
+episode, and more accepted hits and opponent-credited deaths. They are
+consistent with changing survival and combat behavior, without identifying its
+cause or establishing stronger play. It is small in absolute terms (the learner still dies to
 the environment in 35% of episodes and is killed by the opponent in 3.5%),
-and part of the longer rounds is just two players who both avoid the water a
-little longer. The explained-variance decline from .62 to .50 over the same
-window is consistent with a target shift rather than critic failure: longer
-rounds push more of the return further from the terminal reward, and the
-outcome distribution now includes a small kill component that was absent
-before; value loss kept falling (.0264 → .0231). Wins per episode stayed
-at .50 by construction (self-play plus historical opponents of the same
-lineage). None of this is strength evidence against a fixed opponent; the
+but the aggregate counters do not isolate why rounds became longer. A target-distribution shift is one hypothesis for the explained-variance
+decline, not an established alternative to critic error. From 18–20M to
+28–30M, mean explained variance fell .619 → .517 while value loss fell
+.02626 → .02300. Longer rounds and more combat-influenced outcomes may change
+targets, but residual and target variances would need inspection to explain
+these metrics; the clipped loss and explained variance need not move together.
+Kill/death shaping remains exactly zero: there is no added kill-reward
+component. Wins per episode stayed near .50, but that is not guaranteed for
+learner-only totals containing historical-opponent games. None of this is strength evidence against a fixed opponent; the
 evaluation win rate vs random over the last three evaluations (.58, .46, .54
-on 24 games each) is inside noise. The behavior counters are the earlier and
-less noisy signal. Next check at ~40M: whether env deaths keep falling and
-whether aim entropy keeps declining; the 22:16 section's watch item
-("deaths_environment per episode is the most direct behavior progress
-signal") stands.
+on 24 games each) is inside noise. The behavior counters aggregate many more episodes and reveal distribution
+changes, but those samples remain dependent and are not strength evaluations. Next check at ~40M: whether env deaths keep falling and
+whether aim entropy keeps declining; retain self-deaths, total losses, duration and fixed-opponent results alongside
+environment deaths, as specified in the reviewed 22:16 section.
