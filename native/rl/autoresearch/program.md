@@ -219,7 +219,14 @@ the slot is negotiated explicitly between the Rifts.
   `watch_run.py`'s per-milestone `pool win` column reads the env log's
   `historical_episodes`/`historical_wins`; the self-play Rift's working
   tree (read 23:50 EDT) keeps both fields with the same meaning, so the
-  column should survive the swap. Re-check on the first run with the new pool.
+  column should survive the swap. Re-checked on the self-play smoke run
+  (notes.md 2026-09-08 00:27): the column survived, and `watch_run.py` now
+  also prints learner Elo, pool listed/distinct snapshots, mean opponent lag
+  and swaps per milestone from the `pool` record. Open: `pufferlib.selfplay`
+  appends one snapshot per bank that swaps in the same update (same path
+  listed 2 to 4 times, each rated separately, duplicates evicted silently);
+  on the 500M defaults the synchronized early swaps will hit this. Fix is
+  root's (`native_selfplay.py` or a `selfplay.step` patch); reported.
 - **Per-match reset cost on the critical path** (notes.md 2026-09-08 00:08).
   Rollout time on 001-s73 rises ~2 ms per player-episode ended in the update
   (~4 ms per match, ~35 % of rollout at stocks 0; stocks-3 runs 17 % faster

@@ -9,7 +9,12 @@ milestone row also carries the learner's training-time win rate against the
 historical opponent pool since the previous milestone (from the env log's
 `historical_episodes`/`historical_wins`); with a pool of recent snapshots this
 sits at chance even when evaluations against the initial checkpoint rise, so it
-measures pool lag, not strength. Never touches the run, the GPU or the game. Written for the sparse-reward null-hypothesis run: the
+measures pool lag, not strength. Runs with PufferLib's Elo pool (`pool` record per
+update, `pool.jsonl` events) also get the learner's Elo, the pool as listed/distinct
+snapshots (pufferlib.selfplay appends the same snapshot once per bank when several
+banks pass the swap gate in one update, so listed can exceed distinct), the mean lag
+of the banks' current opponents behind the learner, and the bank swaps since the
+previous milestone. Never touches the run, the GPU or the game. Written for the sparse-reward null-hypothesis run: the
 watch rule is "joint entropy still near uniform and evaluation at chance",
 so the last row prints both against the schedule's coefficient.
 
@@ -115,6 +120,36 @@ def pool_wins(rows, lo, hi):
     return dict(rate=rate, se=(rate*(1-rate)/episodes)**0.5, episodes=int(round(episodes)))
 
 
+def load_events(path):
+    """<run>/pool.jsonl (Elo-pool events); empty when the run predates the pool."""
+    if not path.exists(): return []
+    out = []
+    for line in path.read_text().splitlines():
+        if not line.strip(): continue
+        try: out.append(json.loads(line))
+        except json.JSONDecodeError: pass  # torn final line
+    return out
+
+
+def pool_state(row, events, lo_learner, hi_learner):
+    """Elo-pool state after this update from the row's `pool` record: learner Elo, listed
+    and distinct snapshot counts (listed > distinct means duplicate copies of one
+    snapshot, each rated separately), the mean lag in learner decisions of the banks'
+    current opponents behind the learner (the pinned initial checkpoint counts at its
+    full age), and `loaded` swaps with lo < learner_steps <= hi. None without the record."""
+    pool = row.get('pool')
+    if not pool or pool.get('schema') != 1: return None
+    entries = pool.get('entries') or []
+    learner_at = {}
+    for e in entries: learner_at.setdefault(e['step'], e['learner_steps'])
+    now = row.get('learner_steps', row['step'])
+    lags = [now-learner_at[b['opponent_step']] for b in pool.get('banks') or [] if b['opponent_step'] in learner_at]
+    swaps = sum(1 for e in events if e.get('event') == 'loaded' and lo_learner < e.get('learner_steps', -1) <= hi_learner)
+    return dict(elo=pool['elo'], listed=pool['size'], distinct=len({e['step'] for e in entries}),
+                opponent_lag=sum(lags)/len(lags) if lags else float('nan'), banks=len(lags), swaps=swaps,
+                winrate=pool.get('winrate'))
+
+
 def summarize(run, every):
     if every <= 0: raise ValueError('--every must be positive')
     run = Path(run)
@@ -124,12 +159,15 @@ def summarize(run, every):
     config = json.loads((run/'config.json').read_text()) if (run/'config.json').exists() else {}
     rows = load_metrics(run/'metrics.jsonl')
     if not rows: raise SystemExit(f'{run}: no metrics yet')
+    events = load_events(run/'pool.jsonl')
     index = {id(r): i for i, r in enumerate(rows)}
     table, previous = [], -1
     for r in milestones(rows, every):
         i = index[id(r)]
+        lo = rows[previous]['summary_decisions'] if previous >= 0 else -1
         table.append(dict(decisions=r['summary_decisions'], step=r['step'], update=r['update'], elapsed=r['elapsed'],
-                          pool=pool_wins(rows, previous+1, i), **window(rows, i)))
+                          pool=pool_wins(rows, previous+1, i), elo_pool=pool_state(r, events, lo, r['summary_decisions']),
+                          **window(rows, i)))
         previous = i
     last = rows[-1]
     rate = last['summary_decisions']/last['elapsed'] if last['elapsed'] else float('nan')
@@ -254,14 +292,27 @@ def main():
           + (f", ~{s['hours_remaining']:.1f} h left" if s['hours_remaining'] else ''))
     print(f"learner passes {fmt(s['learner_passes'])} (at 1, pre-step kl/clip do not measure the resulting policy change), entropy half-life "
           f"{fmt(s['entropy_half_life'])}, lr {fmt(s['learning_rate_schedule'])}; uniform entropy = {MAX_ENTROPY:.3f} nats")
-    print(f"{s['decision_unit']:>12} {'entropy':>8} {'coef':>7} {'ev':>6} {'gnorm':>6} {'advstd':>6} {'kl':>7} {'clip':>5} {'dps':>6}  {'pool win (eps)':>14}")
+    has_elo = any(m['elo_pool'] for m in s['milestones'])
+    print(f"{s['decision_unit']:>12} {'entropy':>8} {'coef':>7} {'ev':>6} {'gnorm':>6} {'advstd':>6} {'kl':>7} {'clip':>5} {'dps':>6}  {'pool win (eps)':>14}"
+          + (f"  {'elo':>6} {'pool':>5} {'opp lag':>8} {'swaps':>5}" if has_elo else ''))
     print('Signals are trailing 50-update means; pool win is the learner win rate vs the historical opponent pool since the'
           ' previous milestone (±1 se); evaluation steps are physical decisions.')
+    if has_elo:
+        print('elo is the learner rating after the milestone update; pool is listed/distinct snapshots (listed > distinct: one'
+              ' snapshot appended once per bank that swapped in the same update); opp lag is the mean learner-decision age of'
+              ' the banks\' current opponents; swaps are bank loads since the previous milestone.')
     for m in s['milestones']:
         pool = m['pool']
         pool_text = f"{pool['rate']:.3f}±{pool['se']:.3f} ({pool['episodes']:,})" if pool['episodes'] else '-'
+        ep = m['elo_pool']
+        elo_text = (f"  {ep['elo']:6.1f} {ep['listed']:>2}/{ep['distinct']:<2} {ep['opponent_lag']/1e6:7.2f}M {ep['swaps']:>5}" if ep
+                    else ('  ' + f"{'-':>6} {'-':>5} {'-':>8} {'-':>5}" if has_elo else ''))
         print(f"{m['decisions']:>12,} {fmt(m['entropy'])} {fmt(m['entropy_coefficient'], 5)} {fmt(m['explained_variance'])}"
-              f" {fmt(m['gradient_norm'])} {fmt(m['advantage_std'])} {fmt(m['kl'], 5)} {fmt(m['clip_fraction'])} {m['summary_sps']:>6,.0f}  {pool_text}")
+              f" {fmt(m['gradient_norm'])} {fmt(m['advantage_std'])} {fmt(m['kl'], 5)} {fmt(m['clip_fraction'])} {m['summary_sps']:>6,.0f}  {pool_text}{elo_text}")
+    last_ep = next((m['elo_pool'] for m in reversed(s['milestones']) if m['elo_pool']), None)
+    if last_ep and last_ep['listed'] > last_ep['distinct']:
+        print(f"pool: {last_ep['listed']-last_ep['distinct']} of {last_ep['listed']} slots hold duplicate copies (same-update multi-bank"
+              " swaps in pufferlib.selfplay.step); each copy is rated separately and the rating step only touches the first.")
     for e in s['evaluations']:
         print(f"eval physical {e['step']:>12,}: vs random {fmt(e['random'][0])} ({e['random'][1]}g), vs initial {fmt(e['initial'][0])}"
               f" ({e['initial'][1]}g), held-out vs random {fmt(e['heldout'][0])} ({e['heldout'][1]}g), timeouts {e['timeouts']}, {e['games']} games")

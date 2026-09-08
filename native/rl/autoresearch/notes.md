@@ -1532,3 +1532,45 @@ trajectory), so the acceptance test exists.
 
 Also the earlier "~13 ms scene load" is per reset at idle; under load the
 profile's 9.3 ms per preloading frame × 2 frames is 18.6 ms, consistent.
+
+## 2026-09-08 00:27 EDT: watch_run.py reads the Elo pool; the pool double-counts same-update snapshots
+
+Source-only (machine still owned by the many-worlds thread). Checked against the
+self-play thread's smoke run at `/tmp/selfplay-smoke` (98 updates, 300k learner
+decisions, 4 banks, smoke settings `max_size 8, swap_winrate .4, min_games 4`) and
+against `001-s73` (no `pool` record, must degrade to the old table).
+
+`watch_run.py` now adds four columns when the run has the `pool` record: learner
+`elo`, `pool` as listed/distinct snapshots, `opp lag` (mean learner-decision age of
+the banks' current opponents; the pinned initial checkpoint counts at its full age),
+and `swaps` (`loaded` events in `pool.jsonl` since the previous milestone). Runs
+without the record print the old table unchanged; `--json` carries the same values
+under `elo_pool`. The existing `pool win (eps)` column still reads
+`historical_episodes`/`historical_wins` and survived the merge (smoke: .48 to .51).
+
+Finding while testing: `pufferlib.selfplay.step` appends the snapshot once per
+bank that passes the swap gate in the same update. The snapshot path is
+`{global_step:016d}.bin`, so the banks overwrite the same file and the pool
+lists the same path two, three or four times (`entries` shows the same `step`
+repeated). In the smoke run 82 of 98 updates had a duplicate in the pool, the
+worst listed 8 slots for 4 distinct snapshots, and 27 duplicate copies were
+dropped by eviction without an `evicted` event (the event diff keys on `step`).
+Reproduced with a stubbed backend (no GPU, no game;
+`$CLAUDE_JOB_DIR/tmp/dup_repro.py`): four banks reporting 256 games at .7 in
+one window produce `['boot', X, X, X, X]` with four `save_weights` calls, and
+after the swap the four copies carry different Elo (15.2 vs 12.4 ×3) because the
+per-bank rating loop updates only the first entry with a matching path.
+
+Why it matters for the 500M run: banks start synchronized on the initial
+checkpoint and swap on the same gate, so early on several banks meet
+`min_games 256` at `swap_winrate .6` in the same update; each duplicate takes a
+`pool_size 16` slot, gets its own (drifting) Elo, and multiplies that
+snapshot's weight in `sample_opponent` (weights ~sqrt(index+1)). The winrate
+snapshot only fires while the pool has fewer than 10 entries, so the duplicates
+also spend the "small pool" budget early. Eviction keeps stride coverage over
+the listed order, so duplicated steps survive eviction more often than
+singletons. Fix belongs in root's `native_selfplay.py` (or a small patch to
+`selfplay.step`): skip the winrate-driven `pool.append` when the last entry's
+path already equals the new snapshot path, or collapse duplicates in
+`summary`. Not mine to change; reported to the parent. The listed/distinct
+column makes it visible on the live run.
