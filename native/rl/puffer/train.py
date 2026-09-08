@@ -13,6 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 from common import atomic_json
+from evaluation_protocol import checkpoint_identity, opponents
 from native_checkpoint import write_checkpoint
 from native_metrics import empty_counters, update
 from native_pool import SnapshotPool
@@ -89,10 +90,15 @@ def arguments():
 def main():
     a = arguments()
     output = a.output.resolve()
+    frozen = opponents(a.evaluation_opponents)
+    baseline_identity = checkpoint_identity(a.evaluation_baseline) if a.evaluation_baseline else None
     game = reference.resolve_game(a.game)
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
                for key, path in reference.player_sources(game).items()}
     output.mkdir(parents=True, exist_ok=False)
+    frozen_manifest = output/'evaluation-opponents.json' if frozen else None
+    if frozen_manifest:
+        atomic_json(frozen_manifest, dict(schema=2, opponents=frozen))
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
                            BOPL_RL_LOG_DIR=output/'game-logs', OMP_NUM_THREADS=a.workers).items():
         os.environ[key] = str(value)
@@ -139,7 +145,7 @@ def main():
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=-.5, kill=0, death=0),
                   entropy=a.entropy, entropy_floor=a.entropy_floor, learner_passes=a.learner_passes,
-                  frozen_opponents=[], evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
+                  frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
                   runtime_options={name: os.environ.get(name) for name in (
                       'BOPL_SPARE_GAME', 'BOPL_RL_HEADLESS', 'BOPL_RL_RAYCULL', 'BOPL_RL_COALESCE',
@@ -185,17 +191,21 @@ def main():
         if counts['learner_steps'] or counts['game_steps']:
             raise RuntimeError('Setup unexpectedly counted game decisions')
         config['evaluation_baseline'] = str(a.evaluation_baseline.resolve() if a.evaluation_baseline else initial)
+        config['evaluation_baseline_identity'] = checkpoint_identity(Path(config['evaluation_baseline']))
         atomic_json(output/'config.json', config)
         evaluated_steps = set()
         def evaluate(checkpoint):
+            if (checkpoint_identity(Path(config['evaluation_baseline'])) != config['evaluation_baseline_identity']
+                    or opponents(frozen_manifest) != frozen):
+                raise RuntimeError('Frozen evaluation checkpoint identity changed during training')
             command = [sys.executable, str(ROOT/'native/rl/research/evaluate.py'), '--run', str(output),
                        '--checkpoint', str(checkpoint), '--initial', config['evaluation_baseline'],
                        '--evaluation-maps', ','.join(map(str, a.evaluation_maps)),
                        '--heldout-maps', ','.join(map(str, a.heldout_maps)),
                        '--games-per-opponent', str(a.evaluation_games), '--heldout-games', str(a.heldout_games),
                        '--frozen-games', str(a.frozen_games), '--workers', str(a.evaluation_workers), '--game', str(game)]
-            if a.evaluation_opponents:
-                command += ['--opponents', str(a.evaluation_opponents.resolve())]
+            if frozen_manifest:
+                command += ['--opponents', str(frozen_manifest)]
             with (output/'evaluation.log').open('a') as log:
                 subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
             evaluated_steps.add(counts['game_steps'])
