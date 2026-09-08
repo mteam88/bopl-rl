@@ -82,9 +82,74 @@ decides the question (usually: the oracle trace).
     bubbling). Used by menu code only.
 18. **`UnityEngine.Cache`**: empty struct; `SteamFrame.cs` declares a field of
     this type but never uses it.
-19. **Serialization callbacks**: `ISerializationCallbackReceiver.
-    OnAfterDeserialize` must be invoked by the Export loader after populating
-    fields (`FixTransform` implements it). TODO tracked in Export.
+19. **Serialization callbacks**: `FixTransform` is the only
+    `ISerializationCallbackReceiver` in the gameplay set and its
+    `OnAfterDeserialize` body is empty — the loader does not dispatch it.
+    Revisit if a mod/patch adds a non-empty implementation.
+
+## Review round 1 fixes (sim/Oracle/REVIEW-shim-1.md)
+
+- **F1 UnityEvent persistent calls**: `Events.cs` rewritten —
+  `UnityEventBase.m_PersistentCalls` (`PersistentCallGroup` →
+  `PersistentCall` → `ArgumentCache`) is a serialized field tree the Export
+  loader populates via the normal property walker; `Invoke()` runs persistent
+  calls (reflection, list order, `Off` state skipped) before runtime
+  listeners. Sim consumers: `InstantAbility.funcOnEnter`,
+  `QuickSpell.spellFunc`.
+- **F2 ScriptableObject.OnEnable**: dispatched on `CreateInstance`, on
+  `CloneRules.CloneScriptableObject` after field copy, and by
+  `ExportDatabase.BuildAsset` after deserialization (`AnimationData.OnEnable`
+  builds its frame dictionaries there).
+- **F3 destroyed-object equality**: `Object.CompareBaseObjects` — null
+  literal equals any destroyed object, but two references compare by
+  identity even when both destroyed (`destroyedA == destroyedB` is false
+  unless same instance; Unity compares instance ids).
+- **F4 unified activation batching**: scene load (`ActivateLoadedObjects`),
+  `Instantiate` (`CloneRules.DispatchAwake`) and `SetActive(true)`
+  (`GameObject.NotifyActivation`) all collect the affected subtree
+  depth-first, STABLE-sort by script execution order
+  (`ScriptExecutionOrder`, table ripped from the script `.meta` files into
+  `sim/Export/execution-order.json`), then run all Awakes, then all
+  OnEnables. `FlushPendingStarts` sorts the same way.
+- **F5 DontDestroyOnLoad**: marks the root GameObject; Single-mode scene
+  loads spare marked roots.
+- **F6 Color.RGBToHSV/HSVToRGB**: transcribed verbatim from an ilspycmd
+  decompile of the game's `UnityEngine.CoreModule.dll`
+  (`native/tools/replay/bin/Release/net8.0/`); note Unity's g-dominant branch
+  passes `(b, r)` — argument order differs from the textbook form.
+  `BeamColors.Mix` runs these on the sim path and results are
+  trace-captured.
+- **F7 Time.fixedDeltaTime**: loaded from `settings.json` (`0.01666667` →
+  0x3C88888A, the TimeManager.asset value), not `1f/60f` (0x3C888889).
+- **F9 (partial)**: `AddComponent` now dispatches Awake on active
+  GameObjects regardless of the behaviour's `enabled` (OnEnable still gated
+  on `enabled`). Other F9 notes (reverse-order child destroy, `enabled`
+  during OnDestroy, `CompareTag` on undefined tag, clone `RectTransform`
+  fidelity — done via `UseRectTransform`) are documented, unobserved by the
+  sim set. F8 items deferred until after the first trace diff.
+
+## Host bootstrap deviations (boot scene is not exported)
+
+The Unity player reaches gameplay through the boot scene → menus; the sim
+Host reconstructs the DontDestroyOnLoad singletons that flow leaves behind:
+
+- **Settings** loaded from `Settings.asset` + `Init()`;
+  `LocalizedText.localizationTable` from `LocalizationTable.asset`
+  (SettingsInitializer.Awake equivalent).
+- **SteamManager** with `abilityIconsFull/Demo` assets and
+  `networkClient = Host` (boot-scene serialized wiring).
+- **AudioManager** with an EMPTY sound bank and one placeholder song: the
+  audio bank is not exported (presentation) but `Play()` must run because it
+  feeds `ReferencePlayerController.SoundCapture` (trace-captured). Every
+  play logs "non-existent sound" and returns null; music paths index the
+  placeholder song.
+- **WinnerTriangleCanvas** stub hierarchy (canvas → triangle →
+  inactive CharacterStatsList): the additive `winnerTriangle` scene
+  (201-object UI, DontDestroyOnLoad root) is not exported.
+  `GameSessionHandler.prepareWinnerTriangle` needs the two GameObjects at
+  round start. Round-END UI (`ActivateWinnerTriangle` →
+  `CharacterStatsList.OnEnable` player rows) will NOT reproduce until the
+  oracle exports `Assets/Scenes/WinnerTriangle.unity`. TODO(oracle).
 
 ## Open questions for the oracle
 
@@ -95,8 +160,15 @@ decides the question (usually: the oracle trace).
 
 ## TODO
 
-- [ ] Export loader: call OnAfterDeserialize after field population.
+- [x] OnAfterDeserialize: not needed — only implementer (`FixTransform`) has
+      an empty body (see deviation 19).
 - [ ] settings.json reader (layers/tags/collision matrix) — blocked on oracle
       thread; falls back loudly.
 - [ ] GameObject tag from export — blocked on oracle thread re-export;
       defaults "Untagged".
+- [ ] Oracle: export `Assets/Scenes/WinnerTriangle.unity` (round-end UI) and
+      the boot-scene AudioManager sound-name list (SoundCapture parity for
+      sounds whose Play sites the sim reaches).
+- [ ] F8 items (ParticleSystem.MainModule.duration, timeSinceLevelLoad reset,
+      LayerMask.NameToLayer throw, UnloadSceneAsync, AsyncOperation frame
+      gap, Instantiate worldSpace throw) — after first trace diff.
