@@ -106,6 +106,13 @@ internal static class RlProfile
         Switch(slot, at * 2);
     }
 
+    internal static void Add(string name, long elapsed)
+    {
+        if (!Enabled) return;
+        if (!buckets.TryGetValue(name, out var slot)) buckets[name] = slot = new long[2];
+        slot[0] += elapsed; slot[1]++;
+    }
+
     internal static void Ticked(bool counted) { if (!Enabled) return; ticks++; if (counted) countedTicks++; }
 
     private static IEnumerable<KeyValuePair<string, long[]>> Rows()
