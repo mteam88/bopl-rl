@@ -307,6 +307,12 @@ namespace UnityEngine.UI
 		public static void ForceRebuildLayoutImmediate(RectTransform layoutRoot) { }
 		public static void MarkLayoutForRebuild(RectTransform rect) { }
 	}
+
+	// Present in exported scenes; raycasting is presentation-only.
+	public class GraphicRaycaster : UnityEngine.EventSystems.UIBehaviour
+	{
+		public bool ignoreReversedGraphics { get; set; } = true;
+	}
 }
 
 namespace UnityEngine

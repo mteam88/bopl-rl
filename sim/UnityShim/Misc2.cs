@@ -11,6 +11,11 @@ namespace UnityEngine
 	[AttributeUsage(AttributeTargets.Class)]
 	public class SelectionBaseAttribute : Attribute { }
 
+	// Present in exported scenes; no behaviour.
+	public class FlareLayer : Behaviour
+	{
+	}
+
 	public class TextMesh : Component
 	{
 		public string text { get; set; } = "";

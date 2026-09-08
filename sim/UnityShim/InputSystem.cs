@@ -425,6 +425,14 @@ namespace UnityEngine.InputSystem.Controls
 	}
 }
 
+namespace UnityEngine.InputSystem.UI
+{
+	// Present in exported scenes; UI input is irrelevant to the sim.
+	public class InputSystemUIInputModule : MonoBehaviour
+	{
+	}
+}
+
 namespace UnityEngine.InputSystem.Utilities
 {
 	public struct ReadOnlyArray<TValue> : IEnumerable<TValue>

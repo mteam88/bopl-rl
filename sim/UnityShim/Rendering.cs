@@ -48,7 +48,15 @@ namespace UnityEngine
 
 	public class Sprite : Object
 	{
-		public Texture2D texture { get; set; }
+		// Placeholder sprites (assets not exported) still get poked by presentation
+		// Awakes (PlatformSlimeTrailCamera reads sprite.texture.width); lazily
+		// self-populate so those run without data.
+		private Texture2D textureField;
+		public Texture2D texture
+		{
+			get => textureField ??= new Texture2D(0, 0) { objectName = objectName + ":texture" };
+			set => textureField = value;
+		}
 		public Rect rect { get; set; }
 		public Rect textureRect { get; set; }
 		public Vector2 pivot { get; set; }
