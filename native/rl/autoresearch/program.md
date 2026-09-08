@@ -260,8 +260,9 @@ the slot is negotiated explicitly between the Rifts.
   `Updater.random` stream position (two draws per ground in `GameSessionHandler.Init`),
   rebuilt by `InitSeed(seed)` plus one `RandomFix(0,1)` per ground. One snapshot
   per map at tick 240 suffices; the `Random` ability (id 1) is the exception.
-  Check binary queued unbuilt on branch `autoresearch/warmup-check` (edceb65,
-  `native/rl/warmup_check.c`).
+  Confirmed by `warmup_check` (branch `autoresearch/warmup-check`, 120feb2), run by
+  thr_nzrpteey2z in the many-worlds Rift 2026-09-08 01:15 EDT: 5 maps x 4 seeds identical at
+  tick 240 and 120 ticks later, `Random`-ability control differs (notes.md 2026-09-08 01:17).
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
