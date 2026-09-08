@@ -71,8 +71,18 @@ Required (all currently written by `train.py`):
   platform_activations, arrows_fired, arrow_hits, deaths_environment,
   deaths_opponent, deaths_self, deaths_other, reward_outcome, reward_kills,
   reward_deaths, episodes, wins, timeouts, ticks}}`
-- `pool_steps`, `opponent_game_decisions`, `script_assignments`
+- `pool_steps` (physical decisions of the snapshot each frozen bank currently
+  serves, sorted), `opponent_game_decisions`, `script_assignments`
 - `cuda_memory_mb`, `rollout_seconds`, `train_seconds`
+- `pool` — PufferLib self-play pool state after this update:
+  `{schema:1, elo (learner), size, winrate (learner vs all banks since their
+  last swaps, nullable), entries:[{step, learner_steps, elo, games, winrate}],
+  banks:[{opponent_step, opponent_elo, games, winrate, pending_step,
+  winrate_at_swap, epochs_to_align}]}`. `games`/`winrate` on entries are
+  lifetime totals for that snapshot as an opponent; on banks they cover the
+  current opponent only. `<run>/pool.jsonl` holds the corresponding events
+  (`snapshot`, `evicted` with lifetime stats, `armed`, `loaded` with the
+  retired opponent's stats), each with `learner_steps` and the learner `elo`.
 
 New — the dashboard renders these once present (per update):
 

@@ -1,4 +1,4 @@
-"""Train native recurrent PPO with match-stable historical opponents."""
+"""Train native recurrent PPO against PufferLib's Elo-rated self-play pool."""
 import argparse
 import hashlib
 import json
@@ -16,7 +16,7 @@ from common import atomic_json
 from evaluation_protocol import checkpoint_identity, opponents
 from native_checkpoint import write_checkpoint
 from native_metrics import empty_counters, update
-from native_pool import SnapshotPool
+import native_selfplay
 from native_vector import NativeVector
 import reference
 
@@ -63,6 +63,15 @@ def arguments():
     p.add_argument('--stocks', type=int, default=0, help='Smash-style extra-life setting; 0 = vanilla Bopl, one life per round')
     p.add_argument('--training-maps', type=maps, default=[0])
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
+    p.add_argument('--pool-size', type=int, default=16, help='Historical snapshots kept by the self-play pool')
+    p.add_argument('--swap-winrate', type=float, default=.6,
+                   help='Learner win rate against a bank opponent that retires it (0.5 is parity in this symmetric game)')
+    p.add_argument('--min-games', type=int, default=256, help='Completed games per bank before its win rate can retire the opponent')
+    p.add_argument('--snapshot-interval', type=int, default=10_000_000, help='Learner decisions between pool snapshots taken regardless of win rate')
+    p.add_argument('--opponent-timeout', type=int, default=50_000_000, help='Learner decisions a bank keeps one opponent before a forced swap')
+    p.add_argument('--elo-init', type=float, default=0.)
+    p.add_argument('--elo-k', type=float, default=16.)
+    p.add_argument('--pool-seed', type=int, help='Opponent sampling seed (defaults to --seed)')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
     p.add_argument('--no-eval', action='store_true', help='Disable diagnostic evaluation for isolated throughput measurements')
     p.add_argument('--eval-every', type=int, default=1_000_000, help='Learner decisions between diagnostic evaluations')
@@ -76,12 +85,18 @@ def arguments():
     p.add_argument('--evaluation-workers', type=int, default=2)
     a = p.parse_args()
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
-                 'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life'):
+                 'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
+                 'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout'):
         if getattr(a, name) < 1:
             p.error(f'{name.replace("_", "-")} must be positive')
+    if not 0 < a.swap_winrate <= 1 or not math.isfinite(a.elo_init) or not math.isfinite(a.elo_k) or a.elo_k <= 0:
+        p.error('Expected 0 < swap-winrate <= 1, finite elo-init and positive elo-k')
+    a.pool_seed = a.seed if a.pool_seed is None else a.pool_seed
     a.buffers = a.buffers or (2 if a.workers % 4 == 0 else 1)
     if a.workers % (2 * a.buffers):
         p.error('workers must be divisible by twice the buffer count')
+    if (a.workers // 2) % a.banks:
+        p.error('half the workers must divide evenly among the banks')
     if a.hidden < 8 or a.hidden % 8:
         p.error('hidden must be a positive multiple of eight')
     if a.cudagraphs != -1 and a.cudagraphs < 1:
@@ -120,7 +135,7 @@ def main():
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
     import numpy as np
     import torch
-    from pufferlib import _C, pufferl
+    from pufferlib import _C, pufferl, selfplay
     if not _C.gpu:
         raise RuntimeError('Native training requires the CUDA build')
     torch.cuda.init()
@@ -152,6 +167,14 @@ def main():
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=0, reward_timeout_milli=-500)
     pufferl.validate_config(args)
     target_physical = math.ceil(a.steps * 4 / 3)
+    # PufferLib's pool counts native agent steps (padded rows included);
+    # the knobs above count learner decisions.
+    native_per_learner = native_batch / learner_batch
+    pool_config = dict(backend='pufferlib.selfplay', banks=a.banks, historical_games_per_bank=vector.historical_per_bank,
+                    max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
+                    snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
+                    elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed, step_unit='learner_decisions',
+                    native_steps_per_learner_decision=native_per_learner, mid_match_swaps='counted in neither bank statistic')
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
@@ -162,6 +185,7 @@ def main():
                   entropy=a.entropy, entropy_floor=a.entropy_floor,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
+                  selfplay=pool_config,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
@@ -198,7 +222,17 @@ def main():
                 saved[step] = path
             return saved[step]
         initial = save()
-        pool = SnapshotPool(_C, trainer, vector, a.banks, initial)
+        # Every bank starts from the initial policy; PufferLib's pool swaps
+        # them independently as the learner outgrows each opponent.
+        for bank in range(a.banks):
+            _C.load_frozen_bank(trainer, bank, str(initial))
+        (output/'pool').mkdir()
+        pool = native_selfplay.state(output/'pool', str(initial), a.banks, vector.historical_per_bank, trainer.global_step,
+                                     max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
+                                     snapshot_interval=round(a.snapshot_interval*native_per_learner),
+                                     opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
+                                     elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed)
+        ledger = native_selfplay.members(str(initial))
         vector.reset()
         _C.log(trainer)  # Warmup losses are not measured training updates.
         counts = vector.snapshot()
@@ -227,9 +261,7 @@ def main():
         previous, previous_elapsed = counts, 0.
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
-            def event(value):
-                if value:
-                    events.write(json.dumps(value, allow_nan=False)+'\n'); events.flush()
+            update_index = 0
             while counts['learner_steps'] < a.steps and not stop:
                 before = time.monotonic()
                 _C.rollouts(trainer)
@@ -249,17 +281,30 @@ def main():
                         or counts['game_steps']-previous['game_steps'] != a.workers*2*a.horizon):
                     raise RuntimeError('Native rollout physical/learner decision accounting mismatch')
                 elapsed = time.monotonic()-training_started
+                # Elo, snapshots and bank swaps from this rollout's finished games.
+                before_pool = native_selfplay.summary(pool, ledger)
+                flat = {'env/'+key: value for key, value in native['env'].items()}
+                native_selfplay.credit(pool, flat, ledger)
+                selfplay.step(trainer, _C, pool, flat, update_index)
+                update_index += 1
+                native_selfplay.register(pool, ledger, counts['game_steps'], counts['learner_steps'])
+                after_pool = native_selfplay.summary(pool, ledger)
                 record = update(native, counts, previous, elapsed=elapsed, previous_elapsed=previous_elapsed,
                                 entropy_coefficient=native['loss']['entropy_coefficient'],
-                                learning_rate=native['loss']['learning_rate'], pool_steps=pool.steps,
+                                learning_rate=native['loss']['learning_rate'],
+                                pool_steps=sorted(bank['opponent_step'] for bank in after_pool['banks']),
                                 rollout_seconds=rolled-before, train_seconds=trained-rolled)
+                record['pool'] = after_pool
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
+                for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
+                    events.write(json.dumps(event, allow_nan=False)+'\n')
+                events.flush()
                 print(json.dumps(dict(step=record['step'], learner_steps=record['learner_steps'],
-                                      learner_sps=record['learner_sps'], matches=record['matches'])), flush=True)
+                                      learner_sps=record['learner_sps'], matches=record['matches'],
+                                      elo=round(after_pool['elo'], 1), pool=after_pool['size'])), flush=True)
                 previous, previous_elapsed = counts, elapsed
-                event(pool.service())
                 if counts['learner_steps'] >= next_checkpoint:
-                    event(pool.request(save(), counts['game_steps']))
+                    save()
                     next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
                 status('running')
                 if not a.no_eval and counts['learner_steps'] >= next_eval and not stop:

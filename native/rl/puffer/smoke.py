@@ -73,7 +73,6 @@ lib.bopl_vec_handles.argtypes = [C.POINTER(C.c_void_p), C.c_int]; lib.bopl_vec_h
 lib.bopl_vec_reset.argtypes = [C.c_void_p]; lib.bopl_vec_reset.restype = C.c_int
 lib.bopl_vec_host.argtypes = [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_void_p), C.POINTER(C.c_void_p)]
 lib.bopl_vec_host.restype = C.c_int
-lib.bopl_set_valid_banks.argtypes = [C.c_uint]
 lib.bopl_vec_layout.argtypes = [C.c_void_p, C.POINTER(C.c_int), C.c_int]; lib.bopl_vec_layout.restype = C.c_int
 
 games, buffers, banks, horizon = options.games, options.buffers, options.banks, options.horizon
@@ -82,8 +81,6 @@ rows_per_buffer = (games//buffers//2)*(2+1+banks)
 total_agents = rows_per_buffer*buffers
 frozen_rows = historical//buffers  # per buffer, per bank
 minibatch = max(horizon, (total_agents*horizon)//4//horizon*horizon)
-all_banks = (1 << banks)-1
-lib.bopl_set_valid_banks(all_banks)  # before the reset inside create_pufferl
 args = pufferl.load_config('bopl')
 args.update(seed=options.seed, reset_state=False, cudagraphs=options.graphs)
 args['vec'].update(total_agents=total_agents, num_buffers=buffers, num_threads=options.threads,
@@ -199,7 +196,7 @@ try:
     check('CPU evaluator reload', restored['step'] == count['game_steps'] and restored['learner_steps'] == count['learner_steps'], meta=restored)
     check('CPU evaluator step is finite', all(torch.isfinite(v).all() for v in policy.step(torch.zeros(2, OBS), policy.initial(2))))
     # Pool rotation: bank 0 now serves the trained weights, bank 1 keeps the initial ones.
-    _C.load_frozen_bank(trainer, 0, str(final)); lib.bopl_set_valid_banks(all_banks)
+    _C.load_frozen_bank(trainer, 0, str(final))
     count = one_update(options.updates+1, [0, count['game_steps']])
     check('rotation keeps games running', count['matches'] >= previous['matches'], matches=count['matches'])
     learner_decisions = count['learner_steps']

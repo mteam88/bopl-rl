@@ -10,11 +10,14 @@ class NativeVector:
     def __init__(self, backend, workers, buffers, banks):
         if workers < 2 or workers % (2 * buffers) or not 2 <= banks <= 8:
             raise ValueError('Each buffer requires complete self-play/historical pairs and 2..8 banks')
+        if (workers // 2) % banks:
+            raise ValueError('Historical games must be dealt evenly to the banks')
         self.backend, self.workers, self.buffers, self.banks = backend, workers, buffers, banks
         self.pairs = workers // (2 * buffers)
         self.agents_per_buffer = self.pairs * (3 + banks)
         self.total_agents = self.agents_per_buffer * buffers
         self.learner_rows = workers * 3 // 2
+        self.historical_per_bank = workers // 2 // banks
         self.lib = counters.bind(C.CDLL(backend.__file__))
         for name, types in {
             'bopl_vec_handles': [C.POINTER(C.c_void_p), C.c_int],
@@ -23,13 +26,6 @@ class NativeVector:
         }.items():
             fn = getattr(self.lib, name)
             fn.argtypes, fn.restype = types, C.c_int
-        self.lib.bopl_set_valid_banks.argtypes = [C.c_uint]
-        self.set_valid_banks(1)
-
-    def set_valid_banks(self, mask):
-        if not 0 < mask < (1 << self.banks):
-            raise ValueError('Frozen draw mask must select at least one configured bank')
-        self.lib.bopl_set_valid_banks(mask)
 
     def layout(self):
         out = np.empty((self.workers, 22), dtype=np.int32)
@@ -45,9 +41,14 @@ class NativeVector:
             raise RuntimeError('Training requires exactly one vector with the requested game count')
         self.gpu_obs_ptr = handles[0]
         before = self.layout()
-        expected = [[2, 2, 0], [1 + self.banks, 2, self.banks]] * (self.workers // 2)
-        if before[:, :3].tolist() != expected:
-            raise RuntimeError('Expected alternating self-play and historical games')
+        # Historical game j (every second environment) is pinned to bank
+        # j % banks and carries PufferLib's selfplay tag 1 + bank.
+        expected = []
+        for j in range(self.workers // 2):
+            bank = j % self.banks
+            expected += [[2, 2, 0, 0, -1], [1 + self.banks, 2, self.banks, 1 + bank, bank]]
+        if before[:, [0, 1, 2, 3, 5]].tolist() != expected:
+            raise RuntimeError('Expected alternating self-play and bank-pinned historical games')
         perm = np.full(self.total_agents, -1, dtype=np.int32)
         slot = 0
         for buffer in range(self.buffers):
@@ -62,6 +63,7 @@ class NativeVector:
         if sorted(perm.tolist()) != list(range(self.total_agents)):
             raise RuntimeError('Invalid native agent permutation')
         self.backend.set_agent_perm(trainer, perm)
+        self.backend.set_env_tags(trainer, np.ascontiguousarray(before[:, 3], dtype=np.int32))
         after, slot = self.layout(), 0
         for row in after:
             size = int(row[0])
@@ -72,16 +74,6 @@ class NativeVector:
     def reset(self):
         if self.lib.bopl_vec_reset(C.c_void_p(self.gpu_obs_ptr)):
             raise RuntimeError('Native post-routing reset failed')
-
-    def bank_references(self):
-        references = [0] * self.banks
-        for row in self.layout():
-            if row[2]:
-                bank = int(row[5])
-                if not 0 <= bank < self.banks:
-                    raise RuntimeError('Historical match references an invalid bank')
-                references[bank] += 1
-        return references
 
     def snapshot(self):
         return counters.snapshot(self.lib, self)
