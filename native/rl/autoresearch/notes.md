@@ -945,7 +945,7 @@ variance .60; gradient norm rising .24 to .52 across the four 5M marks.
 Watch rule (policy-head net/rw > ~1.5 with a rising cosine before 30M) is not
 triggered. Next read at ~30M.
 
-## 2026-09-07 22:28 EDT: evaluation side asymmetry, critic vs height, and what the policy sees of the water (read-only)
+## 2026-09-07 22:26 EDT: evaluation side asymmetry, critic vs height, and what the policy sees of the water (read-only)
 
 Three more reads of the saved evaluation data and the game source, all
 single-threaded and niced; no jobs run.
