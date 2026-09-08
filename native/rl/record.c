@@ -4,13 +4,14 @@
 #include <stdlib.h>
 
 int main(int argc, char **argv) {
-    if (argc<6 || argc>8) { fprintf(stderr, "record <game> <bootstrap.rep> <game.log> <output.rep> <players> [ability_group=0] [ticks=180]\n"); return 2; }
+    if (argc<6 || argc>9) { fprintf(stderr, "record <game> <bootstrap.rep> <game.log> <output.rep> <players> [ability_group=0] [ticks=180] [map=0]\n"); return 2; }
     char error[512];
     BoplRl *world=bopl_rl_open(argv[1], argv[2], argv[3], 60000, error, sizeof(error));
     if (!world) { fprintf(stderr, "%s\n", error); return 1; }
     BoplRlConfig config; bopl_rl_default_config(&config, (uint32_t)atoi(argv[5]));
     uint32_t group=argc>6?(uint32_t)atoi(argv[6]):0;
     config.seed=785921; config.max_episode_ticks=argc>7?(uint32_t)atoi(argv[7]):180;
+    config.map=argc>8?(uint32_t)atoi(argv[8]):0;
     if (group>4) { bopl_rl_close(world); return 2; }
     if (group) {
         config.seed+=group; config.stocks=5;
