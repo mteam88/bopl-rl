@@ -1,0 +1,26 @@
+{
+    "schema": "bopl-process-identity-exclusions-v1",
+    "comment": "Gameplay fields whose VALUES are Unity GetInstanceID() integers. Instance ids are process-global allocation counters, so two Unity processes (controlled vs replayed) and the .NET port (monotonic shim counter) can never agree on them, even when behaviour is identical. Unlike presentation-fields.json these fields DO affect gameplay (hit dedup); their effect stays compared through everything downstream: which objects take damage, velocities, deaths. Excluding the raw ids is required for any cross-process trace comparison.",
+    "fields": {
+        "Shockwave.gameObjectIdsHit": {
+            "reason": "HashSet<int> of DetPhysics hit instanceId values (hits[i].instanceId) recording which bodies this shockwave already hit. Dedup behaviour remains compared via the affected bodies' state.",
+            "sources": [
+                "Shockwave.cs"
+            ]
+        },
+        "Shockwave.extraObjectsToIgnore": {
+            "reason": "HashSet<int> of instance ids the caster asks the shockwave to skip (AddObjectToIgnore). Skip behaviour remains compared via the affected bodies' state.",
+            "sources": [
+                "Shockwave.cs"
+            ]
+        },
+        "Roll.platformHopBuffer": {
+            "reason": "int[5] of attachedGround.gameObject.GetInstanceID() values written by PlayerPhysics.MoveAlongCurrentPlatFormSwapIfBlocked to disallow re-hopping onto the same platform. Hop behaviour remains compared via player position/velocity. Unused by ability group 0; matters for coverage loadouts with Roll.",
+            "sources": [
+                "Roll.cs",
+                "PlayerPhysics.cs",
+                "StickyRoundedRectangle.cs"
+            ]
+        }
+    }
+}

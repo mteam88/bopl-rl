@@ -36,7 +36,7 @@ public static class ReferenceExport
                 ["path"] = paths[index], ["file"] = filename });
         }
         Write(directory, "maps.json", scenes);
-        var manifest = new JObject { ["schema"] = "bopl-assets-v1", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
+        var manifest = new JObject { ["schema"] = "bopl-assets-v2", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
         var hashes = new JObject();
         foreach (string path in Directory.GetFiles(directory, "*.json").Where(p => Path.GetFileName(p) != "manifest.json").OrderBy(p => p, StringComparer.Ordinal))
         {
@@ -56,7 +56,7 @@ public static class ReferenceExport
         var children = new JArray();
         for (int i = 0; i < root.transform.childCount; i++) children.Add(Hierarchy(root.transform.GetChild(i).gameObject));
         return new JObject { ["name"] = root.name, ["id"] = Id(root), ["layer"] = root.layer,
-            ["active"] = root.activeSelf, ["components"] = components, ["children"] = children };
+            ["tag"] = root.tag, ["active"] = root.activeSelf, ["components"] = components, ["children"] = children };
     }
 
     private static JObject Properties(UnityEngine.Object value)
@@ -65,8 +65,10 @@ public static class ReferenceExport
         var properties = new JObject();
         using var serialized = new SerializedObject(value);
         var property = serialized.GetIterator();
-        while (property.Next(true))
+        bool enterChildren = true;
+        while (property.Next(enterChildren))
         {
+            enterChildren = true;
             JToken item;
             switch (property.propertyType)
             {
@@ -77,7 +79,13 @@ public static class ReferenceExport
                     item = property.type == "double" ? new JObject { ["f64"] = BitConverter.DoubleToInt64Bits(property.doubleValue) }
                         : new JObject { ["f32"] = BitConverter.ToInt32(BitConverter.GetBytes(property.floatValue), 0) }; break;
                 case SerializedPropertyType.String: item = property.stringValue; break;
-                case SerializedPropertyType.ObjectReference: item = property.objectReferenceValue == null ? JValue.CreateNull() : new JValue(Id(property.objectReferenceValue)); break;
+                case SerializedPropertyType.ObjectReference:
+                    // References are exported as GlobalObjectId strings. The m_FileID/
+                    // m_PathID scalar children are the referenced object's in-memory
+                    // instance id, which changes every editor session; skip them so
+                    // re-exports are deterministic.
+                    enterChildren = false;
+                    item = property.objectReferenceValue == null ? JValue.CreateNull() : new JValue(Id(property.objectReferenceValue)); break;
                 case SerializedPropertyType.Enum: item = property.intValue; break;
                 case SerializedPropertyType.LayerMask: item = property.intValue; break;
                 case SerializedPropertyType.ArraySize: item = property.intValue; break;
