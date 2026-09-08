@@ -124,7 +124,7 @@ encoder (evidence layout: `native/artifacts/rl/autoresearch/final-core-checks/`)
 3. **Handoff: written.** `native/rl/NATIVE_HANDOFF.md` (root-owned) carries the
    400M launch configuration for thread thr_wq22hezkbf, the qualification
    evidence and the limits. This session does NOT launch that run.
-4. **Standalone simulator: assessed, not started** (notes.md, 2026-09-08). The game process is at its floor and collection is ~98 % of wall; a training-loadout simulator (dash/bow/platform, two players) in `bopl-sim` could raise throughput 5–10× but is not on the critical path until the 400M run shows collection rate is what limits learning.
+4. **Standalone simulator: assessed, not started** (notes.md, 2026-09-08). Collection is ~98 % of logged training-loop time. A training-loadout simulator (dash/bow/platform, two players) in `bopl-sim` has a speculative 5–10× throughput upside, without demonstrated mechanic parity. Defer it until the 400M run helps establish whether collection rate limits learning.
 
 Ownership while root's Rift is active: root owns `train.py`, `native_pool.py`,
 `native_vector.py`, `policy_eval.c`, `native_policy.py`, `evaluate.py`,
