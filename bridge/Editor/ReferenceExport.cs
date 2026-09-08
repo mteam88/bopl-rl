@@ -65,8 +65,10 @@ public static class ReferenceExport
         var properties = new JObject();
         using var serialized = new SerializedObject(value);
         var property = serialized.GetIterator();
-        while (property.Next(true))
+        bool enterChildren = true;
+        while (property.Next(enterChildren))
         {
+            enterChildren = true;
             JToken item;
             switch (property.propertyType)
             {
@@ -77,7 +79,13 @@ public static class ReferenceExport
                     item = property.type == "double" ? new JObject { ["f64"] = BitConverter.DoubleToInt64Bits(property.doubleValue) }
                         : new JObject { ["f32"] = BitConverter.ToInt32(BitConverter.GetBytes(property.floatValue), 0) }; break;
                 case SerializedPropertyType.String: item = property.stringValue; break;
-                case SerializedPropertyType.ObjectReference: item = property.objectReferenceValue == null ? JValue.CreateNull() : new JValue(Id(property.objectReferenceValue)); break;
+                case SerializedPropertyType.ObjectReference:
+                    // References are exported as GlobalObjectId strings. The m_FileID/
+                    // m_PathID scalar children are the referenced object's in-memory
+                    // instance id, which changes every editor session; skip them so
+                    // re-exports are deterministic.
+                    enterChildren = false;
+                    item = property.objectReferenceValue == null ? JValue.CreateNull() : new JValue(Id(property.objectReferenceValue)); break;
                 case SerializedPropertyType.Enum: item = property.intValue; break;
                 case SerializedPropertyType.LayerMask: item = property.intValue; break;
                 case SerializedPropertyType.ArraySize: item = property.intValue; break;
