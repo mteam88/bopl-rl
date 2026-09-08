@@ -251,7 +251,10 @@ the slot is negotiated explicitly between the Rifts.
   simulated tick and flat (largest item 12.5 µs), against ~111 µs of scene
   load and the 240 warmup ticks per reset; no single bit-exact sim trim
   left is worth more than ~5 %, so "cheaper ticks" means cheaper resets and
-  per-process overhead (many-worlds), not physics.
+  per-process overhead (many-worlds), not physics. One such ≤3 % trim is
+  queued unbuilt on branch `autoresearch/raycull-early` (3cadbe0: bounds
+  cull before `IsActive`; notes.md 00:52) for a parity check + benchmark when
+  the machine is free.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code

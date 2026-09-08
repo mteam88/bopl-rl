@@ -1648,3 +1648,31 @@ against 45 in the train profile (it ships telemetry), and its 58 ms per
 reset for scene load includes each process's cold start; use the train
 profile's 18.6 ms per reset for the reset budget, and only the sim buckets
 and call counts from the raycull profile.
+
+### 00:52 EDT: one bit-exact trim queued for when the machine is free (branch `autoresearch/raycull-early`)
+
+Reading `RaycastToClosestRoundedRect` (DetPhysics.cs:1721) against the raycull
+profile: 6.2 raycasts per tick each scan ~39 rects, and the loop calls
+`IsActive` (fixTrans null check, `gameObject.activeInHierarchy`,
+`monobehaviourCollider.enabled`: four engine calls) on every rect *before* the
+bounds test, so ~36 of 39 rects per raycast pay the engine calls only to be
+culled. The bounds test is pure `Fix` arithmetic on the collider struct and
+`IsActive` has no side effects, so testing the bounds first skips the same
+rects with the same result; it should take most of the 2.0 µs per call
+(12.5 µs/tick, the largest sim bucket) down to the ~1.5 surviving rects.
+Committed as 3cadbe0 on a side branch, deliberately *not* on
+`autoresearch/throughput`: it is unbuilt and unmeasured (no game/build jobs
+while the many-worlds thread owns the box), and the branch stays verified.
+Acceptance when the machine is free: rebuild, `check_game_variant` w16 × 2000
+vs the current build (obs/rewards/dones/telemetry/log identical), then the
+usual interleaved benchmark; expect ≤3 % of game CPU per tick, so it only
+earns a merge if it is free of noise on the parity check. `rr_active` counts
+only rects that survive the cull from that commit on.
+
+Also looked at `bridge:observe` (31 µs per decision, 8.5 µs/tick): the per
+collider `transform.GetComponent<IPlayerIdHolder>()` is the only engine call
+in the writer, but the holder's id can change at runtime (`SetPlayerId` in
+BowTransform/CastSpell) so caching is not free of semantics; at 8 µs/tick it
+is not worth the risk. `bridge:send` is 122 µs per decision in the check
+workload because it ships telemetry; 45 in training. Nothing to trim there
+without changing the wire format (root's).
