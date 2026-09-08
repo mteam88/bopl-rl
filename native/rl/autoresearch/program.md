@@ -223,14 +223,19 @@ the slot is negotiated explicitly between the Rifts.
 - **Per-match reset cost on the critical path** (notes.md 2026-09-08 00:08).
   Rollout time on 001-s73 rises ~2 ms per player-episode ended in the update
   (~4 ms per match, ~35 % of rollout at stocks 0; stocks-3 runs 17 % faster
-  for this reason alone). The spare process already hides the scene load
-  and the 240-tick warmup, of which ≥210 ticks are required by the game's
-  spawn/GO timers, so warmup is not the lever. Unattributed: the game's
-  terminal tick (end-of-round UI/achievement work) versus the spare not
-  finishing its load under 16-worker contention. Measure both with a
-  `reset_profile`-style timing (spare on, idle then loaded) when the machine
-  is released; fix depends on which dominates (skip end-of-round work in RL
-  mode on the game side, or reschedule the spare's load).
+  for this reason alone). It is CPU, not latency: per match the game spends
+  ~51 ms of main-thread time playing ~412 ticks and ~32 ms producing the
+  next round's initial state (240 warmup ticks ~18 ms, scene load 14 to
+  19 ms), i.e. 38 % of game CPU at stocks 0, 14 % at stocks 3. The spare
+  process hides the wait but not the CPU on a saturated machine (Gate 0:
+  flat 16 → 40 workers). Warmup trimming is small (game is physically ready
+  by tick ~162; 240 → 170 saves ~6 % and changes the initial state). The
+  lever is an in-place round reset without scene reload, plus restoring the
+  post-warmup state from a snapshot instead of re-simulating it; the
+  parent forwarded this to the many-worlds design (2026-09-08 00:1x EDT)
+  and asked thr_nzrpteey2z to time reset ms/match separately from tick µs.
+  `reset_check.c` is the acceptance test (reset after dirty play must
+  reproduce the fresh seeded trajectory).
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code

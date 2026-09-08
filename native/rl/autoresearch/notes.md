@@ -1486,3 +1486,49 @@ Also this segment: base main landed the PufferLib Elo self-play pool
 `watch_run.py`'s `pool win` column survives; the binding now also exports
 per-bank `hist_n_bank_*`/`hist_score_bank_*`, and matches interrupted by a
 swap are excluded from the per-bank stats but not from the pooled column.
+
+### Follow-up 00:17 EDT: the reset is CPU, not latency (correction to "not a lead")
+
+The exp08 profiles (`exp08-profiles-train/`, 32 game processes, 825 resets,
+1.77M ticks) give a per-match CPU budget on the game's main thread, and it
+changes the conclusion above. Per reset: 240 warmup ticks at the same
+0.187 ms/tick as played ticks (the sim buckets do not distinguish them) =
+~45 ms in that heavier build, ~18 ms at today's 0.075 ms/tick; scene load
+(`loop:EarlyUpdate.UpdatePreloading`) 18.6 ms, always 2 engine frames per
+reset; `bridge:reset` 1 ms; component `init` 0.4 ms. A stocks-0 match plays
+~412 ticks (episode_length 103 decisions × 4), so at idle-machine rates
+(0.124 ms/tick played, 0.075 warmup, ~14 ms load from `reset-profile.txt`)
+the budget per match is:
+
+    played ticks  51 ms   |  warmup ticks 18 ms  |  scene load 14 ms   ->  reset work = 38 % of game CPU per match
+    stocks-3:    193 ms   |               18 ms  |             14 ms   ->  14 %
+
+Warmup ticks are 37 % of all simulated ticks at stocks 0 (4,770 warmup
+ticks per update against 8,192 played). The spare process moves this work
+off the *latency* path, but Gate 0 showed the machine is CPU-bound (flat
+16 → 40 workers), so the spare's CPU still displaces played ticks. That is
+where the ~4 ms per match on the rollout clock comes from: 32 ms of reset
+CPU per match spread over six cores shared with the players. So "off the
+critical path, not a lead" above is wrong for a saturated machine; the
+right statement is that at stocks 0 about a third of the game CPU is
+spent producing the initial state of the next round.
+
+What the 240 ticks buy, from source: players are instantiated at tick 60
+(`timeBeforeTwo` 1 s), the platform animate-in runs from tick 6 to at most
+tick 6+2 s×(1+0.3) = 162 (`LevelAnimationTime` 2 s, `MaxRandomDelay` 0.3 s,
+`startProgressOfAnimateInGrounds` 0 on maps 0-2), and the GO callback at
+tick 210 only prepares the winner-triangle canvas. There is no player input
+freeze before GO, so the game is physically ready at ~162 and 240 is a
+round number with slack; trimming to ~170 saves ~5 ms of ~83 (6 %) and
+would change every episode's initial state (players fall/land timing), so
+it is a training change, not a free one. The real lever is the one the
+parent has already forwarded to the many-worlds design: an in-place round
+reset that skips the scene reload (14 to 19 ms) and, ideally, restores the
+post-warmup state from a snapshot instead of re-simulating 240 ticks
+(18 ms). Together that is the 38 % above, worth up to ~1.6× game CPU per
+played tick at stocks 0, and it is exactly what `reset_check.c` already
+verifies (a reset after dirty gameplay must reproduce the fresh seeded
+trajectory), so the acceptance test exists.
+
+Also the earlier "~13 ms scene load" is per reset at idle; under load the
+profile's 9.3 ms per preloading frame × 2 frames is 18.6 ms, consistent.
