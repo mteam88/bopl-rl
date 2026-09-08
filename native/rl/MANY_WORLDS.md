@@ -401,6 +401,52 @@ non-exactness is a train/deploy gap. Required, in order:
    decisions/s against the Gate 0 curve. Success is a measured gain, not a build
    that works.
 
+### Gate results 1-3 (2026-09-08 12:40-13:30 EDT, thr_nzrpteey2z, commit f147af1)
+
+Evidence: `native/rl/evidence/many-worlds/gates.json` (raw reports under
+`native/artifacts/rl/many-worlds/`, untracked). Player under test:
+`Builds/LinuxIL2CPP-mw/` built from da03770 (re-pinned SourceHash 98b8a17b…). The
+launcher `BoplBattle.x86_64` is byte-identical to the previous build (the C#
+lives in `GameAssembly.so` f75bc672… and `global-metadata.dat` 9775f3e1…), so
+parity is shown by gameplay comparison, not by a player checksum.
+
+1. **Single-world parity: pass.** `check_telemetry.py`, 12 games, 7208 ticks, new
+   build vs `Builds/LinuxIL2CPP/` (previous build, GameAssembly 67723a4b…):
+   fixed-point state hashes 12/12, delayed observation hashes 12/12, replay
+   bodies 12/12. Replay bytes differ only in bytes 8-72 (the SourceHash pin
+   embedded in the BOPLREP2 header) and the trailing digest, by construction of
+   the re-pin; `check_telemetry.py` now records `replay_body_sha256` with those
+   ranges masked and compares full `replay_sha256` only when the pins agree.
+   Event conservation, reset, sparse reward and forced timeout pass.
+   `reset_check` RESET_ISOLATION_OK (5738 snapshots), `warmup_check`
+   WARMUP_SEED_INDEPENDENT_OK (5 maps, 4 seeds), `sampled_check` pass (459
+   decisions). Legacy path: the new C library against the previous player
+   (140-byte handshake) passes `reset_check`.
+2. **Multi-world parity: pass.** `native/rl/world_check.c` opens one single-world
+   process and one N-world process, plays the same seed/map/loadout/episode-limit
+   schedule per world on N threads (episode limits differ per world so resets
+   land while the other worlds keep ticking), and compares the full fixed-point
+   state (entities, slimes, telemetry) after every sampled step plus the replay
+   bytes. 4 worlds x 3 rounds: 12 matches, 2058 exact snapshots, 4079 ticks. 8
+   worlds x 4 rounds: 32 matches, 5700 snapshots, 11300 ticks. Maps 0-4, loadouts
+   covering Mjolnir, portal gun, poke ball, tack, freeze ray, gold mushroom,
+   spike, beam, throw and dash (the A4 risks: `Updater.random`, prefab/hierarchy
+   counters, rope/black-hole indices, `RlObservation.nextId`, deferred destroys).
+   Through the trainer binding (`check_worlds.py`, 8 games, 4 worlds per process,
+   600 steps, random loadouts): layout, observations, rewards, terminals and
+   counters identical to the single-world vector, 81 matches over all five maps.
+3. **Native trainer smoke: pass.** `check_routing.py` pass. `smoke.py` (8 games, 2
+   buffers, 2 banks, 4 updates + rotation, seed 73) with `--worlds 1` and
+   `--worlds 2`: identical entropy, policy/value loss, KL, advantage std,
+   gradient norm and counters per update, 80 matches each.
+4. **Throughput:** pending (remeasure after snapshot-restore, item D).
+
+Operational notes: `--worlds-per-process N` requires `workers % (2*buffers*N)
+== 0` and disables the spare process (a reset in one world never blocks the
+others, so the spare has nothing to hide). Each vector gets its own process
+epoch, so two vectors never share a game process. Per-process logs are
+`worker-<pid>-<epoch>-p<group>.log`.
+
 Replay format (`ReplayArchive`, BOPLREP2) must not change; the dashboard's replay
 browser, video renderer and mind dumps depend on it.
 
