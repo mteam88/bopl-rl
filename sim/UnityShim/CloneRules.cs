@@ -35,6 +35,15 @@ namespace UnityShim
 		{
 			if (f.IsStatic || f.IsInitOnly || f.IsLiteral) return false;
 			if (f.IsDefined(typeof(NonSerializedAttribute), false)) return false;
+			// Shim built-ins (UnityEngine/TMPro types in this assembly): Unity
+			// clones native-component state wholesale on Instantiate, not by C#
+			// serialization rules. Include private/auto-property backing fields of
+			// serializable types (SpriteRenderer.color reset to white on clones -
+			// g2 SimpleSparkNode.origColor; SpriteRenderer.sprite null on cloned
+			// platforms - g4). Non-serializable classes (ParticleSystem modules,
+			// ctor-created with back-references) stay per-instance.
+			if (f.DeclaringType.Assembly == typeof(UnityEngine.Object).Assembly)
+				return IsSerializableType(f.FieldType);
 			if (!f.IsPublic && !f.IsDefined(typeof(SerializeField), false)) return false;
 			return IsSerializableType(f.FieldType);
 		}
