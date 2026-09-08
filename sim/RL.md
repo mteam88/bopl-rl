@@ -140,11 +140,15 @@ other work — the trainer, not the sim, is now the ceiling to look at.
   `sim/Export` (parse with `JsonLoadSettings.LineInfoHandling = Ignore` for
   an immediate −53 MB; longer term convert to compact records and drop the
   `JObject`s after the assets are built).
-- **Evaluation** (`train.py` without `--no-eval`, `native/rl/research/evaluate.py`)
-  identifies the game via `environment.game_identity`, which requires a Mono
-  `Assembly-CSharp.dll` or IL2CPP `GameAssembly.so` next to the binary and
-  raises `FileNotFoundError` for the port. Not touched tonight; the smoke ran
-  with `--no-eval`.
+- **`native/rl/research/check_telemetry.py`** records
+  `environment.game_identity()`, which requires a Mono `Assembly-CSharp.dll`
+  or IL2CPP `GameAssembly.so` next to the binary and raises
+  `FileNotFoundError` for the port. Not touched. (`evaluate.py` does not use
+  it: run directly on the smoke's final checkpoint with `--game <AOT Host>`,
+  `--workers 2`, 4/2/4 games, it completed in 3.7 s and wrote
+  `evaluations/004001792/result.json` with replays, visuals and mind dumps —
+  so `train.py` without `--no-eval` should work too; the smoke used
+  `--no-eval` only to isolate throughput.)
 - **Bootstrap replay is not actually played.** The player loads the legacy
   `.rep` through its "Replay" scene; the port substitutes a default setup
   (see above). Only the reached state matters for RL and it is identical.
