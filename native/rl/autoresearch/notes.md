@@ -1039,3 +1039,37 @@ available (telemetry is per learner row, side not recorded in metrics), so the e
 place to measure it; (3) track environment deaths, other death categories and duration together with
 fixed-opponent scores. Death frequency and round length have different units; comparing their raw
 rates of change is not a validated progress threshold.
+
+## 2026-09-07 22:31 EDT: 30M drift read (30 checkpoints, read-only)
+
+Same read as at 19M (`watch_run.py --every 5000000 --drift`, single thread,
+niced). Run at 29.3M learner decisions, 0.68 h, 11,986 learner/s trailing,
+~8.6 h left.
+
+| slice | \|w0\| | \|w\| | mean\|dw\| | lag-1 cos | net | net/rw | row0 → row |
+|---|---|---|---|---|---|---|---|
+| encoder | 15.96 | 17.67 | .462 | .558 | 7.23 | 2.85 | – |
+| decoder.aim | 9.23 | 9.42 | .271 | .089 | 2.24 | 1.53 | .576 → .588 |
+| decoder.buttons | 2.30 | 2.36 | .150 | .042 | .90 | 1.11 | .575 → .589 |
+| decoder.value | .57 | 2.04 | .071 | .823 | 1.63 | 3.90 | .570 → 2.041 |
+| mingru | 11.35 | 12.87 | .448 | .404 | 5.88 | 2.43 | – |
+
+Changes since the 19M read: encoder net/rw 2.49 → 2.85, mingru 2.18 → 2.43,
+value 3.68 → 3.90 (its lag-1 cosine fell .94 → .82, so the critic row is
+still moving one way but less steadily). Aim head net/rw 1.35 → 1.53 with
+lag-1 cosine .082 → .089 and row norm .579 → .588; buttons 1.09 → 1.11,
+cosine .052 → .042. The aim head has touched the ~1.5 marker from the watch
+rule, but its cosine is flat and its row norms grew 2%, so this is not the
+"policy heads start moving" signature yet; a random walk's net/rw also grows
+with the number of checkpoints when steps are weakly correlated. Next read at
+~40M decides it: net/rw above ~1.8 with cosine above ~.15 would.
+
+Trailing signals at 29.3M: entropy 8.236 nats (uniform 8.318) at coefficient
+.00509, explained variance .509 (down from .616 at 20-25M), gradient norm
+.548 (flat since 20M), advantage std .195 (slow decline from .226), kl and
+clip fraction 0 as expected at one pass. The explained-variance drop is the
+only signal that moved against trend; it coincides with the critic row's
+lower lag-1 cosine and with rising evaluation win rate vs random, so the
+value target distribution may be shifting. Evaluation at 33.3M physical:
+vs random .542 (24 games), vs initial .375 (24), held-out vs random .625 (8),
+no timeouts.
