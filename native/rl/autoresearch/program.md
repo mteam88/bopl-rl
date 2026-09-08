@@ -157,8 +157,10 @@ the slot is negotiated explicitly between the Rifts.
 - **Learner passes (post-launch A/B, top lead).** The 400M run does one
   gradient step per 3072-decision rollout (`--learner-passes 1`); the old
   trainer did 12 (3 epochs × 4 minibatches). Train time is ~4.4 ms per pass
-  against ~170 ms of rollout per update, so `--learner-passes 3` costs under
-  5% of wall and turns PPO's clip and `kl` back into live quantities. If the
+  against ~170 ms of rollout per update: two extra passes would add about
+  8.8 / 174.4 = 5% to training-loop wall time if costs scale linearly. This is
+  an estimate, not a measured three-pass result. Later passes let `kl`/clip
+  reflect preceding optimizer steps; nonzero clipping is not guaranteed. If the
   400M run shows entropy stuck near uniform, this is the first matched
   comparison to run (same seed, same budget, `strength_check.py`-style
   fail-closed protocol with `--learner-passes` in the plan).
