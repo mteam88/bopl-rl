@@ -1,0 +1,220 @@
+using System;
+using System.Collections.Generic;
+using UnityShim;
+
+namespace UnityEngine
+{
+	public class Object
+	{
+		internal int instanceId;
+		internal bool destroyed;
+		internal string objectName = "";
+		// Assets (prefab templates, ScriptableObjects from the export) never get
+		// lifecycle callbacks and are not part of the live scene.
+		internal bool isAsset;
+
+		public HideFlags hideFlags;
+
+		public Object() { instanceId = World.NextInstanceId(); }
+
+		public virtual string name { get => objectName; set => objectName = value; }
+
+		public int GetInstanceID() => instanceId;
+
+		public override int GetHashCode() => instanceId;
+
+		public override bool Equals(object other) => CompareBaseObjects(this, other as Object);
+
+		public override string ToString() => string.IsNullOrEmpty(objectName) ? GetType().Name : objectName;
+
+		private static bool CompareBaseObjects(Object a, Object b)
+		{
+			bool an = a is null || a.destroyed;
+			bool bn = b is null || b.destroyed;
+			if (an && bn) return true;
+			if (an || bn) return false;
+			return ReferenceEquals(a, b);
+		}
+
+		public static bool operator ==(Object a, Object b) => CompareBaseObjects(a, b);
+		public static bool operator !=(Object a, Object b) => !CompareBaseObjects(a, b);
+		public static implicit operator bool(Object o) => !(o is null) && !o.destroyed;
+
+		public static void DontDestroyOnLoad(Object target) { }
+
+		public static void Destroy(Object obj) => Destroy(obj, 0f);
+
+		public static void Destroy(Object obj, float t)
+		{
+			if (obj == null) return;
+			// Unity defers to end of frame (delay ignored beyond that; gameplay
+			// uses Updater.DestroyFix for deterministic destruction).
+			World.Current.ScheduleDestroy(obj);
+		}
+
+		public static void DestroyImmediate(Object obj) => DestroyImmediate(obj, false);
+
+		public static void DestroyImmediate(Object obj, bool allowDestroyingAssets)
+		{
+			if (obj == null || obj.destroyed) return;
+			switch (obj)
+			{
+				case GameObject go: DestroyGameObject(go); break;
+				case Component c: DestroyComponent(c); break;
+				default: obj.destroyed = true; break;
+			}
+		}
+
+		private static void DestroyGameObject(GameObject go)
+		{
+			// Children first (depth-first), disable callbacks, then OnDestroy.
+			for (int i = go.transform.childCount - 1; i >= 0; i--)
+				DestroyGameObject(go.transform.GetChild(i).gameObject);
+			foreach (var c in go.components.ToArray())
+			{
+				if (c is MonoBehaviour mb && !mb.destroyed && !go.isAsset)
+				{
+					if (mb.enabledSelf && go.activeInHierarchy && mb.awakeRan)
+						mb.SetEnabledInternal(false);
+					if (mb.awakeRan) mb.CallMessage(MessageId.OnDestroy);
+					mb.CleanupOnDestroy();
+				}
+				c.destroyed = true;
+			}
+			if (go.transform.parent != null) go.transform.SetParentInternal(null, false);
+			else World.Current.roots.Remove(go);
+			go.destroyed = true;
+			go.transform.destroyed = true;
+			World.Current.Compact();
+		}
+
+		private static void DestroyComponent(Component c)
+		{
+			if (c is Transform) return; // Unity refuses to destroy transforms
+			if (c is MonoBehaviour mb && !c.gameObject.isAsset)
+			{
+				if (mb.enabledSelf && c.gameObject.activeInHierarchy && mb.awakeRan)
+					mb.SetEnabledInternal(false);
+				if (mb.awakeRan) mb.CallMessage(MessageId.OnDestroy);
+				mb.CleanupOnDestroy();
+			}
+			c.gameObject.components.Remove(c);
+			c.destroyed = true;
+			World.Current.Compact();
+		}
+
+		// ---- Instantiate -------------------------------------------------------
+
+		public static T Instantiate<T>(T original) where T : Object
+			=> (T)InstantiateInternal(original, null, false, false, default, default);
+
+		public static T Instantiate<T>(T original, Transform parent) where T : Object
+			=> (T)InstantiateInternal(original, parent, false, false, default, default);
+
+		public static T Instantiate<T>(T original, Transform parent, bool instantiateInWorldSpace) where T : Object
+			=> (T)InstantiateInternal(original, parent, instantiateInWorldSpace, false, default, default);
+
+		public static T Instantiate<T>(T original, Vector3 position, Quaternion rotation) where T : Object
+			=> (T)InstantiateInternal(original, null, false, true, position, rotation);
+
+		public static T Instantiate<T>(T original, Vector3 position, Quaternion rotation, Transform parent) where T : Object
+			=> (T)InstantiateInternal(original, parent, false, true, position, rotation);
+
+		public static Object Instantiate(Object original) => InstantiateInternal(original, null, false, false, default, default);
+		public static Object Instantiate(Object original, Vector3 position, Quaternion rotation)
+			=> InstantiateInternal(original, null, false, true, position, rotation);
+		public static Object Instantiate(Object original, Vector3 position, Quaternion rotation, Transform parent)
+			=> InstantiateInternal(original, parent, false, true, position, rotation);
+		public static Object Instantiate(Object original, Transform parent) => InstantiateInternal(original, parent, false, false, default, default);
+
+		private static Object InstantiateInternal(Object original, Transform parent, bool worldSpace, bool hasPose, Vector3 position, Quaternion rotation)
+		{
+			if (original == null) throw new ArgumentException("The Object you want to instantiate is null.");
+			if (original is ScriptableObject so)
+				return CloneRules.CloneScriptableObject(so);
+			GameObject sourceGo = original as GameObject ?? (original as Component)?.gameObject;
+			if (sourceGo == null) throw new ArgumentException("Instantiate of unsupported type " + original.GetType().Name);
+			GameObject clone = CloneRules.CloneHierarchy(sourceGo, parent);
+			clone.objectName = sourceGo.objectName + "(Clone)";
+			if (hasPose)
+			{
+				clone.transform.position = position;
+				clone.transform.rotation = rotation;
+			}
+			else if (parent != null && !worldSpace)
+			{
+				// keep the prefab's local pose under the new parent (already local-copied)
+			}
+			CloneRules.DispatchAwake(clone);
+			if (original is GameObject) return clone;
+			// Return the clone's counterpart of the requested component.
+			var comp = (Component)original;
+			int goIndex = 0, compIndex = sourceGo.components.IndexOf(comp);
+			return clone.components[compIndex];
+		}
+
+		// ---- Find --------------------------------------------------------------
+
+		public static T FindObjectOfType<T>() where T : Object => FindObjectOfType<T>(false);
+
+		public static T FindObjectOfType<T>(bool includeInactive) where T : Object
+		{
+			var all = FindObjectsOfType<T>(includeInactive);
+			return all.Length > 0 ? all[0] : null;
+		}
+
+		public static T[] FindObjectsOfType<T>() where T : Object => FindObjectsOfType<T>(false);
+
+		public static T[] FindObjectsOfType<T>(bool includeInactive) where T : Object
+		{
+			var result = new List<T>();
+			foreach (var root in World.Current.roots.ToArray())
+				CollectComponents(root, typeof(T), includeInactive, result);
+			return result.ToArray();
+		}
+
+		public static Object FindObjectOfType(Type type)
+		{
+			var result = new List<Object>();
+			foreach (var root in World.Current.roots.ToArray())
+			{
+				CollectComponents(root, type, false, result);
+				if (result.Count > 0) return result[0];
+			}
+			return null;
+		}
+
+		public static Object[] FindObjectsOfType(Type type)
+		{
+			var result = new List<Object>();
+			foreach (var root in World.Current.roots.ToArray())
+				CollectComponents(root, type, false, result);
+			return result.ToArray();
+		}
+
+		private static void CollectComponents<T>(GameObject go, Type type, bool includeInactive, List<T> result) where T : class
+		{
+			if (go == null || go.destroyed) return;
+			if (!includeInactive && !go.activeInHierarchy) return;
+			if (type == typeof(GameObject))
+			{
+				result.Add(go as T);
+			}
+			else
+			{
+				foreach (var c in go.components)
+					if (!c.destroyed && type.IsInstanceOfType(c)) result.Add(c as T);
+			}
+			var t = go.transform;
+			for (int i = 0; i < t.childCount; i++)
+				CollectComponents(t.GetChild(i).gameObject, type, includeInactive, result);
+		}
+	}
+
+	public enum HideFlags
+	{
+		None = 0, HideInHierarchy = 1, HideInInspector = 2, DontSaveInEditor = 4,
+		NotEditable = 8, DontSaveInBuild = 16, DontUnloadUnusedAsset = 32,
+		DontSave = 52, HideAndDontSave = 61
+	}
+}

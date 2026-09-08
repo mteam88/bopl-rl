@@ -1,0 +1,325 @@
+using System;
+using System.Collections.Generic;
+using UnityShim;
+using UnityEngine.SceneManagement;
+
+namespace UnityEngine
+{
+	public sealed class GameObject : Object
+	{
+		internal readonly List<Component> components = new List<Component>();
+		internal bool activeSelfField = true;
+		internal string tagField = "Untagged";
+
+		public int layer;
+		public Scene scene;
+
+		public Transform transform { get; private set; }
+
+		public GameObject() : this("New Game Object") { }
+
+		public GameObject(string name)
+		{
+			objectName = name ?? "";
+			transform = new Transform();
+			transform.AttachTo(this);
+			components.Add(transform);
+			scene = World.Current.activeScene;
+			World.Current.roots.Add(this);
+		}
+
+		public GameObject(string name, params Type[] componentTypes) : this(name)
+		{
+			foreach (var t in componentTypes) AddComponent(t);
+		}
+
+		// Used by the Export loader / clone machinery: no auto root registration.
+		internal static GameObject CreateDetached(string name, bool asset)
+		{
+			var go = new GameObject(name);
+			go.isAsset = asset;
+			if (asset) { go.transform.isAsset = true; World.Current.roots.Remove(go); }
+			return go;
+		}
+
+		public GameObject gameObject => this;
+
+		public string tag
+		{
+			get => tagField;
+			set => tagField = value ?? "Untagged";
+		}
+
+		public bool CompareTag(string other) => tagField == other;
+
+		public bool activeSelf => activeSelfField;
+
+		public bool activeInHierarchy
+		{
+			get
+			{
+				if (!activeSelfField || destroyed) return false;
+				var p = transform.parent;
+				return p == null || p.gameObject.activeInHierarchy;
+			}
+		}
+
+		public void SetActive(bool value)
+		{
+			if (activeSelfField == value) return;
+			bool wasActive = activeInHierarchy;
+			activeSelfField = value;
+			bool nowActive = activeInHierarchy;
+			if (wasActive == nowActive || isAsset) return;
+			if (nowActive) NotifyActivation(this, true);
+			else NotifyActivation(this, false);
+		}
+
+		// Called when activeInHierarchy flips for this subtree.
+		internal static void NotifyActivation(GameObject go, bool active)
+		{
+			foreach (var c in go.components.ToArray())
+			{
+				if (c is MonoBehaviour mb && !mb.destroyed)
+				{
+					if (active) mb.OnBecameActive();
+					else mb.OnBecameInactive();
+				}
+			}
+			var t = go.transform;
+			for (int i = 0; i < t.childCount; i++)
+			{
+				var child = t.GetChild(i).gameObject;
+				if (child.activeSelfField) NotifyActivation(child, active);
+			}
+		}
+
+		// ---- components ----------------------------------------------------
+
+		public T AddComponent<T>() where T : Component => (T)AddComponent(typeof(T));
+
+		public Component AddComponent(Type componentType)
+		{
+			var c = (Component)Activator.CreateInstance(componentType);
+			c.AttachTo(this);
+			components.Add(c);
+			if (c is MonoBehaviour mb)
+			{
+				mb.isAsset = isAsset;
+				if (!isAsset)
+				{
+					World.Current.RegisterBehaviour(mb);
+					if (activeInHierarchy && mb.enabledSelf) mb.OnBecameActive();
+				}
+			}
+			return c;
+		}
+
+		// Export loader: attach without lifecycle (Awake dispatched later, in order).
+		internal Component AddComponentSilent(Type componentType)
+		{
+			var c = (Component)Activator.CreateInstance(componentType);
+			c.AttachTo(this);
+			c.isAsset = isAsset;
+			components.Add(c);
+			if (c is MonoBehaviour mb) mb.isAsset = isAsset;
+			return c;
+		}
+
+		public T GetComponent<T>()
+		{
+			foreach (var c in components)
+				if (!c.destroyed && c is T t) return t;
+			return default;
+		}
+
+		public Component GetComponent(Type type)
+		{
+			foreach (var c in components)
+				if (!c.destroyed && type.IsInstanceOfType(c)) return c;
+			return null;
+		}
+
+		public Component GetComponent(string typeName)
+		{
+			foreach (var c in components)
+				if (!c.destroyed && c.GetType().Name == typeName) return c;
+			return null;
+		}
+
+		public bool TryGetComponent<T>(out T component)
+		{
+			component = GetComponent<T>();
+			return component != null && !(component is Component c && c.destroyed);
+		}
+
+		public T[] GetComponents<T>()
+		{
+			var list = new List<T>();
+			foreach (var c in components)
+				if (!c.destroyed && c is T t) list.Add(t);
+			return list.ToArray();
+		}
+
+		public void GetComponents<T>(List<T> results)
+		{
+			results.Clear();
+			foreach (var c in components)
+				if (!c.destroyed && c is T t) results.Add(t);
+		}
+
+		public Component[] GetComponents(Type type)
+		{
+			var list = new List<Component>();
+			foreach (var c in components)
+				if (!c.destroyed && type.IsInstanceOfType(c)) list.Add(c);
+			return list.ToArray();
+		}
+
+		public T GetComponentInChildren<T>() => GetComponentInChildren<T>(false);
+
+		public T GetComponentInChildren<T>(bool includeInactive)
+		{
+			if (includeInactive || activeInHierarchy)
+			{
+				var own = GetComponent<T>();
+				if (own != null) return own;
+			}
+			for (int i = 0; i < transform.childCount; i++)
+			{
+				var child = transform.GetChild(i).gameObject;
+				if (!includeInactive && !child.activeSelfField) continue;
+				var found = child.GetComponentInChildren<T>(includeInactive);
+				if (found != null) return found;
+			}
+			return default;
+		}
+
+		public T[] GetComponentsInChildren<T>() => GetComponentsInChildren<T>(false);
+
+		public T[] GetComponentsInChildren<T>(bool includeInactive)
+		{
+			var list = new List<T>();
+			CollectInChildren(this, includeInactive, list);
+			return list.ToArray();
+		}
+
+		public void GetComponentsInChildren<T>(List<T> results) => GetComponentsInChildren(false, results);
+
+		public void GetComponentsInChildren<T>(bool includeInactive, List<T> results)
+		{
+			results.Clear();
+			CollectInChildren(this, includeInactive, results);
+		}
+
+		private static void CollectInChildren<T>(GameObject go, bool includeInactive, List<T> list)
+		{
+			if (!includeInactive && !go.activeInHierarchy) return;
+			foreach (var c in go.components)
+				if (!c.destroyed && c is T t) list.Add(t);
+			for (int i = 0; i < go.transform.childCount; i++)
+				CollectInChildren(go.transform.GetChild(i).gameObject, includeInactive, list);
+		}
+
+		public T GetComponentInParent<T>() => GetComponentInParent<T>(false);
+
+		public T GetComponentInParent<T>(bool includeInactive)
+		{
+			for (var t = transform; t != null; t = t.parent)
+			{
+				if (!includeInactive && !t.gameObject.activeInHierarchy) continue;
+				var c = t.gameObject.GetComponent<T>();
+				if (c != null) return c;
+			}
+			return default;
+		}
+
+		public T[] GetComponentsInParent<T>() => GetComponentsInParent<T>(false);
+
+		public T[] GetComponentsInParent<T>(bool includeInactive)
+		{
+			var list = new List<T>();
+			for (var t = transform; t != null; t = t.parent)
+			{
+				if (!includeInactive && !t.gameObject.activeInHierarchy) continue;
+				foreach (var c in t.gameObject.components)
+					if (!c.destroyed && c is T x) list.Add(x);
+			}
+			return list.ToArray();
+		}
+
+		// ---- statics --------------------------------------------------------
+
+		public static GameObject Find(string name)
+		{
+			// Unity searches active objects only, full hierarchy paths allowed.
+			foreach (var root in World.Current.roots)
+			{
+				var found = FindRecursive(root, name);
+				if (found != null) return found;
+			}
+			return null;
+		}
+
+		private static GameObject FindRecursive(GameObject go, string name)
+		{
+			if (go.destroyed || !go.activeInHierarchy) return null;
+			if (go.objectName == name) return go;
+			for (int i = 0; i < go.transform.childCount; i++)
+			{
+				var found = FindRecursive(go.transform.GetChild(i).gameObject, name);
+				if (found != null) return found;
+			}
+			return null;
+		}
+
+		public static GameObject FindGameObjectWithTag(string tag)
+		{
+			var all = FindGameObjectsWithTag(tag);
+			return all.Length > 0 ? all[0] : null;
+		}
+
+		public static GameObject[] FindGameObjectsWithTag(string tag)
+		{
+			var list = new List<GameObject>();
+			foreach (var root in World.Current.roots.ToArray())
+				CollectByTag(root, tag, list);
+			return list.ToArray();
+		}
+
+		private static void CollectByTag(GameObject go, string tag, List<GameObject> list)
+		{
+			if (go.destroyed || !go.activeInHierarchy) return;
+			if (go.tagField == tag) list.Add(go);
+			for (int i = 0; i < go.transform.childCount; i++)
+				CollectByTag(go.transform.GetChild(i).gameObject, tag, list);
+		}
+
+		public void SendMessage(string methodName) => SendMessage(methodName, null, SendMessageOptions.RequireReceiver);
+		public void SendMessage(string methodName, object value) => SendMessage(methodName, value, SendMessageOptions.RequireReceiver);
+
+		public void SendMessage(string methodName, object value, SendMessageOptions options)
+		{
+			foreach (var c in components.ToArray())
+			{
+				if (c.destroyed || !(c is MonoBehaviour mb)) continue;
+				var method = mb.GetType().GetMethod(methodName,
+					System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+				if (method == null) continue;
+				method.Invoke(mb, method.GetParameters().Length == 0 ? null : new[] { value });
+			}
+		}
+
+		public void BroadcastMessage(string methodName) => BroadcastMessage(methodName, null, SendMessageOptions.DontRequireReceiver);
+		public void BroadcastMessage(string methodName, object value) => BroadcastMessage(methodName, value, SendMessageOptions.DontRequireReceiver);
+
+		public void BroadcastMessage(string methodName, object value, SendMessageOptions options)
+		{
+			SendMessage(methodName, value, options);
+			for (int i = 0; i < transform.childCount; i++)
+				transform.GetChild(i).gameObject.BroadcastMessage(methodName, value, options);
+		}
+	}
+
+	public enum SendMessageOptions { RequireReceiver, DontRequireReceiver }
+}
