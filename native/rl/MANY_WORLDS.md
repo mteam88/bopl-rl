@@ -63,6 +63,78 @@ Decision rule:
 Note `--buffers` is limited to 1 or 2 in `train.py`; PufferLib supports more, ask
 `thr_6bmdfjijez` (trainer owner) before changing that.
 
+### Gate 0 results (2026-09-07 23:05-23:28 EDT, thr_nzrpteey2z)
+
+Driver: `native/rl/many_worlds/gate0.py` (commit 2b21359) in systemd unit `bopl-gate0`
+(`MemoryHigh=27G MemoryMax=29G MemorySwapMax=2G`), 3M learner decisions per point,
+`launch-001-s73.sh` config otherwise (`--no-eval`, stocks 0, episode cap 7200, 4 banks,
+observation delay 9 = one sampled step of 3+1 ticks per decision). Raw data:
+`native/artifacts/rl/many-worlds/gate0/{results.jsonl, <point>/samples.jsonl,
+<point>/run/metrics.jsonl}`; table from `native/rl/many_worlds/gate0_report.py`.
+Machine: Ryzen 5 7600X3D (6 cores / 12 threads), 32 GB, RTX 5070. Nothing else ran.
+
+| point | workers | buffers | games | learner sps (steady) | matches/s | PSS games GB (max) | PSS/game GB | game cores | trainer cores | GPU util % | MemAvail min GB | rollout s/update | train s/update | mem.high / oom_kill | rc |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| w16-b2 | 16 | 2 | 32 | 13,876 | 110.6 | 8.2 | 0.256 | 7.21 | 1.77 | 35 | 12.2 | 0.211 | 0.0044 | 0 / 0 | 0 |
+| w16-b1 | 16 | 1 | 32 | 12,961 | 104.1 | 8.2 | 0.257 | 6.69 | 1.50 | 21 | 12.1 | 0.225 | 0.0044 | 0 / 0 | 0 |
+| w24-b2 | 24 | 2 | 48 | 13,587 | 108.6 | 12.3 | 0.255 | 7.39 | 1.60 | 24 | 7.3 | 0.321 | 0.0052 | 0 / 0 | 0 |
+| w32-b2 | 32 | 2 | 64 | 12,213 | 98.0 | 16.2 | 0.240 | 6.87 | 1.46 | 19 | 3.4 | 0.480 | 0.0059 | 0 / 0 | 0 |
+| w32-b1 | 32 | 1 | 64 | 13,951 | 111.4 | 16.3 | 0.254 | 7.79 | 1.41 | 13 | 6.2 | 0.425 | 0.0059 | 0 / 0 | 0 |
+| w40-b2 | 40 | 2 | 80 | 13,552 | 107.7 | 20.1 | 0.239 | 7.84 | 1.46 | 16 | 2.2 | 0.548 | 0.0066 | 0 / 0 | 0 |
+
+"learner sps (steady)" drops the first 20% of decisions (CUDA warm-up, first resets).
+Cores are medians of 2 s samples over the steady window (game and trainer cgroup
+jiffies). PSS from `smaps_rollup`; RSS overstates by ~30% (shared IL2CPP pages).
+
+**Curve: flat.** 13.0-14.0k learner decisions/s from 16 to 40 workers (32 to 80
+game processes); 32 and 40 workers are within noise of 16. Rollout wall time per
+update grows linearly with workers (0.21 s -> 0.55 s) while train time is 1-3% of it.
+
+**Where it is spent.** The box is CPU-saturated at every point: 10.3 of 12
+logical CPUs busy (user 8.0, sys 1.65, idle 1.6, measured with /proc/stat over
+10 s during w32-b1). Game processes hold ~7.8 logical CPUs regardless of how many
+there are; the trainer ~1.5. Per-thread breakdown across all 64 game processes
+(10 s, w32-b1):
+
+| thread | cores | note |
+|---|--:|---|
+| `BoplBattle.x86_64` main | 5.83 | simulation ticks (~37k ticks/s total -> ~158 us main-thread per tick; isolated single process measures 105-124 us, the rest is SMT/cache sharing) |
+| `AssetGarbageCollector` | 1.07 | one per process, Unity's own; pure per-process overhead |
+| `Loading.Preload` | 0.53 | spare processes loading the next level scene |
+| `threaded-ml`, `BatchDeleteObjects`, `Job.Worker *` | 0.35 | per-process Unity worker threads |
+
+GPU: 13-35% utilization, falling as workers rise (bigger, rarer forward batches);
+1.2-1.8 GB. Not a limit. Socket transfer and the trainer main thread are ~1.5 cores
+and do not grow with workers; not the limit either.
+
+**Memory.** 0.24-0.257 GB PSS per game process. 80 processes = 20 GB PSS,
+MemAvailable min 2.2 GB, ~1.4 GB of game pages already in swap with visible
+swap I/O. 48 workers (96 processes, ~24 GB PSS + trainer + desktop) would thrash
+and adds nothing since throughput is CPU-bound; both 48-worker points were
+**not run** (decision, not a guard skip; the unit was stopped after w40-b2).
+`--buffers 1` vs `2` is a wash once CPU is saturated (b2 +7% at 16 workers, b1
++14% at 32).
+
+**Decision rule outcome.** Branch 2 ("flattens") with a twist: the limit is not
+the trainer but *simulation CPU*. More processes only time-slice the same 6 cores;
+the memory ceiling (~40 workers) arrives before any scaling benefit. Many-worlds
+is therefore worth doing for what it removes, not for concurrency:
+
+- ~1.9 of the 7.8 game cores are per-process Unity overhead (asset GC, worker
+  threads, spare-process scene loading). Folding N worlds into one process
+  divides that by N: **up to ~+25% ticks/s** on this box if the freed CPU goes
+  to main threads, plus whatever less L3/TLB thrash from fewer heaps buys.
+- Memory drops ~N-fold (one IL2CPP runtime, one asset set per process), which
+  removes the 40-worker cap and the swap risk, and lets the same 6 cores serve
+  fewer, fatter processes with fewer context switches (~140k ctxt/s today).
+- It does **not** change the main-thread per-tick cost (~105-160 us). Anything
+  beyond ~+25% needs cheaper ticks (profile `TickSimulationInner`/DetPhysics via
+  `BOPL_RL_PROFILE`) or the in-process Rust stepper (Appendix B), or more cores.
+
+Recommendation: proceed to section 3 as decided, target 4-8 worlds per process,
+P = 6-12 processes; measure with the same `gate0.py` grid at the end (section 4.4)
+expecting ~+20-30%, and budget separate work for per-tick cost.
+
 ## 3. Design: static-state swap + additively loaded level scenes
 
 From the scout (Appendix A). Every level scene carries its own `DetPhysics` and
