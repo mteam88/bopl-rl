@@ -117,7 +117,9 @@ def main():
     parser.add_argument('--games-per-pair',type=int,default=8,help='Per map; even, half per side')
     parser.add_argument('--maps',type=map_ids,default=None,help='Defaults to the run config training maps')
     parser.add_argument('--anchors',type=Path,help='Manifest of frozen native reference checkpoints (evaluation opponents format)')
-    parser.add_argument('--scripts',type=Path,help='Scripted bot manifest; each bot becomes an anchor')
+    parser.add_argument('--scripts',type=Path,help='Scripted bot manifest; each bot becomes an anchor. '
+                        'Depends on the legacy scripted_opponents module, which is slated for deletion '
+                        'in the native cutover — unavailable until a native reimplementation exists')
     parser.add_argument('--seed-base',type=int,default=50001)
     parser.add_argument('--episode-ticks',type=int,default=None,help='Defaults to the run config value')
     parser.add_argument('--library',type=Path,default=None,help='CPU evaluation library for native_policy.load')
