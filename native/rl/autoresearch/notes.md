@@ -1349,3 +1349,36 @@ Measured three-pass cost is on record already (results.tsv
 wall second, with `kl` ~1e-7 and `clip_fraction` 0 throughout, so at that
 budget the extra passes changed nothing visible. program.md's learner-passes
 item now cites the measurement instead of the earlier 5% estimate.
+
+## 2026-09-07 23:41 EDT: the historical pool never fell behind (training-time win rate)
+
+Read from `metrics.jsonl` (`env.historical_episodes` / `env.historical_wins`,
+the per-window means scaled by `env.n`) and `pool.jsonl` of the stopped run.
+Half of matches are self-play (`historical_every=2`), so historical matches
+are one third of learner episodes (self-play counts both players).
+
+Learner win rate against the frozen pool, by thirds of the run:
+
+| learner decisions | historical episodes | learner win rate |
+|---|--:|--:|
+| 0 to 15.5M | 60,681 | .498 ± .002 |
+| 15.5M to 31.0M | 51,053 | .513 ± .002 |
+| 31.0M to 46.5M | 39,156 | .510 ± .003 |
+
+The pool refreshes every checkpoint (1.33M physical) into four banks, and a
+bank is retired only when a newer snapshot is pending, so the opponents were
+always the last four checkpoints: 0.1 to 5.2M physical behind the current
+policy (once 8.1M, when a bank was still referenced), a mean maximum lag of
+12% of the run. Against copies that recent the learner is at chance by
+construction, and its sparse ±1 reward has mean ~0 throughout
+(`mean_reward` +.0001). The 40M+ evaluations show the policy did beat its
+initial checkpoint (.58 to .67), so the strength was real; it was just never
+visible in training-time outcomes, and the training signal was always the
+self-play zero-sum regime. Things this suggests for the program, not yet
+acted on because train.py and native_pool.py are root's: (a) keep one bank
+pinned to the initial checkpoint (or a fixed anchor) so a training-time
+win rate against a fixed reference exists and the reward has nonzero mean
+while the policy is still weak; (b) space the pool wider than four
+consecutive checkpoints (e.g. log-spaced ages) so opponents span more of
+the run. Both change the opponent distribution, so they belong in the same
+matched-A/B category as learner passes, not in a live run.
