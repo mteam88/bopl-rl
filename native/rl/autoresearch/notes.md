@@ -1676,3 +1676,119 @@ BowTransform/CastSpell) so caching is not free of semantics; at 8 µs/tick it
 is not worth the risk. `bridge:send` is 122 µs per decision in the check
 workload because it ships telemetry; 45 in training. Nothing to trim there
 without changing the wire format (root's).
+
+## 2026-09-08 01:10 EDT: the post-warmup state does not depend on the episode seed (source-only, for snapshot-restore)
+
+Question for the many-worlds snapshot-restore design (thr_nzrpteey2z): can one
+post-warmup snapshot per map serve every episode, or does the state at the end of
+the 240 warmup ticks depend on the per-episode seed (`config->seed=bopl_random(env)`
+on every reset, `bopl_puffer.h:337`)? Read-only answer from the game source and the
+scene files; a check binary is queued for when the machine is free.
+
+**Where the seed goes.** `Updater.random` (`Unity.Mathematics.Random`, `Updater.cs:45`)
+is reseeded by `Updater.InitSeed(seed)` in `CharacterSelectHandler_online.ForceStartGame`
+(:219) before the scene loads and in `GameSessionHandler.LoadNextLevelScene` (:419).
+The only other reseed (`Updater.cs:246`, `Environment.TickCount`) runs when recording a
+non-replay game; RL runs as a replay, so it is never hit. Every consumer is a
+`Updater.Random*` call (24 sites, listed by grep).
+
+**What draws during warmup.** With a fixed loadout (trainer default ids 2/4/14, the
+500M launch script passes no ability flags) exactly one site draws before tick 240:
+`GameSessionHandler.Init` (:192), one `RandomFix(0,1) * MaxRandomDelay` per ground,
+before the first tick. Every other site needs something that does not exist yet:
+a death (`SlimeController.DropAbilities` :297), a clone (`DetPhysics.UpdateDuplicatedObjects`
+:1325), sudden death (`AnimateVelocity` :115, at 120 s), an ability object
+(SmokeGrenade, Mine, MeteorSmash, QuantumTunnel, ShootDuplicator, FlammableSmoke,
+UnstableProjectile, TeleportedObjectEffect, Shake), or a pickup: `AbilitySpawner`
+sits in all 21 FFA scenes but its `SpawnDelay` is 40 s and `DynamicAbilityPickup`
+is not placed in any scene. The `Random` ability (catalog id 1) is the one loadout
+that draws at spawn (`RandomAbility.GetRandomAbilityPrefab`, `GameSessionHandler.cs:314`);
+note `random_loadouts` (`bopl_puffer.h:348`, `1+rand%(39-1)`) can pick id 1, so a
+random-loadout run is seed-dependent at spawn by construction. Not used by the 500M run.
+
+**What the one draw changes.** All 21 FFA scenes share the constants (read from
+`Assets/Scenes/FFA/Level*.unity`, raw Fix32):
+
+| constant | value |
+|---|---|
+| `MaxRandomDelay` | 0.3 s |
+| `LevelAnimationTime` | 2.0 s |
+| `startProgressOfAnimateInGrounds` | 0 |
+| `levelAnimationRadius` | 100 units |
+| `timeBeforeTwo` (spawn players) | 1.0 s |
+| `timeBeforeGO` | 2.5 s |
+| `TimeBeforeSuddenDeath` | 120 s |
+
+`randomDelay[i]` in [0, 0.3) only shifts *when* ground i arrives. `AnimateInLoop`
+(:692) advances `_t` by 1/120 per tick and ends when `_t >= 1 + randomDelay[i]` for
+every ground; positions are written in that same final iteration with
+`_t - randomDelay[i] >= 1`. The `AnimateInOut` curve's last key is (0.99939, 1) and
+`m_PostInfinity: 2` (clamp), so `AnimationCurveFixed.Evaluate` returns exactly
+`Fix.One` there and `animateIn` returns `end*1 + start*0 = targetPositions[i]`
+bit-exactly, for every delay. The routine's follow-up (:756) then sets
+`HomePosition = targetPositions[i]` and enables the collider and `AnimateVelocity`
+with the body at its home and zero velocity, so the spring (`speed*(home-pos) -
+mu*v`) applies no force. No ground has a serialized rotation in any FFA scene.
+Timeline (60 Hz ticks, `RoutineQueue.Delay` dequeues when elapsed > delay):
+
+| event | tick |
+|---|---|
+| animate-in loop starts | 8 |
+| last ground home, colliders + springs enabled | 129 (delay 0) to 165 (delay 0.3) |
+| `SpawnPlayers` (bodies not simulated, 105-tick spawn animation) | 62 |
+| `Spawn()`: player physics on, 0.25×jump pop | ~167 |
+| `prepareWinnerTriangle` | ~214 |
+| warmup ends | 240 |
+
+Player physics starts only after every ground is home in the worst case, players
+spawn at the fixed `teamSpawns` (team-ordered, `SpawnOffset` is deterministic), and
+every other warmup-time actor is clocked by tick count. So the simulated state at
+tick 240 is the same for every seed on a given map and loadout; the seed only
+changes which ticks between 129 and 165 the colliders came alive on, while nothing
+that could touch them was simulated.
+
+**What a restore must rebuild.** The RNG stream position after warmup *is*
+seed-dependent: `InitState(seed)` advanced by the Init draws (two `Random.Next*`
+calls per ground, `RandomFix` takes the two-draw branch because `Floor(0) != Floor(1)`).
+That is the whole seed-carried state, and it is cheap to reproduce without playing
+the warmup: after restoring the per-map post-warmup snapshot, call
+`Updater.InitSeed(seed)` and then `Updater.RandomFix(Fix.Zero, Fix.One)` once per
+non-destroyed ground in `grounds[]` order (exactly the loop at
+`GameSessionHandler.cs:180-194`). Playing the first seeded decisions then draws
+from the same stream a fresh episode would. Anything else the design snapshots
+(sprite animator frame counters, ability cooldown timers at `-1.5 s`,
+`RlObservation.nextId`, `Rope.ropeNumber`, `Updater.SimTimeSinceLevelLoaded`)
+is a function of tick count and map only, so it lives in the per-map snapshot.
+
+**Consequences for the design.**
+1. One snapshot per map (per loadout, if loadouts ever vary) is enough; no
+   per-seed snapshots and no warmup replay on restore.
+2. The restore point should be tick 240 exactly, after `Spawn()`, with the RNG
+   rebuilt as above. Snapshotting earlier (before `Init`) buys nothing: the scene
+   load is the expensive part either way and the Init draws are two calls per ground.
+3. Random-loadout runs cannot use a shared snapshot for the `Random` ability
+   (id 1); exclude id 1 from `random_loadouts` if snapshot-restore ships, or accept
+   a per-seed reroll after restore (the draw is at `SpawnPlayers`, tick 62, i.e.
+   inside the snapshot).
+4. This also settles the earlier warmup-trimming idea: nothing below tick ~167 is
+   playable, and cutting 240 to ~170 would change the initial state (players still
+   in their spawn pop), consistent with the 00:17 read (~6 %, not worth it).
+
+**Check queued (unbuilt, unrun).** Branch `autoresearch/warmup-check` (edceb65)
+adds `native/rl/warmup_check.c` and a Makefile target: for five maps and four
+seeds it resets, snapshots the RL state (header + players + entities + slimes, as
+`reset_check` does), plays 120 scripted ticks, snapshots again, and requires both
+snapshots identical across seeds; a control with the `Random` ability in every
+slot is expected to differ. Syntax-checked with `gcc -fsyntax-only` only. When the
+machine is free:
+
+```
+make -C native/rl warmup_check
+native/artifacts/rl/warmup_check <abs game> <abs bootstrap.rep> <abs game.log> 5 4
+```
+
+Expect `WARMUP_SEED_INDEPENDENT_OK` and `"control":"random_ability"` with
+`post_warmup_identical:false`. If the main check fails, the diff at
+`post_warmup_identical` vs `after_120_ticks_identical` says whether the
+dependence is in the warmup state or only surfaces once inputs are applied.
+No heavy jobs were launched for this note.
