@@ -1,21 +1,59 @@
 """Local research dashboard with on-demand saved replay playback."""
 import argparse
+import gzip
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 import json
 import mimetypes
 import re
 import os
 from pathlib import Path
+import threading
 from urllib.parse import unquote,urlparse,parse_qs
 import run_insights
 import study_data
 from replay_library import ReplayLibrary
 
 HERE=Path(__file__).resolve().parent
+# A 400M-learner run writes ~130k metrics rows; ship a bounded series instead.
+METRICS_POINTS=2400
+METRICS_TAIL=120
 
 def read_json(path,default=None):
     try: return json.loads(path.read_text())
     except FileNotFoundError: return default
+
+_metrics_lock=threading.Lock()
+_metrics_cache={}
+
+def read_metrics(file):
+    """Parse an append-only metrics.jsonl incrementally, tolerating a torn tail."""
+    try: size=file.stat().st_size
+    except OSError: return [],True
+    with _metrics_lock:
+        offset,rows=_metrics_cache.get(file,(0,[]))
+        if size<offset: offset,rows=0,[]
+        if size>offset:
+            with file.open('rb') as handle:
+                handle.seek(offset)
+                chunk=handle.read()
+            position=offset
+            for line in chunk.splitlines(keepends=True):
+                complete=line.endswith(b'\n')
+                try: record=json.loads(line)
+                except ValueError:
+                    if complete: return rows,False  # torn middle line: corrupt
+                    break
+                if not complete: break  # a torn final line parsed by luck; wait for the rest
+                rows.append(record); position+=len(line)
+            _metrics_cache[file]=(position,rows)
+        return list(rows),True
+
+def downsample(rows,limit=METRICS_POINTS,tail=METRICS_TAIL):
+    """Uniform stride over the body, the tail intact for rolling windows."""
+    if len(rows)<=limit: return rows
+    body=rows[:-tail]
+    stride=-(-len(body)//(limit-tail))
+    return body[::stride]+rows[-tail:]
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -55,7 +93,11 @@ def main():
         def json(self,data):
             payload=json.dumps(data,allow_nan=False).encode()
             self.send_response(200); self.send_header('Content-Type','application/json')
-            self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(payload)))
+            self.send_header('Cache-Control','no-store')
+            if len(payload)>16384 and 'gzip' in self.headers.get('Accept-Encoding',''):
+                payload=gzip.compress(payload,5)
+                self.send_header('Content-Encoding','gzip')
+            self.send_header('Content-Length',str(len(payload)))
             self.end_headers()
             if self.command!='HEAD': self.wfile.write(payload)
         def replay_request(self, path, prepare=False):
@@ -118,14 +160,10 @@ def main():
                 if status.get('status')=='running':
                     try: os.kill(status['pid'],0)
                     except (ProcessLookupError,KeyError): status['status']='interrupted'
-                metrics=[]
-                file=directory/'metrics.jsonl'
-                if file.exists():
-                    lines=file.read_text().splitlines()
-                    for i,line in enumerate(lines):
-                        try: metrics.append(json.loads(line))
-                        except ValueError:
-                            if i!=len(lines)-1: return self.send_error(500,'Invalid metrics record')
+                metrics,intact=read_metrics(directory/'metrics.jsonl')
+                if not intact: return self.send_error(500,'Invalid metrics record')
+                total=len(metrics)
+                metrics=downsample(metrics)
                 evaluations=[]
                 for file in sorted(directory.glob('evaluations/*/result.json')):
                     report=read_json(file); report['directory']=file.parent.name
@@ -140,7 +178,8 @@ def main():
                 insights=[{key:row[key] for key in ('step','directory','games','gauges')}
                           for row in run_insights.collect(directory)]
                 return self.json(dict(name=name,config=read_json(directory/'config.json'),status=status,
-                                      metrics=metrics,evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
+                                      metrics=metrics,metrics_total=total,
+                                      evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
                                       insights=insights,ladder=read_json(directory/'ladder/ladder.json'),
                                       final_evaluation=latest_report(directory,'final-evaluations/*/result.json'),
                                       validation_evaluation=latest_report(directory,'validation/evaluations/*/result.json')))
