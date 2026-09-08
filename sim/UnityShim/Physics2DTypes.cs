@@ -79,13 +79,25 @@ namespace UnityEngine
 
 	public struct RaycastHit2D
 	{
-		public Collider2D collider { get; set; }
-		public Vector2 point { get; set; }
-		public Vector2 normal { get; set; }
-		public float distance { get; set; }
-		public float fraction { get; set; }
-		public Rigidbody2D rigidbody => collider != null ? collider.attachedRigidbody : null;
-		public Transform transform => collider != null ? collider.transform : null;
+		// Field names/layout match Unity's struct exactly (ReferenceCapture
+		// reflects private fields by name; PlayerPhysics raycast buffers are
+		// trace-captured). m_Collider is Unity's native collider id - always 0
+		// here because Physics2D raycasts produce no hits headless.
+		private Vector2 m_Centroid;
+		private Vector2 m_Point;
+		private Vector2 m_Normal;
+		private float m_Distance;
+		private float m_Fraction;
+		private int m_Collider;
+
+		public Vector2 centroid { get => m_Centroid; set => m_Centroid = value; }
+		public Vector2 point { get => m_Point; set => m_Point = value; }
+		public Vector2 normal { get => m_Normal; set => m_Normal = value; }
+		public float distance { get => m_Distance; set => m_Distance = value; }
+		public float fraction { get => m_Fraction; set => m_Fraction = value; }
+		public Collider2D collider => null;
+		public Rigidbody2D rigidbody => null;
+		public Transform transform => null;
 		public static implicit operator bool(RaycastHit2D hit) => hit.collider != null;
 	}
 
