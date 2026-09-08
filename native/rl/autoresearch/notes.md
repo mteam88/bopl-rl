@@ -577,21 +577,24 @@ updates, 1,048,576 physical decisions = 131,072 ticks per game):
 
 | quantity | linear | SET |
 |---|---:|---:|
-| physical decisions/s (active) | 14,957 | 14,616 |
+| learner decisions/s (active, benchmark stopwatch) | 14,957 | 14,616 |
 | rollout seconds of ~45–46 s elapsed | 44.2 | 45.2 |
-| game ticks/s summed over 16 games | 47,484 | 46,414 |
-| wall ms per tick per game | 0.337 | 0.345 |
+| nominal game ticks/s during collection, summed over 16 games | 47,484 | 46,414 |
+| collection ms per nominal tick per game | 0.337 | 0.345 |
 | busy cores during the loop (of 12) | 8.8 | 8.6 |
 | GPU utilisation | 37 % | 43 % |
 
-Collection is ~98 % of wall; the PPO update is ~1 s per 45 s. The per-step critical path is the
+Collection is ~98 % of the logged training-loop time; the PPO update is ~1 s per 45 s.
+The tick estimate is physical decisions × 4 action-repeat ticks / 2 players, divided by
+rollout seconds; it excludes startup and other outer-loop overhead and assumes full
+action repeats. Learner throughput uses the separate benchmark stopwatch, so these
+rows must not be divided directly to infer a decision-to-tick ratio. The per-step critical path is the
 slowest game's decision step plus the trainer's per-group turnaround (exp09/exp13: game main thread
 ~0.6–0.8 ms compute per 4-tick step, i.e. ~0.15–0.2 ms per tick, and ~0.75 ms of trainer main-thread
 work per group turn). `reset_profile` measured the bare tick at 0.07–0.13 ms in one idle game; the
 exp08 profile put the remaining managed cost in DetPhysics rounded-rect raycasts and Fix arithmetic
 after the render-only work was removed. The Unity frame around each 4096-tick batch is ~0.11 ms per
-tick of `UpdatePreloading` that cannot be removed without leaving the engine. So the game process is
-already close to its floor: IL2CPP, frame batching, ray culling and 128-bit Fix math each bought their
+tick of `UpdatePreloading` that cannot be removed without leaving the engine. These profiles suggest diminishing returns from the tested Unity optimizations: IL2CPP, frame batching, ray culling and 128-bit Fix math each bought their
 few percent and the remainder is genuine simulation plus engine overhead, spread over 16 processes that
 between them keep ~9 of 12 cores busy while the GPU idles 60 % of the time.
 
@@ -618,25 +621,30 @@ them; the validation harness and capture format exist, so the work is porting an
 not inventing a method. The reward for going all the way is not only faster ticks: an in-process
 simulator removes the socket bridge and the 16-process lockstep, lets the trainer step thousands of
 environments per batch (the PufferLib native-vector shape), and turns the current per-group trainer
-turnaround into a cost amortised over a large batch. Order of magnitude, on this machine, that is a
-ceiling of several hundred thousand ticks/s (12 cores at 20–50 µs per full-game tick) against 47k
-today, i.e. 5–10× more learner decisions per hour, with the GPU finally the busy part.
+turnaround into a cost amortised over a large batch. Order of magnitude, on this machine, that suggests
+several hundred thousand ticks/s (12 cores at 20–50 µs per full-game tick) against 47k
+today, i.e. a speculative 5–10× gain in learner decisions per hour. This is not a measured
+training result: full-mechanic cost, observation encoding, scaling and GPU saturation
+remain unverified.
 
 **Risks.** (1) Fidelity: anything not bit-exact reopens the train/deploy gap, and the evaluator,
 replays and Learning Lab all run the real game. Exactness has to be proven per mechanic, and the
 port's own record shows how much of the cost is in the goldens rather than the code. (2) Scope creep:
 the 39-ability catalog and six players are the port's stated target; the training case needs three
 abilities and two players, and the assessment only holds for that scope. (3) It is not on the
-critical path today: the 400M run is limited by learning signal (sparse reward, constant learning
-rate, 30M-half-life entropy), not by collection rate, until the run shows otherwise.
+critical path today: whether the 400M run is limited primarily by learning signal or collection rate
+is still unknown. Its sparse reward, constant learning rate and 30M-half-life entropy
+configuration should be evaluated before committing to the port.
 
 **Recommendation.** Do not start the rewrite now. Revisit when the 400M run gives evidence that more
 decisions per hour would change the outcome (loss curves still improving at budget end, or an A/B
 that needs many seeds), and then scope it to the training loadout, in `bopl-sim`, mechanic by mechanic
 with Unity goldens, starting with arrows (the largest unported gameplay system the loadout touches).
-Cheaper levers that stay on the Unity game are nearly exhausted: worker-count and pipeline shapes were
-swept (exp09–exp13), the game process is at its floor, and the remaining ~0.75 ms per group turn is
-trainer-side Python that the native trainer already replaced for the learner path.
+The tested Unity-side levers show diminishing returns: worker-count and pipeline shapes were
+swept (exp09–exp13), the historical ~0.75 ms per group turn came from the earlier trainer and does
+not establish the remaining overhead in the shipped native path. A current breakdown
+would be needed before claiming an optimization floor.
+
 
 ## 2026-09-08 read-only look at the parent's 400M run (first 8M learner decisions)
 

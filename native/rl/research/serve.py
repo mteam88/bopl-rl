@@ -199,7 +199,9 @@ def main():
                     return self.send_error(403)
             elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css','/arena.js','/matches.js'):
                 query=parse_qs(urlparse(self.path).query)
-                study_home=path=='/' and studies and not any(k in query for k in ('run','series','history'))
+                # A live training run is the front page; the study catalog is the home only when nothing is running.
+                live=any((r.get('status') or {}).get('status')=='running' for r in runs())
+                study_home=path=='/' and studies and not live and not any(k in query for k in ('run','series','history'))
                 file=HERE/'web'/('study.html' if study_home or path=='/study' else 'index.html' if path=='/' else path[1:])
             else: return self.send_error(404)
             if not file.is_file(): return self.send_error(404)
