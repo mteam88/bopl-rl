@@ -508,3 +508,31 @@ win rates vs random/initial and the training telemetry, not head to head; (2) bo
 learning rate to zero over their own budget, so a 10M run is not a prefix of the 400M run's
 schedule; (3) short budgets favor the simpler encoder if anything, so `not-qualified` on a
 short check would mean "re-run longer", not "SET is worse".
+
+## 2026-09-08 parent override, entropy schedule, program rewrite (merge 8dfb4c3 + this commit)
+
+Parent (via root) dropped the matched SET-vs-linear strength check as a launch gate: Matthew already
+chose SET, correctness is covered by final-core-checks, and the old 10M runs were flat, so a short
+comparison was unlikely to discriminate. `strength_check.py` stays as an optional post-launch A/B
+(fail-closed resume landed in c261157; no strength runs were made). No 60M/400M launch from here.
+
+Root landed the parent's entropy requirement in f998744 (merged here): the Python wrapper sets
+`trainer.hypers.ent_coef = max(floor, initial * 2^(-learner_steps / half_life))` before each native
+`train`, `--entropy-half-life` default 30,000,000 learner decisions, native `anneal_ent_coef=0`; the
+native trainer already copies the live scalar into the device buffer each update, so CUDA graph
+replay sees it without a recompile. With .01 -> .0005 the floor is reached at ~130M learner
+decisions. The learning-rate cosine anneal to zero over the run budget is now explicit
+(`anneal_lr=1, min_lr_ratio=0`, unchanged behavior). Root's boundary unit test covers
+0/30/60/120/130/400M. config.json gains `entropy_schedule`, `entropy_half_life`,
+`learning_rate_schedule`. Consequence for the bench rows above: the 786k runs recorded before f998744
+used the cosine-per-budget entropy schedule; throughput is unaffected (one scalar copy per update).
+
+Handoff: root owns `native/rl/NATIVE_HANDOFF.md` (8d5f56f, launch command for thr_wq22hezkbf, evidence,
+limits). Root's evaluation plan: full suite is 57 games on three maps, evaluation cadence 5M learner
+decisions, checkpoints every 1M independently. This Rift's contribution is provenance only:
+`program.md` rewritten around the shipped native design (final audit rg on the merged tree is clean
+for every deleted token; the single `scripted_opponents` hit is a historical sentence in the
+dashboard-owned METRICS_CONTRACT.md).
+
+Final-core-checks binaries: `make -C native/rl all` writes `sampled_check`/`reset_check` to
+`native/artifacts/rl/`, not `native/rl/`.
