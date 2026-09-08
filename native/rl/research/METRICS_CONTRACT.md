@@ -168,10 +168,10 @@ checkpoints appear in listings but never as ladder participants, so the
 "best old checkpoint" anchor is dropped: the old torch GRU (standard recurrent
 matrices/biases, Tanh encoder) has no faithful export to the native
 MinGRU/bias-free layout. Anchors are random, the initial native checkpoint and
-frozen native references. Scripted-bot anchors are NOT available yet: the old
-scripted_opponents module is slated for deletion in the native cutover and the
-native evaluator has no scripted implementation; the ladder's `--scripts` flag
-only works while the legacy module still exists. Ladder
+frozen native references. Scripted-bot anchors do not exist yet: the old
+scripted_opponents module is deleted in the native cutover and the native
+evaluator has no scripted implementation. When a native one lands, the ladder
+grows a scripted-anchor option after launch. Ladder
 output lives in `<run>/ladder/ladder.json` (dashboard-read-only):
 
 ```json

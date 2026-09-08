@@ -2,7 +2,7 @@
 
 Plays side-swapped fixed-seed pools among evenly spaced native checkpoints
 (policy-%09d.bin; legacy .pt files are display-only and never loaded), plus
-anchors: the random policy, optional scripted bots, and optional frozen native
+anchors: the random policy and optional frozen native
 reference checkpoints. Ratings come from a Bradley-Terry maximum-likelihood
 fit (timeouts count as draws) anchored at random = 0 Elo, so numbers are
 comparable across reruns of the same pool. Output is written atomically to
@@ -65,19 +65,6 @@ class Random:
         return lambda observation: np.asarray([rng.integers(256),rng.integers(16)],dtype=np.int64)
 
 
-class Scripted:
-    kind='anchor'; step=None
-
-    def __init__(self,spec):
-        from scripted_opponents import identity
-        self.spec=spec; self.name=spec.name; self.sha256=identity(spec)
-
-    def start(self,task,side,rng):
-        from scripted_opponents import ScriptedOpponent
-        bot=ScriptedOpponent(self.spec,int(rng.integers(2**31)))
-        return lambda observation: np.asarray(bot.act(as_numpy(observation)[side]),dtype=np.int64)
-
-
 def select_checkpoints(run,count):
     """Evenly spaced playable checkpoints, always keeping first and last."""
     rows=[]
@@ -117,9 +104,6 @@ def main():
     parser.add_argument('--games-per-pair',type=int,default=8,help='Per map; even, half per side')
     parser.add_argument('--maps',type=map_ids,default=None,help='Defaults to the run config training maps')
     parser.add_argument('--anchors',type=Path,help='Manifest of frozen native reference checkpoints (evaluation opponents format)')
-    parser.add_argument('--scripts',type=Path,help='Scripted bot manifest; each bot becomes an anchor. '
-                        'Depends on the legacy scripted_opponents module, which is slated for deletion '
-                        'in the native cutover — unavailable until a native reimplementation exists')
     parser.add_argument('--seed-base',type=int,default=50001)
     parser.add_argument('--episode-ticks',type=int,default=None,help='Defaults to the run config value')
     parser.add_argument('--library',type=Path,default=None,help='CPU evaluation library for native_policy.load')
@@ -131,9 +115,6 @@ def main():
     maps=args.maps if args.maps is not None else config['training_maps']
     limit=args.episode_ticks or config['episode_ticks']
     participants=[Random()]
-    if args.scripts:
-        from scripted_opponents import load_specs
-        participants+=[Scripted(spec) for spec in load_specs(args.scripts)]
     for item in opponents(args.anchors) if args.anchors else []:
         participants.append(Model(item['name'],item['path'],'anchor',library=args.library))
     for step,path in select_checkpoints(args.run,args.checkpoints):
