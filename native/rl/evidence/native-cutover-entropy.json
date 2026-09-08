@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "source_commit": "f998744",
+  "run": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/native-migration-audit/final-entropy-cli",
+  "result": {
+    "status": "complete",
+    "pid": 3064538,
+    "step": 24576,
+    "learner_steps": 18432,
+    "matches": 26,
+    "elapsed": 29.864667867019307,
+    "target_steps": 24576,
+    "target_learner_steps": 18432,
+    "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/native-migration-audit/final-entropy-cli/checkpoints/policy-000024576.bin"
+  },
+  "entropy": {
+    "shape": "exponential",
+    "formula": "max(floor, initial * 2 ** (-prior_learner_decisions / half_life))",
+    "production_half_life": 30000000,
+    "floor_reached_at_learner_decisions": 129657842.84662087,
+    "test_half_life": 3072,
+    "expected_coefficients": [
+      0.01,
+      0.005,
+      0.0025,
+      0.00125,
+      0.000625,
+      0.0005
+    ],
+    "observed_native_loss_coefficients": [
+      0.009999999776482582,
+      0.004999999888241291,
+      0.0024999999441206455,
+      0.0012499999720603228,
+      0.0006249999860301614,
+      0.0005000000237487257
+    ],
+    "native_cosine_entropy_disabled": true,
+    "cuda_graph_replay": "pass"
+  },
+  "evaluation": {
+    "elapsed_seconds": 18.660870299994713,
+    "includes_process_startup": false,
+    "scored_games": 56,
+    "selfplay_replays": 1,
+    "workers": 2,
+    "episode_cap": 7200,
+    "report": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/native-migration-audit/final-entropy-cli/evaluations/000024576/result.json"
+  },
+  "cadence": {
+    "checkpoint_learner_decisions": 1000000,
+    "evaluation_learner_decisions": 5000000,
+    "independent": true
+  }
+}

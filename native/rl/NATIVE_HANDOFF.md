@@ -23,7 +23,8 @@ native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
   --horizon 128 --learner-passes 1 --learning-rate 0.0003 \
   --training-maps 0,1,2 --evaluation-maps 0,1,2 --heldout-maps 3,4 \
   --episode-ticks 7200 --entropy 0.01 --entropy-floor 0.0005 \
-  --checkpoint-every 1000000 --eval-every 1000000 \
+  --entropy-half-life 30000000 \
+  --checkpoint-every 1000000 --eval-every 5000000 \
   --evaluation-games 8 --heldout-games 4 --frozen-games 16 \
   --evaluation-workers 2
 ```
@@ -33,13 +34,27 @@ both players on timeout, and zero kill/death shaping. Half the games use live
 self-play, and half pair one learner with a frozen opponent. Frozen banks
 change only after their active matches end.
 
+Entropy uses `max(0.0005, 0.01 * 2**(-N / 30000000))`, where `N` counts learner
+decisions completed before the update. It reaches 0.005 at 30M, 0.0025 at 60M,
+and the floor at about 129.7M. The schedule is independent of `--steps`. The
+native loss reads its updated device scalar during CUDA graph replay; an
+accelerated six-update check verified every halving and the floor. Learning
+rate retains native cosine decay from 0.0003 over the complete run budget;
+`anneal_lr=1` and `min_lr_ratio=0` are explicitly recorded in the native config.
+
 Budgets and checkpoint/evaluation cadence count learner decisions. With this
 configuration an update contains 3,072 learner decisions; completing the last
 rollout gives 400,002,048 learner decisions in 130,209 updates. Metrics `step`
 and checkpoint filenames count physical player decisions, including frozen
 players: 533,336,064 at that endpoint. Both counters are saved explicitly.
 
-Evaluations are synchronous between updates and add wall time. The initial
+Evaluations are synchronous between updates and add wall time. The full suite
+above contains 56 scored games (48 on training maps and eight on held-out maps)
+plus one self-play replay. It recorded 18.7 seconds on an early SET checkpoint
+with two evaluation workers, plus process startup; stronger policies and
+longer matches can change that cost. Evaluation and checkpoint cadence are
+independent: this command schedules about 80 evaluations and 400 checkpoints.
+The final checkpoint is evaluated even when it falls between intervals. The initial
 native policy is saved automatically as the baseline. Optional frozen
 evaluation opponents require a schema-2 manifest of compatible native
 checkpoints. Files are immutable; existing output directories are rejected.
@@ -71,8 +86,10 @@ The canonical working checkout also passes a fresh CUDA/CPU build and a real
 five hash-validated checkpoints, nine replays and nine policy-value dumps.
 The live dashboard runs from that checkout and passed its browser checks.
 
-The matched short-strength result is pending. It must be recorded before this
-configuration is handed over as qualified to launch.
+Matthew selected SET and removed the 60M matched comparison as a launch gate.
+No such run was launched. The corrected exponential schedule also passed a
+fresh canonical training/evaluation smoke; evidence is in
+[native-cutover-entropy.json](evidence/native-cutover-entropy.json).
 
 ## Limits and follow-up
 
@@ -80,6 +97,9 @@ This is a Dash/Bow/Platform diagnostic, not evidence of whole-game competence.
 The previous trainer's timing uses a different recurrent model, optimizer,
 reward setup and initialization, so it does not isolate backend speedup.
 Long-run stability and learning at 400M decisions are the experiment's purpose.
+The optional `autoresearch/strength_check.py` comparison rejects incompatible
+cached plans, settings and checkpoint identities. It can be used for a later
+A/B; its short-budget learning-rate schedule is not a prefix of the 400M run.
 
 After launch, implement native archer/pursuer/evasive evaluation opponents.
 These provide additional fixed anchors once random opponents stop being
