@@ -34,9 +34,17 @@ if args.device == "cuda":
     overlay = out / "puffer-overlay"
     shutil.copytree(source / "src", overlay, dirs_exist_ok=True)
     subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=overlay, check=True)
+    # Bopl trainer semantics on top of the pinned trainer: episode-boundary
+    # resets of the MinGRU state (rollout and training scan), training
+    # sequences start from the real rollout-start state, learner-only replay
+    # sampling, no reward clamp, per-head entropy / gradient-norm / advantage
+    # statistics, and the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
+    # = linear|set selects bopl_set_encoder.cu, found via the -I below). See
+    # pufferlib-bopl.patch (generated with diff -ruN against the pristine overlay).
+    subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
     nvidia = Path(sysconfig.get_path("purelib")) / "nvidia"
     cuda = nvidia / "cu13"
-    includes = [overlay, source / "src", Path(sysconfig.get_path("include")), Path(pybind11.get_include()),
+    includes = [overlay, source / "src", HERE, Path(sysconfig.get_path("include")), Path(pybind11.get_include()),
                 Path(numpy.get_include()), cuda / "include", nvidia / "cudnn/include", nvidia / "nccl/include"]
     if not args.binding_only:
         subprocess.run([str(cuda / "bin/nvcc"), "-O3", "-std=c++17", "-arch=sm_120", "-ccbin", args.cuda_host_compiler,

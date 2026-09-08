@@ -20,12 +20,23 @@ parser.add_argument("--compare-only", action="store_true", help="Recheck existin
 args = parser.parse_args()
 out = args.output.resolve()
 episode, trace = out / "episode.rep", out / "controlled.jsonl.gz"
-game = ROOT / "Builds/Linux/BoplBattle.x86_64"
+game = Path(os.environ.get("BOPL_RL_GAME") or ROOT / "Builds/Linux/BoplBattle.x86_64").resolve()
 replayed = out / "replayed.jsonl.gz"
-sources = {"replay": episode, "controlled": trace, "replayed": replayed,
-           "assembly": game.parent / "BoplBattle_Data/Managed/Assembly-CSharp.dll"}
+sources = {"replay": episode, "controlled": trace, "replayed": replayed}
+# Identify the player by whichever runtime payload it ships: a Mono build's managed assembly,
+# or an IL2CPP build's native library and metadata (no Assembly-CSharp.dll exists there).
+mono_assembly = game.parent / "BoplBattle_Data/Managed/Assembly-CSharp.dll"
+if mono_assembly.exists():
+    sources["assembly"] = mono_assembly
+if (game.parent / "GameAssembly.so").exists():
+    sources["game_assembly"] = game.parent / "GameAssembly.so"
+    sources["metadata"] = game.parent / "BoplBattle_Data/il2cpp_data/Metadata/global-metadata.dat"
+if "assembly" not in sources and "game_assembly" not in sources:
+    raise FileNotFoundError(f"No Mono assembly or IL2CPP payload next to {game}")
 if args.compare_only:
     previous = json.loads((out / "report.json").read_text())
+    if previous.get("game", str(ROOT / "Builds/Linux/BoplBattle.x86_64")) != str(game):
+        raise ValueError("Existing capture was made with a different player")
     for name, path in sources.items():
         if hashlib.sha256(path.read_bytes()).hexdigest() != previous[name + "_sha256"]:
             raise ValueError(f"Existing capture identity changed: {name}")
@@ -62,6 +73,8 @@ while True:
         ticks += 1
 report["matched_ticks"] = ticks
 report["requested_ticks"] = metadata["ticks"]
+report["game"] = str(game)
+report["backend"] = "il2cpp" if "game_assembly" in sources else "mono"
 for name, path in sources.items():
     report[name + "_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
 (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")

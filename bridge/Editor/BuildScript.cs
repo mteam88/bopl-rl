@@ -8,13 +8,34 @@ public static class BuildScript
 {
 	public static void BuildLinux()
 	{
+		PlayerSettings.SetScriptingBackend(BuildTargetGroup.Standalone, ScriptingImplementation.Mono2x);
+		BuildLinuxPlayer("Builds/Linux/BoplBattle.x86_64");
+	}
+
+	// IL2CPP variant of the same player (autoresearch: Matthew's 2026-09-07
+	// priority). Same scenes and graphics API; the scripting backend is the only
+	// difference. Requires the Linux IL2CPP editor module and the
+	// com.unity.toolchain.linux-x86_64 package (Packages/manifest.json).
+	// BOPL_IL2CPP_CONFIG selects Release (default) or Master.
+	public static void BuildLinuxIL2CPP()
+	{
+		PlayerSettings.SetScriptingBackend(BuildTargetGroup.Standalone, ScriptingImplementation.IL2CPP);
+		string config = System.Environment.GetEnvironmentVariable("BOPL_IL2CPP_CONFIG") ?? "Release";
+		PlayerSettings.SetIl2CppCompilerConfiguration(BuildTargetGroup.Standalone,
+			config == "Master" ? Il2CppCompilerConfiguration.Master : Il2CppCompilerConfiguration.Release);
+		string output = System.Environment.GetEnvironmentVariable("BOPL_BUILD_OUTPUT") ?? "Builds/LinuxIL2CPP/BoplBattle.x86_64";
+		BuildLinuxPlayer(output);
+	}
+
+	static void BuildLinuxPlayer(string location)
+	{
 		// Default to OpenGLCore: the Vulkan present path renders corrupted output
 		// (black background / garbage tiles) over NVIDIA + Xwayland + mutter.
 		PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneLinux64, new[] { GraphicsDeviceType.OpenGLCore });
 		BuildPlayerOptions options = new BuildPlayerOptions
 		{
 			scenes = EditorBuildSettingsScene.GetActiveSceneList(EditorBuildSettings.scenes),
-			locationPathName = "Builds/Linux/BoplBattle.x86_64",
+			locationPathName = location,
 			target = BuildTarget.StandaloneLinux64,
 			options = BuildOptions.None
 		};

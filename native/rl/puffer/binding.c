@@ -4,9 +4,14 @@
 #define ACT_SIZES {256, 16}
 #define OBS_TENSOR_T FloatTensor
 #define Env BoplPuffer
-/* The upstream constructor is wrapped below so grouped stepping can find the
- * vector from Python; upstream code and the pybind module keep calling
- * create_static_vec and see identical behaviour. */
+/* Every player is routed through per-slot pointers (my_setup_perm), so the
+ * trainer's agent permutation and the historical-opponent slots actually take
+ * effect; without MY_USES_PERM the vector silently ignores set_agent_perm. */
+#define MY_USES_PERM
+#define MY_USES_TAGS
+/* The upstream constructor/destructor are wrapped below so ctypes callers can
+ * find a vector from Python; upstream code and the pybind module keep calling
+ * create_static_vec/static_vec_close and see identical behaviour. */
 #define create_static_vec bopl_upstream_create_static_vec
 #define static_vec_close bopl_upstream_static_vec_close
 #include "vecenv.h"
@@ -15,18 +20,41 @@
 
 int bopl_puffer_telemetry_size(void) { return BOPL_TELEMETRY_SIZE; }
 
+/* Which frozen banks currently hold a usable snapshot, shared by every
+ * environment of this process; bit b = bank b. Bank environments draw their
+ * opponent from this set at each match start (c_reset). */
+static unsigned int bopl_valid_banks=0;
+void bopl_set_valid_banks(unsigned int mask) { __atomic_store_n(&bopl_valid_banks, mask, __ATOMIC_SEQ_CST); }
+unsigned int bopl_get_valid_banks(void) { return __atomic_load_n(&bopl_valid_banks, __ATOMIC_SEQ_CST); }
+
 static int option(Dict *kwargs, const char *name, int fallback) {
     DictItem *item=dict_get_unsafe(kwargs, name);
     return item?(int)item->value:fallback;
 }
+/* Environment layout comes from three counts: `players` per game, `banks`
+ * frozen opponent banks, and `historical_every` (0 = none; k = every k-th
+ * environment is a historical one: its learner plays a frozen snapshot and it
+ * consumes 1+banks slots, one per bank, so all bank rows stay adjacent to the
+ * primary rows that PufferLib's bank_layout slices per buffer). The trainer
+ * must build the agent permutation so slot 1+b of every historical
+ * environment lands in bank b's slice of its buffer. */
 void my_init(Env *env, Dict *kwargs) {
     unsigned int index=env->rng; // PufferLib assigns the physical environment index before my_init.
     env->rng^=(unsigned int)option(kwargs, "seed", 73);
-    env->num_agents=option(kwargs, "players", 6);
+    env->players=option(kwargs, "players", 6);
+    int banks=option(kwargs, "banks", 0), every=option(kwargs, "historical_every", 0);
+    env->banks=(every>0 && banks>0 && index%(unsigned)every==(unsigned)every-1)?banks:0;
+    env->num_agents=env->banks?1+env->banks:env->players;
+    env->tag=env->banks?1:0;
+    env->valid_banks=&bopl_valid_banks;
+    /* Side and bank draws use their own stream so the game setup sequence
+     * (seed/map/loadouts from env->rng) is identical with or without banks. */
+    env->side_rng=(index*2654435761u)^(unsigned int)option(kwargs, "seed", 73)^0x9e3779b9u;
+    if (!env->side_rng) env->side_rng=1;
     DictItem *telemetry=dict_get_unsafe(kwargs, "telemetry_ptr");
     if (telemetry && telemetry->value) {
-        if ((size_t)(index+1)*env->num_agents>(size_t)option(kwargs,"telemetry_agents",0)) abort();
-        env->telemetry=(float*)(uintptr_t)telemetry->value+(size_t)index*env->num_agents*BOPL_TELEMETRY_SIZE;
+        if ((size_t)(index+1)*env->players>(size_t)option(kwargs,"telemetry_agents",0)) abort();
+        env->telemetry=(float*)(uintptr_t)telemetry->value+(size_t)index*env->players*BOPL_TELEMETRY_SIZE;
     }
     env->observation_delay=option(kwargs, "observation_delay", 9);
     env->repeat=option(kwargs, "action_repeat", 4);
@@ -34,20 +62,38 @@ void my_init(Env *env, Dict *kwargs) {
     env->training_map_mask=(uint32_t)option(kwargs, "training_map_mask", 0);
     if (env->training_map_mask&0x80000000u) abort();
     env->random_loadouts=option(kwargs, "random_loadouts", 0);
-    bopl_rl_default_config(&env->config, (uint32_t)env->num_agents);
+    bopl_rl_default_config(&env->config, (uint32_t)env->players);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
     env->config.slots=(uint32_t)option(kwargs, "slots", 3);
     env->config.stocks=(uint32_t)option(kwargs, "stocks", 3);
     env->config.mode=(uint32_t)option(kwargs, "mode", 0);
     env->config.warmup_ticks=(uint32_t)option(kwargs, "warmup_ticks", 240);
     env->config.max_episode_ticks=(uint32_t)option(kwargs, "max_episode_ticks", 3600);
-    if (env->num_agents<1 || env->num_agents>6 || env->repeat<1 || env->repeat>16) abort();
-    for (int i=0; i<env->num_agents; i++) {
+    /* Rewards arrive scaled by 1000 because PufferLib's kwargs are integers
+     * once they pass through its ini/argparse layer: reward_kill_milli=100 is
+     * the old trainer's 0.1 kill/death shaping, reward_timeout_milli=-500 the
+     * final trainer's timeout penalty. */
+    env->reward_kill=(float)option(kwargs, "reward_kill_milli", 100)/1000.0f;
+    env->reward_timeout=(float)option(kwargs, "reward_timeout_milli", 0)/1000.0f;
+    if (env->players<1 || env->players>6 || env->repeat<1 || env->repeat>16) abort();
+    for (int i=0; i<env->players; i++) {
         env->config.player[i].abilities[0]=(uint32_t)option(kwargs, "ability1", 2);
         env->config.player[i].abilities[1]=(uint32_t)option(kwargs, "ability2", 4);
         env->config.player[i].abilities[2]=(uint32_t)option(kwargs, "ability3", 14);
     }
     init(env);
+}
+/* Called by the vector at creation and after every set_agent_perm: slot s of
+ * this environment is physical agent agent_perm[slot_base+s]. */
+void my_setup_perm(StaticVec *vec, Env *env, int slot_base) {
+    for (int s=0; s<env->num_agents; s++) {
+        int phys=vec->agent_perm?vec->agent_perm[slot_base+s]:slot_base+s;
+        if (phys<0 || phys>=vec->total_agents) { fprintf(stderr, "Bopl RL: agent permutation out of range\n"); abort(); }
+        env->obs_ptr[s]=(float*)vec->observations+(size_t)phys*OBS_SIZE;
+        env->action_ptr[s]=vec->actions+(size_t)phys*NUM_ATNS;
+        env->reward_ptr[s]=vec->rewards+phys;
+        env->terminal_ptr[s]=vec->terminals+phys;
+    }
 }
 void my_log(Log *log, Dict *out) {
     /* PufferLib retains key pointers and starts with room for only 32 fields. */
@@ -61,130 +107,24 @@ void my_log(Log *log, Dict *out) {
         "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
         "map_28_fraction", "map_29_fraction", "map_30_fraction"
     };
-    if (out->capacity<40) {
-        DictItem *items=realloc(out->items,40*sizeof(DictItem));
+    if (out->capacity<48) {
+        DictItem *items=realloc(out->items,48*sizeof(DictItem));
         if (!items) abort();
-        out->items=items;out->capacity=40;
+        out->items=items;out->capacity=48;
     }
     dict_set(out, "perf", log->perf); dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return); dict_set(out, "episode_length", log->episode_length);
     dict_set(out, "environment_ticks", log->environment_ticks);
     dict_set(out, "observation_overflow", log->observation_overflow); dict_set(out, "game_errors", log->game_errors);
+    dict_set(out, "learner_episodes", log->learner_episodes); dict_set(out, "learner_wins", log->learner_wins);
+    dict_set(out, "historical_episodes", log->historical_episodes); dict_set(out, "historical_wins", log->historical_wins);
     for (int map=0; map<31; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);
     }
 }
 
-/* ---------------------------------------------------------------------------
- * Grouped asynchronous stepping (research/vector.py `groups`).
- *
- * The default path is the pinned upstream synchronous gpu_vec_step; nothing
- * below runs unless bopl_groups_create is called. A group is a contiguous
- * range of environments (physical index order, so worker w stays agents 2w and
- * 2w+1). Each group owns one pthread, one non-blocking CUDA stream and a
- * private device action buffer. The trainer:
- *   1. copies the group's chosen actions into the group's device buffer on the
- *      torch stream (bopl_group_actions_ptr), then calls bopl_group_launch with
- *      a CUDA event recorded after that copy on the torch stream;
- *   2. later calls bopl_group_wait, after which the group's slices of
- *      gpu_observations, gpu_rewards, gpu_terminals, the host terminals and the
- *      telemetry buffer are final and visible to the calling (torch) stream
- *      through cudaStreamWaitEvent on the done event.
- * Group threads only ever touch their own environments and buffer slices, so
- * the per-step observation/reward/reset semantics of c_step are unchanged.
- * ------------------------------------------------------------------------- */
-typedef struct CUevent_st* cudaEvent_t;
-extern cudaError_t cudaEventCreateWithFlags(cudaEvent_t*, unsigned int);
-extern cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t);
-extern cudaError_t cudaEventDestroy(cudaEvent_t);
-extern cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned int);
-extern cudaError_t cudaStreamDestroy(cudaStream_t);
-extern cudaError_t cudaGetLastError(void);
-#define cudaEventDisableTiming 2
-
-typedef struct {
-    StaticVec *vec;
-    int index, env_start, env_count, agent_start, agent_count, workers;
-    cudaStream_t stream;
-    cudaEvent_t ready, done;   /* ready: actions copy finished (torch); done: outputs uploaded (ours) */
-    float *gpu_actions;        /* private device copy, agent_count*NUM_ATNS floats */
-    pthread_t thread;
-    pthread_mutex_t lock;
-    pthread_cond_t wake;
-    int state;                 /* 0 idle, 1 launched, 2 shutdown, 3 finished but not yet collected by wait */
-    int jitter_us;             /* per-group copy of BOPL_GROUP_JITTER_US, fixed before the thread starts */
-    unsigned long launches;
-    double env_ms, total_ms;
-} BoplGroup;
-
-typedef struct {
-    StaticVec *vec;
-    int count;
-    BoplGroup *groups;
-} BoplGroups;
-
-static double bopl_now_ms(void) {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-    return t.tv_sec*1000.0+t.tv_nsec/1e6;
-}
-static void bopl_cuda_check(cudaError_t error, const char *what) {
-    if (error!=cudaSuccess) { fprintf(stderr, "Bopl group CUDA failure in %s: %s\n", what, cudaGetErrorString(error)); abort(); }
-}
-/* Test hook: BOPL_GROUP_JITTER_US=<max> sleeps a pseudo-random time before and
- * after each group's environment step, to shake up interleavings. Unset in
- * training; correctness must not depend on it. */
-static void bopl_jitter(BoplGroup *g) {
-    if (g->jitter_us<=0) return;
-    unsigned int x=(unsigned int)(g->launches*2654435761u+(unsigned)g->index*40503u+1u);
-    x^=x<<13; x^=x>>17; x^=x<<5;
-    usleep(x%(unsigned)g->jitter_us);
-}
-static void bopl_group_run(BoplGroup *g) {
-    StaticVec *vec=g->vec; Env *envs=(Env*)vec->envs;
-    double started=bopl_now_ms();
-    bopl_jitter(g);
-    bopl_cuda_check(cudaStreamWaitEvent(g->stream, g->ready, 0), "wait actions");
-    bopl_cuda_check(cudaMemcpyAsync(&vec->actions[g->agent_start*NUM_ATNS], g->gpu_actions,
-        (size_t)g->agent_count*NUM_ATNS*sizeof(float), cudaMemcpyDeviceToHost, g->stream), "actions D2H");
-    bopl_cuda_check(cudaStreamSynchronize(g->stream), "actions sync");
-    double env_started=bopl_now_ms();
-    /* c_step clears its own rewards/terminals slice before writing them. */
-    #pragma omp parallel for schedule(static) num_threads(g->workers)
-    for (int i=g->env_start; i<g->env_start+g->env_count; i++) c_step(&envs[i]);
-    g->env_ms+=bopl_now_ms()-env_started;
-    bopl_jitter(g);
-    size_t obs_bytes=(size_t)g->agent_count*OBS_SIZE*obs_element_size();
-    bopl_cuda_check(cudaMemcpyAsync((char*)vec->gpu_observations+(size_t)g->agent_start*OBS_SIZE*obs_element_size(),
-        (char*)vec->observations+(size_t)g->agent_start*OBS_SIZE*obs_element_size(), obs_bytes, cudaMemcpyHostToDevice, g->stream), "obs H2D");
-    bopl_cuda_check(cudaMemcpyAsync(&vec->gpu_rewards[g->agent_start], &vec->rewards[g->agent_start],
-        (size_t)g->agent_count*sizeof(float), cudaMemcpyHostToDevice, g->stream), "rewards H2D");
-    bopl_cuda_check(cudaMemcpyAsync(&vec->gpu_terminals[g->agent_start], &vec->terminals[g->agent_start],
-        (size_t)g->agent_count*sizeof(float), cudaMemcpyHostToDevice, g->stream), "terminals H2D");
-    bopl_cuda_check(cudaEventRecord(g->done, g->stream), "done event");
-    /* Host-side completion: the trainer reads host terminals/telemetry after wait. */
-    bopl_cuda_check(cudaStreamSynchronize(g->stream), "outputs sync");
-    g->total_ms+=bopl_now_ms()-started; g->launches++;
-}
-static void *bopl_group_thread(void *arg) {
-    BoplGroup *g=arg;
-    for (;;) {
-        pthread_mutex_lock(&g->lock);
-        while (g->state==0 || g->state==3) pthread_cond_wait(&g->wake, &g->lock);
-        int state=g->state;
-        pthread_mutex_unlock(&g->lock);
-        if (state==2) return NULL;
-        bopl_group_run(g);
-        pthread_mutex_lock(&g->lock);
-        g->state=3; pthread_cond_broadcast(&g->wake);
-        pthread_mutex_unlock(&g->lock);
-    }
-}
-/* Splits the vector's environments into `count` contiguous groups. The
- * environment count must divide evenly so every group has the same batch size
- * (the trainer slices tensors by agent ranges). Returns an opaque handle. */
-/* The pybind VecEnv does not expose its StaticVec; Python identifies the
- * vector by the device observation pointer it already wraps. Vectors register
- * themselves here from my_vec_register, called by the trainer after creation. */
+/* ctypes entry points on the loaded _C module. Vectors are identified by the
+ * device observation pointer Python already wraps (VecEnv.gpu_obs_ptr). */
 enum { BOPL_MAX_VECS=16 };
 static StaticVec *bopl_registered[BOPL_MAX_VECS];
 static pthread_mutex_t bopl_registry_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -206,96 +146,53 @@ StaticVec *create_static_vec(int total_agents, int num_buffers, int gpu, Dict *v
     if (slot<0) { fprintf(stderr, "Bopl vector registry full (%d live vectors)\n", BOPL_MAX_VECS); abort(); }
     return vec;
 }
-/* Paired with registration: the pybind close calls this wrapper, so a freed
- * vector can never be found by bopl_groups_open. Groups must be closed first. */
 void static_vec_close(StaticVec *vec) {
     pthread_mutex_lock(&bopl_registry_lock);
     for (int i=0; i<BOPL_MAX_VECS; i++) if (bopl_registered[i]==vec) bopl_registered[i]=NULL;
     pthread_mutex_unlock(&bopl_registry_lock);
     bopl_upstream_static_vec_close(vec);
 }
-BoplGroups *bopl_groups_create(StaticVec *vec, int count, int threads) {
-    if (!vec || !vec->gpu || vec->buffers!=1 || count<1 || vec->size%count) return NULL;
-    BoplGroups *groups=calloc(1, sizeof(*groups));
-    if (!groups) abort();
-    groups->vec=vec; groups->count=count; groups->groups=calloc((size_t)count, sizeof(BoplGroup));
-    if (!groups->groups) abort();
-    const char *jitter=getenv("BOPL_GROUP_JITTER_US");
-    int jitter_us=jitter?atoi(jitter):0;
-    Env *envs=(Env*)vec->envs;
-    int per_group=vec->size/count, agent=0;
-    for (int i=0; i<count; i++) {
-        BoplGroup *g=&groups->groups[i];
-        g->vec=vec; g->index=i; g->jitter_us=jitter_us; g->env_start=i*per_group; g->env_count=per_group; g->agent_start=agent;
-        for (int e=g->env_start; e<g->env_start+g->env_count; e++) agent+=envs[e].num_agents;
-        g->agent_count=agent-g->agent_start;
-        g->workers=threads/count>0?threads/count:1;
-        bopl_cuda_check(cudaStreamCreateWithFlags(&g->stream, cudaStreamNonBlocking), "stream");
-        bopl_cuda_check(cudaEventCreateWithFlags(&g->ready, cudaEventDisableTiming), "ready event");
-        bopl_cuda_check(cudaEventCreateWithFlags(&g->done, cudaEventDisableTiming), "done event");
-        bopl_cuda_check(cudaMalloc((void**)&g->gpu_actions, (size_t)g->agent_count*NUM_ATNS*sizeof(float)), "actions");
-        bopl_cuda_check(cudaMemset(g->gpu_actions, 0, (size_t)g->agent_count*NUM_ATNS*sizeof(float)), "actions clear");
-        pthread_mutex_init(&g->lock, NULL); pthread_cond_init(&g->wake, NULL);
-        if (pthread_create(&g->thread, NULL, bopl_group_thread, g)) abort();
+/* Vectors alive in this process, as the device observation pointers that key
+ * every other ctypes entry point; the trainer's PuffeRL object does not expose
+ * its vector, so the trainer looks it up here (exactly one vector while
+ * training). Returns the count, filling up to `capacity` handles. */
+int bopl_vec_handles(const void **out, int capacity) {
+    int n=0;
+    pthread_mutex_lock(&bopl_registry_lock);
+    for (int i=0; i<BOPL_MAX_VECS; i++) if (bopl_registered[i]) { if (n<capacity) out[n]=bopl_registered[i]->gpu_observations; n++; }
+    pthread_mutex_unlock(&bopl_registry_lock);
+    return n;
+}
+/* Start every environment again, after the trainer installed its agent
+ * permutation and tags: PufferLib resets the vector inside create_pufferl with
+ * identity routing, so the first observations sit on the wrong rows until the
+ * games are reset once more. Only between rollouts. */
+int bopl_vec_reset(const void *gpu_observations) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    static_vec_reset(vec);
+    /* Every row starts a fresh episode: flag it so the first rollout step
+     * zeroes the recurrent state of every bank before consuming observation 0
+     * (the trainer's warmup/capture passes leave those states dirty, and the
+     * upstream reset drops the opponent-row flags c_reset raised). */
+    for (int i=0; i<vec->total_agents; i++) vec->terminals[i]=1;
+    if (vec->gpu) {
+        if (cudaMemcpy(vec->gpu_terminals, vec->terminals, (size_t)vec->total_agents*sizeof(float), cudaMemcpyHostToDevice)!=cudaSuccess) return -2;
+        cudaDeviceSynchronize();
     }
-    if (agent!=vec->total_agents) abort();
-    return groups;
+    return 0;
 }
-int bopl_groups_count(const BoplGroups *groups) { return groups?groups->count:0; }
-int bopl_group_agent_start(const BoplGroups *groups, int i) { return groups->groups[i].agent_start; }
-int bopl_group_agent_count(const BoplGroups *groups, int i) { return groups->groups[i].agent_count; }
-void *bopl_group_actions_ptr(const BoplGroups *groups, int i) { return groups->groups[i].gpu_actions; }
-/* Records the group's ready event on `stream` (the torch stream that produced
- * the group's action copy) and wakes the group thread. Not reentrant per group. */
-void bopl_group_launch(BoplGroups *groups, int i, cudaStream_t stream) {
-    BoplGroup *g=&groups->groups[i];
-    pthread_mutex_lock(&g->lock);
-    if (g->state!=0) { fprintf(stderr, "Bopl group %d launched twice without wait\n", i); abort(); }
-    bopl_cuda_check(cudaEventRecord(g->ready, stream), "ready record");
-    g->state=1; pthread_cond_broadcast(&g->wake);
-    pthread_mutex_unlock(&g->lock);
+/* Host mirrors of the observation, reward and terminal rows (the games write
+ * them; the vector uploads them each step), for checks between rollouts.
+ * Returns total_agents, or -1 for an unknown vector. */
+int bopl_vec_host(const void *gpu_observations, const void **obs, const void **rewards, const void **terminals) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    if (obs) *obs=vec->observations;
+    if (rewards) *rewards=vec->rewards;
+    if (terminals) *terminals=vec->terminals;
+    return vec->total_agents;
 }
-/* Blocks until the group's step has finished on the host, then makes `stream`
- * wait for the device uploads. Returns 1 when this call collected a launched
- * step (exactly one wait per launch does), 0 when there was nothing to collect. */
-int bopl_group_wait(BoplGroups *groups, int i, cudaStream_t stream) {
-    BoplGroup *g=&groups->groups[i];
-    pthread_mutex_lock(&g->lock);
-    while (g->state==1) pthread_cond_wait(&g->wake, &g->lock);
-    int collected=g->state==3;
-    if (collected) g->state=0;
-    pthread_mutex_unlock(&g->lock);
-    /* Exactly one wait per launch collects it: the caller's stream is ordered
-     * after the group's uploads, and the group may be launched again. */
-    if (collected) bopl_cuda_check(cudaStreamWaitEvent(stream, g->done, 0), "done wait");
-    return collected;
-}
-int bopl_group_pending(BoplGroups *groups, int i) {
-    BoplGroup *g=&groups->groups[i];
-    pthread_mutex_lock(&g->lock); int pending=g->state==1||g->state==3; pthread_mutex_unlock(&g->lock);
-    return pending;
-}
-double bopl_group_env_ms(const BoplGroups *groups, int i) { return groups->groups[i].env_ms; }
-double bopl_group_total_ms(const BoplGroups *groups, int i) { return groups->groups[i].total_ms; }
-unsigned long bopl_group_launches(const BoplGroups *groups, int i) { return groups->groups[i].launches; }
-/* Waits for every pending group, then joins threads and frees resources. The
- * StaticVec itself stays owned by the caller. */
-void bopl_groups_close(BoplGroups *groups) {
-    if (!groups) return;
-    for (int i=0; i<groups->count; i++) {
-        BoplGroup *g=&groups->groups[i];
-        pthread_mutex_lock(&g->lock);
-        while (g->state==1) pthread_cond_wait(&g->wake, &g->lock);
-        g->state=2; pthread_cond_broadcast(&g->wake);
-        pthread_mutex_unlock(&g->lock);
-        pthread_join(g->thread, NULL);
-        cudaStreamSynchronize(g->stream);
-        cudaEventDestroy(g->ready); cudaEventDestroy(g->done); cudaStreamDestroy(g->stream); cudaFree(g->gpu_actions);
-        pthread_mutex_destroy(&g->lock); pthread_cond_destroy(&g->wake);
-    }
-    free(groups->groups); free(groups);
-}
-/* Python entry points (ctypes on the loaded _C module). */
 /* Step transport actually in use by the vector's games (sampled after real
  * stepping so an old game build cannot be mistaken for the new path):
  *  2 = every game steps through the single-roundtrip sampled command
@@ -313,7 +210,55 @@ int bopl_vec_step_mode(const void *gpu_observations) {
     }
     return split==vec->size?1:2;
 }
-BoplGroups *bopl_groups_open(const void *gpu_observations, int count, int threads) {
+/* Routing introspection for tests and the trainer's sidecar: per environment,
+ * the physical agent index of each slot (-1 past num_agents), the current
+ * side, active bank, tag, and counters. `out` holds 8+BOPL_MAX_SLOTS ints per
+ * environment; returns the environment count or -1. */
+int bopl_vec_layout(const void *gpu_observations, int *out, int capacity) {
     StaticVec *vec=bopl_find_vec(gpu_observations);
-    return vec?bopl_groups_create(vec, count, threads):NULL;
+    if (!vec) return -1;
+    int stride=8+BOPL_MAX_SLOTS;
+    if (capacity<vec->size*stride) return -1;
+    Env *envs=(Env*)vec->envs;
+    for (int i=0; i<vec->size; i++) {
+        int *row=out+i*stride;
+        row[0]=envs[i].num_agents; row[1]=envs[i].players; row[2]=envs[i].banks; row[3]=envs[i].tag;
+        row[4]=envs[i].side; row[5]=envs[i].active_bank; row[6]=(int)envs[i].matches; row[7]=(int)envs[i].stepped;
+        for (int s=0; s<BOPL_MAX_SLOTS; s++)
+            row[8+s]=s<envs[i].num_agents?(int)(envs[i].obs_ptr[s]-(float*)vec->observations)/OBS_SIZE:-1;
+    }
+    return vec->size;
+}
+/* The same vector-level routing controls PufferLib exposes on its trainer, for
+ * vectors created without one (correctness checks, evaluation). */
+int bopl_vec_set_perm(const void *gpu_observations, const int *perm) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    static_vec_set_perm(vec, perm); return 0;
+}
+int bopl_vec_set_tags(const void *gpu_observations, const int *tags) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    static_vec_set_env_tags(vec, tags); return 0;
+}
+/* Cumulative counters summed over the vector's environments (BOPL_COUNTER_SIZE
+ * doubles in BoplCounters order: learner_steps, game_steps, matches,
+ * opponent_game_decisions, kills, buttons[4], telemetry[16], map_matches[31]).
+ * Read between rollouts, when no environment thread is stepping. */
+int bopl_vec_counters(const void *gpu_observations, double *out, int capacity) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec || capacity<BOPL_COUNTER_SIZE) return -1;
+    Env *envs=(Env*)vec->envs;
+    memset(out, 0, BOPL_COUNTER_SIZE*sizeof(double));
+    for (int i=0; i<vec->size; i++) {
+        const double *c=(const double*)&envs[i].counters;
+        for (int k=0; k<BOPL_COUNTER_SIZE; k++) out[k]+=c[k];
+    }
+    return BOPL_COUNTER_SIZE;
+}
+int bopl_counter_size(void) { return BOPL_COUNTER_SIZE; }
+int bopl_vec_count_aligned(const void *gpu_observations, int tag, int reset_flags) {
+    StaticVec *vec=bopl_find_vec(gpu_observations);
+    if (!vec) return -1;
+    return static_vec_count_aligned(vec, tag, reset_flags);
 }

@@ -16,8 +16,9 @@ public static class RlBridge
     public static bool Enabled => !string.IsNullOrEmpty(endpoint);
     private static Socket socket;
     private static BinaryReader reader;
-    private static BinaryWriter writer;
     private static readonly MemoryStream response = new MemoryStream(65536);
+    // Assemble each framed response before sending; command reads are buffered.
+    private static byte[] sendBuffer = new byte[65536 + 16];
     private static readonly BinaryWriter payload = new BinaryWriter(response, Encoding.UTF8, true);
     private static bool loading, ready, started, terminal, failed;
     private static int warmup, remainingWarmup, episodeTicks, episodeLimit;
@@ -27,17 +28,19 @@ public static class RlBridge
     private static byte[] pendingStep;
     private static uint pendingSequence, pendingOperation;
     private static ReplayArchive recording;
-    private const int CommandsPerFrame = 16;
+    // Gameplay is driven by simulation ticks. Yield periodically so Unity can
+    // finish deferred object destruction and scene bookkeeping.
+    private const int CommandsPerFrame = 4096;
 
     private static void Connect()
     {
         socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         socket.Connect(new UnixDomainSocketEndPoint(endpoint));
         var stream = new NetworkStream(socket, true);
-        reader = new BinaryReader(stream, Encoding.UTF8, true);
-        writer = new BinaryWriter(stream, Encoding.UTF8, true);
+        reader = new BinaryReader(new BufferedStream(stream, 65536), Encoding.UTF8, true);
         Application.targetFrameRate = -1;
         QualitySettings.vSyncCount = 0;
+        RlProfile.Install();
         SceneManager.sceneLoaded += (_, mode) => {
             if (loading && mode == LoadSceneMode.Single) loadedFrame = Time.frameCount;
         };
@@ -52,9 +55,20 @@ public static class RlBridge
 
     private static void Send(uint operation, uint sequence)
     {
+        RlProfile.Enter("bridge:send");
         payload.Flush();
-        writer.Write(Magic); writer.Write(operation); writer.Write(sequence); writer.Write((uint)response.Length);
-        writer.Write(response.GetBuffer(), 0, checked((int)response.Length)); writer.Flush();
+        int length = checked((int)response.Length), total = 16 + length;
+        if (sendBuffer.Length < total) sendBuffer = new byte[Math.Max(total, sendBuffer.Length * 2)];
+        WriteUInt32(sendBuffer, 0, Magic); WriteUInt32(sendBuffer, 4, operation);
+        WriteUInt32(sendBuffer, 8, sequence); WriteUInt32(sendBuffer, 12, (uint)length);
+        Buffer.BlockCopy(response.GetBuffer(), 0, sendBuffer, 16, length);
+        for (int sent = 0; sent < total; ) sent += socket.Send(sendBuffer, sent, total - sent, SocketFlags.None);
+    }
+
+    private static void WriteUInt32(byte[] buffer, int offset, uint value)
+    {
+        buffer[offset] = (byte)value; buffer[offset + 1] = (byte)(value >> 8);
+        buffer[offset + 2] = (byte)(value >> 16); buffer[offset + 3] = (byte)(value >> 24);
     }
 
     private static void Error(uint sequence, Exception exception)
@@ -66,6 +80,13 @@ public static class RlBridge
     }
 
     public static void Pump(Host host)
+    {
+        RlProfile.Enter("bridge:pump");
+        try { PumpInner(host); }
+        finally { RlProfile.Enter("unity:frame"); }
+    }
+
+    private static void PumpInner(Host host)
     {
         try {
             int frameTicks = 0;
@@ -98,15 +119,17 @@ public static class RlBridge
                 if (frameTicks >= CommandsPerFrame) return;
             }
             for (int command = 0; command < CommandsPerFrame; command++) {
+                RlProfile.Enter("bridge:read");
                 uint magic = reader.ReadUInt32(); uint operation = reader.ReadUInt32();
                 uint sequence = reader.ReadUInt32(); uint length = reader.ReadUInt32();
                 if (magic != Magic || length > 4096) throw new InvalidDataException("Invalid RL command frame");
                 byte[] bytes = reader.ReadBytes((int)length);
                 if (bytes.Length != length) throw new EndOfStreamException();
+                RlProfile.Enter("bridge:command");
                 using var body = new BinaryReader(new MemoryStream(bytes, false));
                 try {
                     switch (operation) {
-                        case 1: Reset(host, body, sequence); return;
+                        case 1: RlProfile.Enter("bridge:reset"); Reset(host, body, sequence); return;
                         case 2:
                         case 6:
                             // Both phases of a sampled step (6) count like one step of first+second ticks.
@@ -125,6 +148,7 @@ public static class RlBridge
                         case 4:
                             if (length != 0) throw new InvalidDataException("Invalid close payload");
                             response.SetLength(0); Send(operation, sequence);
+                            RlProfile.Dump();
                             if (ReferenceCapture.Recording && !ReferenceCapture.Completed) ReferenceCapture.Finish("rl-closed");
                             else Application.Quit();
                             socket.Dispose(); return;
@@ -235,6 +259,7 @@ public static class RlBridge
 
     private static void Tick(bool counted)
     {
+        RlProfile.Enter("tick:pre");
         var players = PlayerHandler.Get().PlayerList();
         for (int i = 0; i < inputs.Length; i++) inputs[i].seqNumber = (uint)(Updater.SimulationTicks + 1);
         if (recording != null) recording.frames.Add((InputPacket[])inputs.Clone());
@@ -243,7 +268,7 @@ public static class RlBridge
         RlTelemetry.Counting = counted;
         try { Updater.TickSimulation(GameTime.FixedTimeStep); }
         catch (Exception error) { failed = true; ReferenceCapture.FailedTick(error); throw; }
-        finally { RlTelemetry.Counting = false; }
+        finally { RlTelemetry.Counting = false; RlProfile.Enter("tick:post"); RlProfile.Ticked(counted); }
         Updater.LoadedALevelThisUpdate = false;
         started |= !GameSessionHandler.HasGameEnded();
         if (counted) episodeTicks++;
@@ -252,6 +277,7 @@ public static class RlBridge
 
     private static void Observe(bool append = false)
     {
+        RlProfile.Enter("bridge:observe");
         if (!append) response.SetLength(0);
         uint flags = (terminal ? 1u : 0u) | (episodeTicks >= episodeLimit ? 2u : 0u) | (started ? 4u : 0u) | (failed ? 8u : 0u);
         RlObservation.Write(payload, Version, episodeTicks, flags, warmup);

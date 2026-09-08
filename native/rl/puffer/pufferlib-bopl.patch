@@ -1,0 +1,637 @@
+diff -ruN a/bindings.cu b/bindings.cu
+--- a/bindings.cu
++++ b/bindings.cu
+@@ -52,6 +52,23 @@
+         losses_dict["old_kl"] = losses_host[LOSS_OLD_APPROX_KL] * inv_n;
+         losses_dict["kl"] = losses_host[LOSS_APPROX_KL] * inv_n;
+         losses_dict["clipfrac"] = losses_host[LOSS_CLIPFRAC] * inv_n;
++        // Bopl: per-head entropies and pre-clip gradient norm (minibatch means)
++        losses_dict["entropy_aim"] = losses_host[LOSS_ENT_AIM] * inv_n;
++        losses_dict["entropy_buttons"] = losses_host[LOSS_ENT_BUTTONS] * inv_n;
++        losses_dict["gradient_norm"] = losses_host[LOSS_GRAD_NORM] * inv_n;
++        losses_dict["learning_rate"] = pufferl.last_lr;
++        losses_dict["entropy_coefficient"] = pufferl.last_ent_coef;
++        // Bopl: whole-rollout learner advantage statistics (last update)
++        float adv_stats[BOPL_ADV_STATS];
++        cudaMemcpy(adv_stats, pufferl.adv_stats_puf.data, sizeof(adv_stats), cudaMemcpyDeviceToHost);
++        float var_a = adv_stats[0], var_r = adv_stats[1];
++        if (std::isfinite(var_a) && var_a >= 0.0f) {
++            losses_dict["advantage_std"] = sqrtf(var_a);
++        }
++        if (std::isfinite(var_a) && std::isfinite(var_r) && var_r > 0.0f) {
++            losses_dict["explained_variance"] = 1.0f - var_a / var_r;
++        }
++        losses_dict["advantage_mean"] = adv_stats[2];
+     }
+     cudaMemset(pufferl.losses_puf.data, 0, numel(pufferl.losses_puf.shape) * sizeof(float));
+     result["loss"] = losses_dict;
+@@ -151,6 +168,20 @@
+         }
+     }
+ 
++    // Bopl: remember the primary state every buffer starts this rollout with;
++    // training sequences are initialized from it (see bopl_gather_start_states).
++    {
++        cudaDeviceSynchronize();
++        long per_buf = numel(pufferl.rollout_start_states.shape) / pufferl.hypers.num_buffers;
++        for (int i = 0; i < pufferl.hypers.num_buffers; i++) {
++            assert(numel(pufferl.buffer_states[i].shape) == per_buf && "rollout_start_states shape mismatch");
++            cudaMemcpyAsync(pufferl.rollout_start_states.data + i * per_buf,
++                pufferl.buffer_states[i].data, per_buf * sizeof(precision_t),
++                cudaMemcpyDeviceToDevice, pufferl.default_stream);
++        }
++        cudaStreamSynchronize(pufferl.default_stream);
++    }
++
+     static_vec_omp_step(pufferl.vec);
+     float sec = (float)(wall_clock() - t0);
+     pufferl.profile.accum[PROF_ROLLOUT] += sec * 1000.0f;  // store as ms
+diff -ruN a/models.cu b/models.cu
+--- a/models.cu
++++ b/models.cu
+@@ -147,8 +147,16 @@
+     PrecisionTensor out, next_state;
+     PrecisionTensor grad_combined, grad_state;
+     PrecisionTensor grad_input;        // (B, T, H) highway gate gradient w.r.t. input
++    // Bopl: (B, T) flags, nonzero = reset the recurrent state before consuming
++    // observation t (episode boundary inside the training sequence).
++    const precision_t* reset_ptr = nullptr;
+ };
+ 
++// Bopl: training-time reset flags for every MinGRU layer's scan. Set by the
++// trainer before policy_forward_train (points at a fixed (B, T) buffer).
++static const precision_t* g_mingru_train_reset = nullptr;
++void mingru_set_train_reset(const precision_t* reset_ptr) { g_mingru_train_reset = reset_ptr; }
++
+ // Checkpointing trades off partial recomputation for memory bandwidth.
+ #define CHECKPOINT_INTERVAL 4
+ __global__ void mingru_scan_forward(PrefixScan scan) {
+@@ -161,6 +169,7 @@
+     const precision_t* __restrict__ combined = scan.combined_ptr;
+     const precision_t* __restrict__ state = scan.state_ptr;
+     const precision_t* __restrict__ input = scan.input_ptr;
++    const precision_t* __restrict__ reset = scan.reset_ptr;
+ 
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx >= B * H) {
+@@ -206,6 +215,13 @@
+         float proj_val = to_float(combined_p_base[t_offset]);
+         float x_val = to_float(input[out_base + (t - 1) * H]);
+ 
++        // Bopl: episode boundary before observation t-1 -> restart the scan
++        // from a zero state (state_t = sigmoid(gate) * h_tilde).
++        if (reset != nullptr && to_float(reset[b * T_seq + (t - 1)]) != 0.0f) {
++            a_star = 0.0f;
++            s = -INFINITY;
++        }
++
+         float log_coeff_val;
+         log_coeffs_and_values_fwd(gate_val, hidden_val, &log_coeff_val, &log_value);
+ 
+@@ -245,8 +261,8 @@
+     precision_t* __restrict__ grad_state = scan.grad_state.data;
+     precision_t* __restrict__ grad_input = scan.grad_input.data;
+     const precision_t* __restrict__ combined = scan.combined_ptr;
+-    const precision_t* __restrict__ state = scan.state_ptr;
+     const precision_t* __restrict__ input = scan.input_ptr;
++    const precision_t* __restrict__ reset = scan.reset_ptr;
+     const float* __restrict__ a_star_buf = scan.a_star.data;
+     const float* __restrict__ s_buf = scan.s_vals.data;
+     const float* __restrict__ log_values_buf = scan.log_values_buf.data;
+@@ -280,10 +296,16 @@
+     float acc = 0.0;
+     float s_val_next = 0.0;
+     float carry_grad_a = 0.0;
+-
+-    for (int chunk_end = T_seq; chunk_end > 0; chunk_end -= CHECKPOINT_INTERVAL) {
+-        int chunk_start = (chunk_end > CHECKPOINT_INTERVAL) ? (chunk_end - CHECKPOINT_INTERVAL) : 0;
++    // Bopl: whether step t+1 depends on step t (false at the sequence end and
++    // right after an episode boundary).
++    bool chain_open = false;
++
++    // Bopl: chunks start at the checkpoint saved by the forward pass (multiples
++    // of CHECKPOINT_INTERVAL), so T does not have to be a multiple of it.
++    for (int chunk_end = T_seq; chunk_end > 0;) {
++        int chunk_start = ((chunk_end - 1) / CHECKPOINT_INTERVAL) * CHECKPOINT_INTERVAL;
+         int chunk_len = chunk_end - chunk_start;
++        chunk_end = chunk_start;
+ 
+         // Chunk storage in registers
+         float chunk_a_star[CHECKPOINT_INTERVAL];
+@@ -291,6 +313,7 @@
+         float chunk_log_values[CHECKPOINT_INTERVAL];
+         float chunk_hidden[CHECKPOINT_INTERVAL];
+         float chunk_gate[CHECKPOINT_INTERVAL];
++        bool chunk_reset[CHECKPOINT_INTERVAL];
+ 
+         // Load checkpoint from global memory
+         int ckpt_buf_idx = buf_base + chunk_start * H;
+@@ -305,6 +328,13 @@
+             float hv = to_float(combined_h_base[t_offset]);
+             float gv = to_float(combined_g_base[t_offset]);
+ 
++            bool reset_t = (reset != nullptr) && (to_float(reset[b * T_seq + (t - 1)]) != 0.0f);
++            if (reset_t) {
++                recomp_a_star = 0.0f;
++                recomp_s = -INFINITY;
++            }
++            chunk_reset[i] = reset_t;
++
+             float lc;
+             log_coeffs_and_values_fwd(gv, hv, &lc, &recomp_log_value);
+             recomp_a_star += lc;
+@@ -348,17 +378,22 @@
+             float grad_log_h = grad_scan_result * scan_result;
+             float grad_s = grad_log_h;
+ 
+-            if (t == T_seq) {
+-                acc = grad_s;
+-            } else {
+-                acc = grad_s + acc * __expf(s_t - s_val_next);
+-            }
++            acc = chain_open ? (grad_s + acc * __expf(s_t - s_val_next)) : grad_s;
+             float grad_z = acc * __expf(z - s_t);
+             s_val_next = s_t;
+ 
+             float grad_a = grad_log_h + carry_grad_a - grad_z;
+             carry_grad_a = grad_a;
+ 
++            // Bopl: a boundary before observation t-1 cuts both carries.
++            if (chunk_reset[i]) {
++                acc = 0.0f;
++                carry_grad_a = 0.0f;
++                chain_open = false;
++            } else {
++                chain_open = true;
++            }
++
+             float grad_g, grad_h;
+             log_coeffs_and_values_bwd(grad_a, grad_z, gate_val, hidden_val, &grad_g, &grad_h);
+ 
+@@ -368,22 +403,12 @@
+         }
+     }
+ 
+-    int ckpt_0_idx = buf_base;
+-    float a_star_0 = a_star_buf[ckpt_0_idx];
+-    float s_0 = s_buf[ckpt_0_idx];
+-    float log_value_0 = log_values_buf[ckpt_0_idx];
+-
+-    float scan_result_0 = __expf(a_star_0 + s_0);
+-    float z_0 = log_value_0 - a_star_0;
+-
+-    float grad_scan_result_0 = 0.0f;
+-    float grad_log_h_0 = grad_scan_result_0 * scan_result_0;
+-    float grad_s_0 = grad_log_h_0;
+-
+-    acc = grad_s_0 + acc * __expf(s_0 - s_val_next);
+-    float grad_z_0 = acc * __expf(z_0 - s_0);
+-
+-    grad_state[state_idx] = from_float(grad_z_0 / to_float(state[state_idx]));
++    // d loss / d state_0. Algebraically acc * exp(s_0 - s_1) * exp(z_0 - s_0) / state
++    // with z_0 = log(state) and a_star_0 = 0, i.e. acc * exp(-s_1); this form is
++    // finite for a zero initial state and is zero when observation 0 starts a
++    // new episode (chain cut).
++    float grad_state_val = chain_open ? acc * __expf(-s_val_next) : 0.0f;
++    grad_state[state_idx] = from_float(grad_state_val);
+ }
+ 
+ __global__ void sum_rows_to_precision_kernel(precision_t* __restrict__ dst,
+@@ -731,6 +756,7 @@
+         a->scan_bufs[i].combined_ptr = a->combined_bufs[i].data;
+         a->scan_bufs[i].state_ptr = state_i.data;
+         a->scan_bufs[i].input_ptr = a->saved_inputs[i].data;
++        a->scan_bufs[i].reset_ptr = g_mingru_train_reset;
+         mingru_scan_forward<<<grid_size(B*m->hidden), BLOCK_SIZE, 0, stream>>>(a->scan_bufs[i]);
+         x = a->scan_bufs[i].out;
+     }
+diff -ruN a/ocean.cu b/ocean.cu
+--- a/ocean.cu
++++ b/ocean.cu
+@@ -3,6 +3,8 @@
+ 
+ #include "cudnn_conv2d.cu"
+ #include "nethack.cu"
++#include "bopl_set_encoder.cu"
++#include <cstdlib>
+ 
+ // ---- NMMO3 constants ----
+ 
+@@ -589,6 +591,16 @@
+         };
+     } else if (env_name == "nethack") {
+         create_nethack_encoder(enc);
++    } else if (env_name == "bopl") {
++        // Runtime encoder selection for Bopl (train.py --encoder sets this before
++        // the native trainer is created). Unset/"linear" keeps the upstream
++        // bias-free linear encoder; "set" installs the Bopl SET encoder
++        // (bopl_set_encoder.cu). Anything else is a configuration error.
++        const char* choice = std::getenv("BOPL_NATIVE_ENCODER");
++        std::string encoder = choice ? choice : "linear";
++        if (encoder == "set") bopl_create_set_encoder(enc);
++        else if (encoder != "linear")
++            throw std::runtime_error("BOPL_NATIVE_ENCODER must be 'linear' or 'set', got '" + encoder + "'");
+     }
+ }
+ 
+diff -ruN a/pufferlib.cu b/pufferlib.cu
+--- a/pufferlib.cu
++++ b/pufferlib.cu
+@@ -20,9 +20,17 @@
+ enum LossIdx {
+     LOSS_PG = 0, LOSS_VF = 1, LOSS_ENT = 2, LOSS_TOTAL = 3,
+     LOSS_OLD_APPROX_KL = 4, LOSS_APPROX_KL = 5, LOSS_CLIPFRAC = 6,
+-    LOSS_N = 7, NUM_LOSSES = 8,
++    // Bopl: per-head entropies (head 0 = aim, head 1 = buttons) and the
++    // pre-clip gradient norm, all accumulated per minibatch like the others.
++    LOSS_ENT_AIM = 7, LOSS_ENT_BUTTONS = 8, LOSS_GRAD_NORM = 9,
++    LOSS_N = 10, NUM_LOSSES = 11,
+ };
+ 
++// Bopl: per-update advantage statistics over learner rows (before any
++// normalization): [0] var(adv), [1] var(adv + value) = var(returns),
++// [2] mean(adv), [3] count.
++#define BOPL_ADV_STATS 4
++
+ enum ProfileIdx {
+     PROF_ROLLOUT = 0,
+     PROF_EVAL_GPU,
+@@ -104,6 +112,7 @@
+     PrecisionTensor mb_newvalue;
+     PrecisionTensor mb_prio;        // (B,)
+     PrecisionTensor mb_action_mask; // (B, T, mask_size); .data=nullptr when disabled
++    PrecisionTensor mb_terminals;   // (B, T) Bopl: reset flags for the recurrent scan
+ };
+ 
+ void register_train_buffers(TrainGraph& bufs, Allocator* alloc, int B, int T, int input_size,
+@@ -120,8 +129,10 @@
+         .mb_newvalue =      {.shape = {B, T}},
+         .mb_prio =          {.shape = {B}},
+         .mb_action_mask =   {},
++        .mb_terminals =     {.shape = {B, T}},
+     };
+     alloc_register(alloc, &bufs.mb_obs);
++    alloc_register(alloc, &bufs.mb_terminals);
+     alloc_register(alloc, &bufs.mb_state);
+     alloc_register(alloc, &bufs.mb_actions);
+     alloc_register(alloc, &bufs.mb_logprobs);
+@@ -244,6 +255,84 @@
+     ByteTensor action_mask; // (total_agents, mask_size); .data=nullptr when env opts out
+ };
+ 
++// ---------------------------------------------------------------------------
++// Bopl additions: recurrent-state handling, learner-only replay, statistics.
++// ---------------------------------------------------------------------------
++
++// Zero the recurrent state (all layers) of rows whose env terminal flag is set.
++// The Bopl env publishes terminal=1 together with the first observation of the
++// next episode, so "terminal at row r" means "reset before consuming obs r".
++__global__ void bopl_mask_state_rows(precision_t* __restrict__ state,
++        const float* __restrict__ terminals, int rows, int layers, int row_stride, int H) {
++    int idx = blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx >= rows * H) return;
++    int r = idx / H, h = idx % H;
++    if (terminals[r] == 0.0f) return;
++    for (int l = 0; l < layers; l++) {
++        state[((long)l * row_stride + r) * H + h] = from_float(0.0f);
++    }
++}
++
++// Gather the rollout-start state of every sampled row into mb_state
++// (layers, mb_segs, H) from rollout_start_states (num_buffers, layers, apb, H).
++__global__ void bopl_gather_start_states(precision_t* __restrict__ mb_state,
++        const precision_t* __restrict__ starts, const int* __restrict__ idx,
++        int mb_segs, int layers, int apb, int H) {
++    int i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= mb_segs * H) return;
++    int m = i / H, h = i % H;
++    int src = idx[m];
++    int buf = src / apb, local = src % apb;
++    for (int l = 0; l < layers; l++) {
++        mb_state[((long)l * mb_segs + m) * H + h] =
++            starts[(((long)buf * layers + l) * apb + local) * H + h];
++    }
++}
++
++// Per-update statistics over learner rows (row % apb < primary): variance of
++// the raw GAE advantages and of the returns (adv + rollout value).
++__global__ void bopl_adv_stats(const precision_t* __restrict__ adv,
++        const precision_t* __restrict__ values, float* __restrict__ out,
++        int B, int T, int apb, int primary) {
++    __shared__ double sh[4][256];
++    int tid = threadIdx.x;
++    double sa = 0.0, saa = 0.0, sr = 0.0, srr = 0.0;
++    int total = B * T;
++    for (int i = tid; i < total; i += blockDim.x) {
++        int row = i / T;
++        if (row % apb >= primary) continue;
++        double a = to_float(adv[i]);
++        double r = a + to_float(values[i]);
++        sa += a; saa += a * a; sr += r; srr += r * r;
++    }
++    sh[0][tid] = sa; sh[1][tid] = saa; sh[2][tid] = sr; sh[3][tid] = srr;
++    __syncthreads();
++    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
++        if (tid < stride) {
++            for (int c = 0; c < 4; c++) sh[c][tid] += sh[c][tid + stride];
++        }
++        __syncthreads();
++    }
++    if (tid == 0) {
++        double n = (double)(B / apb) * (double)primary * (double)T;
++        double mean_a = sh[0][0] / n, mean_r = sh[2][0] / n;
++        double var_a = sh[1][0] / n - mean_a * mean_a;
++        double var_r = sh[3][0] / n - mean_r * mean_r;
++        out[0] = (float)var_a;
++        out[1] = (float)var_r;
++        out[2] = (float)mean_a;
++        out[3] = (float)n;
++    }
++}
++
++// losses_acc[LOSS_GRAD_NORM] += sqrt(sum of squared gradients) (pre-clip).
++__global__ void bopl_accum_grad_norm(float* __restrict__ losses_acc,
++        const float* __restrict__ sum_sq_ptr) {
++    if (blockIdx.x == 0 && threadIdx.x == 0) {
++        losses_acc[LOSS_GRAD_NORM] += sqrtf(fmaxf(*sum_sq_ptr, 0.0f));
++    }
++}
++
+ StaticVec* create_environments(int num_buffers, int total_agents,
+         const std::string& env_name, Dict* vec_kwargs, Dict* env_kwargs, EnvBuf& env) {
+     StaticVec* vec = create_static_vec(total_agents, num_buffers, 1, vec_kwargs, env_kwargs);
+@@ -354,6 +443,14 @@
+     EnvBuf env;
+     TrainGraph train_buf;
+     PrecisionTensor advantages_puf;  // Pre-allocated for train_impl (B, T)
++    // Bopl: primary recurrent state of every buffer at the start of the last
++    // rollout, (num_buffers, layers, agents_per_buffer, hidden). Training
++    // sequences start from these (gathered per minibatch row) instead of a
++    // zero or stale state.
++    PrecisionTensor rollout_start_states;
++    FloatTensor adv_stats_puf;       // (BOPL_ADV_STATS,) see bopl_adv_stats
++    float last_lr;                   // lr / entropy coefficient applied by the last train call
++    float last_ent_coef;
+     cudaGraphExec_t* fused_rollout_cudagraphs;  // [horizon][num_buffers]
+     cudaGraphExec_t train_cudagraph;
+     cudaStream_t* streams;  // per-buffer raw CUDA streams
+@@ -722,6 +819,15 @@
+             mask_stride_b = mask_stride;
+         }
+ 
++        // Bopl: episode boundary -> zero this bank's recurrent state for the
++        // rows whose env terminal flag is set (state row r <-> agent sub_start + r).
++        {
++            int layers = s_bank->shape[0];
++            int row_stride = s_bank->shape[1];
++            int H = s_bank->shape[2];
++            bopl_mask_state_rows<<<grid_size(bank_size * H), BLOCK_SIZE, 0, stream>>>(
++                s_bank->data, env.terminals.data + sub_start, bank_size, layers, row_stride, H);
++        }
+         PrecisionTensor dec_puf = policy_forward(p_bank, *w_bank, *a_bank, obs_b, *s_bank, stream);
+ 
+         PrecisionTensor p_logstd = {};
+@@ -997,6 +1103,10 @@
+     block_losses[LOSS_OLD_APPROX_KL][tid] = (-logratio) * inv_NT;
+     block_losses[LOSS_APPROX_KL][tid] = ((ratio - 1.0f) - logratio) * inv_NT;
+     block_losses[LOSS_CLIPFRAC][tid] = (fabsf(ratio - 1.0f) > a.clip_coef ? 1.0f : 0.0f) * inv_NT;
++    if (!a.is_continuous) {
++        block_losses[LOSS_ENT_AIM][tid] = (a.num_atns > 0 ? head_entropy[0] : 0.0f) * inv_NT;
++        block_losses[LOSS_ENT_BUTTONS][tid] = (a.num_atns > 1 ? head_entropy[1] : 0.0f) * inv_NT;
++    }
+     } // end if (idx < total_elements)
+ 
+ // Deterministic aggregation
+@@ -1174,10 +1284,16 @@
+ #define PRIO_NUM_WARPS (PRIO_BLOCK_SIZE / PRIO_WARP_SIZE)
+ __global__ void compute_prio_adv_reduction(
+         const precision_t* __restrict__ advantages,
+-        float* prio_weights, float prio_alpha, int stride) {
++        float* prio_weights, float prio_alpha, int stride,
++        int agents_per_buffer, int primary_per_buffer) {
+     int row = blockIdx.x;
+     int tx = threadIdx.x;
+     int offset = row * stride;
++    // Bopl: frozen-opponent rows get exactly zero priority (never sampled).
++    if (row % agents_per_buffer >= primary_per_buffer) {
++        if (tx == 0) prio_weights[row] = 0.0f;
++        return;
++    }
+ 
+     float local_sum = 0.0f;
+     for (int t = tx; t < stride; t += blockDim.x) {
+@@ -1196,7 +1312,8 @@
+     }
+ }
+ 
+-__global__ void compute_prio_normalize(float* prio_weights, int length) {
++__global__ void compute_prio_normalize(float* prio_weights, int length,
++        int agents_per_buffer, int primary_per_buffer) {
+     __shared__ float shmem[PRIO_NUM_WARPS];
+     __shared__ float block_sum;
+ 
+@@ -1207,7 +1324,8 @@
+ 
+     float local_sum = 0.0f;
+     for (int t = tx; t < length; t += blockDim.x) {
+-        local_sum += prio_weights[t];
++        // Bopl: eps only on learner rows; frozen rows stay at exactly zero.
++        if (t % agents_per_buffer < primary_per_buffer) local_sum += prio_weights[t] + eps;
+     }
+     for (int s = PRIO_WARP_SIZE / 2; s >= 1; s /= 2) {
+         local_sum += __shfl_down_sync(PRIO_FULL_MASK, local_sum, s);
+@@ -1223,13 +1341,14 @@
+             val += __shfl_down_sync(PRIO_FULL_MASK, val, s);
+         }
+         if (tx == 0) {
+-            block_sum = val + eps;
++            block_sum = val;
+         }
+     }
+     __syncthreads();
+ 
+     for (int t = tx; t < length; t += blockDim.x) {
+-        prio_weights[t] = (prio_weights[t] + eps) / block_sum;
++        bool learner = (t % agents_per_buffer < primary_per_buffer);
++        prio_weights[t] = learner ? (prio_weights[t] + eps) / block_sum : 0.0f;
+     }
+ }
+ 
+@@ -1265,6 +1384,7 @@
+ 
+ // Multinomial with replacement (uses cuRAND)
+ __global__ void multinomial_sample(int* __restrict__ out_idx, const float* __restrict__ cdf,
++        const float* __restrict__ probs,
+         int B, int num_samples, uint64_t seed, const int64_t* __restrict__ offset_ptr) {
+     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+     if (tid >= num_samples) return;
+@@ -1280,6 +1400,10 @@
+         if (cdf[mid] < u) lo = mid + 1;
+         else hi = mid;
+     }
++    // Bopl: never return a zero-probability row (frozen-opponent rows, or the
++    // tail when rounding leaves cdf[B-1] < u). Step back to the nearest row
++    // with positive probability.
++    while (lo > 0 && probs[lo] <= 0.0f) lo--;
+     out_idx[tid] = lo;
+ }
+ 
+@@ -1288,26 +1412,31 @@
+ // It is a major improvement in some complex environments
+ // The values of alpha and beta found by sweeps will tell you
+ // whether it is important for your task
++// Bopl: only learner rows (row % agents_per_buffer < primary_per_buffer) are
++// sampled; the importance weights are scaled by the learner row count.
+ void prio_replay_cuda(PrecisionTensor& advantages, float prio_alpha,
+         int minibatch_segments, int total_agents, float anneal_beta,
+-        PrioBuffers& bufs, ulong seed, long* offset_ptr, cudaStream_t stream) {
++        PrioBuffers& bufs, ulong seed, long* offset_ptr, cudaStream_t stream,
++        int agents_per_buffer, int primary_per_buffer) {
+     int B = advantages.shape[0], T = advantages.shape[1];
+     compute_prio_adv_reduction<<<B, PRIO_WARP_SIZE, 0, stream>>>(
+-        advantages.data, bufs.prio_probs.data, prio_alpha, T);
++        advantages.data, bufs.prio_probs.data, prio_alpha, T,
++        agents_per_buffer, primary_per_buffer);
+     compute_prio_normalize<<<1, PRIO_BLOCK_SIZE, 0, stream>>>(
+-        bufs.prio_probs.data, B);
++        bufs.prio_probs.data, B, agents_per_buffer, primary_per_buffer);
+     //int block = fmaxf(((minibatch_segments + 31) / 32) * 32, 32);
+     build_cdf<<<1, 1, 0, stream>>>(bufs.cdf.data, bufs.prio_probs.data, B);
+     int threads = 256;
+     int blocks = (minibatch_segments + threads - 1) / threads;
+     multinomial_sample<<<blocks, threads, 0, stream>>>(
+-        bufs.idx.data, bufs.cdf.data, B, minibatch_segments, seed, offset_ptr);
++        bufs.idx.data, bufs.cdf.data, bufs.prio_probs.data, B, minibatch_segments, seed, offset_ptr);
+     advance_rng_offset<<<1, 1, 0, stream>>>(offset_ptr, (int64_t)minibatch_segments);
+ 
++    int learner_rows = (total_agents / agents_per_buffer) * primary_per_buffer;
+     int p3_blocks = (minibatch_segments + PRIO_BLOCK_SIZE - 1) / PRIO_BLOCK_SIZE;
+     compute_prio_imp_weights<<<p3_blocks, PRIO_BLOCK_SIZE, 0, stream>>>(
+         bufs.idx.data, bufs.prio_probs.data,
+-        bufs.mb_prio.data, total_agents, anneal_beta, minibatch_segments);
++        bufs.mb_prio.data, learner_rows, anneal_beta, minibatch_segments);
+ }
+ 
+ // Experience the puffer advantage! Generalized advantage estimation + V-Trace
+@@ -1535,6 +1664,11 @@
+                        (char*)graph.mb_action_mask.data, src_row, mb, mask_row_bytes);
+         }
+         break;
++    case 6:
++        // Bopl: terminal flags (B, T) -> reset flags for the recurrent scan
++        copy_bytes((const char*)rollouts.terminals.data, (char*)graph.mb_terminals.data,
++                   src_row, mb, horizon * sizeof(precision_t));
++        break;
+     }
+ }
+ 
+@@ -1581,9 +1715,8 @@
+             rollouts.action_mask.data, src.action_mask.data, T, B, mask_size);
+     }
+ 
+-    // We hard-clamp rewards to -1, 1. Our envs are mostly designed to respect this range
+-    clamp_precision_kernel<<<grid_size(numel(rollouts.rewards.shape)), BLOCK_SIZE, 0, train_stream>>>(
+-        rollouts.rewards.data, -1.0f, 1.0f, numel(rollouts.rewards.shape));
++    // Bopl: no reward clamp. The env's per-decision reward (outcome +/-1 plus
++    // kill/death shaping) is used as-is; upstream clamps to [-1, 1].
+ 
+     // Set importance weights to 1.0
+     fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(
+@@ -1600,10 +1733,12 @@
+ 
+     Muon* muon = &pufferl.muon;
+     int total_epochs = hypers.total_timesteps / batch_size;
++    pufferl.last_lr = hypers.lr;
+     if (anneal_lr) {
+         float lr_min = hypers.min_lr_ratio * hypers.lr;
+         float lr = cosine_annealing(hypers.lr, lr_min, current_epoch, total_epochs);
+         cudaMemcpy(muon->lr_ptr, &lr, sizeof(float), cudaMemcpyHostToDevice);
++        pufferl.last_lr = lr;
+     }
+ 
+     // Annealed entropy coefficient — same cosine shape as lr. With PG signal
+@@ -1619,6 +1754,14 @@
+     // copy ent_coef to the device buffer read by the loss kernel
+     cudaMemcpy(pufferl.ppo_bufs_puf.ent_coef.data, &current_ent_coef,
+                sizeof(float), cudaMemcpyHostToDevice);
++    pufferl.last_ent_coef = current_ent_coef;
++
++    // Bopl: row layout for learner-only sampling / statistics.
++    int bopl_apb = hypers.total_agents / hypers.num_buffers;
++    int bopl_primary = (pufferl.num_frozen_banks > 0 && pufferl.bank_layout != NULL)
++        ? pufferl.bank_layout[1] : bopl_apb;
++    // Reset flags for the MinGRU training scan (fixed buffer, graph-safe).
++    mingru_set_train_reset(pufferl.train_buf.mb_terminals.data);
+ 
+     // Annealed priority exponent
+     float anneal_beta = prio_beta0 + (1.0f - prio_beta0) * prio_alpha * (float)current_epoch/(float)total_epochs;
+@@ -1639,6 +1782,13 @@
+             zero_frozen_advantages_cuda(advantages_puf, apb,
+                 pufferl.bank_layout[1], train_stream);
+         }
++        if (mb == 0) {
++            // Bopl: raw (pre-normalization) advantage / return statistics over
++            // the whole rollout, learner rows only, once per update.
++            bopl_adv_stats<<<1, 256, 0, train_stream>>>(
++                advantages_puf.data, rollouts.values.data, pufferl.adv_stats_puf.data,
++                B, T, bopl_apb, bopl_primary);
++        }
+         profile_end(hypers.profile);
+ 
+         profile_begin("compute_prio", hypers.profile);
+@@ -1646,16 +1796,27 @@
+         long* train_rng_offset = pufferl.rng_offset_puf.data + hypers.num_buffers;
+         prio_replay_cuda(advantages_puf, prio_alpha, minibatch_segments,
+             hypers.total_agents, anneal_beta,
+-            pufferl.prio_bufs, pufferl.seed, train_rng_offset, train_stream);
++            pufferl.prio_bufs, pufferl.seed, train_rng_offset, train_stream,
++            bopl_apb, bopl_primary);
+         profile_end(hypers.profile);
+ 
+         profile_begin("train_select_and_copy", hypers.profile);
+-        if (hypers.reset_state) puf_zero(&graph.mb_state, train_stream);
++        int mb_segs = pufferl.prio_bufs.idx.shape[0];
++        if (hypers.reset_state) {
++            puf_zero(&graph.mb_state, train_stream);
++        } else {
++            // Bopl: start every sampled sequence from the state the policy
++            // actually had at the start of the rollout (per-row gather).
++            int layers = graph.mb_state.shape[0];
++            int H = graph.mb_state.shape[2];
++            bopl_gather_start_states<<<grid_size(mb_segs * H), BLOCK_SIZE, 0, train_stream>>>(
++                graph.mb_state.data, pufferl.rollout_start_states.data,
++                pufferl.prio_bufs.idx.data, mb_segs, layers, bopl_apb, H);
++        }
+         {
+             RolloutBuf sel_src = rollouts;
+             sel_src.values = rollouts.values;
+-            int mb_segs = pufferl.prio_bufs.idx.shape[0];
+-            int channels = (graph.mb_action_mask.data != nullptr) ? 6 : 5;
++            int channels = 7;  // Bopl: channel 6 = terminals (5 is self-guarded)
+             select_copy<<<dim3(mb_segs, channels), SELECT_COPY_THREADS, 0, train_stream>>>(
+                 sel_src, graph, pufferl.prio_bufs.idx.data,
+                 advantages_puf.data, pufferl.prio_bufs.mb_prio.data);
+@@ -1696,6 +1857,8 @@
+                 grad_logits_puf, grad_logstd_puf, grad_values_puf, stream);
+ 
+             muon_step(&pufferl.muon, pufferl.master_weights, pufferl.grad_puf, hypers.max_grad_norm, stream);
++            // Bopl: pre-clip gradient norm statistic (muon leaves sum of squares in grad_norm_ptr)
++            bopl_accum_grad_norm<<<1, 1, 0, stream>>>(pufferl.losses_puf.data, pufferl.muon.grad_norm_ptr);
+             if (USE_BF16) {
+                 int n = numel(pufferl.param_puf.shape);
+                 cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
+@@ -2106,6 +2269,14 @@
+     pufferl->advantages_puf = {.shape = {total_agents, horizon}};
+     alloc_register(acts, &pufferl->advantages_puf);
+ 
++    // Bopl: rollout-start states + advantage statistics
++    pufferl->rollout_start_states = {.shape = {num_buffers, num_layers, batch, hidden_size}};
++    alloc_register(acts, &pufferl->rollout_start_states);
++    pufferl->adv_stats_puf = {.shape = {BOPL_ADV_STATS}};
++    alloc_register(acts, &pufferl->adv_stats_puf);
++    pufferl->last_lr = hypers.lr;
++    pufferl->last_ent_coef = hypers.ent_coef;
++
+     muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
+     pufferl->muon.nccl_comm = pufferl->nccl_comm;
+     pufferl->muon.world_size = hypers.world_size;

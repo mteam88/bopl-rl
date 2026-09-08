@@ -49,8 +49,20 @@ class Sampler(threading.Thread):
             current=proc_stat()
             busy=((current[0]-current[1])-(previous[0]-previous[1]))/max(1,current[0]-previous[0])*os.cpu_count()
             previous=current
+            memory_current,memory_high_events=cgroup_memory()
             self.samples.append(dict(t=now,gpu_util=util,gpu_power_w=power,gpu_memory_mb=memory,sm_clock_mhz=clock,
-                                     gpu_temperature_c=temperature,busy_cores=busy,load1=os.getloadavg()[0]))
+                                     gpu_temperature_c=temperature,busy_cores=busy,load1=os.getloadavg()[0],
+                                     cgroup_memory_mb=memory_current/1048576 if memory_current is not None else None,
+                                     cgroup_memory_high_events=memory_high_events))
+
+def cgroup_memory():
+    """(memory.current bytes, memory.high event count) of this process's cgroup, or (None,None)."""
+    try:
+        path=Path('/sys/fs/cgroup')/Path(Path('/proc/self/cgroup').read_text().split('::',1)[1].strip()).relative_to('/')
+        current=int((path/'memory.current').read_text())
+        events=dict(l.split() for l in (path/'memory.events').read_text().splitlines())
+        return current,int(events.get('high',0))
+    except Exception: return None,None
 
 def summarize(values):
     if not values: return None
@@ -58,9 +70,16 @@ def summarize(values):
     return dict(mean=statistics.fmean(values),median=statistics.median(values),
                 p10=values[int(.1*len(values))],p90=values[min(len(values)-1,int(.9*len(values)))],n=len(values))
 
-def run_once(python,out,workers,decisions,seed,extra,env):
+def run_once(python,out,workers,decisions,seed,extra,env,start_step=0):
     metrics=out/'metrics.jsonl'
-    command=[python,str(HERE/'train.py'),'--output',str(out),'--workers',str(workers),'--steps',str(decisions),
+    # Leading KEY=VALUE tokens of an arm set environment variables for that arm
+    # (code-path toggles such as BOPL_OPPONENT_SAMPLING); the rest are train.py flags.
+    env=dict(env); extra=list(extra)
+    while extra and '=' in extra[0] and not extra[0].startswith('-'):
+        key,value=extra.pop(0).split('=',1); env[key]=value
+    # train.py's --steps is an absolute all-player step target, so a resumed
+    # run (--load at start_step) needs start_step added to the budget.
+    command=[python,str(HERE/'train.py'),'--output',str(out),'--workers',str(workers),'--steps',str(start_step+decisions),
              '--seed',str(seed),'--no-eval','--no-video',*extra]
     log=out.with_suffix('.log').open('w')
     log.write(' '.join(shlex.quote(x) for x in command)+'\n'); log.flush()
@@ -75,7 +94,10 @@ def run_once(python,out,workers,decisions,seed,extra,env):
     loop=sum(r['rollout_seconds']+r['train_seconds'] for r in records)
     rollout=sum(r['rollout_seconds'] for r in records)
     snapshot=sum(r.get('snapshot_seconds',0) for r in records)
-    steps=records[-1]['step']
+    steps=records[-1]['step']-start_step
+    per_update=json.loads((out/'config.json').read_text())['decisions_per_update']
+    if records[0]['step']-per_update!=start_step:
+        raise RuntimeError(f'{out.name} started at step {records[0]["step"]-per_update}, expected {start_step}')
     result=json.loads((out/'result.json').read_text())
     window=[s for s in sampler.samples if sampler.loop_started is not None and s['t']>=sampler.loop_started]
     # active_seconds: train.py's own clock from pool/graph setup through the
@@ -95,6 +117,10 @@ def run_once(python,out,workers,decisions,seed,extra,env):
                 gpu_util=summarize([s['gpu_util'] for s in window]),gpu_power_w=summarize([s['gpu_power_w'] for s in window]),
                 gpu_memory_mb=summarize([s['gpu_memory_mb'] for s in window]),sm_clock_mhz=summarize([s['sm_clock_mhz'] for s in window]),
                 busy_cores=summarize([s['busy_cores'] for s in window]),load1=summarize([s['load1'] for s in window]),
+                # Unit memory over the whole run (not only the steady window): a run that touches the
+                # cgroup's memory.high line is throttled and its timings are a lower bound.
+                cgroup_memory_peak_mb=max((s['cgroup_memory_mb'] for s in sampler.samples if s.get('cgroup_memory_mb') is not None),default=None),
+                cgroup_memory_high_events=(lambda e:(e[-1]-e[0]) if len(e)>1 else 0)([s['cgroup_memory_high_events'] for s in sampler.samples if s.get('cgroup_memory_high_events') is not None]),
                 samples=sampler.samples)
 
 def main():
@@ -105,7 +131,8 @@ def main():
     parser.add_argument('--decisions',type=int,default=98304)
     parser.add_argument('--seed',type=int,default=73)
     parser.add_argument('--label',default='')
-    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Pass flags explicitly; an empty arm uses train.py defaults')
+    parser.add_argument('--start-step',type=int,default=0,help='All-player step of the checkpoint passed with --load in the extra args; decision counts and the --steps target are relative to it')
+    parser.add_argument('--arms',default='',help='name=extra train.py args; comma separated, e.g. "sync=--pipeline-groups 1 --cuda-graphs 0,pipe=--pipeline-groups 2". Leading KEY=VALUE tokens set environment variables for the arm. Pass flags explicitly; an empty arm uses train.py defaults')
     parser.add_argument('extra',nargs='*',help='extra train.py arguments for every run (after --)')
     opt=parser.parse_args()
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
@@ -132,19 +159,21 @@ def main():
                     median_gpu_power_w=statistics.median(r['gpu_power_w']['mean'] for r in rows if r['gpu_power_w']),
                     median_busy_cores=statistics.median(r['busy_cores']['mean'] for r in rows if r['busy_cores']),
                     median_wall_seconds=statistics.median(r['wall_seconds'] for r in rows),
+                    max_cgroup_memory_peak_mb=max((r['cgroup_memory_peak_mb'] for r in rows if r.get('cgroup_memory_peak_mb') is not None),default=None),
+                    cgroup_memory_high_events=sum(r.get('cgroup_memory_high_events') or 0 for r in rows),
                     collection_share=statistics.median(r['rollout_seconds']/r['loop_seconds'] for r in rows))
         summary.write_text(json.dumps(dict(schema=1,label=opt.label,gpu=gpu,cpu_count=os.cpu_count(),decisions=opt.decisions,
-            seed=opt.seed,repeats=opt.repeats,extra=opt.extra,arms={a:e for a,e in arms},table=table,
+            seed=opt.seed,repeats=opt.repeats,start_step=opt.start_step,extra=opt.extra,arms={a:e for a,e in arms},table=table,
             runs=[{k:v for k,v in r.items() if k!='samples'} for r in runs]),indent=2)+'\n')
     for repeat in range(opt.repeats):
         for w in workers:
             for arm,extra in arms:
                 name=f'{arm}-w{w}-{repeat+1}'
                 print(f'== {name}',flush=True)
-                result=run_once(python,out/name,w,opt.decisions,opt.seed,[*extra,*opt.extra],env); result['arm']=arm
+                result=run_once(python,out/name,w,opt.decisions,opt.seed,[*extra,*opt.extra],env,opt.start_step); result['arm']=arm
                 (out/f'{name}-samples.json').write_text(json.dumps(result['samples'])+'\n')
                 runs.append(result); write()
-                print(json.dumps({k:v for k,v in result.items() if k in ('name','decisions_per_second','decisions_per_second_active','decisions_per_second_wall','snapshot_seconds','pool_versions','wall_seconds','gpu_util','gpu_power_w','busy_cores')}),flush=True)
+                print(json.dumps({k:v for k,v in result.items() if k in ('name','decisions_per_second','decisions_per_second_active','decisions_per_second_wall','snapshot_seconds','pool_versions','wall_seconds','gpu_util','gpu_power_w','busy_cores','cgroup_memory_peak_mb','cgroup_memory_high_events')}),flush=True)
     print(summary.read_text())
 
 if __name__=='__main__': main()
