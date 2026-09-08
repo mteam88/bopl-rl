@@ -222,6 +222,48 @@ Result: **l0-p2-g4 (Dash/Bow/Platform - the live RL training loadout)
 matches 720/720 unfiltered**; l0-p2, l4-p2, l0-p2-g0, l0-p3-g0 re-verified
 green after the change.
 
+## In-process C ABI (sim/Native -> BoplSimNative.so)
+
+`sim/Native` publishes a NativeAOT shared library exporting the full
+`native/rl/bopl_rl.h` ABI (version 2) via `[UnmanagedCallersOnly]`, replacing
+the worker process + unix socket with direct calls. Smoke test:
+`native/rl/native_check.c` (dlopen, open, reset, 240 zero-action steps).
+
+- **RlBridge's dispatch layer is reimplemented, not called**: all of
+  RlBridge's members are private, but everything it dispatches to is reused
+  verbatim (`Host.ResetRl`, `Updater.TickSimulation`, `RlObservation.Write`,
+  `RlTelemetry`, `ReplayArchive`, `ReferenceCapture`) via a new
+  InternalsVisibleTo(BoplSimNative) on Gameplay. The observation wire bytes
+  from `RlObservation.Write` are decoded into unmanaged `BoplRlState` blocks
+  exactly the way `bopl_rl.c decode_snapshot` does; bopl_rl.c's client-side
+  argument validation and status codes are mirrored verbatim.
+- **Frame cadence = the Unity RL runtime, not the trace fixtures**: RlBridge
+  runs up to `CommandsPerFrame` (4096) simulation ticks per engine frame and
+  defers a step that would cross the budget (`pendingStep`), so destroy
+  drains/Start flushes happen every ~4096 ticks — unlike the 16-tick cadence
+  of the BOPL_TRACE_BATCH=16 fixtures. The .so mirrors the 4096 model
+  (boundary after reset, deferral before an oversized step) for bit-parity
+  with the socket path, which is what the checksum comparison targets.
+- **`BOPL_RL_SOCKET=in-process` is set at open**: `RlTelemetry.Enabled`
+  requires `RlBridge.Enabled` (that env var). The only other consumers
+  (Host.Update -> Pump, Host.OnLevelWasLoaded) are never dispatched by the
+  shim host. Without it the telemetry section of the observation would stay
+  zero, unlike the socket path.
+- **One world per process**: gameplay statics; a second `bopl_rl_open`
+  returns an error (and close does not lift the latch).
+- **reset_begin/finish are synchronous**: no socket to overlap with, so begin
+  does all the work and finish reports the stashed result; the pending
+  protocol (EBUSY/EINVAL -> BOPL_RL_IO, close drains) is preserved.
+- **BOPL_TRACE works inside the .so** (`Tick` calls
+  `ReferenceCapture.BeforeReplayStep` like RlBridge.Tick, with the
+  `!Completed` truncation guard from sim/Host) and the open() log path is the
+  `-logFile` equivalent: stderr (shim Debug.Log*) is redirected there.
+- native_check on the default config (2 players, l0, Dash/Gust/Invisibility):
+  reset 59 ms, 240 steps in 5 ms (~48k ticks/s through the full ABI with
+  per-step observation encode/decode), checksum stable across runs and
+  unchanged with tracing on. The checksum awaits comparison against the same
+  sequence through the RL thread's socket path.
+
 ## Open questions for the oracle
 
 - Awake/OnEnable batching on Instantiate (deviation 3).
@@ -254,3 +296,9 @@ green after the change.
       (10 manual + scripted). Suspect a `Dictionary<string,_>` iteration
       order leak (.NET randomizes string hash seeds per process) somewhere
       on a trace-observable path — audit sim-path dictionary iterations.
+- [ ] l3-p2-g4 diverges at 649/720 on `FixTransform.position` Vec2.x (real
+      physics; left 65682363597 vs right -54114639920). Same level as the g3
+      Mjolnir/Portal divergence — likely a level-3 map mechanic. Owned by the
+      physics-divergence thread per the coordinator's scope cut.
+- [ ] native_check checksum vs the socket path (RL thread) — same 240-step
+      zero-action sequence, compare FNV-1a over the decoded states.
