@@ -34,6 +34,7 @@ namespace BoplSim.Export
 		internal readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
 		internal readonly Dictionary<string, int> WarningCounts = new Dictionary<string, int>();
 		internal readonly Dictionary<string, string> AssetNames = new Dictionary<string, string>();
+		private readonly Dictionary<string, JArray> sceneJsonCache = new Dictionary<string, JArray>();
 		private readonly Dictionary<string, Type> typeCache = new Dictionary<string, Type>();
 		private readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
 		private readonly HashSet<string> warnedScenes = new HashSet<string>();
@@ -161,7 +162,10 @@ namespace BoplSim.Export
 			var scene = new Scene(buildIndex, map.SceneName);
 			World.Current.activeScene = scene;
 
-			var sceneJson = JArray.Parse(File.ReadAllText(Path.Combine(exportDir, map.File)));
+			// PERF-1 fix 1 (minimum): the parse dominated warm resets (~10 of 15 ms);
+			// the JArray is only read by GraphBuilder/PropertyApplier, never mutated.
+			if (!sceneJsonCache.TryGetValue(map.File, out var sceneJson))
+				sceneJsonCache[map.File] = sceneJson = JArray.Parse(File.ReadAllText(Path.Combine(exportDir, map.File)));
 			var pending = new List<PendingProperties>();
 			var roots = new List<GameObject>();
 			foreach (var node in sceneJson)
