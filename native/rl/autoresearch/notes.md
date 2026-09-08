@@ -1073,3 +1073,50 @@ lower lag-1 cosine and with rising evaluation win rate vs random, so the
 value target distribution may be shifting. Evaluation at 33.3M physical:
 vs random .542 (24 games), vs initial .375 (24), held-out vs random .625 (8),
 no timeouts.
+
+## 2026-09-07 22:33 EDT: behavior is moving from ~18M (counters 0-30M, read-only)
+
+Same per-2M sums of `behavior.totals` as the 22:16 section, extended to
+30M learner decisions. Everything below is per learner episode unless marked.
+
+| window | ticks | env deaths | self | opponent-credited | credited kills | arrows | hits | dash | platform | H(aim) | H(buttons) | ev |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0-2M | 333 | .416 | .078 | .008 | .086 | 1.80 | .008 | .96 | .39 | 5.530 | 2.762 | .03 |
+| 10-12M | 342 | .412 | .083 | .009 | .092 | 1.85 | .009 | .98 | .42 | 5.525 | 2.764 | .59 |
+| 18-20M | 372 | .393 | .091 | .014 | .103 | 2.00 | .012 | 1.06 | .50 | 5.515 | 2.756 | .62 |
+| 22-24M | 402 | .382 | .098 | .019 | .117 | 2.15 | .019 | 1.14 | .57 | 5.507 | 2.755 | .60 |
+| 26-28M | 445 | .357 | .110 | .028 | .137 | 2.36 | .027 | 1.26 | .68 | 5.492 | 2.750 | .56 |
+| 28-30M | 469 | .351 | .114 | .033 | .147 | 2.48 | .033 | 1.33 | .74 | 5.482 | 2.753 | .52 |
+| 30M+ (partial) | 488 | .349 | .122 | .035 | .157 | 2.57 | .035 | 1.38 | .79 | 5.474 | 2.751 | .50 |
+
+What changed. Rounds are 47% longer than at the start (333 → 488 ticks) and
+episodes per update fell 36.8 → 25.1. Environment deaths per episode fell
+.416 → .349, the first sustained movement in that counter; it was flat
+through 14M. Opponent-credited deaths rose .008 → .035 and arrow hits
+.008 → .035 in step, both about 4x, while arrows fired rose only 43%
+(1.80 → 2.57), so accuracy per arrow roughly tripled (.0044 → .0136 hits per
+arrow). Self deaths rose .078 → .122 and platform activations per episode
+doubled (.39 → .79); dashes per episode rose 44%. Per decision, jump rate
+rose .503 → .550 and platform rate fell .530 → .508; dash and arrow rates are
+flat, so the per-episode increases are mostly the longer rounds. Aim head
+entropy fell 5.530 → 5.474 (uniform 5.545), buttons 2.762 → 2.751 (uniform
+2.773): still near uniform, and joint entropy 8.236 at 30M matches.
+
+Reading. This is the pattern one would expect from "fall in the water less,
+and occasionally hit the opponent": longer rounds, fewer environment deaths,
+more opponent kills. It is small in absolute terms (the learner still dies to
+the environment in 35% of episodes and is killed by the opponent in 3.5%),
+and part of the longer rounds is just two players who both avoid the water a
+little longer. The explained-variance decline from .62 to .50 over the same
+window is consistent with a target shift rather than critic failure: longer
+rounds push more of the return further from the terminal reward, and the
+outcome distribution now includes a small kill component that was absent
+before; value loss kept falling (.0264 → .0231). Wins per episode stayed
+at .50 by construction (self-play plus historical opponents of the same
+lineage). None of this is strength evidence against a fixed opponent; the
+evaluation win rate vs random over the last three evaluations (.58, .46, .54
+on 24 games each) is inside noise. The behavior counters are the earlier and
+less noisy signal. Next check at ~40M: whether env deaths keep falling and
+whether aim entropy keeps declining; the 22:16 section's watch item
+("deaths_environment per episode is the most direct behavior progress
+signal") stands.
