@@ -289,7 +289,7 @@ def main():
                 before_pool = native_selfplay.summary(pool, ledger)
                 flat = {'env/'+key: value for key, value in native['env'].items()}
                 native_selfplay.credit(pool, flat, ledger)
-                selfplay.step(trainer, _C, pool, flat, update_index)
+                native_selfplay.step(selfplay.step, trainer, _C, pool, flat, update_index)
                 update_index += 1
                 native_selfplay.register(pool, ledger, counts['game_steps'], counts['learner_steps'])
                 after_pool = native_selfplay.summary(pool, ledger)

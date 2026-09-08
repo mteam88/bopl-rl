@@ -50,6 +50,27 @@ def credit(pool, flat, ledger):
             member['wins'] += round(float(flat.get(f'env/hist_score_bank_{index}', 0.0)) * n)
 
 
+def step(selfplay_step, trainer, backend, pool, flat, epoch):
+    """pufferlib.selfplay.step, then collapse the duplicate entries it can create.
+
+    When several banks pass the swap gate in the same update (they start
+    synchronised on the initial checkpoint), upstream saves and appends the same
+    {global_step}.bin once per bank: the copies are rated separately (only the
+    first receives the Elo update), sampled with multiplied weight, and count
+    towards the winrate-snapshot cap. Keep the first occurrence of each path.
+    With max_size >= 10 (winrate snapshots stop at ten entries) the duplicates
+    never reach eviction, so the pool is exactly what a single append would give;
+    a smaller max_size can still evict one extra old entry in the colliding update.
+    """
+    selfplay_step(trainer, backend, pool, flat, epoch)
+    seen, unique = set(), []
+    for entry in pool['pool']:
+        if entry['path'] not in seen:
+            seen.add(entry['path'])
+            unique.append(entry)
+    pool['pool'] = unique
+
+
 def register(pool, ledger, step, learner_steps):
     """Record when snapshots selfplay.step just took were made."""
     for entry in pool['pool']:

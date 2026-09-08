@@ -61,7 +61,7 @@ class NativeSelfplayTests(unittest.TestCase):
 
     def step(self, flat, epoch):
         native_selfplay.credit(self.pool, flat, self.ledger)
-        selfplay.step(self.trainer, self.backend, self.pool, flat, epoch)
+        native_selfplay.step(selfplay.step, self.trainer, self.backend, self.pool, flat, epoch)
         native_selfplay.register(self.pool, self.ledger, self.trainer.global_step * 4, self.trainer.global_step * 3)
 
     def summary(self):
@@ -145,6 +145,20 @@ class NativeSelfplayTests(unittest.TestCase):
         self.assertEqual(kinds, [('snapshot', 4000), ('snapshot', 8000), ('snapshot', 12000), ('snapshot', 16000),
                                  ('evicted', 4000), ('snapshot', 20000), ('evicted', 8000), ('snapshot', 24000), ('evicted', 12000)])
         self.assertEqual(after['entries'][0]['step'], 0, 'stride eviction never drops the bootstrap anchor')
+
+    def test_simultaneous_bank_swaps_snapshot_once(self):
+        # Both banks beat the shared bootstrap in the same update: upstream would
+        # append the same {global_step}.bin twice; the pool must list it once.
+        self.trainer.global_step = 100
+        before = self.summary()
+        self.step(logs(4, **{'0': (4, 4), '1': (4, 4)}), 0)
+        after = self.summary()
+        paths = [e['path'] for e in self.pool['pool']]
+        self.assertEqual(len(paths), len(set(paths)), 'no duplicate pool entries')
+        self.assertEqual(after['size'], 2)
+        self.assertEqual([e['event'] for e in native_selfplay.events(before, after, self.ledger, learner_steps=0)],
+                         ['snapshot', 'armed', 'armed'])
+        self.assertTrue(all(b['pending_opp_path'] is not None for b in self.pool['banks']))
 
     def test_timeout_swap_without_snapshot(self):
         self.pool['snapshot_interval'] = 0
