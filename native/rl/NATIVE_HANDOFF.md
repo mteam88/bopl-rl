@@ -23,12 +23,17 @@ native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
   --horizon 128 --learner-passes 1 --learning-rate 0.0003 \
   --anneal-lr 0 --min-lr-ratio 0 \
   --training-maps 0,1,2 --evaluation-maps 0,1,2 --heldout-maps 3,4 \
-  --episode-ticks 7200 --entropy 0.01 --entropy-floor 0.0005 \
+  --episode-ticks 7200 --stocks 0 --entropy 0.01 --entropy-floor 0.0005 \
   --entropy-half-life 30000000 \
   --checkpoint-every 1000000 --eval-every 5000000 \
   --evaluation-games 8 --heldout-games 4 --frozen-games 16 \
   --evaluation-workers 2
 ```
+
+`--stocks 0` is vanilla Bopl: one life per round (the Smash-style extra-life
+mod is off). Training, the CPU evaluator and `bopl.ini` all default to 0 since
+2026-09-07 21:50; the first 20 minutes of the 400M run were launched with the
+old default of 3 and discarded (`aborted-001-s73-stocks3`).
 
 Rewards are fixed by this entrypoint: +1 for winning, -1 for losing, -0.5 for
 both players on timeout, and zero kill/death shaping. Half the games use live

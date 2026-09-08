@@ -65,7 +65,7 @@ void my_init(Env *env, Dict *kwargs) {
     bopl_rl_default_config(&env->config, (uint32_t)env->players);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
     env->config.slots=(uint32_t)option(kwargs, "slots", 3);
-    env->config.stocks=(uint32_t)option(kwargs, "stocks", 3);
+    env->config.stocks=(uint32_t)option(kwargs, "stocks", 0);
     env->config.mode=(uint32_t)option(kwargs, "mode", 0);
     env->config.warmup_ticks=(uint32_t)option(kwargs, "warmup_ticks", 240);
     env->config.max_episode_ticks=(uint32_t)option(kwargs, "max_episode_ticks", 3600);

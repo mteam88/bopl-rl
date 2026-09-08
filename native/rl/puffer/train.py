@@ -60,6 +60,7 @@ def arguments():
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
                    help='Learner decisions per halving of the entropy coefficient, until its floor')
     p.add_argument('--episode-ticks', type=int, default=7200)
+    p.add_argument('--stocks', type=int, default=0, help='Smash-style extra-life setting; 0 = vanilla Bopl, one life per round')
     p.add_argument('--training-maps', type=maps, default=[0])
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
@@ -148,14 +149,14 @@ def main():
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
-                       max_episode_ticks=a.episode_ticks, reward_kill_milli=0, reward_timeout_milli=-500)
+                       max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=0, reward_timeout_milli=-500)
     pufferl.validate_config(args)
     target_physical = math.ceil(a.steps * 4 / 3)
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
-                  heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks,
+                  heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=-.5, kill=0, death=0),
                   entropy=a.entropy, entropy_floor=a.entropy_floor,
