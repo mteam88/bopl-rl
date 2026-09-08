@@ -51,5 +51,29 @@
     "checkpoint_learner_decisions": 1000000,
     "evaluation_learner_decisions": 5000000,
     "independent": true
+  },
+  "constant_learning_rate_check": {
+    "source_commit": "147abe1",
+    "run": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/native-migration-audit/final-constant-lr-cli",
+    "status": "pass",
+    "updates": 6,
+    "anneal_lr": 0,
+    "configured_learning_rate": 0.0003,
+    "native_learning_rates": [
+      0.0003000000142492354,
+      0.0003000000142492354,
+      0.0003000000142492354,
+      0.0003000000142492354,
+      0.0003000000142492354,
+      0.0003000000142492354
+    ],
+    "native_entropy_coefficients": [
+      0.009999999776482582,
+      0.004999999888241291,
+      0.0024999999441206455,
+      0.0012499999720603228,
+      0.0006249999860301614,
+      0.0005000000237487257
+    ]
   }
 }
