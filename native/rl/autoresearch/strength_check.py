@@ -7,8 +7,10 @@ Protocol (pre-registered; every arm gets identical settings except --encoder):
    timeout -0.5, no kill shaping), episode cap 7200, maps 0,1,2 sampled at
    reset, entropy coefficient .01 decaying exponentially in learner decisions
    with a 30M half-life to the .0005 floor (train.py's default schedule, passed
-   explicitly so a short run is a prefix of the long run's entropy schedule;
-   the learning rate still cosine-anneals over each run's own budget),
+   explicitly so a short run is a prefix of the long run's entropy schedule),
+   learning rate .0003 held constant (`--anneal-lr 0`, train.py's default and
+   the 400M run's setting; `--anneal-lr 1 --min-lr-ratio` selects the native
+   cosine decay over each run's own budget instead, recorded in the plan),
    cudagraphs 1, the same game binary, `--steps` learner decisions,
    `--no-eval` (evaluation is matched below instead). Runs execute one at a time (one heavy job at a time).
 2. Final evaluation per run (`evaluate.py --suite final`, CPU): the last
@@ -96,10 +98,13 @@ def complete(run, plan, arm, seed):
                     learner_passes=plan['learner_passes'], episode_ticks=plan['episode_ticks'],
                     training_maps=plan['training_maps'], learner_steps=plan['steps'],
                     entropy=plan['entropy'], entropy_floor=plan['entropy_floor'],
-                    entropy_schedule='exponential', entropy_half_life=plan['entropy_half_life'])
+                    entropy_schedule='exponential', entropy_half_life=plan['entropy_half_life'],
+                    learning_rate_schedule='cosine' if plan['anneal_lr'] else 'constant')
     mismatch = {k: (config.get(k), v) for k, v in expected.items() if config.get(k) != v}
-    horizon = ((config.get('native') or {}).get('train') or {}).get('horizon')
-    if horizon != plan['horizon']: mismatch['horizon'] = (horizon, plan['horizon'])
+    native_train = (config.get('native') or {}).get('train') or {}
+    for k, v in dict(horizon=plan['horizon'], learning_rate=plan['learning_rate'],
+                     anneal_lr=plan['anneal_lr'], min_lr_ratio=plan['min_lr_ratio']).items():
+        if native_train.get(k) != v: mismatch[k] = (native_train.get(k), v)
     runtime = config.get('runtime') or config.get('game_runtime') or {}
     if plan['game_identity'] != {k: runtime.get(k) for k in plan['game_identity']}:
         mismatch['game_identity'] = (runtime, plan['game_identity'])
@@ -119,7 +124,9 @@ def train(args, plan, arm, seed, game):
     command = [sys.executable, str(TRAINER), '--output', str(run), '--game', str(game),
                '--steps', str(args.steps), '--workers', str(args.workers), '--banks', str(args.banks),
                '--horizon', str(args.horizon), '--seed', str(seed), '--encoder', arm,
-               '--learner-passes', str(args.learner_passes), '--entropy', str(args.entropy),
+               '--learner-passes', str(args.learner_passes),
+               '--learning-rate', repr(args.learning_rate), '--anneal-lr', str(args.anneal_lr),
+               '--min-lr-ratio', repr(args.min_lr_ratio), '--entropy', str(args.entropy),
                '--entropy-floor', str(args.entropy_floor), '--entropy-half-life', str(args.entropy_half_life),
                '--episode-ticks', str(args.episode_ticks),
                '--training-maps', ','.join(map(str, args.training_maps)),
@@ -261,6 +268,10 @@ def main():
     parser.add_argument('--banks', type=int, default=4)
     parser.add_argument('--horizon', type=int, default=128)
     parser.add_argument('--learner-passes', type=int, default=1)
+    parser.add_argument('--learning-rate', type=float, default=.0003, help='train.py default')
+    parser.add_argument('--anneal-lr', type=int, choices=(0, 1), default=0,
+                        help='0 keeps the learning rate constant (train.py default); 1 uses the native cosine decay over each run budget')
+    parser.add_argument('--min-lr-ratio', type=float, default=0., help='Final/base learning-rate ratio when --anneal-lr 1')
     parser.add_argument('--entropy', type=float, default=.01)
     parser.add_argument('--entropy-floor', type=float, default=.0005)
     parser.add_argument('--entropy-half-life', type=int, default=30_000_000,

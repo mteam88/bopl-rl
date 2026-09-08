@@ -46,8 +46,11 @@ Read `native/rl/README.md` first; it is the reference for the contract below.
   events). Episode cap default 7200 ticks. Entropy coefficient decays
   exponentially in learner decisions with `--entropy-half-life` (default 30M)
   from `--entropy` .01 to the `--entropy-floor` .0005, independent of the run
-  budget; the learning rate cosine-anneals to zero over the run budget (explicit
-  `anneal_lr=1, min_lr_ratio=0`). Both effective values are written per update.
+  budget; the learning rate .0003 is held constant (`--anneal-lr 0`, the
+  default, recorded as native `anneal_lr=0`; `--anneal-lr 1 --min-lr-ratio`
+  selects the native cosine decay over the run budget). Constant matches the
+  old trainer and keeps the late sparse-reward signal from being frozen. Both
+  effective values are written per update.
 - **Budgets.** `--steps`, `--checkpoint-every` and `--eval-every` count learner
   decisions; `step` and checkpoint filenames count physical decisions. With 16
   workers one update holds 3072 learner rows (24 learner rows × horizon 128).

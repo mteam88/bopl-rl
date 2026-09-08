@@ -545,3 +545,24 @@ config.json. Checked: a copy of the pre-f998744 self-test run is rejected with
 `entropy_schedule: (None, 'exponential'), entropy_half_life: (None, 30000000)`, and the old
 `strength-selftest/plan.json` is rejected for the missing field. So the self-test evidence predates
 the schedule change; the script has not been exercised end to end on a post-f998744 run.
+
+## 2026-09-08 constant learning rate (parent override; merge b79640c)
+
+Parent's final config override: the learning rate must stay constant at .0003 so the late,
+sparse-reward signal is not frozen by a cosine decay, matching the old trainer. Root's fb0f13e
+adds `--anneal-lr {0,1}` (default 0, constant) and `--min-lr-ratio` to train.py, writes the native
+`anneal_lr` explicitly and records `learning_rate_schedule` ('constant' or 'cosine') in config.json;
+b79640c holds root's six-update check (0.0003 through six native updates with `anneal_lr=0`, entropy
+halving through the floor as before). Entropy stays exponential with the 30M half-life.
+
+Merged base main b79640c here (fast-forward of my b5bbe62). `strength_check.py` now passes
+`--learning-rate`, `--anneal-lr` and `--min-lr-ratio` explicitly (defaults .0003 / 0 / 0 = train.py),
+records them in plan.json, and a cached run must match `learning_rate_schedule` plus the native
+`learning_rate`, `anneal_lr` and `min_lr_ratio`. Checked with synthetic run directories shaped like the
+current config.json: a constant-LR run passes the settings check (it then reaches the checkpoint
+identity check), a cosine-trained run is rejected with `learning_rate_schedule: ('cosine', 'constant'),
+anneal_lr: (1, 0)`, and a pre-fb0f13e run is rejected for the missing fields. program.md's
+schedule paragraph now says constant by default. All throughput rows in results.tsv and the
+final-bench-w16 artifacts were produced under the earlier native cosine schedule (`anneal_lr=1`,
+visible in their config.json); they remain valid throughput provenance, since the learning-rate
+schedule does not touch the collection path, but they are not learning provenance for the 400M run.
