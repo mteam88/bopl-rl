@@ -61,8 +61,9 @@ def game_identity(game=None):
         payload['game_assembly']=native
         metadata=data/'il2cpp_data/Metadata/global-metadata.dat'
         if metadata.exists(): payload['metadata']=metadata
-    if not payload: raise FileNotFoundError(f'No Mono assembly or IL2CPP payload next to {game}')
-    backend='il2cpp' if 'game_assembly' in payload else 'mono'
+    # The NativeAOT .NET sim (sim/RL.md) compiles the game code into the executable
+    # itself and ships no payload files: the player hash alone identifies the build.
+    backend='il2cpp' if 'game_assembly' in payload else 'mono' if payload else 'dotnet-aot'
     digests={name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in payload.items()}
     return {'game':str(game),'backend':backend,'player_sha256':hashlib.sha256(game.read_bytes()).hexdigest(),
             **{name+'_sha256':digest for name,digest in digests.items()},
