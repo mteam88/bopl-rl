@@ -1116,7 +1116,16 @@ little longer. The explained-variance decline from .62 to .50 over the same
 window is consistent with a target shift rather than critic failure: longer
 rounds push more of the return further from the terminal reward, and the
 outcome distribution now includes a small kill component that was absent
-before; value loss kept falling (.0264 → .0231). Wins per episode stayed
+before; value loss kept falling (.0264 → .0231). How the number is formed
+(pinned `torch_pufferl.py`, end of `train`): after the pass, `y_pred` is the
+value buffer with sampled rows overwritten by the post-step critic, and
+`y_true` is GAE advantage plus that same buffer, so the residual is exactly
+the advantage and ev = 1 − var(A)/var(A+V) over the whole rollout. Advantage
+std fell .226 → .193 over 6-30M, so the ev decline means var(A+V) fell
+faster: the critic's own spread is shrinking. With longer rounds and
+γ-discounting, more decisions sit far from any terminal reward and their
+correct value is close to 0, which shrinks var(V) without the critic being
+wrong. Not a failure signal on its own; watch it against value loss. Wins per episode stayed
 at .50 by construction (self-play plus historical opponents of the same
 lineage). None of this is strength evidence against a fixed opponent; the
 evaluation win rate vs random over the last three evaluations (.58, .46, .54
