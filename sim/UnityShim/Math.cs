@@ -855,6 +855,10 @@ namespace UnityEngine
 	{
 		private int m_Mask;
 
+		// Native serialization name (the exporter flattens "<field>.m_Bits" next
+		// to the summary int; REVIEW-loader-2 L2).
+		internal int m_Bits { get => m_Mask; set => m_Mask = value; }
+
 		public int value { get => m_Mask; set => m_Mask = value; }
 
 		public static implicit operator int(LayerMask mask) => mask.m_Mask;

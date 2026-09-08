@@ -40,6 +40,15 @@ namespace UnityEngine
 			m_InTangent = inTangent; m_OutTangent = outTangent;
 			m_InWeight = 0f; m_OutWeight = 0f; m_WeightedMode = 0;
 		}
+
+		// Export loader aliases: the exporter flattens the NATIVE serialization
+		// names (inSlope/outSlope/tangentMode) as exact f32 leaves next to its
+		// Fix-raw summary; these let the property walker overwrite the summary's
+		// preimage floats with the player's exact bits, including the ±Infinity
+		// constant-mode tangents the Fix summary collapses (REVIEW-loader-2 L1).
+		internal float inSlope { get => m_InTangent; set => m_InTangent = value; }
+		internal float outSlope { get => m_OutTangent; set => m_OutTangent = value; }
+		internal int tangentMode { get => 0; set { } } // editor-only tangent UI flags
 	}
 
 	public enum WeightedMode { None = 0, In = 1, Out = 2, Both = 3 }
@@ -56,6 +65,15 @@ namespace UnityEngine
 
 		public AnimationCurve() { }
 		public AnimationCurve(params Keyframe[] keys) { this.keys = keys; }
+
+		// Export loader aliases for the flattened native serialization (see
+		// Keyframe). m_Pre/PostInfinity duplicate the summary's preWrap/postWrap
+		// (different enum encoding); m_RotationOrder is euler-curve-only. No-ops
+		// so the walker stays silent (REVIEW-loader-2 L2).
+		internal Keyframe[] m_Curve { get => keys; set => keys = value; }
+		internal int m_PreInfinity { get => 0; set { } }
+		internal int m_PostInfinity { get => 0; set { } }
+		internal int m_RotationOrder { get => 0; set { } }
 
 		public int length => keys.Length;
 
