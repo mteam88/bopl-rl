@@ -17,6 +17,10 @@ between consecutive increments, `net/rw` the net displacement over the whole
 series divided by the random-walk expectation sqrt(n)*mean|increment|. Near
 1 and ~0 means the slice is doing a random walk (noise-dominated gradient);
 well above 1 with a high cosine means it is moving in a consistent direction.
+`row` is the mean per-row norm of the slice (decoder slices only; rows are
+hidden-wide), first and last checkpoint: Muon whitens the whole 273-row
+decoder, so a row whose gradient is consistent grows while noise rows keep
+their initial norm (notes.md 2026-09-07 22:02).
 """
 import argparse
 import json
@@ -122,6 +126,7 @@ def drift(run):
     if len(files) < 3: raise SystemExit(f'{run}: need at least three native checkpoints for drift')
     metas = [json.loads(Path(str(f)+'.json').read_text()) for f in files]
     total, slices = weight_slices(metas[0])
+    hidden = metas[0]['hidden']
     weights = []
     for f in files:
         w = np.fromfile(f, dtype='<f4')
@@ -135,9 +140,14 @@ def drift(run):
         lag1 = float(np.mean(np.sum(unit[:-1]*unit[1:], axis=1)))
         net = float(np.linalg.norm(weights[-1][lo:hi]-weights[0][lo:hi]))
         walk = math.sqrt(len(inc))*float(norms.mean())
+        row0 = row1 = float('nan')
+        if name.startswith('decoder'):
+            row0 = float(np.linalg.norm(weights[0][lo:hi].reshape(-1, hidden), axis=1).mean())
+            row1 = float(np.linalg.norm(weights[-1][lo:hi].reshape(-1, hidden), axis=1).mean())
         rows.append(dict(slice=name, size=hi-lo, initial_norm=float(np.linalg.norm(weights[0][lo:hi])),
                          final_norm=float(np.linalg.norm(weights[-1][lo:hi])), increments=len(inc),
-                         mean_increment=float(norms.mean()), lag1_cosine=lag1, net=net, net_over_random_walk=net/walk if walk else float('nan')))
+                         mean_increment=float(norms.mean()), lag1_cosine=lag1, net=net, net_over_random_walk=net/walk if walk else float('nan'),
+                         row_norm_initial=row0, row_norm_final=row1))
     return dict(checkpoints=len(files), first_learner_steps=metas[0].get('learner_steps'),
                 last_learner_steps=metas[-1].get('learner_steps'), slices=rows)
 
@@ -185,9 +195,9 @@ def main():
     if 'drift' in s:
         d = s['drift']
         print(f"drift over {d['checkpoints']} checkpoints ({d['first_learner_steps']:,} to {d['last_learner_steps']:,} learner decisions):")
-        print(f"{'slice':>16} {'|w0|':>7} {'|w|':>7} {'mean|dw|':>8} {'lag1':>6} {'net':>6} {'net/rw':>6}")
+        print(f"{'slice':>16} {'|w0|':>7} {'|w|':>7} {'mean|dw|':>8} {'lag1':>6} {'net':>6} {'net/rw':>6} {'row0':>6} {'row':>6}")
         for r in d['slices']:
-            print(f"{r['slice']:>16} {r['initial_norm']:7.3f} {r['final_norm']:7.3f} {r['mean_increment']:8.4f} {r['lag1_cosine']:6.3f} {r['net']:6.3f} {r['net_over_random_walk']:6.2f}")
+            print(f"{r['slice']:>16} {r['initial_norm']:7.3f} {r['final_norm']:7.3f} {r['mean_increment']:8.4f} {r['lag1_cosine']:6.3f} {r['net']:6.3f} {r['net_over_random_walk']:6.2f} {fmt(r['row_norm_initial']):>6} {fmt(r['row_norm_final']):>6}")
 
 
 if __name__ == '__main__':
