@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>BoplSimNative</AssemblyName>
+    <RootNamespace>BoplSim.Native</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- NativeAOT shared library exporting the bopl_rl.h C ABI. ILC only runs
+         on publish; a plain build just produces the managed assembly, so this
+         project is safe to keep in the solution. Publish with:
+           nice -n 19 dotnet publish -c Release -r linux-x64 sim/Native
+         -> bin/Release/net8.0/linux-x64/publish/BoplSimNative.so -->
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../UnityShim/UnityShim.csproj" />
+    <ProjectReference Include="../Gameplay/Gameplay.csproj" />
+    <ProjectReference Include="../Export/Export.csproj" />
+  </ItemGroup>
+
+  <!-- Same reflection roots as the Host AOT build (string-driven loader). -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <RdXmlFile Include="../Host/rd.xml" />
+  </ItemGroup>
+
+</Project>
