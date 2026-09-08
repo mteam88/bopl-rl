@@ -227,3 +227,8 @@ Shim/loader fixes the real scenes forced (all trace-verified):
 - [ ] AOT residual risk (coordinator): serialized `List<T>` fields without
       inline initializers on not-yet-exercised maps/loadouts may need rd.xml
       entries — a serialized-field scan generating rd.xml would close it.
+- [ ] Determinism flake (1 in ~17 runs): one checkpoint.sh l4 replay diverged
+      at tick 0 on `playerDied` + `updatables`, unreproducible in 16 retries
+      (10 manual + scripted). Suspect a `Dictionary<string,_>` iteration
+      order leak (.NET randomizes string hash seeds per process) somewhere
+      on a trace-observable path — audit sim-path dictionary iterations.
