@@ -743,3 +743,19 @@ Provenance: numbers from `aborted-001-s73-stocks3/checkpoints` and both runs' me
 2026-09-07 21:55–22:20 EDT; simulation in this session (numpy, single thread, exact SVD in place of
 the five Newton–Schulz steps). A first version of that simulation briefly ran multi-threaded BLAS
 next to the live run and was killed after ~5 min; no other load was added.
+
+## 2026-09-07 22:02 EDT: stocks-0 run at 6.6M, first drift read (read-only)
+
+`watch_run.py --drift` over 7 checkpoints (0 to 6.0M learner decisions), BLAS pinned to one thread, niced:
+
+| slice | mean abs dw | lag-1 cosine | net/rw |
+|---|---|---|---|
+| encoder | 0.61 | 0.64 | 1.83 |
+| decoder.aim | 0.23 | 0.05 | 1.07 |
+| decoder.buttons | 0.14 | 0.04 | 1.03 |
+| decoder.value | 0.11 | 0.90 | 2.24 |
+| mingru | 0.49 | 0.43 | 1.59 |
+
+Same picture as the aborted stocks-3 run at 19M: the critic row moves in one direction (its norm doubled, 0.57 to 1.05; explained variance 0.39 to 0.48 between 5.0M and 6.6M), the encoder and MinGRU move consistently, and the two policy heads still random-walk at the fixed Muon step. Entropy 8.290, coefficient 0.0086, advantage std 0.23 (double the stocks-3 run). Evaluation at 6.7M: 0.46 vs random and 0.42 vs the initial checkpoint over 24 games each, no timeouts. Not a signal yet either way; the watch rule from 21:50 stands (policy-head net/rw above about 1.5 with rising cosine, or entropy leaving 8.2, before 30M).
+
+Rate: trailing 12.4k learner decisions/s; the run-average 9.0k/s still carries the 5-minute slowdown I caused and the other sessions' load.
