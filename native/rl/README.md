@@ -1,23 +1,15 @@
-# Bopl reinforcement-learning research
+# Bopl native reinforcement learning
 
-Completed runs and measured outcomes: [experiment log](EXPERIMENTS.md).
+Training uses the pinned PufferLib native CUDA trainer. Persistent Unity IL2CPP
+processes run the reconstructed game; the C environment provides observations,
+stepping, rewards and counters. This is separate from the partial Rust gameplay
+port in the parent `native/` directory.
 
-Latest comparison: [A/B continuation and direct crossplay](evidence/opponent-extension-001/REPORT.md).
-
-Long-term goal and initial skill diagnostic: [Bow curriculum](BOW_CURRICULUM.md).
-
-Human demonstration extraction, supervised GRU fits and replay diagnostics:
-[imitation workflow](IMITATION.md).
-
-This environment runs the actual reconstructed Unity game in persistent headless
-processes, controlled through the C API in `bopl_rl.h`. It is separate from the
-partial Rust gameplay port in the parent `native/` directory. The game engine
-provides gameplay; the C layer supplies observations, action stepping and rewards.
-
-The first research experiment uses **two players, dash + arrow (Bow) + platform,
-three stocks, and map 0**. It asks whether a recurrent policy can learn to survive
-and win with delayed information. Evaluation also uses maps 1 and 2. This is a
-bounded training experiment, not a claim of complete all-ability compatibility.
+The current diagnostic uses two players with Dash, Bow and Platform, three stocks,
+and configurable maps. The larger goal remains diverse abilities, maps and
+adaptive opponents; this diagnostic does not establish all-ability competence.
+Historical experiments and their limits remain in [EXPERIMENTS.md](EXPERIMENTS.md)
+and the [evidence directory](evidence/).
 
 ## Observation and control contract
 
@@ -45,308 +37,115 @@ The observation vector currently has 3,257 floats. Player order starts with self
 entity and slime observations use nearest-first ordering. Positions scale by 64,
 velocities by 256, and extreme values clip. No Unity instance IDs enter the policy.
 
-## Training and evaluation
+## Native trainer
 
-`research/train.py` implements recurrent PPO with a 128-unit GRU, using the pinned
-PufferLib C vector runner for concurrent environment stepping and CUDA buffers.
-The rollout records rewards after each action, carries recurrent memory between
-rollouts, clears it at episode boundaries, and preserves segment-start memory
-and internal reset masks during optimization.
+`puffer/train.py` drives native recurrent PPO. Rollout collection, the minGRU
+policy, loss, backward pass and optimizer run in native code. Python configures
+the run, publishes checkpoints and metrics, and invokes evaluation between
+updates. The linear encoder and entity/slime set encoder share the native minGRU
+and action/value heads. `--encoder linear|set` selects the encoder explicitly.
+The set encoder pools visible entity and slime features with shared weights;
+it does not depend on their slot order.
 
-Half the games use current-policy self-play. The other half use one current player
-against a historical checkpoint. Historical actions are excluded from PPO losses.
-A match keeps the same opponent until it ends; the pool retains four recent
-checkpoints, plus any older version still in an active match.
+Half the games use current-policy self-play. The other half pair a learner with
+a frozen checkpoint. Sides and valid frozen banks are sampled at match reset.
+Each historical match retains its opponent weights until it ends. When all
+banks are occupied, a retiring bank stops receiving new matches; replacement
+waits for its last active match. Pending refreshes coalesce to the latest saved
+checkpoint. The default pool has four banks; all checkpoint files are retained.
 
-Rewards are +1/-1 for a round win/loss and +0.1/-0.1 per kill/death. There is no
-per-tick survival reward. A 3,600-tick match limit is part of the finite-horizon
-task: timeout ends the episode with no winner bonus and a terminal value of zero.
-The pilot uses the game's raw kill counter, which also credits self-kills. Thus
-the small kill/death terms cancel for a suicide. The controlled three-seed series
-preserves this behavior; excluding self-kill bonuses is a separate reward ablation.
+Rewards are +1 for a win, -1 for a loss, and -0.5 for each player at timeout.
+There is no kill, death or per-tick reward. The default cap is 7,200 simulation
+ticks (two minutes), configurable with `--episode-ticks`. Entropy regularization
+decays from 0.01 toward a 0.0005 floor. Evaluation reads these reward settings
+from the checkpoint metadata.
 
-Rollout collection is pipelined (`research/vector.py`, `native/rl/puffer/binding.c`):
-the workers are split into contiguous groups, each with its own C thread and CUDA
-stream, so one group's games tick while the policy runs inference for the other.
-Observation age (9 ticks), reward alignment, recurrent resets, historical-opponent
-ownership and on-policy update boundaries are unchanged; `--pipeline-serial` waits
-for each group immediately and reproduces the overlapped run bit-exactly, and
-`--pipeline-groups 1` reproduces the previous synchronous loop bit-exactly.
-Rollout inference for the learner and every pooled historical policy replays
-captured CUDA graphs (`research/inference.py`, `--cuda-graphs 0` for eager) with
-identical random draws and recurrent state. Each decision is one game round trip:
-the bridge's sampled step (op 6) runs the 3-tick and 1-tick phases together and
-returns the intermediate state used for observations plus the final state and
-telemetry. `BOPL_SPLIT_STEP=1` forces the old two-round-trip path (test oracle);
-`step_mode` in `config.json`/metrics records which path a run actually used, and
-training refuses to run on an old game build that would silently fall back.
-Defaults are two groups (for even worker counts) and CUDA graphs on; see
-[Evidence and limits](#evidence-and-limits) for the measurements behind them.
+`--steps`, `--checkpoint-every` and `--eval-every` count **learner decisions**.
+A rollout finishes before stopping, so budgets may overshoot by less than one
+rollout. JSON `step` and checkpoint filenames count **physical player decisions**
+for compatibility with Learning Lab. Both counters are explicit everywhere.
+Inactive padded opponent rows count in neither. `--learner-passes` sets native
+minibatches per update; minibatch size is the learner rollout size, and the
+wrapper corrects the native replay ratio for padded rows.
 
-Each run writes its configuration, source hashes, game assembly hash, checkpoints
-(with optimizer state), metrics, evaluation reports, and replays. `--load` is a
-warm start of weights/optimizer in fresh environments; it is not a bit-exact
-resumption of ongoing matches or the historical opponent pool.
+Each CUDA buffer contains whole self-play/historical pairs. Worker counts must
+be even and divisible by twice the buffer count. CUDA graph capture requires
+at least one warmup update (`--cudagraphs 1`, the default); `-1` disables it.
+Warmup counters and losses are discarded, initial weights are restored by the
+native trainer, and recurrent state is reset before the first game decision.
 
-Evaluation uses identical seeds at each checkpoint and swaps player sides. It
-reports wins, timeouts, kills, deaths and duration against random buttons and the
-initial policy, plus performance on two untrained maps. The default eight games
-per training-map opponent are a fast diagnostic, with wide Wilson intervals.
-A promising policy needs a larger, independently seeded tournament before a
-strength claim. Self-play's aggregate ~50% win rate is not evidence of improvement.
+## Checkpoints, evaluation and metrics
 
-The longer series keeps historical checkpoints at the same cadence as the pilot,
-but evaluates at 1M, 3M and 10M decisions. These milestones round up to a completed
-rollout. `--eval-at` changes only evaluation scheduling. It does not change the
-opponent pool, PPO updates, or random-number consumption. The three fresh training
-seeds share one frozen baseline opponent. Final evaluation uses separate seeds
-that are never used in the checkpoint diagnostics.
+A checkpoint consists of immutable `.bin` float32 weights and a `.bin.json`
+sidecar. The sidecar records architecture, dimensions, both decision counters,
+configuration and a SHA256 digest. Publication validates size and finite weights
+before exposing the final file. Evaluation validates both files and performs
+native CPU inference with the same weight layout.
 
-## Behavioral measurements
+`config.json` records the selected game and native binding identities.
+`metrics.jsonl` contains physical/learner throughput, policy/value loss, joint
+and per-head entropy, entropy coefficient, learning rate, advantage standard
+deviation before normalization, gradient norm, learner button rates, and
+cumulative completed games by map. Behavior counters include unfinished episodes
+and exclude frozen players. `status.json` reports live progress; `result.json`
+records completion, a requested stop, or failure.
 
-Protocol/ABI version 2 adds episode event counters after the existing state.
-The policy observation remains 3,257 floats; no telemetry enters its input or
-reward. Counters exclude warmup and track actual ability entries, arrows released,
-accepted damaging arrow collisions, and deaths by the game's credited killer.
-Environment deaths include falls and hazards; this is credit attribution, not a
-claim that an opponent could not have caused the fall. Self-kills are separate.
-Arrow hits exclude the owner and count accepted damaging collisions, not unique
-arrows or every geometric contact. Ability entry does not imply a useful action.
+Diagnostic evaluations run synchronously between updates. Each suite includes
+side-swapped seeds against random, initial and optional frozen policies, held-out
+maps, and a self-play replay. Final series evaluation uses separate seeds.
+Saved games include lossless `.rep`, physics `.json` and `.mind.json.gz` files;
+the latter records per-decision values and action probabilities for playback.
+Use `--no-eval` for a throughput comparison that excludes evaluation work.
 
-Each native vector worker writes per-decision deltas to a separate host buffer.
-The trainer selects exactly the decisions used for learning, including the final
-decision before a reset. Historical opponents are excluded. The dashboard shows
-rolling 20-update event rates per simulated player-minute, a breakdown of the
-unchanged reward per 1,000 learner decisions, and recent learner-only button rates.
-The legacy pilot is labeled separately because it lacks these counters.
-
-`research/check_telemetry.py --baseline <old-project-root>` checks event/death
-conservation and reset behavior, then compares exact fixed-point gameplay state,
-every delayed observation, and lossless replay hashes against the old build.
-
-Every evaluation exports a lossless `.rep` plus a full physics-state playback.
-A separate video worker renders native game playback. If rendering falls behind,
-it keeps the initial and most recent checkpoints rather than delaying training.
-Native and physics replays remain available for every completed evaluation.
+Learning Lab still consumes these run directories: learning curves, frozen
+opponent results, truncation rates, behavior, replay playback and policy values.
+The video worker is separate so rendering can be scheduled around training.
 
 ## Commands
 
-Run from the Unity project root (the directory containing `Assets/` and `native/`).
+Run from the Unity project root, the directory containing `Assets/` and `native/`.
 
 ```sh
 python3 native/rl/puffer/setup.py
 native/artifacts/rl/venv/bin/python native/rl/puffer/build.py --device cuda
-make -C native/rl
-
-native/artifacts/rl/venv/bin/python native/rl/research/preflight.py \
-  --output native/artifacts/rl/research-checks
-
-native/artifacts/rl/venv/bin/python native/rl/research/train.py \
-  --output native/artifacts/rl/dap-001 --workers 16 --steps 1000000
-
-python3 native/rl/research/serve.py --host 127.0.0.1 --port 8876
+native/artifacts/rl/venv/bin/python native/rl/research/native_policy.py --build
 ```
 
-Throughput and pipeline correctness checks (GPU; the game must be rebuilt after
-`RlBridge.cs` changes, see `native/README.md`):
+Select the exact reconstructed player for the experiment. The optimized local
+IL2CPP build is commonly under the path used below; its hashes are saved in the
+run configuration. Keep the chosen runtime options fixed during comparisons.
 
 ```sh
-native/artifacts/rl/sampled_check Builds/Linux/BoplBattle.x86_64 \
-  native/fixtures/movement.rep /tmp/sampled_check.log 1     # exact one-trip vs two-trip stepping
-native/artifacts/rl/venv/bin/python native/rl/research/check_pipeline.py \
-  --output native/artifacts/rl/throughput/pipeline-check    # transport, serial/async, alignment, graphs
-native/artifacts/rl/venv/bin/python native/rl/research/bench_throughput.py \
-  --output native/artifacts/rl/throughput/bench --workers 16 --repeats 3 --decisions 393216 \
-  --arms "sync=--pipeline-groups 1 --cuda-graphs 0,default="
+export BOPL_SPARE_GAME=1 BOPL_RL_HEADLESS=1 BOPL_RL_RAYCULL=1
+export BOPL_RL_COALESCE=1 BOPL_RL_EAGER_IO=1 BOPL_RL_TICKS_PER_FRAME=4096
+export BOPL_SPLIT_STEP=0
+native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
+  --output native/artifacts/rl/native-smoke \
+  --game native/artifacts/rl/autoresearch/builds/game-il2cpp/BoplBattle.x86_64 \
+  --encoder linear --workers 16 --banks 4 --steps 100000 \
+  --training-maps 0,1,2 --heldout-maps 3,4 --episode-ticks 7200
 ```
 
-For a declared three-seed series, prepare after building and checking the final
-implementation, then execute the saved plan. The runner checks source/binary
-identity before each seed, runs seeds sequentially, and stops on a failed run.
-It does not silently resume an interrupted training environment.
+To declare a sequential series, use `research/series.py prepare` with an explicit
+native `--baseline`, output, learner budget, seeds, encoder and maps. Preparation
+records source, runtime, baseline and frozen-opponent identities. Run the emitted
+plan with `research/series.py run path/to/plan.json`. A changed identity requires
+a new plan; incomplete runs are not silently resumed.
+
+The native frozen-opponent manifest uses schema 2 and entries with `name`, `path`,
+`sha256` and `metadata_sha256`. Relative paths resolve from the manifest directory.
+Old Torch checkpoints and old series plans are not native checkpoints or plans.
+Historical artifacts remain available as evidence; they are not converted by the
+training command.
 
 ```sh
-native/artifacts/rl/venv/bin/python native/rl/research/series.py prepare \
-  --output native/artifacts/rl/dap-series-001 --steps 10000000 \
-  --workers 16 --seeds 73,173,273 \
-  --baseline native/artifacts/rl/dap-001/checkpoints/policy-000000000.pt
-native/artifacts/rl/venv/bin/python native/rl/research/series.py run \
-  native/artifacts/rl/dap-series-001/plan.json
+native/artifacts/rl/venv/bin/python native/rl/research/serve.py \
+  --root native/artifacts/rl --port 8876
+native/artifacts/rl/venv/bin/python native/rl/research/watch_videos.py \
+  --run native/artifacts/rl/native-smoke
 ```
 
-The series dashboard opens with `?series=dap-series-001` and follows the active
-seed. Diagnostic evaluation uses 64 games per training-map opponent and 16 per
-untrained map. Final evaluation uses 256 and 64 respectively, with fresh seed
-pairs. Report individual training-seed results; Wilson intervals are descriptive
-and do not adjust for dependence within side-swapped pairs.
-
-The multi-map extension selects an explicit set at each episode reset. A single
-map retains the original reset RNG sequence. `--training-maps 0,1,2` samples only
-those IDs; the game has a larger map catalog, so this differs from the low-level
-`random_maps` option that samples every map. Completed training matches by map
-are recorded in each metrics row. Map IDs in `--heldout-maps` must not appear in
-training; the dashboard labels maps according to the saved configuration.
-`research/check_map_contracts.py --output <new-artifact-directory>` checks native
-selection, stable log keys, and immediate failure on observation overflow without
-starting a game or GPU. Python schedule/identity tests run with
-`python3 -m unittest discover -s native/rl/research -p test_evaluation_protocol.py`.
-
-Frozen trained opponents are described by a schema-1 JSON manifest containing
-`name`, `path`, and `sha256` for each checkpoint. Relative paths resolve from the
-manifest. The series copies and checks their identities, and evaluators reject
-changed weights or a conflicting existing evaluation. These opponents enter
-evaluation only; training retains its current/recent-checkpoint self-play mix.
-
-After qualifying the selected maps with `research/check_maps.py`, prepare the
-next experiment using the three final policies from `dap-series-001`:
-
-```sh
-native/artifacts/rl/venv/bin/python native/rl/research/check_maps.py \
-  --output native/artifacts/rl/multimap-checks --maps 0,1,2,3,4
-native/artifacts/rl/venv/bin/python native/rl/research/series.py prepare \
-  --output native/artifacts/rl/dap-multimap-001 --steps 10000000 \
-  --workers 16 --seeds 73,173,273 --training-maps 0,1,2 --heldout-maps 3,4 \
-  --pipeline-groups 2 --cuda-graphs 1 \
-  --baseline native/artifacts/rl/dap-001/checkpoints/policy-000000000.pt \
-  --opponents native/rl/evidence/frozen-dap-series-001.json \
-  --diagnostic-games 32 --diagnostic-frozen-games 16 \
-  --final-games 256 --final-frozen-games 128
-```
-
-This schedule has 369 games per diagnostic and 2,817 per final suite. It evaluates
-each frozen policy on every training map, with separate random-play checks on
-the two unseen maps. Each suite includes one self-play game for a native video.
-Series preparation also records `--pipeline-groups`, `--cuda-graphs` and
-`--split-step` explicitly (defaults `1`, `0`, `0`), so later trainer defaults or
-the parent shell cannot change a declared run. The series disables test jitter.
-The series samples GPU activity, memory, power and host CPU load once per second
-in `resource-samples.jsonl`. These measurements cover the whole device and host;
-the training phase includes startup, checkpoint evaluation and video work.
-
-After the series finishes, generate a portable JSON summary and PNG/SVG figures
-with a separate Python environment containing NumPy and Matplotlib:
-
-```sh
-python3 native/rl/reports/summarize_series.py \
-  --series native/artifacts/rl/dap-series-001 \
-  --output native/artifacts/rl/dap-series-001/report
-```
-
-This reporter checks the declared final game counts and per-game outcomes. Its
-final error bars resample whole side-swapped seed pairs, with 5,000 bootstrap
-draws. They describe evaluation uncertainty for each fixed policy; they do not
-pool training seeds or establish performance against human opponents.
-`--allow-partial` creates an explicitly labeled preview while a series is running.
-
-An output directory must be new. The normal training command requires CUDA and
-runs evaluation and video capture. `--no-eval` is for short throughput checks;
-`--no-video` retains evaluation and both downloadable replay formats.
-
-After a C observation/binding-only change, `build.py --device cuda --binding-only`
-reuses the existing CUDA object and relinks the environment. Do not use that flag
-after changing PufferLib CUDA sources, compiler flags or the dependency revision.
-Do not rebuild the game or binding while workers are using them.
-
-The dashboard is read-only. It supports phone layouts, live graphs, checkpoint
-selection, play/pause, scrubbing, speed selection, native video and `.rep` downloads.
-When BB Connect is paired, use `bb connect expose 8876`. On Matthew's PowerSpec,
-the current dashboard is served through a dedicated tailnet-only HTTPS route:
-
-```sh
-tailscale serve --bg --https=8876 http://127.0.0.1:8876
-# Remove only this route when the dashboard is retired:
-tailscale serve --https=8876 off
-```
-
-Native video capture requires `Xvfb`, `xdotool`, `ffmpeg` with `h264_nvenc`, and
-`ffprobe`. It owns and cleans up only its own display, game and encoder processes.
-Do not use the older root-level `record-demo.sh` during training: it kills all
-Bopl processes by name.
-
-For headless browser verification, start an isolated Chrome profile with
-`--headless --password-store=basic --use-mock-keychain --remote-debugging-port=9224`,
-then run `node native/rl/research/check_dashboard.mjs <dashboard-url>`.
-
-## Evidence and limits
-
-Preparation checks cover real-game delay/reset/loadout behavior, hidden-position
-invariance with public cooldown changes, recurrent reset equivalence on CPU/CUDA,
-exact checkpoint reload, finite loss and updated weights in short GPU jobs,
-evaluation/replay export, and desktop/phone browser behavior.
-
-`verify_replay.py --players 2 --ability-group 4 --ticks 900` compared 1,140 ticks
-(including warmup) with ordinary playback and matched the audited gameplay
-projection. That episode entered Bow 7 times, Dash 4 times, and Platform 2 times.
-The projection excludes explicitly audited presentation fields listed in
-`native/data/presentation-fields.json`; it is not an unqualified full-object hash.
-Broader all-ability replay work remains separate and unfinished.
-
-Performance tuning so far: persistent game processes, compiled C feature packing,
-shared CUDA buffers, batched policy inference, passive OpenMP waiting, removal of
-repeated loadout features, contiguous GRU weights, and reuse of unchanged CUDA
-build objects. A matching 65,536-decision comparison measured median throughput of 3,252
-decisions/s with eight workers and 4,490 with sixteen (38% higher). Report wall
-throughput for the actual research run, including evaluation/video contention;
-do not extrapolate the native fused smoke benchmark to this recurrent workload.
-
-Collection profiling (2026-09-06, sixteen workers, `research/profile_collection.py`):
-one vectorised step costs about 7.4 ms, of which the game/IPC step is 3.3 ms
-median (5 ms mean; ~33 ms scene resets stall the OpenMP barrier), and the
-remainder is serial GPU-side Python work. Games use about 0.4 cores each and a
-single uncontended game needs 0.63 ms per four-tick decision, so the vector is
-bound by two IPC round trips per decision, not by CPU. Two exact changes landed:
-`Categorical(validate_args=False)` in `policy.distribution` (removes a per-call
-GPU sync; samples and log-probabilities are identical) and `research/selfplay.py`,
-which caches per-version opponent index tensors instead of rebuilding Python
-index lists every step (`check_selfplay.py` verifies bit-exact equivalence).
-Matched 65,536-decision `--no-eval --no-video` runs, alternating three times each
-on an otherwise idle machine, measured 4,231–4,367 decisions/s before and
-4,562–4,781 after (median 4,319 vs 4,773, about +10%); final weights and RNG
-state were bit-identical across all six runs. Profiler numbers exclude
-evaluation/video and the `--no-eval` runs exclude evaluation contention, so
-expect lower wall throughput in a full research run.
-
-Throughput work (2026-09-06, [evidence/throughput/summary.json](evidence/throughput/summary.json),
-raw logs under `native/artifacts/rl/throughput/`). Worker counts 16/24/32 were
-benchmarked with sampled GPU utilization/power and CPU load; 32 workers is about
-9% faster than 16 in loop throughput but saturates the six cores and changes the
-PPO batch, so 16 stays the series contract. The three runtime changes were then
-measured in matched `--no-eval --no-video` runs of 393,216 decisions (96 updates,
-crossing three checkpoint snapshots so the pool reaches four versions and graph
-capture for new snapshots is paid), three repeats each, at 16 workers:
-
-| arm | loop decisions/s | active (incl. snapshots) | wall (incl. 36 s startup) | GPU util | busy cores |
-|---|---|---|---|---|---|
-| synchronous loop (`--pipeline-groups 1 --cuda-graphs 0`) | 4,455 | 4,448 | 3,131 | 8.8% | 5.5 |
-| default (2 groups, CUDA graphs) | 5,547 | 5,506 | 3,605 | 15.6% | 6.1 |
-| default with `--pipeline-serial` (oracle) | 3,986 | 3,965 | 2,873 | 12.4% | 4.3 |
-
-That is +24% active and +15% wall throughput over the synchronous loop. All three
-serial/async pairs match exactly across every update (rewards, matches, losses,
-KL, gradients, behavior, pool state). Overlap alone raises active throughput
-by 39% against the identical grouped serial control; the 24% gain against the
-synchronous baseline includes both grouping and CUDA graphs. The 98,304-decision
-screen of groups 1/2/4 with and without graphs (two repeats) put 2 groups with graphs
-first at 16 workers; 4 groups without graphs was slower than synchronous. Graph
-capture and checkpoint snapshots cost under 0.05 s per run. GPU utilization stays
-low because the loop is bound by game IPC and per-step launch overhead, and loop
-throughput falls in every arm as the historical pool grows from one to four versions.
-
-Correctness: `check_pipeline.py` passed all phases (transport ordering with 2/4
-groups and injected jitter, serial versus overlapped rollouts, observation/reward/
-reset/recurrent-state alignment, CUDA graphs versus eager across three pool
-versions). `sampled_check` passed on the new build (459 decisions, three episodes
-ending inside the first phase) and on the old build through the transparent
-fallback; `check_telemetry.py` matched MAIN's build exactly for state, observations
-and replays on both the sampled and split paths; the new synchronous loop matched
-the previous loop bit-for-bit over 24 updates.
-
-Reset cost (`reset_profile`, `frame_profile`): a reset is about 32 ms, of which
-scene load is 13 ms and the 240 warmup ticks are 19 ms at 16 ticks per engine
-frame. Engine frame overhead is only about 0.6 ms, so lifting the warmup
-ticks-per-frame could save at most 9 ms per reset. The final runs completed 486
-matches, so the bound is 4.4 s per 393k-decision run (6% of the 71 s active time
-of the default arm) if no reset stall is hidden by the other group's inference;
-overlap was not instrumented, so that is an upper bound, not a measurement.
-Reset semantics were left unchanged; this remains a candidate for later work
-since it needs a game rebuild and a parity re-check.
+A short smoke verifies execution and artifact compatibility. It does not establish
+learning strength or whole-game competence. Report measured learner decisions,
+completed matches and evaluation results separately from throughput and compile
+success. Qualification and long-run results belong in the experiment evidence.

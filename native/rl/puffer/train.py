@@ -39,6 +39,7 @@ def arguments():
     p.add_argument('--buffers', type=int, choices=(1, 2))
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
+    p.add_argument('--encoder', choices=('linear', 'set'), default='linear')
     p.add_argument('--hidden', type=int, default=128)
     p.add_argument('--layers', type=int, default=1)
     p.add_argument('--horizon', type=int, default=128)
@@ -96,6 +97,7 @@ def main():
                            BOPL_RL_LOG_DIR=output/'game-logs', OMP_NUM_THREADS=a.workers).items():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir()
+    os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
     import numpy as np
     import torch
     from pufferlib import _C, pufferl
@@ -131,7 +133,7 @@ def main():
     target_physical = math.ceil(a.steps * 4 / 3)
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
-                  seed=a.seed, workers=a.workers, banks=a.banks, hidden=a.hidden, layers=a.layers,
+                  seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks,
                   observation_delay_ticks=9, telemetry_schema=1,
@@ -139,6 +141,9 @@ def main():
                   entropy=a.entropy, entropy_floor=a.entropy_floor, learner_passes=a.learner_passes,
                   frozen_opponents=[], evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
+                  runtime_options={name: os.environ.get(name) for name in (
+                      'BOPL_SPARE_GAME', 'BOPL_RL_HEADLESS', 'BOPL_RL_RAYCULL', 'BOPL_RL_COALESCE',
+                      'BOPL_RL_EAGER_IO', 'BOPL_RL_TICKS_PER_FRAME', 'BOPL_SPLIT_STEP')},
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
     atomic_json(output/'config.json', config)
     started = time.monotonic()
@@ -168,7 +173,7 @@ def main():
             if step not in saved:
                 path = output/'checkpoints'/f'policy-{step:09d}.bin'
                 write_checkpoint(path, lambda name: _C.save_weights(trainer, name), obs_size=3257,
-                                 hidden=a.hidden, num_layers=a.layers, architecture='puffernet-mingru',
+                                 hidden=a.hidden, num_layers=a.layers, architecture='bopl-set-mingru-v1' if a.encoder == 'set' else 'puffernet-mingru',
                                  game_steps=step, learner_steps=counts['learner_steps'], config=config)
                 saved[step] = path
             return saved[step]
