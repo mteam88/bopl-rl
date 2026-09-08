@@ -60,6 +60,19 @@ void bopl_rl_default_config(BoplRlConfig *config, uint32_t players);
  * Error text is written to error (when non-NULL and capacity > 0). */
 BoplRl *bopl_rl_open(const char *executable, const char *bootstrap_replay,
                      const char *log_path, uint32_t timeout_ms, char *error, size_t capacity);
+/* One game process hosting `worlds` independent matches (1..64); out[0..worlds-1]
+ * receive one handle per world. Handles of one process may be used from
+ * different threads concurrently (replies are demultiplexed by request); each
+ * handle still serializes its own calls. A game error invalidates only its
+ * world; a transport error breaks every handle of the process. bopl_rl_close
+ * releases one handle and the process closes with its last one, in any order.
+ * A game build without world support accepts only worlds == 1. Returns
+ * BOPL_RL_OK or a status; error text as for bopl_rl_open. */
+int bopl_rl_open_worlds(const char *executable, const char *bootstrap_replay, const char *log_path,
+                        uint32_t timeout_ms, uint32_t worlds, BoplRl **out, char *error, size_t capacity);
+/* Number of worlds of the handle's process and this handle's index in it. */
+uint32_t bopl_rl_world_count(const BoplRl *world);
+uint32_t bopl_rl_world_index(const BoplRl *world);
 int bopl_rl_reset(BoplRl *world, const BoplRlConfig *config);
 /* bopl_rl_reset split in two: begin sends the configuration and returns while
  * the game loads the scene and runs its warmup ticks; finish waits for the
