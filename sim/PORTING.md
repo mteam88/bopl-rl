@@ -302,10 +302,28 @@ the worker process + unix socket with direct calls. Smoke test:
       inline initializers on not-yet-exercised maps/loadouts may need rd.xml
       entries — a serialized-field scan generating rd.xml would close it.
 - [ ] Determinism flake (1 in ~17 runs): one checkpoint.sh l4 replay diverged
-      at tick 0 on `playerDied` + `updatables`, unreproducible in 16 retries
-      (10 manual + scripted). Suspect a `Dictionary<string,_>` iteration
-      order leak (.NET randomizes string hash seeds per process) somewhere
-      on a trace-observable path — audit sim-path dictionary iterations.
+      at tick 0 on `playerDied` + `updatables`, unreproducible since.
+      **Audited + unreproduced in 40 further runs (24 scripted + 16 earlier
+      retries); static audit found no per-run nondeterminism source:**
+      no threads/Parallel/Task in shim/Export/Host (DetPhysics's
+      Parallel.ForEach was already replaced with a sequential bit-identical
+      loop; Client.Task.Run is netcode, off the sim path); shim
+      UnityEngine.Random is a fixed-seed System.Random(42), presentation-only;
+      no wall-clock reads in the shim — Updater.cs:245
+      InitSeed(Environment.TickCount) is guarded by !isPlayingAReplay in
+      replay mode and empirically silent in reset mode (3 identical
+      native_check checksums); every shim Dictionary is a lookup-only cache
+      or keyed by int/Object (Object.GetHashCode = instanceId, so even the
+      enumerated CloneRules map is creation-order deterministic); the trace
+      encoder sorts IDictionary entries by key and gameplay HashSets are
+      int/Object-keyed (bucket order deterministic given identical insert
+      sequences); no string-keyed dictionary enumeration feeds sim or trace
+      order (string hashing is the per-process-randomized one);
+      toBeAddedUpdatables.Sort is unstable introsort but deterministic for
+      identical inputs. The pre-InstanceID FindObjectsOfType walk was
+      List-based, not hash-based, so 00610a3 neither explains nor was needed
+      for the flake. Left open pending one more sighting with the diverging
+      trace preserved; if it recurs, diff the kept trace directly.
 - [x] l3-p2-g4 "divergence" at 649/720: NOT physics — both players entered
       the Platform ability the same tick, spawning two root CursorArrow(Clone)
       objects whose ReferenceCapture identities tie ("[0]" both: PathOf skips
