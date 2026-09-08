@@ -31,18 +31,21 @@ namespace BoplSim.Export
 		// Non-level scenes from scenes.json (v3 export): boot MainMenu (0) and
 		// WinnerTriangle (4). Same file shape as map-N.json.
 		internal readonly Dictionary<int, MapEntry> ExtraScenes = new Dictionary<int, MapEntry>();
-		internal readonly Dictionary<string, JObject> AssetData = new Dictionary<string, JObject>();
+		// assets.json / sprites.json stay as bytes; entries are parsed when built.
+		private JsonSliceIndex assets;
+		private JsonSliceIndex sprites;
 		internal readonly Dictionary<string, string> GuidByResourcePath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		internal readonly Dictionary<string, UnityEngine.Object> BuiltAssets = new Dictionary<string, UnityEngine.Object>();
 		internal readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
 		internal readonly Dictionary<string, int> WarningCounts = new Dictionary<string, int>();
 		internal readonly Dictionary<string, string> AssetNames = new Dictionary<string, string>();
-		// v5 export: per-sprite texture/geometry metrics keyed by GlobalObjectId
-		// (ResizablePlatform reads sprite.texture.width + pixelsPerUnit on the
-		// sim path). Atlas sprites share one Texture2D via textureId.
-		internal readonly Dictionary<string, JObject> SpriteData = new Dictionary<string, JObject>();
 		private readonly Dictionary<string, Texture2D> spriteTextures = new Dictionary<string, Texture2D>();
+		// Level scenes only: boot/WinnerTriangle load once, levels on every reset.
+		// A level tree is ~10 MB; a training run rotates a handful of maps, a
+		// map sweep (reset_check) touches dozens, so the cache is capped.
 		private readonly Dictionary<string, JArray> sceneJsonCache = new Dictionary<string, JArray>();
+		private const int SceneCacheCapacity = 8;
+		private static readonly JsonLoadSettings NoLineInfo = new JsonLoadSettings { LineInfoHandling = LineInfoHandling.Ignore };
 		private readonly Dictionary<string, Type> typeCache = new Dictionary<string, Type>();
 		private readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
 		private readonly HashSet<string> warnedScenes = new HashSet<string>();
@@ -82,14 +85,12 @@ namespace BoplSim.Export
 						File = (string)entry["file"],
 					};
 
-			var assets = JObject.Parse(File.ReadAllText(Path.Combine(exportDir, "assets.json")));
-			foreach (var pair in assets)
+			db.assets = JsonSliceIndex.Load(Path.Combine(exportDir, "assets.json"), "path");
+			foreach (var pair in db.assets.Tracked)
 			{
-				var value = (JObject)pair.Value;
-				db.AssetData[pair.Key] = value;
-				string path = (string)value["path"];
+				string path = pair.Value;
 				const string resourcesPrefix = "Assets/Resources/";
-				if (path != null && path.StartsWith(resourcesPrefix, StringComparison.OrdinalIgnoreCase))
+				if (path.StartsWith(resourcesPrefix, StringComparison.OrdinalIgnoreCase))
 				{
 					string resourcePath = path.Substring(resourcesPrefix.Length);
 					int dot = resourcePath.LastIndexOf('.');
@@ -109,10 +110,11 @@ namespace BoplSim.Export
 				foreach (var pair in JObject.Parse(File.ReadAllText(namesPath)))
 					db.AssetNames[pair.Key] = (string)pair.Value;
 
+			// v5 export: per-sprite texture/geometry metrics keyed by GlobalObjectId
+			// (ResizablePlatform reads sprite.texture.width + pixelsPerUnit on the
+			// sim path). Atlas sprites share one Texture2D via textureId.
 			string spritesPath = Path.Combine(exportDir, "sprites.json");
-			if (File.Exists(spritesPath))
-				foreach (var pair in JObject.Parse(File.ReadAllText(spritesPath)))
-					db.SpriteData[pair.Key] = (JObject)pair.Value;
+			if (File.Exists(spritesPath)) db.sprites = JsonSliceIndex.Load(spritesPath);
 
 			string orderPath = settingsPath == null ? null
 				: Path.Combine(Path.GetDirectoryName(settingsPath), "execution-order.json");
@@ -196,8 +198,23 @@ namespace BoplSim.Export
 
 			// PERF-1 fix 1 (minimum): the parse dominated warm resets (~10 of 15 ms);
 			// the JArray is only read by GraphBuilder/PropertyApplier, never mutated.
-			if (!sceneJsonCache.TryGetValue(map.File, out var sceneJson))
-				sceneJsonCache[map.File] = sceneJson = JArray.Parse(File.ReadAllText(Path.Combine(exportDir, map.File)));
+			// Non-level scenes are not worth their tree (scene-boot.json alone is 5 MB
+			// of text): parse and drop.
+			bool isLevel = !ExtraScenes.ContainsKey(buildIndex);
+			if (!isLevel || !sceneJsonCache.TryGetValue(map.File, out var sceneJson))
+			{
+				using (var text = new StreamReader(Path.Combine(exportDir, map.File), System.Text.Encoding.UTF8))
+				using (var reader = new Newtonsoft.Json.JsonTextReader(text))
+				{
+					sceneJson = JArray.Load(reader, NoLineInfo);
+					while (reader.Read()) { } // as JArray.Parse: trailing content throws
+				}
+				if (isLevel)
+				{
+					if (sceneJsonCache.Count >= SceneCacheCapacity) sceneJsonCache.Clear();
+					sceneJsonCache[map.File] = sceneJson;
+				}
+			}
 			var pending = new List<PendingProperties>();
 			var roots = new List<GameObject>();
 			foreach (var node in sceneJson)
@@ -225,7 +242,8 @@ namespace BoplSim.Export
 		internal UnityEngine.Object BuildAsset(string guid)
 		{
 			if (BuiltAssets.TryGetValue(guid, out var built)) return built;
-			if (!AssetData.TryGetValue(guid, out var entry)) return null;
+			var entry = assets.Parse(guid);
+			if (entry == null) return null;
 			var data = (JObject)entry["data"];
 			string path = (string)entry["path"];
 			if (data["components"] != null)
@@ -260,8 +278,8 @@ namespace BoplSim.Export
 		// Host bootstrap: load an asset by its Unity project path.
 		public UnityEngine.Object LoadAssetByPath(string assetPath)
 		{
-			foreach (var pair in AssetData)
-				if ((string)pair.Value["path"] == assetPath)
+			foreach (var pair in assets.Tracked)
+				if (pair.Value == assetPath)
 					return BuildAsset(pair.Key);
 			Warn("no asset at path " + assetPath);
 			return null;
@@ -274,7 +292,7 @@ namespace BoplSim.Export
 		{
 			if (ObjectsById.TryGetValue(id, out var found)) return found;
 			var parts = id.Split('-');
-			if (parts.Length >= 3 && AssetData.ContainsKey(parts[2]))
+			if (parts.Length >= 3 && assets.ContainsKey(parts[2]))
 			{
 				BuildAsset(parts[2]);
 				if (ObjectsById.TryGetValue(id, out found)) return found;
@@ -287,7 +305,8 @@ namespace BoplSim.Export
 			// Sprites: v5 exports real metrics (sprites.json) - the sim path reads
 			// texture dims, pixelsPerUnit, pivot, bounds, textureRect
 			// (ResizablePlatform, GrowthFlare, StretchableLightning...).
-			if (SpriteData.TryGetValue(id, out var spriteJson))
+			var spriteJson = sprites?.Parse(id);
+			if (spriteJson != null)
 			{
 				var sprite = BuildSprite(spriteJson);
 				ObjectsById[id] = sprite;
