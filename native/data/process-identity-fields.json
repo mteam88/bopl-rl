@@ -13,6 +13,14 @@
             "sources": [
                 "Shockwave.cs"
             ]
+        },
+        "Roll.platformHopBuffer": {
+            "reason": "int[5] of attachedGround.gameObject.GetInstanceID() values written by PlayerPhysics.MoveAlongCurrentPlatFormSwapIfBlocked to disallow re-hopping onto the same platform. Hop behaviour remains compared via player position/velocity. Unused by ability group 0; matters for coverage loadouts with Roll.",
+            "sources": [
+                "Roll.cs",
+                "PlayerPhysics.cs",
+                "StickyRoundedRectangle.cs"
+            ]
         }
     }
 }
