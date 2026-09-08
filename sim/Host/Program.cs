@@ -140,6 +140,56 @@ namespace BoplSim.Host
 			double perSecond = ticked / Math.Max(stopwatch.Elapsed.TotalSeconds, 1e-9);
 			Console.WriteLine($"ticks={ticked}/{ticks} elapsed={stopwatch.Elapsed.TotalSeconds:F3}s ticks/s={perSecond:F0} " +
 				$"simulationTicks={Updater.SimulationTicks} gameEnded={GameSessionHandler.HasGameEnded()}");
+
+			// ---- PROFILING PATCH (oracle rift only - sim/Oracle/PERF-1.md) ----
+			// BOPL_SIM_PROFILE=<n> repeats the reset episode n more times in the
+			// same process: the run above pays JIT, these measure steady state.
+			// Prints per-episode ticks/s, GC collections per 1000 ticks, and
+			// allocated MB on the main thread. Reset mode only.
+			if (mode == "reset"
+				&& int.TryParse(Environment.GetEnvironmentVariable("BOPL_SIM_PROFILE"), out int profileEpisodes))
+			{
+				for (int episode = 0; episode < profileEpisodes; episode++)
+				{
+					var resetWatch = Stopwatch.StartNew();
+					host.ResetRl(setup);
+					World.Current.FlushPendingStarts();
+					World.Current.FlushDestroyQueue();
+					resetWatch.Stop();
+					playerList = PlayerHandler.Get().PlayerList();
+					int g0 = GC.CollectionCount(0), g1 = GC.CollectionCount(1), g2 = GC.CollectionCount(2);
+					long alloc0 = GC.GetAllocatedBytesForCurrentThread();
+					var profileWatch = Stopwatch.StartNew();
+					for (int t = 0; t < ticks; t++)
+					{
+						for (int i = 0; i < inputs.Length && i < playerList.Count; i++)
+						{
+							inputs[i].seqNumber = (uint)(Updater.SimulationTicks + 1);
+							playerList[i].OverrideInputWithNetworkInput(inputs[i]);
+						}
+						Updater.TickSimulation(GameTime.FixedTimeStep);
+						Updater.LoadedALevelThisUpdate = false;
+						if ((t + 1) % ticksPerFrame == 0)
+						{
+							World.Current.FlushDestroyQueue();
+							World.Current.frameCount++;
+							Time.frameCount = World.Current.frameCount;
+							World.Current.FlushPendingStarts();
+						}
+					}
+					profileWatch.Stop();
+					double per1000 = 1000.0 / ticks;
+					Console.WriteLine(
+						$"profile: episode={episode + 2} resetMs={resetWatch.Elapsed.TotalMilliseconds:F1} ticks={ticks} elapsed={profileWatch.Elapsed.TotalSeconds:F3}s " +
+						$"ticks/s={ticks / profileWatch.Elapsed.TotalSeconds:F0} " +
+						$"gc0/1k={(GC.CollectionCount(0) - g0) * per1000:F2} " +
+						$"gc1/1k={(GC.CollectionCount(1) - g1) * per1000:F2} " +
+						$"gc2/1k={(GC.CollectionCount(2) - g2) * per1000:F2} " +
+						$"allocMB={(GC.GetAllocatedBytesForCurrentThread() - alloc0) / 1048576.0:F1} " +
+						$"simTicks={Updater.SimulationTicks} gameEnded={GameSessionHandler.HasGameEnded()}");
+				}
+			}
+			// ---- END PROFILING PATCH ----
 			return 0;
 		}
 
