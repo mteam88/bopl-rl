@@ -49,11 +49,22 @@ The set encoder pools visible entity and slime features with shared weights;
 it does not depend on their slot order.
 
 Half the games use current-policy self-play. The other half pair a learner with
-a frozen checkpoint. Sides and valid frozen banks are sampled at match reset.
-Each historical match retains its opponent weights until it ends. When all
-banks are occupied, a retiring bank stops receiving new matches; replacement
-waits for its last active match. Pending refreshes coalesce to the latest saved
-checkpoint. The default pool has four banks; all checkpoint files are retained.
+a frozen opponent from PufferLib's Elo-rated self-play pool
+(`pufferlib/selfplay.py`, driven by `puffer/native_selfplay.py`). Each
+historical game is pinned to one of the frozen banks (four by default) and draws
+its side at match reset. A bank retires its opponent when the learner's win rate
+against it reaches `--swap-winrate` over at least `--min-games` games, or after
+`--opponent-timeout` learner decisions; the replacement is sampled from the pool
+(never the five newest snapshots once the pool has six), weighted toward newer
+entries. The pool grows every `--snapshot-interval` learner decisions and on
+win-rate swaps while small; past `--pool-size` it evicts every other entry of
+the older half, so the initial policy is never evicted and old opponents stay
+represented. Raw snapshots live in `<run>/pool/` (PufferLib keeps evicted files
+on disk). A swap loads the new weights in place as soon as every game of that
+bank has started a match since the previous swap, so at most one in-flight match
+per historical game sees its opponent change mid-match; that match is excluded
+from the bank's win-rate and Elo statistics. Pool state is recorded per update
+under `pool` in `metrics.jsonl` and as events in `pool.jsonl`.
 
 Rewards are +1 for a win, -1 for a loss, and -0.5 for each player at timeout.
 There is no kill, death or per-tick reward. The default cap is 7,200 simulation

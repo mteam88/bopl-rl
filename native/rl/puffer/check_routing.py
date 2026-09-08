@@ -9,9 +9,11 @@ steps that:
   * idle opponent rows (the bank not chosen this match) stay all-zero;
   * the previous-action features of every active row echo the action written to
     that physical row, so actions route per row and not per slot order;
-  * sides and banks change between matches, an opponent row is terminated and
-    blanked when its match ends, and the alignment protocol (tags/count_aligned)
-    reports each historical environment once per match boundary.
+  * sides change between matches while each historical environment keeps its
+    bank, an opponent row is terminated and blanked when its match ends, and
+    the alignment protocol (tags/count_aligned) reports each historical
+    environment once per match boundary and drops mid-swap matches from the
+    per-bank pool statistics.
 Runs on the CUDA build of the binding but steps on the host path, so it needs a
 game player and no GPU work beyond module load.
 """
@@ -83,7 +85,6 @@ def main():
     lib.bopl_vec_set_perm.restype = ctypes.c_int; lib.bopl_vec_set_perm.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_set_tags.restype = ctypes.c_int; lib.bopl_vec_set_tags.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_count_aligned.restype = ctypes.c_int; lib.bopl_vec_count_aligned.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-    lib.bopl_set_valid_banks.argtypes = [ctypes.c_uint]
     counters.bind(lib)
     report = dict(schema=1, game=os.environ['BOPL_RL_GAME'], checks=[])
     def check(name, ok, **info):
@@ -105,17 +106,17 @@ def main():
         assert lib.bopl_vec_set_perm(ctypes.c_void_p(vec.gpu_obs_ptr), (ctypes.c_int*total)(*perm)) == 0
         tags = (ctypes.c_int*(4*num_buffers))(*[e['tag'] for e in envs])
         assert lib.bopl_vec_set_tags(ctypes.c_void_p(vec.gpu_obs_ptr), tags) == 0
-        lib.bopl_set_valid_banks(0b11)
         vec.reset()
         envs = layout(lib, vec, 4*num_buffers)
         expected = []; slot = 0
         for e in envs: expected.append(perm[slot:slot+e['num_agents']]); slot += e['num_agents']
         check(f'b{num_buffers}: slots follow the permutation', [e['slots'] for e in envs] == expected,
               got=[e['slots'] for e in envs], expected=expected)
-        check(f'b{num_buffers}: tags', [e['tag'] for e in envs] == [0, 1]*(2*num_buffers))
-        check(f'b{num_buffers}: reset aligns every historical env once',
-              lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1, 1) == 2*num_buffers
-              and lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1, 0) == 0)
+        check(f'b{num_buffers}: historical envs are dealt to the banks with tag 1+bank',
+              [(e['tag'], e['bank']) for e in envs] == [(0, -1), (1, 0), (0, -1), (2, 1)]*num_buffers, got=[(e['tag'], e['bank']) for e in envs])
+        check(f'b{num_buffers}: reset aligns every historical env of each bank once',
+              all(lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1+b, 1) == num_buffers for b in range(banks))
+              and all(lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1+b, 0) == 0 for b in range(banks)))
         obs = np.ctypeslib.as_array((ctypes.c_float*(total*OBS)).from_address(vec.obs_ptr)).reshape(total, OBS)
         rewards = np.ctypeslib.as_array((ctypes.c_float*total).from_address(vec.rewards_ptr))
         terminals = np.ctypeslib.as_array((ctypes.c_float*total).from_address(vec.terminals_ptr))
@@ -150,8 +151,13 @@ def main():
             vec.close(); continue
         # Step on the host path with a distinct action per physical row.
         sides = {i: set() for i, e in enumerate(envs) if e['banks']}; bank_seen = {i: set() for i in sides}
+        # Pool statistics mirror the sticky boundary flag: a match counts toward hist_n_bank only
+        # if no reset (a swap) cleared the flag while it was in flight. The reset check above
+        # cleared it during every env's first match; a second reset hits bank 0 part way through.
+        flag = {i: 0 for i in sides}; finished = {i: 0 for i in sides}; counted = {i: 0 for i in sides}
+        skipped = 0; flags_ok = True
         seen_apart = [False]*len(envs)
-        aligned_total = 0; matches_before = [e['matches'] for e in envs]; last = envs
+        matches_before = [e['matches'] for e in envs]; last = envs
         # Expected cumulative counters: every step decides for every player; learner rows are the
         # self-play rows and slot 0 of historical environments; buttons are the low four action bits.
         learner_rows = [r for e in envs for r in (e['slots'][:1] if e['banks'] else e['slots'])]
@@ -191,7 +197,19 @@ def main():
                         sides[i].add(e['side']); bank_seen[i].add(e['bank'])
                     if not pair_ok(*active_rows(e)): action_echo_ok = False
                 previous_active[i] = active_rows(e)
-            aligned_total += lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1, 1)
+            for i in sides:
+                if cur[i]['matches'] != last[i]['matches']:
+                    finished[i] += 1; counted[i] += flag[i]; skipped += 1-flag[i]; flag[i] = 1
+            aligned = lambda tag, reset=0: lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), tag, reset)
+            for b in range(banks):
+                if aligned(1+b) != sum(flag[i] for i in sides if cur[i]['bank'] == b): flags_ok = False
+            if step == args.steps//3:
+                # The trainer swaps bank 0 mid-match: the reset clears bank 0's flags only.
+                before_other = aligned(2)
+                aligned(1, 1)
+                for i in sides:
+                    if cur[i]['bank'] == 0: flag[i] = 0
+                if aligned(1) != 0 or aligned(2) != before_other: flags_ok = False
             last = cur
         matches = [e['matches']-m for e, m in zip(cur, matches_before)]
         check('b1: actions echo per physical row and pairs stay mutually visible', action_echo_ok)
@@ -200,18 +218,15 @@ def main():
         check('b1: finished opponent row is blanked', blank_after_ok)
         check('b1: several matches per env', min(matches) >= 3, matches=matches)
         check('b1: sides vary per historical env', all(len(s) == 2 for s in sides.values()), sides={k: sorted(v) for k, v in sides.items()})
-        check('b1: banks vary per historical env', all(len(s) == 2 for s in bank_seen.values()), banks={k: sorted(v) for k, v in bank_seen.items()})
-        check('b1: count_aligned reports each historical match boundary once', aligned_total == sum(matches[i] for i in sides), aligned=aligned_total, matches=matches)
-        # Restrict the valid banks: new matches must only pick bank 1.
-        lib.bopl_set_valid_banks(0b10)
-        picked = set()
-        for step in range(args.steps//2):
-            vec.cpu_step(actions.ctypes.data); account()
-            cur = layout(lib, vec, 4)
-            for i, e in enumerate(cur):
-                if e['banks'] and e['matches'] != last[i]['matches']: picked.add(e['bank'])
-            last = cur
-        check('b1: valid-bank mask restricts new matches', picked == {1}, picked=sorted(picked))
+        check('b1: each historical env keeps its bank', all(s == {cur[i]['bank']} for i, s in bank_seen.items()), banks={k: sorted(v) for k, v in bank_seen.items()})
+        check('b1: count_aligned counts envs that started a match since their bank was last swapped', flags_ok)
+        log = vec.log()
+        expected_n = {b: sum(counted[i] for i in sides if cur[i]['bank'] == b) for b in range(banks)}
+        check('b1: per-bank pool statistics skip the matches a reset interrupted',
+              skipped == len(sides)+1 and sum(expected_n.values()) > 0
+              and all(round(log.get(f'hist_n_bank_{b}', 0)*log['n']) == expected_n[b] for b in range(banks))
+              and all(0 <= log.get(f'hist_score_bank_{b}', 0) <= log.get(f'hist_n_bank_{b}', 0) for b in range(banks)),
+              skipped=skipped, finished=finished, expected=expected_n, log={k: v for k, v in log.items() if 'bank' in k or k == 'n'})
         # Cumulative counters (what the metrics helper differences): physical and learner decisions,
         # held buttons, completed matches (once each, per map), learner-only telemetry, kills.
         snap = counters.snapshot(lib, vec); completed = sum(e['matches']-1 for e in cur)
@@ -224,7 +239,7 @@ def main():
         tel = snap['telemetry']
         check('b1: counters keep learner-only telemetry', tel[12] == expect['learner_episodes'] and tel[13]+tel[14] <= tel[12]
               and tel[15] > 0 and abs(tel[10] - 0.1*snap['kills']) < 1e-6, telemetry=tel, kills=snap['kills'], episodes=expect['learner_episodes'])
-        report['log'] = vec.log(); report['counters'] = snap
+        report['log'] = log; report['counters'] = snap
         vec.close()
     # Final-trainer reward: no kill shaping, timeout -0.5 paid by both players of a truncated match.
     vec = _C.create_vec(dict(vec=dict(total_agents=4, num_buffers=1), env=dict(env_kwargs, banks=0, historical_every=0,

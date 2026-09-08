@@ -37,8 +37,12 @@ old default of 3 and discarded (`aborted-001-s73-stocks3`).
 
 Rewards are fixed by this entrypoint: +1 for winning, -1 for losing, -0.5 for
 both players on timeout, and zero kill/death shaping. Half the games use live
-self-play, and half pair one learner with a frozen opponent. Frozen banks
-change only after their active matches end.
+self-play, and half pair one learner with a frozen opponent from PufferLib's
+Elo-rated pool (`--pool-size 16 --swap-winrate 0.6 --min-games 256
+--snapshot-interval 10000000 --opponent-timeout 50000000` by default; see
+[README.md](README.md)). A swap replaces a bank's weights in place once every
+game of the bank has started a match since the last swap; a match interrupted by
+a swap is dropped from that bank's statistics.
 
 Entropy uses `max(0.0005, 0.01 * 2**(-N / 30000000))`, where `N` counts learner
 decisions completed before the update. It reaches 0.005 at 30M, 0.0025 at 60M,

@@ -19,6 +19,11 @@ typedef struct {
     /* Learner-player outcomes, split by opponent kind (each averaged by n like
      * every other field, so win rate = wins/episodes). */
     float learner_episodes, learner_wins, historical_episodes, historical_wins;
+    /* Per frozen bank, the fields PufferLib's selfplay pool reads (n-averaged
+     * like the rest): matches the learner completed against bank b and the
+     * learner's score in them. A match whose opponent weights were swapped
+     * while it ran (see c_step) counts in neither. */
+    float hist_n_bank[8], hist_score_bank[8];
     float map_fraction[31];
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
@@ -44,19 +49,23 @@ typedef struct {
      * self-play or evaluation environment uses one slot per player. A
      * historical environment (banks>0, two players) uses slot 0 for the
      * learner and slots 1..banks for its opponent, one per frozen weight bank;
-     * exactly one opponent slot is active per match (1+active_bank), the rest
-     * idle. Player p writes to and reads from slot bopl_slot(env, p). */
+     * only the slot of this environment's bank (1+active_bank) is ever active,
+     * the rest idle. Player p writes to and reads from slot bopl_slot(env, p). */
     int num_agents, players, banks;
     float *obs_ptr[BOPL_MAX_SLOTS], *action_ptr[BOPL_MAX_SLOTS], *reward_ptr[BOPL_MAX_SLOTS], *terminal_ptr[BOPL_MAX_SLOTS];
-    /* PufferLib alignment protocol (MY_USES_TAGS): tag 0 self-play, 1 historical. */
+    /* PufferLib selfplay-pool protocol (MY_USES_TAGS): tag 0 self-play,
+     * 1+active_bank historical. boundary_reached is raised at every match
+     * start and cleared by the trainer (count_aligned reset) right after it
+     * swapped this bank's weights, so at match end it tells whether the
+     * opponent was one policy for the whole match. */
     int tag, boundary_reached;
-    /* Per match, drawn in c_reset from a stream separate from the game setup
-     * draws so the map/seed/loadout sequence is unaffected: which player the
-     * learner controls (side) and which frozen bank the opponent runs on
-     * (uniform over the vector's currently valid banks). */
+    /* The frozen bank this environment's opponent runs on, fixed for the
+     * environment's lifetime (bank = historical index modulo banks). Which
+     * player the learner controls (side) is drawn per match in c_reset from a
+     * stream separate from the game setup draws, so the map/seed/loadout
+     * sequence is unaffected. */
     int side, active_bank;
     unsigned int side_rng;
-    const unsigned int *valid_banks;
     unsigned long matches, stepped;
     /* Player-ordered observation block; rows are published to the slots. */
     float *scratch;
@@ -303,7 +312,7 @@ static void init(BoplPuffer *env) {
     env->sample=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
     env->scratch=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
     if (!env->history || !env->sample || !env->scratch) abort();
-    env->active_bank=-1;
+    if (env->banks && (env->active_bank<0 || env->active_bank>=env->banks)) { fprintf(stderr, "Bopl RL: historical environment without a bank\n"); abort(); }
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
     if (!env->no_autoreset) {
@@ -362,19 +371,14 @@ static void c_reset(BoplPuffer *env) {
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
     for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
     if (env->banks) {
-        /* Opponent ownership changes only here, between matches: every bank
-         * row goes idle (blank observation; the finished match's opponent state
-         * was reset by the terminal flag) and the new match draws its side and
-         * one of the banks the trainer currently declares valid. Blanking all
-         * rows, not just the previously active one, also clears rows that held
-         * another slot's observation before the trainer's agent permutation
-         * was installed (create_pufferl resets under identity routing). */
+        /* Every bank row goes idle (blank observation; the finished match's
+         * opponent state was reset by the terminal flag) and the new match
+         * draws its side. Blanking all rows, not just the active one, also
+         * clears rows that held another slot's observation before the
+         * trainer's agent permutation was installed (create_pufferl resets
+         * under identity routing). */
         for (int bank=0; bank<env->banks; bank++) memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float));
-        unsigned int valid=*env->valid_banks&((1u<<env->banks)-1u);
-        if (!valid) { fprintf(stderr, "Bopl RL: no valid opponent bank\n"); abort(); }
         env->side=(int)(bopl_side_random(env)&1u);
-        int count=__builtin_popcount(valid), pick=(int)(bopl_side_random(env)%(uint32_t)count);
-        for (int bank=0; bank<env->banks; bank++) if (valid&(1u<<bank)) { if (pick==0) { env->active_bank=bank; break; } pick--; }
         /* A fresh recurrent state for the row this match's opponent runs on. */
         *env->terminal_ptr[1+env->active_bank]=1;
     }
@@ -457,7 +461,13 @@ static void c_step(BoplPuffer *env) {
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;
             if (learner) {
                 env->log.learner_episodes++; env->log.learner_wins+=won;
-                if (env->banks) { env->log.historical_episodes++; env->log.historical_wins+=won; }
+                if (env->banks) {
+                    env->log.historical_episodes++; env->log.historical_wins+=won;
+                    /* The pool's Elo/swap statistics skip a match whose opponent
+                     * weights the trainer replaced while it ran (the swap
+                     * cleared boundary_reached; the next c_reset raises it). */
+                    if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
+                }
             }
         }
     }

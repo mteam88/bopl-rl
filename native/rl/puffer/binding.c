@@ -20,13 +20,6 @@
 
 int bopl_puffer_telemetry_size(void) { return BOPL_TELEMETRY_SIZE; }
 
-/* Which frozen banks currently hold a usable snapshot, shared by every
- * environment of this process; bit b = bank b. Bank environments draw their
- * opponent from this set at each match start (c_reset). */
-static unsigned int bopl_valid_banks=0;
-void bopl_set_valid_banks(unsigned int mask) { __atomic_store_n(&bopl_valid_banks, mask, __ATOMIC_SEQ_CST); }
-unsigned int bopl_get_valid_banks(void) { return __atomic_load_n(&bopl_valid_banks, __ATOMIC_SEQ_CST); }
-
 static int option(Dict *kwargs, const char *name, int fallback) {
     DictItem *item=dict_get_unsafe(kwargs, name);
     return item?(int)item->value:fallback;
@@ -35,9 +28,11 @@ static int option(Dict *kwargs, const char *name, int fallback) {
  * frozen opponent banks, and `historical_every` (0 = none; k = every k-th
  * environment is a historical one: its learner plays a frozen snapshot and it
  * consumes 1+banks slots, one per bank, so all bank rows stay adjacent to the
- * primary rows that PufferLib's bank_layout slices per buffer). The trainer
- * must build the agent permutation so slot 1+b of every historical
- * environment lands in bank b's slice of its buffer. */
+ * primary rows that PufferLib's bank_layout slices per buffer). Historical
+ * environments are dealt to the banks round-robin (the j-th historical
+ * environment plays bank j%banks) and tagged 1+bank for PufferLib's selfplay
+ * pool. The trainer must build the agent permutation so slot 1+b of every
+ * historical environment lands in bank b's slice of its buffer. */
 void my_init(Env *env, Dict *kwargs) {
     unsigned int index=env->rng; // PufferLib assigns the physical environment index before my_init.
     env->rng^=(unsigned int)option(kwargs, "seed", 73);
@@ -45,8 +40,8 @@ void my_init(Env *env, Dict *kwargs) {
     int banks=option(kwargs, "banks", 0), every=option(kwargs, "historical_every", 0);
     env->banks=(every>0 && banks>0 && index%(unsigned)every==(unsigned)every-1)?banks:0;
     env->num_agents=env->banks?1+env->banks:env->players;
-    env->tag=env->banks?1:0;
-    env->valid_banks=&bopl_valid_banks;
+    env->active_bank=env->banks?(int)((index/(unsigned)every)%(unsigned)env->banks):-1;
+    env->tag=env->banks?1+env->active_bank:0;
     /* Side and bank draws use their own stream so the game setup sequence
      * (seed/map/loadouts from env->rng) is identical with or without banks. */
     env->side_rng=(index*2654435761u)^(unsigned int)option(kwargs, "seed", 73)^0x9e3779b9u;
@@ -107,10 +102,10 @@ void my_log(Log *log, Dict *out) {
         "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
         "map_28_fraction", "map_29_fraction", "map_30_fraction"
     };
-    if (out->capacity<48) {
-        DictItem *items=realloc(out->items,48*sizeof(DictItem));
+    if (out->capacity<64) {
+        DictItem *items=realloc(out->items,64*sizeof(DictItem));
         if (!items) abort();
-        out->items=items;out->capacity=48;
+        out->items=items;out->capacity=64;
     }
     dict_set(out, "perf", log->perf); dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return); dict_set(out, "episode_length", log->episode_length);
@@ -118,6 +113,11 @@ void my_log(Log *log, Dict *out) {
     dict_set(out, "observation_overflow", log->observation_overflow); dict_set(out, "game_errors", log->game_errors);
     dict_set(out, "learner_episodes", log->learner_episodes); dict_set(out, "learner_wins", log->learner_wins);
     dict_set(out, "historical_episodes", log->historical_episodes); dict_set(out, "historical_wins", log->historical_wins);
+    static const char *bank_n[8]={"hist_n_bank_0","hist_n_bank_1","hist_n_bank_2","hist_n_bank_3","hist_n_bank_4","hist_n_bank_5","hist_n_bank_6","hist_n_bank_7"};
+    static const char *bank_score[8]={"hist_score_bank_0","hist_score_bank_1","hist_score_bank_2","hist_score_bank_3","hist_score_bank_4","hist_score_bank_5","hist_score_bank_6","hist_score_bank_7"};
+    for (int bank=0; bank<8; bank++) if (log->hist_n_bank[bank]) {
+        dict_set(out, bank_n[bank], log->hist_n_bank[bank]); dict_set(out, bank_score[bank], log->hist_score_bank[bank]);
+    }
     for (int map=0; map<31; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);
     }

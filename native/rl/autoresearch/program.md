@@ -107,7 +107,7 @@ encoder (evidence layout: `native/artifacts/rl/autoresearch/final-core-checks/`)
   (bank routing, historical ownership, per-episode resets);
 - `check_set_encoder.py` (CUDA forward/backward vs an independent oracle,
   masking, permutation, empty sets, graph replay, finite differences);
-- `check_recurrent.py`, `test_native_pool.py`, and the research unit tests
+- `check_recurrent.py`, `puffer/test_native_selfplay.py`, and the research unit tests
   (`python -m unittest discover -s native/rl/research`).
   `libbopl_research.so` needs `make -B -C native/rl research` to pick up
   header changes. Unity player launches need
@@ -139,7 +139,7 @@ encoder (evidence layout: `native/artifacts/rl/autoresearch/final-core-checks/`)
    evidence and the limits. This session does NOT launch that run.
 4. **Standalone simulator: assessed, not started** (notes.md, 2026-09-08). Collection is ~98 % of logged training-loop time. A training-loadout simulator (dash/bow/platform, two players) in `bopl-sim` has a speculative 5–10× throughput upside, without demonstrated mechanic parity. Defer it until the 400M run helps establish whether collection rate limits learning.
 
-Ownership while root's Rift is active: root owns `train.py`, `native_pool.py`,
+Ownership while root's Rift is active: root owns `train.py`, `native_selfplay.py`,
 `native_vector.py`, `policy_eval.c`, `native_policy.py`, `evaluate.py`,
 `native_metrics.py`, `environment.py`, dashboard files, `series.py` and
 `NATIVE_HANDOFF.md`. This Rift owns `bopl_rl.c`, `bopl_puffer.h`, `binding.c`,
