@@ -103,12 +103,12 @@ def payload(name,directory,root):
             if index%stride==0 or index==len(all_metrics)-1:
                 curve.append(dict(steps=m.get('learner_steps',m['step']*.75),hits=hits,shots=shots,
                                   environment_deaths=env_deaths,self_deaths=self_deaths,opponent_deaths=combat_deaths,
-                                  sps=m['sps']*m.get('learner_fraction',.75),entropy=m.get('entropy')))
+                                  sps=m.get('learner_sps',m['sps']*m.get('learner_fraction',.75)),entropy=m.get('entropy')))
         last_file=path/'metrics.jsonl';age=time.time()-last_file.stat().st_mtime if last_file.exists() else None
         rows.append(dict(name=run['name'],condition=run['condition'],seed=run['seed'],status=s['status'],
                          learner_steps=s.get('learner_steps',latest.get('learner_steps',run.get('source_learner_steps',0))),target=target,
                          source_learner_steps=run.get('source_learner_steps',0),
-                         sps=latest.get('sps',0)*latest.get('learner_fraction',.75) if s['status']=='running' else None,
+                         sps=latest.get('learner_sps',latest.get('sps',0)*latest.get('learner_fraction',.75)) if s['status']=='running' else None,
                          elapsed=s.get('elapsed',0),update_age_seconds=age,
                          failure=s.get('failure') or failures.get(run['name'],{}).get('note'),action_rates=latest.get('action_rates',{}),
                          kl=latest.get('kl'),entropy=latest.get('entropy'),

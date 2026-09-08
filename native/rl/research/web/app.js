@@ -12,6 +12,7 @@ let data = null,
   study = null,
   runName = "",
   replay = null,
+  mind = null,
   selectedEvaluation = null,
   selectedGame = null,
   frameIndex = 0,
@@ -183,6 +184,8 @@ function update() {
   $("memory").textContent = m.cuda_memory_mb
     ? Math.round(m.cuda_memory_mb) + " MB"
     : "—";
+  $("explained").textContent =
+    m.explained_variance === undefined ? "—" : m.explained_variance.toFixed(3);
   $("configLink").href = `/runs/${encodeURIComponent(runName)}/config.json`;
   $("updated").textContent =
     `Last checked ${new Date().toLocaleTimeString()} · local GPU`;
@@ -199,7 +202,12 @@ function update() {
     ? `${initial.wins} / ${initial.games} wins · ${final ? "fresh final seeds · " : data.validation_evaluation ? "expanded evaluation · " : ""}95% interval ${percent(initial.interval[0])}–${percent(initial.interval[1])}`
     : "Fixed evaluation · both player sides";
   const evals = data.evaluations;
-  replaceOptions($("winMap"), (c.eval_maps || [0, 1, 2]).map((m) => [String(m), `Map ${m}`]));
+  const evalMaps =
+    c.eval_maps ||
+    (c.evaluation_maps
+      ? c.evaluation_maps.concat(c.heldout_maps || [])
+      : [0, 1, 2]);
+  replaceOptions($("winMap"), evalMaps.map((m) => [String(m), `Map ${m}`]));
   const chartMap = Number($("winMap").value);
   const makeSeries = (opponent, map, color) => ({
     color,
@@ -272,15 +280,70 @@ function update() {
     ],
     { min: 0, format: short },
   );
+  const perHead = data.metrics.some((m) => m.entropy_aim !== undefined);
   chart(
     "entropyChart",
     [
+      {
+        color: "#2846d4",
+        points: data.metrics.map((m) => ({ x: m.step, y: m.entropy_aim })),
+      },
+      {
+        color: "#e87350",
+        points: data.metrics.map((m) => ({ x: m.step, y: m.entropy_buttons })),
+      },
       {
         color: "#71816a",
         points: data.metrics.map((m) => ({ x: m.step, y: m.entropy })),
       },
     ],
-    { min: 0, max: Math.log(256) + Math.log(16), format: (n) => n.toFixed(1) },
+    {
+      min: 0,
+      max: (Math.log(256) + Math.log(16)) * 1.04,
+      format: (n) => n.toFixed(1),
+      refs: [
+        { y: Math.log(256) + Math.log(16), color: "#71816a" },
+        ...(perHead
+          ? [
+              { y: Math.log(256), color: "#2846d4" },
+              { y: Math.log(16), color: "#e87350" },
+            ]
+          : []),
+      ],
+    },
+  );
+  $("entropyNote").textContent = perHead
+    ? "Dotted lines are uniform-policy maxima. A head parked at its line is not learning; falling entropy alone does not prove better play."
+    : "This run reports only joint entropy (max 8.32). Per-head entropy arrives with the native trainer.";
+  chart(
+    "scheduleChart",
+    [
+      {
+        color: "#2846d4",
+        points: data.metrics.map((m) => ({
+          x: m.step,
+          y: m.entropy_coefficient,
+        })),
+      },
+      {
+        color: "#e87350",
+        points: data.metrics.map((m) => ({
+          x: m.step,
+          y: m.learning_rate ?? c.learning_rate,
+        })),
+      },
+    ],
+    { log: true, format: (n) => n.toExponential(0) },
+  );
+  chart(
+    "advantageChart",
+    [
+      {
+        color: "#71816a",
+        points: data.metrics.map((m) => ({ x: m.step, y: m.advantage_std })),
+      },
+    ],
+    { min: 0, format: (n) => n.toFixed(3) },
   );
   chart(
     "lossChart",
@@ -339,6 +402,104 @@ function update() {
     ),
     { format: (n) => n.toFixed(2) },
   );
+  const killReward = c.reward?.kill || 0;
+  const kills = (t) =>
+    t.kills !== undefined
+      ? t.kills
+      : killReward
+        ? t.reward_kills / killReward
+        : undefined;
+  const perEpisode = (value) => (m) => ({
+    x: m.step,
+    y:
+      m.totals.episodes > 0 ? value(m.totals) / m.totals.episodes : undefined,
+  });
+  chart(
+    "endingsChart",
+    [
+      { color: "#2846d4", points: rolling.map(perEpisode((t) => t.timeouts)) },
+      {
+        color: "#e87350",
+        points: rolling.map(perEpisode((t) => t.deaths_environment)),
+      },
+      { color: "#71816a", points: rolling.map(perEpisode(kills)) },
+    ],
+    { min: 0, format: (n) => n.toFixed(2) },
+  );
+  chart(
+    "accuracyChart",
+    [
+      {
+        color: "#e87350",
+        points: rolling.map((m) => ({
+          x: m.step,
+          y:
+            m.totals.arrows_fired > 0
+              ? m.totals.arrow_hits / m.totals.arrows_fired
+              : undefined,
+        })),
+      },
+    ],
+    { min: 0, max: Math.max(0.05, ...rolling.map((m) => m.totals.arrows_fired > 0 ? m.totals.arrow_hits / m.totals.arrows_fired : 0)) * 1.2, format: percent },
+  );
+  const capSeconds = (c.episode_ticks || 3600) / 60;
+  chart(
+    "episodeLengthChart",
+    [
+      {
+        color: "#2846d4",
+        points: rolling.map(perEpisode((t) => t.ticks / 60)),
+      },
+    ],
+    {
+      min: 0,
+      max: capSeconds * 1.1,
+      format: (n) => Math.round(n) + "s",
+      refs: [{ y: capSeconds, color: "#e87350", label: "episode cap" }],
+    },
+  );
+  const window20 = measured.slice(-20);
+  const episodeCount = window20.reduce(
+    (n, m) => n + m.behavior.totals.episodes,
+    0,
+  );
+  const timeoutCount = window20.reduce(
+    (n, m) => n + m.behavior.totals.timeouts,
+    0,
+  );
+  $("truncations").textContent = episodeCount
+    ? percent(timeoutCount / episodeCount)
+    : "—";
+  $("truncationDetail").textContent = episodeCount
+    ? `${fmt.format(timeoutCount)} of ${fmt.format(episodeCount)} recent episodes hit the ${Math.round(capSeconds)} s cap`
+    : "Timeouts per episode · rolling 20 updates";
+  const gaugeSeries = (key) => [
+    {
+      color: "#2846d4",
+      points: (data.insights || []).map((r) => ({
+        x: r.step,
+        y: r.gauges[key],
+      })),
+    },
+  ];
+  chart("bowHoldChart", gaugeSeries("bow_hold_seconds"), {
+    min: 0,
+    max: 1,
+    format: (n) => n.toFixed(2),
+    refs: [{ y: 0.84, color: "#71816a", label: "human" }],
+  });
+  chart("aimChangeChart", gaugeSeries("aim_change_degrees"), {
+    min: 0,
+    max: 100,
+    format: (n) => Math.round(n) + "°",
+    refs: [{ y: 2.8, color: "#71816a", label: "human" }],
+  });
+  const latestGauges = (data.insights || []).at(-1);
+  $("gaugeNote").textContent = latestGauges
+    ? `Latest checkpoint: hold ${latestGauges.gauges.bow_hold_seconds?.toFixed(2) ?? "—"} s over ${latestGauges.gauges.completed_holds} completed holds · aim change ${latestGauges.gauges.aim_change_degrees?.toFixed(1) ?? "—"}° over ${fmt.format(latestGauges.gauges.decisions)} decisions, from ${latestGauges.games} saved games. Human references: 47-recording demonstration batch (IMITATION.md).`
+    : "Measured from saved evaluation replays once the first evaluation completes.";
+  updateLadder();
+  updateHeatmapOptions();
   $("actionNote").textContent =
     c.telemetry_schema === 1
       ? "Last 20 updates, weighted by learning-player decisions. Button presses are attempts, not confirmed activations."
@@ -438,18 +599,29 @@ function chart(id, series, options = {}) {
     bottom = 20;
   const points = series
     .flatMap((s) => s.points)
-    .filter((p) => Number.isFinite(p.y));
+    .filter((p) => Number.isFinite(p.y) && (!options.log || p.y > 0));
+  const refValues = (options.refs || []).map((ref) => ref.y);
   const xmax = Math.max(1, ...points.map((p) => p.x)),
-    ymin = options.min ?? Math.min(0, ...points.map((p) => p.y)),
+    ymin =
+      options.log && points.length
+        ? Math.min(...points.map((p) => p.y), ...refValues) / 1.5
+        : (options.min ?? Math.min(0, ...points.map((p) => p.y))),
     ymax =
-      options.max ?? Math.max(0.001, ...points.map((p) => p.hi ?? p.y)) * 1.1;
+      options.max ??
+      Math.max(0.001, ...points.map((p) => p.hi ?? p.y), ...refValues) * 1.1;
+  const scale = options.log ? Math.log10 : (v) => v,
+    lo = scale(Math.max(ymin, options.log ? 1e-12 : -Infinity)),
+    hi = scale(ymax);
   const x = (v) => left + ((w - left - right) * v) / xmax,
-    y = (v) => top + (h - top - bottom) * (1 - (v - ymin) / (ymax - ymin || 1));
+    y = (v) =>
+      top + (h - top - bottom) * (1 - (scale(v) - lo) / (hi - lo || 1));
   ctx.font = '9px "Trebuchet MS",sans-serif';
   ctx.lineWidth = 1;
   ctx.textBaseline = "middle";
   for (let i = 0; i <= 2; i++) {
-    const value = ymin + ((ymax - ymin) * i) / 2,
+    const value = options.log
+      ? 10 ** (lo + ((hi - lo) * i) / 2)
+      : ymin + ((ymax - ymin) * i) / 2,
       py = y(value);
     ctx.strokeStyle = "#dfe2d5";
     ctx.beginPath();
@@ -459,6 +631,21 @@ function chart(id, series, options = {}) {
     ctx.fillStyle = "#868b7c";
     ctx.textAlign = "right";
     ctx.fillText((options.format || short)(value), left - 7, py);
+  }
+  for (const ref of options.refs || []) {
+    const py = y(ref.y);
+    ctx.strokeStyle = ref.color || "#868b7c";
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(left, py);
+    ctx.lineTo(w - right, py);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (ref.label) {
+      ctx.fillStyle = ref.color || "#868b7c";
+      ctx.textAlign = "left";
+      ctx.fillText(ref.label, left + 4, py - 6);
+    }
   }
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
@@ -513,6 +700,158 @@ function chart(id, series, options = {}) {
     }
   }
 }
+function updateLadder() {
+  const ladder = data.ladder;
+  $("ladderSection").hidden = !ladder;
+  if (!ladder) return;
+  const checkpoints = ladder.ratings
+    .filter((r) => r.kind === "checkpoint")
+    .sort((a, b) => a.step - b.step);
+  const anchors = ladder.ratings.filter((r) => r.kind === "anchor");
+  const anchorPalette = ["#71816a", "#e87350", "#ab8a5a", "#80c7e0", "#b99be8", "#868b7c"];
+  $("ladderTag").textContent = `${fmt.format(ladder.games)} rated games`;
+  chart(
+    "ladderChart",
+    [
+      {
+        color: "#2846d4",
+        points: checkpoints.map((r) => ({ x: r.step, y: r.rating })),
+      },
+    ],
+    {
+      format: (n) => Math.round(n).toString(),
+      refs: anchors.map((a, i) => ({
+        y: a.rating,
+        color: anchorPalette[i % anchorPalette.length],
+        label: a.name,
+      })),
+    },
+  );
+  $("ladderLegend").replaceChildren(
+    ...[
+      Object.assign(document.createElement("span"), {
+        textContent: "Checkpoints",
+      }),
+      ...anchors.map((a, i) => {
+        const span = document.createElement("span");
+        span.textContent = `${a.name} · ${Math.round(a.rating)} · ${a.games} games`;
+        span.style.setProperty("--series", anchorPalette[i % anchorPalette.length]);
+        return span;
+      }),
+    ],
+  );
+  $("ladderLegend").firstChild.style.setProperty("--series", "#2846d4");
+}
+const heatmapCache = {};
+let heatmapRun = "";
+function updateHeatmapOptions() {
+  const insights = data.insights || [];
+  $("heatmapSection").hidden = !insights.length;
+  if (!insights.length) return;
+  if (heatmapRun !== runName) {
+    heatmapRun = runName;
+    for (const key of Object.keys(heatmapCache)) delete heatmapCache[key];
+  }
+  const previous = $("heatmapEval").value;
+  replaceOptions(
+    $("heatmapEval"),
+    insights
+      .map((r) => [r.directory, `${fmt.format(r.step)} decisions`])
+      .reverse(),
+  );
+  if (!insights.some((r) => r.directory === previous))
+    $("heatmapEval").value = insights.at(-1).directory;
+  loadHeatmap();
+}
+async function loadHeatmap() {
+  const directory = $("heatmapEval").value;
+  if (!directory) return;
+  const key = `${runName}/${directory}`;
+  if (!heatmapCache[key]) {
+    try {
+      const response = await fetch(
+        `/api/insights/${encodeURIComponent(runName)}/${encodeURIComponent(directory)}`,
+      );
+      if (!response.ok) return;
+      heatmapCache[key] = await response.json();
+    } catch {
+      return;
+    }
+  }
+  if ($("heatmapEval").value !== directory) return;
+  const maps = Object.keys(heatmapCache[key].maps).sort(
+    (a, b) => Number(a) - Number(b),
+  );
+  replaceOptions($("heatmapMap"), maps.map((m) => [m, `Map ${m}`]));
+  drawHeatmap();
+}
+function drawHeatmap() {
+  const key = `${runName}/${$("heatmapEval").value}`;
+  const insight = heatmapCache[key];
+  const cell = insight?.maps[$("heatmapMap").value];
+  const canvas = $("heatmap"),
+    ctx = canvas.getContext("2d"),
+    w = canvas.width,
+    h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!cell) return;
+  const grid = insight.grid;
+  const worldW = grid.w * grid.cell,
+    worldH = grid.h * grid.cell;
+  const px = (x) => ((x - grid.x0) / worldW) * w;
+  const py = (y) => h - ((y - grid.y0) / worldH) * h;
+  ctx.fillStyle = "#18263a";
+  ctx.fillRect(0, 0, w, h);
+  for (const outline of cell.outline || []) {
+    const corners = [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ].map(([a, b]) => [
+      px(outline.x + a * outline.rx + b * outline.ux),
+      py(outline.y + a * outline.ry + b * outline.uy),
+    ]);
+    ctx.beginPath();
+    corners.forEach(([cx2, cy2], i) =>
+      i ? ctx.lineTo(cx2, cy2) : ctx.moveTo(cx2, cy2),
+    );
+    ctx.closePath();
+    ctx.lineJoin = "round";
+    ctx.lineWidth = Math.max(2, ((outline.radius * 2) / worldW) * w);
+    ctx.strokeStyle = "#33475f";
+    ctx.fillStyle = "#33475f";
+    ctx.stroke();
+    ctx.fill();
+  }
+  const peak = Math.max(1, ...cell.occupancy.map(([, count]) => count));
+  const cw = (grid.cell / worldW) * w,
+    ch = (grid.cell / worldH) * h;
+  for (const [index, count] of cell.occupancy) {
+    const column = index % grid.w,
+      row = Math.floor(index / grid.w);
+    ctx.fillStyle = `rgba(244,217,63,${(0.85 * Math.sqrt(count / peak)).toFixed(3)})`;
+    ctx.fillRect(
+      px(grid.x0 + column * grid.cell),
+      py(grid.y0 + (row + 1) * grid.cell),
+      cw + 0.5,
+      ch + 0.5,
+    );
+  }
+  ctx.strokeStyle = "#ef5d3c";
+  ctx.lineWidth = 2.5;
+  for (const [x, y] of cell.deaths) {
+    const cx2 = px(x),
+      cy2 = py(y);
+    ctx.beginPath();
+    ctx.moveTo(cx2 - 6, cy2 - 6);
+    ctx.lineTo(cx2 + 6, cy2 + 6);
+    ctx.moveTo(cx2 - 6, cy2 + 6);
+    ctx.lineTo(cx2 + 6, cy2 - 6);
+    ctx.stroke();
+  }
+  $("heatmapNote").textContent = `${cell.games} saved game${cell.games === 1 ? "" : "s"} on map ${$("heatmapMap").value} at this checkpoint · ${cell.deaths.length} deaths marked. Occupancy is the policy player only; platforms drawn for reference.`;
+}
 function selectEvaluation() {
   selectedEvaluation = data.evaluations.find(
     (e) => e.directory === $("checkpoint").value,
@@ -539,6 +878,19 @@ async function selectMatch() {
   if (!selectedGame) return;
   const requested = selectedGame;
   playing = false;
+  mind = null;
+  $("mindPanel").hidden = true;
+  if (selectedGame.mind) {
+    fetch(fileUrl(selectedEvaluation, selectedGame.mind))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((value) => {
+        if (requested !== selectedGame || !value) return;
+        mind = value;
+        $("mindPanel").hidden = false;
+        drawMind();
+      })
+      .catch(() => {});
+  }
   const response = await fetch(
     fileUrl(selectedEvaluation, selectedGame.visual),
   );
@@ -591,10 +943,121 @@ function setView(next) {
   $("viewVideo").classList.toggle("active", next === "video");
   $("viewPhysics").classList.toggle("active", next === "physics");
 }
+function mindIndex() {
+  if (!mind) return -1;
+  // Legacy visuals record the action that led into a frame; native visuals
+  // (actions_timing=observation-before-action) record the action taken from it.
+  const offset = replay?.actions_timing === "observation-before-action" ? 0 : 1;
+  return Math.min(
+    mind.decisions.length - 1,
+    Math.max(0, Math.floor(frameIndex) - offset),
+  );
+}
+function drawMind() {
+  if (!mind) return;
+  const decisions = mind.decisions,
+    cursor = mindIndex();
+  const canvas = $("mindValue"),
+    r = canvas.getBoundingClientRect(),
+    dpr = devicePixelRatio || 1;
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const w = r.width,
+    h = r.height,
+    left = 40,
+    right = 8,
+    top = 6,
+    bottom = 14;
+  const values = decisions.map((d) => d.value);
+  const vmax = Math.max(0.1, ...values.map(Math.abs)) * 1.1;
+  const x = (i) =>
+    left + ((w - left - right) * i) / Math.max(1, decisions.length - 1);
+  const y = (v) => top + ((h - top - bottom) * (1 - v / vmax)) / 2;
+  ctx.font = '9px "Trebuchet MS",sans-serif';
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 1;
+  for (const level of [-vmax / 1.1, 0, vmax / 1.1]) {
+    ctx.strokeStyle = level === 0 ? "#c9cdbc" : "#dfe2d5";
+    ctx.beginPath();
+    ctx.moveTo(left, y(level));
+    ctx.lineTo(w - right, y(level));
+    ctx.stroke();
+    ctx.fillStyle = "#868b7c";
+    ctx.textAlign = "right";
+    ctx.fillText(level.toFixed(1), left - 7, y(level));
+  }
+  ctx.strokeStyle = "#2846d4";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  values.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+  ctx.stroke();
+  if (cursor >= 0) {
+    ctx.strokeStyle = "#e87350";
+    ctx.beginPath();
+    ctx.moveTo(x(cursor), top);
+    ctx.lineTo(x(cursor), h - bottom);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#868b7c";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "bottom";
+  ctx.fillText("V(s)", left, h);
+  const decision = decisions[Math.max(0, cursor)];
+  if (decision) {
+    $("mindReadout").textContent =
+      `V(s) ${decision.value.toFixed(2)} at ${duration(decision.t / 60)}`;
+    drawDistribution(
+      "mindButtons",
+      decision.buttons,
+      decision.action?.[1],
+      (i) =>
+        ["J", "D", "A", "P"].filter((_, bit) => i & (1 << bit)).join("") ||
+        "·",
+    );
+    // Aim index 0 is "no joystick direction", not zero degrees; bins 1..255
+    // map to (index-1)*360/255 degrees. Bin 0 is drawn apart in gray.
+    drawDistribution("mindAim", decision.aim, decision.action
+      ? Math.round((decision.action[0] * decision.aim.length) / 256)
+      : undefined, (i) => (i === 0 ? "∅" : ""), 0);
+  }
+}
+function drawDistribution(id, probabilities, chosen, label, special) {
+  const canvas = $(id),
+    r = canvas.getBoundingClientRect(),
+    dpr = devicePixelRatio || 1;
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const w = r.width,
+    h = r.height,
+    bottom = label ? 12 : 4;
+  const peak = Math.max(1e-6, ...probabilities);
+  const bar = w / probabilities.length;
+  probabilities.forEach((p, i) => {
+    const height = (h - bottom - 4) * (p / peak);
+    ctx.fillStyle =
+      i === chosen ? "#e87350" : i === special ? "#868b7c" : "#2846d4";
+    ctx.fillRect(i * bar + 0.5, h - bottom - height, Math.max(1, bar - 1), height);
+  });
+  if (label) {
+    ctx.fillStyle = "#868b7c";
+    ctx.font = '8px "Trebuchet MS",sans-serif';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    probabilities.forEach((_, i) => {
+      if ((bar >= 14 || i === chosen || i === special) && label(i))
+        ctx.fillText(label(i), i * bar + bar / 2, h - 1);
+    });
+  }
+}
 function drawFrame() {
   if (!replay) return;
   const frame = replay.frames[Math.floor(frameIndex)];
   drawBoplArena($("arena"),frame,replay.frames[0]);
+  if (mind && !$("mindPanel").hidden) drawMind();
   $("scrub").value = Math.floor(frameIndex);
   $("replayTime").textContent =
     duration(frame.t / 60) + " / " + duration(replay.frames.at(-1).t / 60);
@@ -656,8 +1119,10 @@ function resetRun(name) {
   selectedEvaluation = null;
   selectedGame = null;
   replay = null;
+  mind = null;
   playing = false;
   $("video").pause();
+  $("mindPanel").hidden = true;
   $("emptyReplay").style.display = "flex";
 }
 $("run").onchange = () => {
@@ -684,6 +1149,8 @@ $("scrub").oninput = () => {
 };
 $("viewPhysics").onclick = () => setView("physics");
 $("viewVideo").onclick = () => setView("video");
+$("heatmapEval").onchange = loadHeatmap;
+$("heatmapMap").onchange = drawHeatmap;
 window.addEventListener("resize", () => {
   updateSeries();
   if (data) update();
