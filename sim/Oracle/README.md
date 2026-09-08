@@ -35,6 +35,56 @@ Recorded 2026-09-08 on the pinned player (`Builds/Linux/BoplBattle.x86_64`, Mono
 
 `episode.rep` sha256s are in each `report.json` (`replay_sha256`).
 
+## Ability-coverage fixtures (level 0, `--ticks 480`, seed 785921+G)
+
+`record.c` ability groups (`record <game> ... <players> [ability_group] [ticks] [map]`):
+group 0 keeps `bopl_rl_default_config` loadouts (all players Dash/Gust/Invisibility,
+catalog indices 2/7/19) with the button-mash input script; groups 1–3 assign catalog
+index `1+18*(G-1)+3*player+slot` per slot (indices ≥39 clamp to Dash) with a scripted
+ability-press input pattern and 5 stocks; group 4 is the fixed training loadout.
+**With 2 players only 6 slots exist, so groups 1–3 cover indices 1–6, 19–24, 37–38 —
+13 distinct abilities; indices 7–18 and 25–36 need 6-player fixtures** (the formula
+was sized for 6 players; 18 per group).
+
+| fixture | loadouts (catalog index = name) | exercises |
+| --- | --- | --- |
+| l0-p2-g0 | both: 2 Dash, 7 Gust, 19 Invisibility | default RL smoke loadout |
+| l0-p2-g1 | p0: 1 Random, 2 Dash, 3 Grenade; p1: 4 Bow, 5 Engine, 6 Blink gun | projectiles, Random re-roll |
+| l0-p2-g2 | p0: 19 Invisibility, 20 Meteor, 21 Throw; p1: 22 Push, 23 Tesla coil, 24 Mine | area effects, placeables |
+| l0-p2-g3 | p0: 37 Mjolnir, 38 Portal gun; rest clamp to 2 Dash | end-of-catalog abilities |
+| l0-p2-g4 | both: 2 Dash, 4 Bow, 14 Platform | **the live training loadout** (`puffer/bopl.ini` ability1/2/3 = 2/4/14, `eval_binding.c`; `random_loadouts=0`) |
+| l0-p3-g0 | 3 players, default loadout | 3-player physics/team handling |
+
+All recorded 2026-09-08, `match: true` controlled-vs-replayed on the first pass — no
+new process-identity exclusions were needed beyond the existing
+`native/data/process-identity-fields.json` set. `episode.rep` + `report.json`
+committed under `sim/Oracle/fixtures/<name>/`; traces stay in `/tmp/oracle/`
+(11–33 MB gzipped). Trace ticks = 240 warmup + up to 480 episode ticks; g0 runs
+end early on a terminal death (509/557 ticks).
+
+| run | match | trace ticks | controlled.jsonl.gz sha256 | replayed.jsonl.gz sha256 |
+| --- | --- | --- | --- | --- |
+| /tmp/oracle/l0-p2-g0 | true | 509 | 1681221a07afb3b7b5de6946f671adf8d41b4eecdb225af4c9eac2933929b227 | 5297a93a383abc8df5e8a159e27e716bc2f6e55e20b4c47ee323cfcabd60d4ac |
+| /tmp/oracle/l0-p2-g1 | true | 720 | 2b708bf389e7359de500d9a47776b3e99f40241e449cc8089d7d8b02ecc6d50b | d1c69ab0e4fcafd69a4255889971e2007e2db7d72bbdb66ae6a42e88adefb590 |
+| /tmp/oracle/l0-p2-g2 | true | 720 | e2b716ed79f5b6d945341b3ee93d3092c3fb9407048dcd121ee2fea3d0c01313 | 6b7ed9dfb6f4658876b41095eaac78558484fdfc614f8f1e33d93a7d7cd694db |
+| /tmp/oracle/l0-p2-g3 | true | 720 | 3b900e19a9b820244c93ea108517e2e9091f49a0499d637260019d464c3e6b08 | 820c2c5f0d5596b25bc4d747896974b03a2a01b0fca3756be8b446874b5dfed3 |
+| /tmp/oracle/l0-p2-g4 | true | 720 | 0fdb9267869cb201f012e0970058fdd4a65b7864cdba6b4cad7cccc2774ac987 | d1f9b0d5e832b55e3e523c2634aa245e2379562f080684e2a5ca3ebb84034a68 |
+| /tmp/oracle/l0-p3-g0 | true | 557 | d29b06a7488a5ad4ab4abefb8599b37d2262b86105805db32915d386e822f8c7 | d66ac9d8fed6594137327c3b72d005eeb5865509c88b85079834b7a2594b2348 |
+
+Full ability catalog (39 entries, index = the ushort in `.rep` player loadouts, from
+`Assets/MonoBehaviour/AbilityIcons.asset` `sprites` order): 0 NullAbility, 1 Random,
+2 Dash, 3 Grenade, 4 Bow, 5 Engine, 6 Blink gun, 7 Gust, 8 Growth ray, 9 Rock,
+10 Missile, 11 Spike, 12 Time stop, 13 Smoke, 14 Platform, 15 Revival, 16 Roll,
+17 Shrink ray, 18 Black hole, 19 Invisibility, 20 Meteor, 21 Throw, 22 Push,
+23 Tesla coil, 24 Mine, 25 Teleport, 26 Drill, 27 Grappling hook, 28 Beam,
+29 Duplicator, 30 Magnet gun, 31 Rewind, 32 Web swing, 33 Poke ball,
+34 Gold mushroom (Super star.prefab), 35 Tack (Banana peel.prefab), 36 Freeze ray,
+37 Mjolnir, 38 Portal gun.
+
+Rerun any of these: `python3 native/rl/verify_replay.py --players P --ability-group G
+--level 0 --ticks 480 --output /tmp/oracle/l0-pP-gG`. Include them in the scorecard
+with `sim/Oracle/checkpoint.sh --full`.
+
 ### Unity ticks/s (for the port comparison)
 
 - Traced (`BOPL_TRACE` writing full state JSON): ~40–50 ticks/s. Controlled Mono player `[PERF] simTickAvg=20.0–25.0ms`; replayed IL2CPP player did 480 ticks in 11.6 s including boot. Trace encoding dominates.
