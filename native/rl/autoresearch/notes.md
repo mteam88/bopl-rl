@@ -786,3 +786,17 @@ Row norms are about 0.57 at initialization; the value row has grown to 1.22 whil
 - Learning signal in the policy rows shows up as a rising lag-1 cosine and net/rw, and as growing row norms, not as a change in the slice's mean|dw| (the total step is fixed). The watch rule keys on the right statistics; row norms of the aim/button rows are a third one worth printing.
 - Caveat for the `--learner-passes 3` A/B: three Muon steps on the same rollout take three nearly parallel steps (same data, same noise direction), so per-rollout displacement roughly triples for noise and signal alike. It only wins if the extra passes extract signal that the first pass left; judge it with `--drift` on both arms, not with entropy alone.
 - Projected noise drift over the full run: 0.24 per checkpoint x sqrt(400) = about 4.8 for the aim rows against an initial norm of 9.2 (aim slice), so noise alone reshapes about half the aim head by 400M, with weight decay 0 and nothing pulling it back. Lowering the learning rate shrinks noise and signal steps alike, so it is not a signal-to-noise lever; reward density is.
+
+## 2026-09-07 22:40 EDT: the prioritized sampler sees only ~64% of each rollout at one pass (source read)
+
+`src/pufferlib.cu` `prio_replay_cuda`: per minibatch it weights each of the 56 rollout rows by (sum of |advantage| over the 128-step segment)^0.8 (frozen-bank rows are zeroed first, so the 32 opponent rows get weight 1e-6 and are effectively never drawn), normalizes, and draws `minibatch_segments` = 3072/128 = 24 indices by multinomial sampling **with replacement** (`multinomial_sample`, cuRAND, binary search on a CDF). It never de-duplicates. So with 24 learner rows and 24 draws per pass:
+
+| priorities | unique learner rows touched per rollout, 1 pass | 3 passes |
+|---|---|---|
+| uniform | 15.4 of 24 (64%) | 22.9 (95%) |
+| six rows at 4x weight | 14.1 | 21.6 |
+| one row at 10x | 14.0 | 22.1 |
+
+(20k-trial simulation of the kernel's sampling rule, CPU, single thread.) Duplicated rows enter the loss twice with the same importance weight, so ~36% of each rollout's learner data is discarded per update and another ~20% counted twice. This is independent of the whitening point above: it is a straight loss of sample efficiency at `--learner-passes 1`, and it is the mechanism by which `--learner-passes 3` would help beyond "more steps": three passes see 95% of the rollout, each with a fresh draw. The importance weight `(56 x p)^-beta` with beta annealing 0.2 to 0.84 over the run is 0.84 to 0.49 for a uniformly drawn learner row (total_agents counts the 32 zero-priority rows), i.e. it scales the policy-gradient term down over the run relative to the value and entropy terms; Muon's whitening removes the overall scale but not the relative weighting inside one step.
+
+What this means for the reading of the run: entropy near 8.29 at 10M and non-persistent policy-head motion are consistent with a learner that gets ~15 unique 128-step segments of sparse-reward data per update, one Muon step each. Nothing to change on the live run (parent owns it); it sharpens the `--learner-passes 3` A/B into a specific hypothesis (coverage 64% to 95% per rollout) and adds a cheaper alternative worth listing: sampling without replacement (a PufferLib change, `multinomial_sample` -> a Gumbel-top-k or a permutation when minibatch_segments equals the learner-row count) would give 100% coverage at one pass with no extra train time. Not proposed for this run; recorded as a post-run lead. Source-only; no jobs run.
