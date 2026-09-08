@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using BoplSim.Export;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityShim;
 
 namespace BoplSim.Host
@@ -61,7 +62,7 @@ namespace BoplSim.Host
 				Path.Combine(repoRoot, "sim", "Export", "settings.json"),
 				repoRoot);
 			db.Install();
-			var host = Bootstrap(db, repoRoot);
+			var host = Bootstrap();
 
 			ReplayArchive setup;
 			if (mode == "replay")
@@ -149,88 +150,40 @@ namespace BoplSim.Host
 			return 0;
 		}
 
-		// Recreates what the Unity boot scenes provide before a level loads. The
-		// menu scenes are not exported, so SteamManager/Host are constructed
-		// directly (no Awake: it only does Steam/netcode/command-line work).
-		// Deviations recorded in sim/PORTING.md.
-		private static global::Host Bootstrap(ExportDatabase db, string repoRoot)
+		// Unity boots MainMenu.unity (build index 0, exported as scene-boot.json).
+		// Loading the real scene runs the real singleton Awakes - SteamManager
+		// (Steam init fails headless, same as the batchmode oracle), Host on the
+		// "networkClient" root, SettingsInitializer (Settings.Init +
+		// LocalizedText.localizationTable), AudioManager (136-sound bank) - and
+		// the serialized references wire themselves (SteamManager.networkClient,
+		// Host.playerColors...). Menu UI roots die at the first Single level load.
+		private static global::Host Bootstrap()
 		{
-			// Settings singleton (SettingsInitializer.Awake equivalent).
-			var settings = (Settings)db.LoadAssetByPath("Assets/MonoBehaviour/Settings.asset");
-			settings.Init();
-			LocalizedText.localizationTable = (LocalizationTable)db.LoadAssetByPath("Assets/MonoBehaviour/LocalizationTable.asset");
+			SceneManager.LoadScene(0);
+			var host = UnityEngine.Object.FindObjectOfType<global::Host>();
+			if (host == null) throw new InvalidOperationException("boot scene did not provide a Host (networkClient root)");
 
-			// AudioManager singleton (boot scene, DontDestroyOnLoad). The sound bank
-			// is not exported (audio is presentation) but Play() must run: it feeds
-			// ReferencePlayerController.SoundCapture, which the trace records. Empty
-			// bank -> every Play logs "non-existent sound" and returns null.
-			var audioGo = new GameObject("AudioManager");
-			var audio = (AudioManager)audioGo.AddComponentSilent(typeof(AudioManager));
-			// Sound bank ripped from the boot AudioManager (MainMenu.unity ->
-			// sim/Export/sound-bank.json): InterruptableAudio stores bank INDICES
-			// (Dash.dashSound.index = 14 = "dash") which the trace captures, so the
-			// order must be the player's. Clips are placeholders (audio never plays).
-			string bankPath = Path.Combine(repoRoot, "sim", "Export", "sound-bank.json");
-			var bank = Newtonsoft.Json.Linq.JArray.Parse(File.ReadAllText(bankPath));
-			var sounds = new Sound[bank.Count];
-			for (int i = 0; i < bank.Count; i++)
-				sounds[i] = new Sound
-				{
-					name = (string)bank[i]["name"],
-					volume = (float)bank[i]["volume"],
-					pitch = (float)bank[i]["pitch"],
-					loop = (bool)bank[i]["loop"],
-					fadeLoop = (bool)bank[i]["fadeLoop"],
-					clip = new AudioClip { name = (string)bank[i]["name"] },
-				};
-			audio.sounds = sounds;
-			// Music paths (OnMatchStarted/StartMusic) index songs[] unconditionally;
-			// one placeholder keeps them running. Music never reaches the trace.
-			audio.songs = new[] { new Song { name = "placeholder", volume = 1f, pitch = 1f, introLength = 1f, intro = new AudioClip(), songLoop = new AudioClip() } };
-			audio.settings = settings;
-			audio.DispatchAwakeIfNeeded();
-			audio.DispatchEnable();
+			// Host.Awake early-returns when process argv carries a .rep path (the
+			// player's command-line replay flow via the unexported "Replay" scene,
+			// which we do not take) - skipping its DontDestroyOnLoad calls. Re-apply
+			// what its no-argv path does; idempotent when Awake already did it.
+			UnityEngine.Object.DontDestroyOnLoad(host.gameObject);
+			var debugText = GetPrivateField(host, "DebugTextRenderer") as UnityEngine.Object;
+			if (debugText != null) UnityEngine.Object.DontDestroyOnLoad(debugText);
 
-			var steamGo = new GameObject("SteamManager");
-			var steam = (SteamManager)steamGo.AddComponentSilent(typeof(SteamManager));
-			var abilityIcons = db.LoadAssetByPath("Assets/MonoBehaviour/AbilityIcons.asset");
-			var abilityIconsDemo = db.LoadAssetByPath("Assets/MonoBehaviour/AbilityIcons_demo.asset");
-			SetPrivateField(steam, "abilityIconsFull", abilityIcons);
-			SetPrivateField(steam, "abilityIconsDemo", abilityIconsDemo);
-			SteamManager.instance = steam;
-			UnityEngine.Object.DontDestroyOnLoad(steamGo);
-
-			// The "winnerTriangle" additive scene (201-object UI, DontDestroyOnLoad
-			// root) is NOT exported. GameSessionHandler dereferences exactly two
-			// things at round start: WinnerTriangleCanvas.instance.gameObject and
-			// instance.charStatsList.transform.parent.gameObject. Stub that shape;
-			// the stats GO stays inactive so its round-end UI OnEnable never runs.
-			// TODO(oracle): export WinnerTriangle.unity for round-end fidelity.
-			var winnerCanvasGo = new GameObject("WinnerTriangleCanvas_leaveEnabled");
-			var winnerCanvas = (WinnerTriangleCanvas)winnerCanvasGo.AddComponentSilent(typeof(WinnerTriangleCanvas));
-			var triangleGo = new GameObject("WinnerCelebration_leaveDisabled");
-			triangleGo.transform.SetParent(winnerCanvasGo.transform, false);
-			var statsGo = new GameObject("CharacterStatsList");
-			statsGo.SetActive(false);
-			statsGo.transform.SetParent(triangleGo.transform, false);
-			winnerCanvas.charStatsList = (CharacterStatsList)statsGo.AddComponentSilent(typeof(CharacterStatsList));
-			winnerCanvas.DispatchAwakeIfNeeded(); // sets WinnerTriangleCanvas.instance
-			UnityEngine.Object.DontDestroyOnLoad(winnerCanvasGo);
-
-			var hostGo = new GameObject("Host");
-			var host = (global::Host)hostGo.AddComponentSilent(typeof(global::Host));
-			SetPrivateField(host, "playerColors", db.LoadAssetByPath("Assets/MonoBehaviour/PlayerColors.asset"));
-			UnityEngine.Object.DontDestroyOnLoad(hostGo);
-			steam.networkClient = host; // boot scene wires this serialized reference
+			// The boot frame completes before anything else: Starts run
+			// (DontDestroyOnLoad.Start among them), deferred destroys drain.
+			World.Current.FlushPendingStarts();
+			World.Current.FlushDestroyQueue();
 			return host;
 		}
 
-		private static void SetPrivateField(object target, string name, object value)
+		private static object GetPrivateField(object target, string name)
 		{
 			for (var type = target.GetType(); type != null; type = type.BaseType)
 			{
 				var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-				if (field != null) { field.SetValue(target, value); return; }
+				if (field != null) return field.GetValue(target);
 			}
 			throw new MissingFieldException(target.GetType().Name, name);
 		}
