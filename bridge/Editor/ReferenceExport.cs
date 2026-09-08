@@ -53,7 +53,7 @@ public static class ReferenceExport
                 ["path"] = paths[buildIndex], ["file"] = file, ["loadedBy"] = loadedBy });
         }
         Write(directory, "scenes.json", extraScenes);
-        var manifest = new JObject { ["schema"] = "bopl-assets-v3", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
+        var manifest = new JObject { ["schema"] = "bopl-assets-v4", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
         var hashes = new JObject();
         foreach (string path in Directory.GetFiles(directory, "*.json").Where(p => Path.GetFileName(p) != "manifest.json").OrderBy(p => p, StringComparer.Ordinal))
         {
@@ -107,13 +107,26 @@ public static class ReferenceExport
                 case SerializedPropertyType.LayerMask: item = property.intValue; break;
                 case SerializedPropertyType.ArraySize: item = property.intValue; break;
                 case SerializedPropertyType.AnimationCurve:
+                    // Fix raws kept for compat (v2/v3 consumers). The *F32 fields are
+                    // the raw float bits, added in v4 because the (Fix) cast collapses
+                    // +/-Infinity constant-mode tangents to long.MinValue (see
+                    // sim/Oracle/REVIEW-loader-2.md L1); the loader should prefer them.
                     var curve = property.animationCurveValue;
                     item = new JObject { ["preWrap"] = (int)curve.preWrapMode, ["postWrap"] = (int)curve.postWrapMode,
                         ["keys"] = JToken.FromObject(curve.keys.Select(k => new {
                             time = ((BoplFixedMath.Fix)k.time).m_rawValue,
                             value = ((BoplFixedMath.Fix)k.value).m_rawValue,
                             inTangent = ((BoplFixedMath.Fix)k.inTangent).m_rawValue,
-                            outTangent = ((BoplFixedMath.Fix)k.outTangent).m_rawValue })) }; break;
+                            outTangent = ((BoplFixedMath.Fix)k.outTangent).m_rawValue,
+                            inWeight = ((BoplFixedMath.Fix)k.inWeight).m_rawValue,
+                            outWeight = ((BoplFixedMath.Fix)k.outWeight).m_rawValue,
+                            weightedMode = (int)k.weightedMode,
+                            timeF32 = BitConverter.ToInt32(BitConverter.GetBytes(k.time), 0),
+                            valueF32 = BitConverter.ToInt32(BitConverter.GetBytes(k.value), 0),
+                            inTangentF32 = BitConverter.ToInt32(BitConverter.GetBytes(k.inTangent), 0),
+                            outTangentF32 = BitConverter.ToInt32(BitConverter.GetBytes(k.outTangent), 0),
+                            inWeightF32 = BitConverter.ToInt32(BitConverter.GetBytes(k.inWeight), 0),
+                            outWeightF32 = BitConverter.ToInt32(BitConverter.GetBytes(k.outWeight), 0) })) }; break;
                 default:
                     // Child scalar fields are enumerated by Next(true). Preserve a type tag
                     // for native presentation values that have no scalar children.
