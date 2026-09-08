@@ -153,6 +153,14 @@ the slot is negotiated explicitly between the Rifts.
   half-life explicitly and rejects cached runs trained under another
   schedule. Run it only when the GPU is free of the 400M run, or on a second
   machine.
+- **Learner passes (post-launch A/B, top lead).** The 400M run does one
+  gradient step per 3072-decision rollout (`--learner-passes 1`); the old
+  trainer did 12 (3 epochs × 4 minibatches). Train time is ~4.4 ms per pass
+  against ~170 ms of rollout per update, so `--learner-passes 3` costs under
+  5% of wall and turns PPO's clip and `kl` back into live quantities. If the
+  400M run shows entropy stuck near uniform, this is the first matched
+  comparison to run (same seed, same budget, `strength_check.py`-style
+  fail-closed protocol with `--learner-passes` in the plan).
 - **Throughput.** Collection is ~98% of wall time at 16 workers (rollout 44 s
   of 56 s; train ~1 s). Leads: game stepping cost inside the IL2CPP player,
   worker count vs GPU utilization (34–38%), observation packing, and the
