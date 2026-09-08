@@ -210,8 +210,15 @@ the slot is negotiated explicitly between the Rifts.
   `native_pool.py`; the lead is a matched A/B in the `strength_check.py`
   protocol: (a) one bank pinned to the initial checkpoint (a fixed
   reference visible in `env.historical_wins`), (b) log-spaced pool ages
-  instead of four consecutive checkpoints. Both change the opponent
-  distribution, so no live-run edits.
+  instead of four consecutive checkpoints. Parent decision (2026-09-07
+  23:47 EDT): no separate A/B on the old pool; the self-play thread
+  (thr_rfgz498pxv) is replacing `SnapshotPool` with the PufferLib Elo pool,
+  and the parent forwarded three requirements to it: retain old opponents
+  rather than a rolling window, pin the initial checkpoint as a permanent
+  anchor, and log member ages, Elo and win rates to `pool.jsonl`.
+  `watch_run.py`'s per-milestone `pool win` column reads the env log's
+  `historical_episodes`/`historical_wins`; re-check those fields once the
+  new pool lands.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
