@@ -657,28 +657,35 @@ per-update shape as final-bench-w16).
 
 Two things worth knowing when reading this run's dashboard:
 
-1. **`kl` and `clip_fraction` are identically zero on every update, by construction.** With
+1. **`kl` is near zero and `clip_fraction` is zero before the single optimizer step.** With
    `--learner-passes 1` the native trainer runs `total_minibatches = replay_ratio·batch/minibatch = 1`
    (config: batch 7168, minibatch 3072, replay_ratio 0.4286), and that single minibatch is scored with
-   the same weights that collected it, so `ratio = exp(logp − old_logp) = 1` exactly, KL 0, nothing
-   clipped. Each update is one plain policy-gradient step (vtrace/GAE advantages, prioritized rows) and
+   the same weights that collected it, so `ratio = exp(logp − old_logp)` is approximately 1 and nothing is
+   clipped. Canonical metrics through 8.2M learner decisions have KL in
+   [-8.54e-10, 0], consistent with floating-point roundoff. Each update is one plain policy-gradient step (vtrace/GAE advantages, prioritized rows) and
    PPO's clip is inert. The old trainer did 3 epochs × 4 minibatches (12 steps per 3072 decisions), so
-   its KL/clip carried information. On this run a zero KL is not evidence of stability, and a nonzero
-   KL would be a bug. Any `--learner-passes ≥ 2` run would show real values again.
+   its KL/clip carried information. On this run a zero KL is not evidence of stability, and tiny nonzero
+   KL is not itself a bug. A material discrepancy warrants investigation. Additional
+   learner passes can expose changes from preceding optimizer steps; they do not
+   guarantee nonzero values. These metrics do not measure this update after its step.
 2. **Entropy has not moved.** Joint entropy 8.292 nats at update 1 → 8.291 at 8.2M (max ln 4096 =
    8.318; aim 5.530 of 5.545, buttons 2.762 of 2.773), drifting slightly *up* over the last
    thousand updates (8.2896 → 8.2932) while the coefficient fell only to .0083. Explained variance
    rose to 0.3–0.4 (the critic is learning something from terminal outcomes), gradient norm ~0.15,
    advantage std ~0.11, mean reward 0.000, `policy_loss` median |0.006|. The old 10M run (with ±0.1
    kill/death shaping, cap 3600, Adam, 12 steps per update) had entropy at 7.94 by 500k decisions.
-   The first evaluation (6.67M, 57 games) is at chance: 25–50 % vs random and 37–62 % vs the initial
+   The first evaluation (about 6.67M physical / 5M learner decisions, 57 games) is at chance: 25–50 % vs random and 37–62 % vs the initial
    checkpoint on maps 0–2, 100 % vs random on map 4 with four games.
 
-Reading: with sparse terminal reward only, the per-step policy-gradient signal is currently smaller
-than the entropy bonus at coefficient ~.009, so the actor sits at uniform while the critic learns. The
+Hypothesis: the entropy bonus may be holding the actor near uniform while the critic
+learns. Entropy alone does not establish that its gradient dominates the reward gradient;
+that would require measuring the separate gradient contributions. The
 schedule halves the coefficient every 30M learner decisions and reaches the .0005 floor near 130M, so
 the run's own design says "wait": the honest checkpoints are 30M (coefficient .005) and 60M (.0025).
 A useful watch rule for parent, not a change request: if joint entropy is still above ~8.2 at 30M
-and the 30M evaluation is still at chance against random, the sparse-reward null hypothesis is being
-confirmed early and the remaining ~5 hours mostly test whether the floor at 130M unlocks anything.
+and the 30M evaluation is still at chance against random, there is still no clear evidence of policy improvement. That is a watch point, not
+confirmation that sparse rewards cannot learn: evaluations are small, entropy is not
+a strength metric, and learning may emerge before or after the floor near 130M.
+Assess later evaluations with their sample uncertainty; the remaining wall time is
+a throughput projection rather than a fixed duration.
 Root owns train.py and parent owns the run; nothing to do from this Rift.
