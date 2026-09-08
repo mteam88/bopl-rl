@@ -4,8 +4,12 @@ Reads <run>/status.json, config.json, metrics.jsonl and evaluations/*/result.jso
 (a torn final metrics line is skipped) and prints milestone rows every
 --every learner decisions (physical decisions for legacy runs without learner counts)
 plus every evaluation, each with the learner's win rate by spawn side (pooled and
-per map: a persistent left/right gap is a map property, not strength). Never touches the run, the
-GPU or the game. Written for the sparse-reward null-hypothesis run: the
+per map: a persistent left/right gap is a map property, not strength). Each
+milestone row also carries the learner's training-time win rate against the
+historical opponent pool since the previous milestone (from the env log's
+`historical_episodes`/`historical_wins`); with a pool of recent snapshots this
+sits at chance even when evaluations against the initial checkpoint rise, so it
+measures pool lag, not strength. Never touches the run, the GPU or the game. Written for the sparse-reward null-hypothesis run: the
 watch rule is "joint entropy still near uniform and evaluation at chance",
 so the last row prints both against the schedule's coefficient.
 
@@ -94,16 +98,39 @@ def sides(games):
     return dict(pooled=by_side, per_map=per_map)
 
 
+def pool_wins(rows, lo, hi):
+    """Learner win rate against the historical opponent pool over updates lo..hi
+    (inclusive), from the env block's per-episode means times `n`. Episode-weighted,
+    with a binomial standard error. Self-play matches are not historical matches, so
+    with `historical_every=2` this covers about a third of learner episodes. nan when
+    the run predates the env fields."""
+    episodes = wins = 0.0
+    for row in rows[lo:hi+1]:
+        env = row.get('env') or {}
+        n = env.get('n')
+        if not n or 'historical_episodes' not in env: continue
+        episodes += env['historical_episodes']*n; wins += env.get('historical_wins', 0.0)*n
+    if not episodes: return dict(rate=float('nan'), se=float('nan'), episodes=0)
+    rate = wins/episodes
+    return dict(rate=rate, se=(rate*(1-rate)/episodes)**0.5, episodes=int(round(episodes)))
+
+
 def summarize(run, every):
     if every <= 0: raise ValueError('--every must be positive')
     run = Path(run)
     status = json.loads((run/'status.json').read_text()) if (run/'status.json').exists() else {}
+    if status.get('status') == 'running' and status.get('pid') and not Path(f"/proc/{status['pid']}").exists():
+        status['status'] = f"stale 'running' (pid {status['pid']} gone)"
     config = json.loads((run/'config.json').read_text()) if (run/'config.json').exists() else {}
     rows = load_metrics(run/'metrics.jsonl')
     if not rows: raise SystemExit(f'{run}: no metrics yet')
     index = {id(r): i for i, r in enumerate(rows)}
-    table = [dict(decisions=r['summary_decisions'], step=r['step'], update=r['update'], elapsed=r['elapsed'],
-                  **window(rows, index[id(r)])) for r in milestones(rows, every)]
+    table, previous = [], -1
+    for r in milestones(rows, every):
+        i = index[id(r)]
+        table.append(dict(decisions=r['summary_decisions'], step=r['step'], update=r['update'], elapsed=r['elapsed'],
+                          pool=pool_wins(rows, previous+1, i), **window(rows, i)))
+        previous = i
     last = rows[-1]
     rate = last['summary_decisions']/last['elapsed'] if last['elapsed'] else float('nan')
     has_learner_counts = all('learner_steps' in row for row in rows)
@@ -227,11 +254,14 @@ def main():
           + (f", ~{s['hours_remaining']:.1f} h left" if s['hours_remaining'] else ''))
     print(f"learner passes {fmt(s['learner_passes'])} (at 1, pre-step kl/clip do not measure the resulting policy change), entropy half-life "
           f"{fmt(s['entropy_half_life'])}, lr {fmt(s['learning_rate_schedule'])}; uniform entropy = {MAX_ENTROPY:.3f} nats")
-    print(f"{s['decision_unit']:>12} {'entropy':>8} {'coef':>7} {'ev':>6} {'gnorm':>6} {'advstd':>6} {'kl':>7} {'clip':>5} {'dps':>6}")
-    print('Signals are trailing 50-update means; evaluation steps are physical decisions.')
+    print(f"{s['decision_unit']:>12} {'entropy':>8} {'coef':>7} {'ev':>6} {'gnorm':>6} {'advstd':>6} {'kl':>7} {'clip':>5} {'dps':>6}  {'pool win (eps)':>14}")
+    print('Signals are trailing 50-update means; pool win is the learner win rate vs the historical opponent pool since the'
+          ' previous milestone (±1 se); evaluation steps are physical decisions.')
     for m in s['milestones']:
+        pool = m['pool']
+        pool_text = f"{pool['rate']:.3f}±{pool['se']:.3f} ({pool['episodes']:,})" if pool['episodes'] else '-'
         print(f"{m['decisions']:>12,} {fmt(m['entropy'])} {fmt(m['entropy_coefficient'], 5)} {fmt(m['explained_variance'])}"
-              f" {fmt(m['gradient_norm'])} {fmt(m['advantage_std'])} {fmt(m['kl'], 5)} {fmt(m['clip_fraction'])} {m['summary_sps']:>6,.0f}")
+              f" {fmt(m['gradient_norm'])} {fmt(m['advantage_std'])} {fmt(m['kl'], 5)} {fmt(m['clip_fraction'])} {m['summary_sps']:>6,.0f}  {pool_text}")
     for e in s['evaluations']:
         print(f"eval physical {e['step']:>12,}: vs random {fmt(e['random'][0])} ({e['random'][1]}g), vs initial {fmt(e['initial'][0])}"
               f" ({e['initial'][1]}g), held-out vs random {fmt(e['heldout'][0])} ({e['heldout'][1]}g), timeouts {e['timeouts']}, {e['games']} games")

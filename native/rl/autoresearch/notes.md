@@ -1382,3 +1382,13 @@ while the policy is still weak; (b) space the pool wider than four
 consecutive checkpoints (e.g. log-spaced ages) so opponents span more of
 the run. Both change the opponent distribution, so they belong in the same
 matched-A/B category as learner passes, not in a live run.
+
+Follow-up 23:45 EDT: `watch_run.py` now prints the training-time pool win
+rate per milestone (`pool win (eps)`: learner win rate vs the historical
+pool since the previous milestone, ±1 se, episode count), read from the env
+log's `historical_episodes`/`historical_wins` × `n`, so the next run shows
+this without a one-off script; legacy runs without the env fields print
+`-`. It also flags a `status.json` that still says running when the pid is
+gone (the stopped run's file was never rewritten). Verified on 001-s73
+(20M/40M/46.5M milestones .501/.512/.507), the aborted stocks-3 run (.505),
+and dap-001 (legacy, `-`).
