@@ -117,6 +117,11 @@ namespace BoplSim.Host
 			int ticked = 0;
 			for (; ticked < ticks; ticked++)
 			{
+				// ReferenceCapture.Finish (tick-limit or exception) calls
+				// Application.Quit: Unity exits the player there. Ticking past it
+				// would re-open the finished trace and truncate it to 0 bytes
+				// (EnsureWriter -> File.Create on the next BeforeReplayStep).
+				if (Application.quitRequested) break;
 				if (replayFrames != null)
 				{
 					if (replayFrames.Count == 0) break;
