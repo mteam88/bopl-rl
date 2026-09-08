@@ -36,7 +36,24 @@ public static class ReferenceExport
                 ["path"] = paths[index], ["file"] = filename });
         }
         Write(directory, "maps.json", scenes);
-        var manifest = new JObject { ["schema"] = "bopl-assets-v2", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
+        // Non-level scenes gameplay loads at runtime. "winnerTriangle" is the only
+        // additive load in the gameplay sources (CharacterSelectHandler.cs:132,
+        // CharacterSelectHandler_online.cs:353 - note lowercase: Unity name lookup
+        // is case-insensitive). Build index 0 (MainMenu) is the boot scene; it owns
+        // the AudioManager sound bank (Sound[] sounds - names in serialized order)
+        // that SoundCapture parity needs. Same JSON shape as map-N.json.
+        var extraScenes = new JArray();
+        foreach (var (buildIndex, file, loadedBy) in new (int, string, string)[] {
+            (0, "scene-boot.json", "boot scene; AudioManager/SteamManager/Settings singletons"),
+            (4, "scene-WinnerTriangle.json", "LoadScene(\"winnerTriangle\", Additive) at round end") })
+        {
+            var scene = EditorSceneManager.OpenScene(paths[buildIndex], OpenSceneMode.Single);
+            Write(directory, file, new JArray(scene.GetRootGameObjects().Select(Hierarchy)));
+            extraScenes.Add(new JObject { ["buildIndex"] = buildIndex, ["scene"] = scene.name,
+                ["path"] = paths[buildIndex], ["file"] = file, ["loadedBy"] = loadedBy });
+        }
+        Write(directory, "scenes.json", extraScenes);
+        var manifest = new JObject { ["schema"] = "bopl-assets-v3", ["reference"] = "67484d0", ["unity"] = Application.unityVersion };
         var hashes = new JObject();
         foreach (string path in Directory.GetFiles(directory, "*.json").Where(p => Path.GetFileName(p) != "manifest.json").OrderBy(p => p, StringComparer.Ordinal))
         {
