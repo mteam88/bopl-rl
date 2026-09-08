@@ -960,7 +960,14 @@ fixed-opponent games (random + initial, both sides of every seed pair):
 | pooled | 106/196 = .54 [.47, .61] | 71/196 = .36 [.30, .43] |
 
 Wilson intervals; seed pairs are correlated so treat the pooled interval as
-optimistic. Within a pair, "only side 0 wins" outnumbers "only side 1 wins"
+optimistic. Per map, pooled over both runs (side 0 / side 1 win rate, 64
+games per side on maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28,
+map 2 .42/.27, map 3 .50/.44, map 4 .94/.62. The gap is small on maps 0 and 3
+and large on maps 1, 2 and 4, which points at map geometry rather than a
+global id-order effect: map 1 spawns the left player 9 units higher than the
+right one (y 9.8 vs 0.8), and map 2 is a ring of circles where the two spawns
+sit on different circles. The first evaluation of each run (6.7M physical,
+policy near uniform) already shows it: 14/28 vs 11/28 and 16/28 vs 9/28. Within a pair, "only side 0 wins" outnumbers "only side 1 wins"
 11:4, 11:5, 9:5, 7:5 across the four stocks-0 evaluations. The evaluator
 (`evaluate.py`) is side-swapped, so this is not a bookkeeping error; it means
 player slot 1 (spawn on the left of every map: x = -14, -11, -27, -14, -22 for
