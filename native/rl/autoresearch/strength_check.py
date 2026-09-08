@@ -32,8 +32,13 @@ Usage (from the repository root, no other heavy job running):
         --output native/artifacts/rl/autoresearch/strength-set-vs-linear \
         --game <player> --steps 10000000 --seeds 73,173,273
 
-The script is resumable: complete training runs, final evaluations and the
-pool are skipped when their result files already exist and match the plan.
+Resuming is fail-closed: an existing output directory must carry an identical
+plan (same settings, game payload hashes and source revision; only the creation
+time may differ). A training run is reused only when it completed its budget
+with the planned settings and game hashes and its final checkpoint still matches
+its sidecar hash; a final evaluation is reused only for that same checkpoint
+identity; the pool cache is keyed on every participant's checkpoint identity.
+Anything else raises instead of mixing evidence.
 """
 import argparse
 import hashlib
@@ -54,7 +59,7 @@ RESEARCH = ROOT/'native/rl/research'
 sys.path.insert(0, str(RESEARCH))
 sys.path.insert(0, str(ROOT/'native/tools'))
 from common import atomic_json  # noqa: E402
-from evaluation_protocol import checkpoint_identity, map_ids  # noqa: E402
+from evaluation_protocol import checkpoint_identity, map_ids, schedule  # noqa: E402
 from reference import resolve_game, player_sources  # noqa: E402
 
 TRAINER = ROOT/'native/rl/puffer/train.py'
@@ -76,19 +81,37 @@ def environment():
     return env
 
 
-def complete(run, steps):
+def complete(run, plan, arm, seed):
+    """The run's result when it finished its budget under the planned settings; None when absent."""
     result = run/'result.json'
     if not result.exists(): return None
     data = json.loads(result.read_text())
-    if data.get('status') != 'complete' or data.get('learner_steps', 0) < steps: return None
+    if data.get('status') != 'complete' or data.get('learner_steps', 0) < plan['steps']:
+        raise RuntimeError(f'{run} exists but did not complete its budget; remove it to retrain')
+    config = json.loads((run/'config.json').read_text())
+    expected = dict(encoder=arm, seed=seed, workers=plan['workers'], banks=plan['banks'],
+                    learner_passes=plan['learner_passes'], episode_ticks=plan['episode_ticks'],
+                    training_maps=plan['training_maps'], learner_steps=plan['steps'],
+                    entropy=plan['entropy'], entropy_floor=plan['entropy_floor'])
+    mismatch = {k: (config.get(k), v) for k, v in expected.items() if config.get(k) != v}
+    horizon = ((config.get('native') or {}).get('train') or {}).get('horizon')
+    if horizon != plan['horizon']: mismatch['horizon'] = (horizon, plan['horizon'])
+    runtime = config.get('runtime') or config.get('game_runtime') or {}
+    if plan['game_identity'] != {k: runtime.get(k) for k in plan['game_identity']}:
+        mismatch['game_identity'] = (runtime, plan['game_identity'])
+    if mismatch: raise RuntimeError(f'{run} was trained with different settings: {mismatch}')
+    checkpoint = Path(data['checkpoint'])
+    if checkpoint.parent.parent.resolve() != run.resolve():
+        raise RuntimeError(f'{run} result points outside the run: {checkpoint}')
+    data['checkpoint_identity'] = checkpoint_identity(checkpoint)  # raises on a replaced or corrupt .bin
     return data
 
 
-def train(args, arm, seed, game):
+def train(args, plan, arm, seed, game):
     run = args.output/f'{arm}-s{seed}'
-    done = complete(run, args.steps)
+    done = complete(run, plan, arm, seed)
     if done: return run, done
-    if run.exists(): raise RuntimeError(f'{run} exists but is not a complete run; remove it to retrain')
+    if run.exists(): raise RuntimeError(f'{run} exists without a result; remove it to retrain')
     command = [sys.executable, str(TRAINER), '--output', str(run), '--game', str(game),
                '--steps', str(args.steps), '--workers', str(args.workers), '--banks', str(args.banks),
                '--horizon', str(args.horizon), '--seed', str(seed), '--encoder', arm,
@@ -101,7 +124,7 @@ def train(args, arm, seed, game):
         stream.write(' '.join(command)+'\n'); stream.flush()
         code = subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, env=environment()).returncode
     if code: raise RuntimeError(f'training {arm} seed {seed} exited {code}; see {log}')
-    done = complete(run, args.steps)
+    done = complete(run, plan, arm, seed)
     if not done: raise RuntimeError(f'{run} did not complete its budget')
     return run, done
 
@@ -109,8 +132,19 @@ def train(args, arm, seed, game):
 def final_evaluation(args, run, result, game):
     step = result['step']
     out = run/'final-evaluations'/f'{step:09d}'/'result.json'
-    if out.exists(): return json.loads(out.read_text())
     initial = run/'checkpoints/policy-000000000.bin'
+    if out.exists():
+        previous = json.loads(out.read_text())
+        expected = len(schedule(args.training_maps, args.heldout_maps, [], args.final_games, args.final_heldout_games,
+                                2, 50001, 60001, 70001)[0])
+        if (previous.get('schema') != 2 or previous.get('suite') != 'final'
+                or previous.get('checkpoint_identity') != result['checkpoint_identity']
+                or previous.get('baseline_identity') != checkpoint_identity(initial)
+                or previous.get('evaluation_maps') != args.training_maps or previous.get('heldout_maps') != args.heldout_maps
+                or (previous.get('seed_base'), previous.get('heldout_seed_base'), previous.get('selfplay_seed')) != (50001, 60001, 70001)
+                or len(previous.get('games', [])) != expected):
+            raise RuntimeError(f'{out} is a final evaluation of a different checkpoint or schedule; remove it to re-evaluate')
+        return previous
     command = [sys.executable, str(EVALUATOR), '--run', str(run), '--checkpoint', result['checkpoint'],
                '--initial', str(initial), '--suite', 'final', '--game', str(game),
                '--evaluation-maps', ','.join(map(str, args.training_maps)),
@@ -146,11 +180,14 @@ def play_pool(args, participants, game):
     from environment import Environment, configure
     out = args.output/'pool'; out.mkdir(exist_ok=True)
     cache = out/'games.json'
-    plan = dict(participants={n: p for n, p in participants.items()}, maps=args.training_maps,
-                games_per_pair=args.pool_games, seed_base=args.pool_seed_base, episode_ticks=args.episode_ticks)
+    plan = dict(participants={n: dict(path=p, **checkpoint_identity(Path(p))) for n, p in participants.items()},
+                maps=args.training_maps, games_per_pair=args.pool_games, seed_base=args.pool_seed_base,
+                episode_ticks=args.episode_ticks)
     if cache.exists():
         saved = json.loads(cache.read_text())
-        if saved['plan'] == plan: return saved['games']
+        if saved['plan'] != plan:
+            raise RuntimeError(f'{cache} was played with different participants or settings; remove it to replay')
+        return saved['games']
     configure(out/'workers', game)
     models = {'random': Random()}
     for name, path in participants.items():
@@ -244,13 +281,20 @@ def main():
                 game=str(game), game_identity={k: hashlib.sha256(p.read_bytes()).hexdigest() for k, p in player_sources(game).items()},
                 arms=list(ARMS), **{k: v for k, v in vars(args).items() if k not in ('output', 'game')},
                 verdict_rule='qualified iff upper Wilson bound of pooled SET-vs-linear score >= 0.5 and SET score vs random >= linear score vs random - 0.05')
-    atomic_json(args.output/'plan.json', plan)
+    existing = args.output/'plan.json'
+    if existing.exists():
+        previous = json.loads(existing.read_text())
+        differences = {k: (previous.get(k), v) for k, v in plan.items() if k != 'created_utc' and previous.get(k) != v}
+        if differences or set(previous) != set(plan):
+            raise RuntimeError(f'{existing} differs from this invocation (use a fresh --output or the same settings): {differences}')
+    else:
+        atomic_json(existing, plan)
 
     runs = {}
     for seed in args.seeds:            # interleave arms so drift in the machine affects both equally
         for arm in ARMS:
             print(f'== train {arm} seed {seed} {time.strftime("%H:%M:%S")}', flush=True)
-            run, result = train(args, arm, seed, game)
+            run, result = train(args, plan, arm, seed, game)
             runs[(arm, seed)] = dict(run=run, result=result)
     for (arm, seed), item in runs.items():
         print(f'== final evaluation {arm} seed {seed} {time.strftime("%H:%M:%S")}', flush=True)
