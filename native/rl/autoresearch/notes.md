@@ -449,3 +449,62 @@ Merged root a0d513f first (environment.step_mode API, train.py runtime_options f
 - rg audit over the shipped tree (excluding artifacts, evidence, notes, results.tsv, program.md) for torch_pufferl, `from policy import`, Stepper, TurnGraph, BOPL_SPLIT_STEP, --backend, step_mode, sampled_native and every deleted game/trainer flag: zero hits.
 
 Pending once the GPU is back: `build.py --device cuda`, `native_policy.build()`, `make -C native/rl`, then smoke linear/set/set16, check_routing, reset_check, sampled_check, unit tests, on the rebuilt game binary. Exactness evidence for the now-unconditional paths is the earlier flag-on/flag-off comparisons (exp03 spare, exp05 parallel open, exp09 eager I/O, sampled parity-main/parity-split in evidence/throughput).
+
+## 2026-09-08 final build validation, SET throughput, strength protocol (commit f2cbbae + this one)
+
+Game: root's final IL2CPP build from cleaned C# (copied to `native/artifacts/rl/autoresearch/builds/game-il2cpp-final/`,
+player sha256 0bfe51325720c950b4ad75ce7c3b65595fd7e939908520ec33600919919327a8, GameAssembly.so
+67723a4b5427af191d8c16b6090f74ff523c6cf1401fea6273311e28f23b678d, global-metadata.dat
+a4e4759368bde74d17d54f46f30df79b1d58fe491dd1970abdc47bd5c17e1a9e; same bytes as the installed
+`ExportedProject/Builds/LinuxIL2CPP/BoplBattle.x86_64`). Full native rebuild after the C/API cutover
+(build.py --device cuda, native_policy.build(), make all + make -B research) is clean.
+
+Correctness on the final build, evidence in `native/artifacts/rl/autoresearch/final-core-checks/`:
+sampled_check pass (459 decisions, 3 phase-1 terminal episodes); reset_check RESET_ISOLATION_OK
+(5738 exact snapshots); smoke linear / set / set16 (16 games, 4 banks) 85 PASS each, 0 failed checks;
+check_routing 31/31; unit tests 2 (puffer) + 16 (research) OK; check_set_encoder rebuilt, pass_all
+(forward <= 2.4e-7, autograd grad <= 2.9e-6, graph replay, permutation, masked poison, empty set) plus
+root's new finite-difference check of the CUDA forward vs the native backward: 16 coordinates in each
+of flat / entity / slime / fusion, central eps 1e-3, max abs error 6.8e-5 / 6.7e-5 / 7.5e-5 / 3.0e-5.
+
+Throughput, workload `native-w16-786432-fresh-sparse-7200-final` (final game, 16 workers, 4 banks,
+horizon 128, random init, sparse +-1 / timeout -0.5, cap 7200, maps 0,1,2, passes 1, entropy
+.01->.0005, 786432 learner decisions in 256 updates, no game env flags: the old toggles are now the
+only code path). Medians of 3, `native/artifacts/rl/autoresearch/final-bench-w16/summary.json`:
+
+| arm | learner dps active | learner dps wall | wall s | rollout s | train s | CUDA MB |
+| linear | 14957 | 14004 | 56.2 | 43.9 | 0.9 | 982 |
+| set | 14616 | 13683 | 57.5 | 45.2 | 1.1 | 1190 |
+
+SET costs 2.3% of both rates (all six runs within 14423-14982 active; zero cgroup memory.high
+events). Cap 7200 vs the earlier cap-3600 linear rows (14689/13756): +1.8% active, same wall, i.e.
+inside noise; the earlier flag-gated paths and the now-unconditional ones perform the same.
+Learning signal in these 786k random-init runs is nil for both arms (entropy 8.30 -> 8.29,
+explained variance <= 0.01, tail win rate ~0.5), as expected; lr still cosine-anneals to ~1e-8 by
+the last update (PufferLib `anneal_lr` default, reported to root).
+
+Strength protocol (`native/rl/autoresearch/strength_check.py`, source only; root executes it):
+per encoder and seed, one fresh train.py run with identical settings except `--encoder`
+(16w, 4 banks, horizon 128, passes 1, sparse reward, cap 7200, maps 0,1,2, entropy .01->.0005,
+cudagraphs 1, `--no-eval`), arms interleaved per seed; then `evaluate.py --suite final` on the last
+checkpoint (random + own initial on maps 0,1,2, random on held-out 3,4; same seeds for every run);
+then a side-swapped fixed-seed round robin of all final checkpoints plus the random anchor on maps
+0,1,2 at cap 7200 (timeouts are draws; Bradley-Terry Elo anchored at random = 0, same fit as
+elo_ladder.py). Primary metric: pooled SET-vs-linear score (win 1, draw 1/2) with a Wilson
+interval. Verdict rule fixed before any run: `qualified` iff the interval's upper bound >= 0.5 and
+SET's pool score vs random >= linear's minus 0.05. The report also carries per-seed scores, Elo,
+final-evaluation win rates, training tail win/timeout rates and training wall-hours per arm.
+Self-tested on the two 786k bench checkpoints (`strength-selftest/`: training skipped as complete,
+final evaluation 17 games per run, 18-game pool, verdict computed) so only the GPU training stage is
+unexercised at the full budget. Pool speed on CPU: ~2000 ticks/s per worker.
+
+Recommended budget: `--steps 10000000 --seeds 73,173,273` (six runs of ~12 min at ~14k learner
+dps, ~75 min GPU total; final evaluations and the 1008-game pool are CPU, a few minutes). Fallback
+if time is short: `--steps 5000000 --seeds 73,173` (four runs, ~25 min GPU).
+
+Limitations to carry into the handoff: (1) no old-trainer anchor exists (the old torch GRU has no
+faithful native export), so strength per wall-hour vs the old trainer is only comparable through
+win rates vs random/initial and the training telemetry, not head to head; (2) both arms anneal the
+learning rate to zero over their own budget, so a 10M run is not a prefix of the 400M run's
+schedule; (3) short budgets favor the simpler encoder if anything, so `not-qualified` on a
+short check would mean "re-run longer", not "SET is worse".
