@@ -9,12 +9,14 @@ using UnityEngine;
 // deferred removal window. Policy selection/normalization happens in C.
 internal static class RlObservation
 {
-    private static readonly Dictionary<ulong, uint> ids = new Dictionary<ulong, uint>();
+    private static Dictionary<ulong, uint> ids = new Dictionary<ulong, uint>();
     private static readonly Dictionary<Sprite, uint> icons = new Dictionary<Sprite, uint>();
     private static readonly List<SlimeController> slimes = new List<SlimeController>();
     private static readonly FieldInfo inAbility = typeof(SlimeController).GetField("isInAbility", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly FieldInfo beamCount = typeof(DetPhysics).GetField("totalBeamsLastFrame", BindingFlags.Instance | BindingFlags.NonPublic);
     private static uint nextId;
+    internal static Dictionary<ulong, uint> Ids { get => ids; set => ids = value; }
+    internal static uint NextId { get => nextId; set => nextId = value; }
 
     internal static void Reset()
     {

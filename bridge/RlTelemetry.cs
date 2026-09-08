@@ -6,7 +6,8 @@ using System.IO;
 internal static class RlTelemetry
 {
     internal const int Fields = 9;
-    private static readonly uint[,] counters = new uint[6, Fields];
+    private static uint[,] counters = new uint[6, Fields];
+    internal static uint[,] Counters { get => counters; set => counters = value; }
     internal static bool Counting;
     internal static bool Enabled => RlBridge.Enabled && Counting;
 
