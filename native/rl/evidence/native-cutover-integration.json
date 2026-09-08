@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "checked_at_utc": "2026-09-08T01:11:08Z",
+  "checkout": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject",
+  "source_commit": "8794f254094e61f52db6b87a5ac47b117a3f39de",
+  "build": {
+    "cuda": "pass",
+    "cpu_policy_evaluator": "pass",
+    "native_binding_sha256": "cff33dadbeb8a88fcebc7ef0c641684931dafd3ec5ea6e727d5503c4a54e4c7c",
+    "runtime": {
+      "player_binary_sha256": "0bfe51325720c950b4ad75ce7c3b65595fd7e939908520ec33600919919327a8",
+      "unity_player_sha256": "e04c6b4bd57426ac83210dbff59016a94c6e31561e41d706ca0089601dbc15c1",
+      "game_assembly_sha256": "67723a4b5427af191d8c16b6090f74ff523c6cf1401fea6273311e28f23b678d",
+      "il2cpp_metadata_sha256": "a4e4759368bde74d17d54f46f30df79b1d58fe491dd1970abdc47bd5c17e1a9e"
+    }
+  },
+  "live_cli": {
+    "result": {
+      "status": "complete",
+      "pid": 2866012,
+      "step": 16384,
+      "learner_steps": 12288,
+      "matches": 17,
+      "elapsed": 20.73124123297748,
+      "target_steps": 16384,
+      "target_learner_steps": 12288,
+      "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/native-migration-audit/final-working-cli/checkpoints/policy-000016384.bin"
+    },
+    "encoder": "set",
+    "reward": {
+      "win": 1,
+      "loss": -1,
+      "timeout": -0.5,
+      "kill": 0,
+      "death": 0
+    },
+    "checkpoints": 5,
+    "checkpoint_integrity": "all five SHA256 match sidecars; all SET architecture",
+    "replays": 9,
+    "mind_dumps": 9,
+    "mind_parse": "all nine gzip JSON files parsed",
+    "run": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/native-migration-audit/final-working-cli"
+  },
+  "limits": "Four-update functional check only. Throughput and short-strength qualification are recorded separately."
+}

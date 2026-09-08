@@ -8,8 +8,9 @@ port in the parent `native/` directory.
 The current diagnostic uses two players with Dash, Bow and Platform, three stocks,
 and configurable maps. The larger goal remains diverse abilities, maps and
 adaptive opponents; this diagnostic does not establish all-ability competence.
-Historical experiments and their limits remain in [EXPERIMENTS.md](EXPERIMENTS.md)
-and the [evidence directory](evidence/).
+Throughput experiments and their limits are recorded in the
+[research log](autoresearch/notes.md) and [evidence directory](evidence/).
+Earlier trainer implementations and removed reports remain in Git history.
 
 ## Observation and control contract
 
@@ -57,7 +58,10 @@ checkpoint. The default pool has four banks; all checkpoint files are retained.
 Rewards are +1 for a win, -1 for a loss, and -0.5 for each player at timeout.
 There is no kill, death or per-tick reward. The default cap is 7,200 simulation
 ticks (two minutes), configurable with `--episode-ticks`. Entropy regularization
-decays from 0.01 toward a 0.0005 floor. Evaluation reads these reward settings
+decays exponentially from 0.01, halving every 30M learner decisions until it
+reaches the 0.0005 floor at about 129.7M decisions. `--entropy-half-life` sets
+that interval independently of the training budget. Learning rate follows the
+native cosine schedule over the run budget. Evaluation reads reward settings
 from the checkpoint metadata.
 
 `--steps`, `--checkpoint-every` and `--eval-every` count **learner decisions**.
