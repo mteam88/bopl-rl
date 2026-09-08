@@ -637,3 +637,40 @@ with Unity goldens, starting with arrows (the largest unported gameplay system t
 Cheaper levers that stay on the Unity game are nearly exhausted: worker-count and pipeline shapes were
 swept (exp09–exp13), the game process is at its floor, and the remaining ~0.75 ms per group turn is
 trainer-side Python that the native trainer already replaced for the learner path.
+
+## 2026-09-08 read-only look at the parent's 400M run (first 8M learner decisions)
+
+Parent launched `native/artifacts/rl/null-hypothesis-native/001-s73` from the canonical checkout
+(SET, 16 workers, 4 banks, constant lr .0003, entropy .01 with 30M half-life, sparse reward, cap 7200,
+final IL2CPP player 0bfe5132…, binding cff33dad…). Nothing here was run by me; these are metrics.jsonl
+and evaluations read from disk while the run is at ~8.2M learner decisions (~480 s, i.e. ~17.6k learner
+decisions/s sustained, projecting ~6.5 h to 400M; rollout 0.17 s and train 4.4 ms per update, the same
+per-update shape as final-bench-w16).
+
+Two things worth knowing when reading this run's dashboard:
+
+1. **`kl` and `clip_fraction` are identically zero on every update, by construction.** With
+   `--learner-passes 1` the native trainer runs `total_minibatches = replay_ratio·batch/minibatch = 1`
+   (config: batch 7168, minibatch 3072, replay_ratio 0.4286), and that single minibatch is scored with
+   the same weights that collected it, so `ratio = exp(logp − old_logp) = 1` exactly, KL 0, nothing
+   clipped. Each update is one plain policy-gradient step (vtrace/GAE advantages, prioritized rows) and
+   PPO's clip is inert. The old trainer did 3 epochs × 4 minibatches (12 steps per 3072 decisions), so
+   its KL/clip carried information. On this run a zero KL is not evidence of stability, and a nonzero
+   KL would be a bug. Any `--learner-passes ≥ 2` run would show real values again.
+2. **Entropy has not moved.** Joint entropy 8.292 nats at update 1 → 8.291 at 8.2M (max ln 4096 =
+   8.318; aim 5.530 of 5.545, buttons 2.762 of 2.773), drifting slightly *up* over the last
+   thousand updates (8.2896 → 8.2932) while the coefficient fell only to .0083. Explained variance
+   rose to 0.3–0.4 (the critic is learning something from terminal outcomes), gradient norm ~0.15,
+   advantage std ~0.11, mean reward 0.000, `policy_loss` median |0.006|. The old 10M run (with ±0.1
+   kill/death shaping, cap 3600, Adam, 12 steps per update) had entropy at 7.94 by 500k decisions.
+   The first evaluation (6.67M, 57 games) is at chance: 25–50 % vs random and 37–62 % vs the initial
+   checkpoint on maps 0–2, 100 % vs random on map 4 with four games.
+
+Reading: with sparse terminal reward only, the per-step policy-gradient signal is currently smaller
+than the entropy bonus at coefficient ~.009, so the actor sits at uniform while the critic learns. The
+schedule halves the coefficient every 30M learner decisions and reaches the .0005 floor near 130M, so
+the run's own design says "wait": the honest checkpoints are 30M (coefficient .005) and 60M (.0025).
+A useful watch rule for parent, not a change request: if joint entropy is still above ~8.2 at 30M
+and the 30M evaluation is still at chance against random, the sparse-reward null hypothesis is being
+confirmed early and the remaining ~5 hours mostly test whether the floor at 130M unlocks anything.
+Root owns train.py and parent owns the run; nothing to do from this Rift.
