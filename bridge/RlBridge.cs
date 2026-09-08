@@ -167,7 +167,7 @@ public static class RlBridge
                 if (frameTicks >= CommandsPerFrame) return;
             }
             // (2) Next queued reset: issue its scene load (at most one per frame).
-            if (IssueLoad(host)) return;
+            IssueLoad(host);
             // (3) Steps deferred by the per-frame tick budget.
             foreach (var world in worlds) {
                 if (world.pendingStep == null) continue;
@@ -213,7 +213,7 @@ public static class RlBridge
                             RlProfile.Enter("bridge:reset");
                             WorldState.Bind(world);
                             Reset(host, world, body, operation, sequence);
-                            if (IssueLoad(host)) return;
+                            IssueLoad(host);
                             break;
                         case 2:
                         case 6:
@@ -261,10 +261,10 @@ public static class RlBridge
 
     // Issues the scene load of the oldest queued reset. One per Unity frame: the load
     // completes at the frame boundary and the bound world must stay bound across it
-    // so the scene's Awake/Start land in that world. Returns true when a load was issued.
-    private static bool IssueLoad(Host host)
+    // so the scene's Awake/Start land in that world (Pump's finally re-binds it).
+    private static void IssueLoad(Host host)
     {
-        if (loadingWorld != null || loadQueue.Count == 0) return false;
+        if (loadingWorld != null || loadQueue.Count == 0) return;
         var world = loadQueue.Dequeue();
         WorldState.Bind(world);
         RlProfile.Enter("reset:load");
@@ -274,9 +274,7 @@ public static class RlBridge
         catch (Exception error) {
             loadingWorld = null; world.loading = world.ready = false; world.failed = true;
             Error(world.resetSequence, error);
-            return false;
         }
-        return true;
     }
 
     private static byte[] Slice(byte[] bytes, int skip)
