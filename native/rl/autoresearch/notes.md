@@ -977,14 +977,16 @@ check that costs no GPU: evaluate initial vs initial (same weights both sides) a
 identify the game as its sole cause. A shared policy can itself be asymmetric, and slot-dependent
 RNG or game-policy interactions remain possible. Recorded as a lead; not run.
 
-Per map, pooled over both runs (side 0 / side 1 win rate, 64 games per side on
-maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28, map 2 .42/.27,
+Per map, pooled over three stocks-3 and five stocks-0 evaluations (one more
+stocks-0 evaluation than the preceding aggregate table; side 0 / side 1 win
+rate, 64 games per side on maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28, map 2 .42/.27,
 map 3 .50/.44, map 4 .94/.62. The gap is small on maps 0 and 3 and large on
 maps 1, 2 and 4, which is consistent with map geometry contributing, though the
 per-map counts are small and a slot effect could still vary by map. Frame-0
 spawn positions from the saved games: map 1 spawns the left player 9 units
-higher (y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns are mirrored
-(x -26.6/27.6, y 5.2/5.1) so its gap is not the spawn point itself; maps 0, 3
+higher (y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns have similar heights on opposite sides
+(x -26.6/27.6, y 5.2/5.1), so a large initial height difference alone does
+not explain its gap; other spawn-context differences remain possible; maps 0, 3
 and 4 have level spawns (y within 1 unit). The first evaluation of each run
 (6.7M physical, policy near uniform) already shows the asymmetry: 14/28 vs
 11/28 and 16/28 vs 9/28.
@@ -1040,11 +1042,11 @@ place to measure it; (3) track environment deaths, other death categories and du
 fixed-opponent scores. Death frequency and round length have different units; comparing their raw
 rates of change is not a validated progress threshold.
 
-## 2026-09-07 22:31 EDT: 30M drift read (30 checkpoints, read-only)
+## 2026-09-07 22:31 EDT: near-30M read (29.3M metrics, 30 checkpoints through 29.0M)
 
 Same read as at 19M (`watch_run.py --every 5000000 --drift`, single thread,
 niced). Run at 29.3M learner decisions, 0.68 h, 11,986 learner/s trailing,
-~8.6 h left.
+~8.6 h remaining projected at that rate; not a completion guarantee.
 
 | slice | \|w0\| | \|w\| | mean\|dw\| | lag-1 cos | net | net/rw | row0 → row |
 |---|---|---|---|---|---|---|---|
@@ -1059,17 +1061,19 @@ value 3.68 → 3.90 (its lag-1 cosine fell .94 → .82, so the critic row is
 still moving one way but less steadily). Aim head net/rw 1.35 → 1.53 with
 lag-1 cosine .082 → .089 and row norm .579 → .588; buttons 1.09 → 1.11,
 cosine .052 → .042. The aim head has touched the ~1.5 marker from the watch
-rule, but its cosine is flat and its row norms grew 2%, so this is not the
-"policy heads start moving" signature yet; a random walk's net/rw also grows
-with the number of checkpoints when steps are weakly correlated. Next read at
-~40M decides it: net/rw above ~1.8 with cosine above ~.15 would.
+rule, but its cosine is flat and its row norms grew 2%, so this snapshot does not establish a meaningful change in policy behavior.
+The statistic is computed over a growing history; correlations and interval
+lengths affect its reference value, and it need not increase monotonically.
+Next read is planned around 40M. No new decision threshold is established: the
+previous markers remain exploratory, and matched evaluation results are needed
+to assess strength.
 
 Trailing signals at 29.3M: entropy 8.236 nats (uniform 8.318) at coefficient
 .00509, explained variance .509 (down from .616 at 20-25M), gradient norm
-.548 (flat since 20M), advantage std .195 (slow decline from .226), kl and
-clip fraction 0 as expected at one pass. The explained-variance drop is the
+.548 (flat since 20M), advantage std .195 (slow decline from .226), KL near zero and
+clip fraction zero before the single optimizer step. The explained-variance drop is the
 only signal that moved against trend; it coincides with the critic row's
 lower lag-1 cosine and with rising evaluation win rate vs random, so the
-value target distribution may be shifting. Evaluation at 33.3M physical:
+value target distribution may be shifting. Evaluation at approximately 33.3M physical / 25M learner decisions:
 vs random .542 (24 games), vs initial .375 (24), held-out vs random .625 (8),
 no timeouts.
