@@ -977,14 +977,16 @@ check that costs no GPU: evaluate initial vs initial (same weights both sides) a
 identify the game as its sole cause. A shared policy can itself be asymmetric, and slot-dependent
 RNG or game-policy interactions remain possible. Recorded as a lead; not run.
 
-Per map, pooled over both runs (side 0 / side 1 win rate, 64 games per side on
-maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28, map 2 .42/.27,
+Per map, pooled over three stocks-3 and five stocks-0 evaluations (one more
+stocks-0 evaluation than the preceding aggregate table; side 0 / side 1 win
+rate, 64 games per side on maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28, map 2 .42/.27,
 map 3 .50/.44, map 4 .94/.62. The gap is small on maps 0 and 3 and large on
 maps 1, 2 and 4, which is consistent with map geometry contributing, though the
 per-map counts are small and a slot effect could still vary by map. Frame-0
 spawn positions from the saved games: map 1 spawns the left player 9 units
-higher (y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns are mirrored
-(x -26.6/27.6, y 5.2/5.1) so its gap is not the spawn point itself; maps 0, 3
+higher (y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns have similar heights on opposite sides
+(x -26.6/27.6, y 5.2/5.1), so a large initial height difference alone does
+not explain its gap; other spawn-context differences remain possible; maps 0, 3
 and 4 have level spawns (y within 1 unit). The first evaluation of each run
 (6.7M physical, policy near uniform) already shows the asymmetry: 14/28 vs
 11/28 and 16/28 vs 9/28.
@@ -1040,11 +1042,11 @@ place to measure it; (3) track environment deaths, other death categories and du
 fixed-opponent scores. Death frequency and round length have different units; comparing their raw
 rates of change is not a validated progress threshold.
 
-## 2026-09-07 22:31 EDT: 30M drift read (30 checkpoints, read-only)
+## 2026-09-07 22:31 EDT: near-30M read (29.3M metrics, 30 checkpoints through 29.0M)
 
 Same read as at 19M (`watch_run.py --every 5000000 --drift`, single thread,
 niced). Run at 29.3M learner decisions, 0.68 h, 11,986 learner/s trailing,
-~8.6 h left.
+~8.6 h remaining projected at that rate; not a completion guarantee.
 
 | slice | \|w0\| | \|w\| | mean\|dw\| | lag-1 cos | net | net/rw | row0 → row |
 |---|---|---|---|---|---|---|---|
@@ -1059,25 +1061,29 @@ value 3.68 → 3.90 (its lag-1 cosine fell .94 → .82, so the critic row is
 still moving one way but less steadily). Aim head net/rw 1.35 → 1.53 with
 lag-1 cosine .082 → .089 and row norm .579 → .588; buttons 1.09 → 1.11,
 cosine .052 → .042. The aim head has touched the ~1.5 marker from the watch
-rule, but its cosine is flat and its row norms grew 2%, so this is not the
-"policy heads start moving" signature yet; a random walk's net/rw also grows
-with the number of checkpoints when steps are weakly correlated. Next read at
-~40M decides it: net/rw above ~1.8 with cosine above ~.15 would.
+rule, but its cosine is flat and its row norms grew 2%, so this snapshot does not establish a meaningful change in policy behavior.
+The statistic is computed over a growing history; correlations and interval
+lengths affect its reference value, and it need not increase monotonically.
+Next read is planned around 40M. No new decision threshold is established: the
+previous markers remain exploratory, and matched evaluation results are needed
+to assess strength.
 
 Trailing signals at 29.3M: entropy 8.236 nats (uniform 8.318) at coefficient
 .00509, explained variance .509 (down from .616 at 20-25M), gradient norm
-.548 (flat since 20M), advantage std .195 (slow decline from .226), kl and
-clip fraction 0 as expected at one pass. The explained-variance drop is the
+.548 (flat since 20M), advantage std .195 (slow decline from .226), KL near zero and
+clip fraction zero before the single optimizer step. The explained-variance drop is the
 only signal that moved against trend; it coincides with the critic row's
 lower lag-1 cosine and with rising evaluation win rate vs random, so the
-value target distribution may be shifting. Evaluation at 33.3M physical:
+value target distribution may be shifting. Evaluation at approximately 33.3M physical / 25M learner decisions:
 vs random .542 (24 games), vs initial .375 (24), held-out vs random .625 (8),
 no timeouts.
 
 ## 2026-09-07 22:33 EDT: behavior is moving from ~18M (counters 0-30M, read-only)
 
 Same per-2M sums of `behavior.totals` as the 22:16 section, extended to
-30M learner decisions. Everything below is per learner episode unless marked.
+30M learner decisions. Event counts and ticks below are per completed learner episode; entropy and
+explained variance are means of update metrics. The 30M+ row is an historical
+partial window, so use the complete 28–30M window for matched comparisons.
 
 | window | ticks | env deaths | self | opponent-credited | credited kills | arrows | hits | dash | platform | H(aim) | H(buttons) | ev |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -1094,43 +1100,45 @@ episodes per update fell 36.8 → 25.1. Environment deaths per episode fell
 .416 → .349, the first sustained movement in that counter; it was flat
 through 14M. Opponent-credited deaths rose .008 → .035 and arrow hits
 .008 → .035 in step, both about 4x, while arrows fired rose only 43%
-(1.80 → 2.57), so accuracy per arrow roughly tripled (.0044 → .0136 hits per
-arrow). Note what `arrow_hits` counts: `PlayerCollision.cs` line 458 records a
-hit only when the arrow collision actually killed (`killed &&
-arrowForTelemetry`), so at stocks 0 it is arrow kills credited to the learner,
-not contacts. Its near equality with opponent-credited deaths is the
-self-play symmetry (the learner's kills on itself-as-opponent are its own
-deaths), not a coincidence. Self deaths rose .078 → .122 and platform activations per episode
+(1.80 → 2.57), so damaging hit events per fired arrow roughly tripled. The complete
+0–2M and 28–30M windows give .004519 → .013375, a 2.96x increase. This is
+not a fraction of unique projectiles that hit: the event counter can count
+multiple accepted contacts from a projectile. (Source check: `PlayerCollision.cs` line 458 calls `RlTelemetry.ArrowHit`
+only when `killed && arrowForTelemetry`, i.e. the accepted arrow contact
+killed the victim, and `RlTelemetry.ArrowHit` skips owner hits. With one life
+per player at stocks 0, one projectile can therefore be counted at most once
+per opponent it kills; in two-player games the counter is arrow kills credited
+to the learner, which is why it tracks opponent-credited deaths under
+self-play.) Self deaths rose .078 → .122 and platform activations per episode
 doubled (.39 → .79); dashes per episode rose 44%. Per decision, jump rate
 rose .503 → .550 and platform rate fell .530 → .508; dash and arrow rates are
 flat, so the per-episode increases are mostly the longer rounds. Aim head
 entropy fell 5.530 → 5.474 (uniform 5.545), buttons 2.762 → 2.751 (uniform
 2.773): still near uniform, and joint entropy 8.236 at 30M matches.
 
-Reading. This is the pattern one would expect from "fall in the water less,
-and occasionally hit the opponent": longer rounds, fewer environment deaths,
-more opponent kills. It is small in absolute terms (the learner still dies to
+Reading. These windows show longer rounds, fewer environment-credited deaths per
+episode, and more accepted hits and opponent-credited deaths. They are
+consistent with changing survival and combat behavior, without identifying its
+cause or establishing stronger play. It is small in absolute terms (the learner still dies to
 the environment in 35% of episodes and is killed by the opponent in 3.5%),
-and part of the longer rounds is just two players who both avoid the water a
-little longer. The explained-variance decline from .62 to .50 over the same
-window is consistent with a target shift rather than critic failure: longer
-rounds push more of the return further from the terminal reward, and the
-outcome distribution now includes a small kill component that was absent
-before; value loss kept falling (.0264 → .0231). How the number is formed
-(pinned `torch_pufferl.py`, end of `train`): after the pass, `y_pred` is the
-value buffer with sampled rows overwritten by the post-step critic, and
-`y_true` is GAE advantage plus that same buffer, so the residual is exactly
-the advantage and ev = 1 − var(A)/var(A+V) over the whole rollout. Advantage
-std fell .226 → .193 over 6-30M, so the ev decline means var(A+V) fell
-faster: the critic's own spread is shrinking. With longer rounds and
-γ-discounting, more decisions sit far from any terminal reward and their
-correct value is close to 0, which shrinks var(V) without the critic being
-wrong. Not a failure signal on its own; watch it against value loss. Wins per episode stayed
-at .50 by construction (self-play plus historical opponents of the same
-lineage). None of this is strength evidence against a fixed opponent; the
+but the aggregate counters do not isolate why rounds became longer. A target-distribution shift is one hypothesis for the explained-variance
+decline, not an established alternative to critic error. From 18–20M to
+28–30M, mean explained variance fell .619 → .517 while value loss fell
+.02626 → .02300. Longer rounds and more combat-influenced outcomes may change
+targets, but residual and target variances would need inspection to explain
+these metrics; the clipped loss and explained variance need not move together.
+Kill/death shaping remains exactly zero: there is no added kill-reward
+component. Wins per episode stayed near .50, but that is not guaranteed for
+learner-only totals containing historical-opponent games. (How ev is formed, pinned `torch_pufferl.py` end of `train`: `y_pred` is
+the value buffer with sampled rows overwritten by the post-step critic,
+`y_true` is GAE advantage plus that same buffer, so the residual is the
+advantage and ev = 1 − var(A)/var(A+V) over the whole rollout. The logged
+`advantage_std` is var(A)^½ and fell .226 → .193 over 6-30M, so the ev
+decline implies var(A+V) fell faster than var(A); γ is .995 (`bopl.ini`).
+That narrows what to inspect, it does not by itself say whether the critic
+or the target moved.) None of this is strength evidence against a fixed opponent; the
 evaluation win rate vs random over the last three evaluations (.58, .46, .54
-on 24 games each) is inside noise. The behavior counters are the earlier and
-less noisy signal. Next check at ~40M: whether env deaths keep falling and
-whether aim entropy keeps declining; the 22:16 section's watch item
-("deaths_environment per episode is the most direct behavior progress
-signal") stands.
+on 24 games each) is inside noise. The behavior counters aggregate many more episodes and reveal distribution
+changes, but those samples remain dependent and are not strength evaluations. Next check at ~40M: whether env deaths keep falling and
+whether aim entropy keeps declining; retain self-deaths, total losses, duration and fixed-opponent results alongside
+environment deaths, as specified in the reviewed 22:16 section.
