@@ -151,10 +151,13 @@ def main():
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
     def status(state, **extra):
-        atomic_json(output/'status.json', dict(status=state, pid=os.getpid(), step=counts['game_steps'],
+        record = dict(status=state, pid=os.getpid(), step=counts['game_steps'],
                     learner_steps=counts['learner_steps'], matches=counts['matches'],
                     elapsed=time.monotonic()-started, target_steps=target_physical,
-                    target_learner_steps=a.steps, **extra))
+                    target_learner_steps=a.steps, **extra)
+        atomic_json(output/'status.json', record)
+        if state in ('complete', 'stopped', 'failed'):
+            atomic_json(output/'result.json', record)
     status('starting')
     saved = {}
     try:
