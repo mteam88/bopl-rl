@@ -8,8 +8,9 @@ port in the parent `native/` directory.
 The current diagnostic uses two players with Dash, Bow and Platform, three stocks,
 and configurable maps. The larger goal remains diverse abilities, maps and
 adaptive opponents; this diagnostic does not establish all-ability competence.
-Historical experiments and their limits remain in [EXPERIMENTS.md](EXPERIMENTS.md)
-and the [evidence directory](evidence/).
+Throughput experiments and their limits are recorded in the
+[research log](autoresearch/notes.md) and [evidence directory](evidence/).
+Earlier trainer implementations and removed reports remain in Git history.
 
 ## Observation and control contract
 
