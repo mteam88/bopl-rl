@@ -122,8 +122,10 @@ def main():
     frozen = opponents(a.evaluation_opponents)
     baseline_identity = checkpoint_identity(a.evaluation_baseline) if a.evaluation_baseline else None
     game = reference.resolve_game(a.game)
+    # The NativeAOT sim (sim/RL.md) is one self-contained binary: only the
+    # player_binary entry exists for it, the Unity-specific files do not.
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
-               for key, path in reference.player_sources(game).items()}
+               for key, path in reference.player_sources(game).items() if path.exists()}
     output.mkdir(parents=True, exist_ok=False)
     frozen_manifest = output/'evaluation-opponents.json' if frozen else None
     if frozen_manifest:
