@@ -889,9 +889,11 @@ learner wins, i.e. the opponent died first, and since the opponent rows are the
 same policy or frozen copies of it, those are mostly the mirror of the same
 falls. Arrow hits are ~.01 per episode with ~1.9 arrows fired, so the bow is
 essentially never landing. The `kills` counter (.09/ep) exceeds
-`deaths_opponent` (.01/ep); the learner rows are 24 of 56 and opponents include
-the frozen banks, and kill credit may follow the game's credited-killer rule
-after environment-assisted deaths. Not resolved here.
+`deaths_opponent` (.01/ep) because `Player.cs` increments the credited
+killer's kill count whenever the killer is any player, the victim included, so
+a self-kill counts as a kill for the learner. `kills` = opponent kills + self
+kills, and .086 = .078 + .008 in the first window. Real kills of the opponent
+are the ~.01/ep in `deaths_opponent` mirrored across rows.
 
 Trends over 18M are small and monotone: episodes lengthen (333 to 362 ticks),
 environment deaths fall slightly (.416 to .398), and dash, platform, arrow and
