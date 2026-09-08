@@ -98,6 +98,10 @@ namespace BoplSim.Host
 				host.ResetRl(BootstrapSetup(replayPath));
 				// Bootstrap scene load completes its frame like every load below.
 				EndFrame();
+				// Memory baseline per game process (sim/RL.md "Known gaps"): the
+				// retained export JSON dominates; a forced compacting GC here was
+				// measured to return only ~6 MiB of working set, so none is done.
+				Console.Error.WriteLine($"[rl] ready: heap {GC.GetTotalMemory(false) >> 20}MiB workingSet {Environment.WorkingSet >> 20}MiB");
 
 				int frames = 0;
 				while (!Application.quitRequested)
@@ -113,7 +117,8 @@ namespace BoplSim.Host
 					EndFrame();
 					frames++;
 				}
-				Console.Error.WriteLine($"[rl] quit code={Application.quitCode} frames={frames} simulationTicks={Updater.SimulationTicks}");
+				Console.Error.WriteLine($"[rl] quit code={Application.quitCode} frames={frames} simulationTicks={Updater.SimulationTicks} " +
+					$"heap={GC.GetTotalMemory(false) >> 20}MiB live={GC.GetTotalMemory(true) >> 20}MiB workingSet={Environment.WorkingSet >> 20}MiB gcs={GC.CollectionCount(0)}/{GC.CollectionCount(1)}/{GC.CollectionCount(2)}");
 				return Application.quitCode;
 			}
 			catch (Exception error)
