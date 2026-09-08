@@ -21,6 +21,7 @@ native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
   --steps 400000000 --seed 73 \
   --workers 16 --buffers 2 --banks 4 \
   --horizon 128 --learner-passes 1 --learning-rate 0.0003 \
+  --anneal-lr 0 --min-lr-ratio 0 \
   --training-maps 0,1,2 --evaluation-maps 0,1,2 --heldout-maps 3,4 \
   --episode-ticks 7200 --entropy 0.01 --entropy-floor 0.0005 \
   --entropy-half-life 30000000 \
@@ -39,8 +40,10 @@ decisions completed before the update. It reaches 0.005 at 30M, 0.0025 at 60M,
 and the floor at about 129.7M. The schedule is independent of `--steps`. The
 native loss reads its updated device scalar during CUDA graph replay; an
 accelerated six-update check verified every halving and the floor. Learning
-rate retains native cosine decay from 0.0003 over the complete run budget;
-`anneal_lr=1` and `min_lr_ratio=0` are explicitly recorded in the native config.
+rate stays constant at 0.0003: `anneal_lr=0` is recorded in the native config.
+This preserves the old trainer's learning rate and keeps late sparse-reward
+signals trainable; it differs from the earlier native throughput benchmarks,
+which used the native cosine schedule.
 
 Budgets and checkpoint/evaluation cadence count learner decisions. With this
 configuration an update contains 3,072 learner decisions; completing the last
@@ -99,7 +102,7 @@ reward setup and initialization, so it does not isolate backend speedup.
 Long-run stability and learning at 400M decisions are the experiment's purpose.
 The optional `autoresearch/strength_check.py` comparison rejects incompatible
 cached plans, settings and checkpoint identities. It can be used for a later
-A/B; its short-budget learning-rate schedule is not a prefix of the 400M run.
+A/B with explicit learning-rate and entropy settings matching the target run.
 
 After launch, implement native archer/pursuer/evasive evaluation opponents.
 These provide additional fixed anchors once random opponents stop being

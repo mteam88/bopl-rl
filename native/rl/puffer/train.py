@@ -51,6 +51,10 @@ def arguments():
     p.add_argument('--horizon', type=int, default=128)
     p.add_argument('--learner-passes', type=int, default=1, help='Native minibatches per rollout; each has one learner batch of samples')
     p.add_argument('--learning-rate', type=float, default=.0003)
+    p.add_argument('--anneal-lr', type=int, choices=(0, 1), default=0,
+                   help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
+    p.add_argument('--min-lr-ratio', type=float, default=0.,
+                   help='Final/base learning-rate ratio when --anneal-lr 1')
     p.add_argument('--entropy', type=float, default=.01)
     p.add_argument('--entropy-floor', type=float, default=.0005)
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
@@ -84,6 +88,8 @@ def arguments():
     if not (math.isfinite(a.learning_rate) and a.learning_rate > 0
             and 0 < a.entropy_floor <= a.entropy and math.isfinite(a.entropy)):
         p.error('Expected positive learning rate and 0 < entropy-floor <= entropy')
+    if not math.isfinite(a.min_lr_ratio) or not 0 <= a.min_lr_ratio <= 1:
+        p.error('min-lr-ratio must be finite and within 0..1')
     a.evaluation_maps = a.evaluation_maps or a.training_maps
     a.heldout_maps = a.heldout_maps or [m for m in range(31) if m not in a.training_maps][:2]
     if not a.no_eval:
@@ -136,7 +142,7 @@ def main():
     args['policy'].update(hidden_size=a.hidden, num_layers=a.layers)
     args['train'].update(total_timesteps=updates*native_batch, seed=a.seed,
                          horizon=a.horizon, minibatch_size=learner_batch, replay_ratio=ratio,
-                         learning_rate=a.learning_rate, anneal_lr=1, min_lr_ratio=0.0,
+                         learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
@@ -154,7 +160,7 @@ def main():
                   reward=dict(win=1, loss=-1, timeout=-.5, kill=0, death=0),
                   entropy=a.entropy, entropy_floor=a.entropy_floor,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
-                  learning_rate_schedule='cosine', learner_passes=a.learner_passes,
+                  learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())

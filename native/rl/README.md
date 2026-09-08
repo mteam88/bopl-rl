@@ -60,8 +60,9 @@ There is no kill, death or per-tick reward. The default cap is 7,200 simulation
 ticks (two minutes), configurable with `--episode-ticks`. Entropy regularization
 decays exponentially from 0.01, halving every 30M learner decisions until it
 reaches the 0.0005 floor at about 129.7M decisions. `--entropy-half-life` sets
-that interval independently of the training budget. Learning rate follows the
-native cosine schedule over the run budget. Evaluation reads reward settings
+that interval independently of the training budget. Learning rate is constant
+at 0.0003 by default (`--anneal-lr 0`). Optional `--anneal-lr 1` uses native
+cosine decay toward `--min-lr-ratio` over the run budget. Evaluation reads reward settings
 from the checkpoint metadata.
 
 `--steps`, `--checkpoint-every` and `--eval-every` count **learner decisions**.
