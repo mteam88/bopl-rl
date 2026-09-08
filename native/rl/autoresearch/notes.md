@@ -813,3 +813,51 @@ observation does not establish which gradient source drove each row. Interpretat
 - Row norms add a parameter-scale diagnostic alongside lag-1 cosine and net/rw. A random walk can grow norms, and a persistent update can shrink them if it points toward the origin. None of these statistics is a necessary or sufficient test of useful learning; slice displacement can also change as the joint decoder update changes.
 - Caveat for the `--learner-passes 3` A/B: repeated steps may be correlated because they reuse rollout data. Near-parallel, equal-length steps would roughly triple displacement, for useful or noisy directions, but prioritized resampling, recomputed advantages and changed weights make this conditional rather than established. Compare drift on both arms, and judge strength with matched game evaluations and their uncertainty.
 - A stationary independent-increment model with interval norm 0.24 gives RMS displacement 0.24 x sqrt(400) = 4.8, against an initial aim-slice norm of 9.2. This is an illustrative extrapolation, not a prediction: the entropy schedule, correlations, state distribution and gradient structure can change. Absence of explicit weight decay does not imply absence of restoring gradients. Scaling the learning rate scales the immediate update but may change later optimization dynamics; this calculation does not rule it out as an A/B variable.
+
+## 2026-09-07 22:08 EDT: replacement sampling and loss weighting (source review)
+
+The native `prio_replay_cuda` path draws 24 sequence indices with replacement from
+56 stored rows (24 learner rows, 32 frozen-bank rows). Each sequence contains 128
+steps. The priority is `(sum(abs(advantage)))**0.8`; `multinomial_sample` draws
+independent CDF samples with no deduplication. Frozen advantages are zeroed first,
+but `compute_prio_normalize` adds epsilon to every row. Their mathematical
+probability is therefore small, not strictly zero; float32 CDF rounding may erase
+some small intervals. This is not a hard frozen-row exclusion guarantee. Actual
+frozen draws have not been measured here and no live failure is inferred.
+
+For fixed probabilities p_i, expected unique learner sequences after m draws are
+`sum_i(1 - (1-p_i)**m)`. Ignoring tiny frozen probability, the closed-form results
+below reproduce the reported simulation. Ratios in the first column refer to
+advantage sums BEFORE the 0.8 exponent, not final sampling probabilities:
+
+| advantage-sum pattern | unique learner sequences, 24 draws | 72 draws |
+|---|---:|---:|
+| uniform | 15.358 (63.99%) | 22.880 (95.33%) |
+| six at 4x, others 1x | 14.077 | 21.595 |
+| one at 10x, others 1x | 13.999 | 22.111 |
+
+Thus one uniform pass leaves about 36% of sequences unselected in expectation;
+this is a coverage property, not a measured 36% loss of useful learning. Priorities
+intentionally trade coverage for emphasis. Stronger skew can reduce coverage much
+more. Three-pass figures assume fixed probabilities across 72 draws; the real
+trainer recomputes advantages and priorities after each optimizer step. Sampling
+indices would need to be instrumented to measure actual per-rollout coverage.
+
+Importance weights are `(56*p_i)**(-beta)`, with beta progressing from 0.2 to 0.84.
+For uniform learner sampling, p_i is approximately 1/24 and the multiplier goes
+from 0.844 to 0.491. The fused PPO loss multiplies the normalized policy advantage
+by this weight AFTER advantage normalization; value and entropy terms do not use
+it. Relative to using 24 eligible rows, counting all 56 gives a common policy-term
+factor `(56/24)**(-beta)` at each update. It does not cancel in normalization and
+can change the balance among policy, value and entropy gradients before Muon.
+These uniform values are a reference, not the observed weight of every sample.
+
+This provides a concrete coverage hypothesis for the post-run learner-passes A/B,
+not a conclusion that it will improve strength. Sampling without replacement over
+eligible learner rows could cover all 24 at one pass without additional optimizer
+steps. It is a separate algorithm change: when all rows are selected, priority no
+longer changes inclusion, and the current with-replacement importance weights
+must be reconsidered. Selection cost and end-to-end speed also need measurement;
+no-extra-training-time is not yet established. Any alternative should explicitly
+mask frozen rows and test the zero-advantage case. Judge with matched evaluations,
+using drift only as supporting diagnostics. No live trainer or run changes.
