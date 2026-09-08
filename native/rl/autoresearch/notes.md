@@ -1229,3 +1229,40 @@ initial checkpoint around 40-50M physical. The drift table says the strength
 gain so far is carried by the encoder and mingru (persistent motion) rather
 than the decoder heads, whose row norms grew 3% while random-walking; the
 decoder change that matters may be small in norm. Next read at ~50M learner.
+
+## 2026-09-07 22:47 EDT: the side gap is map 1; per-decision policy sharpening (read-only)
+
+Per map and side on the stocks-0 run only, fixed-opponent games (side 0 wins
+/ games vs side 1 wins / games):
+
+| evaluations | map 0 | map 1 | map 2 | map 3 | map 4 |
+|---|---|---|---|---|---|
+| first four (6.7-26.7M physical) | 16/32 vs 16/32 | 20/32 vs 7/32 | 11/32 vs 10/32 | 5/8 vs 4/8 | 8/8 vs 4/8 |
+| last three (40.0-53.3M) | 17/24 vs 17/24 | 19/24 vs 10/24 | 9/24 vs 12/24 | 3/6 vs 4/6 | 5/6 vs 6/6 |
+
+Maps 0, 2 and 3 are even on this run in both periods; map 4 has 8 games per
+period. Map 1 is .63 vs .22 early and .79 vs .42 late, and it is the map
+whose left spawn sits 9 units above the right one (frame-0 y 9.8 vs 0.8).
+The pooled two-run per-map numbers in the 22:26 section mixed in the
+stocks-3 run, which showed gaps on maps 2 and 4 that this run does not. So:
+on the live run the "side asymmetry" is a map 1 spawn-height asymmetry, and
+the whole-suite side gap closed at 40-53M because map 1's side 1 rate rose
+from .22 to .42 while side 0 rose less. Consequence: read map 1 results per
+side, and the initial-vs-initial check is only needed on map 1. Elsewhere the
+evaluator is balanced.
+
+Per-decision policy read from the saved mind dumps (first vs newest
+evaluation, all saved games; uniform aim max-probability is 1/256 = .0039):
+
+| physical step | decisions | H(aim) mean / p5 / p95 | max aim prob mean / p95 | P(no direction) | H(buttons) mean / p5 | V mean / sd |
+|---|---|---|---|---|---|---|
+| 6.7M | 803 | 5.528 / 5.527 / 5.529 | .0065 / .0067 | .0044 | 2.763 / 2.762 | +.022 / .155 |
+| 53.3M | 996 | 5.427 / 5.332 / 5.479 | .0146 / .0214 | .0078 | 2.741 / 2.711 | −.005 / .201 |
+
+At 6.7M every decision had the same near-uniform aim distribution (p5 to p95
+spread .002 nats). At 53.3M the spread is .15 nats and the most likely aim
+bin averages 3.7x uniform (5.5x at the 95th percentile), so the aim head is
+now state-dependent even though its mean entropy is still 98% of maximum.
+The button head barely moved (2.741 vs 2.773 max). The critic's spread grew
+(.155 → .201) while its mean returned to zero, matching the settled critic
+row in the drift table.
