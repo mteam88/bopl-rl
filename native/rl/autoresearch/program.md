@@ -199,6 +199,19 @@ the slot is negotiated explicitly between the Rifts.
   (b) done in `watch_run.py` (3413a3d: pooled and per-map left/right win
   rate under every evaluation line, self-play excluded); the dashboard
   summary is root's. On the stocks-0 run the gap is map 1 only.
+- **Opponent pool age and diversity** (notes.md 2026-09-07 23:41). The four
+  banks only ever hold the last four checkpoints (0.1 to 5M physical behind
+  the learner, a bank retires as soon as a newer snapshot is pending), and
+  half of matches are self-play (`historical_every=2`). The learner's
+  training-time win rate against the pool stayed at .50 to .51 for the whole
+  46.5M stopped run while evaluations against the initial checkpoint reached
+  .58 to .67, so training outcomes carry no strength signal and the sparse
+  reward has mean ~0 by construction. Root owns `train.py` and
+  `native_pool.py`; the lead is a matched A/B in the `strength_check.py`
+  protocol: (a) one bank pinned to the initial checkpoint (a fixed
+  reference visible in `env.historical_wins`), (b) log-spaced pool ages
+  instead of four consecutive checkpoints. Both change the opponent
+  distribution, so no live-run edits.
 - **Visibility review** before any experiment with invisibility or smoke.
 
 ## Claude Code
