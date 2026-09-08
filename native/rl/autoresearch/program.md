@@ -139,8 +139,10 @@ the slot is negotiated explicitly between the Rifts.
   without a matched strength gate. `native/rl/autoresearch/strength_check.py`
   is the fail-closed protocol (fresh matched runs per seed, final evaluation,
   side-swapped round robin with a random anchor, Bradley-Terry Elo, pooled
-  Wilson score; verdict rule fixed before the run). Run it only when the GPU
-  is free of the 400M run, or on a second machine.
+  Wilson score; verdict rule fixed before the run). It passes the entropy
+  half-life explicitly and rejects cached runs trained under another
+  schedule. Run it only when the GPU is free of the 400M run, or on a second
+  machine.
 - **Throughput.** Collection is ~98% of wall time at 16 workers (rollout 44 s
   of 56 s; train ~1 s). Leads: game stepping cost inside the IL2CPP player,
   worker count vs GPU utilization (34–38%), observation packing, and the

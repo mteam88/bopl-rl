@@ -536,3 +536,12 @@ dashboard-owned METRICS_CONTRACT.md).
 
 Final-core-checks binaries: `make -C native/rl all` writes `sampled_check`/`reset_check` to
 `native/artifacts/rl/`, not `native/rl/`.
+
+Merged root 3603dca (native-evaluation Rift, `research/cuda-set`; handoff now `--eval-every 5000000`,
+`--entropy-half-life 30000000`, entropy evidence `native/rl/evidence/native-cutover-entropy.json`).
+`strength_check.py` now passes `--entropy-half-life` (default 30M = train.py default), records it in
+plan.json and requires `entropy_schedule == 'exponential'` plus the same half-life in cached runs'
+config.json. Checked: a copy of the pre-f998744 self-test run is rejected with
+`entropy_schedule: (None, 'exponential'), entropy_half_life: (None, 30000000)`, and the old
+`strength-selftest/plan.json` is rejected for the missing field. So the self-test evidence predates
+the schedule change; the script has not been exercised end to end on a post-f998744 run.
