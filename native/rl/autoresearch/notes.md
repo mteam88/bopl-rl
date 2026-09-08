@@ -436,3 +436,16 @@ Correctness on this branch: SET encoder core hook (`BOPL_NATIVE_ENCODER` read in
 `create_custom_encoder`, fail-closed on bad values), full CUDA build, `check_set_encoder`
 pass_all (forward <= 2.4e-7, grad <= 2.9e-6, graph replay / permutation / masked poison / empty
 set), unit tests 6+2+3 OK, smokes linear/set/set16 86 PASS, SET 4w CLI run with two evaluations.
+
+## 2026-09-08 native C/API cutover (commit 90ac98e, source only; no build/GPU until root returns the rebuilt IL2CPP executable)
+
+Merged root a0d513f first (environment.step_mode API, train.py runtime_options flag block, series.py BOPL_SPLIT_STEP env, graph_workspace_repro.py, README old flag exports all gone on root's side). Then in my files:
+
+- `bopl_puffer.h`: BOPL_PARALLEL_OPEN, BOPL_SPARE_GAME and BOPL_SPLIT_STEP gates removed. Every env opens its world process on a thread at init; every auto-resetting env runs a spare process (evaluation envs with `no_autoreset` stay single-process, as before). The delayed observation always takes the single-roundtrip sampled step (3+1 ticks); the two-roundtrip oracle branch and the `split_step` field are deleted.
+- `bopl_rl.c/.h`: BOPL_RL_EAGER_IO gate removed; non-blocking-first transport and one-write request framing are the only path. The "Unknown RL command" fallback to two step commands is gone: an old game build is now a hard `BOPL_RL_GAME_ERROR`. `bopl_rl_sampled_native` deleted.
+- API: `bopl_vec_step_mode` (binding.c) and `research_step_mode` (eval_binding.c) deleted; `smoke.py` and `check_routing.py` no longer assert on the transport mode (there is only one).
+- `sampled_check.c` kept as the exactness oracle (sampled command == two sequential steps; argument guards; phase-1 terminal/truncation). Its `expect_native` argument and output field are gone: `sampled_check <game> <bootstrap.rep> <game.log>`.
+- Syntax-checked bopl_rl.c, sampled_check.c, eval_binding.c and binding.c (against the overlay vecenv.h) with -Wall -Wextra -Werror; no full build yet.
+- rg audit over the shipped tree (excluding artifacts, evidence, notes, results.tsv, program.md) for torch_pufferl, `from policy import`, Stepper, TurnGraph, BOPL_SPLIT_STEP, --backend, step_mode, sampled_native and every deleted game/trainer flag: zero hits.
+
+Pending once the GPU is back: `build.py --device cuda`, `native_policy.build()`, `make -C native/rl`, then smoke linear/set/set16, check_routing, reset_check, sampled_check, unit tests, on the rebuilt game binary. Exactness evidence for the now-unconditional paths is the earlier flag-on/flag-off comparisons (exp03 spare, exp05 parallel open, exp09 eager I/O, sampled parity-main/parity-split in evidence/throughput).
