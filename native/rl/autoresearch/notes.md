@@ -965,8 +965,9 @@ games per side on maps 0-2, 16 on maps 3-4): map 0 .55/.47, map 1 .58/.28,
 map 2 .42/.27, map 3 .50/.44, map 4 .94/.62. The gap is small on maps 0 and 3
 and large on maps 1, 2 and 4, which points at map geometry rather than a
 global id-order effect: map 1 spawns the left player 9 units higher than the
-right one (y 9.8 vs 0.8), and map 2 is a ring of circles where the two spawns
-sit on different circles. The first evaluation of each run (6.7M physical,
+right one (frame-0 y 9.8 vs 0.8, x -11.4 vs 16.5); map 2's spawns are mirrored
+(x -26.6/27.6, y 5.2/5.1) so its gap must come from the terrain layout, not the
+spawn point. Maps 0, 3 and 4 have level spawns (frame-0 y within 1 unit). The first evaluation of each run (6.7M physical,
 policy near uniform) already shows it: 14/28 vs 11/28 and 16/28 vs 9/28. Within a pair, "only side 0 wins" outnumbers "only side 1 wins"
 11:4, 11:5, 9:5, 7:5 across the four stocks-0 evaluations. The evaluator
 (`evaluate.py`) is side-swapped, so this is not a bookkeeping error; it means
