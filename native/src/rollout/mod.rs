@@ -331,6 +331,9 @@ pub struct RolloutWorld {
     pub sample_slimes: Vec<CSlime>,
     pub sample: Box<CState>,
     pub sample_valid: bool,
+    /// Actions currently in effect; new registrations lag one tick (.NET
+    /// controllers act on inputs the tick after they arrive).
+    pub held: [CAction; MAX_PLAYERS],
     pub error: [u8; 512],
 }
 
@@ -377,6 +380,7 @@ impl RolloutWorld {
             sample_slimes: Vec::with_capacity(MAX_PLAYERS),
             sample: empty_state(),
             sample_valid: false,
+            held: [CAction::default(); MAX_PLAYERS],
             error: [0; 512],
         }
     }
@@ -428,6 +432,7 @@ impl RolloutWorld {
         self.terminal = false;
         self.failed = false;
         self.sample_valid = false;
+        self.held = [CAction::default(); MAX_PLAYERS];
         self.rng = Random::new(config.seed.max(1));
         self.sudden_death = false;
         self.arrows.clear();
@@ -651,8 +656,20 @@ impl RolloutWorld {
             }
         }
         self.sample_valid = false;
-        for _ in 0..repeat.max(1) {
-            self.game_tick(actions);
+        for i in 0..repeat.max(1) {
+            // The .NET sim's controllers act on an input one tick after it is
+            // registered, so a new action takes effect on the second tick of
+            // its window. Replicate that latency: the first tick still runs
+            // the previously held actions.
+            let held = self.held;
+            self.game_tick(if i == 0 {
+                &held[..actions.len()]
+            } else {
+                actions
+            });
+            if i == 0 {
+                self.held[..actions.len()].copy_from_slice(actions);
+            }
             if self.terminal {
                 break;
             }
@@ -1379,7 +1396,9 @@ impl RolloutWorld {
     /// Ballistic flight, swept collision against players and platforms, the
     /// hurt-owner delay, and the scene-bounds despawn (never upward).
     fn arrows_tick(&mut self, data: &data::RolloutData) {
-        let gravity = Fix::from_f64(-9.82) * data.arrow.gravity_scale;
+        // Scene DetPhysics overrides gravityAccel to -40 on every map (the
+        // -9.82 field default never applies).
+        let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
         let radius = data.arrow.radius;
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active {
