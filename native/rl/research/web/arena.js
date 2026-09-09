@@ -11,11 +11,17 @@ window.drawBoplArena = function(canvas,frame,initial) {
   // for jumps, arrows and platforms (most of the action happens over the
   // level) and some below for falls. Fixed for the whole replay so it never
   // jitters; the scale is whichever axis is tighter.
-  const extent = (e) => Math.abs(e.rx) + Math.abs(e.ux) + Math.abs(e.ry) + Math.abs(e.uy) + e.radius;
-  const xs = visible.flatMap((e) => [e.x - extent(e), e.x + extent(e)]);
-  const ys = visible.flatMap((e) => [e.y - extent(e), e.y + extent(e)]);
+  // Level objects parked far outside the arena (map 2 keeps one at x=-100)
+  // would drag the box off the action, so ignore anything far from the median.
+  const median = (vs) => vs.sort((a, b) => a - b)[vs.length >> 1];
+  const medX = median(visible.map((e) => e.x)), medY = median(visible.map((e) => e.y));
+  const level = visible.filter((e) => Math.abs(e.x - medX) < 60 && Math.abs(e.y - medY) < 45);
+  const geometry = level.length ? level : visible;
+  const ex = (e) => Math.abs(e.rx) + Math.abs(e.ux) + e.radius, ey = (e) => Math.abs(e.ry) + Math.abs(e.uy) + e.radius;
+  const xs = geometry.flatMap((e) => [e.x - ex(e), e.x + ex(e)]);
+  const ys = geometry.flatMap((e) => [e.y - ey(e), e.y + ey(e)]);
   const x0 = Math.min(...xs) - 6, x1 = Math.max(...xs) + 6;
-  const y0 = Math.min(...ys) - 10, y1 = Math.max(...ys) + 26;
+  const y0 = Math.min(...ys) - 12, y1 = Math.max(...ys) + 30;
   const spanX = Math.max(54, Math.min(110, x1 - x0)), spanY = Math.max(40, y1 - y0);
   const scale = Math.min(w / spanX, h / spanY),
     mx = (x0 + x1) / 2,
