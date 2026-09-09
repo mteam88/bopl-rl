@@ -178,6 +178,7 @@ const LAYER_PROJECTILE: u32 = 9;
 const LAYER_WALL: u32 = 11;
 const LAYER_WATER: u32 = 4;
 
+const CAUSE_OTHER: u32 = 0;
 const CAUSE_ACCIDENT: u32 = 2;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
@@ -189,18 +190,22 @@ const ENVIRONMENT: u32 = 0xFFFF_FFFF;
 const SLIME_AWAKE_TICK: u32 = 62;
 const TIMER_START: Fix = Fix(-6_442_450_944); // -1.5s
 
-/// A live arrow (Arrow.cs + Projectile.cs, simplified: a gravity projectile
-/// that sticks to walls/platforms and kills players on contact).
+/// A live arrow (Arrow.cs + Projectile.cs): a ballistic projectile that
+/// kills players on contact and sticks to whatever it hits. A stuck arrow's
+/// collider is destroyed in the .NET sim, so it vanishes from the observation;
+/// here the slot is simply freed.
 #[derive(Clone, Copy, Default)]
 pub struct Arrow {
     pub active: bool,
-    pub landed: bool,
-    pub destroyed: bool,
+    /// Owning player id (1-based).
     pub owner: u32,
     pub entity: usize,
     pub position: Vec2,
     pub velocity: Vec2,
-    pub ticks_alive: u32,
+    pub time_passed: Fix,
+    /// Projectile.DelayedEnableHurtOwner: 5 units of travel time.
+    pub hurt_owner_after: Fix,
+    pub can_hurt_owner: bool,
 }
 
 /// A platform spawned by the Platform ability (ResizablePlatform prefab).
@@ -214,11 +219,14 @@ pub struct SpawnedPlatform {
 /// Per-player bow ability state (BowTransform.cs).
 #[derive(Clone, Copy, Default)]
 pub struct BowState {
+    /// Ticks since the ability was entered ("transform" starts at 0).
     pub ticks: u32,
-    pub loading_frame: u32,
+    pub aim: Vec2,
+    pub released: bool,
     pub has_fired: bool,
+    /// Remaining ticks of the fireGround/fireAir animation before exit.
     pub fire_ticks_left: u32,
-    pub was_grounded: bool,
+    pub loading_frame: u32,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -671,6 +679,15 @@ impl RolloutWorld {
                 if !self.playable(pa) || !self.playable(pb) {
                     continue;
                 }
+                // A body box disabled by a non-dash ability (bow, platform)
+                // collides with nothing, so the pair never shoves.
+                let a_boxless = self.players[pa].active != ActiveAbility::None
+                    && !self.players[pa].base.dash.active;
+                let b_boxless = self.players[pb].active != ActiveAbility::None
+                    && !self.players[pb].base.dash.active;
+                if a_boxless || b_boxless {
+                    continue;
+                }
                 let a_pos = self.players[pa].base.position;
                 let b_pos = self.players[pb].base.position;
                 let a_dash = self.players[pa].base.dash.active;
@@ -745,13 +762,36 @@ impl RolloutWorld {
                         self.dash_move(index, masked);
                         return;
                     }
-                    // Bow and Platform activate in later milestones; other
-                    // catalog abilities are never simulated here.
+                    ABILITY_BOW => {
+                        self.players[index].timers[s] = Fix::ZERO;
+                        self.players[index].active = ActiveAbility::Bow;
+                        self.players[index].active_slot = s;
+                        self.players[index].telemetry.ability_activations[s] += 1;
+                        let slot = &mut self.players[index];
+                        // BowTransform.OnEnterAbility: aim starts at the up
+                        // vector; airborne entry slows to a tenth (slow-mo).
+                        slot.bow = BowState {
+                            aim: slot.base.up,
+                            ..BowState::default()
+                        };
+                        if !slot.base.grounded {
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                            slot.base.external_velocity *= Fix::from_f32(0.1);
+                        }
+                        self.bow_tick(index, action, data);
+                        return;
+                    }
+                    // Platform activates in a later milestone; other catalog
+                    // abilities are never simulated here.
                     _ => {}
                 }
             }
         }
 
+        if self.players[index].active == ActiveAbility::Bow {
+            self.bow_tick(index, action, data);
+            return;
+        }
         if self.players[index].base.dash.active {
             let masked = Action {
                 angle: action.angle,
@@ -808,8 +848,277 @@ impl RolloutWorld {
         }
     }
 
-    fn arrows_tick(&mut self, _data: &data::RolloutData) {
-        // Milestone 2 (bow).
+    /// BowTransform.OldUpdate + UpdateSim for one tick: aim tracking, the
+    /// loading-frame charge schedule, firing on release, slow-mo aiming
+    /// physics, post-fire recoil flight, and the exit conditions.
+    fn bow_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let bow = &data.bow;
+        let slot_button = 2u8 << self.players[index].active_slot;
+        let button_down = action.buttons & slot_button != 0;
+        let dir = action.direction();
+        let fire_now = {
+            let b = &mut self.players[index].bow;
+            b.ticks += 1;
+            // OldUpdate: the aim follows the stick until release (deadzone:
+            // the direction table only emits unit vectors or zero).
+            if dir != Vec2::ZERO && !b.released {
+                b.aim = dir.normalized();
+            }
+            if !button_down && !b.has_fired {
+                b.released = true;
+            }
+            // Loading frames advance on the "load" animation's sprite
+            // boundaries after "transform"; FinishedLoading caps at 4.
+            if !b.has_fired && b.ticks >= bow.transform_ticks {
+                let since = b.ticks - bow.transform_ticks;
+                let frames = bow.load_frame_ticks.iter().filter(|t| since >= **t).count() as u32;
+                b.loading_frame = frames.min(4);
+            }
+            // "…|| animator.getNumberOfPassedSprites() > 2" during transform:
+            // 3 of its 6 sprites have passed at the halfway point.
+            let early = b.ticks * 2 >= bow.transform_ticks;
+            b.released && !b.has_fired && (b.loading_frame > 0 || early)
+        };
+        if fire_now {
+            self.fire_bow(index, data);
+        }
+
+        // Movement (UpdateSim).
+        let mut exit = false;
+        let this = &mut *self;
+        let slot = &mut this.players[index];
+        let platforms: &[Platform] = &this.platforms;
+        if slot.base.grounded {
+            if slot.bow.has_fired {
+                // Landed after firing: exit with the landing (justlanded).
+                exit = true;
+            } else {
+                // Grounded aiming: physics.Move(zero) = friction, stay attached.
+                slot.base.step(Action::default(), platforms);
+            }
+        } else if !slot.bow.has_fired {
+            // Airborne aiming: near-frozen fall (gravity_modifier 0.03),
+            // speed clamped to maxSlowMoSpeed.
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                bow.constants.gravity_accel,
+                Fix::from_f32(0.03),
+                bow.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid bow gravity constants");
+            let speed = slot.base.velocity.length();
+            if speed > bow.max_slow_mo_speed {
+                slot.base.velocity *= bow.max_slow_mo_speed / speed;
+            }
+            slot.base.collision_rays(platforms);
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        } else {
+            // Post-fire flight: full gravity, blended air control, exit on
+            // landing.
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                bow.constants.gravity_accel,
+                Fix::ONE,
+                bow.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid bow gravity constants");
+            let before = slot.base.velocity;
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                dir.x,
+                bow.constants.air_accel,
+                bow.constants.max_speed,
+            )
+            .expect("valid bow air constants");
+            slot.base.velocity = before + (slot.base.velocity - before) * bow.aireal_control_blend;
+            let speed = slot.base.velocity.length();
+            if speed > bow.constants.max_speed {
+                slot.base.velocity *= bow.constants.max_speed / speed;
+            }
+            slot.base.collision_rays(platforms);
+            if slot.base.grounded {
+                exit = true;
+            } else {
+                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+            }
+        }
+        if slot.bow.has_fired && slot.bow.fire_ticks_left > 0 {
+            slot.bow.fire_ticks_left -= 1;
+            if slot.bow.fire_ticks_left == 0 {
+                exit = true;
+            }
+        }
+        if slot.base.outside_bounds() {
+            slot.base.alive = false; // deaths_tick attributes it
+        }
+        if exit {
+            slot.active = ActiveAbility::None;
+        }
+    }
+
+    /// BowTransform.Fire + Shoot: spawn the arrow (pre-knockback velocity),
+    /// then recoil the shooter.
+    fn fire_bow(&mut self, index: usize, data: &data::RolloutData) {
+        let bow = &data.bow;
+        let (position, aim, loading_frame, velocity_before, grounded, owner) = {
+            let slot = &self.players[index];
+            (
+                slot.base.position,
+                slot.bow.aim.normalized(),
+                slot.bow.loading_frame,
+                slot.base.velocity,
+                slot.base.grounded,
+                slot.base.id,
+            )
+        };
+        let speed = Fix::from_int(i64::from(loading_frame) + 1) * bow.arrow_speed;
+        let start_velocity = aim * speed + velocity_before;
+        let magnitude = start_velocity.length();
+        let hurt_owner_after = if magnitude > Fix::ZERO {
+            bow.time_before_arrows_hurt_owner / magnitude
+        } else {
+            Fix::ZERO
+        };
+        self.spawn_arrow(owner, position, start_velocity, hurt_owner_after);
+        self.players[index].telemetry.arrows_fired += 1;
+        let this = &mut *self;
+        let slot = &mut this.players[index];
+        let platforms: &[Platform] = &this.platforms;
+        slot.bow.has_fired = true;
+        if grounded {
+            // selfImposedVelocity = -groundNormal * KnockBack, then UnGround:
+            // the shooter slams onto the platform and exits on landing.
+            slot.base.velocity = -(slot.base.up * bow.knockback);
+            slot.base.force_unground(platforms);
+            slot.bow.fire_ticks_left = bow.fire_ground_ticks;
+        } else {
+            slot.base.velocity = -(aim * bow.knockback);
+            slot.bow.fire_ticks_left = bow.fire_air_ticks;
+        }
+    }
+
+    fn spawn_arrow(&mut self, owner: u32, position: Vec2, velocity: Vec2, hurt_owner_after: Fix) {
+        let radius = data::get().arrow.radius;
+        let free = self.arrows.iter().position(|a| !a.active);
+        let entity = match free {
+            Some(i) => self.arrows[i].entity,
+            None => {
+                self.entities.push(CEntity::default());
+                self.entities.len() - 1
+            }
+        };
+        let id = self.next_id();
+        self.entities[entity] = CEntity {
+            id,
+            kind: 0,
+            layer: LAYER_PROJECTILE,
+            owner,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 200_000_000 + id,
+            radius: radius.0,
+            inverse_mass: Fix::from_f64(0.2).0,
+            ..CEntity::default()
+        };
+        let arrow = Arrow {
+            active: true,
+            owner,
+            entity,
+            position,
+            velocity,
+            time_passed: Fix::ZERO,
+            hurt_owner_after,
+            can_hurt_owner: false,
+        };
+        match free {
+            Some(i) => self.arrows[i] = arrow,
+            None => self.arrows.push(arrow),
+        }
+    }
+
+    fn destroy_arrow(&mut self, index: usize) {
+        let arrow = &mut self.arrows[index];
+        arrow.active = false;
+        let entity = &mut self.entities[arrow.entity];
+        entity.flags = E_ENABLED | E_DESTROYED;
+        entity.vx = 0;
+        entity.vy = 0;
+    }
+
+    /// Ballistic flight, swept collision against players and platforms, the
+    /// hurt-owner delay, and the scene-bounds despawn (never upward).
+    fn arrows_tick(&mut self, data: &data::RolloutData) {
+        let gravity = Fix::from_f64(-9.82) * data.arrow.gravity_scale;
+        let radius = data.arrow.radius;
+        for i in 0..self.arrows.len() {
+            if !self.arrows[i].active {
+                continue;
+            }
+            {
+                let a = &mut self.arrows[i];
+                a.time_passed += DT;
+                if !a.can_hurt_owner
+                    && a.hurt_owner_after > Fix::ZERO
+                    && a.time_passed > a.hurt_owner_after
+                {
+                    a.can_hurt_owner = true;
+                }
+                a.velocity.y += gravity * DT;
+            }
+            let a = self.arrows[i];
+            let speed = a.velocity.length();
+            if speed == Fix::ZERO {
+                continue;
+            }
+            let direction = a.velocity * (Fix::ONE / speed);
+            let reach = speed * DT + radius;
+            let wall = crate::world::closest(&self.platforms, a.position, direction, reach, None)
+                .map(|(_, near, _)| near);
+            let mut victim: Option<(usize, Fix)> = None;
+            for (j, p) in self.players.iter().enumerate() {
+                if !p.base.alive || p.respawn_ticks > 0 {
+                    continue;
+                }
+                if p.base.id == a.owner && !a.can_hurt_owner {
+                    continue;
+                }
+                if let Some(hit) = p.base.collider.raycast(a.position, direction)
+                    && hit.near <= reach
+                    && hit.far >= Fix::ZERO
+                    && victim.is_none_or(|(_, d)| hit.near < d)
+                {
+                    victim = Some((j, hit.near.max(Fix::ZERO)));
+                }
+            }
+            match (victim, wall) {
+                (Some((j, d)), w) if w.is_none_or(|wd| d <= wd) => {
+                    let victim_id = self.players[j].base.id;
+                    let cause = if a.owner == victim_id {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    self.kill(j, a.owner, cause);
+                    if a.owner != victim_id && a.owner >= 1 {
+                        self.players[a.owner as usize - 1].telemetry.arrow_hits += 1;
+                    }
+                    self.destroy_arrow(i);
+                }
+                (_, Some(_)) => self.destroy_arrow(i),
+                _ => {
+                    let a = &mut self.arrows[i];
+                    a.position += a.velocity * DT;
+                    let out = a.position.y < Fix::from_f32(-11.3)
+                        || a.position.x.abs() > Fix::from_f64(131.25);
+                    if out {
+                        self.destroy_arrow(i);
+                    }
+                }
+            }
+        }
     }
 
     /// Map platform motion: sudden death sinking (AnimateVelocity), and the
@@ -1017,6 +1326,8 @@ impl RolloutWorld {
             let slot = &self.players[index];
             let alive = slot.base.alive;
             let dashing = slot.base.dash.active;
+            let bowing = slot.active == ActiveAbility::Bow;
+            let bow_aim = slot.bow.aim;
             let position = slot.base.position;
             let rotation = slot.base.rotation;
             let velocity = slot.base.velocity + slot.base.external_velocity;
@@ -1026,7 +1337,7 @@ impl RolloutWorld {
             let body = &mut self.entities[body_e];
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
-            } else if dashing {
+            } else if dashing || bowing {
                 body.flags = E_ENABLED | E_TRIGGER;
             } else {
                 body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
@@ -1068,8 +1379,51 @@ impl RolloutWorld {
                 dash_box.vx = 0;
                 dash_box.vy = 0;
             }
+            // Bow hurtbox: active while aiming/firing, up vector = aim.
+            let bow_e = self.players[index].bow_entity;
+            let bow_box = &mut self.entities[bow_e];
+            if alive && bowing {
+                let extents = data.bow.hurtbox_extents;
+                let up_dir = if bow_aim == Vec2::ZERO {
+                    Vec2::UP
+                } else {
+                    bow_aim
+                };
+                let right_dir = up_dir.perp_cw();
+                bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                bow_box.x = position.x.0;
+                bow_box.y = position.y.0;
+                bow_box.vx = velocity.x.0;
+                bow_box.vy = velocity.y.0;
+                bow_box.right_x = (right_dir * extents.x).x.0;
+                bow_box.right_y = (right_dir * extents.x).y.0;
+                bow_box.up_x = (up_dir * extents.y).x.0;
+                bow_box.up_y = (up_dir * extents.y).y.0;
+                bow_box.rotation = right_dir.normalized_angle().0;
+            } else {
+                bow_box.flags = E_ENABLED | E_TRIGGER;
+                bow_box.x = 0;
+                bow_box.y = 0;
+                bow_box.vx = 0;
+                bow_box.vy = 0;
+            }
             let circle = &mut self.entities[circle_e];
             circle.flags = E_ENABLED | E_TRIGGER;
+        }
+        for arrow in &self.arrows {
+            if !arrow.active {
+                continue;
+            }
+            let e = &mut self.entities[arrow.entity];
+            e.x = arrow.position.x.0;
+            e.y = arrow.position.y.0;
+            e.vx = arrow.velocity.x.0;
+            e.vy = arrow.velocity.y.0;
+            let speed = arrow.velocity.length();
+            if speed > Fix::ZERO {
+                let up = arrow.velocity * (Fix::ONE / speed);
+                e.rotation = up.perp_cw().normalized_angle().0;
+            }
         }
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];

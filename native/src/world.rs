@@ -234,7 +234,7 @@ impl Player {
             .expect("valid attachment");
         self.apply_ground_state(motion);
     }
-    fn collision_rays(&mut self, platforms: &[Platform]) {
+    pub(crate) fn collision_rays(&mut self, platforms: &[Platform]) {
         let velocity = self.velocity + self.external_velocity;
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
@@ -393,6 +393,15 @@ impl Player {
             up: (Vec2::UP / inv.y).complex_mul(basis),
             inverse_extents: inv,
         };
+    }
+    /// Detach from the ground without the jump impulse (PlayerPhysics.UnGround).
+    pub(crate) fn force_unground(&mut self, platforms: &[Platform]) {
+        if let Some(platform) = self.platform(platforms) {
+            let surface = platform.surface.clone();
+            let mut motion = self.ground_state();
+            motion.unground(Some(&surface), false);
+            self.apply_ground_state(motion);
+        }
     }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
         if self.alive && self.grounded && !self.dash.active {
