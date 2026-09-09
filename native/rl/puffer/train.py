@@ -218,7 +218,18 @@ def main():
     output = a.output.resolve()
     frozen = opponents(a.evaluation_opponents)
     baseline_identity = checkpoint_identity(a.evaluation_baseline) if a.evaluation_baseline else None
-    game = reference.resolve_game(a.game)
+    # BOPL_RL_BACKEND=rust rolls out on the Rust sim (native/src/rollout,
+    # built by `cargo build --release`); anything else keeps the .NET/Unity
+    # game resolution. The Rust backend needs no spare world (resets are
+    # microseconds) and hosts every world in one runtime.
+    if os.environ.get('BOPL_RL_BACKEND', '').lower() == 'rust':
+        game = (ROOT/'native/target/release/libbopl_sim.so').resolve()
+        if not game.exists():
+            raise SystemExit(f'BOPL_RL_BACKEND=rust: {game} is missing; run cargo build --release in native/')
+        os.environ.setdefault('BOPL_RL_INPROC_SPARE', '0')
+        os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', str(1 << 20))
+    else:
+        game = reference.resolve_game(a.game)
     # The NativeAOT sim (sim/RL.md) is one self-contained binary: only the
     # player_binary entry exists for it, the Unity-specific files do not.
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()

@@ -170,7 +170,7 @@ impl World {
     }
 }
 
-fn closest(
+pub(crate) fn closest(
     platforms: &[Platform],
     origin: Vec2,
     direction: Vec2,
@@ -322,7 +322,7 @@ impl Player {
             self.collision_rays(platforms);
         }
     }
-    fn step(&mut self, action: Action, platforms: &[Platform]) {
+    pub(crate) fn step(&mut self, action: Action, platforms: &[Platform]) {
         let jump = action.buttons & 1 != 0;
         if self.dash.active {
             self.previous_jump = jump;
@@ -361,13 +361,13 @@ impl Player {
         self.position += (self.velocity + self.external_velocity) * DT;
         self.external_velocity *= Fix::from_f64(0.95);
     }
-    fn outside_bounds(&self) -> bool {
+    pub(crate) fn outside_bounds(&self) -> bool {
         self.position.y < Fix::from_f32(-11.3)
             || self.position.y > Fix::from_f64(72.5)
             || self.position.x < Fix::from_f64(-131.25)
             || self.position.x > Fix::from_f64(131.25)
     }
-    fn push_from(&mut self, other: Vec2, lower_id: bool) {
+    pub(crate) fn push_from(&mut self, other: Vec2, lower_id: bool) {
         let Some(direction) = crate::player_collision::overlap_push_direction(
             self.position,
             self.up,
@@ -379,7 +379,7 @@ impl Player {
         };
         self.external_velocity += direction * Fix(21_474_836) * Fix::from_int(35);
     }
-    fn sync_collider(&mut self) {
+    pub(crate) fn sync_collider(&mut self) {
         let extents = if self.dash.active {
             Vec2::new(Fix(5_626_406_912), Fix(4_359_391_744))
         } else {
@@ -394,7 +394,7 @@ impl Player {
             inverse_extents: inv,
         };
     }
-    fn late_step(&mut self, platforms: &[Platform]) {
+    pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
         if self.alive && self.grounded && !self.dash.active {
             let platform = self.platform(platforms).unwrap();
             self.position = platform.surface.position(self.local, self.radius);

@@ -71,3 +71,4 @@ pub mod actor_spawn;
 pub mod revive_particle;
 
 pub mod revive_effect;
+pub mod rollout;
