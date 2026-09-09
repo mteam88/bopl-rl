@@ -50,8 +50,25 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'learner_passes', 'learning_rate', 'anneal_lr', 'entropy', 'entropy_floor',
                  'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
-                 'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale')
+                 'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows')
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
+# Heads the environment masks while a latch is in force (bopl_write_mask):
+# buttons and hold. Aim is live every decision.
+LATCHED_HEADS = (1, 2)
+FREE_FRACTION_FLOOR = 1 / layout.HOLD_LENGTHS[-1]
+
+
+def free_fraction(env_log):
+    """Fraction of the rollout's decisions that were free (not latched), from the env's hold stats.
+
+    None until completed episodes report; the per-episode means share one denominator, so
+    their ratio is the fraction. The floor is what the longest latch alone would give.
+    """
+    free = sum(env_log.get(f'hold_{n}', 0.0) for n in layout.HOLD_LENGTHS)
+    latched = env_log.get('latched_decisions', 0.0)
+    if free + latched <= 0:
+        return None
+    return max(FREE_FRACTION_FLOOR, min(1.0, free / (free + latched)))
 
 
 def recorded_hypers(config):
@@ -66,7 +83,8 @@ def recorded_hypers(config):
                 reward_timeout=config['reward']['timeout'], pool_size=pool['max_size'], swap_winrate=pool['swap_winrate'],
                 min_games=pool['min_games'], snapshot_interval=pool['snapshot_interval'],
                 opponent_timeout=pool['opponent_timeout'], elo_init=pool['elo_init'], elo_k=pool['elo_k'],
-                pool_seed=pool['seed'], head_scale=config['entropy_head_scale'])
+                pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
+                entropy_free_rows=config.get('entropy_free_rows', 0))
 
 
 def offset_counters(counts, base):
@@ -124,6 +142,9 @@ def arguments():
                    help='Learner decisions per halving of the entropy coefficient, until its floor')
     p.add_argument('--entropy-head-scale', default='1,1,1',
                    help='Per-head multipliers on the entropy bonus (aim,buttons,hold); logged entropies stay unscaled')
+    p.add_argument('--entropy-free-rows', type=int, choices=(0, 1), default=1,
+                   help='1 normalises the button/hold entropy bonus over free (unlatched) rows: the head scale is '
+                        'divided by the previous rollout\'s free-decision fraction (latched rows carry no entropy)')
     p.add_argument('--episode-ticks', type=int, default=7200)
     p.add_argument('--reward-kill', type=float, default=0.,
                    help='Per-kill bonus, also paid as a per-death penalty (game credit incl. self-kills)')
@@ -282,6 +303,7 @@ def main():
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
                   entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=a.head_scale,
+                  entropy_free_rows=a.entropy_free_rows,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
                   layout=dict(version=2, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
                               hold_lengths=layout.HOLD_LENGTHS),
@@ -392,6 +414,7 @@ def main():
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         previous, previous_elapsed = counts, elapsed_before
+        free, applied_scale = None, list(a.head_scale)
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
             while counts['learner_steps'] < a.steps and not stop:
@@ -405,9 +428,19 @@ def main():
                 # frozen/padded rows never advance the schedule.
                 trainer.hypers.ent_coef = entropy_coefficient(
                     counts['learner_steps'], a.entropy, a.entropy_floor, a.entropy_half_life)
+                # Latched rows contribute zero entropy and zero entropy gradient
+                # to the button and hold heads, and the loss is a mean over all
+                # rows, so with most decisions latched the bonus on those heads
+                # is diluted by the free fraction (runs 005/006 collapsed into a
+                # 16-decision latch this way). Dividing the head scale by the
+                # previous rollout's free fraction makes it a mean over free rows.
+                if a.entropy_free_rows and free is not None:
+                    applied_scale = [s / free if h in LATCHED_HEADS else s for h, s in enumerate(a.head_scale)]
+                    _C.set_ent_head_scale(trainer, [min(100.0, s) for s in applied_scale])
                 _C.train(trainer)
                 trained = time.monotonic()
                 native = _C.log(trainer)
+                free = free_fraction(native['env']) if a.entropy_free_rows else None
                 counts = offset_counters(vector.snapshot(), base_counts)
                 if (counts['learner_steps']-previous['learner_steps'] != learner_batch
                         or counts['game_steps']-previous['game_steps'] != a.workers*2*a.horizon):
@@ -427,6 +460,8 @@ def main():
                                 pool_steps=sorted(bank['opponent_step'] for bank in after_pool['banks']),
                                 rollout_seconds=rolled-before, train_seconds=trained-rolled)
                 record['pool'] = after_pool
+                record['free_fraction'] = free
+                record['entropy_head_scale_applied'] = applied_scale
                 # The native trainer's own per-update timers (seconds, averaged
                 # over buffers): eval_gpu = inference graph + action copy-back,
                 # eval_env = OpenMP game stepping, rollout = whole barrier.

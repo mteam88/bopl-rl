@@ -274,6 +274,19 @@ The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
   buttons stay free on that decision. Same header drives the evaluator, so
   `evaluate.py` applies it too (its free-decision test now looks at the
   hold-head mask, which is never partially masked).
+- **Entropy over free rows (2026-09-09, after run 006).** With the arrow
+  release in, run 006 collapsed the same way into jump+platform held with
+  the 16-decision latch by 15M. The trap is the latch itself: latched rows
+  carry zero entropy and zero entropy gradient on the button and hold heads,
+  and the loss is a mean over all rows, so once the policy prefers hold_16
+  the bonus on those heads is ~1/16 of nominal and nothing pushes back.
+  `train.py --entropy-free-rows 1` (default) divides the button/hold head
+  scales by the previous rollout's free-decision fraction
+  (`hold_*` / (`hold_*` + `latched_decisions`), floor 1/16) through the new
+  `_C.set_ent_head_scale`, making the bonus a mean over free rows, i.e. the
+  same per-decision pressure the v1 interface had. `metrics.jsonl` records
+  `free_fraction` and `entropy_head_scale_applied` (~6.5 at the start, where
+  ~15% of decisions are free).
 - Checkpoints are `bopl-set-mingru-v2`; 001–003 checkpoints do not load.
   Not launched: `native/artifacts/rl/long-run-500m/launch-004-s73-hold-head.sh`.
 - Merged with the in-process many-worlds sim on 2026-09-09 (branch
