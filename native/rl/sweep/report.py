@@ -103,17 +103,21 @@ def _write_launch_script(sweep_dir, spec, trial, pufferlib_dir):
     """A launch-*.sh in the long-run-1b convention for the best configuration."""
     point = final_point(trial)
     arguments = spec.trial_arguments(trial['hypers'], '__OUT__', seed=trial.get('seed'))
-    rendered = []
-    skip = False
-    for argument in arguments:
-        if skip:
-            skip = False
+    lines = []
+    index = 0
+    while index < len(arguments):
+        argument = str(arguments[index])
+        if argument == '--output':  # the script owns --output via $OUT
+            index += 2
             continue
-        if argument == '--output':
-            skip = True
-            continue
-        rendered.append(shlex.quote(str(argument)))
-    flags = ' \\\n  '.join(rendered)
+        if (argument.startswith('--') and index + 1 < len(arguments)
+                and not str(arguments[index + 1]).startswith('--')):
+            lines.append(f'{argument} {shlex.quote(str(arguments[index + 1]))}')
+            index += 2
+        else:
+            lines.append(shlex.quote(argument))
+            index += 1
+    flags = ' \\\n  '.join(lines)
     pythonpath = ''
     if pufferlib_dir:
         pythonpath = f'export PYTHONPATH="$PWD/{Path(pufferlib_dir)}"\n'

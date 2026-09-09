@@ -166,6 +166,83 @@ class NextTrial(unittest.TestCase):
             self.assertIn('--no-eval', command)
 
 
+class FakeProcess:
+    def poll(self):
+        return None
+
+
+class EarlyStop(unittest.TestCase):
+    def _polling_driver(self, tmp, curve_points, should_stop):
+        import scoring
+        d = make_driver(tmp)
+        d.sweeper.should_stop = should_stop
+        d._run_status = lambda trial: dict(pid=1, learner_steps=1_900_000)
+        d.stopped = []
+        d.stop_trial = lambda trial, reason: (d.stopped.append(reason),
+                                              trial.__setitem__('early_stop', reason))
+        self._original_curve = scoring.curve
+        scoring.curve = lambda run_dir, cfg: curve_points
+        self.addCleanup(lambda: setattr(scoring, 'curve', self._original_curve))
+        return d
+
+    def test_wall_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._polling_driver(tmp, [], lambda s, c: False)
+            d.spec.max_seconds = 10
+            trial = trial_record(0, status='running', run_dir=tmp, launched_at=0)
+            self.assertFalse(d.poll(trial, FakeProcess()))
+            self.assertEqual(d.stopped, ['wall-cap'])
+
+    def test_quantile_stop_fires_past_floor(self):
+        import scoring
+        point = scoring.Point(1_900_000, 0.1, 100.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._polling_driver(tmp, [point], lambda score, cost: score < 0.2)
+            trial = trial_record(0, status='running', run_dir=tmp,
+                                 launched_at=__import__('time').time())
+            self.assertFalse(d.poll(trial, FakeProcess()))
+            self.assertEqual(d.stopped, ['quantile'])
+            self.assertEqual(trial['early_stop'], 'quantile')
+
+    def test_no_stop_below_progress_floor(self):
+        import scoring
+        point = scoring.Point(100_000, 0.0, 10.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self._polling_driver(tmp, [point], lambda score, cost: True)
+            d._run_status = lambda trial: dict(pid=1, learner_steps=100_000)  # < 20% of 2M
+            trial = trial_record(0, status='running', run_dir=tmp,
+                                 launched_at=__import__('time').time())
+            self.assertFalse(d.poll(trial, FakeProcess()))
+            self.assertEqual(d.stopped, [])
+
+
+class Lock(unittest.TestCase):
+    def test_live_driver_blocks_second(self):
+        state = dict(schema=1, name='unit', created=0, config={}, trials=[],
+                     driver=dict(pid=1, started=0))  # init: alive, not ours
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_driver(tmp, state)
+            with self.assertRaises(SystemExit):
+                d._take_lock()
+
+    def test_same_process_relocks(self):
+        import os
+        state = dict(schema=1, name='unit', created=0, config={}, trials=[],
+                     driver=dict(pid=os.getpid(), started=0))
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_driver(tmp, state)
+            d._take_lock()  # our own pid: allowed
+
+    def test_dead_owner_lock_is_taken(self):
+        state = dict(schema=1, name='unit', created=0, config={}, trials=[],
+                     driver=dict(pid=2 ** 22 - 1, started=0))  # long-dead pid
+        with tempfile.TemporaryDirectory() as tmp:
+            d = make_driver(tmp, state)
+            d._take_lock()
+            import os
+            self.assertEqual(d.state['driver']['pid'], os.getpid())
+
+
 class Reports(unittest.TestCase):
     def test_pareto_and_best(self):
         cheap = trial_record(0, observations=[dict(steps=1e6, score=0.5, cost=1e6, elapsed=1)])
