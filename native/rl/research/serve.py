@@ -210,6 +210,19 @@ def main():
             if not file.is_file(): return self.send_error(404)
             size=file.stat().st_size; start=0; end=size-1
             requested=self.headers.get('Range')
+            # Replay JSON grows with episode length (a full 7200-tick self-play match is ~12 MB);
+            # compress whole-file JSON responses for clients that accept it, as the API does.
+            if not requested and file.suffix in ('.json','.jsonl') and size>16384 and 'gzip' in self.headers.get('Accept-Encoding',''):
+                payload=gzip.compress(file.read_bytes(),5)
+                self.send_response(200)
+                self.send_header('Content-Type','application/json')
+                self.send_header('Content-Encoding','gzip')
+                self.send_header('Content-Length',str(len(payload)))
+                self.end_headers()
+                if self.command!='HEAD':
+                    try: self.wfile.write(payload)
+                    except (BrokenPipeError,ConnectionResetError): pass
+                return
             if requested:
                 match=re.fullmatch(r'bytes=(\d*)-(\d*)',requested)
                 if not match or not any(match.groups()): return self.send_error(416)
