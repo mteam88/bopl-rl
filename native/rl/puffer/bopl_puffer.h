@@ -299,6 +299,13 @@ static void bopl_write_mask(BoplPuffer *env, int player) {
         memset(mask+BOPL_ACT_AIM, 0, BOPL_ACT_BUTTONS+BOPL_ACT_HOLD);
         mask[BOPL_ACT_AIM+env->held[player]]=1;
         mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS]=1;
+    } else if (env->hold_run[player][BOPL_BUTTON_ARROW]>0) {
+        /* The arrow was down through the decision just applied, so this free
+         * decision must let go of it: a latch with the arrow is a charge that
+         * fires when it expires, never an indefinite hold (run 005 collapsed
+         * to holding the arrow for the whole episode and never firing). The
+         * head still picks the other three buttons and the next hold length. */
+        for (int b=0; b<BOPL_ACT_BUTTONS; b++) if (b&(1<<BOPL_BUTTON_ARROW)) mask[BOPL_ACT_AIM+b]=0;
     }
 }
 static uint32_t bopl_side_random(BoplPuffer *env) {

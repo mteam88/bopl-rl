@@ -128,7 +128,7 @@ def main():
                     events.append(env.telemetry[task['side']].copy())
                     buttons=int(actions[task['side'],1])  # masked to the latched state while a hold is in force
                     for i in range(4): button_counts[i]+=bool(buttons&(1<<i))
-                    if mask[task['side'],layout.ACT_AIM:].all(): hold_counts[int(actions[task['side'],2])]+=1  # free decision
+                    if mask[task['side'],layout.ACT_AIM+layout.ACT_BUTTONS:].all(): hold_counts[int(actions[task['side'],2])]+=1  # free decision (the hold head is unmasked; the button head may be arrow-release masked)
                     else: latched_decisions+=1
                     decisions+=1
                     if task['save']:

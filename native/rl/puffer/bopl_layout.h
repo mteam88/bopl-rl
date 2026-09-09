@@ -34,6 +34,10 @@ enum { BOPL_ACT_AIM=256, BOPL_ACT_BUTTONS=16, BOPL_ACT_HOLD=5, BOPL_NUM_ATNS=3,
        BOPL_HOLD_MAX=16, BOPL_LOGITS=BOPL_ACT_AIM+BOPL_ACT_BUTTONS+BOPL_ACT_HOLD,
        BOPL_DECODER=BOPL_LOGITS+1 /* + value */ };
 static const int BOPL_HOLD_LENGTHS[BOPL_ACT_HOLD]={1, 2, 4, 8, 16};
+/* Button bit positions in the button head's index. The arrow may not be held
+ * across a free decision (bopl_write_mask): pressing it is charging, and the
+ * charge fires when the latch expires. */
+enum { BOPL_BUTTON_JUMP=0, BOPL_BUTTON_DASH=1, BOPL_BUTTON_ARROW=2, BOPL_BUTTON_PLATFORM=3 };
 /* Slime ability_flags bits written by RlObservation.cs: 1 present, 2 ready,
  * 4 over cooldown, 8 active (in use this tick), 0x70 bow charge level 0..4
  * (BowTransform.loadingFrame while active), 0x80 bow already fired. */

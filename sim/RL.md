@@ -262,6 +262,18 @@ The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
   113-decision episode) a healthy near-uniform button head reads ~0.45, not
   2.77. Divide by the free fraction `1 - latched_decisions / decisions` before
   applying run-003-style collapse thresholds.
+- **Arrow release (2026-09-09, after run 005).** Run 005 collapsed by 10M
+  learner decisions to holding the arrow (charging) and platform for whole
+  episodes with the 16-decision latch: arrows fired 2.0 -> 0.1 per episode,
+  kills 0, 53% timeouts, button entropy 0.05 raw. Holding = charging and
+  release = fire, so an indefinite hold was a "do nothing safely" action v1
+  did not have. Now the free decision after any arrow-down decision is
+  masked to the eight arrow-up button states (`bopl_write_mask`): a latch
+  with the arrow is a charge that fires when it expires (1-16 decisions,
+  4-64 ticks), never an indefinite hold. The hold head and the other three
+  buttons stay free on that decision. Same header drives the evaluator, so
+  `evaluate.py` applies it too (its free-decision test now looks at the
+  hold-head mask, which is never partially masked).
 - Checkpoints are `bopl-set-mingru-v2`; 001–003 checkpoints do not load.
   Not launched: `native/artifacts/rl/long-run-500m/launch-004-s73-hold-head.sh`.
 - Merged with the in-process many-worlds sim on 2026-09-09 (branch
