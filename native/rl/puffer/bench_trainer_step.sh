@@ -8,9 +8,10 @@
 # Usage: bench_trainer_step.sh [rounds] [updates]
 #   WAIT_FOR=<systemd user unit>  wait until that unit is inactive first
 #   (default: bopl-long-run-500m-dotnet, the live 003 run).
-# Run it from its own unit so it is not in the peace.service cgroup:
+# Run it from its own unit so it is not in the peace.service cgroup (systemd-run
+# does not inherit cwd: absolute paths):
 #   systemd-run --user --unit bopl-trainer-step-bench -p MemoryMax=14G \
-#     bash native/rl/puffer/bench_trainer_step.sh
+#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/native/rl/puffer/bench_trainer_step.sh
 set -euo pipefail
 ROUNDS=${1:-2}
 UPDATES=${2:-300}
