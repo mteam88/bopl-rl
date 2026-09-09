@@ -60,6 +60,10 @@ def arguments():
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
                    help='Learner decisions per halving of the entropy coefficient, until its floor')
     p.add_argument('--episode-ticks', type=int, default=7200)
+    p.add_argument('--reward-kill', type=float, default=0.,
+                   help='Per-kill bonus, also paid as a per-death penalty (game credit incl. self-kills)')
+    p.add_argument('--reward-timeout', type=float, default=-.5,
+                   help='Terminal reward for both players when the episode hits --episode-ticks (<= 0)')
     p.add_argument('--stocks', type=int, default=0, help='Smash-style extra-life setting; 0 = vanilla Bopl, one life per round')
     p.add_argument('--training-maps', type=maps, default=[0])
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
@@ -166,7 +170,7 @@ def main():
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
-                       max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=0, reward_timeout_milli=-500)
+                       max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000))
     pufferl.validate_config(args)
     target_physical = math.ceil(a.steps * 4 / 3)
     # PufferLib's pool counts native agent steps (padded rows included);
@@ -183,7 +187,7 @@ def main():
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
-                  reward=dict(win=1, loss=-1, timeout=-.5, kill=0, death=0),
+                  reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
                   entropy=a.entropy, entropy_floor=a.entropy_floor,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
