@@ -12,7 +12,7 @@ use crate::{
     random::Random,
     surface::Surface,
     vector::Vec2,
-    world::{Action, DashState, Platform, Player, DT},
+    world::{Action, DT, DashState, Platform, Player},
 };
 
 pub mod abi;
@@ -366,7 +366,7 @@ impl RolloutWorld {
             return Err("Unknown map".into());
         }
         let players = config.players as usize;
-        if players < 1 || players > MAX_PLAYERS {
+        if !(1..=MAX_PLAYERS).contains(&players) {
             return Err("Invalid player count".into());
         }
         let slots = config.slots as usize;
@@ -486,7 +486,8 @@ impl RolloutWorld {
                 inverse_mass: Fix::from_f64(1.0 / 15.0).0,
                 ..CEntity::default()
             });
-            self.platforms.push(make_platform(self.next_platform_id, &p.surface));
+            self.platforms
+                .push(make_platform(self.next_platform_id, &p.surface));
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
@@ -626,7 +627,12 @@ impl RolloutWorld {
         Ok(())
     }
 
-    pub fn step_sampled(&mut self, actions: &[CAction], first: u32, second: u32) -> Result<(), String> {
+    pub fn step_sampled(
+        &mut self,
+        actions: &[CAction],
+        first: u32,
+        second: u32,
+    ) -> Result<(), String> {
         if first + second > 16 {
             return Err("Sampled step phases too long".into());
         }
@@ -708,10 +714,10 @@ impl RolloutWorld {
         }
         if !in_ability {
             for s in 0..3 {
-                self.players[index].timers[s] = self.players[index].timers[s] + DT;
+                self.players[index].timers[s] += DT;
             }
         } else {
-            self.players[index].ability_time = self.players[index].ability_time + DT;
+            self.players[index].ability_time += DT;
         }
 
         // Ability entry (held button, ready, castable, not already in one).
@@ -774,14 +780,9 @@ impl RolloutWorld {
         if caster.dash.active && caster.dash.time == DT {
             let origin = caster.position;
             let direction = caster.dash.input;
-            let wall = crate::world::closest(
-                &self.platforms,
-                origin,
-                direction,
-                Fix::from_int(13),
-                None,
-            )
-            .map(|(_, distance, _)| distance);
+            let wall =
+                crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
+                    .map(|(_, distance, _)| distance);
             let targets: Vec<usize> = self
                 .players
                 .iter()
@@ -827,7 +828,9 @@ impl RolloutWorld {
             let delay = self.sudden_death_delays[*def_index];
             // AnimateVelocity.UpdateSim: home -= down * curve(t - delay)
             //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
-            let steps = (elapsed * def.sudden_death_acceleration).to_int().clamp(0, 5);
+            let steps = (elapsed * def.sudden_death_acceleration)
+                .to_int()
+                .clamp(0, 5);
             let scale = def.sudden_death_speed * Fix::from_int(2 << steps);
             let speed = curve_eval(&def.sudden_death_y_speed, elapsed - delay);
             let drop = speed * scale * DT;
@@ -835,8 +838,8 @@ impl RolloutWorld {
                 continue;
             }
             let platform = &mut self.platforms[i];
-            platform.surface.center.y = platform.surface.center.y - drop;
-            platform.collider.inner.center.y = platform.collider.inner.center.y - drop;
+            platform.surface.center.y -= drop;
+            platform.collider.inner.center.y -= drop;
         }
     }
 
