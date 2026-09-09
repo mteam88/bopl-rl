@@ -34,7 +34,8 @@ fi
 ulimit -c 0
 STEPS=$((UPDATES * 24 * 128))  # learner rows (16 workers * 3/2) * horizon
 run() {
-  local mode=$1 tag=$2 dir="$OUT/w16b2-m$mode-$tag" branches=1 game="$GAME" per_runtime=4096
+  local mode=$1 tag=$2
+  local dir="$OUT/w16b2-m$mode-$tag" branches=1 game="$GAME" per_runtime=4096
   [ "$mode" = 0 ] && branches=0
   [ "$mode" = 2 ] && game="$LIB"
   [ "$mode" = 3 ] && game="$LIB" && per_runtime=1
