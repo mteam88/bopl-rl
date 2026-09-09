@@ -37,10 +37,10 @@ run() { # workers omp-threads wait-policy mode(so|socket) [worlds-per-runtime, d
   fi
   python3 - "$dir" "$tag" "$workers" "$omp" "$wait" "$mode" "$per" >> "$OUT/results.jsonl" <<'PY'
 import json, statistics as st, sys, os
-d, tag, workers, omp, wait, mode, per = sys.argv[1:]
+d, tag, workers, omp, wait, mode, wpr = sys.argv[1:]
 rows = [json.loads(l) for l in open(os.path.join(d, 'metrics.jsonl'))][20:]
 per = {k: st.median(r['native_perf'][k] for r in rows) * 1000 / 128 for k in ('rollout', 'eval_gpu', 'eval_env')}
-print(json.dumps(dict(tag=tag, workers=int(workers), omp=int(omp), wait=wait, mode=mode, worlds_per_runtime=int(per), updates=len(rows),
+print(json.dumps(dict(tag=tag, workers=int(workers), omp=int(omp), wait=wait, mode=mode, worlds_per_runtime=int(wpr), updates=len(rows),
                       load1=os.getloadavg()[0], learner_sps_median=st.median(r['learner_sps'] for r in rows),
                       sps_median=st.median(r['sps'] for r in rows), ms_per_step=per)))
 PY

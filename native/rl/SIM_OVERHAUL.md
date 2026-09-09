@@ -248,38 +248,191 @@ Trainer-side changes this needs (all in the overlay / `train.py`):
 Expected at 128 games: `t_step` ~1.6 ms, 256 rows per buffer-step, ~150k
 rows/s (~110k learner). Report the curve against the model in section 0.
 
-## 5. Deprioritised, with the reason
+**Done 2026-09-09 (`native/rl/puffer/bench_scale.sh`, results in
+`native/artifacts/rl/scale/`, idle box, 300 updates each, `--buffers 2`,
+`--banks 4`, medians after update 20). The premise was wrong for this box
+and the curve is flat:**
 
-- **Snapshot-restore resets.** Reset is ~8 ms warm; with an untrained
-  policy games last ~160 decisions, so unhidden resets cost 0.4-0.8 ms per
-  step (section 2 measurement), hidden ones ~0. Not needed while a spare
-  runtime hides them; becomes the fix if section 3 cannot overlap resets
-  with ticking and memory rules out spares (world-level snapshot of the
-  post-warmup state per map and seed schedule).
+| workers | mode | learner/s | rows/s | ms/step env | load |
+|---|---|---|---|---|---|
+| 16 | one runtime (.so) | 23.2k | 31.0k | 0.83 | 9 |
+| 32 | one runtime (.so) | 21.1k | 28.2k | 2.02 | 16 |
+| 64 | one runtime (.so) | 20.7k | 27.6k | 4.14 | 23 |
+| 64 | one runtime, `OMP_NUM_THREADS=16` passive | 21.6k | 28.8k | 3.94 | 23 |
+| 128 | one runtime (.so) | 16.1k | 21.4k | 10.85 | 41 |
+| 128 | one runtime, `OMP_NUM_THREADS=16` passive | 16.8k | 22.4k | 10.54 | 35 |
+| 32 | socket Host, one process per world | **30.4k** | **40.5k** | 1.34 | - |
+| 16 | socket Host (section 3 A/B, m1) | 34.8k | - | 0.50 | - |
+
+WORLDS_PER_RUNTIME_TABLE
+
+Reading:
+
+- `t_env` grows linearly with games from 16 up: 0.83 -> 2.02 -> 4.14 ->
+  10.9 ms. The sim was already `games * compute / cores`-bound at 16 games.
+  The box is a Ryzen 5 7600X3D: **6 cores / 12 threads**, not the 12 cores
+  section 0 assumed, and a decision under real play costs far more CPU than
+  the 21-78 us of the quiet/scripted measurements (below). Adding games adds
+  nothing; oversubscribing OMP (128 threads on 12) costs 25%.
+- Separate runtimes beat one runtime by a widening margin: at 16 games the
+  socket Host is +50% over one runtime (34.8k vs 23.2k), one runtime per
+  world +30% (section 3 A/B); at 32 games the socket Host is +44%. Same game
+  code, same ticks: the difference is one workstation GC heap under 32-64
+  allocating threads. Every gen0 collection suspends every world
+  (`ThreadStore::SuspendAllThreads` 2.3% self, `WKS::gc_heap` 12.5%
+  inclusive in the 16-game profile below), and collections come as often as
+  the *sum* of the worlds' allocation rates demands, so the stall cost grows
+  with worlds. Server GC (per-core heaps) was the textbook answer and cost 6x
+  RSS for no gain in section 3; the remaining knob is
+  `BOPL_RL_WORLDS_PER_RUNTIME` (table above), which trades RSS for heaps.
+- `train.py` learned `BOPL_OMP_THREADS` (override for `OMP_NUM_THREADS`) for
+  the oversubscription rows; nothing else in this section's trainer-side list
+  was needed, the trainer ran 128 games / 192 learner rows per buffer
+  unchanged (peak RSS 13.7 GB at 128 games, 256 worlds).
+
+So section 4 as written (more games) is closed for this hardware: throughput
+on this box is set by **CPU per decision and per reset**, and the profile
+says where it goes. On a many-core box the same sweep should be rerun; the
+memory side is solved (~40 MB per extra world in one runtime).
+
+### 4.1 Where a sim CPU-second goes (perf, 16 games, one runtime, steady state)
+
+`perf record -g` on the m2 trainer for 10 s during rollouts, user space only;
+86.7% of samples are in `BoplSimNative.so`, 7.2% libcuda, 2.4% libc, 0.8%
+libgomp. Inside the .so, inclusive:
+
+```
+c_step (the 4 ticks + observe of a decision)          45.5%
+  Updater.TickSimulation from step                     ~39.5%
+  NativeApi.Observe / RlObservation.Write               5.4%
+inproc_reset_worker (background reset thread)         37.6%
+  ExportDatabase.LoadSceneByBuildIndex                 20.3%   scene rebuilt from JSON every episode
+    PropertyApplier.Apply (reflection SetValue,
+      string Tokenize/Split per property)              17.1%
+    MonoBehaviour.CallMessage via DynamicInvoke         2.5%
+  240 warmup ticks                                     ~16%
+GC (WKS::gc_heap::gc1 inclusive, both threads)         12.5%
+static_omp_threadmanager (fork/join, barriers)          6.4%
+```
+
+Self time, grouped (top 120 symbols = 76% of the .so):
+
+```
+physics + fixed-point math   22%   Fix.ClampSinValue 6.2 (top symbol), DetPhysics.Simulate 2.8,
+                                   Fix.op_Multiply 2.5, RaycastToClosestRoundedRect 1.3, SimulateRope 0.9
+shim / runtime glue          16%   Object.CompareBaseObjects 4.8 (every `== null`), TickSimulationInner 3.4,
+                                   GameObject.activeInHierarchy 1.3, TypeCast.IsInstanceOfAny 1.1,
+                                   MonoUpdatable.IsEnabled 0.9, Dictionary lookups, Monitor.Enter/Exit 1.3
+GC                           14%
+misc runtime                 12%   memmove/memset 2.0, __tls_get_addr 0.9, interface dispatch 0.7
+gameplay logic                7%
+observation encode            3%   MemoryStream.Write 1.6, RlObservation.Write 0.8
+presentation leftovers        5%   DetPhysics.renderBeams 2.9 incl, UpdateRopeMesh_parallell 1.2,
+                                   RopeMesh.UpdateMesh 0.6, SyncAllPhysicsObjectsToFixTransformPosition 5.6 incl
+```
+
+Per episode in this regime (untrained policy, `matches` counter): 83
+decisions = 332 played ticks, preceded by a scene rebuild and 240 warmup
+ticks. Resets are 38% of sim CPU because the episode is short; they shrink
+as policies improve, but the first hours of every run are in this regime.
+
+## 5. Stage 5: cheaper decision (game + shim optimisation, 3-5 days)
+
+The next step. Ordered by measured share; every item is gated on bit-exact
+checksums (`backend_check` phases a/b/c, `Host worlds`, the oracle fixtures
+in PORTING.md) and on the m2/socket A/B in `bench_scale.sh` at 16 games.
+Ambition: 2x rows/s on this box from CPU per decision alone, and closing the
+one-runtime penalty so many-worlds stops costing throughput.
+
+1. **Reset: build the scene once per map, clone per episode (20% of CPU).**
+   `LoadSceneByBuildIndex` reparses the scene JSON graph through
+   `PropertyApplier` (reflection `SetValue`, `Tokenize` string splits per
+   property, `DynamicInvoke` for `Awake`/`Start`) on every reset. Keep the
+   per-world *template* hierarchy for each map (built once, never started)
+   and instantiate the episode's scene from it with the existing
+   `CloneRules.CloneHierarchy` (the code path `Object.Instantiate` already
+   uses), then run the messages. Gate: identical checksums for a clean
+   reset, a dirty reset and a map change; `Host worlds` over all 5 maps.
+   Expected: reset 8 ms -> ~1-2 ms warm.
+2. **Reset: snapshot after warmup (16% of CPU).** The 240 warmup ticks are
+   deterministic given (map, seed schedule, loadouts, colours). Measure how
+   many distinct configurations a run visits (`--training-maps 0,1,2`,
+   random loadouts); if the seed enters the warmup, snapshot per (map,
+   loadout) at tick 0 instead and run only the ticks the seed influences.
+   This is the section-5 item from the original plan, promoted by the
+   profile. Needs a deep-copy of the world (`RlWorldState` + shim object
+   graph); build it on the clone machinery from item 1. Gate: warmup-then-
+   play checksum equals restore-then-play for 20 matches per map.
+3. **Allocation diet (GC 12.5%, and the one-runtime penalty).** Find the
+   per-tick allocators with the managed build (`Host worlds` under
+   `dotnet-trace`/`DOTNET_gcServer=0` + `GC.GetAllocatedBytesForCurrentThread`
+   per phase; NativeAOT cannot report them). Known suspects from the
+   profile: `List<T>` constructions per tick (1.1% inclusive), `HashMap.Clear`,
+   `RlObservation` via `MemoryStream`/`BinaryWriter`, `PropertyApplier`
+   strings (item 1 removes them), coroutine/message boxing. Target: a quiet
+   tick allocates nothing, a spawn-heavy tick < 1 KB. This is also the fix
+   for the one-runtime penalty: fewer collections means fewer all-world
+   stalls. Re-run the 16/32-game m1-vs-m2 A/B after; if a gap remains, add
+   `GCgen0size` at link time (`RuntimeHostConfigurationOption`) and re-test
+   a capped Server GC (`GCHeapCount=4`, `GCConserveMemory`) - the section 3
+   rejection tested the default heap count only.
+4. **`Fix.ClampSinValue` (6.2% self, top symbol).** Reduces the angle with
+   29 dependent 64-bit `%` operations by `2*pi*2^60 >> i`. Exact shortcut:
+   when `|angle| < (num >> i)` the remaining moduli are identities, so skip
+   to the first `i` whose modulus is `<= |angle|` (leading-zero count).
+   An angle already in `[-2pi, 2pi)` then costs zero divisions; how often
+   that is the case (callers: `Box.SetRotation` 5% inclusive, `FastSin`,
+   `Sin`) decides the win, so count it first. Bit-exact by construction;
+   fixture-check anyway.
+5. **`Object.CompareBaseObjects` (4.8% self).** The Unity `== null` on
+   destroyed objects, not inlined by ILC. `AggressiveInlining` on the
+   operators and the helper, and audit hot loops in `DetPhysics` /
+   `Updater` that null-test every entity every tick (`RemoveDestroyedColliders`
+   1.0% inclusive) to test `destroyed` directly.
+6. **Presentation still executing (~5%).** `DetPhysics.renderBeams` (2.9%
+   inclusive: instantiates `beamAfterEffect` prefabs, `AudioManager.Play`,
+   particle colour gradients), `UpdateRopeMesh_parallell` + `RopeMesh.UpdateMesh`
+   (1.8%), and whatever in `SyncAllPhysicsObjectsToFixTransformPosition`
+   (5.6% inclusive) only feeds rendering. Guard behind `RlHeadless.Render`
+   after confirming nothing gameplay-visible reads the results (the ropes'
+   mesh is presentation; `transform.position` sync is read by gameplay, keep
+   the Fix -> transform part). Gate: checksums, plus a replay comparison
+   against the Unity oracle for a beam-heavy fixture.
+7. **Updater passes (~6% self across `TickSimulationInner`, `IsEnabled`,
+   `activeInHierarchy`, `isActiveAndEnabled`).** The per-tick walk over
+   every behaviour re-derives active state through the transform chain.
+   Cache `activeInHierarchy` on the `GameObject` and invalidate on
+   `SetActive`/reparent; keep enabled `MonoUpdatable`s in a dense list
+   maintained on enable/disable instead of filtering each tick.
+8. **Observation encode (5.4% inclusive).** `RlObservation.Write` goes
+   through `MemoryStream`/`BinaryWriter` into a managed buffer that is then
+   copied to the pinned ABI buffer. Write directly into the pinned span with
+   `BinaryPrimitives`; the layout is fixed by `bopl_rl.h`, so
+   `backend_check` catches any drift.
+
+Measure after each item with the same `bench_scale.sh` shape (16 games,
+one runtime, and 16 games socket as the isolated-runtime reference) and
+record the perf grouping above so the next item is chosen by share, not by
+guess. Stop when `c_step` per decision on a spawn-heavy loadout is < 100 us
+of CPU or the remaining share is spread thin.
+
+## 6. Horizon
+
+- **Rust sim for rollouts.** ~5 us per tick vs the .NET port's ~100+ us of
+  CPU per tick under real play. Bow and Platform are unimplemented and the
+  standing decision is that Rust is verified against replays continuously
+  (`verify_replay.py`), never trusted blind. Only start after stage 5 has
+  taken the .NET path as far as bit-exactness allows and the sweep still
+  says throughput limits learning.
 - **Async actor/learner (PufferLib 5 / Cleanba style).** Overlapping
   training with rollout saves at most the train share, 4% today. Worth it
   only when the network grows enough that `train_seconds` exceeds ~25% of
   the update (roughly hidden >= 512 or several GRU layers). Track the ratio
   in metrics; do not port ahead of need.
-- **More buffers as a substitute for more games.** Buffers hide GPU latency
-  behind env time and vice versa; once both sides are ~0.15 ms the third
-  buffer adds little. Sweep it in section 4 and stop there.
-
-## 6. Horizon: a cheaper tick
-
-Section 4's ceiling is the .NET sim's compute per tick. Two ways past it,
-both gated on the section 1 measurement:
-
-- **Shim diet.** Profile a tick in the port: the per-frame passes over all
-  behaviours (`Update`/`LateUpdate`, pending Starts, destroy queue,
-  coroutines), presentation code still executing behind `RlHeadless.Render`
-  guards, and Newtonsoft slices on ability spawn. Likely 1.5-2x, zero
-  correctness risk when it stays bit-exact against the oracle fixtures.
-- **Rust sim for rollouts.** ~5 us per tick vs ~20-80 us, but Bow and
-  Platform are unimplemented and the standing decision is that Rust is
-  verified against replays continuously (`verify_replay.py`), never trusted
-  blind. Only start after the .NET path is CPU-bound at the section 4
-  ceiling and the sweep says throughput still limits learning.
+- **More cores.** Section 4's sweep is the recipe: on a 32-core box the
+  same one-runtime build runs 64-128 games in ~5-10 GB, and the curve should
+  bend where `games * compute / cores` says, once stage 5 has made the
+  shared heap cheap.
 
 ## Order and ownership
 
