@@ -264,7 +264,17 @@ and the curve is flat:**
 | 32 | socket Host, one process per world | **30.4k** | **40.5k** | 1.34 | - |
 | 16 | socket Host (section 3 A/B, m1) | 34.8k | - | 0.50 | - |
 
-WORLDS_PER_RUNTIME_TABLE
+Worlds per runtime (`BOPL_RL_WORLDS_PER_RUNTIME`), same shape:
+
+| workers | worlds per runtime | runtimes | learner/s | rows/s | ms/step env |
+|---|---|---|---|---|---|
+| 16 | all (32) | 1 | 23.2k | 31.0k | 0.83 |
+| 16 | 4 | 8 | **29.3k** | 39.0k | 0.62 |
+| 16 | 1 | 32 | 30.2k (section 3 A/B; the rerun here swapped, 8.6 GB, and is void) | - | - |
+| 32 | all (64) | 1 | 21.1k | 28.2k | 2.02 |
+| 32 | 8 | 8 | 27.3k | 36.4k | 1.47 |
+| 32 | 4 | 16 | **28.8k** | 38.3k | 1.41 |
+| 32 | socket, 1 per process | 64 | 30.4k | 40.5k | 1.34 |
 
 Reading:
 
@@ -283,8 +293,10 @@ Reading:
   inclusive in the 16-game profile below), and collections come as often as
   the *sum* of the worlds' allocation rates demands, so the stall cost grows
   with worlds. Server GC (per-core heaps) was the textbook answer and cost 6x
-  RSS for no gain in section 3; the remaining knob is
-  `BOPL_RL_WORLDS_PER_RUNTIME` (table above), which trades RSS for heaps.
+  RSS for no gain in section 3; the knob that works is
+  `BOPL_RL_WORLDS_PER_RUNTIME`: 4 worlds per heap recovers most of the gap
+  (+26% at 16 games, +36% at 32) for ~8 runtimes' worth of code pages and
+  parse caches. `train.py` now defaults it to 4 when unset.
 - `train.py` learned `BOPL_OMP_THREADS` (override for `OMP_NUM_THREADS`) for
   the oversubscription rows; nothing else in this section's trainer-side list
   was needed, the trainer ran 128 games / 192 learner rows per buffer

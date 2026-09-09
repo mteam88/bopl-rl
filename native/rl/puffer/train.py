@@ -134,6 +134,11 @@ def main():
     frozen_manifest = output/'evaluation-opponents.json' if frozen else None
     if frozen_manifest:
         atomic_json(frozen_manifest, dict(schema=2, opponents=frozen))
+    # SIM_OVERHAUL.md section 4: one GC heap under every world costs 25-45%
+    # of throughput (each gen0 collection suspends every world); four worlds
+    # per runtime measured within 5-15% of one runtime per world at a
+    # fraction of the memory. Honour an explicit setting.
+    os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
                            BOPL_RL_LOG_DIR=output/'game-logs',
                            OMP_NUM_THREADS=os.environ.get('BOPL_OMP_THREADS', a.workers)).items():
