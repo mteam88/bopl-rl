@@ -85,13 +85,10 @@ namespace BoplSim.Native
 			public InputPacket[] inputs;
 			public ReplayArchive recording;
 
-			public readonly MemoryStream wire = new MemoryStream(65536);
-			public readonly BinaryWriter payload;
 			public Snapshot main, sample;
 			public byte* replayBuffer;
 			public nuint replayCapacity;
 
-			public RlWorld() { payload = new BinaryWriter(wire, Encoding.UTF8, true); }
 		}
 
 		// Scope of one ABI call on a world: binds the thread to it (gameplay
@@ -312,7 +309,7 @@ namespace BoplSim.Native
 					{
 						// Episode ended during the first phase: sample and final
 						// state are identical (bopl_rl.c copy_snapshot).
-						DecodeInto(w, ref w.main);
+						CopySnapshot(ref w.sample, ref w.main);
 					}
 					else
 					{
@@ -589,57 +586,68 @@ namespace BoplSim.Native
 
 		// RlBridge.Observe: one state record on the wire, then decoded into the
 		// C-visible snapshot the way bopl_rl.c decode_snapshot does.
+		// Stage 5 item 8: sections are written straight into the C-visible
+		// snapshot buffers (no MemoryStream wire, no DecodeInto copy). Layout
+		// identical to what decode_snapshot produced; WireWriter's span bounds
+		// throw on any drift, and backend_check compares against the socket
+		// path, which still goes through the wire bytes.
 		private static void Observe(RlWorld w, ref Snapshot snapshot)
 		{
-			w.wire.SetLength(0);
 			uint flags = (w.terminal ? 1u : 0u) | (w.episodeTicks >= w.episodeLimit ? 2u : 0u)
 				| (w.started ? 4u : 0u) | (w.failed ? 8u : 0u);
-			RlObservation.Write(w.payload, Version, w.episodeTicks, flags, w.warmup);
-			w.payload.Flush();
-			DecodeInto(w, ref snapshot);
-		}
-
-		private static void DecodeInto(RlWorld w, ref Snapshot snapshot)
-		{
-			byte[] bytes = w.wire.GetBuffer();
-			int length = (int)w.wire.Length;
-			uint playerCount = BitConverter.ToUInt32(bytes, 16);
-			uint entityCount = BitConverter.ToUInt32(bytes, 20);
-			uint slimeCount = BitConverter.ToUInt32(bytes, 28);
-			int playerBytes = (int)playerCount * PlayerSize;
-			int entityBytes = (int)entityCount * EntitySize;
-			int slimeBytes = (int)slimeCount * SlimeSize;
-			int telemetryBytes = (int)playerCount * TelemetrySize;
-			if (playerCount < 1 || playerCount > 6
-				|| HeaderSize + playerBytes + entityBytes + slimeBytes + telemetryBytes != length)
+			RlObservation.Measure(out int playerCount, out int entityCount, out int slimeCount);
+			if (playerCount < 1 || playerCount > 6)
 				throw new InvalidDataException("Invalid RL state layout");
 			if (snapshot.state == null) snapshot.state = (byte*)NativeMemory.AllocZeroed(StateSize);
-			if (entityCount > snapshot.entityCapacity)
+			if ((uint)entityCount > snapshot.entityCapacity)
 			{
-				snapshot.entities = (byte*)NativeMemory.Realloc(snapshot.entities, (nuint)entityBytes);
-				snapshot.entityCapacity = entityCount;
+				snapshot.entities = (byte*)NativeMemory.Realloc(snapshot.entities, (nuint)(entityCount * EntitySize));
+				snapshot.entityCapacity = (uint)entityCount;
 			}
-			if (slimeCount > snapshot.slimeCapacity)
+			if ((uint)slimeCount > snapshot.slimeCapacity)
 			{
-				snapshot.slimes = (byte*)NativeMemory.Realloc(snapshot.slimes, (nuint)slimeBytes);
-				snapshot.slimeCapacity = slimeCount;
+				snapshot.slimes = (byte*)NativeMemory.Realloc(snapshot.slimes, (nuint)(slimeCount * SlimeSize));
+				snapshot.slimeCapacity = (uint)slimeCount;
 			}
-			fixed (byte* source = bytes)
-			{
-				Buffer.MemoryCopy(source, snapshot.state, HeaderSize, HeaderSize);
-				var players = new Span<byte>(snapshot.state + PlayersOffset, 6 * PlayerSize);
-				players.Clear();
-				new ReadOnlySpan<byte>(source + HeaderSize, playerBytes).CopyTo(players);
-				if (entityBytes > 0)
-					Buffer.MemoryCopy(source + HeaderSize + playerBytes, snapshot.entities, entityBytes, entityBytes);
-				if (slimeBytes > 0)
-					Buffer.MemoryCopy(source + HeaderSize + playerBytes + entityBytes, snapshot.slimes, slimeBytes, slimeBytes);
-				var telemetry = new Span<byte>(snapshot.state + TelemetryOffset, 6 * TelemetrySize);
-				telemetry.Clear();
-				new ReadOnlySpan<byte>(source + HeaderSize + playerBytes + entityBytes + slimeBytes, telemetryBytes).CopyTo(telemetry);
-			}
+			var header = new WireWriter(new Span<byte>(snapshot.state, HeaderSize));
+			var playersSpan = new Span<byte>(snapshot.state + PlayersOffset, 6 * PlayerSize);
+			playersSpan.Clear();
+			var playersW = new WireWriter(playersSpan.Slice(0, playerCount * PlayerSize));
+			var entitiesW = new WireWriter(new Span<byte>(snapshot.entities, entityCount * EntitySize));
+			var slimesW = new WireWriter(new Span<byte>(snapshot.slimes, slimeCount * SlimeSize));
+			var telemetrySpan = new Span<byte>(snapshot.state + TelemetryOffset, 6 * TelemetrySize);
+			telemetrySpan.Clear();
+			var telemetryW = new WireWriter(telemetrySpan.Slice(0, playerCount * TelemetrySize));
+			RlObservation.WriteSections(ref header, ref playersW, ref entitiesW, ref slimesW, ref telemetryW,
+				Version, w.episodeTicks, flags, w.warmup, playerCount, entityCount, slimeCount);
 			*(byte**)(snapshot.state + EntitiesPtrOffset) = snapshot.entities;
 			*(byte**)(snapshot.state + SlimesPtrOffset) = snapshot.slimes;
+		}
+
+		// Duplicate an already-written snapshot (terminal-in-first-phase case,
+		// mirroring bopl_rl.c copy_snapshot).
+		private static void CopySnapshot(ref Snapshot source, ref Snapshot target)
+		{
+			uint entityCount = *(uint*)(source.state + 20);
+			uint slimeCount = *(uint*)(source.state + 28);
+			int entityBytes = (int)entityCount * EntitySize;
+			int slimeBytes = (int)slimeCount * SlimeSize;
+			if (target.state == null) target.state = (byte*)NativeMemory.AllocZeroed(StateSize);
+			if (entityCount > target.entityCapacity)
+			{
+				target.entities = (byte*)NativeMemory.Realloc(target.entities, (nuint)entityBytes);
+				target.entityCapacity = entityCount;
+			}
+			if (slimeCount > target.slimeCapacity)
+			{
+				target.slimes = (byte*)NativeMemory.Realloc(target.slimes, (nuint)slimeBytes);
+				target.slimeCapacity = slimeCount;
+			}
+			Buffer.MemoryCopy(source.state, target.state, StateSize, StateSize);
+			if (entityBytes > 0) Buffer.MemoryCopy(source.entities, target.entities, entityBytes, entityBytes);
+			if (slimeBytes > 0) Buffer.MemoryCopy(source.slimes, target.slimes, slimeBytes, slimeBytes);
+			*(byte**)(target.state + EntitiesPtrOffset) = target.entities;
+			*(byte**)(target.state + SlimesPtrOffset) = target.slimes;
 		}
 
 		// A game-side exception: RlBridge.Error sends it as an error frame, and
