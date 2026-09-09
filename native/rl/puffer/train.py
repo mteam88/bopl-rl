@@ -301,6 +301,10 @@ def main():
                                 pool_steps=sorted(bank['opponent_step'] for bank in after_pool['banks']),
                                 rollout_seconds=rolled-before, train_seconds=trained-rolled)
                 record['pool'] = after_pool
+                # The native trainer's own per-update timers (seconds, averaged
+                # over buffers): eval_gpu = inference graph + action copy-back,
+                # eval_env = OpenMP game stepping, rollout = whole barrier.
+                record['native_perf'] = {key: native['perf'].get(key) for key in ('rollout', 'eval_gpu', 'eval_env')}
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
                 for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
                     events.write(json.dumps(event, allow_nan=False)+'\n')

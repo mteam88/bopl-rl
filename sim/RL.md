@@ -161,6 +161,46 @@ training, plus evaluations (5 s each with an empty pool, growing with
 `native/artifacts/rl/long-run-500m/launch-002-s73-dotnet.sh` (MemoryMax
 15G = 8.6 GB peak + 6 GB).
 
+### Trainer step latency (2026-09-08, branch `trainer-step`)
+
+Where the ~0.9 ms per (buffer, step) of the 16x2 run went, from `perf` on the
+live 003 trainer and the vector's own timers (now written to `metrics.jsonl`
+as `native_perf`: `eval_gpu` = inference graph + action copy-back, `eval_env`
+= OpenMP game stepping, seconds per rollout averaged over buffers):
+
+- ~0.45 ms GPU: the per-step cudagraph ran learner + 4 frozen banks as one
+  serial chain of ~93 tiny kernels (28 rows per buffer, 4 per bank: pure
+  launch latency). The two buffer threads spent ~85% of their CPU spinning
+  in `cudaStreamSynchronize` on it.
+- ~0.4 ms env: socket round trip to the .NET host plus OpenMP wake-ups.
+- One whole core: the main thread hot-spun in `static_vec_omp_step` for the
+  entire rollout.
+
+Changes (all in `pufferlib-bopl.patch`; `BOPL_BANK_BRANCHES=0` restores the
+serial chain for A/B):
+
+- Banks 1.. run on side streams forked/joined with events, so the captured
+  graph has 5 parallel branches. One cuBLAS handle per stream (same
+  workspace size, so the same GEMM algorithms).
+- `sample_logits` takes the bank's row count. Upstream sized the launch from
+  `dec_out.shape[0]`, and the primary policy's rollout activations span the
+  whole buffer, so the learner's launch also wrote the frozen banks' rows and
+  advanced their Philox states before the banks overwrote them; serial that
+  was a hidden order dependence, parallel it was a race. Fixed, serial and
+  branched are bit-identical (same checkpoint hash over 20 updates); against
+  the old build only the frozen opponents' random draws differ.
+- The rollout barrier and the buffer threads' between-rollout wait
+  sleep-poll (50 / 20 us) instead of spinning.
+
+Measured on the box while the 003 run (32 game processes) was live, so both
+sides are contaminated (load 27, GPU time-sliced with the other context):
+w8x2 `eval_gpu` 0.46 -> 0.12 ms per step; w16x2 interleaved A/B x2, medians:
+serial 16.3k learner/s (gpu 0.52, env 0.87 ms), branched 17.7k (gpu 0.29,
+env 0.96 ms), +9%. The env half is CPU-starved under that load; remeasure on
+an idle box (`bopl-trainer-step-bench` unit, results in
+`native/artifacts/rl/trainer-step/`). Expected idle: GPU 0.45 -> ~0.12 ms,
+step ~0.9 -> ~0.55 ms, with the env round trip as the remaining floor.
+
 ## Known gaps
 
 - **Memory** (fixed 2026-09-08, `602709e` + `2c0b01c`): the export's

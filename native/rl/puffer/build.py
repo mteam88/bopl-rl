@@ -21,27 +21,31 @@ args = parser.parse_args()
 source = args.puffer.resolve()
 out = HERE.parents[1] / "artifacts/rl"
 out.mkdir(parents=True, exist_ok=True)
-subprocess.run(["cc", "-O3", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-I" + str(source / "src"),
+# Keep the pinned dependency tree unchanged. Upstream dereferences a null
+# graph array during teardown when cudagraphs=-1; apply the small fix only
+# in this generated compilation directory.
+overlay = out / "puffer-overlay"
+shutil.copytree(source / "src", overlay, dirs_exist_ok=True)
+subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=overlay, check=True)
+# Bopl trainer semantics on top of the pinned trainer: episode-boundary
+# resets of the MinGRU state (rollout and training scan), training
+# sequences start from the real rollout-start state, learner-only replay
+# sampling, no reward clamp, per-head entropy / gradient-norm / advantage
+# statistics, the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
+# = linear|set selects bopl_set_encoder.cu, found via the -I below), per-bank
+# rollout graph branches with per-stream cuBLAS handles, and sleep-polling
+# rollout barriers in vecenv.h (which binding.c compiles, so it too builds
+# against the overlay). See pufferlib-bopl.patch (generated with
+# diff -ruN against the pristine overlay: cd artifacts/rl && diff -ruN
+# pristine-src puffer-overlay).
+subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
+subprocess.run(["cc", "-O3", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-I" + str(overlay),
                 "-I" + str(HERE.parent), "-c", str(HERE / "binding.c"), "-o", str(out / "bopl_binding.o")], check=True)
 subprocess.run(["cc", "-O3", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fPIC", "-c",
                 str(HERE.parent / "bopl_rl.c"), "-o", str(out / "bopl_rl.o")], check=True)
 target = source / "pufferlib" / ("_C" + sysconfig.get_config_var("EXT_SUFFIX"))
 if args.device == "cuda":
     import numpy
-    # Keep the pinned dependency tree unchanged. Upstream dereferences a null
-    # graph array during teardown when cudagraphs=-1; apply the small fix only
-    # in this generated compilation directory.
-    overlay = out / "puffer-overlay"
-    shutil.copytree(source / "src", overlay, dirs_exist_ok=True)
-    subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=overlay, check=True)
-    # Bopl trainer semantics on top of the pinned trainer: episode-boundary
-    # resets of the MinGRU state (rollout and training scan), training
-    # sequences start from the real rollout-start state, learner-only replay
-    # sampling, no reward clamp, per-head entropy / gradient-norm / advantage
-    # statistics, and the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
-    # = linear|set selects bopl_set_encoder.cu, found via the -I below). See
-    # pufferlib-bopl.patch (generated with diff -ruN against the pristine overlay).
-    subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
     nvidia = Path(sysconfig.get_path("purelib")) / "nvidia"
     cuda = nvidia / "cu13"
     includes = [overlay, source / "src", HERE, Path(sysconfig.get_path("include")), Path(pybind11.get_include()),
@@ -64,7 +68,7 @@ if args.device == "cuda":
                     "-lm", "-lpthread", "-o", str(target)], check=True)
 else:
     subprocess.run(["c++", "-O3", "-std=c++17", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-DENV_NAME=bopl",
-                "-DOBS_TENSOR_T=FloatTensor", "-I" + str(source / "src"),
+                "-DOBS_TENSOR_T=FloatTensor", "-I" + str(overlay), "-I" + str(source / "src"),
                 "-I" + sysconfig.get_path("include"), "-I" + pybind11.get_include(),
                     "-c", str(source / "src/bindings_cpu.cpp"), "-o", str(out / "puffer_cpu.o")], check=True)
     subprocess.run(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cpu.o"),
