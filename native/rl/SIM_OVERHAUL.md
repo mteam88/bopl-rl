@@ -184,6 +184,51 @@ Work items:
 Serial ticking inside one runtime is required (the port serialised every
 `Parallel.ForEach`); parallelism is across runtimes, P ~= cores.
 
+**Done (2026-09-09, commit be0d838). What was built differs from items 1-2
+above in one way that mattered:** worlds tick *concurrently* inside one
+runtime, on the trainer's own threads, rather than serially behind a
+`Bind(k)` copy-in/out. The per-match statics are `[System.ThreadStatic]`
+(~110 fields, listed in `sim/Gameplay/RlWorldState.cs`), `World.Current` is
+thread-static, and `RlWorldState` snapshots the statics into the `World` on
+unbind / restores on bind, so a world may move between threads (step thread,
+reset helper) but two threads never share a static. The "serial ticking"
+sentence above is therefore void; P is 1.
+
+The part the plan did not foresee is assets. The shim's `Material`,
+ScriptableObjects and prefab templates are mutated in place by gameplay
+(`SteamFrame.Awake` -> `Material.SetColor`; `AchievementHandler` compares
+sprite identity against `SteamManager.abilityIcons`), and in a fresh process
+each world owns its copies. So `ExportDatabase` now keeps the *parsed inputs*
+shared (assets.json / sprites.json slices parsed once, scene JSON cache, type
+lookups) and builds the *objects* per world (`ExportDatabase.Store`, hung on
+`World.assetStore`). Getting that split wrong in either direction is visible:
+shared objects race (a corrupted `Dictionary` in `Material.SetColor` was the
+first symptom), per-world parsing made a 32-world boot GC-bound (28 s, 65% of
+samples in `WKS::gc_heap`, until the parse cache brought it to 9 s).
+
+How the races were found: the `.so` publish loop (35 s publish + backend_check)
+was too slow to bisect with. `sim/Host worlds --n 16 --episodes 3
+--abilities 2,4,14` runs N threads, each with its own `World`, through the
+same scripted episode (backend_check phase b) and prints per-world checksums
+and the first divergent step; it reproduced every race within 15 s and is the
+regression test for this section. Then `backend_check worlds <so> N`.
+
+Gates (item 4): N=1 and N=8/16/32 in one runtime print the socket-path
+checksums (`5381bf21573b20a6` / `8dc13de2cc8c8e7c`), dirty reset reproduces
+the clean one; `worlds` in the managed build agrees over 16 worlds x 3
+episodes on maps 1-3 with spawning abilities; puffer smoke passes with 16 and
+32 games and its per-update entropies equal `BOPL_RL_WORLDS_PER_RUNTIME=1`.
+
+Numbers (box loaded by run 003, so relative only): RSS 32 worlds in one
+runtime 0.94 GB vs 8 runtimes 1.9 GB (`backend_check`); trainer smoke 16
+games (32 worlds incl. spares) 2.6 GB peak vs 8.5 GB. Aggregate stepping
+cost per decision with 16-32 concurrent worlds 7-16 us against 17 us for 8
+separate runtimes - one heap under 32 allocating threads is not free, and
+the honest A/B is m2 vs m3 in `bench_trainer_step.sh` when the box is idle.
+Server GC was tried for that and rejected (3.5 GB vs 0.56 GB for 16 worlds,
+no throughput gain). Item 3 (the 1-in-17 flake) was not needed: the parity
+runs never flaked, the flake is likely a socket-path artefact.
+
 ## 4. Scale the lockstep (1-2 days, the actual throughput)
 
 With sections 2-3 the step is CPU-bound and `rows/s` grows with games until

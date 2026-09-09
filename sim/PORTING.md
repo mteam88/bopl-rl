@@ -11,6 +11,18 @@ decides the question (usually: the oracle trace).
   mechanical copy`). Presentation/Steam/menu classes compile against data-only
   stubs and are simply never driven.
 - `Properties/AssemblyInfo.cs` was not copied (Unity assembly metadata).
+- **Many-worlds deviation (2026-09-09, `native/rl/SIM_OVERHAUL.md` section
+  3)**: the per-match static fields (~110, every one carries the comment
+  `// per world: RlWorldState`) are `[System.ThreadStatic] internal static`
+  and their initialisers moved to `sim/Gameplay/RlWorldState.cs`, which
+  restores them when a thread binds a `UnityShim.World` and captures them on
+  unbind. Auto-properties with such backing state (`GameTime.PlayerTimeScale`,
+  `GameSessionHandler.SuddenDeathInProgress`, `ReplaySession.Playing/Recording`)
+  became explicit properties over a thread-static field. `Player.InputProfile.
+  GenerateInputVectorTable` fills a local and publishes it whole. Behaviour in
+  a single world is unchanged; the change lets many worlds tick concurrently
+  in one process. Process-wide constants (layer indices, `Constants.*`,
+  `achievementNames`) stayed plain statics on purpose.
 
 ## Shim deviations (sim/UnityShim, ~5.7k LOC)
 

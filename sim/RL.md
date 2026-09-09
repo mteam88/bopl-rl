@@ -54,17 +54,23 @@ nice -n 19 dotnet publish -c Release -r linux-x64 sim/Native
 export BOPL_RL_GAME=$PWD/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
 ```
 
-`bopl_rl.c` then `dlopen`s one private (reflinked, unlinked) copy of the
-library per handle, one NativeAOT runtime per world, and forwards every ABI
-call; `reset_begin` runs the library's synchronous reset on a helper thread so
-the spare world overlaps resets with play as before. Training is bit-identical
-to the socket path (same losses and match counts for the same seed) and the
-env phase of a step drops ~20% (`native/rl/SIM_OVERHAUL.md` section 2 has the
-numbers; `native/rl/backend_check.c` is the parity and multi-runtime test).
-Memory per env is unchanged (two runtimes ~ two processes). Knobs:
-`BOPL_RL_INPROC_SPARE=0` (no spare, every reset stalls the lockstep ~8 ms),
-`BOPL_RL_INPROC_KEEP=1` (keep the copies and `.dbg` next to the library so
-`perf` can symbolize).
+`bopl_rl.c` then `dlopen`s the library once and opens every handle as a
+world inside that one NativeAOT runtime (`sim/Native/NativeApi.cs`: handle
+table of `RlWorld`, per-match statics `[ThreadStatic]` + `RlWorldState`
+snapshot, per-world asset objects over shared parsed JSON - section 3 of
+`native/rl/SIM_OVERHAUL.md`), and forwards every ABI call; `reset_begin` runs
+the library's synchronous reset on a helper thread so the spare world overlaps
+resets with play as before. Training is bit-identical to the socket path (same
+losses and match counts for the same seed); `native/rl/backend_check.c
+worlds` is the parity test and `dotnet sim/Host/bin/Release/net8.0/Host.dll
+worlds --n 16 --episodes 3` the fast managed one. Memory: ~30 MB per world
+plus ~0.7 GB per runtime, against ~240 MB per world when each had its own
+runtime. Knobs: `BOPL_RL_WORLDS_PER_RUNTIME=N` (pack at most N worlds into a
+runtime; further worlds load reflinked copies of the file; `1` restores one
+runtime per world), `BOPL_RL_INPROC_SPARE=0` (no spare, every reset stalls the
+lockstep ~8 ms), `BOPL_RL_INPROC_KEEP=1` (keep the copies and `.dbg` next to
+the library so `perf` can symbolize). All worlds' `Debug.Log` output goes to
+the first opened world's log file (one stderr per process).
 
 ## What the process does (`sim/Host/RlMode.cs`)
 
