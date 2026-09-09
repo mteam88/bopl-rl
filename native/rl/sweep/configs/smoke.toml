@@ -1,0 +1,73 @@
+# Tiny end-to-end validation sweep: 4 short trials, 4 workers, shared box.
+# Numbers are noisy at this scale; the point is the plumbing
+# (suggest -> launch -> score -> observe -> report), not the science.
+
+[sweep]
+method = "Protein"          # stays in the Sobol phase at 4 trials; exercises the full path
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+early_stop_quantile = 0.3
+max_suggestion_cost = 4e6   # cost = learner_steps, so this caps suggested budgets
+max_runs = 4
+use_gpu = false             # GP on CPU; cuda:0 belongs to the real run
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "6G"
+nice = 10
+max_seconds = 3600
+poll_seconds = 30
+
+[scoring]
+scorer = "anchors"          # mean win rate vs random/initial (+ any frozen opponents)
+opponents = []              # empty = every non-selfplay opponent in the results
+include_heldout = false
+
+[fixed]
+steps = 3000000             # default budget; also the seed trial's cost
+workers = 4                 # (workers/2) must divide by banks -> banks = 2
+banks = 2
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learning_rate = 3e-4
+entropy = 0.01
+entropy_floor = 0.004
+entropy_half_life = 150000000
+entropy_head_scale = "1,1,1"
+reward_kill = 0.1
+reward_timeout = -1
+training_maps = [0]
+evaluation_maps = [0]
+heldout_maps = [1, 2]
+episode_ticks = 7200
+checkpoint_every = 1000000
+eval_every = 1000000
+evaluation_games = 4
+heldout_games = 2
+evaluation_workers = 2
+cudagraphs = 1
+
+[params.steps]
+distribution = "log_normal"
+min = 1.5e6
+max = 3e6
+scale = "time"
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 1e-3
+scale = 0.5
+
+[params.entropy]
+distribution = "log_normal"
+min = 3e-3
+max = 3e-2
+scale = 0.5

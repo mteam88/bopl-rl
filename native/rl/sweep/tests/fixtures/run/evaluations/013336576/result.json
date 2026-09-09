@@ -1,0 +1,5485 @@
+{
+  "schema": 2,
+  "decision_dump_schema": 1,
+  "step": 13336576,
+  "suite": "diagnostic",
+  "checkpoint": "policy-013336576.bin",
+  "checkpoint_identity": {
+    "sha256": "421ba580965eed267263aedb9e16623f53a8ee10752297254b26fbc2830925f1",
+    "metadata_sha256": "e9729de8d8b46b20bcf8de0a8832e0d4e726f1c52615665d2e26ca33dd320bcd"
+  },
+  "baseline_identity": {
+    "sha256": "a70aee0ff424a53afc852ec46e153c87a7667e9e89d84dbfee0a11b6683a47b4",
+    "metadata_sha256": "4aa7b4c8106b71c19ebabb97d2fbe1421c898fe8b5024659d42cf7d1d8baff81"
+  },
+  "frozen_opponents": [],
+  "evaluation_maps": [
+    0,
+    1,
+    2
+  ],
+  "heldout_maps": [
+    3,
+    4
+  ],
+  "training_maps": [
+    0,
+    1,
+    2
+  ],
+  "seed_base": 10001,
+  "heldout_seed_base": 20001,
+  "selfplay_seed": 30001,
+  "interval_note": "Descriptive Wilson interval; does not adjust for correlation within seed pairs",
+  "elapsed": 5.7969068409875035,
+  "groups": [
+    {
+      "opponent": "random",
+      "map": 0,
+      "games": 8,
+      "wins": 6,
+      "win_rate": 0.75,
+      "map_role": "trained",
+      "interval": [
+        0.40926987910258916,
+        0.9285223111419724
+      ],
+      "timeouts": 0,
+      "seed_pairs": 4,
+      "behavior_totals": {
+        "dash_activations": 11.0,
+        "bow_activations": 20.0,
+        "platform_activations": 6.0,
+        "arrows_fired": 16.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 2.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": 4.0,
+        "reward_kills": 0.0,
+        "reward_deaths": -0.20000000298023224,
+        "episodes": 8.0,
+        "wins": 6.0,
+        "timeouts": 0.0,
+        "ticks": 4918.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.25,
+      "mean_duration": 10.245833333333334
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "games": 8,
+      "wins": 4,
+      "win_rate": 0.5,
+      "map_role": "trained",
+      "interval": [
+        0.21521252682444186,
+        0.7847874731755582
+      ],
+      "timeouts": 0,
+      "seed_pairs": 4,
+      "behavior_totals": {
+        "dash_activations": 11.0,
+        "bow_activations": 15.0,
+        "platform_activations": 5.0,
+        "arrows_fired": 13.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 4.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": 0.0,
+        "reward_kills": 0.0,
+        "reward_deaths": -0.4000000059604645,
+        "episodes": 8.0,
+        "wins": 4.0,
+        "timeouts": 0.0,
+        "ticks": 3691.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.5,
+      "mean_duration": 7.689583333333333
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "games": 8,
+      "wins": 6,
+      "win_rate": 0.75,
+      "map_role": "trained",
+      "interval": [
+        0.40926987910258916,
+        0.9285223111419724
+      ],
+      "timeouts": 0,
+      "seed_pairs": 4,
+      "behavior_totals": {
+        "dash_activations": 12.0,
+        "bow_activations": 21.0,
+        "platform_activations": 9.0,
+        "arrows_fired": 20.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 2.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": 4.0,
+        "reward_kills": 0.0,
+        "reward_deaths": -0.20000000298023224,
+        "episodes": 8.0,
+        "wins": 6.0,
+        "timeouts": 0.0,
+        "ticks": 5663.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.25,
+      "mean_duration": 11.797916666666667
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "games": 8,
+      "wins": 3,
+      "win_rate": 0.375,
+      "map_role": "trained",
+      "interval": [
+        0.13684175946152105,
+        0.6942621454161981
+      ],
+      "timeouts": 0,
+      "seed_pairs": 4,
+      "behavior_totals": {
+        "dash_activations": 9.0,
+        "bow_activations": 18.0,
+        "platform_activations": 7.0,
+        "arrows_fired": 18.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 5.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": -2.0,
+        "reward_kills": 0.0,
+        "reward_deaths": -0.5000000074505806,
+        "episodes": 8.0,
+        "wins": 3.0,
+        "timeouts": 0.0,
+        "ticks": 4781.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.625,
+      "mean_duration": 9.960416666666667
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "games": 8,
+      "wins": 6,
+      "win_rate": 0.75,
+      "map_role": "trained",
+      "interval": [
+        0.40926987910258916,
+        0.9285223111419724
+      ],
+      "timeouts": 0,
+      "seed_pairs": 4,
+      "behavior_totals": {
+        "dash_activations": 7.0,
+        "bow_activations": 11.0,
+        "platform_activations": 3.0,
+        "arrows_fired": 9.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 2.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": 4.0,
+        "reward_kills": 0.0,
+        "reward_deaths": -0.20000000298023224,
+        "episodes": 8.0,
+        "wins": 6.0,
+        "timeouts": 0.0,
+        "ticks": 3057.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.25,
+      "mean_duration": 6.36875
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "games": 8,
+      "wins": 2,
+      "win_rate": 0.25,
+      "map_role": "trained",
+      "interval": [
+        0.07147768885802763,
+        0.5907301208974108
+      ],
+      "timeouts": 0,
+      "seed_pairs": 4,
+      "behavior_totals": {
+        "dash_activations": 9.0,
+        "bow_activations": 15.0,
+        "platform_activations": 4.0,
+        "arrows_fired": 15.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 5.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 1.0,
+        "deaths_other": 0.0,
+        "reward_outcome": -4.0,
+        "reward_kills": 0.10000000149011612,
+        "reward_deaths": -0.6000000089406967,
+        "episodes": 8.0,
+        "wins": 2.0,
+        "timeouts": 0.0,
+        "ticks": 3519.0
+      },
+      "mean_kills": 0.125,
+      "mean_deaths": 0.75,
+      "mean_duration": 7.331250000000001
+    },
+    {
+      "opponent": "random",
+      "map": 3,
+      "games": 4,
+      "wins": 3,
+      "win_rate": 0.75,
+      "map_role": "untrained",
+      "interval": [
+        0.3006360524426366,
+        0.9544139373553637
+      ],
+      "timeouts": 0,
+      "seed_pairs": 2,
+      "behavior_totals": {
+        "dash_activations": 6.0,
+        "bow_activations": 9.0,
+        "platform_activations": 2.0,
+        "arrows_fired": 9.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 0.0,
+        "deaths_opponent": 1.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": 2.0,
+        "reward_kills": 0.0,
+        "reward_deaths": -0.10000000149011612,
+        "episodes": 4.0,
+        "wins": 3.0,
+        "timeouts": 0.0,
+        "ticks": 2088.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.25,
+      "mean_duration": 8.700000000000001
+    },
+    {
+      "opponent": "random",
+      "map": 4,
+      "games": 4,
+      "wins": 4,
+      "win_rate": 1.0,
+      "map_role": "untrained",
+      "interval": [
+        0.5100999795960008,
+        1
+      ],
+      "timeouts": 0,
+      "seed_pairs": 2,
+      "behavior_totals": {
+        "dash_activations": 4.0,
+        "bow_activations": 6.0,
+        "platform_activations": 1.0,
+        "arrows_fired": 5.0,
+        "arrow_hits": 0.0,
+        "deaths_environment": 0.0,
+        "deaths_opponent": 0.0,
+        "deaths_self": 0.0,
+        "deaths_other": 0.0,
+        "reward_outcome": 4.0,
+        "reward_kills": 0.0,
+        "reward_deaths": 0.0,
+        "episodes": 4.0,
+        "wins": 4.0,
+        "timeouts": 0.0,
+        "ticks": 1235.0
+      },
+      "mean_kills": 0.0,
+      "mean_deaths": 0.0,
+      "mean_duration": 5.145833333333333
+    }
+  ],
+  "games": [
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10001,
+      "side": 0,
+      "save": true,
+      "name": "random-0",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 1015,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -4.82314,
+          "y": 18.13365,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 38.29096,
+          "y": -11.39682,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 254,
+        "seconds": 16.916666666666668,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 4.0,
+          "platform_activations": 2.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 1015.0
+        },
+        "per_minute": {
+          "dash_activations": 7.0935960591133,
+          "bow_activations": 14.1871921182266,
+          "platform_activations": 7.0935960591133,
+          "arrows_fired": 10.64039408866995,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 3.937007874015748,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.5078740157480315,
+        "dash": 0.3937007874015748,
+        "arrow": 0.31496062992125984,
+        "platform": 0.6653543307086615
+      },
+      "hold_rates": {
+        "1": 0.125,
+        "2": 0.125,
+        "4": 0.041666666666666664,
+        "8": 0.125,
+        "16": 0.5833333333333334
+      },
+      "latched_fraction": 0.905511811023622,
+      "replay": "random-0.rep",
+      "visual": "random-0.json",
+      "mind": "random-0.mind.json.gz",
+      "replay_sha256": "8c342ea20c56b5459853302a7788ef42f8e69838818e050b609e26e36a159daf"
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10002,
+      "side": 0,
+      "save": false,
+      "name": "random-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 328,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -7.39191,
+          "y": 3.63128,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 21.09243,
+          "y": -11.61446,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 82,
+        "seconds": 5.466666666666667,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 328.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 21.95121951219512,
+          "platform_activations": 0.0,
+          "arrows_fired": 10.97560975609756,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 12.195121951219512,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.8048780487804879,
+        "dash": 0.024390243902439025,
+        "arrow": 0.32926829268292684,
+        "platform": 0.7682926829268293
+      },
+      "hold_rates": {
+        "1": 0.1,
+        "2": 0.1,
+        "4": 0.3,
+        "8": 0.1,
+        "16": 0.4
+      },
+      "latched_fraction": 0.8780487804878049
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10003,
+      "side": 0,
+      "save": false,
+      "name": "random-4",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 312,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -6.17342,
+          "y": 8.3762,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 1,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 20.60718,
+          "y": -5.27339,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 78,
+        "seconds": 5.2,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 312.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 23.076923076923077,
+          "platform_activations": 0.0,
+          "arrows_fired": 23.076923076923077,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 12.820512820512821,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.358974358974359,
+        "dash": 0.0641025641025641,
+        "arrow": 0.3717948717948718,
+        "platform": 0.46153846153846156
+      },
+      "hold_rates": {
+        "1": 0.125,
+        "2": 0.0,
+        "4": 0.25,
+        "8": 0.125,
+        "16": 0.5
+      },
+      "latched_fraction": 0.8974358974358975
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10004,
+      "side": 0,
+      "save": false,
+      "name": "random-6",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 323,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -1.06106,
+          "y": -3.5687,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -3.75985,
+          "y": -3.57433,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 81,
+        "seconds": 5.383333333333334,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 323.0
+        },
+        "per_minute": {
+          "dash_activations": 11.145510835913312,
+          "bow_activations": 22.291021671826623,
+          "platform_activations": 0.0,
+          "arrows_fired": 11.145510835913312,
+          "arrow_hits": 0.0,
+          "deaths_environment": 11.145510835913312,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -12.345679012345679,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.2345679196310633
+        }
+      },
+      "action_rates": {
+        "jump": 0.4074074074074074,
+        "dash": 0.345679012345679,
+        "arrow": 0.5432098765432098,
+        "platform": 0.8024691358024691
+      },
+      "hold_rates": {
+        "1": 0.14285714285714285,
+        "2": 0.0,
+        "4": 0.14285714285714285,
+        "8": 0.0,
+        "16": 0.7142857142857143
+      },
+      "latched_fraction": 0.9135802469135802
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10001,
+      "side": 0,
+      "save": true,
+      "name": "initial-0",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 128,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -22.20779,
+          "y": -11.36909,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 13.06827,
+          "y": 6.24524,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 32,
+        "seconds": 2.1333333333333333,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 0.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 0.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 128.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 0.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 0.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 28.125,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -31.25,
+          "reward_kills": 0.0,
+          "reward_deaths": -3.1250000465661287
+        }
+      },
+      "action_rates": {
+        "jump": 1.0,
+        "dash": 0.0,
+        "arrow": 0.0,
+        "platform": 0.5
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 1.0
+      },
+      "latched_fraction": 0.9375,
+      "replay": "initial-0.rep",
+      "visual": "initial-0.json",
+      "mind": "initial-0.mind.json.gz",
+      "replay_sha256": "3ead4fb5fc0e889a1e2d960d648d764cd54949cf2eb2a39fcbc7cb9a6a61d9aa"
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10002,
+      "side": 0,
+      "save": false,
+      "name": "initial-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 211,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -15.64252,
+          "y": 6.57245,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 30.25704,
+          "y": -11.67946,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 53,
+        "seconds": 3.5166666666666666,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 211.0
+        },
+        "per_minute": {
+          "dash_activations": 17.061611374407583,
+          "bow_activations": 17.061611374407583,
+          "platform_activations": 0.0,
+          "arrows_fired": 17.061611374407583,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 18.867924528301888,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.7735849056603774,
+        "dash": 0.09433962264150944,
+        "arrow": 0.49056603773584906,
+        "platform": 0.4528301886792453
+      },
+      "hold_rates": {
+        "1": 0.2,
+        "2": 0.3,
+        "4": 0.2,
+        "8": 0.1,
+        "16": 0.2
+      },
+      "latched_fraction": 0.8113207547169812
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10003,
+      "side": 0,
+      "save": false,
+      "name": "initial-4",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 703,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 3.70896,
+          "y": 14.00218,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 29.90357,
+          "y": -11.42435,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 176,
+        "seconds": 11.716666666666667,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 3.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 703.0
+        },
+        "per_minute": {
+          "dash_activations": 10.241820768136558,
+          "bow_activations": 15.362731152204836,
+          "platform_activations": 5.120910384068279,
+          "arrows_fired": 10.241820768136558,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 5.681818181818182,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.44886363636363635,
+        "dash": 0.44886363636363635,
+        "arrow": 0.4943181818181818,
+        "platform": 0.5511363636363636
+      },
+      "hold_rates": {
+        "1": 0.11764705882352941,
+        "2": 0.058823529411764705,
+        "4": 0.11764705882352941,
+        "8": 0.17647058823529413,
+        "16": 0.5294117647058824
+      },
+      "latched_fraction": 0.9034090909090909
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10004,
+      "side": 0,
+      "save": false,
+      "name": "initial-6",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 215,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -42.79638,
+          "y": -11.36593,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 30.23801,
+          "y": -6.11791,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 54,
+        "seconds": 3.5833333333333335,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 215.0
+        },
+        "per_minute": {
+          "dash_activations": 16.744186046511626,
+          "bow_activations": 16.744186046511626,
+          "platform_activations": 0.0,
+          "arrows_fired": 16.744186046511626,
+          "arrow_hits": 0.0,
+          "deaths_environment": 16.744186046511626,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -18.51851851851852,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.8518518794465948
+        }
+      },
+      "action_rates": {
+        "jump": 0.7592592592592593,
+        "dash": 0.9814814814814815,
+        "arrow": 0.37037037037037035,
+        "platform": 0.018518518518518517
+      },
+      "hold_rates": {
+        "1": 0.16666666666666666,
+        "2": 0.0,
+        "4": 0.16666666666666666,
+        "8": 0.16666666666666666,
+        "16": 0.5
+      },
+      "latched_fraction": 0.8888888888888888
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110001,
+      "side": 0,
+      "save": true,
+      "name": "random-map-1-0",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 133,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -13.37796,
+          "y": 9.0796,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 22.35184,
+          "y": -11.75237,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 34,
+        "seconds": 2.216666666666667,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 133.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 27.06766917293233,
+          "platform_activations": 0.0,
+          "arrows_fired": 27.06766917293233,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 29.41176470588235,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.029411764705882353,
+        "dash": 0.2647058823529412,
+        "arrow": 0.29411764705882354,
+        "platform": 0.5294117647058824
+      },
+      "hold_rates": {
+        "1": 0.2,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.4,
+        "16": 0.4
+      },
+      "latched_fraction": 0.8529411764705882,
+      "replay": "random-map-1-0.rep",
+      "visual": "random-map-1-0.json",
+      "mind": "random-map-1-0.mind.json.gz",
+      "replay_sha256": "19b68c67ddeb273b9d933b2b94e70f970eccaf927e455d14295a88fd362d0892"
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110002,
+      "side": 0,
+      "save": false,
+      "name": "random-map-1-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 98,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -15.78591,
+          "y": 7.98331,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 1,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 13.40398,
+          "y": 0.30609,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 25,
+        "seconds": 1.6333333333333333,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 98.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 36.734693877551024,
+          "platform_activations": 0.0,
+          "arrows_fired": 36.734693877551024,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 40.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 1.0,
+        "dash": 0.16,
+        "arrow": 0.64,
+        "platform": 0.36
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.0,
+        "4": 0.3333333333333333,
+        "8": 0.0,
+        "16": 0.6666666666666666
+      },
+      "latched_fraction": 0.88
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110003,
+      "side": 0,
+      "save": false,
+      "name": "random-map-1-4",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 215,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -11.76409,
+          "y": 9.70357,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 41.71613,
+          "y": -11.72723,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 54,
+        "seconds": 3.5833333333333335,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 0.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 215.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 16.744186046511626,
+          "platform_activations": 0.0,
+          "arrows_fired": 0.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 18.51851851851852,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.16666666666666666,
+        "dash": 0.0,
+        "arrow": 0.09259259259259259,
+        "platform": 0.9814814814814815
+      },
+      "hold_rates": {
+        "1": 0.14285714285714285,
+        "2": 0.0,
+        "4": 0.14285714285714285,
+        "8": 0.2857142857142857,
+        "16": 0.42857142857142855
+      },
+      "latched_fraction": 0.8703703703703703
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110004,
+      "side": 0,
+      "save": false,
+      "name": "random-map-1-6",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 886,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -23.20131,
+          "y": 9.88358,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -15.32103,
+          "y": 4.5349,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 222,
+        "seconds": 14.766666666666667,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 3.0,
+          "platform_activations": 2.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 886.0
+        },
+        "per_minute": {
+          "dash_activations": 8.126410835214447,
+          "bow_activations": 12.18961625282167,
+          "platform_activations": 8.126410835214447,
+          "arrows_fired": 12.18961625282167,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 4.504504504504505,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.6351351351351351,
+        "dash": 0.4009009009009009,
+        "arrow": 0.28378378378378377,
+        "platform": 0.6306306306306306
+      },
+      "hold_rates": {
+        "1": 0.05,
+        "2": 0.15,
+        "4": 0.1,
+        "8": 0.05,
+        "16": 0.65
+      },
+      "latched_fraction": 0.9099099099099099
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110001,
+      "side": 0,
+      "save": true,
+      "name": "initial-map-1-0",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 263,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -28.04214,
+          "y": -11.57719,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 27.60043,
+          "y": 3.98559,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 66,
+        "seconds": 4.383333333333334,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 263.0
+        },
+        "per_minute": {
+          "dash_activations": 13.688212927756652,
+          "bow_activations": 13.688212927756652,
+          "platform_activations": 0.0,
+          "arrows_fired": 13.688212927756652,
+          "arrow_hits": 0.0,
+          "deaths_environment": 13.688212927756652,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -15.151515151515152,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.515151537729032
+        }
+      },
+      "action_rates": {
+        "jump": 0.5151515151515151,
+        "dash": 0.7272727272727273,
+        "arrow": 0.3939393939393939,
+        "platform": 0.3939393939393939
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.25,
+        "4": 0.25,
+        "8": 0.125,
+        "16": 0.375
+      },
+      "latched_fraction": 0.8787878787878788,
+      "replay": "initial-map-1-0.rep",
+      "visual": "initial-map-1-0.json",
+      "mind": "initial-map-1-0.mind.json.gz",
+      "replay_sha256": "c1d125c0aaf8f19e0244a317008dd5f73396cb6d4019809faf4d2c83840ec49b"
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110002,
+      "side": 0,
+      "save": false,
+      "name": "initial-map-1-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 491,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -16.58414,
+          "y": -2.84301,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 28.81155,
+          "y": -11.47124,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 123,
+        "seconds": 8.183333333333334,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 491.0
+        },
+        "per_minute": {
+          "dash_activations": 7.3319755600814664,
+          "bow_activations": 14.663951120162933,
+          "platform_activations": 7.3319755600814664,
+          "arrows_fired": 14.663951120162933,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 8.130081300813009,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.5365853658536586,
+        "dash": 0.6260162601626016,
+        "arrow": 0.34146341463414637,
+        "platform": 0.3821138211382114
+      },
+      "hold_rates": {
+        "1": 0.14285714285714285,
+        "2": 0.14285714285714285,
+        "4": 0.14285714285714285,
+        "8": 0.07142857142857142,
+        "16": 0.5
+      },
+      "latched_fraction": 0.8861788617886179
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110003,
+      "side": 0,
+      "save": false,
+      "name": "initial-map-1-4",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 825,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -16.55743,
+          "y": 4.6169,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -5.7405,
+          "y": 13.02549,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 207,
+        "seconds": 13.75,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 4.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 4.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 825.0
+        },
+        "per_minute": {
+          "dash_activations": 8.727272727272727,
+          "bow_activations": 17.454545454545453,
+          "platform_activations": 4.363636363636363,
+          "arrows_fired": 17.454545454545453,
+          "arrow_hits": 0.0,
+          "deaths_environment": 4.363636363636363,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -4.830917874396135,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.48309179463824214
+        }
+      },
+      "action_rates": {
+        "jump": 0.48792270531400966,
+        "dash": 0.2318840579710145,
+        "arrow": 0.34782608695652173,
+        "platform": 0.6328502415458938
+      },
+      "hold_rates": {
+        "1": 0.14285714285714285,
+        "2": 0.047619047619047616,
+        "4": 0.0,
+        "8": 0.3333333333333333,
+        "16": 0.47619047619047616
+      },
+      "latched_fraction": 0.8985507246376812
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110004,
+      "side": 0,
+      "save": false,
+      "name": "initial-map-1-6",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 172,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -15.46264,
+          "y": 8.29336,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 25.16665,
+          "y": -11.42549,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 43,
+        "seconds": 2.8666666666666667,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 172.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 20.930232558139533,
+          "platform_activations": 0.0,
+          "arrows_fired": 20.930232558139533,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 23.25581395348837,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.0,
+        "dash": 0.023255813953488372,
+        "arrow": 0.37209302325581395,
+        "platform": 0.37209302325581395
+      },
+      "hold_rates": {
+        "1": 0.25,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 0.75
+      },
+      "latched_fraction": 0.9069767441860465
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210001,
+      "side": 0,
+      "save": true,
+      "name": "random-map-2-0",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 537,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -29.6075,
+          "y": 10.77802,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 44.51691,
+          "y": -11.30369,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 135,
+        "seconds": 8.95,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 537.0
+        },
+        "per_minute": {
+          "dash_activations": 6.703910614525141,
+          "bow_activations": 6.703910614525141,
+          "platform_activations": 6.703910614525141,
+          "arrows_fired": 6.703910614525141,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 7.407407407407407,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.8074074074074075,
+        "dash": 0.5111111111111111,
+        "arrow": 0.1037037037037037,
+        "platform": 0.6074074074074074
+      },
+      "hold_rates": {
+        "1": 0.05,
+        "2": 0.35,
+        "4": 0.15,
+        "8": 0.2,
+        "16": 0.25
+      },
+      "latched_fraction": 0.8518518518518519,
+      "replay": "random-map-2-0.rep",
+      "visual": "random-map-2-0.json",
+      "mind": "random-map-2-0.mind.json.gz",
+      "replay_sha256": "7f99a3d2498561ee313512e838eff5a38bc9032f09a7d3956490de2967fbc622"
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210002,
+      "side": 0,
+      "save": false,
+      "name": "random-map-2-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 513,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -33.74938,
+          "y": -7.49341,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 9.0278,
+          "y": -11.57018,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 129,
+        "seconds": 8.55,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 513.0
+        },
+        "per_minute": {
+          "dash_activations": 7.017543859649122,
+          "bow_activations": 14.035087719298245,
+          "platform_activations": 7.017543859649122,
+          "arrows_fired": 14.035087719298245,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 7.751937984496124,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.7054263565891473,
+        "dash": 0.2713178294573643,
+        "arrow": 0.4263565891472868,
+        "platform": 0.5891472868217055
+      },
+      "hold_rates": {
+        "1": 0.2222222222222222,
+        "2": 0.1111111111111111,
+        "4": 0.2222222222222222,
+        "8": 0.05555555555555555,
+        "16": 0.3888888888888889
+      },
+      "latched_fraction": 0.8604651162790697
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210003,
+      "side": 0,
+      "save": false,
+      "name": "random-map-2-4",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 426,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 0,
+          "x": -47.79892,
+          "y": -11.46555,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 30.41127,
+          "y": -8.88701,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 107,
+        "seconds": 7.1,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 426.0
+        },
+        "per_minute": {
+          "dash_activations": 8.450704225352114,
+          "bow_activations": 8.450704225352114,
+          "platform_activations": 8.450704225352114,
+          "arrows_fired": 8.450704225352114,
+          "arrow_hits": 0.0,
+          "deaths_environment": 8.450704225352114,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -9.345794392523365,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.9345794531786553
+        }
+      },
+      "action_rates": {
+        "jump": 0.3644859813084112,
+        "dash": 0.4953271028037383,
+        "arrow": 0.14018691588785046,
+        "platform": 0.7289719626168224
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.09090909090909091,
+        "4": 0.2727272727272727,
+        "8": 0.09090909090909091,
+        "16": 0.5454545454545454
+      },
+      "latched_fraction": 0.897196261682243
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210004,
+      "side": 0,
+      "save": false,
+      "name": "random-map-2-6",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 278,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -28.6816,
+          "y": 6.48496,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 44.3958,
+          "y": -10.91748,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 70,
+        "seconds": 4.633333333333334,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 278.0
+        },
+        "per_minute": {
+          "dash_activations": 12.949640287769784,
+          "bow_activations": 12.949640287769784,
+          "platform_activations": 0.0,
+          "arrows_fired": 12.949640287769784,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 14.285714285714286,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.5428571428571428,
+        "dash": 0.45714285714285713,
+        "arrow": 0.37142857142857144,
+        "platform": 0.6142857142857143
+      },
+      "hold_rates": {
+        "1": 0.2,
+        "2": 0.2,
+        "4": 0.1,
+        "8": 0.2,
+        "16": 0.3
+      },
+      "latched_fraction": 0.8571428571428571
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210001,
+      "side": 0,
+      "save": true,
+      "name": "initial-map-2-0",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 460,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -57.79926,
+          "y": -11.64588,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 37.57465,
+          "y": 0.23736,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 115,
+        "seconds": 7.666666666666667,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 460.0
+        },
+        "per_minute": {
+          "dash_activations": 7.826086956521739,
+          "bow_activations": 7.826086956521739,
+          "platform_activations": 7.826086956521739,
+          "arrows_fired": 7.826086956521739,
+          "arrow_hits": 0.0,
+          "deaths_environment": 7.826086956521739,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -8.695652173913043,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.8695652303488358
+        }
+      },
+      "action_rates": {
+        "jump": 0.7043478260869566,
+        "dash": 0.2956521739130435,
+        "arrow": 0.2956521739130435,
+        "platform": 0.3565217391304348
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.16666666666666666,
+        "4": 0.16666666666666666,
+        "8": 0.25,
+        "16": 0.4166666666666667
+      },
+      "latched_fraction": 0.8956521739130435,
+      "replay": "initial-map-2-0.rep",
+      "visual": "initial-map-2-0.json",
+      "mind": "initial-map-2-0.mind.json.gz",
+      "replay_sha256": "f6cec7a57500c32ed23ef4101c9a0491f053f62038747c518fa267e92ca200c2"
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210002,
+      "side": 0,
+      "save": false,
+      "name": "initial-map-2-2",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 396,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -8.5988,
+          "y": -11.75166,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 24.43424,
+          "y": 9.05182,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 99,
+        "seconds": 6.6,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 396.0
+        },
+        "per_minute": {
+          "dash_activations": 9.090909090909092,
+          "bow_activations": 18.181818181818183,
+          "platform_activations": 0.0,
+          "arrows_fired": 18.181818181818183,
+          "arrow_hits": 0.0,
+          "deaths_environment": 9.090909090909092,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -10.1010101010101,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.010101025152688
+        }
+      },
+      "action_rates": {
+        "jump": 0.5050505050505051,
+        "dash": 0.15151515151515152,
+        "arrow": 0.1717171717171717,
+        "platform": 0.6565656565656566
+      },
+      "hold_rates": {
+        "1": 0.2222222222222222,
+        "2": 0.0,
+        "4": 0.1111111111111111,
+        "8": 0.0,
+        "16": 0.6666666666666666
+      },
+      "latched_fraction": 0.9090909090909091
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210003,
+      "side": 0,
+      "save": false,
+      "name": "initial-map-2-4",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 570,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -45.9828,
+          "y": -6.13803,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 0,
+          "x": 26.13181,
+          "y": -11.77873,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 143,
+        "seconds": 9.5,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 3.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 570.0
+        },
+        "per_minute": {
+          "dash_activations": 6.315789473684211,
+          "bow_activations": 18.94736842105263,
+          "platform_activations": 6.315789473684211,
+          "arrows_fired": 18.94736842105263,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 6.993006993006993,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.2937062937062937,
+        "dash": 0.3776223776223776,
+        "arrow": 0.5734265734265734,
+        "platform": 0.5734265734265734
+      },
+      "hold_rates": {
+        "1": 0.22727272727272727,
+        "2": 0.09090909090909091,
+        "4": 0.22727272727272727,
+        "8": 0.18181818181818182,
+        "16": 0.2727272727272727
+      },
+      "latched_fraction": 0.8461538461538461
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210004,
+      "side": 0,
+      "save": false,
+      "name": "initial-map-2-6",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 277,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -8.80336,
+          "y": -11.40843,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 20.64159,
+          "y": -3.23222,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 70,
+        "seconds": 4.616666666666666,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 277.0
+        },
+        "per_minute": {
+          "dash_activations": 12.996389891696753,
+          "bow_activations": 25.992779783393505,
+          "platform_activations": 0.0,
+          "arrows_fired": 25.992779783393505,
+          "arrow_hits": 0.0,
+          "deaths_environment": 12.996389891696753,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -14.285714285714286,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.4285714498588018
+        }
+      },
+      "action_rates": {
+        "jump": 0.4857142857142857,
+        "dash": 0.5285714285714286,
+        "arrow": 0.6285714285714286,
+        "platform": 0.9571428571428572
+      },
+      "hold_rates": {
+        "1": 0.3,
+        "2": 0.1,
+        "4": 0.1,
+        "8": 0.1,
+        "16": 0.4
+      },
+      "latched_fraction": 0.8571428571428571
+    },
+    {
+      "opponent": "random",
+      "map": 3,
+      "seed": 20001,
+      "side": 0,
+      "save": true,
+      "name": "map-3-0",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 1225,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -11.60142,
+          "y": 19.02659,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 39.22809,
+          "y": -11.69925,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 307,
+        "seconds": 20.416666666666668,
+        "totals": {
+          "dash_activations": 3.0,
+          "bow_activations": 5.0,
+          "platform_activations": 2.0,
+          "arrows_fired": 5.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 1225.0
+        },
+        "per_minute": {
+          "dash_activations": 8.816326530612244,
+          "bow_activations": 14.693877551020407,
+          "platform_activations": 5.877551020408163,
+          "arrows_fired": 14.693877551020407,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 3.257328990228013,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.5732899022801303,
+        "dash": 0.3941368078175896,
+        "arrow": 0.38436482084690554,
+        "platform": 0.501628664495114
+      },
+      "hold_rates": {
+        "1": 0.09375,
+        "2": 0.09375,
+        "4": 0.125,
+        "8": 0.25,
+        "16": 0.4375
+      },
+      "latched_fraction": 0.8957654723127035,
+      "replay": "map-3-0.rep",
+      "visual": "map-3-0.json",
+      "mind": "map-3-0.mind.json.gz",
+      "replay_sha256": "e3d301dade745a0a8033b6d965bab3a3d3bed68c10d6f2e5ac3b2909c886efd0"
+    },
+    {
+      "opponent": "random",
+      "map": 3,
+      "seed": 20002,
+      "side": 0,
+      "save": false,
+      "name": "map-3-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 280,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -26.91999,
+          "y": 15.84497,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 1,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 4.9584,
+          "y": 12.08428,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 70,
+        "seconds": 4.666666666666667,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 280.0
+        },
+        "per_minute": {
+          "dash_activations": 12.857142857142856,
+          "bow_activations": 12.857142857142856,
+          "platform_activations": 0.0,
+          "arrows_fired": 12.857142857142856,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 14.285714285714286,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.9142857142857143,
+        "dash": 0.6142857142857143,
+        "arrow": 0.18571428571428572,
+        "platform": 0.9428571428571428
+      },
+      "hold_rates": {
+        "1": 0.1,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.1,
+        "16": 0.4
+      },
+      "latched_fraction": 0.8571428571428571
+    },
+    {
+      "opponent": "random",
+      "map": 4,
+      "seed": 20001,
+      "side": 0,
+      "save": true,
+      "name": "map-4-0",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 227,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -27.65898,
+          "y": 24.21047,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 41.04472,
+          "y": -11.35353,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 57,
+        "seconds": 3.783333333333333,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 227.0
+        },
+        "per_minute": {
+          "dash_activations": 15.859030837004406,
+          "bow_activations": 15.859030837004406,
+          "platform_activations": 0.0,
+          "arrows_fired": 15.859030837004406,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 17.54385964912281,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.3333333333333333,
+        "dash": 0.5614035087719298,
+        "arrow": 0.3157894736842105,
+        "platform": 0.5614035087719298
+      },
+      "hold_rates": {
+        "1": 0.2222222222222222,
+        "2": 0.2222222222222222,
+        "4": 0.2222222222222222,
+        "8": 0.0,
+        "16": 0.3333333333333333
+      },
+      "latched_fraction": 0.8421052631578947,
+      "replay": "map-4-0.rep",
+      "visual": "map-4-0.json",
+      "mind": "map-4-0.mind.json.gz",
+      "replay_sha256": "1b5414da4d9f15831b468d593de21362ef0a4bab12f124378911b5f89db6ef8b"
+    },
+    {
+      "opponent": "random",
+      "map": 4,
+      "seed": 20002,
+      "side": 0,
+      "save": false,
+      "name": "map-4-2",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 392,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -32.69148,
+          "y": 15.95099,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 31.57352,
+          "y": -11.39821,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 98,
+        "seconds": 6.533333333333333,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 392.0
+        },
+        "per_minute": {
+          "dash_activations": 9.183673469387756,
+          "bow_activations": 18.367346938775512,
+          "platform_activations": 9.183673469387756,
+          "arrows_fired": 9.183673469387756,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 10.204081632653061,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.9387755102040817,
+        "dash": 0.5918367346938775,
+        "arrow": 0.1836734693877551,
+        "platform": 0.8775510204081632
+      },
+      "hold_rates": {
+        "1": 0.08333333333333333,
+        "2": 0.16666666666666666,
+        "4": 0.16666666666666666,
+        "8": 0.16666666666666666,
+        "16": 0.4166666666666667
+      },
+      "latched_fraction": 0.8775510204081632
+    },
+    {
+      "opponent": "selfplay",
+      "map": 0,
+      "seed": 30001,
+      "side": 0,
+      "save": true,
+      "name": "selfplay",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 408,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -20.05358,
+          "y": 2.72912,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 10.1939,
+          "y": 10.48644,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 102,
+        "seconds": 6.8,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 408.0
+        },
+        "per_minute": {
+          "dash_activations": 8.823529411764707,
+          "bow_activations": 8.823529411764707,
+          "platform_activations": 8.823529411764707,
+          "arrows_fired": 8.823529411764707,
+          "arrow_hits": 0.0,
+          "deaths_environment": 8.823529411764707,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -9.803921568627452,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.9803921714717266
+        }
+      },
+      "action_rates": {
+        "jump": 0.4411764705882353,
+        "dash": 0.5490196078431373,
+        "arrow": 0.3137254901960784,
+        "platform": 0.6372549019607843
+      },
+      "hold_rates": {
+        "1": 0.08333333333333333,
+        "2": 0.25,
+        "4": 0.08333333333333333,
+        "8": 0.08333333333333333,
+        "16": 0.5
+      },
+      "latched_fraction": 0.8823529411764706,
+      "replay": "selfplay.rep",
+      "visual": "selfplay.json",
+      "mind": "selfplay.mind.json.gz",
+      "replay_sha256": "99ecf6cf78c610371423a6078c48e95b261c36ec09eae78f5b64b4aaa808c9b1"
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10001,
+      "side": 1,
+      "save": false,
+      "name": "random-1",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 984,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 1,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -22.21683,
+          "y": 11.82104,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -2.52491,
+          "y": -3.49,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 246,
+        "seconds": 16.4,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 984.0
+        },
+        "per_minute": {
+          "dash_activations": 7.317073170731708,
+          "bow_activations": 7.317073170731708,
+          "platform_activations": 3.658536585365854,
+          "arrows_fired": 3.658536585365854,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 4.065040650406504,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.5934959349593496,
+        "dash": 0.3333333333333333,
+        "arrow": 0.25609756097560976,
+        "platform": 0.8821138211382114
+      },
+      "hold_rates": {
+        "1": 0.09523809523809523,
+        "2": 0.09523809523809523,
+        "4": 0.047619047619047616,
+        "8": 0.09523809523809523,
+        "16": 0.6666666666666666
+      },
+      "latched_fraction": 0.9146341463414634
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10002,
+      "side": 1,
+      "save": false,
+      "name": "random-3",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 1092,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -26.41232,
+          "y": -2.77176,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 40.3119,
+          "y": -11.94517,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 273,
+        "seconds": 18.2,
+        "totals": {
+          "dash_activations": 3.0,
+          "bow_activations": 4.0,
+          "platform_activations": 2.0,
+          "arrows_fired": 4.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 1092.0
+        },
+        "per_minute": {
+          "dash_activations": 9.89010989010989,
+          "bow_activations": 13.186813186813188,
+          "platform_activations": 6.593406593406594,
+          "arrows_fired": 13.186813186813188,
+          "arrow_hits": 0.0,
+          "deaths_environment": 3.296703296703297,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -3.663003663003663,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.3663003717586671
+        }
+      },
+      "action_rates": {
+        "jump": 0.6813186813186813,
+        "dash": 0.42857142857142855,
+        "arrow": 0.31135531135531136,
+        "platform": 0.7472527472527473
+      },
+      "hold_rates": {
+        "1": 0.10344827586206896,
+        "2": 0.2413793103448276,
+        "4": 0.06896551724137931,
+        "8": 0.06896551724137931,
+        "16": 0.5172413793103449
+      },
+      "latched_fraction": 0.8937728937728938
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10003,
+      "side": 1,
+      "save": false,
+      "name": "random-5",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 665,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -45.01415,
+          "y": -11.93018,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 39.8592,
+          "y": 1.15397,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 167,
+        "seconds": 11.083333333333334,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 3.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 665.0
+        },
+        "per_minute": {
+          "dash_activations": 10.827067669172932,
+          "bow_activations": 16.240601503759397,
+          "platform_activations": 5.413533834586466,
+          "arrows_fired": 16.240601503759397,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 5.9880239520958085,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.437125748502994,
+        "dash": 0.5029940119760479,
+        "arrow": 0.33532934131736525,
+        "platform": 0.5209580838323353
+      },
+      "hold_rates": {
+        "1": 0.05,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.15,
+        "16": 0.4
+      },
+      "latched_fraction": 0.8802395209580839
+    },
+    {
+      "opponent": "random",
+      "map": 0,
+      "seed": 10004,
+      "side": 1,
+      "save": false,
+      "name": "random-7",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 199,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -31.26126,
+          "y": -11.52334,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -10.14166,
+          "y": -3.49,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 50,
+        "seconds": 3.316666666666667,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 199.0
+        },
+        "per_minute": {
+          "dash_activations": 18.09045226130653,
+          "bow_activations": 18.09045226130653,
+          "platform_activations": 0.0,
+          "arrows_fired": 18.09045226130653,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 20.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.38,
+        "dash": 0.54,
+        "arrow": 0.36,
+        "platform": 0.58
+      },
+      "hold_rates": {
+        "1": 0.125,
+        "2": 0.125,
+        "4": 0.125,
+        "8": 0.375,
+        "16": 0.25
+      },
+      "latched_fraction": 0.84
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10001,
+      "side": 1,
+      "save": false,
+      "name": "initial-1",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 384,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -9.08584,
+          "y": -4.47631,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -1.04497,
+          "y": 8.69144,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 96,
+        "seconds": 6.4,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 384.0
+        },
+        "per_minute": {
+          "dash_activations": 9.375,
+          "bow_activations": 18.75,
+          "platform_activations": 9.375,
+          "arrows_fired": 18.75,
+          "arrow_hits": 0.0,
+          "deaths_environment": 9.375,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -10.416666666666666,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.0416666821887095
+        }
+      },
+      "action_rates": {
+        "jump": 0.5208333333333334,
+        "dash": 0.6875,
+        "arrow": 0.4791666666666667,
+        "platform": 0.7291666666666666
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.2222222222222222,
+        "4": 0.1111111111111111,
+        "8": 0.1111111111111111,
+        "16": 0.5555555555555556
+      },
+      "latched_fraction": 0.90625
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10002,
+      "side": 1,
+      "save": false,
+      "name": "initial-3",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 381,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -14.51316,
+          "y": -5.71426,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -1.27272,
+          "y": 4.52324,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 96,
+        "seconds": 6.35,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 381.0
+        },
+        "per_minute": {
+          "dash_activations": 9.448818897637796,
+          "bow_activations": 9.448818897637796,
+          "platform_activations": 9.448818897637796,
+          "arrows_fired": 9.448818897637796,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 10.416666666666666,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.625,
+        "dash": 0.5416666666666666,
+        "arrow": 0.3333333333333333,
+        "platform": 0.7083333333333334
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.2,
+        "4": 0.2,
+        "8": 0.1,
+        "16": 0.5
+      },
+      "latched_fraction": 0.8958333333333334
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10003,
+      "side": 1,
+      "save": false,
+      "name": "initial-5",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 244,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -15.41444,
+          "y": 9.11208,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 36.30198,
+          "y": -11.48372,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 61,
+        "seconds": 4.066666666666666,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 244.0
+        },
+        "per_minute": {
+          "dash_activations": 14.754098360655739,
+          "bow_activations": 14.754098360655739,
+          "platform_activations": 0.0,
+          "arrows_fired": 14.754098360655739,
+          "arrow_hits": 0.0,
+          "deaths_environment": 14.754098360655739,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -16.39344262295082,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.639344286723215
+        }
+      },
+      "action_rates": {
+        "jump": 0.08196721311475409,
+        "dash": 0.21311475409836064,
+        "arrow": 0.3442622950819672,
+        "platform": 1.0
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.2,
+        "16": 0.8
+      },
+      "latched_fraction": 0.9180327868852459
+    },
+    {
+      "opponent": "initial",
+      "map": 0,
+      "seed": 10004,
+      "side": 1,
+      "save": false,
+      "name": "initial-7",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 1425,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -7.78903,
+          "y": -5.45282,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -0.6212,
+          "y": 13.38164,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 357,
+        "seconds": 23.75,
+        "totals": {
+          "dash_activations": 4.0,
+          "bow_activations": 6.0,
+          "platform_activations": 2.0,
+          "arrows_fired": 5.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 1425.0
+        },
+        "per_minute": {
+          "dash_activations": 10.105263157894736,
+          "bow_activations": 15.157894736842104,
+          "platform_activations": 5.052631578947368,
+          "arrows_fired": 12.631578947368421,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 2.8011204481792715,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.3445378151260504,
+        "dash": 0.4481792717086835,
+        "arrow": 0.4005602240896359,
+        "platform": 0.6582633053221288
+      },
+      "hold_rates": {
+        "1": 0.08333333333333333,
+        "2": 0.027777777777777776,
+        "4": 0.25,
+        "8": 0.16666666666666666,
+        "16": 0.4722222222222222
+      },
+      "latched_fraction": 0.8991596638655462
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110001,
+      "side": 1,
+      "save": false,
+      "name": "random-map-1-1",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 1812,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 12.53208,
+          "y": 13.55697,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": 28.57985,
+          "y": -2.71532,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 453,
+        "seconds": 30.2,
+        "totals": {
+          "dash_activations": 3.0,
+          "bow_activations": 5.0,
+          "platform_activations": 3.0,
+          "arrows_fired": 5.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 1812.0
+        },
+        "per_minute": {
+          "dash_activations": 5.960264900662252,
+          "bow_activations": 9.933774834437086,
+          "platform_activations": 5.960264900662252,
+          "arrows_fired": 9.933774834437086,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.9867549668874174,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -2.207505518763797,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.22075055516581923
+        }
+      },
+      "action_rates": {
+        "jump": 0.48123620309050774,
+        "dash": 0.3333333333333333,
+        "arrow": 0.26490066225165565,
+        "platform": 0.5562913907284768
+      },
+      "hold_rates": {
+        "1": 0.13636363636363635,
+        "2": 0.06818181818181818,
+        "4": 0.13636363636363635,
+        "8": 0.09090909090909091,
+        "16": 0.5681818181818182
+      },
+      "latched_fraction": 0.9028697571743929
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110002,
+      "side": 1,
+      "save": false,
+      "name": "random-map-1-3",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 280,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -23.64888,
+          "y": -11.3023,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 22.63949,
+          "y": 0.15085,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 70,
+        "seconds": 4.666666666666667,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 280.0
+        },
+        "per_minute": {
+          "dash_activations": 12.857142857142856,
+          "bow_activations": 12.857142857142856,
+          "platform_activations": 0.0,
+          "arrows_fired": 12.857142857142856,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 14.285714285714286,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.22857142857142856,
+        "dash": 0.32857142857142857,
+        "arrow": 0.2714285714285714,
+        "platform": 0.42857142857142855
+      },
+      "hold_rates": {
+        "1": 0.3333333333333333,
+        "2": 0.0,
+        "4": 0.1111111111111111,
+        "8": 0.1111111111111111,
+        "16": 0.4444444444444444
+      },
+      "latched_fraction": 0.8714285714285714
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110003,
+      "side": 1,
+      "save": false,
+      "name": "random-map-1-5",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 580,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -7.10917,
+          "y": 37.92848,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": 10.2284,
+          "y": 6.39432,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 145,
+        "seconds": 9.666666666666666,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 580.0
+        },
+        "per_minute": {
+          "dash_activations": 6.206896551724138,
+          "bow_activations": 12.413793103448276,
+          "platform_activations": 6.206896551724138,
+          "arrows_fired": 12.413793103448276,
+          "arrow_hits": 0.0,
+          "deaths_environment": 6.206896551724138,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -6.896551724137931,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.689655182690456
+        }
+      },
+      "action_rates": {
+        "jump": 0.4206896551724138,
+        "dash": 0.41379310344827586,
+        "arrow": 0.23448275862068965,
+        "platform": 0.7310344827586207
+      },
+      "hold_rates": {
+        "1": 0.23529411764705882,
+        "2": 0.11764705882352941,
+        "4": 0.11764705882352941,
+        "8": 0.0,
+        "16": 0.5294117647058824
+      },
+      "latched_fraction": 0.8827586206896552
+    },
+    {
+      "opponent": "random",
+      "map": 1,
+      "seed": 110004,
+      "side": 1,
+      "save": false,
+      "name": "random-map-1-7",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 1659,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 38.62636,
+          "y": -11.61857,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 35.23108,
+          "y": 11.99061,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 415,
+        "seconds": 27.65,
+        "totals": {
+          "dash_activations": 5.0,
+          "bow_activations": 7.0,
+          "platform_activations": 3.0,
+          "arrows_fired": 7.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 1659.0
+        },
+        "per_minute": {
+          "dash_activations": 10.8499095840868,
+          "bow_activations": 15.18987341772152,
+          "platform_activations": 6.50994575045208,
+          "arrows_fired": 15.18987341772152,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 2.4096385542168677,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.4506024096385542,
+        "dash": 0.3204819277108434,
+        "arrow": 0.3421686746987952,
+        "platform": 0.4674698795180723
+      },
+      "hold_rates": {
+        "1": 0.13333333333333333,
+        "2": 0.06666666666666667,
+        "4": 0.2,
+        "8": 0.17777777777777778,
+        "16": 0.4222222222222222
+      },
+      "latched_fraction": 0.891566265060241
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110001,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-1-1",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 573,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -21.885,
+          "y": -12.18326,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 6.0159,
+          "y": 0.86355,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 144,
+        "seconds": 9.55,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 573.0
+        },
+        "per_minute": {
+          "dash_activations": 6.282722513089005,
+          "bow_activations": 12.56544502617801,
+          "platform_activations": 6.282722513089005,
+          "arrows_fired": 12.56544502617801,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 6.944444444444445,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.6805555555555556,
+        "dash": 0.3888888888888889,
+        "arrow": 0.4444444444444444,
+        "platform": 0.7638888888888888
+      },
+      "hold_rates": {
+        "1": 0.13333333333333333,
+        "2": 0.06666666666666667,
+        "4": 0.06666666666666667,
+        "8": 0.26666666666666666,
+        "16": 0.4666666666666667
+      },
+      "latched_fraction": 0.8958333333333334
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110002,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-1-3",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 762,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -19.42812,
+          "y": 4.0013,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 53.24372,
+          "y": -11.53543,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 191,
+        "seconds": 12.7,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 3.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 762.0
+        },
+        "per_minute": {
+          "dash_activations": 9.448818897637796,
+          "bow_activations": 14.173228346456694,
+          "platform_activations": 4.724409448818898,
+          "arrows_fired": 14.173228346456694,
+          "arrow_hits": 0.0,
+          "deaths_environment": 4.724409448818898,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -5.2356020942408374,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.5235602172257389
+        }
+      },
+      "action_rates": {
+        "jump": 0.44502617801047123,
+        "dash": 0.39267015706806285,
+        "arrow": 0.3612565445026178,
+        "platform": 0.6073298429319371
+      },
+      "hold_rates": {
+        "1": 0.15,
+        "2": 0.1,
+        "4": 0.1,
+        "8": 0.2,
+        "16": 0.45
+      },
+      "latched_fraction": 0.8952879581151832
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110003,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-1-5",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 1326,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -21.22312,
+          "y": 8.13877,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": 18.77085,
+          "y": -5.16489,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 332,
+        "seconds": 22.1,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 3.0,
+          "platform_activations": 2.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 1326.0
+        },
+        "per_minute": {
+          "dash_activations": 5.4298642533936645,
+          "bow_activations": 8.144796380090497,
+          "platform_activations": 5.4298642533936645,
+          "arrows_fired": 8.144796380090497,
+          "arrow_hits": 0.0,
+          "deaths_environment": 2.7149321266968323,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -3.0120481927710845,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.30120482376541
+        }
+      },
+      "action_rates": {
+        "jump": 0.786144578313253,
+        "dash": 0.4457831325301205,
+        "arrow": 0.4126506024096386,
+        "platform": 0.7951807228915663
+      },
+      "hold_rates": {
+        "1": 0.07142857142857142,
+        "2": 0.03571428571428571,
+        "4": 0.14285714285714285,
+        "8": 0.07142857142857142,
+        "16": 0.6785714285714286
+      },
+      "latched_fraction": 0.9156626506024096
+    },
+    {
+      "opponent": "initial",
+      "map": 1,
+      "seed": 110004,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-1-7",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 369,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 35,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -13.04921,
+          "y": 14.66094,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": 17.2107,
+          "y": -1.61279,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 93,
+        "seconds": 6.15,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 369.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 19.51219512195122,
+          "platform_activations": 9.75609756097561,
+          "arrows_fired": 19.51219512195122,
+          "arrow_hits": 0.0,
+          "deaths_environment": 9.75609756097561,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -10.75268817204301,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.075268833227055
+        }
+      },
+      "action_rates": {
+        "jump": 0.46236559139784944,
+        "dash": 0.3763440860215054,
+        "arrow": 0.43010752688172044,
+        "platform": 0.3763440860215054
+      },
+      "hold_rates": {
+        "1": 0.1111111111111111,
+        "2": 0.1111111111111111,
+        "4": 0.1111111111111111,
+        "8": 0.1111111111111111,
+        "16": 0.5555555555555556
+      },
+      "latched_fraction": 0.9032258064516129
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210001,
+      "side": 1,
+      "save": false,
+      "name": "random-map-2-1",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 412,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 1,
+          "x": -29.45868,
+          "y": -5.58375,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 40.65039,
+          "y": -6.95864,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 103,
+        "seconds": 6.866666666666666,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 412.0
+        },
+        "per_minute": {
+          "dash_activations": 8.737864077669903,
+          "bow_activations": 17.475728155339805,
+          "platform_activations": 0.0,
+          "arrows_fired": 8.737864077669903,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 9.70873786407767,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.6796116504854369,
+        "dash": 0.32038834951456313,
+        "arrow": 0.36893203883495146,
+        "platform": 0.7864077669902912
+      },
+      "hold_rates": {
+        "1": 0.125,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.125,
+        "16": 0.75
+      },
+      "latched_fraction": 0.9223300970873787
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210002,
+      "side": 1,
+      "save": false,
+      "name": "random-map-2-3",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 330,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -6.59968,
+          "y": -11.40913,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 36.75389,
+          "y": -6.53162,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 83,
+        "seconds": 5.5,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 330.0
+        },
+        "per_minute": {
+          "dash_activations": 10.909090909090908,
+          "bow_activations": 10.909090909090908,
+          "platform_activations": 0.0,
+          "arrows_fired": 10.909090909090908,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 12.048192771084338,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.7951807228915663,
+        "dash": 0.42168674698795183,
+        "arrow": 0.21686746987951808,
+        "platform": 0.6144578313253012
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.14285714285714285,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 0.8571428571428571
+      },
+      "latched_fraction": 0.9156626506024096
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210003,
+      "side": 1,
+      "save": false,
+      "name": "random-map-2-5",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 278,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -7.97587,
+          "y": -11.55242,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 31.80815,
+          "y": 3.46395,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 70,
+        "seconds": 4.633333333333334,
+        "totals": {
+          "dash_activations": 0.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 278.0
+        },
+        "per_minute": {
+          "dash_activations": 0.0,
+          "bow_activations": 25.899280575539567,
+          "platform_activations": 0.0,
+          "arrows_fired": 12.949640287769784,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 14.285714285714286,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.6,
+        "dash": 0.24285714285714285,
+        "arrow": 0.3,
+        "platform": 0.6285714285714286
+      },
+      "hold_rates": {
+        "1": 0.2857142857142857,
+        "2": 0.0,
+        "4": 0.0,
+        "8": 0.14285714285714285,
+        "16": 0.5714285714285714
+      },
+      "latched_fraction": 0.9
+    },
+    {
+      "opponent": "random",
+      "map": 2,
+      "seed": 210004,
+      "side": 1,
+      "save": false,
+      "name": "random-map-2-7",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 283,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -13.07905,
+          "y": -5.43357,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 51.60057,
+          "y": -11.88767,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 71,
+        "seconds": 4.716666666666667,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 283.0
+        },
+        "per_minute": {
+          "dash_activations": 12.720848056537102,
+          "bow_activations": 12.720848056537102,
+          "platform_activations": 0.0,
+          "arrows_fired": 12.720848056537102,
+          "arrow_hits": 0.0,
+          "deaths_environment": 12.720848056537102,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -14.084507042253522,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.408450725212903
+        }
+      },
+      "action_rates": {
+        "jump": 0.6619718309859155,
+        "dash": 0.43661971830985913,
+        "arrow": 0.22535211267605634,
+        "platform": 0.4788732394366197
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.14285714285714285,
+        "4": 0.0,
+        "8": 0.42857142857142855,
+        "16": 0.42857142857142855
+      },
+      "latched_fraction": 0.9014084507042254
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210001,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-2-1",
+      "win": false,
+      "timeout": false,
+      "kills": 1,
+      "deaths": 1,
+      "ticks": 323,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -32.27316,
+          "y": 1.33114,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 1,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 28.73271,
+          "y": 5.00353,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 81,
+        "seconds": 5.383333333333334,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 1.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.10000000149011612,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 323.0
+        },
+        "per_minute": {
+          "dash_activations": 11.145510835913312,
+          "bow_activations": 22.291021671826623,
+          "platform_activations": 11.145510835913312,
+          "arrows_fired": 22.291021671826623,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 11.145510835913312,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -12.345679012345679,
+          "reward_kills": 1.2345679196310633,
+          "reward_deaths": -1.2345679196310633
+        }
+      },
+      "action_rates": {
+        "jump": 0.5061728395061729,
+        "dash": 0.2716049382716049,
+        "arrow": 0.2716049382716049,
+        "platform": 0.48148148148148145
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.1111111111111111,
+        "4": 0.2222222222222222,
+        "8": 0.2222222222222222,
+        "16": 0.4444444444444444
+      },
+      "latched_fraction": 0.8888888888888888
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210002,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-2-3",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 261,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -16.81674,
+          "y": 30.0175,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 44.98645,
+          "y": -11.87666,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 66,
+        "seconds": 4.35,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 261.0
+        },
+        "per_minute": {
+          "dash_activations": 13.793103448275863,
+          "bow_activations": 13.793103448275863,
+          "platform_activations": 0.0,
+          "arrows_fired": 13.793103448275863,
+          "arrow_hits": 0.0,
+          "deaths_environment": 13.793103448275863,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -15.151515151515152,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.515151537729032
+        }
+      },
+      "action_rates": {
+        "jump": 0.7575757575757576,
+        "dash": 0.7272727272727273,
+        "arrow": 0.24242424242424243,
+        "platform": 0.30303030303030304
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.3333333333333333,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 0.6666666666666666
+      },
+      "latched_fraction": 0.9090909090909091
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210003,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-2-5",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 220,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -52.88379,
+          "y": -11.83737,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 32.69665,
+          "y": 2.60083,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 55,
+        "seconds": 3.6666666666666665,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 220.0
+        },
+        "per_minute": {
+          "dash_activations": 16.363636363636363,
+          "bow_activations": 16.363636363636363,
+          "platform_activations": 0.0,
+          "arrows_fired": 16.363636363636363,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 18.181818181818183,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.7090909090909091,
+        "dash": 0.38181818181818183,
+        "arrow": 0.38181818181818183,
+        "platform": 0.41818181818181815
+      },
+      "hold_rates": {
+        "1": 0.0,
+        "2": 0.2,
+        "4": 0.0,
+        "8": 0.0,
+        "16": 0.8
+      },
+      "latched_fraction": 0.9090909090909091
+    },
+    {
+      "opponent": "initial",
+      "map": 2,
+      "seed": 210004,
+      "side": 1,
+      "save": false,
+      "name": "initial-map-2-7",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 1012,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -6.65799,
+          "y": 5.13791,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": 7.28365,
+          "y": -11.59282,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 253,
+        "seconds": 16.866666666666667,
+        "totals": {
+          "dash_activations": 2.0,
+          "bow_activations": 3.0,
+          "platform_activations": 1.0,
+          "arrows_fired": 3.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 1.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 1012.0
+        },
+        "per_minute": {
+          "dash_activations": 7.1146245059288535,
+          "bow_activations": 10.671936758893281,
+          "platform_activations": 3.5573122529644268,
+          "arrows_fired": 10.671936758893281,
+          "arrow_hits": 0.0,
+          "deaths_environment": 3.5573122529644268,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -3.952569169960474,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.39525692288583447
+        }
+      },
+      "action_rates": {
+        "jump": 0.37549407114624506,
+        "dash": 0.3952569169960474,
+        "arrow": 0.2134387351778656,
+        "platform": 0.7075098814229249
+      },
+      "hold_rates": {
+        "1": 0.04,
+        "2": 0.12,
+        "4": 0.2,
+        "8": 0.12,
+        "16": 0.52
+      },
+      "latched_fraction": 0.9011857707509882
+    },
+    {
+      "opponent": "random",
+      "map": 3,
+      "seed": 20001,
+      "side": 1,
+      "save": false,
+      "name": "map-3-1",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 314,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -34.66362,
+          "y": -11.61458,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -5.68398,
+          "y": 30.42114,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 79,
+        "seconds": 5.233333333333333,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 314.0
+        },
+        "per_minute": {
+          "dash_activations": 11.464968152866241,
+          "bow_activations": 22.929936305732483,
+          "platform_activations": 0.0,
+          "arrows_fired": 22.929936305732483,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 12.658227848101266,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.7468354430379747,
+        "dash": 0.26582278481012656,
+        "arrow": 0.43037974683544306,
+        "platform": 0.6075949367088608
+      },
+      "hold_rates": {
+        "1": 0.3333333333333333,
+        "2": 0.0,
+        "4": 0.1111111111111111,
+        "8": 0.1111111111111111,
+        "16": 0.4444444444444444
+      },
+      "latched_fraction": 0.8860759493670886
+    },
+    {
+      "opponent": "random",
+      "map": 3,
+      "seed": 20002,
+      "side": 1,
+      "save": false,
+      "name": "map-3-3",
+      "win": false,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 1,
+      "ticks": 269,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 1,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -2.89293,
+          "y": 19.1612,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 0,
+          "x": -3.40996,
+          "y": 20.26031,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 68,
+        "seconds": 4.483333333333333,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 1.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": -1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": -0.10000000149011612,
+          "episodes": 1.0,
+          "wins": 0.0,
+          "timeouts": 0.0,
+          "ticks": 269.0
+        },
+        "per_minute": {
+          "dash_activations": 13.382899628252789,
+          "bow_activations": 13.382899628252789,
+          "platform_activations": 0.0,
+          "arrows_fired": 13.382899628252789,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 13.382899628252789,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": -14.705882352941176,
+          "reward_kills": 0.0,
+          "reward_deaths": -1.47058825720759
+        }
+      },
+      "action_rates": {
+        "jump": 0.14705882352941177,
+        "dash": 0.39705882352941174,
+        "arrow": 0.47058823529411764,
+        "platform": 0.4117647058823529
+      },
+      "hold_rates": {
+        "1": 0.14285714285714285,
+        "2": 0.14285714285714285,
+        "4": 0.0,
+        "8": 0.14285714285714285,
+        "16": 0.5714285714285714
+      },
+      "latched_fraction": 0.8970588235294118
+    },
+    {
+      "opponent": "random",
+      "map": 4,
+      "seed": 20001,
+      "side": 1,
+      "save": false,
+      "name": "map-4-1",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 334,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 2,
+          "x": -48.33373,
+          "y": -11.46845,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": 5.85187,
+          "y": 19.73152,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 84,
+        "seconds": 5.566666666666666,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 2.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 2.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 334.0
+        },
+        "per_minute": {
+          "dash_activations": 10.778443113772456,
+          "bow_activations": 21.55688622754491,
+          "platform_activations": 0.0,
+          "arrows_fired": 21.55688622754491,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 11.904761904761905,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.7023809523809523,
+        "dash": 0.25,
+        "arrow": 0.40476190476190477,
+        "platform": 0.6309523809523809
+      },
+      "hold_rates": {
+        "1": 0.3,
+        "2": 0.0,
+        "4": 0.1,
+        "8": 0.1,
+        "16": 0.5
+      },
+      "latched_fraction": 0.8809523809523809
+    },
+    {
+      "opponent": "random",
+      "map": 4,
+      "seed": 20002,
+      "side": 1,
+      "save": false,
+      "name": "map-4-3",
+      "win": true,
+      "timeout": false,
+      "kills": 0,
+      "deaths": 0,
+      "ticks": 282,
+      "final_players": [
+        {
+          "id": 1,
+          "flags": 0,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 1,
+          "cause_of_death": 0,
+          "x": -23.18228,
+          "y": -11.53375,
+          "scale": 1.0
+        },
+        {
+          "id": 2,
+          "flags": 3,
+          "stocks": 0,
+          "kills": 0,
+          "deaths": 0,
+          "cause_of_death": 5,
+          "x": -1.24093,
+          "y": 15.933,
+          "scale": 1.0
+        }
+      ],
+      "behavior": {
+        "schema": 1,
+        "decisions": 71,
+        "seconds": 4.7,
+        "totals": {
+          "dash_activations": 1.0,
+          "bow_activations": 1.0,
+          "platform_activations": 0.0,
+          "arrows_fired": 1.0,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0,
+          "reward_outcome": 1.0,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0,
+          "episodes": 1.0,
+          "wins": 1.0,
+          "timeouts": 0.0,
+          "ticks": 282.0
+        },
+        "per_minute": {
+          "dash_activations": 12.76595744680851,
+          "bow_activations": 12.76595744680851,
+          "platform_activations": 0.0,
+          "arrows_fired": 12.76595744680851,
+          "arrow_hits": 0.0,
+          "deaths_environment": 0.0,
+          "deaths_opponent": 0.0,
+          "deaths_self": 0.0,
+          "deaths_other": 0.0
+        },
+        "reward_per_1000_decisions": {
+          "reward_outcome": 14.084507042253522,
+          "reward_kills": 0.0,
+          "reward_deaths": 0.0
+        }
+      },
+      "action_rates": {
+        "jump": 0.18309859154929578,
+        "dash": 0.38028169014084506,
+        "arrow": 0.4507042253521127,
+        "platform": 0.43661971830985913
+      },
+      "hold_rates": {
+        "1": 0.14285714285714285,
+        "2": 0.14285714285714285,
+        "4": 0.0,
+        "8": 0.14285714285714285,
+        "16": 0.5714285714285714
+      },
+      "latched_fraction": 0.9014084507042254
+    }
+  ]
+}
