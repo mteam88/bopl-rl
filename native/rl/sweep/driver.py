@@ -148,7 +148,10 @@ class Driver:
             hypers, info, suggested = self.spec.defaults(), {}, False
         else:
             hypers, info = self.sweeper.suggest(dict(self.spec.defaults()))
-            hypers = {name: hypers[name] for name in self.spec.params}
+            # Plain Python numbers: numpy scalars subclass float/int but print
+            # as np.float64(...) and would look odd in sweep.json.
+            hypers = {name: (int(hypers[name]) if self.spec.is_integer(name)
+                             else float(hypers[name])) for name in self.spec.params}
             info = {k: (v if isinstance(v, (int, float, str)) else str(v))
                     for k, v in (info or {}).items()}
             suggested = True
