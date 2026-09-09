@@ -18,8 +18,10 @@ import time
 import numpy as np
 from environment import Environment,configure
 from evaluation_protocol import map_ids,opponents
+import layout
 
 SCHEMA=1
+HEAD_BOUNDS=[sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS+1)]  # logits row offsets per head
 ELO_SCALE=400/math.log(10)
 
 
@@ -43,14 +45,16 @@ class Model:
     def start(self,task,side,rng):
         import torch
         state=self.policy.initial(2,'cpu')
-        def act(observation):
+        def act(observation,mask):
             nonlocal state
             with torch.no_grad():
                 batch=torch.from_numpy(np.ascontiguousarray(observation,dtype=np.float32))
                 logits,_,state=self.policy.step(batch,state)
-            row=as_numpy(logits)[side]
+            # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices.
+            row=np.where(np.asarray(mask[side])!=0,as_numpy(logits)[side],-np.inf)
             action=[]
-            for part in (row[:256],row[256:272]):
+            for lo,hi in zip(HEAD_BOUNDS,HEAD_BOUNDS[1:]):  # aim, buttons, hold
+                part=row[lo:hi]
                 weights=np.exp(part-part.max()); weights/=weights.sum()
                 action.append(rng.choice(len(part),p=weights))
             return np.asarray(action,dtype=np.int64)
@@ -61,7 +65,8 @@ class Random:
     name='random'; kind='anchor'; step=None; sha256=None
 
     def start(self,task,side,rng):
-        return lambda observation: np.asarray([rng.integers(256),rng.integers(16)],dtype=np.int64)
+        # No hold output: hold index 0 (length 1) leaves every decision's buttons free.
+        return lambda observation,mask: np.asarray([rng.integers(layout.ACT_AIM),rng.integers(layout.ACT_BUTTONS),0],dtype=np.int64)
 
 
 def select_checkpoints(run,count):
@@ -144,8 +149,8 @@ def main():
                 actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
                         1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
                 while not env.ended:
-                    observation=env.obs.copy()
-                    env.step(np.stack([actors[0](observation),actors[1](observation)]))
+                    observation=env.obs.copy(); mask=env.mask.copy()
+                    env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
                 final=env.frame()
                 timeout=bool(final['flags']&2)
                 a_won=bool(final['players'][task['side']]['flags']&2) and not timeout

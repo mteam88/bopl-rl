@@ -12,12 +12,22 @@ from environment import Environment,configure
 from native_policy import load
 from common import atomic_json
 import decision_dump
+import layout
 from telemetry import FIELDS,summarize
 from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
 
+def masked(logits,mask):
+    """Apply the environment's action mask (1 = allowed) the way the trainer samples: disallowed logits -> -inf."""
+    return logits.masked_fill(torch.from_numpy(np.asarray(mask,dtype=np.uint8)==0),float('-inf'))
+
 def sample(logits,generator):
+    """One index per head (aim, buttons, hold), shape (batch, layout.NUM_ATNS)."""
     return torch.stack([torch.multinomial(part.softmax(-1),1,generator=generator).squeeze(-1)
-                        for part in logits.split([256,16],-1)],-1)
+                        for part in logits.split(layout.ACTION_SIZES,-1)],-1)
+
+def random_action(rng):
+    """Scripted opponent without a hold output: hold index 0 (length 1) keeps every decision free."""
+    return torch.tensor([rng.integers(layout.ACT_AIM),rng.integers(layout.ACT_BUTTONS),0])
 
 def wilson(wins,n):
     if not n: return [0,1]
@@ -95,26 +105,31 @@ def main():
                 rng=np.random.default_rng(task['seed']*11+task['side'])
                 frames=[env.frame()] if task['save'] else []
                 mind=[]
-                button_counts=np.zeros(4,dtype=np.int64); decisions=0; events=[]
+                button_counts=np.zeros(4,dtype=np.int64); hold_counts=np.zeros(layout.ACT_HOLD,dtype=np.int64)
+                latched_decisions=0; decisions=0; events=[]
                 while not env.ended:
                     observation=torch.from_numpy(env.obs.copy())
+                    mask=env.mask.copy()
                     with torch.no_grad():
                         logits,values,state=policy.step(observation,state)
+                        logits=masked(logits,mask)
                         actions=sample(logits,generator)
                         other=1-task['side']
                         if opponent is not None:
                             old_logits,_,other_state=opponent.step(observation,other_state)
-                            actions[other]=sample(old_logits,generator)[other]
+                            actions[other]=sample(masked(old_logits,mask),generator)[other]
                         elif task['opponent']=='random':
-                            actions[other]=torch.tensor([rng.integers(256),rng.integers(16)])
+                            actions[other]=random_action(rng)
                     if task['save']:
                         side=task['side']
                         mind.append(decision_dump.decision(env.state.header.episode_ticks,
-                                    logits[side],values[side],actions[side]))
+                                    logits[side],values[side],actions[side],mask[side]))
                     env.step(actions.numpy())
                     events.append(env.telemetry[task['side']].copy())
-                    buttons=int(actions[task['side'],1])
+                    buttons=int(actions[task['side'],1])  # masked to the latched state while a hold is in force
                     for i in range(4): button_counts[i]+=bool(buttons&(1<<i))
+                    if mask[task['side'],layout.ACT_AIM:].all(): hold_counts[int(actions[task['side'],2])]+=1  # free decision
+                    else: latched_decisions+=1
                     decisions+=1
                     if task['save']:
                         frames[-1]['actions']=actions.tolist()
@@ -123,7 +138,10 @@ def main():
                 timeout=bool(final['flags']&2); win=bool(me['flags']&2) and not timeout
                 result={**task,'win':win,'timeout':timeout,'kills':me['kills'],'deaths':me['deaths'],
                         'ticks':final['t'],'final_players':final['players'],'behavior':summarize(np.asarray(events)),
-                        'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist()))}
+                        'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist())),
+                        # Hold head: share of free (unlatched) decisions choosing each hold length, as the trainer's hold_* log.
+                        'hold_rates':dict(zip([str(n) for n in layout.HOLD_LENGTHS],(hold_counts/max(1,hold_counts.sum())).tolist())),
+                        'latched_fraction':latched_decisions/max(1,decisions)}
                 if task['save']:
                     replay=out/(task['name']+'.rep'); env.replay(replay)
                     visual=out/(task['name']+'.json')

@@ -11,6 +11,8 @@ import tempfile
 
 import numpy as np
 
+import layout
+
 
 def write_checkpoint(path, save_weights, *, obs_size, hidden, num_layers,
                      architecture, game_steps, learner_steps, config):
@@ -25,16 +27,17 @@ def write_checkpoint(path, save_weights, *, obs_size, hidden, num_layers,
             raise ValueError(f"Invalid native checkpoint {key}")
     if hidden < 8 or hidden % 8 or learner_steps > game_steps:
         raise ValueError("Invalid native hidden size or decision counters")
-    encoder = hidden * obs_size
-    if architecture == "bopl-set-mingru-v1" and obs_size == 3257:
-        encoder = hidden * 905 + 64 * 49 + hidden * (hidden + 128)
-    elif architecture != "puffernet-mingru":
+    if architecture == layout.ARCHITECTURE and obs_size == layout.OBS_SIZE:
+        encoder = layout.set_encoder_weights(hidden)
+    elif architecture == "puffernet-mingru":
+        encoder = hidden * obs_size
+    else:
         raise ValueError("Unsupported native checkpoint architecture or observation size")
-    expected = encoder + 273 * hidden + num_layers * 3 * hidden**2
+    expected = encoder + layout.DECODER * hidden + num_layers * 3 * hidden**2
     if not config.get("training_maps") or type(config.get("episode_ticks")) is not int or config["episode_ticks"] < 1:
         raise ValueError("Checkpoint config requires training_maps and positive episode_ticks")
     metadata = dict(schema=1, backend="pufferlib-native", architecture=architecture,
-                    precision="float32", **dimensions, action_sizes=[256, 16],
+                    precision="float32", **dimensions, action_sizes=list(layout.ACTION_SIZES),
                     step=game_steps, learner_steps=learner_steps,
                     step_unit="physical_player_decisions", config=config)
     # Reject unserializable/nonfinite configuration before invoking the backend.

@@ -186,6 +186,12 @@ The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
   entropy or gradient until the latch expires. Metrics: `entropy_hold`,
   env `hold_1..hold_16`, `latched_decisions`; `--entropy-head-scale a,b,h`
   scales the entropy bonus per head (`BOPL_ENT_HEAD_SCALE`).
+- Reading the entropies: `entropy_buttons`/`entropy_hold` are minibatch means
+  over *all* rows, and latched rows contribute exactly 0, so with ~85% of
+  decisions latched (2M-step smoke: 11 free choices + 59 latched per
+  113-decision episode) a healthy near-uniform button head reads ~0.45, not
+  2.77. Divide by the free fraction `1 - latched_decisions / decisions` before
+  applying run-003-style collapse thresholds.
 - Checkpoints are `bopl-set-mingru-v2`; 001–003 checkpoints do not load.
   Not launched: `native/artifacts/rl/long-run-500m/launch-004-s73-hold-head.sh`.
 

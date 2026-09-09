@@ -18,6 +18,7 @@ ROOT=HERE.parents[2]
 
 def capture(out,games,game=None):
     import environment as E
+    from layout import ACT_AIM,ACT_BUTTONS
     from telemetry import EVENT_FIELDS,FIELDS
     E.configure(out/'workers',game=game)
     result=[]
@@ -38,7 +39,8 @@ def capture(out,games,game=None):
                 obs_hash.update(env.obs.tobytes())
             record()
             while not env.ended:
-                actions=np.stack([rng.integers(256,size=2),rng.integers(16,size=2)],axis=-1)
+                # Random aim and buttons; hold index 0 (length 1) so no decision is latched.
+                actions=np.stack([rng.integers(ACT_AIM,size=2),rng.integers(ACT_BUTTONS,size=2),np.zeros(2,np.int64)],axis=-1)
                 env.step(actions); record();decisions+=1
                 events.append(env.telemetry.copy())
             replay=out/f'episode-{game}.rep';env.replay(replay)
@@ -66,7 +68,7 @@ def capture(out,games,game=None):
         assert all(getattr(env.state.telemetry[p],k)==0 for p in range(2) for k in EVENT_FIELDS)
     # Force a short timeout so the sparse timeout contract is always exercised.
     with E.Environment(seed=18,limit=4,reward=sparse) as env:
-        env.step([[0,0],[0,0]])
+        env.step([[0,0,0],[0,0,0]])
         assert env.ended and env.state.header.flags&2
         np.testing.assert_array_equal(env.telemetry[:,FIELDS.index('reward_outcome')],-0.5)
         np.testing.assert_array_equal(env.telemetry[:,FIELDS.index('reward_kills')],0)

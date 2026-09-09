@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import numpy as np
-from replay_data import ReplayWorld, ROOT, decode, previous, player_sources
+from replay_data import ReplayWorld, ROOT, decode, hold_run, previous, player_sources
 
 def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
     if repeat not in (2,4): raise ValueError("Repeat must be 2 or 4")
@@ -22,6 +22,9 @@ def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
     if destination.exists(): raise FileExistsError(destination)
     rows, labels, ticks, alive, events = [], [], [], [], []
     history = deque(maxlen=10)
+    # Replays have no hold head: the tail's button runs are rebuilt from the
+    # recorded decisions alone (consecutive decisions each button was down).
+    runs = np.zeros((len(meta['players']), 4), np.int32)
     with ReplayWorld(meta, output/(destination.stem+'.log')) as world:
         sources = player_sources(world.game)
         runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
@@ -31,8 +34,11 @@ def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
                 history.append(world.pack(origin, episode_limit))
                 if (t-origin)%repeat == 0:
                     obs = history[0].copy()  # t-9, clamped to initial observation
-                    prior = [(0,0)]*len(meta['players']) if t==origin else list(zip(inputs[t-repeat]['angle'], inputs[t-repeat]['buttons']))
-                    previous(obs, prior)
+                    if t == origin: prior = [(0,0)]*len(meta['players'])
+                    else:
+                        prior = list(zip(inputs[t-repeat]['angle'], inputs[t-repeat]['buttons']))
+                        runs = hold_run(runs, inputs[t-repeat]['buttons'])
+                    previous(obs, prior, runs)
                     rows.append(obs[index]); labels.append([inputs[t,index]['angle'],inputs[t,index]['buttons']])
                     ticks.append(t)
                     alive.append(world.state.players[index].alive_bodies > 0)

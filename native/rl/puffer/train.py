@@ -119,6 +119,7 @@ def arguments():
         head_scale = []
     if len(head_scale) != layout.NUM_ATNS or not all(math.isfinite(s) and 0 <= s <= 100 for s in head_scale):
         p.error(f'entropy-head-scale must be {layout.NUM_ATNS} finite values in 0..100')
+    a.head_scale = head_scale
     a.evaluation_maps = a.evaluation_maps or a.training_maps
     a.heldout_maps = a.heldout_maps or [m for m in range(31) if m not in a.training_maps][:2]
     if not a.no_eval:
@@ -148,7 +149,7 @@ def main():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir()
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
-    os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in head_scale)
+    os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
     import numpy as np
     import torch
     from pufferlib import _C, pufferl, selfplay
@@ -198,7 +199,7 @@ def main():
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
-                  entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=head_scale,
+                  entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=a.head_scale,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
                   layout=dict(version=2, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
                               hold_lengths=layout.HOLD_LENGTHS),

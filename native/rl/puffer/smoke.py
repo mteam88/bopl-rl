@@ -29,7 +29,8 @@ ROOT = HERE.parents[2]
 sys.path[:0] = [str(ROOT/'native/tools'), str(ROOT/'native/rl/research'), str(HERE)]
 import reference  # noqa: E402
 import counters  # noqa: E402
-from check_routing import layout, build_perm, OBS, PLAYER0  # noqa: E402
+from check_routing import layout, build_perm, OBS, PLAYER0, PLAYER  # noqa: E402
+import layout as policy_layout  # noqa: E402  (research/layout.py: architecture string, heads)
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--output', type=Path, default=ROOT/'native/artifacts/rl/autoresearch/native-smoke')
@@ -48,7 +49,7 @@ parser.add_argument('--game', type=Path)
 parser.add_argument('--encoder', choices=('linear', 'set'), default='linear', help='native encoder (sets BOPL_NATIVE_ENCODER before the trainer is created)')
 options = parser.parse_args()
 os.environ['BOPL_NATIVE_ENCODER'] = options.encoder
-ARCHITECTURE = 'bopl-set-mingru-v1' if options.encoder == 'set' else 'puffernet-mingru'
+ARCHITECTURE = policy_layout.ARCHITECTURE if options.encoder == 'set' else 'puffernet-mingru'
 if options.games % (2*options.buffers) or options.banks < 1 or options.updates < 1 or options.graphs == 0:
     parser.error('games must be a multiple of 2*buffers, banks and updates positive, graphs >= 1 or -1')
 output = options.output.resolve()
@@ -110,7 +111,7 @@ def pair_ok(obs, a, b):
     """Two different players who see each other (check_routing's invariant)."""
     ra, rb = obs[a], obs[b]
     if not (ra[PLAYER0] == 1 and ra[PLAYER0+1] == 1 and rb[PLAYER0] == 1 and rb[PLAYER0+1] == 1): return False
-    oa = ra[PLAYER0+148:PLAYER0+2*148]; ob = rb[PLAYER0+148:PLAYER0+2*148]
+    oa = ra[PLAYER0+PLAYER:PLAYER0+2*PLAYER]; ob = rb[PLAYER0+PLAYER:PLAYER0+2*PLAYER]
     if not (oa[0] == 1 and oa[1] == 0 and ob[0] == 1 and ob[1] == 0): return False
     return abs(oa[9]+ob[9]) < 1e-5 and abs(oa[10]+ob[10]) < 1e-5
 
@@ -175,9 +176,10 @@ try:
         check(f'update {number}: learner decisions exclude frozen rows', count['learner_steps'] == number*(games+historical)*horizon, counters=count)
         check(f'update {number}: opponent decisions', count['opponent_game_decisions'] == number*historical*horizon, counters=count)
         check(f'update {number}: padded rows', native['agent_steps'] == number*total_agents*horizon, agent_steps=native['agent_steps'])
-        for field in ('entropy_aim', 'entropy_buttons', 'advantage_std', 'gradient_norm', 'policy_loss', 'value_loss', 'kl'):
-            check(f'update {number}: finite {field}', record[field] is not None and math.isfinite(record[field]), value=record[field])
-        check(f'update {number}: joint entropy is the sum of the heads', abs(record['entropy']-record['entropy_aim']-record['entropy_buttons']) < 2e-5, record=record)
+        heads = ('entropy_aim', 'entropy_buttons', 'entropy_hold')  # one per action head (layout.ACTION_SIZES)
+        for field in heads + ('advantage_std', 'gradient_norm', 'policy_loss', 'value_loss', 'kl'):
+            check(f'update {number}: finite {field}', record.get(field) is not None and math.isfinite(record[field]), value=record.get(field))
+        check(f'update {number}: joint entropy is the sum of the heads', abs(record['entropy']-sum(record[h] for h in heads)) < 2e-5, record=record)
         check(f'update {number}: kill shaping off', record['behavior']['totals']['reward_kills'] == record['behavior']['totals']['reward_deaths'] == 0)
         rows_ok(f'update {number}')
         report['records'].append(record)
