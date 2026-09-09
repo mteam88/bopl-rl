@@ -314,5 +314,9 @@ the worker process + unix socket with direct calls. Smoke test:
       sort; the same fix resolved the REAL g3 physics divergence
       (Mjolnir/Portal iterate FindObjectsOfType<SlimeController> newest-first
       in Unity). All 15 committed fixtures now match unfiltered.
-- [ ] native_check checksum vs the socket path (RL thread) — same 240-step
-      zero-action sequence, compare FNV-1a over the decoded states.
+- [x] native_check checksum vs the socket path — `native/rl/backend_check.c`
+      runs the same sequence through `bopl_rl.c` + `Host` and through the .so:
+      identical (`5381bf21573b20a6` for the 240 zero-action ticks, plus a
+      242-decision scripted game with respawns and a dirty reset). The same
+      tool dlopens up to 16 file copies of the .so in one process, all
+      agreeing (2026-09-08, `native/rl/evidence/trainer-step/`).

@@ -56,6 +56,27 @@ Past that only a cheaper tick helps (section 6).
    same 240-step zero-action sequence, FNV-1a over decoded states. Nothing
    in-process ships until this is byte-equal.
 
+**Results for 1.3 and 1.4 (2026-09-08, `native/rl/backend_check.c`, evidence
+in `native/rl/evidence/trainer-step/backend_check-2026-09-08.txt`, taken
+while run 003 was live so timings are inflated):**
+
+- Socket path (`Host` NativeAOT via `bopl_rl.c`) and in-process
+  `BoplSimNative.so` give identical checksums on all three phases: 240
+  zero-action ticks `5381bf21573b20a6`, 242 decisions of scripted play with
+  respawns on map 1 `8dc13de2cc8c8e7c`, dirty reset back to phase (a)
+  reproduces it. 1.4 done.
+- 2, 4, 8 and 16 copies of the .so `dlopen`ed in one process (distinct
+  files), each running the sequence on its own thread concurrently: every
+  copy prints the same checksums, no signal-handler or GC trouble. ~238 MB
+  RSS per copy (16 copies 3.8 GB), same as a process today. Opens are
+  ~1.1 s each and were serial in the test; the backend should open in
+  parallel. 1.3 done: Route A is viable.
+- Compute per decision (4 ticks, 2 players, Dash/Gust/Invisibility, map 1)
+  through the ABI: ~78 us alone, 85-140 us with 8 copies stepping at once on
+  the loaded box; quiet zero-action ticks ~23 us. Reset 8-9 ms warm, 55-90
+  ms the first time a map is loaded. Use 0.1 ms per game-decision in the
+  section 0 model until measured idle.
+
 ## 2. In-process stepping (1-2 days, +~1.5x)
 
 Goal: `t_env` = compute only. Remove the unix socket, the .NET
