@@ -12,14 +12,30 @@ void research_pack(const BoplRlState *state, const BoplRlConfig *config, float *
 /* Standalone environments route every player straight to its own row. */
 static void research_route(BoplPuffer *env) {
     for (int s=0; s<env->num_agents; s++) {
-        env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_SIZE; env->action_ptr[s]=env->actions+2*s;
+        env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_SIZE; env->action_ptr[s]=env->actions+BOPL_NUM_ATNS*s;
         env->reward_ptr[s]=env->rewards+s; env->terminal_ptr[s]=env->terminals+s;
+        env->mask_ptr[s]=env->action_mask+(size_t)s*BOPL_LOGITS;
     }
 }
-void research_previous(float *observations, const BoplRlAction *actions, int count) {
+/* Action mask of the next decision, 2 x BOPL_LOGITS bytes (1 = allowed). The
+ * evaluator applies it before sampling exactly as the trainer's sampler does. */
+const unsigned char *research_mask(BoplPuffer *env) { return env->action_mask; }
+int research_mask_size(void) { return BOPL_LOGITS; }
+/* Replay extraction: the tail is rebuilt from the recorded inputs alone. Hold
+ * state is reconstructed as "consecutive ticks down / repeat" by the caller and
+ * passed in hold_run (4 ints per player, may be NULL); no latch is in force. */
+void research_previous(float *observations, const BoplRlAction *actions, const int *hold_run, int count) {
     for (int i=0; i<count; i++)
-        bopl_previous_action(observations+(size_t)(i+1)*BOPL_OBS_SIZE-7, actions[i]);
+        bopl_previous_action(observations+(size_t)(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES, actions[i], 0, hold_run?hold_run+4*i:NULL);
 }
+int research_layout(int *out, int capacity) {
+    int values[]={BOPL_OBS_SIZE, BOPL_PLAYER_FEATURES, BOPL_ABILITY_FEATURES, BOPL_ENTITY_FEATURES, BOPL_SLIME_FEATURES,
+                  BOPL_PREVIOUS_FEATURES, BOPL_OBS_ENTITIES, BOPL_OBS_SLIMES, BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, BOPL_HOLD_MAX};
+    int count=(int)(sizeof(values)/sizeof(values[0]));
+    if (capacity<count) return -count;
+    memcpy(out, values, sizeof(values)); return count;
+}
+int research_num_atns(void) { return BOPL_NUM_ATNS; }
 int research_check(BoplPuffer *env) { return env->log.game_errors; } /* observation overflow is a logged, non-fatal truncation */
 BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
     BoplPuffer *env=calloc(1, sizeof(*env));
@@ -34,8 +50,9 @@ BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay
         env->config.player[i].abilities[2]=14;
     }
     env->observations=calloc(2*BOPL_OBS_SIZE, sizeof(float));
-    env->actions=calloc(4, sizeof(float)); env->rewards=calloc(2, sizeof(float)); env->terminals=calloc(2, sizeof(float));
-    if (!env->observations || !env->actions || !env->rewards || !env->terminals) abort();
+    env->actions=calloc(2*BOPL_NUM_ATNS, sizeof(float)); env->rewards=calloc(2, sizeof(float)); env->terminals=calloc(2, sizeof(float));
+    env->action_mask=calloc(2*BOPL_LOGITS, 1);
+    if (!env->observations || !env->actions || !env->rewards || !env->terminals || !env->action_mask) abort();
     research_route(env);
     init(env); c_reset(env); return env;
 }
@@ -50,7 +67,7 @@ void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
     env->rng=seed; env->config.map=map; c_reset(env);
     memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
 }
-void research_step(BoplPuffer *env, const float *actions) { memcpy(env->actions, actions, 4*sizeof(float)); c_step(env); }
+void research_step(BoplPuffer *env, const float *actions) { memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float)); c_step(env); }
 const float *research_obs(BoplPuffer *env) { return env->observations; }
 const float *research_telemetry(BoplPuffer *env) { return env->last_telemetry; }
 const BoplRlState *research_state(BoplPuffer *env) { return bopl_rl_state(env->world); }
@@ -63,5 +80,5 @@ int research_replay(BoplPuffer *env, const char *path) {
 }
 void research_close(BoplPuffer *env) {
     if (!env) return;
-    c_close(env); free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env);
+    c_close(env); free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env->action_mask); free(env);
 }

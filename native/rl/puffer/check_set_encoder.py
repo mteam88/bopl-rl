@@ -15,6 +15,9 @@ import torch
 
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[2]
+import sys; sys.path.insert(0,str(ROOT/'native/rl/research'))
+from layout import (OBS_SIZE as OBS, OBS_PREFIX as PREFIX, OBS_SLIME_OFFSET as SLIME_OFF, OBS_PREVIOUS_OFFSET as PREV_OFF,
+                    SET_FLAT as FLAT, OBS_ENTITIES as N_ENT, ENTITY_FEATURES as W_ENT, OBS_SLIMES as N_SLIME, SLIME_FEATURES as W_SLIME)
 REVISION='42f70d6932c30ac977736f861006809c50168ba9'
 
 
@@ -35,21 +38,21 @@ def build(output, source, compiler):
 
 def oracle(obs, weights, hidden, incoming):
     """Independent functional reference; autograd supplies all four weight gradients."""
-    sizes=[hidden*905,64*21,64*28,hidden*(hidden+128)]
+    sizes=[hidden*FLAT,64*W_ENT,64*W_SLIME,hidden*(hidden+128)]
     w=torch.tensor(weights,requires_grad=True)
     flat,entity,slime,fusion=w.split(sizes)
-    flat=flat.reshape(hidden,905);entity=entity.reshape(64,21)
-    slime=slime.reshape(64,28);fusion=fusion.reshape(hidden,hidden+128)
+    flat=flat.reshape(hidden,FLAT);entity=entity.reshape(64,W_ENT)
+    slime=slime.reshape(64,W_SLIME);fusion=fusion.reshape(hidden,hidden+128)
     obs=torch.from_numpy(obs)
-    x=torch.cat((obs[:,:898],obs[:,3250:]),-1)
+    x=torch.cat((obs[:,:PREFIX],obs[:,PREV_OFF:]),-1)
     def pool(rows,projection):
         mask=rows[:,:,0]!=0
         safe=rows.masked_fill(~mask[:,:,None],0)
         values=(safe@projection.T).relu().masked_fill(~mask[:,:,None],-float('inf'))
         pooled=values.max(1).values
         return torch.where(mask.any(1,keepdim=True),pooled,torch.zeros_like(pooled))
-    entities=pool(obs[:,898:2914].reshape(-1,96,21),entity)
-    slimes=pool(obs[:,2914:3250].reshape(-1,12,28),slime)
+    entities=pool(obs[:,PREFIX:SLIME_OFF].reshape(-1,N_ENT,W_ENT),entity)
+    slimes=pool(obs[:,SLIME_OFF:PREV_OFF].reshape(-1,N_SLIME,W_SLIME),slime)
     out=(torch.cat(((x@flat.T).relu(),entities,slimes),-1)@fusion.T).relu()
     (out*torch.from_numpy(incoming)).sum().backward()
     return out.detach().numpy(),w.grad.numpy()
@@ -60,7 +63,7 @@ class Check:
         self.lib=lib;self.batch=batch;self.hidden=hidden
         self.context=lib.bopl_set_check_create(batch,hidden)
         if not self.context:raise RuntimeError(lib.bopl_set_check_error().decode())
-        expected=hidden*905+64*(21+28)+hidden*(hidden+128)
+        expected=hidden*FLAT+64*(W_ENT+W_SLIME)+hidden*(hidden+128)
         assert lib.bopl_set_check_weight_count(self.context)==expected
     def run(self,weights,obs,incoming,graph=False):
         output=np.empty((self.batch,self.hidden),np.float32);gradients=np.empty_like(weights)
@@ -83,14 +86,14 @@ def finite_differences(lib):
     """
     batch,hidden=2,8
     rng=np.random.default_rng(91073)
-    obs=rng.uniform(.05,.2,size=(batch,3257)).astype(np.float32)
-    for start,stop,n,width in [(898,2914,96,21),(2914,3250,12,28)]:
+    obs=rng.uniform(.05,.2,size=(batch,OBS)).astype(np.float32)
+    for start,stop,n,width in [(PREFIX,SLIME_OFF,N_ENT,W_ENT),(SLIME_OFF,PREV_OFF,N_SLIME,W_SLIME)]:
         rows=obs[:,start:stop].reshape(batch,n,width)
         base=rng.uniform(.05,.2,size=(batch,1,width-1))
         rows[:,:,1:]=base*np.linspace(.2,1.,n)[None,:,None]
         rows[:,:,0]=1
         rows[:,::3,0]=0
-    sizes=[hidden*905,64*21,64*28,hidden*(hidden+128)]
+    sizes=[hidden*FLAT,64*W_ENT,64*W_SLIME,hidden*(hidden+128)]
     weights=rng.uniform(.01,.04,size=sum(sizes)).astype(np.float32)
     incoming=rng.uniform(-1,1,size=(batch,hidden)).astype(np.float32)
     check=Check(lib,batch,hidden)
@@ -141,11 +144,11 @@ def main():
     torch.set_num_threads(1)
     rng=np.random.default_rng(73);results=[]
     for batch,hidden in [(1,8),(3,16),(7,128)]:
-        obs=rng.normal(size=(batch,3257)).astype(np.float32)
-        for start,stop,count,width in [(898,2914,96,21),(2914,3250,12,28)]:
+        obs=rng.normal(size=(batch,OBS)).astype(np.float32)
+        for start,stop,count,width in [(PREFIX,SLIME_OFF,N_ENT,W_ENT),(SLIME_OFF,PREV_OFF,N_SLIME,W_SLIME)]:
             rows=obs[:,start:stop].reshape(batch,count,width)
             rows[:,:,0]=rng.choice([0.,1.],size=(batch,count),p=[.7,.3])
-        count=hidden*905+64*49+hidden*(hidden+128)
+        count=hidden*FLAT+64*(W_ENT+W_SLIME)+hidden*(hidden+128)
         weights=(rng.normal(size=count)*.03).astype(np.float32)
         incoming=rng.normal(size=(batch,hidden)).astype(np.float32)
         check=Check(lib,batch,hidden)
@@ -158,7 +161,7 @@ def main():
             np.testing.assert_array_equal(graph,actual);np.testing.assert_array_equal(graph_grad,grad)
             # Reorder slots and poison absent rows: predictions must be unaffected.
             changed=obs.copy()
-            for start,stop,n,width in [(898,2914,96,21),(2914,3250,12,28)]:
+            for start,stop,n,width in [(PREFIX,SLIME_OFF,N_ENT,W_ENT),(SLIME_OFF,PREV_OFF,N_SLIME,W_SLIME)]:
                 rows=changed[:,start:stop].reshape(batch,n,width)
                 rows[:,:,1:][rows[:,:,0]==0]=1e9
                 rows[:]=rows[:,rng.permutation(n)]
@@ -166,13 +169,13 @@ def main():
             np.testing.assert_allclose(permuted,actual,rtol=0,atol=1e-6)
             # All-absent after populated graph replay must not retain pooled values or gradients.
             empty=changed.copy()
-            empty[:,898:2914].reshape(batch,96,21)[:,:,0]=0
-            empty[:,2914:3250].reshape(batch,12,28)[:,:,0]=0
+            empty[:,PREFIX:SLIME_OFF].reshape(batch,N_ENT,W_ENT)[:,:,0]=0
+            empty[:,SLIME_OFF:PREV_OFF].reshape(batch,N_SLIME,W_SLIME)[:,:,0]=0
             empty_out,empty_grad=check.run(weights,empty,incoming,True)
             want,want_grad=oracle(empty,weights,hidden,incoming)
             np.testing.assert_allclose(empty_out,want,rtol=2e-4,atol=1e-5)
             np.testing.assert_allclose(empty_grad,want_grad,rtol=3e-4,atol=5e-5)
-            np.testing.assert_array_equal(empty_grad[hidden*905:hidden*905+64*49],0)
+            np.testing.assert_array_equal(empty_grad[hidden*FLAT:hidden*FLAT+64*(W_ENT+W_SLIME)],0)
             # Mutate all inputs to a captured graph, including weights and upstream gradient.
             next_weights=(weights*.8).astype(np.float32);next_incoming=-incoming
             changed_out,changed_grad=check.run(next_weights,obs,next_incoming,True)

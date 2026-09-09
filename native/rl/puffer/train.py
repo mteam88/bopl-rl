@@ -15,6 +15,7 @@ sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 from common import atomic_json
 from evaluation_protocol import checkpoint_identity, opponents
 from native_checkpoint import write_checkpoint
+import layout
 from native_metrics import empty_counters, update
 import native_selfplay
 from native_vector import NativeVector
@@ -59,6 +60,8 @@ def arguments():
     p.add_argument('--entropy-floor', type=float, default=.0005)
     p.add_argument('--entropy-half-life', type=int, default=30_000_000,
                    help='Learner decisions per halving of the entropy coefficient, until its floor')
+    p.add_argument('--entropy-head-scale', default='1,1,1',
+                   help='Per-head multipliers on the entropy bonus (aim,buttons,hold); logged entropies stay unscaled')
     p.add_argument('--episode-ticks', type=int, default=7200)
     p.add_argument('--reward-kill', type=float, default=0.,
                    help='Per-kill bonus, also paid as a per-death penalty (game credit incl. self-kills)')
@@ -110,6 +113,12 @@ def arguments():
         p.error('Expected positive learning rate and 0 < entropy-floor <= entropy')
     if not math.isfinite(a.min_lr_ratio) or not 0 <= a.min_lr_ratio <= 1:
         p.error('min-lr-ratio must be finite and within 0..1')
+    try:
+        head_scale = [float(part) for part in a.entropy_head_scale.split(',')]
+    except ValueError:
+        head_scale = []
+    if len(head_scale) != layout.NUM_ATNS or not all(math.isfinite(s) and 0 <= s <= 100 for s in head_scale):
+        p.error(f'entropy-head-scale must be {layout.NUM_ATNS} finite values in 0..100')
     a.evaluation_maps = a.evaluation_maps or a.training_maps
     a.heldout_maps = a.heldout_maps or [m for m in range(31) if m not in a.training_maps][:2]
     if not a.no_eval:
@@ -139,6 +148,7 @@ def main():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir()
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
+    os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in head_scale)
     import numpy as np
     import torch
     from pufferlib import _C, pufferl, selfplay
@@ -188,8 +198,10 @@ def main():
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
-                  entropy=a.entropy, entropy_floor=a.entropy_floor,
+                  entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=head_scale,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
+                  layout=dict(version=2, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
+                              hold_lengths=layout.HOLD_LENGTHS),
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   selfplay=pool_config,
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
@@ -222,8 +234,8 @@ def main():
             step = counts['game_steps']
             if step not in saved:
                 path = output/'checkpoints'/f'policy-{step:09d}.bin'
-                write_checkpoint(path, lambda name: _C.save_weights(trainer, name), obs_size=3257,
-                                 hidden=a.hidden, num_layers=a.layers, architecture='bopl-set-mingru-v1' if a.encoder == 'set' else 'puffernet-mingru',
+                write_checkpoint(path, lambda name: _C.save_weights(trainer, name), obs_size=layout.OBS_SIZE,
+                                 hidden=a.hidden, num_layers=a.layers, architecture=layout.ARCHITECTURE if a.encoder == 'set' else 'puffernet-mingru',
                                  game_steps=step, learner_steps=counts['learner_steps'], config=config)
                 saved[step] = path
             return saved[step]

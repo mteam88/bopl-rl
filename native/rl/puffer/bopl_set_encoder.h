@@ -1,23 +1,25 @@
 /* CPU forward for Bopl's set encoder. Include after upstream puffernet.h.
  * All projections are bias-free, matching upstream Linear. Parameter order:
- * flat [H,905], entity [64,21], slime [64,28], fusion [H,H+128].
+ * flat [H,BOPL_SET_FLAT], entity [64,21], slime [64,28], fusion [H,H+128];
+ * the sizes come from bopl_layout.h (v2: flat 946, obs 3298).
  * This encoder is followed by the unchanged upstream decoder/MinGRU weights.
  */
 #ifndef BOPL_SET_ENCODER_H
 #define BOPL_SET_ENCODER_H
+#include "bopl_layout.h"
 
 enum {
-    BOPL_SET_PREFIX = 10 + 6 * 148,
-    BOPL_SET_ENTITIES = 96,
-    BOPL_SET_ENTITY_WIDTH = 21,
-    BOPL_SET_SLIMES = 12,
-    BOPL_SET_SLIME_WIDTH = 28,
-    BOPL_SET_PREVIOUS = 7,
+    BOPL_SET_PREFIX = BOPL_OBS_PREFIX,
+    BOPL_SET_ENTITIES = BOPL_OBS_ENTITIES,
+    BOPL_SET_ENTITY_WIDTH = BOPL_ENTITY_FEATURES,
+    BOPL_SET_SLIMES = BOPL_OBS_SLIMES,
+    BOPL_SET_SLIME_WIDTH = BOPL_SLIME_FEATURES,
+    BOPL_SET_PREVIOUS = BOPL_PREVIOUS_FEATURES,
     BOPL_SET_FLAT = BOPL_SET_PREFIX + BOPL_SET_PREVIOUS,
     BOPL_SET_DIM = 64,
-    BOPL_SET_SLIME_OFFSET = BOPL_SET_PREFIX + BOPL_SET_ENTITIES * BOPL_SET_ENTITY_WIDTH,
-    BOPL_SET_PREVIOUS_OFFSET = BOPL_SET_SLIME_OFFSET + BOPL_SET_SLIMES * BOPL_SET_SLIME_WIDTH,
-    BOPL_SET_OBS = BOPL_SET_PREVIOUS_OFFSET + BOPL_SET_PREVIOUS
+    BOPL_SET_SLIME_OFFSET = BOPL_OBS_SLIME_OFFSET,
+    BOPL_SET_PREVIOUS_OFFSET = BOPL_OBS_PREVIOUS_OFFSET,
+    BOPL_SET_OBS = BOPL_OBS_SIZE
 };
 
 typedef struct {

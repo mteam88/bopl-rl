@@ -14,6 +14,9 @@ internal static class RlObservation
     private static readonly List<SlimeController> slimes = new List<SlimeController>();
     private static readonly FieldInfo inAbility = typeof(SlimeController).GetField("isInAbility", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly FieldInfo beamCount = typeof(DetPhysics).GetField("totalBeamsLastFrame", BindingFlags.Instance | BindingFlags.NonPublic);
+    // Bow charge for the policy (ability_flags bits 4..7): loadingFrame 0..4 while the bow is in use, 0x80 once fired.
+    private static readonly FieldInfo bowLoadingFrame = typeof(BowTransform).GetField("loadingFrame", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo bowHasFired = typeof(BowTransform).GetField("hasFired", BindingFlags.Instance | BindingFlags.NonPublic);
     private static uint nextId;
 
     internal static void Reset()
@@ -140,8 +143,17 @@ internal static class RlObservation
             bool present = ability != null && !ability.IsDestroyed;
             bool timer = timers != null && i < timers.Length;
             Fix cooldown = present ? ability.GetCooldown() : Fix.Zero;
+            bool active = present && ability.gameObject.activeInHierarchy;
+            uint charge = 0;
+            if (active) {
+                var bow = ability.GetComponent<BowTransform>();
+                if (bow != null) {
+                    charge = ((uint)(int)bowLoadingFrame.GetValue(bow) & 7u) << 4;
+                    if ((bool)bowHasFired.GetValue(bow)) charge |= 0x80u;
+                }
+            }
             output.Write((present ? 1u : 0u) | (present && timer && timers[i] >= cooldown ? 2u : 0u)
-                | (present && timer && timers[i] > cooldown ? 4u : 0u) | (present && ability.gameObject.activeInHierarchy ? 8u : 0u));
+                | (present && timer && timers[i] > cooldown ? 4u : 0u) | (active ? 8u : 0u) | charge);
         }
         for (int i = 0; i < 3; i++) {
             var ability = slime.abilities != null && i < slime.abilities.Count ? slime.abilities[i] : null;

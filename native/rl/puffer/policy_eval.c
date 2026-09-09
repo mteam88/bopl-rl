@@ -22,7 +22,7 @@ static void *bopl_policy_eval_create_impl(const float *data, size_t count,
         return NULL;
     if (use_set && observations != BOPL_SET_OBS) return NULL;
     size_t encoder_count = use_set ? bopl_set_weight_count(hidden) : (size_t)hidden * observations;
-    size_t expected = encoder_count + (size_t)hidden * 273
+    size_t expected = encoder_count + (size_t)hidden * BOPL_DECODER
                     + (size_t)layers * 3 * hidden * hidden;
     size_t states = (size_t)layers * batch * hidden;
     if (count != expected || count > INT_MAX - 7 || states > INT_MAX / 3
@@ -36,7 +36,7 @@ static void *bopl_policy_eval_create_impl(const float *data, size_t count,
     eval->weights->data = (float *)(eval->weights + 1);
     eval->weights->size = (int)count + 7;
     memcpy(eval->weights->data, data, count * sizeof(float));
-    int heads[] = {256, 16};
+    int heads[] = {BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD};
     if (use_set) {
         eval->set_encoder = bopl_set_create(eval->weights, batch, hidden);
         if (!eval->set_encoder) { free(eval->weights); free(eval); return NULL; }
@@ -45,10 +45,10 @@ static void *bopl_policy_eval_create_impl(const float *data, size_t count,
             bopl_set_free(eval->set_encoder); free(eval->weights); free(eval); return NULL;
         }
         eval->net->num_agents = batch;
-        eval->net->decoder = make_linear(eval->weights, batch, hidden, 273);
+        eval->net->decoder = make_linear(eval->weights, batch, hidden, BOPL_DECODER);
         eval->net->mingru = make_mingru(eval->weights, batch, hidden, layers);
     } else {
-        eval->net = make_puffernet(eval->weights, batch, observations, hidden, layers, heads, 2);
+        eval->net = make_puffernet(eval->weights, batch, observations, hidden, layers, heads, BOPL_NUM_ATNS);
     }
     eval->state_size = states;
     return eval;
@@ -79,7 +79,7 @@ void bopl_policy_eval_step(void *handle, float *observations, const float *state
     }
     mingru(net->mingru, encoded);
     linear(net->decoder, net->mingru->output);
-    memcpy(logits_and_value, net->decoder->output, (size_t)net->num_agents * 273 * sizeof(float));
+    memcpy(logits_and_value, net->decoder->output, (size_t)net->num_agents * BOPL_DECODER * sizeof(float));
     memcpy(next_state, net->mingru->state, eval->state_size * sizeof(float));
 }
 
