@@ -27,11 +27,14 @@ _metrics_cache={}
 
 def read_metrics(file):
     """Parse an append-only metrics.jsonl incrementally, tolerating a torn tail."""
-    try: size=file.stat().st_size
+    try: stat=file.stat(); size=stat.st_size
     except OSError: return [],True
     with _metrics_lock:
-        offset,rows=_metrics_cache.get(file,(0,[]))
-        if size<offset: offset,rows=0,[]
+        offset,rows,identity=_metrics_cache.get(file,(0,[],None))
+        # A relaunched run replaces the file at the same path; a cached offset
+        # into the old file would land mid-line and read as corruption forever.
+        if size<offset or identity!=(stat.st_ino,stat.st_dev): offset,rows=0,[]
+        identity=(stat.st_ino,stat.st_dev)
         if size>offset:
             with file.open('rb') as handle:
                 handle.seek(offset)
@@ -45,7 +48,7 @@ def read_metrics(file):
                     break
                 if not complete: break  # a torn final line parsed by luck; wait for the rest
                 rows.append(record); position+=len(line)
-            _metrics_cache[file]=(position,rows)
+            _metrics_cache[file]=(position,rows,identity)
         return list(rows),True
 
 def downsample(rows,limit=METRICS_POINTS,tail=METRICS_TAIL):
