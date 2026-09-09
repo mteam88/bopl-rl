@@ -37,9 +37,71 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
     return max(floor, initial * math.exp2(-learner_steps / half_life))
 
 
+# Resume (--resume): a run directory is restarted from its last checkpoint and
+# may be given a larger --steps (every schedule is a function of learner
+# decisions or constant, never of the run budget). Restored: policy weights,
+# the self-play pool (entries, Elo, per-bank opponents, sampling RNG), the
+# frozen banks' weights, the native step counter (pool snapshot names and
+# intervals), and the cumulative environment counters, which the C vector
+# restarts at zero and this process offsets. Not restored: the optimizer's
+# Muon momentum buffers (no native API; they rebuild within a few updates)
+# and the recurrent state, which starts as at an episode boundary.
+RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
+                 'learner_passes', 'learning_rate', 'anneal_lr', 'entropy', 'entropy_floor',
+                 'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
+                 'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
+                 'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale')
+COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
+
+
+def recorded_hypers(config):
+    """The RESUME_HYPERS of a run as config.json recorded them."""
+    pool, train, env = config['selfplay'], config['native']['train'], config['native']['env']
+    return dict(workers=config['workers'], buffers=config['native']['vec']['num_buffers'], banks=env['banks'],
+                seed=config['seed'], encoder=config['encoder'], hidden=config['hidden'], layers=config['layers'],
+                horizon=train['horizon'], learner_passes=config['learner_passes'], learning_rate=train['learning_rate'],
+                anneal_lr=train['anneal_lr'], entropy=config['entropy'], entropy_floor=config['entropy_floor'],
+                entropy_half_life=config['entropy_half_life'], episode_ticks=config['episode_ticks'], stocks=config['stocks'],
+                training_maps=config['training_maps'], reward_kill=config['reward']['kill'],
+                reward_timeout=config['reward']['timeout'], pool_size=pool['max_size'], swap_winrate=pool['swap_winrate'],
+                min_games=pool['min_games'], snapshot_interval=pool['snapshot_interval'],
+                opponent_timeout=pool['opponent_timeout'], elo_init=pool['elo_init'], elo_k=pool['elo_k'],
+                pool_seed=pool['seed'], head_scale=config['entropy_head_scale'])
+
+
+def offset_counters(counts, base):
+    """Cumulative counters of this process plus those of the runs before it."""
+    if base is None:
+        return counts
+    out = dict(counts)
+    for key in COUNTER_KEYS:
+        out[key] = counts[key] + base[key]
+    out['buttons'] = [x + y for x, y in zip(counts['buttons'], base['buttons'])]
+    out['telemetry'] = [x + y for x, y in zip(counts['telemetry'], base['telemetry'])]
+    out['map_matches'] = {m: counts['map_matches'].get(m, 0) + base['map_matches'].get(m, 0)
+                          for m in set(counts['map_matches']) | set(base['map_matches'])}
+    return out
+
+
+def pool_state_json(pool, ledger, *, counts, elapsed, global_step, update_index, checkpoint):
+    return dict(schema=1, pool={k: v for k, v in pool.items() if k != 'rng'},
+                rng=pool['rng'].bit_generator.state, ledger=ledger, counts=counts, elapsed=elapsed,
+                global_step=int(global_step), update_index=update_index, checkpoint=str(checkpoint))
+
+
+def load_pool_state(record):
+    import numpy as np
+    pool = dict(record['pool'])
+    pool['rng'] = np.random.default_rng()
+    pool['rng'].bit_generator.state = record['rng']
+    return pool, record['ledger']
+
+
 def arguments():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--resume', action='store_true',
+                   help='Continue the run in --output from its last checkpoint (same hyperparameters; --steps may grow)')
     p.add_argument('--game', type=Path)
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
@@ -140,9 +202,23 @@ def main():
     # player_binary entry exists for it, the Unity-specific files do not.
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
                for key, path in reference.player_sources(game).items() if path.exists()}
-    output.mkdir(parents=True, exist_ok=False)
+    resume = None
+    if a.resume:
+        resume = json.loads((output/'pool/state.json').read_text())
+        previous_config = json.loads((output/'config.json').read_text())
+        recorded = recorded_hypers(previous_config)
+        for name in RESUME_HYPERS:
+            if recorded[name] != getattr(a, name):
+                raise SystemExit(f'--resume: {name} was {recorded[name]!r}, now {getattr(a, name)!r}; only --steps may change')
+        if a.steps < resume['counts']['learner_steps']:
+            raise SystemExit(f"--resume: --steps {a.steps} is below the {resume['counts']['learner_steps']} already trained")
+        if not Path(resume['checkpoint']).exists():
+            raise SystemExit(f"--resume: checkpoint {resume['checkpoint']} is missing")
+        (output/'game-logs').mkdir(exist_ok=True)
+    else:
+        output.mkdir(parents=True, exist_ok=False)
     frozen_manifest = output/'evaluation-opponents.json' if frozen else None
-    if frozen_manifest:
+    if frozen_manifest and not resume:
         atomic_json(frozen_manifest, dict(schema=2, opponents=frozen))
     # SIM_OVERHAUL.md section 4: one GC heap under every world costs 25-45%
     # of throughput (each gen0 collection suspends every world); four worlds
@@ -153,7 +229,7 @@ def main():
                            BOPL_RL_LOG_DIR=output/'game-logs',
                            OMP_NUM_THREADS=os.environ.get('BOPL_OMP_THREADS', a.workers)).items():
         os.environ[key] = str(value)
-    (output/'game-logs').mkdir()
+    (output/'game-logs').mkdir(exist_ok=True)
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
     os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
     import numpy as np
@@ -214,9 +290,16 @@ def main():
                   frozen_opponents=frozen, evaluation_baseline_identity=baseline_identity, evaluation_baseline=str(a.evaluation_baseline.resolve()) if a.evaluation_baseline else None,
                   game=str(game), runtime=runtime, native=args,
                   native_binding_sha256=hashlib.sha256(Path(_C.__file__).read_bytes()).hexdigest())
+    if resume:
+        # The original config stays the record of the run; only the budget and
+        # the resume history change.
+        config = previous_config
+        config.update(steps=target_physical, learner_steps=a.steps)
+        config.setdefault('resumed', []).append(dict(at_learner_steps=resume['counts']['learner_steps'],
+                                                     checkpoint=resume['checkpoint'], steps=a.steps))
     atomic_json(output/'config.json', config)
     started = time.monotonic()
-    counts = empty_counters()
+    counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
     trainer = None
     stop = False
     def request_stop(signum, frame):
@@ -237,6 +320,9 @@ def main():
     try:
         trainer = _C.create_pufferl(args)
         vector.attach(trainer)
+        pool = ledger = None
+        update_index = 0
+        elapsed_before = 0.
         def save():
             step = counts['game_steps']
             if step not in saved:
@@ -245,24 +331,45 @@ def main():
                                  hidden=a.hidden, num_layers=a.layers, architecture=layout.ARCHITECTURE if a.encoder == 'set' else 'puffernet-mingru',
                                  game_steps=step, learner_steps=counts['learner_steps'], config=config)
                 saved[step] = path
+            if pool is not None:
+                # Everything --resume needs besides the weights, written with
+                # every checkpoint so the last one is always consistent.
+                atomic_json(output/'pool/state.json', pool_state_json(
+                    pool, ledger, counts=counts, elapsed=elapsed_before + time.monotonic() - training_started,
+                    global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step]))
             return saved[step]
-        initial = save()
-        # Every bank starts from the initial policy; PufferLib's pool swaps
-        # them independently as the learner outgrows each opponent.
-        for bank in range(a.banks):
-            _C.load_frozen_bank(trainer, bank, str(initial))
-        (output/'pool').mkdir()
-        pool = native_selfplay.state(output/'pool', str(initial), a.banks, vector.historical_per_bank, trainer.global_step,
-                                     max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
-                                     snapshot_interval=round(a.snapshot_interval*native_per_learner),
-                                     opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
-                                     elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed)
-        ledger = native_selfplay.members(str(initial))
+        training_started = time.monotonic()
+        if resume:
+            saved = {int(path.stem.split('-')[1]): path for path in sorted((output/'checkpoints').glob('policy-*.bin'))}
+            initial = saved[min(saved)]
+            _C.load_weights(trainer, resume['checkpoint'])
+            trainer.global_step = resume['global_step']
+            pool, ledger = load_pool_state(resume)
+            for bank, state in enumerate(pool['banks']):
+                _C.load_frozen_bank(trainer, bank, state['cur_opp_path'])
+            update_index = resume['update_index']
+            elapsed_before = resume['elapsed']
+        else:
+            initial = save()
+            # Every bank starts from the initial policy; PufferLib's pool swaps
+            # them independently as the learner outgrows each opponent.
+            for bank in range(a.banks):
+                _C.load_frozen_bank(trainer, bank, str(initial))
+            (output/'pool').mkdir()
+            pool = native_selfplay.state(output/'pool', str(initial), a.banks, vector.historical_per_bank, trainer.global_step,
+                                         max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
+                                         snapshot_interval=round(a.snapshot_interval*native_per_learner),
+                                         opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
+                                         elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed)
+            ledger = native_selfplay.members(str(initial))
         vector.reset()
         _C.log(trainer)  # Warmup losses are not measured training updates.
-        counts = vector.snapshot()
-        if counts['learner_steps'] or counts['game_steps']:
+        if vector.snapshot()['learner_steps'] or vector.snapshot()['game_steps']:
             raise RuntimeError('Setup unexpectedly counted game decisions')
+        base_counts = resume['counts'] if resume else None
+        counts = offset_counters(vector.snapshot(), base_counts)
+        if not resume:
+            save()  # pool/state.json for the initial checkpoint
         config['evaluation_baseline'] = str(a.evaluation_baseline.resolve() if a.evaluation_baseline else initial)
         config['evaluation_baseline_identity'] = checkpoint_identity(Path(config['evaluation_baseline']))
         atomic_json(output/'config.json', config)
@@ -282,11 +389,11 @@ def main():
             with (output/'evaluation.log').open('a') as log:
                 subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
             evaluated_steps.add(counts['game_steps'])
-        next_checkpoint, next_eval = a.checkpoint_every, a.eval_every
-        previous, previous_elapsed = counts, 0.
+        next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
+        next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
+        previous, previous_elapsed = counts, elapsed_before
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
-            update_index = 0
             while counts['learner_steps'] < a.steps and not stop:
                 before = time.monotonic()
                 _C.rollouts(trainer)
@@ -301,11 +408,11 @@ def main():
                 _C.train(trainer)
                 trained = time.monotonic()
                 native = _C.log(trainer)
-                counts = vector.snapshot()
+                counts = offset_counters(vector.snapshot(), base_counts)
                 if (counts['learner_steps']-previous['learner_steps'] != learner_batch
                         or counts['game_steps']-previous['game_steps'] != a.workers*2*a.horizon):
                     raise RuntimeError('Native rollout physical/learner decision accounting mismatch')
-                elapsed = time.monotonic()-training_started
+                elapsed = elapsed_before + time.monotonic()-training_started
                 # Elo, snapshots and bank swaps from this rollout's finished games.
                 before_pool = native_selfplay.summary(pool, ledger)
                 flat = {'env/'+key: value for key, value in native['env'].items()}

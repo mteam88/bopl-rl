@@ -1,6 +1,6 @@
 diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu	2026-09-09 11:07:52.596795176 -0400
-+++ b/bindings.cu	2026-09-09 11:07:52.607438886 -0400
+--- a/bindings.cu	2026-09-09 13:17:54.227306898 -0400
++++ b/bindings.cu	2026-09-09 13:17:54.234306971 -0400
 @@ -52,6 +52,24 @@
          losses_dict["old_kl"] = losses_host[LOSS_OLD_APPROX_KL] * inv_n;
          losses_dict["kl"] = losses_host[LOSS_APPROX_KL] * inv_n;
@@ -47,9 +47,18 @@ diff -ruN a/bindings.cu b/bindings.cu
      static_vec_omp_step(pufferl.vec);
      float sec = (float)(wall_clock() - t0);
      pufferl.profile.accum[PROF_ROLLOUT] += sec * 1000.0f;  // store as ms
+@@ -626,7 +658,7 @@
+         .def_readwrite("hypers", &PuffeRL::hypers)
+         .def_readwrite("rollouts", &PuffeRL::rollouts)
+         .def_readonly("epoch", &PuffeRL::epoch)
+-        .def_readonly("global_step", &PuffeRL::global_step)
++        .def_readwrite("global_step", &PuffeRL::global_step)  // Bopl: resume restores it
+         .def_readonly("last_log_time", &PuffeRL::last_log_time)
+         .def("num_params", [](PuffeRL& self) -> int64_t {
+             return numel(self.master_weights.shape);
 diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu	2026-09-09 11:07:52.596795176 -0400
-+++ b/kernels.cu	2026-09-09 11:07:52.607438886 -0400
+--- a/kernels.cu	2026-09-09 13:17:54.227306898 -0400
++++ b/kernels.cu	2026-09-09 13:17:54.234306971 -0400
 @@ -248,14 +248,24 @@
  // Strides derived from M, N, K assuming tightly packed row-major storage.
  static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
@@ -93,8 +102,8 @@ diff -ruN a/kernels.cu b/kernels.cu
      cublasGemmEx(handle, op_b, op_a, N, M, K, &alpha,
          B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
 diff -ruN a/models.cu b/models.cu
---- a/models.cu	2026-09-09 11:07:52.596795176 -0400
-+++ b/models.cu	2026-09-09 11:07:52.607438886 -0400
+--- a/models.cu	2026-09-09 13:17:54.227306898 -0400
++++ b/models.cu	2026-09-09 13:17:54.234306971 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -252,8 +261,8 @@ diff -ruN a/models.cu b/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu	2026-09-09 11:07:52.596795176 -0400
-+++ b/ocean.cu	2026-09-09 11:07:52.607438886 -0400
+--- a/ocean.cu	2026-09-09 13:17:54.228306909 -0400
++++ b/ocean.cu	2026-09-09 13:17:54.234306971 -0400
 @@ -3,6 +3,8 @@
  
  #include "cudnn_conv2d.cu"
@@ -281,8 +290,8 @@ diff -ruN a/ocean.cu b/ocean.cu
  }
  
 diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu	2026-09-09 11:07:52.599080506 -0400
-+++ b/pufferlib.cu	2026-09-09 11:07:52.608080605 -0400
+--- a/pufferlib.cu	2026-09-09 13:17:54.231306940 -0400
++++ b/pufferlib.cu	2026-09-09 13:17:54.234306971 -0400
 @@ -20,9 +20,17 @@
  enum LossIdx {
      LOSS_PG = 0, LOSS_VF = 1, LOSS_ENT = 2, LOSS_TOTAL = 3,
@@ -918,8 +927,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      policy_weights_free(&pufferl.policy, &pufferl.weights);
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
 diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h	2026-09-09 11:07:52.596795176 -0400
-+++ b/vecenv.h	2026-09-09 11:07:52.607438886 -0400
+--- a/vecenv.h	2026-09-09 13:17:54.228306909 -0400
++++ b/vecenv.h	2026-09-09 13:17:54.234306971 -0400
 @@ -262,10 +262,14 @@
  
      printf("Num workers: %d\n", num_workers);
