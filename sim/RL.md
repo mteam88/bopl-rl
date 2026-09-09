@@ -67,7 +67,9 @@ worlds --n 16 --episodes 3` the fast managed one. Memory: ~30 MB per world
 plus ~0.7 GB per runtime, against ~240 MB per world when each had its own
 runtime. Knobs: `BOPL_RL_WORLDS_PER_RUNTIME=N` (pack at most N worlds into a
 runtime; further worlds load reflinked copies of the file; `1` restores one
-runtime per world), `BOPL_RL_INPROC_SPARE=0` (no spare, every reset stalls the
+runtime per world; `train.py` defaults it to 4 because one workstation GC
+heap under all worlds costs 25-45% of throughput, see SIM_OVERHAUL.md
+section 4), `BOPL_RL_INPROC_SPARE=0` (no spare, every reset stalls the
 lockstep ~8 ms), `BOPL_RL_INPROC_KEEP=1` (keep the copies and `.dbg` next to
 the library so `perf` can symbolize). All worlds' `Debug.Log` output goes to
 the first opened world's log file (one stderr per process).
