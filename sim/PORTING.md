@@ -284,6 +284,37 @@ the worker process + unix socket with direct calls. Smoke test:
   unchanged with tracing on. The checksum awaits comparison against the same
   sequence through the RL thread's socket path.
 
+## Stage 5 allocation diet (2026-09-09, branch stage5-perf)
+
+Gameplay-file edits for per-tick allocation, all bit-exact by construction
+(same arithmetic, same ordering; verified against the pre-change build:
+`Host worlds` checksum `6ba6807c6a980f41` for `--n 8 --episodes 2
+--abilities 2,4,14`, `backend_check` `5381bf21573b20a6`/`8dc13de2cc8c8e7c`):
+
+- `DetPhysics.SyncGameObject(IShape ...)` -> generic `<TShape> where TShape :
+  struct, IShape`: the end-of-Simulate sync loop boxed every non-trigger
+  collider's shape struct every tick (46% of tick allocation).
+- `DetPhysics.PrepareCollisionCallBacks(... IShape shapeA, IShape shapeB ...)`
+  -> generic `<TA, TB>`: shapes are now boxed only when a side actually has a
+  collision callback (body verbatim, including the original's
+  `p1.collisionCallback` null-check quirk in the p2 branch).
+- `Array.Sort(..., IComparer)` / `List.Sort(IComparer)` allocate a
+  `Comparison<T>` wrapper per call inside `ArraySortHelper`; the broadphase
+  sorts (`boundingBoxes`, `bb_rope_rr`), the raycast output sort and
+  `Updater.toBeAddedUpdatables` now use cached `Comparison<T>` delegates
+  (same IntroSort, same ordering).
+- `RlObservation` reads of private fields (`isInAbility`,
+  `totalBeamsLastFrame`, bow `loadingFrame`/`hasFired`) via
+  `[UnsafeAccessor]` instead of `FieldInfo.GetValue` (boxed a primitive per
+  read per observation).
+
+Measured with `Host alloc` (new mode, `sim/Host/AllocCheck.cs`): decision
+tick 2,077 -> 1,152 B (spawn-heavy loadout 2,4,14 rate 2; default loadout
+1,712 -> ~900), observation 86 -> 3.5 B. The remainder is Object.Instantiate
+clone machinery on spawns plus ~0.4 KB/tick of contact-callback boxing
+(player-platform contacts box the shape into `CollisionInformation.collider`,
+which gameplay callbacks read as `IShape` - left as is).
+
 ## Open questions for the oracle
 
 - Awake/OnEnable batching on Instantiate (deviation 3).
