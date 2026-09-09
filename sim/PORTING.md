@@ -313,7 +313,53 @@ tick 2,077 -> 1,152 B (spawn-heavy loadout 2,4,14 rate 2; default loadout
 1,712 -> ~900), observation 86 -> 3.5 B. The remainder is Object.Instantiate
 clone machinery on spawns plus ~0.4 KB/tick of contact-callback boxing
 (player-platform contacts box the shape into `CollisionInformation.collider`,
-which gameplay callbacks read as `IShape` - left as is).
+which gameplay callbacks read as `IShape`).
+
+### Round 2: contact-callback box pool (bit-exact)
+
+`DetPhysics.RentShapeBox<T>`: pooled boxed shapes per type (Box / Circle /
+RoundedRect), rewritten in place with `Unsafe.Unbox<T>` and handed out as
+`IShape` per queued callback. Safe because no gameplay code stores an
+`IShape` or a `CollisionInformation` beyond the callback dispatch (grepped),
+each `PrepareCollisionCallBacks` call gets a distinct pool slot within the
+tick, and the pool resets with `ToMakeCallBacks` at the top of `Simulate` -
+after the previous tick's dispatch. Checksums identical to baseline
+(loadouts 2,7,19 / 3,9,28 / 27,32,28, maps 1+4). Killed the last
+steady-state per-tick allocator: `phase:physics` ~157 B/tick -> 0.
+
+### Stage 5 headless split (fidelity notes)
+
+`RlHeadless.Render` is always false in the shim (`GraphicsDeviceType.Null`);
+oracle capture keeps presentation alive via `ReferenceCapture.Enabled`
+where it is observable. Guarded as presentation, verified bit-exact
+(baseline checksums unchanged; beam loadout 28,28,28 `7846c5b21596d0c9`,
+rope loadout 27,32,28, maps 1+4):
+
+- `DetPhysics.renderBeams`: after-effect prefab instantiation, particle
+  systems, colors/audio, hit-effect pool activation + transforms. The
+  `BeamObject` pool and its `DPhysicsBox` hitboxes stay - gameplay.
+- Rope mesh floats: `Rope` creation-time `UpdateMesh`/`SetMeshValues`,
+  `DetPhysics.UpdateRopeMesh_parallell` body (the `levelTypeThisFrame`
+  latch stays - `SimulateRope` reads it for space gravity).
+- `AudioManager` "beamSparks" random-prefix pick.
+
+One deliberate inexactness, `DestroyIfOutsideSceneBounds`: boundary death
+effects (water splash etc.) are skipped headless UNLESS the prefab carries
+`DeathEffect2`, whose `Init()` calls `Updater.HitStop` (gameplay), or
+oracle capture is on. Skipping a splash means `Updater.prefabsAdded`
+advances less, so every LATER prefab's `HierarchyNumber` (100,000,000 + a
+global running count) shifts down by the skipped updatable count. Relative
+update ORDER is unchanged (uniform shift), so trajectories are identical -
+verified: step counts and episode outcomes match the keep-everything build
+across loadouts/maps, and a byte-level wire diff (env `BOPL_WIRE_DIR`, new
+debug hook in `WorldsCheck`) over two full episodes showed every differing
+word is an entity `hierarchy` field near 1e8 (1,234 + 1,228 words, zero
+other diffs). The trainer never reads `hierarchy` (no reference in
+`bopl_puffer.h` / `eval_binding.c` / `bopl_set_encoder.cu`), so training
+and transfer are unaffected. `Host worlds` checksums DO change vs baseline
+(the wire hashes the raw entity record); use `BOPL_KEEP_BOUNDARY_FX=1` to
+restore baseline-comparable checksums when bisecting.
+`sim/Oracle/checkpoint.sh`: all five fixtures still match (2026-09-09).
 
 ## Open questions for the oracle
 

@@ -22,6 +22,9 @@ namespace BoplSim.Host
 	{
 		private sealed class Result { public ulong Checksum; public int Steps; public string Error; public List<ulong> PerStep = new List<ulong>(); }
 
+		// Debug aid: dump each decision's wire payload for byte-level A/B diffs.
+		private static readonly string wireDumpDir = Environment.GetEnvironmentVariable("BOPL_WIRE_DIR");
+
 		public static int Run(string[] args)
 		{
 			int n = 8, level = 1, decisions = 400, rate = 32, episodes = 1;
@@ -157,6 +160,8 @@ namespace BoplSim.Host
 					RlObservation.Write(payload, 2, episodeTicks, terminal ? 1u : 0u, 240);
 					payload.Flush();
 					checksum = Fnv(checksum, wire.GetBuffer(), (int)wire.Length);
+					if (wireDumpDir != null)
+						File.WriteAllBytes(Path.Combine(wireDumpDir, $"step{steps:d4}.bin"), wire.ToArray());
 					result.PerStep.Add(checksum);
 					steps++;
 					if (terminal) break;
