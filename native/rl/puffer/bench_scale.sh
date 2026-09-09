@@ -20,7 +20,8 @@ LIB=$R/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
 ulimit -c 0
 run() { # workers omp-threads wait-policy mode(so|socket)
   local workers=$1 omp=$2 wait=$3 mode=$4
-  local tag="w${workers}-omp${omp}-${wait}-${mode}" dir="$OUT/$tag" game="$LIB"
+  local tag="w${workers}-omp${omp}-${wait}-${mode}"
+  local dir="$OUT/$tag" game="$LIB"
   [ "$mode" = socket ] && game="$GAME"
   local steps=$((UPDATES * workers * 3 / 2 * 128))
   rm -rf "$dir"
