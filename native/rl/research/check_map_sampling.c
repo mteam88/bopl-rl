@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
         state.entities=entities;
         for (int i=0;i<BOPL_OBS_ENTITIES+1;i++) entities[i].flags=1;
         compute_observations(&env);
-        return 2; /* Capacity overflow must fail before any episode is logged. */
+        return env.log.observation_overflow==1 ? 2 : 3; /* Overflow is logged and truncated, never fatal. */
     }
     assert(argc==1);
     /* The old single-map default consumes exactly its one episode-seed draw. */

@@ -20,7 +20,7 @@ void research_previous(float *observations, const BoplRlAction *actions, int cou
     for (int i=0; i<count; i++)
         bopl_previous_action(observations+(size_t)(i+1)*BOPL_OBS_SIZE-7, actions[i]);
 }
-int research_check(BoplPuffer *env) { return env->log.game_errors || env->log.observation_overflow; }
+int research_check(BoplPuffer *env) { return env->log.game_errors; } /* observation overflow is a logged, non-fatal truncation */
 BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
     BoplPuffer *env=calloc(1, sizeof(*env));
     if (!env) return NULL;

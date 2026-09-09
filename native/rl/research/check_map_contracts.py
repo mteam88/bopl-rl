@@ -23,8 +23,8 @@ def main():
     for name in ('sampling','logs'): subprocess.run([str(out/name)],check=True)
     def no_core(): resource.setrlimit(resource.RLIMIT_CORE,(0,0))
     overflow=subprocess.run([str(out/'sampling'),'overflow'],capture_output=True,text=True,preexec_fn=no_core)
-    assert overflow.returncode==-signal.SIGABRT and 'observation overflow' in overflow.stderr
-    report=dict(status='pass',selection_and_default_rng=True,all_map_log_keys=True,overflow_before_episode_end=True)
+    assert overflow.returncode==2 and 'observation overflow' in overflow.stderr  # non-fatal since 2026-09-08: truncates + logs
+    report=dict(status='pass',selection_and_default_rng=True,all_map_log_keys=True,overflow_logged_non_fatal=True)
     (out/'result.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report))
 

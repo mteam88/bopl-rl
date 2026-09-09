@@ -172,11 +172,14 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
         obs[6]=bopl_clip((double)visible_slimes/BOPL_OBS_SLIMES);
         obs[7]=bopl_clip((double)(visible_slimes>BOPL_OBS_SLIMES?visible_slimes-BOPL_OBS_SLIMES:0)/BOPL_OBS_SLIMES);
         if (active_count>count || visible_slimes>BOPL_OBS_SLIMES) {
+            /* The policy sees the nearest BOPL_OBS_ENTITIES entities plus the
+             * overflow fraction (obs[5]/obs[7]); the count is logged per
+             * episode. Crowded Platform rounds (>96 live bodies) are a real,
+             * rare game state, not an error: the 2026-09-08 500M run died on
+             * one at 55M learner steps. Report once per env, keep training. */
+            if (env->log.observation_overflow==0)
+                fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes (truncated to nearest)\n", active_count, visible_slimes);
             env->log.observation_overflow++;
-            /* Vector logging skips unfinished episodes, so a log-only error
-             * could disappear before the trainer sees it. Never train on it. */
-            fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes\n", active_count, visible_slimes);
-            abort();
         }
         obs[8]=bopl_clip(self_x/64.0); obs[9]=bopl_clip(self_y/64.0);
         for (uint32_t i=0; i<state->header.player_count; i++) {
