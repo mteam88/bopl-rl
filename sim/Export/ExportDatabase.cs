@@ -34,6 +34,10 @@ namespace BoplSim.Export
 			public readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
 			public readonly Dictionary<string, Texture2D> spriteTextures = new Dictionary<string, Texture2D>();
 			public readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
+			// Level-scene templates (stage 5 reset item 1): the JSON graph is
+			// built once per (world, map) as an inert asset hierarchy (no Awake),
+			// and every load after the first clones it (CloneRules.CloneScene).
+			public readonly Dictionary<int, List<GameObject>> SceneTemplates = new Dictionary<int, List<GameObject>>();
 		}
 
 		private static Store Current
@@ -253,11 +257,64 @@ namespace BoplSim.Export
 			var scene = new Scene(buildIndex, map.SceneName);
 			if (mode == LoadSceneMode.Single) World.Current.activeScene = scene;
 
-			// PERF-1 fix 1 (minimum): the parse dominated warm resets (~10 of 15 ms);
-			// the JArray is only read by GraphBuilder/PropertyApplier, never mutated.
-			// Non-level scenes are not worth their tree (scene-boot.json alone is 5 MB
-			// of text): parse and drop.
+			// Stage 5 reset item 1: level scenes build the object graph once per
+			// (world, map) as an inert template (asset semantics: detached, no
+			// Awake, no scene), then every load - including the first - clones
+			// it. The clone reproduces GraphBuilder's creation order and the
+			// persistent flag, so instance-id-order-dependent gameplay
+			// (FindObjectsOfType InstanceID sort) sees the same relative order
+			// as a parse load; PropertyApplier state carries over exactly the
+			// way prefab assets already carry it into Object.Instantiate clones.
 			bool isLevel = !ExtraScenes.ContainsKey(buildIndex);
+			var store = Current;
+			if (isLevel)
+			{
+				if (!store.SceneTemplates.TryGetValue(buildIndex, out var template))
+				{
+					var templatePending = new List<PendingProperties>();
+					var templateRoots = new List<GameObject>();
+					foreach (var node in LoadSceneJson(map, true))
+						templateRoots.Add(GraphBuilder.BuildGameObject((JObject)node, true, null, templatePending, this));
+					foreach (var item in templatePending)
+						PropertyApplier.Apply(item.Target, item.Properties, this);
+					store.SceneTemplates[buildIndex] = template = templateRoots;
+					DumpWarnings("scene template " + map.SceneName);
+				}
+				var cloneRoots = UnityShim.CloneRules.CloneScene(template);
+				foreach (var root in cloneRoots) StampScene(root, scene);
+				World.Current.ActivateLoadedObjects(cloneRoots);
+				SceneManager.NotifySceneLoaded(scene, mode);
+				return;
+			}
+
+			JArray sceneJson = LoadSceneJson(map, isLevel);
+			var pending = new List<PendingProperties>();
+			var roots = new List<GameObject>();
+			foreach (var node in sceneJson)
+				roots.Add(GraphBuilder.BuildGameObject((JObject)node, false, null, pending, this));
+			foreach (var item in pending)
+				PropertyApplier.Apply(item.Target, item.Properties, this);
+
+			foreach (var root in roots) StampScene(root, scene);
+			World.Current.ActivateLoadedObjects(roots);
+			SceneManager.NotifySceneLoaded(scene, mode);
+			DumpWarnings("scene " + map.SceneName);
+		}
+
+		private static void StampScene(GameObject go, Scene scene)
+		{
+			go.scene = scene;
+			var t = go.transform;
+			for (int i = 0; i < t.childCount; i++)
+				StampScene(t.GetChild(i).gameObject, scene);
+		}
+
+		// PERF-1 fix 1 (minimum): the parse dominated warm resets (~10 of 15 ms);
+		// the JArray is only read by GraphBuilder/PropertyApplier, never mutated.
+		// Non-level scenes are not worth their tree (scene-boot.json alone is 5 MB
+		// of text): parse and drop (weak cache).
+		private JArray LoadSceneJson(MapEntry map, bool isLevel)
+		{
 			JArray sceneJson = null;
 			bool cached;
 			lock (gate)
@@ -284,25 +341,7 @@ namespace BoplSim.Export
 					else weakSceneJsonCache[map.File] = new WeakReference<JArray>(sceneJson);
 				}
 			}
-			var pending = new List<PendingProperties>();
-			var roots = new List<GameObject>();
-			foreach (var node in sceneJson)
-				roots.Add(GraphBuilder.BuildGameObject((JObject)node, false, null, pending, this));
-			foreach (var item in pending)
-				PropertyApplier.Apply(item.Target, item.Properties, this);
-
-			foreach (var root in roots) StampScene(root, scene);
-			World.Current.ActivateLoadedObjects(roots);
-			SceneManager.NotifySceneLoaded(scene, mode);
-			DumpWarnings("scene " + map.SceneName);
-		}
-
-		private static void StampScene(GameObject go, Scene scene)
-		{
-			go.scene = scene;
-			var t = go.transform;
-			for (int i = 0; i < t.childCount; i++)
-				StampScene(t.GetChild(i).gameObject, scene);
+			return sceneJson;
 		}
 
 		// ---- assets ------------------------------------------------------------

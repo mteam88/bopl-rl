@@ -70,6 +70,34 @@ namespace UnityShim
 	// remapped; [Serializable] plain classes are deep-copied by value.
 	public static class CloneRules
 	{
+		// Scene-template instantiation (stage 5 reset item 1). Clones every root
+		// of a prebuilt, never-awoken scene template with ONE shared reference
+		// map, so cross-root scene references bind inside the clone instead of
+		// leaking to the template. Every cloned object is stamped persistent,
+		// like GraphBuilder stamps parse-loaded scene objects: FindObjectsOfType
+		// orders persistent ids ascending before runtime ids descending, and
+		// clone creation order (GO, then components, then children, depth-first,
+		// roots in order) matches GraphBuilder's build order, so the relative
+		// InstanceID order gameplay observes is the same as a parse load.
+		// Activation (StampScene, ActivateLoadedObjects, NotifySceneLoaded) is
+		// the caller's job, exactly as after a parse load.
+		public static List<GameObject> CloneScene(List<GameObject> templateRoots)
+		{
+			var map = new Dictionary<UnityEngine.Object, UnityEngine.Object>(2048);
+			var clones = new List<GameObject>(templateRoots.Count);
+			foreach (var root in templateRoots)
+				clones.Add(CloneGameObjectRecursive(root, map));
+			foreach (var pair in map)
+				if (pair.Key is Component srcComp && pair.Value is Component dstComp && !(srcComp is Transform))
+					CopySerializedFields(srcComp, dstComp, map);
+			foreach (var value in map.Values)
+			{
+				if (value is GameObject go) { go.persistent = true; go.transform.persistent = true; }
+				else if (value is Component c && !(c is Transform)) c.persistent = true;
+			}
+			return clones;
+		}
+
 		public static GameObject CloneHierarchy(GameObject source, Transform parent)
 		{
 			var map = new Dictionary<UnityEngine.Object, UnityEngine.Object>();
