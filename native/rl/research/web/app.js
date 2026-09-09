@@ -891,11 +891,21 @@ async function selectMatch() {
       })
       .catch(() => {});
   }
-  const response = await fetch(
-    fileUrl(selectedEvaluation, selectedGame.visual),
-  );
-  const value = await response.json();
+  $("replayTag").textContent = "Loading replay…";
+  let value = null;
+  try {
+    const response = await fetch(
+      fileUrl(selectedEvaluation, selectedGame.visual),
+    );
+    if (response.ok) value = await response.json();
+  } catch (error) {
+    value = null;
+  }
   if (requested !== selectedGame) return;
+  if (!value) {
+    $("replayTag").textContent = "Replay unavailable";
+    return;
+  }
   replay = value;
   frameIndex = 0;
   $("emptyReplay").style.display = "none";
