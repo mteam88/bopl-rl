@@ -7,28 +7,30 @@ window.drawBoplArena = function(canvas,frame,initial) {
   ctx.fillStyle = "#18263a";
   ctx.fillRect(0, 0, w, h);
   const visible = initial.entities.filter((e) => !(e.flags & 8));
-  const xs = visible.flatMap((e) => [
-    e.x - Math.abs(e.rx) - Math.abs(e.ux) - e.radius,
-    e.x + Math.abs(e.rx) + Math.abs(e.ux) + e.radius,
-  ]);
-  const span = Math.max(
-    54,
-    Math.min(110, Math.max(...xs) - Math.min(...xs) + 12),
-  );
-  const scale = w / span,
-    cx = w / 2,
-    cy = h * 0.49;
-  const point = (x, y) => [cx + x * scale, cy - y * scale];
+  // Camera: fit the level's static geometry on both axes, with room above
+  // for jumps, arrows and platforms (most of the action happens over the
+  // level) and some below for falls. Fixed for the whole replay so it never
+  // jitters; the scale is whichever axis is tighter.
+  const extent = (e) => Math.abs(e.rx) + Math.abs(e.ux) + Math.abs(e.ry) + Math.abs(e.uy) + e.radius;
+  const xs = visible.flatMap((e) => [e.x - extent(e), e.x + extent(e)]);
+  const ys = visible.flatMap((e) => [e.y - extent(e), e.y + extent(e)]);
+  const x0 = Math.min(...xs) - 6, x1 = Math.max(...xs) + 6;
+  const y0 = Math.min(...ys) - 10, y1 = Math.max(...ys) + 26;
+  const spanX = Math.max(54, Math.min(110, x1 - x0)), spanY = Math.max(40, y1 - y0);
+  const scale = Math.min(w / spanX, h / spanY),
+    mx = (x0 + x1) / 2,
+    my = (y0 + y1) / 2;
+  const point = (x, y) => [w / 2 + (x - mx) * scale, h / 2 - (y - my) * scale];
   ctx.strokeStyle = "#243348";
   ctx.lineWidth = 1;
-  for (let x = -60; x <= 60; x += 5) {
+  for (let x = Math.floor((mx - w / scale / 2) / 5) * 5; x <= mx + w / scale / 2; x += 5) {
     const [px] = point(x, 0);
     ctx.beginPath();
     ctx.moveTo(px, 0);
     ctx.lineTo(px, h);
     ctx.stroke();
   }
-  for (let y = -30; y < 30; y += 5) {
+  for (let y = Math.floor((my - h / scale / 2) / 5) * 5; y <= my + h / scale / 2; y += 5) {
     const [, py] = point(0, y);
     ctx.beginPath();
     ctx.moveTo(0, py);

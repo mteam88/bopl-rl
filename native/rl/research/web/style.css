@@ -261,7 +261,7 @@ h2 {
 .stage {
   position: relative;
   background: #18263a;
-  aspect-ratio: 16/9;
+  aspect-ratio: 4/3; /* taller than the video: the replay camera fits the level vertically */
   overflow: hidden;
   border-radius: 3px;
 }
