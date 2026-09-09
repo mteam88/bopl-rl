@@ -161,6 +161,34 @@ training, plus evaluations (5 s each with an empty pool, growing with
 `native/artifacts/rl/long-run-500m/launch-002-s73-dotnet.sh` (MemoryMax
 15G = 8.6 GB peak + 6 GB).
 
+## Policy interface v2: hold head (2026-09-09, branch `hold-head`)
+
+Run 003 finished 500M learner decisions without ever charging the bow (arrow
+presses lasted 1–2 decisions; a 5× arrow needs ~15 consecutive ones: ~30 ticks
+of `transform` animation plus 4 `load` frames × 7 ticks, see `BowTransform.cs`).
+The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
+(Python mirror `native/rl/research/layout.py`, checked against
+`research_layout()` at import):
+
+- **Wire** (`RlObservation.cs`, Unity source and `sim/Gameplay` copy, wire
+  version unchanged): slime `ability_flags` bits 4–6 carry
+  `BowTransform.loadingFrame` (0–4) and bit 7 `hasFired`, only while the slot's
+  ability object is active (bit 8). Republish the Host after pulling this; the
+  launch script refuses a Host older than `sim/Gameplay/RlObservation.cs`.
+- **Observation** 3257 → 3298: per ability slot `[44]` in use now, `[45]`
+  charge/4 (visible for every player, like the bow sprite); own tail 7 → 12
+  with latch-remaining/16 and four per-button consecutive-hold counters/16.
+- **Actions** `[256, 16]` → `[256, 16, 5]`: the hold head latches the button
+  state for {1, 2, 4, 8, 16} decisions; aim is live every decision (the bow
+  follows `AimVector()` while charging). During a latch the env publishes a
+  PufferLib action mask (`MY_ACTION_MASK`) pinning the button head to the
+  latched state and the hold head to 1, so those heads carry no log-prob,
+  entropy or gradient until the latch expires. Metrics: `entropy_hold`,
+  env `hold_1..hold_16`, `latched_decisions`; `--entropy-head-scale a,b,h`
+  scales the entropy bonus per head (`BOPL_ENT_HEAD_SCALE`).
+- Checkpoints are `bopl-set-mingru-v2`; 001–003 checkpoints do not load.
+  Not launched: `native/artifacts/rl/long-run-500m/launch-004-s73-hold-head.sh`.
+
 ## Known gaps
 
 - **Memory** (fixed 2026-09-08, `602709e` + `2c0b01c`): the export's
