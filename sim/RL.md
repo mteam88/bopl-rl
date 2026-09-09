@@ -231,6 +231,40 @@ an idle box (`bopl-trainer-step-bench` unit, results in
 `native/artifacts/rl/trainer-step/`). Expected idle: GPU 0.45 -> ~0.12 ms,
 step ~0.9 -> ~0.55 ms, with the env round trip as the remaining floor.
 
+## Policy interface v2: hold head (2026-09-09, branch `hold-head`)
+
+Run 003 finished 500M learner decisions without ever charging the bow (arrow
+presses lasted 1–2 decisions; a 5× arrow needs ~15 consecutive ones: ~30 ticks
+of `transform` animation plus 4 `load` frames × 7 ticks, see `BowTransform.cs`).
+The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
+(Python mirror `native/rl/research/layout.py`, checked against
+`research_layout()` at import):
+
+- **Wire** (`RlObservation.cs`, Unity source and `sim/Gameplay` copy, wire
+  version unchanged): slime `ability_flags` bits 4–6 carry
+  `BowTransform.loadingFrame` (0–4) and bit 7 `hasFired`, only while the slot's
+  ability object is active (bit 8). Republish the Host after pulling this; the
+  launch script refuses a Host older than `sim/Gameplay/RlObservation.cs`.
+- **Observation** 3257 → 3298: per ability slot `[44]` in use now, `[45]`
+  charge/4 (visible for every player, like the bow sprite); own tail 7 → 12
+  with latch-remaining/16 and four per-button consecutive-hold counters/16.
+- **Actions** `[256, 16]` → `[256, 16, 5]`: the hold head latches the button
+  state for {1, 2, 4, 8, 16} decisions; aim is live every decision (the bow
+  follows `AimVector()` while charging). During a latch the env publishes a
+  PufferLib action mask (`MY_ACTION_MASK`) pinning the button head to the
+  latched state and the hold head to 1, so those heads carry no log-prob,
+  entropy or gradient until the latch expires. Metrics: `entropy_hold`,
+  env `hold_1..hold_16`, `latched_decisions`; `--entropy-head-scale a,b,h`
+  scales the entropy bonus per head (`BOPL_ENT_HEAD_SCALE`).
+- Reading the entropies: `entropy_buttons`/`entropy_hold` are minibatch means
+  over *all* rows, and latched rows contribute exactly 0, so with ~85% of
+  decisions latched (2M-step smoke: 11 free choices + 59 latched per
+  113-decision episode) a healthy near-uniform button head reads ~0.45, not
+  2.77. Divide by the free fraction `1 - latched_decisions / decisions` before
+  applying run-003-style collapse thresholds.
+- Checkpoints are `bopl-set-mingru-v2`; 001–003 checkpoints do not load.
+  Not launched: `native/artifacts/rl/long-run-500m/launch-004-s73-hold-head.sh`.
+
 ## Known gaps
 
 - **Memory** (fixed 2026-09-08, `602709e` + `2c0b01c`): the export's

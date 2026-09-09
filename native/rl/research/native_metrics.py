@@ -73,7 +73,8 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
     for dest, src in dict(policy_loss='policy', value_loss='value', entropy='entropy',
                           kl='kl', clip_fraction='clipfrac', gradient_norm='gradient_norm',
                           explained_variance='explained_variance', entropy_aim='entropy_aim',
-                          entropy_buttons='entropy_buttons', advantage_std='advantage_std').items():
+                          entropy_buttons='entropy_buttons', entropy_hold='entropy_hold',
+                          advantage_std='advantage_std').items():
         value = loss.get(src)
         if value is not None and not math.isfinite(value):
             # Explained variance is undefined when return variance is zero.

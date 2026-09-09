@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import numpy as np
 from telemetry import EVENT_FIELDS,FIELDS
+import layout
+from layout import ACTION_SIZES,NUM_ATNS
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'native/tools'))
@@ -24,11 +26,18 @@ class Telemetry(C.Structure):
 class State(C.Structure):
     _fields_ = [('header',Header),('players',Player*6),('entities',C.POINTER(Entity)),('slimes',C.POINTER(Slime)),('telemetry',Telemetry*6)]
 
-LIB = C.CDLL(str(ROOT/'native/artifacts/rl/libbopl_research.so'))
+LIB = C.CDLL(os.environ.get('BOPL_RESEARCH_LIBRARY') or str(ROOT/'native/artifacts/rl/libbopl_research.so'))
 LIB.research_obs_size.restype = C.c_int
 LIB.research_telemetry_size.restype = C.c_int
+LIB.research_num_atns.restype = C.c_int
+LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
 LIB.research_check.argtypes = [C.c_void_p]; LIB.research_check.restype = C.c_int
 if LIB.research_telemetry_size()!=len(FIELDS): raise RuntimeError('Rebuild the research telemetry binding')
+# The compiled layout (bopl_layout.h) must match the Python mirror (layout.py) field for field.
+_fields = (C.c_int*len(layout.LAYOUT_FIELDS))()
+if (LIB.research_layout(_fields,len(_fields))!=len(layout.LAYOUT_FIELDS) or tuple(_fields)!=layout.LAYOUT_FIELDS
+        or LIB.research_num_atns()!=NUM_ATNS or LIB.research_obs_size()!=layout.OBS_SIZE):
+    raise RuntimeError(f'Research library layout {tuple(_fields)} differs from research/layout.py {layout.LAYOUT_FIELDS}; rebuild it')
 LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
 LIB.research_reset.argtypes = [C.c_void_p,C.c_uint32,C.c_uint32]
@@ -38,6 +47,9 @@ LIB.research_telemetry.argtypes = [C.c_void_p]; LIB.research_telemetry.restype =
 LIB.research_state.argtypes = [C.c_void_p]; LIB.research_state.restype = C.POINTER(State)
 LIB.research_replay.argtypes = [C.c_void_p,C.c_char_p]
 LIB.research_close.argtypes = [C.c_void_p]
+LIB.research_mask.argtypes = [C.c_void_p]; LIB.research_mask.restype = C.POINTER(C.c_ubyte)
+LIB.research_mask_size.restype = C.c_int
+if LIB.research_mask_size()!=layout.LOGITS: raise RuntimeError('Research library action mask width differs from layout.LOGITS')
 OBS_SIZE = LIB.research_obs_size()
 
 def selected_game():
@@ -96,6 +108,9 @@ class Environment:
             raise ValueError('Evaluation reward values are outside native float range')
         self.obs=np.ctypeslib.as_array(LIB.research_obs(self.handle),shape=(2*OBS_SIZE,)).reshape(2,OBS_SIZE)
         self.telemetry=np.ctypeslib.as_array(LIB.research_telemetry(self.handle),shape=(2*len(FIELDS),)).reshape(2,len(FIELDS))
+        # Action mask of the next decision (1 = allowed), the one the trainer samples with:
+        # while a player's buttons are latched only the held button state and hold length 1 remain.
+        self.mask=np.ctypeslib.as_array(LIB.research_mask(self.handle),shape=(2*layout.LOGITS,)).reshape(2,layout.LOGITS)
         try: self.check()
         except BaseException:
             self.close();raise
@@ -108,7 +123,8 @@ class Environment:
     def reset(self,seed,map_id=0):
         LIB.research_reset(self.handle,seed,map_id);self.check()
     def step(self,actions):
-        actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,2)
+        """actions: 2 players x NUM_ATNS floats (aim angle, button bits, hold length index)."""
+        actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,NUM_ATNS)
         LIB.research_step(self.handle,actions.ctypes.data_as(C.POINTER(C.c_float)))
         self.check()
     def replay(self,path):

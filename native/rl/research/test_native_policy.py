@@ -12,7 +12,14 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
+import layout
+from layout import ACTION_SIZES, ARCHITECTURE, DECODER, LOGITS, OBS_SIZE, SET_FLAT
 from native_policy import NativePolicy, ROOT, REVISION, load
+
+# Set-encoder slices of one observation row: (start, stop, rows, width).
+ENTITY_SLICE = (layout.OBS_ENTITY_OFFSET, layout.OBS_SLIME_OFFSET, layout.OBS_ENTITIES, layout.ENTITY_FEATURES)
+SLIME_SLICE = (layout.OBS_SLIME_OFFSET, layout.OBS_PREVIOUS_OFFSET, layout.OBS_SLIMES, layout.SLIME_FEATURES)
+SET_SLICES = (ENTITY_SLICE, SLIME_SLICE)
 
 
 class NativePolicyTests(unittest.TestCase):
@@ -26,7 +33,7 @@ class NativePolicyTests(unittest.TestCase):
 
     def fixture(self, obs=11, hidden=8, layers=1):
         rng = np.random.default_rng(73)
-        count = hidden * (obs + 273) + layers * 3 * hidden**2
+        count = hidden * (obs + DECODER) + layers * 3 * hidden**2
         weights = (rng.standard_normal(count) * .025).astype(np.float32)
         policy = NativePolicy(weights, obs, hidden, layers)
         return policy, weights
@@ -34,13 +41,13 @@ class NativePolicyTests(unittest.TestCase):
     def test_upstream_parity_with_caller_resets(self):
         # Compare to upstream's independent Torch MinGRU, including its highway
         # connection. Exercise real Bopl dimensions and multiple recurrent layers.
-        for obs, hidden, layers in ((11, 8, 1), (3257, 128, 1), (11, 16, 2)):
+        for obs, hidden, layers in ((11, 8, 1), (OBS_SIZE, 128, 1), (11, 16, 2)):
             with self.subTest(obs=obs, hidden=hidden, layers=layers):
                 policy, weights = self.fixture(obs, hidden, layers)
                 encoder_end = hidden * obs
-                decoder_end = encoder_end + 273 * hidden
+                decoder_end = encoder_end + DECODER * hidden
                 encoder = torch.from_numpy(weights[:encoder_end].reshape(hidden, obs))
-                decoder = torch.from_numpy(weights[encoder_end:decoder_end].reshape(273, hidden))
+                decoder = torch.from_numpy(weights[encoder_end:decoder_end].reshape(DECODER, hidden))
                 recurrent = self.upstream.MinGRU(hidden, layers).eval()
                 with torch.no_grad():
                     offset = decoder_end
@@ -64,8 +71,8 @@ class NativePolicyTests(unittest.TestCase):
                     with torch.no_grad():
                         out, reference_state = recurrent.forward_eval(F.linear(observations, encoder), reference_state)
                         decoded = F.linear(out, decoder)
-                    torch.testing.assert_close(logits, decoded[:, :272], rtol=2e-5, atol=2e-6)
-                    torch.testing.assert_close(values, decoded[:, 272], rtol=2e-5, atol=2e-6)
+                    torch.testing.assert_close(logits, decoded[:, :LOGITS], rtol=2e-5, atol=2e-6)
+                    torch.testing.assert_close(values, decoded[:, LOGITS], rtol=2e-5, atol=2e-6)
                     torch.testing.assert_close(actual_next, reference_state[0], rtol=2e-5, atol=2e-6)
                     actual_state = actual_next
 
@@ -99,7 +106,7 @@ class NativePolicyTests(unittest.TestCase):
             weights.tofile(path)
             meta = dict(schema=1, backend="pufferlib-native", architecture="puffernet-mingru",
                         precision="float32", obs_size=11, hidden=8, num_layers=1,
-                        action_sizes=[256, 16], step=42, weights_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                        action_sizes=list(ACTION_SIZES), step=42, weights_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
             sidecar = Path(str(path) + ".json")
             sidecar.write_text(json.dumps(meta))
             restored, saved = load(path)
@@ -109,6 +116,8 @@ class NativePolicyTests(unittest.TestCase):
                 torch.testing.assert_close(actual, expected, rtol=0, atol=0)
             with self.assertRaisesRegex(ValueError, "precision"):
                 load(path, metadata=dict(meta, precision="bfloat16"))
+            with self.assertRaisesRegex(ValueError, "action_sizes"):
+                load(path, metadata=dict(meta, action_sizes=[256, 16]))  # layout v1 checkpoints are refused
             path.write_bytes(path.read_bytes()[:-4])
             with self.assertRaisesRegex(ValueError, "metadata hash"):
                 load(path)
@@ -131,13 +140,13 @@ class NativePolicyTests(unittest.TestCase):
         # independent full encoder oracle is kept outside the shipped code.
         hidden, batch = 16, 4
         rng = np.random.default_rng(91)
-        shapes = ((hidden, 905), (64, 21), (64, 28), (hidden, hidden + 128),
-                  (273, hidden), (3 * hidden, hidden))
+        shapes = ((hidden, SET_FLAT), (64, layout.ENTITY_FEATURES), (64, layout.SLIME_FEATURES), (hidden, hidden + 128),
+                  (DECODER, hidden), (3 * hidden, hidden))
         weights = np.concatenate([(rng.standard_normal(shape) * .025).astype(np.float32).ravel()
                                   for shape in shapes])
-        policy = NativePolicy(weights, 3257, hidden, architecture="bopl-set-mingru-v1")
-        obs = rng.standard_normal((batch, 3257)).astype(np.float32)
-        for lo, hi, rows, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+        policy = NativePolicy(weights, OBS_SIZE, hidden, architecture=ARCHITECTURE)
+        obs = rng.standard_normal((batch, OBS_SIZE)).astype(np.float32)
+        for lo, hi, rows, width in SET_SLICES:
             slots = obs[:, lo:hi].reshape(batch, rows, width)
             slots[:, :, 0] = rng.integers(2, size=(batch, rows))
             slots[0, :, 0] = 0
@@ -148,7 +157,7 @@ class NativePolicyTests(unittest.TestCase):
 
         expected = step(obs)
         permuted, poisoned, empty = (obs.copy() for _ in range(3))
-        for lo, hi, rows, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+        for lo, hi, rows, width in SET_SLICES:
             slots = obs[:, lo:hi].reshape(batch, rows, width)
             for row in range(batch):
                 permuted[row, lo:hi] = slots[row, rng.permutation(rows)].ravel()
@@ -160,7 +169,7 @@ class NativePolicyTests(unittest.TestCase):
                 torch.testing.assert_close(actual, reference, rtol=0, atol=0)
         # Reusing activations across populated and empty sets must not retain
         # an entity's previous pooled output.
-        fresh = NativePolicy(weights, 3257, hidden, architecture="bopl-set-mingru-v1")
+        fresh = NativePolicy(weights, OBS_SIZE, hidden, architecture=ARCHITECTURE)
         empty_result = fresh.step(torch.from_numpy(empty.copy()), fresh.initial(batch))
         step(obs)
         for actual, reference in zip(step(empty), empty_result):
@@ -173,14 +182,14 @@ class NativePolicyTests(unittest.TestCase):
             with self.subTest(hidden=hidden, layers=layers):
                 batch = 3
                 rng = np.random.default_rng(193)
-                shapes = [(hidden, 905), (64, 21), (64, 28),
-                          (hidden, hidden + 128), (273, hidden)]
+                shapes = [(hidden, SET_FLAT), (64, layout.ENTITY_FEATURES), (64, layout.SLIME_FEATURES),
+                          (hidden, hidden + 128), (DECODER, hidden)]
                 shapes += [(3 * hidden, hidden)] * layers
                 matrices = [(rng.standard_normal(shape) * .03).astype(np.float32)
                             for shape in shapes]
                 weights = np.concatenate([matrix.ravel() for matrix in matrices])
-                policy = NativePolicy(weights, 3257, hidden, layers,
-                                      architecture="bopl-set-mingru-v1")
+                self.assertEqual(weights.size, layout.policy_weights(hidden, layers, ARCHITECTURE))
+                policy = NativePolicy(weights, OBS_SIZE, hidden, layers, architecture=ARCHITECTURE)
                 flat, entity, slime, fusion, decoder = map(torch.from_numpy, matrices[:5])
                 recurrent = self.upstream.MinGRU(hidden, layers).eval()
                 with torch.no_grad():
@@ -203,23 +212,24 @@ class NativePolicyTests(unittest.TestCase):
                         row = tick % batch
                         state[:, row] = 0
                         reference[0][:, row] = 0
-                    obs = rng.standard_normal((batch, 3257)).astype(np.float32)
-                    for lo, hi, count, width in ((898, 2914, 96, 21), (2914, 3250, 12, 28)):
+                    obs = rng.standard_normal((batch, OBS_SIZE)).astype(np.float32)
+                    for lo, hi, count, width in SET_SLICES:
                         rows = obs[:, lo:hi].reshape(batch, count, width)
                         rows[:, :, 0] = 0 if tick == 10 else rng.integers(2, size=(batch, count))
                         rows[:, :, 1:][rows[:, :, 0] == 0] = 1e9
                     observations = torch.from_numpy(obs)
                     logits, values, state = policy.step(observations, state)
                     with torch.no_grad():
-                        flat_input = torch.cat((observations[:, :898], observations[:, 3250:]), 1)
+                        (e_lo, e_hi, e_rows, e_width), (s_lo, s_hi, s_rows, s_width) = SET_SLICES
+                        flat_input = torch.cat((observations[:, :e_lo], observations[:, s_hi:]), 1)
                         joined = torch.cat((F.linear(flat_input, flat).relu(),
-                                            pooled(observations[:, 898:2914].reshape(batch, 96, 21), entity),
-                                            pooled(observations[:, 2914:3250].reshape(batch, 12, 28), slime)), 1)
+                                            pooled(observations[:, e_lo:e_hi].reshape(batch, e_rows, e_width), entity),
+                                            pooled(observations[:, s_lo:s_hi].reshape(batch, s_rows, s_width), slime)), 1)
                         encoded = F.linear(joined, fusion).relu()
                         out, reference = recurrent.forward_eval(encoded, reference)
                         decoded = F.linear(out, decoder)
-                    torch.testing.assert_close(logits, decoded[:, :272], rtol=2e-5, atol=2e-6)
-                    torch.testing.assert_close(values, decoded[:, 272], rtol=2e-5, atol=2e-6)
+                    torch.testing.assert_close(logits, decoded[:, :LOGITS], rtol=2e-5, atol=2e-6)
+                    torch.testing.assert_close(values, decoded[:, LOGITS], rtol=2e-5, atol=2e-6)
                     torch.testing.assert_close(state, reference[0], rtol=2e-5, atol=2e-6)
 
 

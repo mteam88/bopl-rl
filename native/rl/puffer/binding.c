@@ -1,8 +1,10 @@
 #include "bopl_puffer.h"
 #define OBS_SIZE BOPL_OBS_SIZE
-#define NUM_ATNS 2
-#define ACT_SIZES {256, 16}
+#define NUM_ATNS BOPL_NUM_ATNS
+#define ACT_SIZES {BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD}
 #define OBS_TENSOR_T FloatTensor
+/* Per-agent action mask over the concatenated heads (see BoplPuffer.action_mask). */
+#define MY_ACTION_MASK BOPL_LOGITS
 #define Env BoplPuffer
 /* Every player is routed through per-slot pointers (my_setup_perm), so the
  * trainer's agent permutation and the historical-opponent slots actually take
@@ -88,6 +90,7 @@ void my_setup_perm(StaticVec *vec, Env *env, int slot_base) {
         env->action_ptr[s]=vec->actions+(size_t)phys*NUM_ATNS;
         env->reward_ptr[s]=vec->rewards+phys;
         env->terminal_ptr[s]=vec->terminals+phys;
+        env->mask_ptr[s]=vec->action_mask+(size_t)phys*MY_ACTION_MASK;
     }
 }
 void my_log(Log *log, Dict *out) {
@@ -102,10 +105,10 @@ void my_log(Log *log, Dict *out) {
         "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
         "map_28_fraction", "map_29_fraction", "map_30_fraction"
     };
-    if (out->capacity<64) {
-        DictItem *items=realloc(out->items,64*sizeof(DictItem));
+    if (out->capacity<96) {
+        DictItem *items=realloc(out->items,96*sizeof(DictItem));
         if (!items) abort();
-        out->items=items;out->capacity=64;
+        out->items=items;out->capacity=96;
     }
     dict_set(out, "perf", log->perf); dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return); dict_set(out, "episode_length", log->episode_length);
@@ -113,6 +116,9 @@ void my_log(Log *log, Dict *out) {
     dict_set(out, "observation_overflow", log->observation_overflow); dict_set(out, "game_errors", log->game_errors);
     dict_set(out, "learner_episodes", log->learner_episodes); dict_set(out, "learner_wins", log->learner_wins);
     dict_set(out, "historical_episodes", log->historical_episodes); dict_set(out, "historical_wins", log->historical_wins);
+    static const char *hold_keys[BOPL_ACT_HOLD]={"hold_1","hold_2","hold_4","hold_8","hold_16"};
+    for (int h=0; h<BOPL_ACT_HOLD; h++) dict_set(out, hold_keys[h], log->hold_choice[h]);
+    dict_set(out, "latched_decisions", log->latched_decisions);
     static const char *bank_n[8]={"hist_n_bank_0","hist_n_bank_1","hist_n_bank_2","hist_n_bank_3","hist_n_bank_4","hist_n_bank_5","hist_n_bank_6","hist_n_bank_7"};
     static const char *bank_score[8]={"hist_score_bank_0","hist_score_bank_1","hist_score_bank_2","hist_score_bank_3","hist_score_bank_4","hist_score_bank_5","hist_score_bank_6","hist_score_bank_7"};
     for (int bank=0; bank<8; bank++) if (log->hist_n_bank[bank]) {

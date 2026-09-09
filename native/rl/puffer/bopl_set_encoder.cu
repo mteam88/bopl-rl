@@ -6,9 +6,12 @@
 #include <cmath>
 #include <initializer_list>
 #include <stdexcept>
+#include "bopl_layout.h"
 
-static constexpr int BS_PREFIX=898, BS_FLAT=905, BS_OBS=3257, BS_E=64;
-static constexpr int BS_ENTITY_OFFSET=898, BS_SLIME_OFFSET=2914, BS_PREVIOUS_OFFSET=3250;
+// Layout v2 (bopl_layout.h): prefix 934, flat 946, obs 3298.
+static constexpr int BS_PREFIX=BOPL_OBS_PREFIX, BS_FLAT=BOPL_OBS_PREFIX+BOPL_PREVIOUS_FEATURES, BS_OBS=BOPL_OBS_SIZE, BS_E=64;
+static constexpr int BS_ENTITY_OFFSET=BOPL_OBS_ENTITY_OFFSET, BS_SLIME_OFFSET=BOPL_OBS_SLIME_OFFSET, BS_PREVIOUS_OFFSET=BOPL_OBS_PREVIOUS_OFFSET;
+static constexpr int BS_N_ENT=BOPL_OBS_ENTITIES, BS_W_ENT=BOPL_ENTITY_FEATURES, BS_N_SLIME=BOPL_OBS_SLIMES, BS_W_SLIME=BOPL_SLIME_FEATURES;
 
 struct BoplSetWeights {
     PrecisionTensor flat, entity, slime, fusion;
@@ -83,14 +86,14 @@ static PrecisionTensor bs_forward(void* weights, void* activations, PrecisionTen
     auto* w=(BoplSetWeights*)weights; auto* a=(BoplSetActs*)activations;
     int B=a->out.shape[0], H=w->hidden;
     bs_gather_flat<<<grid_size(B*BS_FLAT),BLOCK_SIZE,0,stream>>>(a->flat_input.data,input.data,B);
-    bs_gather_set<96,21,BS_ENTITY_OFFSET><<<grid_size(B*96*21),BLOCK_SIZE,0,stream>>>(a->entity_input.data,input.data,B);
-    bs_gather_set<12,28,BS_SLIME_OFFSET><<<grid_size(B*12*28),BLOCK_SIZE,0,stream>>>(a->slime_input.data,input.data,B);
+    bs_gather_set<BS_N_ENT,BS_W_ENT,BS_ENTITY_OFFSET><<<grid_size(B*BS_N_ENT*BS_W_ENT),BLOCK_SIZE,0,stream>>>(a->entity_input.data,input.data,B);
+    bs_gather_set<BS_N_SLIME,BS_W_SLIME,BS_SLIME_OFFSET><<<grid_size(B*BS_N_SLIME*BS_W_SLIME),BLOCK_SIZE,0,stream>>>(a->slime_input.data,input.data,B);
     puf_mm(&a->flat_input,&w->flat,&a->flat,stream);
     puf_mm(&a->entity_input,&w->entity,&a->entity,stream);
     puf_mm(&a->slime_input,&w->slime,&a->slime,stream);
     bs_join_flat<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->joined.data,a->flat.data,B,H);
-    bs_pool<96,21><<<grid_size(B*BS_E),BLOCK_SIZE,0,stream>>>(a->joined.data,a->entity_winner.data,a->entity.data,a->entity_input.data,B,H,H);
-    bs_pool<12,28><<<grid_size(B*BS_E),BLOCK_SIZE,0,stream>>>(a->joined.data,a->slime_winner.data,a->slime.data,a->slime_input.data,B,H,H+BS_E);
+    bs_pool<BS_N_ENT,BS_W_ENT><<<grid_size(B*BS_E),BLOCK_SIZE,0,stream>>>(a->joined.data,a->entity_winner.data,a->entity.data,a->entity_input.data,B,H,H);
+    bs_pool<BS_N_SLIME,BS_W_SLIME><<<grid_size(B*BS_E),BLOCK_SIZE,0,stream>>>(a->joined.data,a->slime_winner.data,a->slime.data,a->slime_input.data,B,H,H+BS_E);
     puf_mm(&a->joined,&w->fusion,&a->out,stream);
     bs_relu<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->out.data,B*H);
     return a->out;
@@ -102,8 +105,8 @@ static void bs_backward(void* weights, void* activations, PrecisionTensor grad, 
     puf_mm_tn(&a->grad_out,&a->joined,&a->wgrad_fusion,stream);
     puf_mm_nn(&a->grad_out,&w->fusion,&a->grad_joined,stream);
     bs_flat_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->grad_flat.data,a->grad_joined.data,a->flat.data,B,H);
-    bs_pool_grad<96><<<grid_size(B*96*BS_E),BLOCK_SIZE,0,stream>>>(a->grad_entity.data,a->grad_joined.data,a->entity_winner.data,B,H,H);
-    bs_pool_grad<12><<<grid_size(B*12*BS_E),BLOCK_SIZE,0,stream>>>(a->grad_slime.data,a->grad_joined.data,a->slime_winner.data,B,H,H+BS_E);
+    bs_pool_grad<BS_N_ENT><<<grid_size(B*BS_N_ENT*BS_E),BLOCK_SIZE,0,stream>>>(a->grad_entity.data,a->grad_joined.data,a->entity_winner.data,B,H,H);
+    bs_pool_grad<BS_N_SLIME><<<grid_size(B*BS_N_SLIME*BS_E),BLOCK_SIZE,0,stream>>>(a->grad_slime.data,a->grad_joined.data,a->slime_winner.data,B,H,H+BS_E);
     puf_mm_tn(&a->grad_flat,&a->flat_input,&a->wgrad_flat,stream);
     puf_mm_tn(&a->grad_entity,&a->entity_input,&a->wgrad_entity,stream);
     puf_mm_tn(&a->grad_slime,&a->slime_input,&a->wgrad_slime,stream);
@@ -115,15 +118,15 @@ static void bs_init(void* weights, ulong* seed, cudaStream_t stream) {
 }
 static void bs_reg_params(void* weights, Allocator* alloc) {
     auto* w=(BoplSetWeights*)weights; int H=w->hidden;
-    w->flat={.shape={H,BS_FLAT}}; w->entity={.shape={BS_E,21}};
-    w->slime={.shape={BS_E,28}}; w->fusion={.shape={H,H+2*BS_E}};
+    w->flat={.shape={H,BS_FLAT}}; w->entity={.shape={BS_E,BS_W_ENT}};
+    w->slime={.shape={BS_E,BS_W_SLIME}}; w->fusion={.shape={H,H+2*BS_E}};
     // Registration order is also the on-disk and optimizer gradient order.
     for(auto* tensor:{&w->flat,&w->entity,&w->slime,&w->fusion}) alloc_register(alloc,tensor);
 }
 static void bs_reg_rollout(void* weights, void* activations, Allocator* alloc, int B) {
     auto* w=(BoplSetWeights*)weights; auto* a=(BoplSetActs*)activations; int H=w->hidden;
-    a->flat_input={.shape={B,BS_FLAT}}; a->entity_input={.shape={B*96,21}}; a->slime_input={.shape={B*12,28}};
-    a->flat={.shape={B,H}}; a->entity={.shape={B*96,BS_E}}; a->slime={.shape={B*12,BS_E}};
+    a->flat_input={.shape={B,BS_FLAT}}; a->entity_input={.shape={B*BS_N_ENT,BS_W_ENT}}; a->slime_input={.shape={B*BS_N_SLIME,BS_W_SLIME}};
+    a->flat={.shape={B,H}}; a->entity={.shape={B*BS_N_ENT,BS_E}}; a->slime={.shape={B*BS_N_SLIME,BS_E}};
     a->joined={.shape={B,H+2*BS_E}}; a->out={.shape={B,H}};
     a->entity_winner={.shape={B,BS_E}}; a->slime_winner={.shape={B,BS_E}};
     for(auto* tensor:{&a->flat_input,&a->entity_input,&a->slime_input,&a->flat,&a->entity,&a->slime,&a->joined,&a->out})
@@ -134,15 +137,15 @@ static void bs_reg_train(void* weights, void* activations, Allocator* acts, Allo
     auto* w=(BoplSetWeights*)weights; auto* a=(BoplSetActs*)activations; int H=w->hidden;
     bs_reg_rollout(weights,activations,acts,B);
     a->grad_out={.shape={B,H}}; a->grad_joined={.shape={B,H+2*BS_E}};
-    a->grad_flat={.shape={B,H}}; a->grad_entity={.shape={B*96,BS_E}}; a->grad_slime={.shape={B*12,BS_E}};
+    a->grad_flat={.shape={B,H}}; a->grad_entity={.shape={B*BS_N_ENT,BS_E}}; a->grad_slime={.shape={B*BS_N_SLIME,BS_E}};
     for(auto* tensor:{&a->grad_out,&a->grad_joined,&a->grad_flat,&a->grad_entity,&a->grad_slime}) alloc_register(acts,tensor);
-    a->wgrad_flat={.shape={H,BS_FLAT}}; a->wgrad_entity={.shape={BS_E,21}};
-    a->wgrad_slime={.shape={BS_E,28}}; a->wgrad_fusion={.shape={H,H+2*BS_E}};
+    a->wgrad_flat={.shape={H,BS_FLAT}}; a->wgrad_entity={.shape={BS_E,BS_W_ENT}};
+    a->wgrad_slime={.shape={BS_E,BS_W_SLIME}}; a->wgrad_fusion={.shape={H,H+2*BS_E}};
     for(auto* tensor:{&a->wgrad_flat,&a->wgrad_entity,&a->wgrad_slime,&a->wgrad_fusion}) alloc_register(grads,tensor);
 }
 static void* bs_create(void* self) {
     auto* encoder=(Encoder*)self;
-    if(encoder->in_dim!=BS_OBS) throw std::runtime_error("Bopl SET expects 3257 observation features");
+    if(encoder->in_dim!=BS_OBS) throw std::runtime_error("Bopl SET expects "+std::to_string(BS_OBS)+" observation features (layout v2)");
     auto* w=(BoplSetWeights*)calloc(1,sizeof(BoplSetWeights));
     w->hidden=encoder->out_dim; return w;
 }
