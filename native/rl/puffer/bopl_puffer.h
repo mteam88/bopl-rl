@@ -318,7 +318,11 @@ static void init(BoplPuffer *env) {
     if (env->banks && (env->active_bank<0 || env->active_bank>=env->banks)) { fprintf(stderr, "Bopl RL: historical environment without a bank\n"); abort(); }
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
-    if (!env->no_autoreset) {
+    /* The spare is a second runtime (~240 MB) for an in-process game, the
+     * same memory as its second process for a socket game; BOPL_RL_INPROC_SPARE=0
+     * drops it and pays every reset (~8 ms) on the lockstep instead. */
+    const char *inproc_spare=getenv("BOPL_RL_INPROC_SPARE");
+    if (!env->no_autoreset && !(bopl_rl_in_process(game) && inproc_spare && inproc_spare[0]=='0')) {
         length=snprintf(env->spare_log, sizeof(env->spare_log), "%s/worker-%ld-%u-spare.log", logs, (long)getpid(), env->rng);
         if (length<0 || (size_t)length>=sizeof(env->spare_log)) abort();
         /* Game start-up takes seconds; overlap it with the other workers' start-up. */

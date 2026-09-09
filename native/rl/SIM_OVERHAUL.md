@@ -95,10 +95,15 @@ calls the exported functions directly. Selection: `BOPL_RL_GAME` ending in
   P independent NativeAOT runtimes, each ~31 MB of private code pages plus
   the same ~200 MB heap a process has today. Memory is unchanged vs
   processes (3.6 GB at 16); what we buy is the transport.
-- The spare world (`env->spare`, `bopl_spare_open`) is a socket-era overlap
-  for 13-33 ms Unity resets. In-process resets are synchronous and ~3 ms;
-  16 games resetting once per ~20 s of play stall the lockstep 0.25% of the
-  time. Route A opens no spare (`env->spare = NULL` path already exists).
+- The spare world (`env->spare`, `bopl_spare_open`) stays. The library's
+  `reset_begin` does the whole reset before returning (~8 ms warm, 55-90 ms
+  the first time a runtime loads a map), so the backend runs it on a helper
+  thread and `reset_finish` joins; the spare then overlaps resets with play
+  as with a process. Without that overlap every reset sat on the lockstep:
+  measured 0.4-0.8 ms per step (one reset per 10-20 steps at 4-16 games with
+  an untrained policy), which alone made in-process *slower* than the socket.
+  Memory is the same as today (two runtimes per env, two processes per env).
+  `BOPL_RL_INPROC_SPARE=0` drops the spare for memory-constrained tests.
 - OpenMP threads call into the runtimes; NativeAOT attaches a thread on first
   entry. Pin nothing; measure whether `OMP_PROC_BIND` matters.
 - Logging: `bopl_rl_open`'s log path argument already redirects the shim's
@@ -108,6 +113,33 @@ Gate: `check_pipeline.py`-style comparison, obs/rewards/dones/telemetry
 identical to the socket path for a fixed seed schedule over >= 20 matches on
 all 5 maps; then w16b2 A/B against the socket build on the idle box.
 Expected: `t_env` 0.4 -> ~0.15-0.2 ms, `t_step` ~0.55 -> ~0.3 ms.
+
+**Done 2026-09-08 (`bopl_rl.c` in-process backend, `bopl_puffer.h` spare
+logic).** `BOPL_RL_GAME=.../BoplSimNative.so` dlopens one reflinked copy per
+handle (unlinked once mapped; `BOPL_RL_INPROC_KEEP=1` keeps them with the
+`.dbg` for perf). Training is bit-identical to the socket path (every loss
+and match count equal over 20-60 updates at w4, w8, w16x2). On the loaded
+box (run 003 live): w4 `eval_env` 0.268 -> 0.212 ms (+17% learner/s), w16x2
+0.969 -> 0.856 ms (+12%). Smaller than the estimate because `t_env` is the
+slowest of the 16 games, and with an untrained policy spamming Bow/Platform
+a decision costs ~0.2 ms of sim CPU (the same in Host and in the .so; the
+78 us of section 1 was a mild scripted schedule). Transport was only ~50 us
+of the step. The clean number comes from the `bopl-trainer-step-bench` unit
+(m2 = in-process) once the box is idle.
+
+Two findings that feed section 3:
+
+- Reset overlap is not optional. A world-per-runtime design where a reset
+  cannot run concurrently with another world's ticking (the `Bind(k)`
+  copy-in/out model with plain statics) puts every reset back on the
+  lockstep. Section 3 must either make the swapped statics per-thread
+  (`[ThreadStatic]` + `Bind` at hand-over) so a reset thread and step
+  threads share a runtime, or make reset itself ~0.1 ms (snapshot), or keep
+  a spare runtime per P (memory).
+- Compute per decision is ~0.2 ms on spawn-heavy content, so the section 0
+  ceiling (12 cores / compute) is ~60k decisions/s = ~120k rows/s for random
+  play, higher as policies stop spamming. The shim diet (section 6) is worth
+  more than assumed.
 
 ## 3. Many worlds per runtime (3-5 days, memory and reset cost)
 
@@ -173,11 +205,12 @@ rows/s (~110k learner). Report the curve against the model in section 0.
 
 ## 5. Deprioritised, with the reason
 
-- **Snapshot-restore resets.** Reset is ~3 ms and one-life games last
-  300-1500 decisions; lockstep stall from resets is <1% at 16 games and
-  ~2-4% at 128 (resets scale with games, the stall does not shrink). Revisit
-  only if the section 4 sweep shows reset stalls above 5% of step time; the
-  fix is then a world-level snapshot of the post-warmup state per map.
+- **Snapshot-restore resets.** Reset is ~8 ms warm; with an untrained
+  policy games last ~160 decisions, so unhidden resets cost 0.4-0.8 ms per
+  step (section 2 measurement), hidden ones ~0. Not needed while a spare
+  runtime hides them; becomes the fix if section 3 cannot overlap resets
+  with ticking and memory rules out spares (world-level snapshot of the
+  post-warmup state per map and seed schedule).
 - **Async actor/learner (PufferLib 5 / Cleanba style).** Overlapping
   training with rollout saves at most the train share, 4% today. Worth it
   only when the network grows enough that `train_seconds` exceeds ~25% of

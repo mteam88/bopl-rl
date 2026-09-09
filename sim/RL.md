@@ -44,6 +44,28 @@ native/artifacts/rl/sampled_check "$BOPL_RL_GAME" $PWD/native/fixtures/movement.
 Unity-only files (`UnityPlayer.so`, `Assembly-CSharp.dll`) that do not exist
 next to the port; `config.json` then records only `player_binary_sha256`.
 
+### In-process instead of a process (branch `trainer-step`, 2026-09-08)
+
+The same harness steps the sim inside the trainer when `BOPL_RL_GAME` ends
+in `.so`:
+
+```sh
+nice -n 19 dotnet publish -c Release -r linux-x64 sim/Native
+export BOPL_RL_GAME=$PWD/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
+```
+
+`bopl_rl.c` then `dlopen`s one private (reflinked, unlinked) copy of the
+library per handle, one NativeAOT runtime per world, and forwards every ABI
+call; `reset_begin` runs the library's synchronous reset on a helper thread so
+the spare world overlaps resets with play as before. Training is bit-identical
+to the socket path (same losses and match counts for the same seed) and the
+env phase of a step drops ~20% (`native/rl/SIM_OVERHAUL.md` section 2 has the
+numbers; `native/rl/backend_check.c` is the parity and multi-runtime test).
+Memory per env is unchanged (two runtimes ~ two processes). Knobs:
+`BOPL_RL_INPROC_SPARE=0` (no spare, every reset stalls the lockstep ~8 ms),
+`BOPL_RL_INPROC_KEEP=1` (keep the copies and `.dbg` next to the library so
+`perf` can symbolize).
+
 ## What the process does (`sim/Host/RlMode.cs`)
 
 `Program.Run` hands over to `RlMode` when `BOPL_RL_SOCKET` is set or the first

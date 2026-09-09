@@ -2,7 +2,7 @@
  * and 1.4). Runs one fixed input sequence through the bopl_rl.h ABI and prints
  * FNV-1a checksums over every post-step state, via either backend:
  *
- *   backend_check socket <Host-or-player binary> <bootstrap .rep>
+ *   backend_check socket <Host-or-player binary> <bootstrap .rep> [copies]
  *   backend_check inproc <BoplSimNative.so> [copies]
  *
  * The socket backend is bopl_rl.c linked in (worker process + unix socket),
@@ -18,6 +18,14 @@
  * with a deterministic pseudo-random input schedule (held stick, occasional
  * jump/ability), stopping early if the episode ends; then (c) = (a) again to check that a
  * dirty reset lands on the same state.
+ *
+ * Knobs: BOPL_CHECK_SAMPLED=1 uses step_sampled(3, 1) like the trainer;
+ * BOPL_CHECK_ABILITIES=a,b,c / BOPL_CHECK_MAP=n / BOPL_CHECK_ABILITY_RATE=n
+ * change phase (b)'s loadout, map and ability press rate (2,4,14 / 0 / 2 is
+ * spawn-heavy, near what an untrained policy does); BOPL_CHECK_ROUNDS=n
+ * repeats phase (b) n times and prints each round's wall and CPU per step
+ * (the first round on new content is 2-3x slower: asset build). A single
+ * in-process copy loads the file itself so perf sees symbols.
  *
  *   cc -O2 -pthread -o backend_check backend_check.c bopl_rl.c -ldl
  */
@@ -40,6 +48,7 @@ typedef struct {
     BoplRl *(*open)(const char *, const char *, const char *, uint32_t, char *, size_t);
     int (*reset)(BoplRl *, const BoplRlConfig *);
     int (*step)(BoplRl *, const BoplRlAction *, size_t, uint32_t);
+    int (*step_sampled)(BoplRl *, const BoplRlAction *, size_t, uint32_t, uint32_t);
     const BoplRlState *(*state)(const BoplRl *);
     const char *(*error)(const BoplRl *);
     uint32_t (*map_count)(const BoplRl *);
@@ -71,13 +80,20 @@ static double now_ms(void)
     return value.tv_sec * 1000.0 + value.tv_nsec / 1e6;
 }
 
+static double cpu_ms(void)
+{
+    struct timespec value;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value);
+    return value.tv_sec * 1000.0 + value.tv_nsec / 1e6;
+}
+
 typedef struct {
     const Backend *api;
     BoplRl *world;
     const char *label;
     uint64_t checksum[3];
     int steps[3];
-    double reset_ms[3], step_us[3];
+    double reset_ms[3], step_us[3], cpu_us[3];
     int failed;
 } Run;
 
@@ -101,6 +117,15 @@ static int run_phase(Run *run, int p)
         config.map = 1 % api->map_count(run->world);
         config.seed = 7;
         config.stocks = 3; /* respawns, so the schedule gets a long game */
+        /* BOPL_CHECK_ABILITIES=a,b,c overrides the loadout (e.g. 2,4,14 =
+         * Dash/Bow/Platform, the training loadout); BOPL_CHECK_MAP the map. */
+        const char *abilities = getenv("BOPL_CHECK_ABILITIES"), *map = getenv("BOPL_CHECK_MAP");
+        if (abilities) {
+            uint32_t a, b, c;
+            if (sscanf(abilities, "%u,%u,%u", &a, &b, &c) == 3)
+                for (int k = 0; k < 6; k++) { config.player[k].abilities[0] = a; config.player[k].abilities[1] = b; config.player[k].abilities[2] = c; }
+        }
+        if (map) config.map = (uint32_t)atoi(map);
         decisions = 1500; repeat = 4; rng = 0x9E3779B9u;
     }
     double start = now_ms();
@@ -110,8 +135,15 @@ static int run_phase(Run *run, int p)
 
     uint64_t checksum = 14695981039346656037ULL;
     uint8_t held[2] = {0, 0};
+    /* BOPL_CHECK_SAMPLED=1: phase (b) uses the trainer's step_sampled(3, 1). */
+    const char *sampled_env = getenv("BOPL_CHECK_SAMPLED");
+    int sampled = sampled_env && sampled_env[0] == '1';
+    /* BOPL_CHECK_ABILITY_RATE=n: an ability press 1 in n decisions (default 32). */
+    const char *rate_env = getenv("BOPL_CHECK_ABILITY_RATE");
+    uint32_t ability_mask = (rate_env ? (uint32_t)atoi(rate_env) : 32u) - 1u;
     int steps = 0;
     start = now_ms();
+    double cpu_start = cpu_ms();
     for (int i = 0; i < decisions; i++) {
         BoplRlAction actions[2] = {{0, 0, 0}, {0, 0, 0}};
         if (rng) {
@@ -122,16 +154,19 @@ static int run_phase(Run *run, int p)
                 if ((i & 7) == 0) held[k] = (uint8_t)(rng >> 24);
                 actions[k].angle = held[k];
                 if (((rng >> 4) & 7) == 0) actions[k].buttons |= 1;
-                if (((rng >> 16) & 31) == 0) actions[k].buttons |= (uint16_t)(2u << ((rng >> 21) % 3));
+                if (((rng >> 16) & ability_mask) == 0) actions[k].buttons |= (uint16_t)(2u << ((rng >> 21) % 3));
             }
         }
-        result = api->step(run->world, actions, 2, (uint32_t)repeat);
+        result = sampled && repeat == 4 ? api->step_sampled(run->world, actions, 2, 3, 1)
+                                        : api->step(run->world, actions, 2, (uint32_t)repeat);
         if (result == BOPL_RL_ENDED) break;
         if (result != BOPL_RL_OK) return fail(run, "step", result);
         checksum = hash_state(checksum, api->state(run->world));
         steps++;
     }
     run->step_us[p] = steps ? (now_ms() - start) * 1000.0 / steps : 0;
+    run->cpu_us[p] = steps ? (cpu_ms() - cpu_start) * 1000.0 / steps : 0;
+    if (p == 1 && getenv("BOPL_CHECK_ROUNDS")) printf("[%s] round: reset=%.1fms step=%.1fus cpu=%.1fus\n", run->label, run->reset_ms[p], run->step_us[p], run->cpu_us[p]);
     run->checksum[p] = checksum;
     run->steps[p] = steps;
     return 0;
@@ -140,15 +175,19 @@ static int run_phase(Run *run, int p)
 static void *run_sequence(void *arg)
 {
     Run *run = arg;
-    for (int p = 0; p < 3 && !run->failed; p++) run_phase(run, p);
+    /* BOPL_CHECK_ROUNDS=n repeats phase (b) n times (profiling the step path). */
+    const char *rounds_env = getenv("BOPL_CHECK_ROUNDS");
+    int rounds = rounds_env ? atoi(rounds_env) : 1;
+    for (int p = 0; p < 3 && !run->failed; p++)
+        for (int r = 0; r < (p == 1 ? rounds : 1) && !run->failed; r++) run_phase(run, p);
     return NULL;
 }
 
 static void print_run(const Run *run)
 {
     for (int p = 0; p < 3; p++)
-        printf("[%s] phase %c: steps=%d reset=%.1fms step=%.1fus checksum=%016llx\n", run->label, 'a' + p,
-               run->steps[p], run->reset_ms[p], run->step_us[p], (unsigned long long)run->checksum[p]);
+        printf("[%s] phase %c: steps=%d reset=%.1fms step=%.1fus cpu=%.1fus checksum=%016llx\n", run->label, 'a' + p,
+               run->steps[p], run->reset_ms[p], run->step_us[p], run->cpu_us[p], (unsigned long long)run->checksum[p]);
 }
 
 static int copy_file(const char *from, const char *to)
@@ -170,7 +209,7 @@ static int load_inproc(Backend *api, const char *path)
 #define RESOLVE(field, name) api->field = (__typeof__(api->field))dlsym(library, "bopl_rl_" #name); \
     if (!api->field) { fprintf(stderr, "dlsym bopl_rl_%s: %s\n", #name, dlerror()); return -1; }
     RESOLVE(abi_version, abi_version) RESOLVE(default_config, default_config) RESOLVE(open, open)
-    RESOLVE(reset, reset) RESOLVE(step, step) RESOLVE(state, state) RESOLVE(error, error)
+    RESOLVE(reset, reset) RESOLVE(step, step) RESOLVE(step_sampled, step_sampled) RESOLVE(state, state) RESOLVE(error, error)
     RESOLVE(map_count, map_count) RESOLVE(close, close)
 #undef RESOLVE
     if (api->abi_version() != 2) { fprintf(stderr, "%s: ABI version %u\n", path, api->abi_version()); return -1; }
@@ -187,10 +226,13 @@ int main(int argc, char **argv)
     if (!mkdtemp(tmpdir)) { perror("mkdtemp"); return 1; }
 
     if (!strcmp(argv[1], "socket")) {
-        if (argc != 4) { fprintf(stderr, "socket needs <binary> <bootstrap.rep>\n"); return 2; }
-        apis = calloc(1, sizeof(Backend));
-        *apis = (Backend){bopl_rl_abi_version, bopl_rl_default_config, bopl_rl_open, bopl_rl_reset, bopl_rl_step,
-                          bopl_rl_state, bopl_rl_error, bopl_rl_map_count, bopl_rl_close};
+        if (argc != 4 && argc != 5) { fprintf(stderr, "socket needs <binary> <bootstrap.rep> [copies]\n"); return 2; }
+        if (argc == 5) copies = atoi(argv[4]);
+        if (copies < 1 || copies > 64) { fprintf(stderr, "copies must be 1..64\n"); return 2; }
+        apis = calloc((size_t)copies, sizeof(Backend));
+        for (int k = 0; k < copies; k++)
+            apis[k] = (Backend){bopl_rl_abi_version, bopl_rl_default_config, bopl_rl_open, bopl_rl_reset, bopl_rl_step,
+                                bopl_rl_step_sampled, bopl_rl_state, bopl_rl_error, bopl_rl_map_count, bopl_rl_close};
     } else if (!strcmp(argv[1], "inproc")) {
         if (argc == 4) copies = atoi(argv[3]);
         if (copies < 1 || copies > 64) { fprintf(stderr, "copies must be 1..64\n"); return 2; }
@@ -198,8 +240,9 @@ int main(int argc, char **argv)
         for (int k = 0; k < copies; k++) {
             char path[256];
             snprintf(path, sizeof(path), "%s/BoplSimNative.%d.so", tmpdir, k);
-            if (copy_file(argv[2], path)) { perror("copy .so"); return 1; }
-            if (load_inproc(&apis[k], path)) return 1;
+            /* A single copy loads the file itself, so profilers see symbols. */
+            if (copies > 1 && copy_file(argv[2], path)) { perror("copy .so"); return 1; }
+            if (load_inproc(&apis[k], copies > 1 ? path : argv[2])) return 1;
         }
     } else { fprintf(stderr, "unknown backend %s\n", argv[1]); return 2; }
 
@@ -211,7 +254,7 @@ int main(int argc, char **argv)
         snprintf(labels[k], 32, "%s%d", argv[1], k);
         snprintf(logs[k], 256, "%s/%s.log", tmpdir, labels[k]);
         char message[512] = {0};
-        const char *binary = argc == 4 && !strcmp(argv[1], "socket") ? argv[2] : "/usr/bin/true";
+        const char *binary = !strcmp(argv[1], "socket") ? argv[2] : "/usr/bin/true";
         const char *replay = !strcmp(argv[1], "socket") ? argv[3] : "/dev/null";
         runs[k].api = &apis[k]; runs[k].label = labels[k];
         double start = now_ms();
