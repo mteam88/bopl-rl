@@ -135,7 +135,8 @@ def main():
     if frozen_manifest:
         atomic_json(frozen_manifest, dict(schema=2, opponents=frozen))
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
-                           BOPL_RL_LOG_DIR=output/'game-logs', OMP_NUM_THREADS=a.workers).items():
+                           BOPL_RL_LOG_DIR=output/'game-logs',
+                           OMP_NUM_THREADS=os.environ.get('BOPL_OMP_THREADS', a.workers)).items():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir()
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
