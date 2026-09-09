@@ -66,8 +66,8 @@ def pid_alive(pid):
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
-        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
     except OSError:
         return False
 
@@ -288,8 +288,9 @@ class Driver:
             log(f"trial {trial['id']} {trial['status']}: score {final['score']:.4f} "
                 f"at cost {final['cost']:.4g} ({len(trial['observations'])} observations)")
         self.save()
-        report.write_reports(self.sweep_dir, self.spec, self.state,
-                             pufferlib_dir=PUFFERLIB_DIR.relative_to(ROOT))
+        if not self.dry_run:
+            report.write_reports(self.sweep_dir, self.spec, self.state,
+                                 pufferlib_dir=PUFFERLIB_DIR.relative_to(ROOT))
 
     # ---- main loop -----------------------------------------------------------
 
@@ -303,12 +304,23 @@ class Driver:
                   + (' (config defaults)' if not trial['suggested'] else ''))
             print(' '.join(shlex.quote(str(part)) for part in self.command(trial)))
 
+    def _take_lock(self):
+        """One driver per sweep: refuse when another live driver owns the state."""
+        owner = self.state.get('driver', {})
+        if owner.get('pid') and owner['pid'] != os.getpid() and pid_alive(owner['pid']):
+            raise SystemExit(f"Another driver (pid {owner['pid']}) is running this sweep; "
+                             'stop it first or wait for it to finish')
+        self.state['driver'] = dict(pid=os.getpid(), started=time.time())
+        self.save()
+
     def run(self):
         self.replay()
-        self.adopt_running()
         if self.dry_run:
+            self.adopt_running()
             self.print_dry_run()
             return
+        self._take_lock()
+        self.adopt_running()
         signal.signal(signal.SIGTERM, self._request_stop)
         signal.signal(signal.SIGINT, self._request_stop)
         attempts = len(self.state['trials'])

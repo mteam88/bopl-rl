@@ -1,0 +1,118 @@
+{
+ "schema": 1,
+ "recorded": "2026-09-09T23:40:23Z",
+ "what": "Validation sweep for native/rl/sweep (Protein driver): 4 trials of 1.6-3M learner steps, workers 4, anchor scoring, systemd scopes MemoryMax=6G, alongside live run 007",
+ "config": "native/rl/sweep/configs/smoke.toml",
+ "notes": [
+  "Trial 000 ran the config defaults; 001-003 were Protein Sobol suggestions.",
+  "Driver killed and restarted mid-trial-002: history replayed (2 successful trials re-observed), live trial adopted by pid, identical final score computed.",
+  "Observed 9 (cost, score) points; Protein retained 5 after its own near-duplicate and below-min-cost filtering; Pareto front = trials 003 (0.625 @ 1.62M) and 002 (0.75 @ 1.66M).",
+  "Anchor scores at 4 games/opponent are noisy by design; this validates plumbing, not hypers.",
+  "Match scorer validated separately: trial 002 vs 000 final checkpoints, 8 games, score 0.5."
+ ],
+ "trials": [
+  {
+   "id": "000",
+   "status": "complete",
+   "hypers": {
+    "steps": 3000000,
+    "learning_rate": 0.0003,
+    "entropy": 0.01
+   },
+   "observations": [
+    {
+     "steps": 1000704,
+     "score": 0.75,
+     "cost": 1000704,
+     "elapsed": 75.47400697798003
+    },
+    {
+     "steps": 2000640,
+     "score": 0.5,
+     "cost": 2000640,
+     "elapsed": 149.56934257096145
+    },
+    {
+     "steps": 3000576,
+     "score": 0.625,
+     "cost": 3000576,
+     "elapsed": 229.83505468198564
+    }
+   ],
+   "early_stop": null
+  },
+  {
+   "id": "001",
+   "status": "complete",
+   "hypers": {
+    "steps": 1685223.630862785,
+    "learning_rate": 0.0002406651255123655,
+    "entropy": 0.0037257757213447792
+   },
+   "observations": [
+    {
+     "steps": 1000704,
+     "score": 0.625,
+     "cost": 1000704,
+     "elapsed": 75.24104643700412
+    },
+    {
+     "steps": 1685760,
+     "score": 0.375,
+     "cost": 1685760,
+     "elapsed": 127.496476697037
+    }
+   ],
+   "early_stop": null
+  },
+  {
+   "id": "002",
+   "status": "complete",
+   "hypers": {
+    "steps": 1658700.8363504945,
+    "learning_rate": 0.000862259200880628,
+    "entropy": 0.025633535764164706
+   },
+   "observations": [
+    {
+     "steps": 1000704,
+     "score": 0.5,
+     "cost": 1000704,
+     "elapsed": 84.19148109696107
+    },
+    {
+     "steps": 1658880,
+     "score": 0.75,
+     "cost": 1658880,
+     "elapsed": 138.978170907998
+    }
+   ],
+   "early_stop": null
+  },
+  {
+   "id": "003",
+   "status": "complete",
+   "hypers": {
+    "steps": 1619194.2119031,
+    "learning_rate": 0.00013428560239093766,
+    "entropy": 0.0062652165930597485
+   },
+   "observations": [
+    {
+     "steps": 1000704,
+     "score": 0.875,
+     "cost": 1000704,
+     "elapsed": 78.8415621430031
+    },
+    {
+     "steps": 1619712,
+     "score": 0.625,
+     "cost": 1619712,
+     "elapsed": 130.0200173050398
+    }
+   ],
+   "early_stop": null
+  }
+ ],
+ "summary_md": "# Sweep smoke\n\nmethod Protein, scorer anchors, cost learner_steps, downsample 3, max_runs 4. Updated 2026-09-09 23:36:15 UTC.\n\n| trial | status | steps | learning_rate | entropy | cost | score | early stop | pareto |\n|---|---|---|---|---|---|---|---|---|\n| 000 | complete | 3000000 | 0.0003 | 0.01 | 3000576 | 0.625 |  |  |\n| 001 | complete | 1.685e+06 | 0.0002407 | 0.003726 | 1685760 | 0.375 |  |  |\n| 002 | complete | 1.659e+06 | 0.0008623 | 0.02563 | 1658880 | 0.75 |  | * |\n| 003 | complete | 1.619e+06 | 0.0001343 | 0.006265 | 1619712 | 0.625 |  | * |\n\n## Pareto front (cost vs score, final observations)\n\n- 003: score 0.625 at cost 1619712\n- 002: score 0.75 at cost 1658880\n\n## Best trial: 002 (score 0.75, cost 1658880)\n\n```\nsteps = 1.659e+06\nlearning_rate = 0.0008623\nentropy = 0.02563\n```\n\nReady-to-run command: `launch-best.sh` beside this file.\n"
+}

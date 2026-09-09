@@ -99,7 +99,8 @@ persists every suggestion and observation in `sweep.json` *before and after*
 each trial; killing the driver loses nothing — on restart it re-observes the
 whole history into a fresh Protein, adopts any still-running trial (or
 finalizes a dead one from its run directory), and continues until `max_runs`
-successful trials. Failures (no scoreable output) are observed as failures and
+successful trials. A pid lock in `sweep.json` stops a second driver from
+racing the same sweep (a dead owner's lock is taken over silently). Failures (no scoreable output) are observed as failures and
 don't count toward `max_runs` (attempts are capped at twice `max_runs`).
 
 The driver resolves PufferLib from this checkout's
