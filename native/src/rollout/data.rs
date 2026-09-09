@@ -132,13 +132,19 @@ struct RawPlatformAbility {
     min_size: i64,
     rotation_speed: i64,
     max_area: i64,
+    max_size_time: i64,
+    face_height: i64,
     ejection_offset: i64,
+    ejection_curve: Vec<RawCurveKey>,
+    enter_scale_curve: Vec<RawCurveKey>,
     anims: RawPlatformAnims,
 }
 #[derive(Deserialize)]
 struct RawPlatformAnims {
     #[serde(rename = "Anticipation")]
     anticipation: Vec<i32>,
+    #[serde(rename = "Enter")]
+    enter: Vec<i32>,
     #[serde(rename = "ToExit")]
     to_exit: Vec<i32>,
     #[serde(rename = "Exit")]
@@ -148,6 +154,7 @@ struct RawPlatformAnims {
 struct RawResizable {
     extents: RawVec2,
     radius: i64,
+    animate_velocity: RawAnimateVelocity,
 }
 #[derive(Deserialize)]
 struct RawPrefabs {
@@ -223,12 +230,22 @@ pub struct PlatformAbilityData {
     pub min_size: Fix,
     pub rotation_speed: Fix,
     pub max_area: Fix,
+    pub max_size_time: Fix,
+    pub face_height: Fix,
     pub ejection_offset: Fix,
+    pub ejection_curve: Vec<(Fix, Fix)>,
+    pub enter_scale_curve: Vec<(Fix, Fix)>,
     pub anticipation_ticks: u32,
+    pub enter_ticks: u32,
     pub to_exit_ticks: u32,
     pub exit_ticks: u32,
     pub spawn_extents: Vec2,
     pub spawn_radius: Fix,
+    /// AnimateVelocity sudden-death sinking of spawned platforms.
+    pub sudden_death_speed: Fix,
+    pub sudden_death_max_delay: Fix,
+    pub sudden_death_acceleration: Fix,
+    pub sudden_death_y_speed: Vec<(Fix, Fix)>,
 }
 pub struct DashData {
     pub cooldown: Fix,
@@ -268,6 +285,10 @@ fn constants(physics: &RawPhysics) -> crate::world::MovementConstants {
 
 fn ticks(frames: &[i32]) -> u32 {
     frames.iter().map(|d| d.unsigned_abs()).sum()
+}
+
+fn curve(keys: &[RawCurveKey]) -> Vec<(Fix, Fix)> {
+    keys.iter().map(|k| (Fix(k.time), Fix(k.value))).collect()
 }
 
 fn map_def(raw: &RawMap) -> MapDef {
@@ -366,12 +387,38 @@ pub fn get() -> &'static RolloutData {
                 min_size: Fix(plat.min_size),
                 rotation_speed: Fix(plat.rotation_speed),
                 max_area: Fix(plat.max_area),
+                max_size_time: Fix(plat.max_size_time),
+                face_height: Fix(plat.face_height),
                 ejection_offset: Fix(plat.ejection_offset),
+                ejection_curve: curve(&plat.ejection_curve),
+                enter_scale_curve: curve(&plat.enter_scale_curve),
                 anticipation_ticks: ticks(&plat.anims.anticipation),
+                enter_ticks: ticks(&plat.anims.enter),
                 to_exit_ticks: ticks(&plat.anims.to_exit),
                 exit_ticks: ticks(&plat.anims.exit),
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
                 spawn_radius: Fix(raw.prefabs.resizable_platform.radius),
+                sudden_death_speed: Fix(raw
+                    .prefabs
+                    .resizable_platform
+                    .animate_velocity
+                    .sudden_death_speed),
+                sudden_death_max_delay: Fix(raw
+                    .prefabs
+                    .resizable_platform
+                    .animate_velocity
+                    .sudden_death_max_delay),
+                sudden_death_acceleration: Fix(raw
+                    .prefabs
+                    .resizable_platform
+                    .animate_velocity
+                    .sudden_death_acceleration),
+                sudden_death_y_speed: curve(
+                    &raw.prefabs
+                        .resizable_platform
+                        .animate_velocity
+                        .sudden_death_y_speed,
+                ),
             },
         }
     })

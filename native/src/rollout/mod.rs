@@ -183,6 +183,8 @@ const CAUSE_ACCIDENT: u32 = 2;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
 const ENVIRONMENT: u32 = 0xFFFF_FFFF;
+/// PlatformTransform.cursorSensitivity.
+const CURSOR_SENSITIVITY: Fix = Fix(107_374_182_400); // 25.0
 
 /// Slime controllers wake this many ticks into the warmup (measured against
 /// the .NET reset: ability cooldown timers read -1.5s + (240-62)/60 = 1.4667s
@@ -209,12 +211,23 @@ pub struct Arrow {
 }
 
 /// A platform spawned by the Platform ability (ResizablePlatform prefab).
-#[derive(Clone, Default)]
+/// Each player keeps at most one (PlatformTransform's one-slot srrBuffer);
+/// a re-cast removes the previous platform.
+#[derive(Clone, Copy, Default)]
 pub struct SpawnedPlatform {
     pub active: bool,
-    pub entity: usize,
+    /// Owning player index (not id).
+    pub owner: usize,
+    /// Index into `RolloutWorld::platforms` (kept in sync on removal).
     pub platform_index: usize,
+    pub sudden_death_delay: Fix,
 }
+
+/// PlatformTransform.State.
+pub const PLATFORM_ANTICIPATION: u32 = 0;
+pub const PLATFORM_ROTATION: u32 = 1;
+pub const PLATFORM_SIZE: u32 = 2;
+pub const PLATFORM_EXIT: u32 = 3;
 
 /// Per-player bow ability state (BowTransform.cs).
 #[derive(Clone, Copy, Default)]
@@ -232,12 +245,16 @@ pub struct BowState {
 /// Per-player platform ability state (PlatformTransform.cs).
 #[derive(Clone, Copy, Default)]
 pub struct PlatformState {
-    pub ticks: u32,
     pub phase: u32,
-    pub rotation: Fix,
-    pub extents: Vec2,
-    pub exit_ticks: u32,
-    pub position: Vec2,
+    pub ticks: u32,
+    /// Seconds since CreatePlatform (the .NET timePassed).
+    pub time_passed: Fix,
+    pub exit_time: Fix,
+    pub released: bool,
+    pub cursor: Vec2,
+    pub active_corner: Vec2,
+    /// Index into `RolloutWorld::platforms` for the platform being shaped.
+    pub platform_index: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -781,8 +798,27 @@ impl RolloutWorld {
                         self.bow_tick(index, action, data);
                         return;
                     }
-                    // Platform activates in a later milestone; other catalog
-                    // abilities are never simulated here.
+                    ABILITY_PLATFORM => {
+                        self.players[index].timers[s] = Fix::ZERO;
+                        self.players[index].active = ActiveAbility::Platform;
+                        self.players[index].active_slot = s;
+                        self.players[index].telemetry.ability_activations[s] += 1;
+                        let slot = &mut self.players[index];
+                        // PlatformTransform.OnEnterAbility: the body freezes at
+                        // its position; the ability object carries no velocity.
+                        slot.platform = PlatformState {
+                            active_corner: Vec2::new(Fix::ONE, Fix::ONE),
+                            ..PlatformState::default()
+                        };
+                        slot.base.velocity = Vec2::ZERO;
+                        slot.base.external_velocity = Vec2::ZERO;
+                        slot.base.grounded = false;
+                        slot.base.ground = None;
+                        slot.base.grounded_speed = Fix::ZERO;
+                        self.platform_ability_tick(index, action, data);
+                        return;
+                    }
+                    // Other catalog abilities are never simulated here.
                     _ => {}
                 }
             }
@@ -790,6 +826,10 @@ impl RolloutWorld {
 
         if self.players[index].active == ActiveAbility::Bow {
             self.bow_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Platform {
+            self.platform_ability_tick(index, action, data);
             return;
         }
         if self.players[index].base.dash.active {
@@ -1001,6 +1041,285 @@ impl RolloutWorld {
         }
     }
 
+    /// PlatformTransform.UpdateSim: anticipation, rotation while the enter
+    /// animation scales the radius in, cursor-driven sizing under the area
+    /// cap, and the ejection along the platform's up vector.
+    fn platform_ability_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let pd = &data.platform;
+        let slot_button = 2u8 << self.players[index].active_slot;
+        let button_down = action.buttons & slot_button != 0;
+        let aim = action.direction();
+        self.players[index].platform.ticks += 1;
+        if !button_down && !self.players[index].platform.released {
+            self.players[index].platform.released = true;
+        }
+        let phase = self.players[index].platform.phase;
+        match phase {
+            PLATFORM_ANTICIPATION => {
+                if self.players[index].platform.ticks >= pd.anticipation_ticks {
+                    // CreatePlatform: spawn at the frozen player position.
+                    let position = self.players[index].base.position;
+                    let platform_index = self.spawn_ability_platform(index, position);
+                    let st = &mut self.players[index].platform;
+                    st.platform_index = platform_index;
+                    st.phase = PLATFORM_ROTATION;
+                    st.time_passed = Fix::ZERO;
+                    st.cursor = position + Vec2::UP * pd.spawn_radius;
+                }
+            }
+            PLATFORM_ROTATION => {
+                let st = &mut self.players[index].platform;
+                st.time_passed += DT;
+                let time_passed = st.time_passed;
+                let platform_index = st.platform_index;
+                let ticks = st.ticks;
+                let radius = curve_eval(&pd.enter_scale_curve, time_passed);
+                let (center, mut up) = {
+                    let s = &self.platforms[platform_index].surface;
+                    (s.center, s.up)
+                };
+                if aim != Vec2::ZERO {
+                    up = slerp(up, aim, DT * pd.rotation_speed);
+                }
+                self.reshape_platform(platform_index, center, up, pd.spawn_extents, radius);
+                let slot = &mut self.players[index];
+                slot.base.position = center;
+                slot.base.rotation = up.perp_cw().normalized_angle();
+                if ticks >= pd.anticipation_ticks + pd.enter_ticks {
+                    slot.platform.phase = PLATFORM_SIZE;
+                }
+            }
+            PLATFORM_SIZE => {
+                self.players[index].platform.time_passed += DT;
+                self.platform_size_tick(index, aim, pd);
+                let st = &mut self.players[index].platform;
+                if st.released || st.time_passed > pd.max_size_time {
+                    st.phase = PLATFORM_EXIT;
+                    st.exit_time = st.time_passed;
+                }
+            }
+            _ => {
+                let st = &mut self.players[index].platform;
+                st.time_passed += DT;
+                let (time_passed, exit_time, platform_index) =
+                    (st.time_passed, st.exit_time, st.platform_index);
+                let (center, up, span) = {
+                    let s = &self.platforms[platform_index].surface;
+                    (s.center, s.up, s.radius + s.extents.y)
+                };
+                let eject = curve_eval(
+                    &pd.ejection_curve,
+                    (time_passed - exit_time) / pd.time_in_exit,
+                ) * span;
+                let slot = &mut self.players[index];
+                slot.base.position = center + up * eject;
+                if eject + pd.face_height >= span {
+                    slot.base.position += up * pd.ejection_offset;
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.grounded = false;
+                    slot.base.ground = None;
+                    slot.base.grounded_speed = Fix::ZERO;
+                    slot.active = ActiveAbility::None;
+                }
+            }
+        }
+    }
+
+    /// The State.Size cursor sizing, ported from PlatformTransform (active
+    /// corner selection, per-axis growth, and the maxArea cap with its
+    /// quadratic clamp when both axes grow).
+    fn platform_size_tick(&mut self, index: usize, aim: Vec2, pd: &data::PlatformAbilityData) {
+        let platform_index = self.players[index].platform.platform_index;
+        let (center, right_unit, up, extents, radius) = {
+            let s = &self.platforms[platform_index].surface;
+            (s.center, s.right, s.up, s.extents, s.radius)
+        };
+        let (x, y) = (extents.x, extents.y);
+        let rotation = right_unit.normalized_angle();
+        let basis = Vec2::angle(rotation);
+        let conj = Vec2::new(basis.x, -basis.y);
+        let st = &mut self.players[index].platform;
+        st.cursor += aim * CURSOR_SENSITIVITY * DT;
+        let mut local = (st.cursor - center).complex_mul(conj);
+        local.x = local.x.max(-x - radius).min(x + radius);
+        local.y = local.y.max(-y - radius).min(y + radius);
+        st.cursor = center + local.complex_mul(basis);
+        let reach = pd.min_size + radius * Fix::from_int(2);
+        if local.x >= x && x <= pd.min_size {
+            st.active_corner.x = Fix::ONE;
+        } else if local.x < -x && x <= pd.min_size {
+            st.active_corner.x = -Fix::ONE;
+        }
+        if local.y >= y && y <= pd.min_size {
+            st.active_corner.y = Fix::ONE;
+        } else if local.y < -y && y <= pd.min_size {
+            st.active_corner.y = -Fix::ONE;
+        }
+        let corner = Vec2::new(st.active_corner.x * x, st.active_corner.y * y);
+        let diff = local - corner;
+        let capped = Vec2::new(diff.x.min(reach), diff.y.min(reach));
+        let dir = Vec2::new(
+            capped.x * Fix::from_int(corner.x.sign()),
+            capped.y * Fix::from_int(corner.y.sign()),
+        );
+        let mut a = (x + dir.x * DT * pd.size_change_speed).max(pd.min_size);
+        let mut a2 = (y + dir.y * DT * pd.size_change_speed).max(pd.min_size);
+        let cap = pd.max_area;
+        if dir.x >= Fix::ZERO && dir.y >= Fix::ZERO {
+            let gx = dir.x * DT * pd.size_change_speed;
+            let gy = dir.y * DT * pd.size_change_speed;
+            let grow = gx.min(gy);
+            let skew = gx - gy;
+            if skew > Fix::ZERO {
+                let sized = new_size(x + skew, y, radius, cap, pd.min_size);
+                a = sized.0;
+                a2 = sized.1;
+            } else if skew < Fix::ZERO {
+                let sized = new_size(y - skew, x, radius, cap, pd.min_size);
+                a2 = sized.0;
+                a = sized.1;
+            } else {
+                a = x;
+                a2 = y;
+            }
+            if platform_area(a + grow, a2 + grow, radius) > cap {
+                let quarter = Fix::from_f64(0.25);
+                let c0 = (Fix::from_int(4) * a2 * radius
+                    + Fix::from_int(4) * a * radius
+                    + Fix::from_int(4) * a2 * a
+                    + Fix::PI * radius * radius
+                    - cap)
+                    * quarter;
+                let c1 = (Fix::from_int(8) * radius + Fix::from_int(4) * a2 + Fix::from_int(4) * a)
+                    * quarter;
+                let disc = (c1 * c1 * quarter - c0).sqrt().unwrap_or(Fix::ZERO);
+                let root = -(c1 * Fix::from_f64(0.5)) + disc;
+                a2 += root;
+                a += root;
+            } else {
+                a += grow;
+                a2 += grow;
+            }
+        } else if dir.x > Fix::ZERO {
+            let sized = new_size(a, a2, radius, cap, pd.min_size);
+            a = sized.0;
+            a2 = sized.1;
+        } else if dir.y > Fix::ZERO {
+            let sized = new_size(a2, a, radius, cap, pd.min_size);
+            a2 = sized.0;
+            a = sized.1;
+        }
+        // Shift the centre so the anchored corner stays put.
+        let shift_local = Vec2::new((a - x) * st.active_corner.x, (a2 - y) * st.active_corner.y);
+        let shift = shift_local.complex_mul(basis);
+        let new_center = center + shift;
+        self.reshape_platform(platform_index, new_center, up, Vec2::new(a, a2), radius);
+        self.players[index].base.position = new_center;
+    }
+
+    /// Spawn a ResizablePlatform for `owner` (replacing their previous one)
+    /// and return its index in `platforms`.
+    fn spawn_ability_platform(&mut self, owner: usize, position: Vec2) -> usize {
+        self.remove_spawned_platform_of(owner);
+        let pd = &data::get().platform;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 2,
+            layer: LAYER_WALL,
+            owner: 0,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 300_000_000 + id,
+            inverse_mass: Fix::from_f64(1.0 / 15.0).0,
+            ..CEntity::default()
+        });
+        let surface = Surface {
+            center: position,
+            right: Vec2::RIGHT,
+            up: Vec2::UP,
+            extents: pd.spawn_extents,
+            radius: pd.spawn_radius,
+        };
+        let platform_index = self.platforms.len();
+        self.platforms
+            .push(make_platform(self.next_platform_id, &surface));
+        self.next_platform_id += 1;
+        self.platform_defs.push(usize::MAX);
+        self.platform_entities.push(entity);
+        let delay = self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay);
+        self.spawned.push(SpawnedPlatform {
+            active: true,
+            owner,
+            platform_index,
+            sudden_death_delay: delay,
+        });
+        platform_index
+    }
+
+    fn remove_spawned_platform_of(&mut self, owner: usize) {
+        if let Some(i) = self
+            .spawned
+            .iter()
+            .position(|s| s.active && s.owner == owner)
+        {
+            let platform_index = self.spawned[i].platform_index;
+            self.spawned[i].active = false;
+            self.remove_platform(platform_index);
+        }
+    }
+
+    /// Remove a platform from the world (RemovePlatform / scene-bounds
+    /// destruction), detaching any players standing on it.
+    fn remove_platform(&mut self, index: usize) {
+        let id = self.platforms[index].id;
+        for slot in &mut self.players {
+            if slot.base.ground == Some(id) {
+                slot.base.grounded = false;
+                slot.base.ground = None;
+                slot.base.grounded_speed = Fix::ZERO;
+            }
+        }
+        let entity = self.platform_entities[index];
+        self.entities[entity].flags = E_ENABLED | E_DESTROYED;
+        self.platforms.remove(index);
+        self.platform_defs.remove(index);
+        self.platform_entities.remove(index);
+        for s in &mut self.spawned {
+            if s.active && s.platform_index > index {
+                s.platform_index -= 1;
+            }
+        }
+        for p in &mut self.players {
+            if p.active == ActiveAbility::Platform && p.platform.platform_index > index {
+                p.platform.platform_index -= 1;
+            }
+        }
+    }
+
+    fn reshape_platform(
+        &mut self,
+        index: usize,
+        center: Vec2,
+        up: Vec2,
+        extents: Vec2,
+        radius: Fix,
+    ) {
+        let platform = &mut self.platforms[index];
+        let right = up.perp_cw();
+        platform.surface.center = center;
+        platform.surface.right = right;
+        platform.surface.up = up;
+        platform.surface.extents = extents;
+        platform.surface.radius = radius;
+        platform.collider.inner.center = center;
+        platform.collider.inner.right = right * extents.x;
+        platform.collider.inner.up = up * extents.y;
+        platform.collider.inner.inverse_extents =
+            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        platform.collider.radius = radius;
+    }
+
     fn spawn_arrow(&mut self, owner: u32, position: Vec2, velocity: Vec2, hurt_owner_after: Fix) {
         let radius = data::get().arrow.radius;
         let free = self.arrows.iter().position(|a| !a.active);
@@ -1080,6 +1399,10 @@ impl RolloutWorld {
             let mut victim: Option<(usize, Fix)> = None;
             for (j, p) in self.players.iter().enumerate() {
                 if !p.base.alive || p.respawn_ticks > 0 {
+                    continue;
+                }
+                if p.active == ActiveAbility::Platform && p.platform.phase != PLATFORM_ANTICIPATION
+                {
                     continue;
                 }
                 if p.base.id == a.owner && !a.can_hurt_owner {
@@ -1327,6 +1650,9 @@ impl RolloutWorld {
             let alive = slot.base.alive;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
+            let in_ability = slot.active != ActiveAbility::None;
+            let anticipating = slot.active == ActiveAbility::Platform
+                && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_aim = slot.bow.aim;
             let position = slot.base.position;
             let rotation = slot.base.rotation;
@@ -1337,7 +1663,7 @@ impl RolloutWorld {
             let body = &mut self.entities[body_e];
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
-            } else if dashing || bowing {
+            } else if dashing || in_ability {
                 body.flags = E_ENABLED | E_TRIGGER;
             } else {
                 body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
@@ -1407,8 +1733,18 @@ impl RolloutWorld {
                 bow_box.vx = 0;
                 bow_box.vy = 0;
             }
+            // The Platform ability's hurtbox circle is live during
+            // anticipation only (hurtBox.enabled until CreatePlatform).
             let circle = &mut self.entities[circle_e];
-            circle.flags = E_ENABLED | E_TRIGGER;
+            if alive && anticipating {
+                circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                circle.x = position.x.0;
+                circle.y = position.y.0;
+            } else {
+                circle.flags = E_ENABLED | E_TRIGGER;
+                circle.x = 0;
+                circle.y = 0;
+            }
         }
         for arrow in &self.arrows {
             if !arrow.active {
@@ -1584,6 +1920,41 @@ fn make_platform(id: u32, surface: &Surface) -> Platform {
         },
         ice: false,
     }
+}
+
+/// Vec2.Slerp for unit vectors: rotate `from` toward `to` by fraction `t` of
+/// the angle between them.
+fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
+    let a = from.normalized_angle();
+    let b = to.normalized_angle();
+    let mut delta = b - a;
+    if delta > Fix::PI {
+        delta -= Fix::TAU;
+    } else if delta < -Fix::PI {
+        delta += Fix::TAU;
+    }
+    let t = t.max(Fix::ZERO).min(Fix::ONE);
+    Vec2::angle(a + delta * t)
+}
+
+/// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
+/// width/height: 4wr + 4hr + 4wh + pi r^2.
+fn platform_area(w: Fix, h: Fix, r: Fix) -> Fix {
+    Fix::from_int(4) * w * r + Fix::from_int(4) * h * r + Fix::from_int(4) * w * h + Fix::PI * r * r
+}
+
+/// PlatformTransform.GetNewSize: clamp one growing axis to the area cap.
+fn new_size(mut w: Fix, mut h: Fix, r: Fix, cap: Fix, min: Fix) -> (Fix, Fix) {
+    if platform_area(w, h, r) > cap {
+        h = (cap - Fix::from_int(4) * r * w - Fix::PI * r * r)
+            / (Fix::from_int(4) * r + Fix::from_int(4) * w);
+        if h < min {
+            h = min;
+            w = (cap - Fix::from_int(4) * h * r - Fix::PI * r * r)
+                / (Fix::from_int(4) * h + Fix::from_int(4) * r);
+        }
+    }
+    (w, h)
 }
 
 /// Linear interpolation over serialized AnimationCurveFixed keys (tangents are
