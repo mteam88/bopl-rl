@@ -121,6 +121,7 @@ namespace UnityEngine
 			if (go.transform.parent != null) go.transform.SetParentInternal(null, false);
 			else World.Current.roots.Remove(go);
 			go.destroyed = true;
+			go.world.activationVersion++; // activeInHierarchy cache
 			go.transform.destroyed = true;
 			World.Current.Compact();
 		}

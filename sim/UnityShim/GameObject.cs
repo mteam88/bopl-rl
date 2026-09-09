@@ -9,6 +9,12 @@ namespace UnityEngine
 	{
 		internal readonly List<Component> components = new List<Component>();
 		internal bool activeSelfField = true;
+		// activeInHierarchy cache, stamped with the owning world's
+		// activationVersion (stage 5 updater pass: the recursive parent walk
+		// was ~6% of the tick). -1 means never cached.
+		internal World world;
+		private int activeCacheVersion = -1;
+		private bool activeCacheValue;
 		internal string tagField = "Untagged";
 		internal bool dontDestroyOnLoad;
 
@@ -22,11 +28,12 @@ namespace UnityEngine
 		public GameObject(string name)
 		{
 			objectName = name ?? "";
+			world = World.Current;
 			transform = new Transform();
 			transform.AttachTo(this);
 			components.Add(transform);
-			scene = World.Current.activeScene;
-			World.Current.roots.Add(this);
+			scene = world.activeScene;
+			world.roots.Add(this);
 		}
 
 		public GameObject(string name, params Type[] componentTypes) : this(name)
@@ -50,6 +57,7 @@ namespace UnityEngine
 		internal void UseRectTransform()
 		{
 			if (transform is RectTransform) return;
+			world.activationVersion++; // direct parentField surgery below
 			var old = transform;
 			var rt = new RectTransform();
 			rt.AttachTo(this);
@@ -86,9 +94,18 @@ namespace UnityEngine
 		{
 			get
 			{
-				if (!activeSelfField || destroyed) return false;
-				var p = transform.parent;
-				return p == null || p.gameObject.activeInHierarchy;
+				int version = world.activationVersion;
+				if (activeCacheVersion == version) return activeCacheValue;
+				bool result;
+				if (!activeSelfField || destroyed) result = false;
+				else
+				{
+					var p = transform.parent;
+					result = p == null || p.gameObject.activeInHierarchy;
+				}
+				activeCacheVersion = version;
+				activeCacheValue = result;
+				return result;
 			}
 		}
 
@@ -97,6 +114,7 @@ namespace UnityEngine
 			if (activeSelfField == value) return;
 			bool wasActive = activeInHierarchy;
 			activeSelfField = value;
+			world.activationVersion++;
 			bool nowActive = activeInHierarchy;
 			if (wasActive == nowActive || isAsset) return;
 			if (nowActive) NotifyActivation(this, true);

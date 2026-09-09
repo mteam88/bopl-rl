@@ -50,6 +50,13 @@ namespace UnityShim
 			current = null;
 		}
 
+		// Bumped whenever anything that can change any GameObject's
+		// activeInHierarchy happens in this world (SetActive, reparent,
+		// destroy): GameObjects cache activeInHierarchy stamped with this
+		// version (stage 5 updater pass). Worlds are thread-isolated, so a
+		// plain increment is safe.
+		internal int activationVersion;
+
 		// Slot for the gameplay assembly's per-world statics snapshot.
 		public object gameplayState;
 		// Export's per-world object graph (built assets, ids); see ExportDatabase.Store.

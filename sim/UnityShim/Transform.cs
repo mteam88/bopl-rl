@@ -50,6 +50,7 @@ namespace UnityEngine
 
 		internal void SetParentInternal(Transform newParent, bool manageRoots = true)
 		{
+			gameObject.world.activationVersion++; // activeInHierarchy cache
 			if (parentField != null) parentField.children.Remove(this);
 			else if (manageRoots && !isAsset) World.Current.roots.Remove(gameObject);
 			parentField = newParent;
