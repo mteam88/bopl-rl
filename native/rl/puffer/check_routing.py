@@ -34,6 +34,7 @@ OBS = layout.OBS_SIZE
 PLAYER0 = layout.PLAYER0
 PLAYER = layout.PLAYER_FEATURES
 NUM_ATNS = layout.NUM_ATNS  # aim, buttons, hold length index
+PREVIOUS = layout.PREVIOUS_FEATURES  # (the layout() helper below shadows the module)
 STRIDE = 8 + 14  # bopl_vec_layout row: num_agents, players, banks, tag, side, bank, matches, stepped, slots[14]
 
 def layout(lib, vec, count):
@@ -183,7 +184,7 @@ def main():
                     seen_apart[i] |= separated(*rows)
                     for k, r in enumerate(rows):
                         # previous-action tail: [angle==0, cos, sin, buttons bits, latch left, 4 button runs]
-                        tail = obs[r, OBS-layout.PREVIOUS_FEATURES:]
+                        tail = obs[r, OBS-PREVIOUS:]
                         angle, buttons, _hold = actions[r]
                         want_bits = [(int(buttons) >> b) & 1 for b in range(4)]
                         if terminals[r] == 0 and (tail[0] != (angle == 0) or list(tail[3:7]) != want_bits or tail[7] != 0
