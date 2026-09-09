@@ -264,6 +264,23 @@ The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
   applying run-003-style collapse thresholds.
 - Checkpoints are `bopl-set-mingru-v2`; 001–003 checkpoints do not load.
   Not launched: `native/artifacts/rl/long-run-500m/launch-004-s73-hold-head.sh`.
+- Merged with the in-process many-worlds sim on 2026-09-09 (branch
+  `many-worlds`, rift `trainer-step`). Rebuild everything after pulling:
+  `dotnet publish` of `sim/Host` (AOT) and `sim/Native` *sequentially* (both
+  build the shared `sim/Gameplay` project; in parallel they race on its
+  `obj/`), `native/rl/puffer/build.py --device cuda` (the overlay patch was
+  regenerated from a three-way merge of the patched trees, not of the diff
+  text), `backend_check`, and the research eval library:
+  `cd native/rl/research && <venv>/python -c 'import native_policy;
+  native_policy.build()'` — `smoke.py` fails with "Invalid native policy
+  dimensions" on a stale `libbopl_policy_eval.so`. Gates after the merge:
+  `backend_check` socket / rl / rl x8 (4 per runtime) / worlds x32 all
+  `5381bf21573b20a6` `8dc13de2cc8c8e7c` (the scripted sequence never charges
+  a bow, so the wire checksum is unchanged), smoke passes on the `.so` and the
+  Host with identical losses and `final.bin`, `check_routing.py` ROUTING
+  PASS, `test_native_policy` + `test_native_checkpoint` 8/8, and 30 updates of
+  16-game training are bit-identical (every loss, entropy, match count) on the
+  `.so` with 4 worlds per runtime, 1 per runtime, and the socket Host.
 
 ## Known gaps
 
