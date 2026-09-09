@@ -238,15 +238,28 @@ pub unsafe extern "C" fn bopl_rl_sample(world: *const Handle) -> *const CState {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bopl_rl_replay(
     world: *mut Handle,
-    _bytes: *mut *const core::ffi::c_void,
-    _length: *mut usize,
+    bytes: *mut *const core::ffi::c_void,
+    length: *mut usize,
 ) -> i32 {
-    if let Some(handle) = unsafe { world.as_mut() } {
-        handle
-            .world
-            .set_error("Replay export is not supported by the Rust rollout backend");
+    if bytes.is_null() || length.is_null() {
+        return ARGUMENT;
     }
-    GAME_ERROR
+    let Some(handle) = (unsafe { world.as_mut() }) else {
+        return ARGUMENT;
+    };
+    match handle.world.encode_replay() {
+        Ok(()) => {
+            unsafe {
+                *bytes = handle.world.replay_buffer.as_ptr().cast();
+                *length = handle.world.replay_buffer.len();
+            }
+            OK
+        }
+        Err(message) => {
+            handle.world.set_error(&message);
+            GAME_ERROR
+        }
+    }
 }
 
 /// # Safety
@@ -262,13 +275,29 @@ pub unsafe extern "C" fn bopl_rl_error(world: *const Handle) -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bopl_rl_source_hash(_world: *const Handle) -> *const c_char {
-    static HASH: &[u8] = b"rust-rollout-backend-v1\0";
+    static HASH: [u8; 65] = {
+        let mut buffer = [0u8; 65];
+        let mut i = 0;
+        while i < 64 {
+            buffer[i] = super::SOURCE_HASH[i];
+            i += 1;
+        }
+        buffer
+    };
     HASH.as_ptr().cast()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bopl_rl_catalog_hash(_world: *const Handle) -> *const c_char {
-    static HASH: &[u8] = b"rust-rollout-catalog-v1\0";
+    static HASH: [u8; 65] = {
+        let mut buffer = [0u8; 65];
+        let mut i = 0;
+        while i < 64 {
+            buffer[i] = super::CATALOG_HASH[i];
+            i += 1;
+        }
+        buffer
+    };
     HASH.as_ptr().cast()
 }
 
