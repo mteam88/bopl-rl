@@ -458,12 +458,16 @@ of CPU or the remaining share is spread thin.
 
 ## 6. Horizon
 
-- **Rust sim for rollouts.** ~5 us per tick vs the .NET port's ~100+ us of
-  CPU per tick under real play. Bow and Platform are unimplemented and the
-  standing decision is that Rust is verified against replays continuously
-  (`verify_replay.py`), never trusted blind. Only start after stage 5 has
-  taken the .NET path as far as bit-exactness allows and the sweep still
-  says throughput limits learning.
+- **Rust sim for rollouts.** DONE — see `RUST_ROLLOUTS.md`. The Rust crate
+  (`native/src/rollout`) implements the full `bopl_rl.h` ABI including Bow,
+  Platform, maps 0-4, the match lifecycle and BOPLREP2 replay export;
+  `BOPL_RL_BACKEND=rust` selects it in `train.py`. Fidelity is statistical,
+  not bit-exact: 89% winner agreement on identical action streams, and the
+  1B .NET-trained checkpoint scores 153/160 on Rust vs 154/160 on .NET
+  (held-out maps included). Single-thread stepping is 2.6x the .NET sim
+  (116.6k vs 45.5k ticks/s) and 5x including resets; resets cost ~1 ms vs
+  ~9 ms so no spare world is needed. The .NET sim remains the reference
+  for evaluation and replays.
 - **Async actor/learner (PufferLib 5 / Cleanba style).** Overlapping
   training with rollout saves at most the train share, 4% today. Worth it
   only when the network grows enough that `train_seconds` exceeds ~25% of
