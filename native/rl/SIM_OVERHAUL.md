@@ -425,7 +425,35 @@ one-runtime penalty so many-worlds stops costing throughput.
 Measure after each item with the same `bench_scale.sh` shape (16 games,
 one runtime, and 16 games socket as the isolated-runtime reference) and
 record the perf grouping above so the next item is chosen by share, not by
-guess. Stop when `c_step` per decision on a spawn-heavy loadout is < 100 us
+guess.
+
+### Done 2026-09-09: items 4 and 5 (bit-exact quick wins)
+
+- `Fix.ClampSinValue`: the 29 moduli `num >> i` decrease with `i` and
+  `a %= m` is the identity while `|a| < m`, so the loop now skips straight
+  to the first modulus <= |angle| (an angle already inside +-2pi divides
+  zero times instead of 29). Bit-exact by construction; checked against
+  the original on 10^6 random and 2^k-boundary angles in Python emulation.
+- `Fix.operator *`: one `Math.BigMul` (exact 128-bit product) and a shift
+  instead of four 32x32 partial products summed modulo 2^64; the original
+  sum is the same bits 32..95 of the product. `AggressiveInlining`.
+- `UnityShim.Object`: `CompareBaseObjects` and the `==`/`!=`/`bool`
+  operators marked `AggressiveInlining` so the ubiquitous `== null` stops
+  being a call.
+- The trace kept diverging from the Unity oracle at tick 0 on
+  `<SuddenDeathInProgress>k__BackingField` / `<PlayerTimeScale>k__BackingField`:
+  not the maths, but the many-worlds port turned those auto-properties into
+  explicit `[ThreadStatic]` fields and `ReferenceCapture.Static` was
+  emitting the new names. It now maps them back to Unity's compiler names.
+
+Gates: `sim/Oracle/checkpoint.sh --full` matches the Unity oracle on all 15
+fixtures (l0-l4, groups g0-g4, p3); `backend_check` socket / rl / worlds x16
+unchanged at `5381bf21573b20a6` `8dc13de2cc8c8e7c`; `Host worlds --n 8
+--episodes 2` agree. Throughput (`bench_scale.sh`, 16 games, 4 worlds per
+runtime, 300 s, load ~6): 29.3k -> **34.4k learner decisions/s** (+17%),
+env share of the rollout step 0.62 -> 0.48 ms. That is more than the two
+symbols' 11% self time; inlining the null-compare helps everything around it.
+Next by share: items 1-3 (resets 38%, GC 12.5%). Stop when `c_step` per decision on a spawn-heavy loadout is < 100 us
 of CPU or the remaining share is spread thin.
 
 ## 6. Horizon

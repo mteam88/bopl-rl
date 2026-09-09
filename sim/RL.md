@@ -282,6 +282,37 @@ The interface is now versioned in one place, `native/rl/puffer/bopl_layout.h`
   16-game training are bit-identical (every loss, entropy, match count) on the
   `.so` with 4 worlds per runtime, 1 per runtime, and the socket Host.
 
+## Resuming and extending a run (`train.py --resume`, 2026-09-09)
+
+With every checkpoint the trainer writes `pool/state.json`: the self-play
+pool (entries, Elo, per-bank current/pending opponents, sampling RNG state),
+the snapshot ledger, PufferLib's native `global_step` (pool snapshot names
+and intervals), the cumulative environment counters, elapsed training time
+and the checkpoint path. SIGTERM (`systemctl --user stop`) saves a final
+checkpoint before exiting, so a graceful stop loses nothing; a crash loses
+at most one `--checkpoint-every` interval.
+
+`train.py --output <run> --resume --steps N <same flags>` loads the
+checkpoint's weights into the learner, each bank's current opponent into the
+frozen banks, restores the pool and `global_step`, offsets the C vector's
+counters (which restart at zero) by the saved totals, and appends to
+`metrics.jsonl` / `pool.jsonl` with contiguous learner-step numbering. Every
+hyperparameter except `--steps` must match `config.json` (refused
+otherwise); `--steps` may only grow, which is how a run is extended: every
+schedule is a function of learner decisions (entropy half-life) or constant
+(LR), never of the budget. `config.json` keeps a `resumed` list.
+
+Not restored: the Muon momentum buffers (no native API; they rebuild in a
+few updates) and the GRU state (starts as at an episode boundary). A resumed
+run is therefore not bit-identical to an uninterrupted one.
+
+Verified on an 8-game run stopped at 296k learner decisions and resumed to
+600k: uniform 1536-decision gaps across the boundary, monotonic elapsed,
+pool snapshots continue at the same native-step cadence, the 400k evaluation
+ran, and a changed `--entropy` is refused.
+`native/artifacts/rl/long-run-1b/launch-005-s73-1b.sh` is the idempotent
+launcher (adds `--resume` when `pool/state.json` exists; `STEPS=` extends).
+
 ## Known gaps
 
 - **Memory** (fixed 2026-09-08, `602709e` + `2c0b01c`): the export's
