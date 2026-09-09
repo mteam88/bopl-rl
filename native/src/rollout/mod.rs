@@ -170,7 +170,14 @@ const S_SIMULATED: u32 = 16;
 const STATE_IDLE: u32 = 0;
 const STATE_RUN: u32 = 1;
 const STATE_FALL: u32 = 2;
-const STATE_ABILITY: u32 = 5;
+const STATE_LAND: u32 = 4;
+const STATE_TURN: u32 = 6;
+const STATE_STOP: u32 = 7;
+// SlimeController animation lengths driving the state machine (rollout.json
+// player anims: land 6x6, stop 1x6, runTurnAround 4x3 ticks).
+const LAND_TICKS: u32 = 36;
+const STOP_TICKS: u32 = 6;
+const TURN_TICKS: u32 = 12;
 
 // Layers (sim/Export/settings.json).
 const LAYER_PLAYER: u32 = 8;
@@ -284,6 +291,13 @@ pub struct PlayerSlot {
     pub ability_time: Fix,
     pub bow: BowState,
     pub platform: PlatformState,
+    /// SlimeController.currentState as the policy observes it. The .NET enum
+    /// never takes the `ability` value (nothing assigns it), so the state
+    /// freezes at its pre-ability value while an ability runs.
+    pub obs_state: u32,
+    /// Countdown for the land/stop/turn animation states.
+    pub state_ticks: u32,
+    pub facing_right: bool,
     /// Respawn countdown while holding a consumed stock (StockRespawn).
     pub respawn_ticks: u32,
     pub telemetry: CTelemetry,
@@ -606,6 +620,9 @@ impl RolloutWorld {
                 ability_time: Fix::ZERO,
                 bow: BowState::default(),
                 platform: PlatformState::default(),
+                obs_state: STATE_FALL,
+                state_ticks: 0,
+                facing_right: true,
                 respawn_ticks: 0,
                 telemetry: CTelemetry::default(),
                 circle_entity: i,
@@ -652,6 +669,93 @@ impl RolloutWorld {
             if slot.base.alive {
                 slot.base.sync_collider();
                 slot.base.late_step(&self.platforms);
+            }
+        }
+        for (index, action) in actions.iter().enumerate() {
+            self.update_obs_state(index, *action);
+        }
+    }
+
+    /// SlimeController's observable state machine, evaluated once per tick
+    /// after physics. Frozen while an ability (dash included) runs, because
+    /// EnterAbility returns before the state switch and nothing ever assigns
+    /// State.ability. `land`/`stop`/`turn` last exactly their animation and
+    /// then chain like the .NET callbacks (land->idle, stop->idle,
+    /// turn->run); reversals while running pass through `stop`.
+    fn update_obs_state(&mut self, index: usize, action: Action) {
+        let slot = &mut self.players[index];
+        if !slot.base.alive
+            || slot.respawn_ticks > 0
+            || slot.active != ActiveAbility::None
+            || slot.base.dash.active
+        {
+            return;
+        }
+        if !slot.base.grounded {
+            slot.obs_state = STATE_FALL;
+            return;
+        }
+        let dir = action.direction();
+        // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
+        // direction table only emits unit vectors) and the tangential ground
+        // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
+        // the ground with any alignment at all.
+        let tangent = Vec2::new(slot.base.up.y, -slot.base.up.x); // rightward
+        let align = dir.dot(tangent);
+        let into_ground = slot.base.up.dot(dir) < Fix::ZERO;
+        let moving = dir != Vec2::ZERO
+            && (align.abs() >= Fix::from_f32(0.2)
+                || (into_ground && align.abs() >= Fix::from_f32(0.01)));
+        let input_right = align >= Fix::ZERO;
+        match slot.obs_state {
+            STATE_FALL => {
+                // attachToGround: land animation, then idle.
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS;
+            }
+            STATE_LAND => {
+                slot.state_ticks = slot.state_ticks.saturating_sub(1);
+                if slot.state_ticks == 0 {
+                    slot.obs_state = STATE_IDLE;
+                }
+            }
+            STATE_RUN => {
+                if !moving || input_right != slot.facing_right {
+                    slot.obs_state = STATE_STOP;
+                    slot.state_ticks = STOP_TICKS;
+                }
+            }
+            STATE_STOP => {
+                if moving && input_right != slot.facing_right {
+                    slot.obs_state = STATE_TURN;
+                    slot.state_ticks = TURN_TICKS;
+                    slot.facing_right = input_right;
+                } else {
+                    slot.state_ticks = slot.state_ticks.saturating_sub(1);
+                    if slot.state_ticks == 0 {
+                        slot.obs_state = STATE_IDLE;
+                    }
+                }
+            }
+            STATE_TURN => {
+                if !moving {
+                    slot.obs_state = STATE_STOP;
+                    slot.state_ticks = STOP_TICKS;
+                } else {
+                    slot.state_ticks = slot.state_ticks.saturating_sub(1);
+                    if slot.state_ticks == 0 {
+                        slot.obs_state = STATE_RUN;
+                    }
+                }
+            }
+            _ => {
+                // idle (and anything unexpected).
+                if moving {
+                    slot.obs_state = STATE_RUN;
+                    slot.facing_right = input_right;
+                } else {
+                    slot.obs_state = STATE_IDLE;
+                }
             }
         }
     }
@@ -770,6 +874,11 @@ impl RolloutWorld {
                 self.players[index].base.sync_collider();
                 self.players[index].base.late_step(&self.platforms);
             }
+            let action = Action {
+                angle: actions[index].angle,
+                buttons: (actions[index].buttons & 0xFF) as u8,
+            };
+            self.update_obs_state(index, action);
         }
         self.arrows_tick(data);
         self.platforms_tick(data);
@@ -955,16 +1064,21 @@ impl RolloutWorld {
             if !button_down && !b.has_fired {
                 b.released = true;
             }
-            // Loading frames advance on the "load" animation's sprite
-            // boundaries after "transform"; FinishedLoading caps at 4.
+            // loadingFrame = getNumberOfPassedSprites() of the "load" anim =
+            // currentSpriteIndex+1: it jumps to 1 the tick "transform" ends
+            // (load starts at index 0) and increments one tick after each
+            // sprite boundary (currentSpritePos must exceed the duration).
+            // Measured .NET boundaries: frames 1/2/3/4 at ability ticks
+            // 30/38/45/52.
             if !b.has_fired && b.ticks >= bow.transform_ticks {
                 let since = b.ticks - bow.transform_ticks;
-                let frames = bow.load_frame_ticks.iter().filter(|t| since >= **t).count() as u32;
-                b.loading_frame = frames.min(4);
+                let passed = bow.load_frame_ticks.iter().filter(|t| since > **t).count() as u32;
+                b.loading_frame = (1 + passed).min(4);
             }
             // "…|| animator.getNumberOfPassedSprites() > 2" during transform:
-            // 3 of its 6 sprites have passed at the halfway point.
-            let early = b.ticks * 2 >= bow.transform_ticks;
+            // its 6 uniform sprites pass index 2 one tick after the second
+            // boundary (tick 11 of the 30-tick animation).
+            let early = b.ticks > bow.transform_ticks / 3;
             b.released && !b.has_fired && (b.loading_frame > 0 || early)
         };
         if fire_now {
@@ -1045,6 +1159,9 @@ impl RolloutWorld {
         }
         if exit {
             slot.active = ActiveAbility::None;
+            // ExitAbility ungrounds the body, so the state machine resumes
+            // from fall (and lands again next tick if still grounded).
+            slot.obs_state = STATE_FALL;
         }
     }
 
@@ -1168,6 +1285,7 @@ impl RolloutWorld {
                     slot.base.ground = None;
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.active = ActiveAbility::None;
+                    slot.obs_state = STATE_FALL;
                 }
             }
         }
@@ -1931,15 +2049,7 @@ impl RolloutWorld {
             } else {
                 flags |= S_SIMULATED;
             }
-            let state = if in_ability {
-                STATE_ABILITY
-            } else if !slot.base.grounded {
-                STATE_FALL
-            } else if slot.base.grounded_speed.abs() > Fix::from_f32(0.5) {
-                STATE_RUN
-            } else {
-                STATE_IDLE
-            };
+            let state = slot.obs_state;
             let mut ability_flags = [0u32; 3];
             for s in 0..3 {
                 if slot.abilities[s] == 0 {
@@ -1953,13 +2063,14 @@ impl RolloutWorld {
                     f |= 4;
                 }
                 if in_ability && slot.active_slot == s {
+                    // Active bit only: the .NET observation reads loadingFrame
+                    // and hasFired off the slot's ability component through
+                    // reflection and always sees zero (verified empirically:
+                    // charge bits stay 0 through a 96-tick hold while launch
+                    // speeds prove the internal frame reached 4), so exposing
+                    // the real charge here would feed the policy an input it
+                    // never saw in training.
                     f |= 8;
-                    if slot.active == ActiveAbility::Bow {
-                        f |= (slot.bow.loading_frame & 7) << 4;
-                        if slot.bow.has_fired {
-                            f |= 0x80;
-                        }
-                    }
                 }
                 ability_flags[s] = f;
             }
