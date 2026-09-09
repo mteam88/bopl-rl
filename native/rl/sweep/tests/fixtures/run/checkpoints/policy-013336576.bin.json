@@ -1,0 +1,1 @@
+{"schema": 1, "backend": "pufferlib-native", "architecture": "bopl-set-mingru-v2", "precision": "float32", "obs_size": 3298, "hidden": 128, "num_layers": 1, "action_sizes": [256, 16, 5], "step": 13336576, "learner_steps": 10002432, "step_unit": "physical_player_decisions", "weights_sha256": "421ba580965eed267263aedb9e16623f53a8ee10752297254b26fbc2830925f1"}
