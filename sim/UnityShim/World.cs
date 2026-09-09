@@ -5,11 +5,71 @@ using UnityEngine.SceneManagement;
 
 namespace UnityShim
 {
-	// Owns every shim object. One instance per simulated world; static Current
-	// for now (day 4 makes it per-world, see MANY_WORLDS.md).
+	// Owns every shim object. One instance per simulated world.
+	//
+	// Current is thread-local: a thread works on exactly one world at a time,
+	// and different threads may drive different worlds of the same runtime
+	// concurrently (many worlds per process, SIM_OVERHAUL.md section 3). All
+	// per-world state that Unity keeps in statics (Time, Random, scene events)
+	// lives on the World; gameplay's own per-match statics are swapped in and
+	// out by the onBind/onUnbind hooks (Gameplay's RlWorldState). Anything the
+	// shim keeps genuinely static (ScriptExecutionOrder, execution tables) is
+	// read-mostly and locked.
+	//
+	// The single-world drivers (sim/Host, Oracle) never bind: the first access
+	// on a thread lazily creates that thread's world, so they behave as before.
 	public class World
 	{
-		public static World Current = new World();
+		[ThreadStatic] private static World current;
+
+		public static World Current
+		{
+			get => current ??= new World();
+			set => current = value;
+		}
+
+		// Gameplay registers these once; they restore/capture its per-match
+		// statics around a thread's use of a world.
+		public static Action<World> onBind, onUnbind;
+
+		// Make `world` the calling thread's current world. Pair with Unbind on
+		// the same thread; nesting is not supported (a thread has one world).
+		public static void Bind(World world)
+		{
+			if (world == null) throw new ArgumentNullException(nameof(world));
+			if (current != null && current != world) throw new InvalidOperationException("UnityShim: thread already bound to another world");
+			current = world;
+			onBind?.Invoke(world);
+		}
+
+		public static void Unbind()
+		{
+			var world = current;
+			if (world == null) return;
+			onUnbind?.Invoke(world);
+			current = null;
+		}
+
+		// Slot for the gameplay assembly's per-world statics snapshot.
+		public object gameplayState;
+		// Export's per-world object graph (built assets, ids); see ExportDatabase.Store.
+		public object assetStore;
+
+		// UnityEngine.Time, per world (see Runtime.cs Time forwarding).
+		public TimeState time = TimeState.Defaults();
+
+		// UnityEngine.Random (presentation-only in this game; System.Random deviation, PORTING.md).
+		public System.Random random = new System.Random(42);
+
+		// Scene-object singletons Unity exposes statically.
+		public UnityEngine.EventSystems.EventSystem eventSystem;
+		public UnityEngine.InputSystem.PlayerInputManager playerInputManager;
+		public readonly System.Collections.Generic.Dictionary<string, object> playerPrefs = new System.Collections.Generic.Dictionary<string, object>();
+
+		// SceneManager events: subscribers are this world's objects.
+		public Action<Scene, LoadSceneMode> sceneLoaded;
+		public Action<Scene> sceneUnloaded;
+		public Action<Scene, Scene> activeSceneChanged;
 
 		private int nextInstanceId = 1;
 
@@ -81,7 +141,7 @@ namespace UnityShim
 		// pending Starts -> Update -> coroutines -> LateUpdate -> destroy flush.
 		public void RunFrame(float deltaTime)
 		{
-			Time.Advance(deltaTime);
+			time.Advance(deltaTime);
 			frameCount++;
 			Time.frameCount = frameCount;
 			FlushPendingStarts();
@@ -182,6 +242,26 @@ namespace UnityShim
 		public static void ResetAll()
 		{
 			Current = new World();
+		}
+	}
+
+	// UnityEngine.Time's mutable statics, owned by a World.
+	public sealed class TimeState
+	{
+		public float deltaTime, fixedDeltaTime, time, unscaledTime, unscaledDeltaTime, timeScale;
+		public float fixedTime, smoothDeltaTime, maximumDeltaTime, timeSinceLevelLoad, captureDeltaTime;
+		public int frameCount;
+
+		public static TimeState Defaults() => new TimeState { fixedDeltaTime = 1f / 60f, timeScale = 1f, maximumDeltaTime = 1f / 3f };
+
+		internal void Advance(float unscaledDelta)
+		{
+			unscaledDeltaTime = unscaledDelta;
+			deltaTime = unscaledDelta * timeScale;
+			smoothDeltaTime = deltaTime;
+			unscaledTime += unscaledDelta;
+			time += deltaTime;
+			timeSinceLevelLoad += deltaTime;
 		}
 	}
 }

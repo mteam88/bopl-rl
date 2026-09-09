@@ -15,7 +15,11 @@ namespace UnityShim
 
 		public static FieldInfo[] SerializedFields(Type type)
 		{
-			if (cache.TryGetValue(type, out var cached)) return cached;
+			// Filled lazily from several world threads (Instantiate, scene loads).
+			lock (cache)
+			{
+				if (cache.TryGetValue(type, out var cached)) return cached;
+			}
 			var chain = new List<Type>();
 			for (var t = type; t != null && t != typeof(object) && t != typeof(MonoBehaviour)
 				&& t != typeof(Behaviour) && t != typeof(Component) && t != typeof(UnityEngine.Object)
@@ -27,7 +31,7 @@ namespace UnityShim
 				foreach (var f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
 					if (IsSerialized(f)) fields.Add(f);
 			var result = fields.ToArray();
-			cache[type] = result;
+			lock (cache) cache[type] = result;
 			return result;
 		}
 

@@ -50,10 +50,24 @@ namespace UnityEngine.SceneManagement
 
 	public static class SceneManager
 	{
-		// UnityAction<Scene, LoadSceneMode> in Unity; Action works for gameplay's lambda subscribers.
-		public static event Action<Scene, LoadSceneMode> sceneLoaded;
-		public static event Action<Scene> sceneUnloaded;
-		public static event Action<Scene, Scene> activeSceneChanged;
+		// UnityAction<Scene, LoadSceneMode> in Unity; Action works for gameplay's
+		// lambda subscribers. Subscriber lists are per world (World.sceneLoaded...):
+		// the subscribers are that world's objects.
+		public static event Action<Scene, LoadSceneMode> sceneLoaded
+		{
+			add => World.Current.sceneLoaded += value;
+			remove => World.Current.sceneLoaded -= value;
+		}
+		public static event Action<Scene> sceneUnloaded
+		{
+			add => World.Current.sceneUnloaded += value;
+			remove => World.Current.sceneUnloaded -= value;
+		}
+		public static event Action<Scene, Scene> activeSceneChanged
+		{
+			add => World.Current.activeSceneChanged += value;
+			remove => World.Current.activeSceneChanged -= value;
+		}
 
 		public static int sceneCountInBuildSettings => World.Current.sceneCountInBuildSettings;
 		public static int sceneCount => 1;
@@ -87,7 +101,7 @@ namespace UnityEngine.SceneManagement
 
 		public static AsyncOperation UnloadSceneAsync(Scene scene)
 		{
-			sceneUnloaded?.Invoke(scene);
+			World.Current.sceneUnloaded?.Invoke(scene);
 			return new AsyncOperation();
 		}
 
@@ -112,10 +126,11 @@ namespace UnityEngine.SceneManagement
 		// Export loader calls this once a scene finished instantiating.
 		public static void NotifySceneLoaded(Scene scene, LoadSceneMode mode)
 		{
-			var previous = World.Current.activeScene;
-			if (mode == LoadSceneMode.Single) World.Current.activeScene = scene;
-			sceneLoaded?.Invoke(scene, mode);
-			if (mode == LoadSceneMode.Single) activeSceneChanged?.Invoke(previous, scene);
+			var world = World.Current;
+			var previous = world.activeScene;
+			if (mode == LoadSceneMode.Single) world.activeScene = scene;
+			world.sceneLoaded?.Invoke(scene, mode);
+			if (mode == LoadSceneMode.Single) world.activeSceneChanged?.Invoke(previous, scene);
 		}
 	}
 }

@@ -40,24 +40,17 @@ typedef struct {
 } Snapshot;
 /* In-process backend: the game is a NativeAOT shared library (sim/Native ->
  * BoplSimNative.so) exporting this same ABI, and every call is forwarded to
- * it. The library holds one world per runtime, so each handle dlopens its own
- * copy of the file (glibc de-duplicates by device/inode; the copy is a reflink
- * where the filesystem supports it and is unlinked once mapped). Several
- * runtimes per process are verified by native/rl/backend_check.c. */
-typedef struct {
-    BoplRl *inner;
-    /* The library's reset_begin does the whole reset (scene build + warmup
-     * ticks, ~8 ms warm, 55-90 ms on a runtime's first load of a map) before
-     * returning, so begin runs it on a helper thread and finish joins: the
-     * spare world of bopl_puffer.h then overlaps resets with play exactly as
-     * with a worker process. Measured without this: one reset per ~10-20
-     * lockstep steps at 8 ms each was 0.4-0.8 ms per step, the whole gap
-     * between the socket and in-process paths. */
-    pthread_t reset_thread;
-    bool reset_pending_flag;
-    int reset_result;
-    BoplRlConfig reset_config;
+ * it. A runtime (one dlopen of the file) serves bopl_rl_world_capacity()
+ * worlds - one for library builds without that export - and handles are
+ * packed into runtimes up to that (or BOPL_RL_WORLDS_PER_RUNTIME, if lower).
+ * Further runtimes dlopen private copies of the file (glibc de-duplicates by
+ * device/inode; the copy is a reflink where the filesystem supports it and
+ * is unlinked once mapped). Verified by native/rl/backend_check.c. */
+typedef struct InprocLib {
+    struct InprocLib *next;
+    uint32_t capacity, used;
     uint32_t (*abi_version)(void);
+    uint32_t (*world_capacity)(void);
     BoplRl *(*open)(const char *, const char *, const char *, uint32_t, char *, size_t);
     int (*reset_begin)(BoplRl *, const BoplRlConfig *);
     int (*reset_finish)(BoplRl *);
@@ -73,7 +66,26 @@ typedef struct {
     uint32_t (*map_count)(const BoplRl *);
     uint32_t (*ability_count)(const BoplRl *);
     void (*close)(BoplRl *);
+} InprocLib;
+typedef struct {
+    InprocLib *lib;
+    BoplRl *inner;
+    /* The library's reset_begin does the whole reset (scene build + warmup
+     * ticks, ~8 ms warm, 55-90 ms on a runtime's first load of a map) before
+     * returning, so begin runs it on a helper thread and finish joins: the
+     * spare world of bopl_puffer.h then overlaps resets with play exactly as
+     * with a worker process. Measured without this: one reset per ~10-20
+     * lockstep steps at 8 ms each was 0.4-0.8 ms per step, the whole gap
+     * between the socket and in-process paths. With many worlds per runtime
+     * the helper thread runs its world while the caller's threads step the
+     * others: the library's per-match statics are thread-local. */
+    pthread_t reset_thread;
+    bool reset_pending_flag;
+    int reset_result;
+    BoplRlConfig reset_config;
 } Inproc;
+static pthread_mutex_t inproc_libs_lock=PTHREAD_MUTEX_INITIALIZER;
+static InprocLib *inproc_libs;
 struct BoplRl {
     int socket, listener;
     pid_t child;
@@ -279,56 +291,92 @@ static int copy_file(const char *from, const char *to) {
     if (out>=0) close(out);
     return status;
 }
+/* dlopen one runtime of the library: the file itself for the first, a
+ * private copy for every further one. Returns NULL with w->error set. */
+static InprocLib *load_inproc_lib(BoplRl *w, const char *library, bool first) {
+    InprocLib *lib=calloc(1, sizeof(*lib));
+    if (!lib) { fail(w, "RL library table"); return NULL; }
+    char parent[4096], path[4096+80], scratch[4096+40];
+    void *handle=NULL;
+    const char *keep=getenv("BOPL_RL_INPROC_KEEP");
+    if (first) handle=dlopen(library, RTLD_NOW|RTLD_LOCAL);
+    else {
+        /* Private copy next to the library (same filesystem, so a reflink where
+         * possible); /tmp when that directory is not writable. */
+        snprintf(parent, sizeof(parent), "%s", library);
+        snprintf(scratch, sizeof(scratch), "%s/.bopl-rl-XXXXXX", dirname(parent));
+        char *directory=mkdtemp(scratch);
+        if (!directory) { snprintf(scratch, sizeof(scratch), "/tmp/bopl-rl-XXXXXX"); directory=mkdtemp(scratch); }
+        if (!directory) { fail(w, "RL library copy directory"); free(lib); return NULL; }
+        snprintf(path, sizeof(path), "%s/BoplSimNative.so", directory);
+        if (copy_file(library, path)) { fail(w, "RL library copy"); unlink(path); rmdir(directory); free(lib); return NULL; }
+        handle=dlopen(path, RTLD_NOW|RTLD_LOCAL);
+        /* The mapping outlives the name; nothing is left on disk per runtime.
+         * BOPL_RL_INPROC_KEEP=1 keeps the copies (plus the .dbg symbol file) so
+         * perf can symbolize them; the caller cleans the directories up. */
+        if (keep && keep[0]=='1') {
+            char debug_from[4096+8], debug_to[4096+88];
+            snprintf(debug_from, sizeof(debug_from), "%s.dbg", library);
+            snprintf(debug_to, sizeof(debug_to), "%s.dbg", path);
+            (void)copy_file(debug_from, debug_to);
+        } else { unlink(path); rmdir(directory); }
+    }
+    if (!handle) { snprintf(w->error, sizeof(w->error), "RL library dlopen: %s", dlerror()); free(lib); return NULL; }
+#define RESOLVE(field) if (!(lib->field=(__typeof__(lib->field))dlsym(handle, "bopl_rl_" #field))) { \
+        snprintf(w->error, sizeof(w->error), "RL library symbol bopl_rl_%s: %s", #field, dlerror()); free(lib); return NULL; }
+    RESOLVE(abi_version) RESOLVE(open) RESOLVE(reset_begin) RESOLVE(reset_finish) RESOLVE(reset_pending)
+    RESOLVE(step) RESOLVE(step_sampled) RESOLVE(state) RESOLVE(sample) RESOLVE(replay) RESOLVE(error)
+    RESOLVE(source_hash) RESOLVE(catalog_hash) RESOLVE(map_count) RESOLVE(ability_count) RESOLVE(close)
+#undef RESOLVE
+    if (lib->abi_version()!=2) { snprintf(w->error, sizeof(w->error), "RL library ABI version %u", lib->abi_version()); free(lib); return NULL; }
+    /* Optional: builds before many-worlds host one world per runtime. */
+    lib->world_capacity=(uint32_t (*)(void))dlsym(handle, "bopl_rl_world_capacity");
+    lib->capacity=lib->world_capacity?lib->world_capacity():1;
+    if (lib->capacity<1) lib->capacity=1;
+    const char *limit=getenv("BOPL_RL_WORLDS_PER_RUNTIME");
+    if (limit && limit[0]) {
+        unsigned long value=strtoul(limit, NULL, 10);
+        if (value>=1 && value<lib->capacity) lib->capacity=(uint32_t)value;
+    }
+    /* A NativeAOT runtime cannot be unloaded; the mapping stays for the
+     * process lifetime, like the library's own statics. No dlclose. */
+    return lib;
+}
 static BoplRl *open_inproc(BoplRl *w, const char *library, const char *replay, const char *log_path,
                            uint32_t timeout_ms, char *error, size_t capacity) {
     Inproc *p=calloc(1, sizeof(*p));
     if (!p) { error_text(error, capacity, "RL handle allocation failed"); free(w); return NULL; }
     w->inproc=p;
-    /* Private copy next to the library (same filesystem, so a reflink where
-     * possible); /tmp when that directory is not writable. */
-    char parent[4096], path[4096+80];
-    snprintf(parent, sizeof(parent), "%s", library);
     snprintf(w->directory, sizeof(w->directory), "%s", "");
-    char scratch[4096+40];
-    snprintf(scratch, sizeof(scratch), "%s/.bopl-rl-XXXXXX", dirname(parent));
-    char *directory=mkdtemp(scratch);
-    if (!directory) { snprintf(scratch, sizeof(scratch), "/tmp/bopl-rl-XXXXXX"); directory=mkdtemp(scratch); }
-    if (!directory) { fail(w, "RL library copy directory"); goto failed; }
-    snprintf(path, sizeof(path), "%s/BoplSimNative.so", directory);
-    if (copy_file(library, path)) { fail(w, "RL library copy"); unlink(path); rmdir(directory); goto failed; }
-    void *handle=dlopen(path, RTLD_NOW|RTLD_LOCAL);
-    /* The mapping outlives the name; nothing is left on disk per handle.
-     * BOPL_RL_INPROC_KEEP=1 keeps the copies (plus the .dbg symbol file) so
-     * perf can symbolize them; the caller cleans the directories up. */
-    const char *keep=getenv("BOPL_RL_INPROC_KEEP");
-    if (keep && keep[0]=='1') {
-        char debug_from[4096+8], debug_to[4096+88];
-        snprintf(debug_from, sizeof(debug_from), "%s.dbg", library);
-        snprintf(debug_to, sizeof(debug_to), "%s.dbg", path);
-        (void)copy_file(debug_from, debug_to);
-    } else { unlink(path); rmdir(directory); }
-    if (!handle) { snprintf(w->error, sizeof(w->error), "RL library dlopen: %s", dlerror()); goto failed; }
-#define RESOLVE(field) if (!(p->field=(__typeof__(p->field))dlsym(handle, "bopl_rl_" #field))) { \
-        snprintf(w->error, sizeof(w->error), "RL library symbol bopl_rl_%s: %s", #field, dlerror()); goto failed; }
-    RESOLVE(abi_version) RESOLVE(open) RESOLVE(reset_begin) RESOLVE(reset_finish) RESOLVE(reset_pending)
-    RESOLVE(step) RESOLVE(step_sampled) RESOLVE(state) RESOLVE(sample) RESOLVE(replay) RESOLVE(error)
-    RESOLVE(source_hash) RESOLVE(catalog_hash) RESOLVE(map_count) RESOLVE(ability_count) RESOLVE(close)
-#undef RESOLVE
-    if (p->abi_version()!=2) { snprintf(w->error, sizeof(w->error), "RL library ABI version %u", p->abi_version()); goto failed; }
+    pthread_mutex_lock(&inproc_libs_lock);
+    InprocLib *lib=inproc_libs;
+    while (lib && lib->used>=lib->capacity) lib=lib->next;
+    if (!lib) {
+        lib=load_inproc_lib(w, library, inproc_libs==NULL);
+        if (!lib) { pthread_mutex_unlock(&inproc_libs_lock); goto failed; }
+        lib->next=inproc_libs; inproc_libs=lib;
+    }
+    lib->used++; /* reserve the slot; the open itself runs unlocked */
+    pthread_mutex_unlock(&inproc_libs_lock);
     /* The library validates the paths like this file does and uses only the
-     * log path (its -logFile). Its open() writes the error text itself. */
-    p->inner=p->open(library, replay, log_path, timeout_ms, error, capacity);
-    if (!p->inner) { free(p); free(w); return NULL; }
-    /* A NativeAOT runtime cannot be unloaded; the mapping stays for the
-     * process lifetime, like the library's own statics. No dlclose. */
+     * log path (its -logFile). Its open() writes the error text itself. A
+     * world's open boots its scene (~0.5 s); the library's open is thread-safe
+     * (its process-wide boot is behind its own gate), so the trainer's workers
+     * open their worlds in parallel. */
+    p->inner=lib->open(library, replay, log_path, timeout_ms, error, capacity);
+    if (!p->inner) {
+        pthread_mutex_lock(&inproc_libs_lock); lib->used--; pthread_mutex_unlock(&inproc_libs_lock);
+        free(p); free(w); return NULL;
+    }
+    p->lib=lib;
     error_text(error, capacity, ""); return w;
 failed:
     error_text(error, capacity, w->error); free(p); free(w); return NULL;
 }
 static void *inproc_reset_worker(void *arg) {
     Inproc *p=arg;
-    int result=p->reset_begin(p->inner, &p->reset_config);
-    if (!result) result=p->reset_finish(p->inner);
+    int result=p->lib->reset_begin(p->inner, &p->reset_config);
+    if (!result) result=p->lib->reset_finish(p->inner);
     p->reset_result=result;
     return NULL;
 }
@@ -348,7 +396,7 @@ static int inproc_reset_finish(BoplRl *w) {
     p->reset_pending_flag=false;
     return p->reset_result;
 }
-#define INPROC(w, call) if ((w) && (w)->inproc) return (w)->inproc->call
+#define INPROC(w, call) if ((w) && (w)->inproc) return (w)->inproc->lib->call
 BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log_path,
                      uint32_t timeout_ms, char *error, size_t capacity) {
     if (!executable || executable[0]!='/' || !replay || replay[0]!='/' || !log_path || log_path[0]!='/'
@@ -505,7 +553,7 @@ int bopl_rl_replay(BoplRl *w, const void **bytes, size_t *length) {
 }
 const char *bopl_rl_error(const BoplRl *w) {
     if (!w) return "NULL RL handle";
-    if (w->inproc) return w->error[0] ? w->error : w->inproc->error(w->inproc->inner);
+    if (w->inproc) return w->error[0] ? w->error : w->inproc->lib->error(w->inproc->inner);
     return w->error;
 }
 const char *bopl_rl_source_hash(const BoplRl *w) { INPROC(w, source_hash(w->inproc->inner)); return w?w->source:NULL; }
@@ -516,7 +564,7 @@ void bopl_rl_close(BoplRl *w) {
     if (!w) return;
     if (w->inproc) {
         if (w->inproc->reset_pending_flag) (void)inproc_reset_finish(w);
-        w->inproc->close(w->inproc->inner); free(w->inproc); free(w); return;
+        w->inproc->lib->close(w->inproc->inner); free(w->inproc); free(w); return;
     }
     if (w->socket>=0 && !w->broken) {
         uint32_t length; uint32_t timeout=w->timeout_ms;

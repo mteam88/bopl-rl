@@ -3,15 +3,21 @@
  * FNV-1a checksums over every post-step state, via either backend:
  *
  *   backend_check socket <Host-or-player binary> <bootstrap .rep> [copies]
+ *   backend_check rl <BoplSimNative.so> <any .rep path> [worlds]
  *   backend_check inproc <BoplSimNative.so> [copies]
+ *   backend_check worlds <BoplSimNative.so> [worlds]
  *
- * The socket backend is bopl_rl.c linked in (worker process + unix socket),
- * the in-process backend dlopens the library. With copies > 1, the library is
- * copied to distinct files (glibc de-duplicates dlopen by device/inode) and
- * each copy runs the sequence on its own thread at the same time: several
- * NativeAOT runtimes in one process, which is what one-copy-per-env needs.
- * Every copy must print the checksums of a single copy, which must equal the
- * socket backend's.
+ * socket/rl go through bopl_rl.c linked in (worker process + unix socket for
+ * a binary; its in-process backend for a .so, which packs worlds into
+ * runtimes and resets on helper threads exactly as the trainer does). inproc
+ * dlopens the library itself: with copies > 1, the library is copied to
+ * distinct files (glibc de-duplicates dlopen by device/inode) and each copy
+ * runs the sequence on its own thread at the same time - several NativeAOT
+ * runtimes in one process. worlds dlopens the library once and opens n
+ * handles in that one runtime, each sequence on its own thread concurrently
+ * (many worlds per runtime, SIM_OVERHAUL.md section 3). Every copy/world must
+ * print the checksums of a single copy, which must equal the socket
+ * backend's.
  *
  * Sequence: (a) default 2-player config, 240 zero-action ticks (the
  * native_check number); (b) map 1, seed 7, 3 stocks, up to 1500 decisions of 4 ticks
@@ -129,7 +135,14 @@ static int run_phase(Run *run, int p)
         decisions = 1500; repeat = 4; rng = 0x9E3779B9u;
     }
     double start = now_ms();
+    /* BOPL_CHECK_SERIAL_RESET=1 serializes resets across the concurrent
+     * sequences (steps stay concurrent): localizes a race to reset or step. */
+    static pthread_mutex_t reset_lock = PTHREAD_MUTEX_INITIALIZER;
+    const char *serial_reset = getenv("BOPL_CHECK_SERIAL_RESET");
+    int lock_reset = serial_reset && serial_reset[0] == '1';
+    if (lock_reset) pthread_mutex_lock(&reset_lock);
     int result = api->reset(run->world, &config);
+    if (lock_reset) pthread_mutex_unlock(&reset_lock);
     run->reset_ms[p] = now_ms() - start;
     if (result != BOPL_RL_OK) return fail(run, "reset", result);
 
@@ -162,6 +175,15 @@ static int run_phase(Run *run, int p)
         if (result == BOPL_RL_ENDED) break;
         if (result != BOPL_RL_OK) return fail(run, "step", result);
         checksum = hash_state(checksum, api->state(run->world));
+        if (p == 1 && getenv("BOPL_CHECK_TRACE")) {
+            const BoplRlState *st = api->state(run->world);
+            uint64_t h = hash_state(14695981039346656037ULL, st);
+            if (steps < 4 || (steps & 31) == 0)
+                printf("[%s] b step %d: tick=%u entities=%u slimes=%u p0=(%d,%d) alive=%u/%u hash=%016llx\n", run->label, steps,
+                       st->header.tick, st->header.entity_count, st->header.slime_count,
+                       (int)(st->players[0].x >> 32), (int)(st->players[0].y >> 32),
+                       st->players[0].alive_bodies, st->players[1].alive_bodies, (unsigned long long)h);
+        }
         steps++;
     }
     run->step_us[p] = steps ? (now_ms() - start) * 1000.0 / steps : 0;
@@ -225,14 +247,21 @@ int main(int argc, char **argv)
     char tmpdir[64] = "/tmp/bopl-backend-check-XXXXXX";
     if (!mkdtemp(tmpdir)) { perror("mkdtemp"); return 1; }
 
-    if (!strcmp(argv[1], "socket")) {
-        if (argc != 4 && argc != 5) { fprintf(stderr, "socket needs <binary> <bootstrap.rep> [copies]\n"); return 2; }
+    int via_rl = !strcmp(argv[1], "socket") || !strcmp(argv[1], "rl");
+    if (via_rl) {
+        if (argc != 4 && argc != 5) { fprintf(stderr, "%s needs <binary|.so> <bootstrap.rep> [copies]\n", argv[1]); return 2; }
         if (argc == 5) copies = atoi(argv[4]);
         if (copies < 1 || copies > 64) { fprintf(stderr, "copies must be 1..64\n"); return 2; }
         apis = calloc((size_t)copies, sizeof(Backend));
         for (int k = 0; k < copies; k++)
             apis[k] = (Backend){bopl_rl_abi_version, bopl_rl_default_config, bopl_rl_open, bopl_rl_reset, bopl_rl_step,
                                 bopl_rl_step_sampled, bopl_rl_state, bopl_rl_error, bopl_rl_map_count, bopl_rl_close};
+    } else if (!strcmp(argv[1], "worlds")) {
+        if (argc == 4) copies = atoi(argv[3]);
+        if (copies < 1 || copies > 1024) { fprintf(stderr, "worlds must be 1..1024\n"); return 2; }
+        apis = calloc((size_t)copies, sizeof(Backend));
+        if (load_inproc(&apis[0], argv[2])) return 1;
+        for (int k = 1; k < copies; k++) apis[k] = apis[0]; /* one runtime, n handles */
     } else if (!strcmp(argv[1], "inproc")) {
         if (argc == 4) copies = atoi(argv[3]);
         if (copies < 1 || copies > 64) { fprintf(stderr, "copies must be 1..64\n"); return 2; }
@@ -254,8 +283,8 @@ int main(int argc, char **argv)
         snprintf(labels[k], 32, "%s%d", argv[1], k);
         snprintf(logs[k], 256, "%s/%s.log", tmpdir, labels[k]);
         char message[512] = {0};
-        const char *binary = !strcmp(argv[1], "socket") ? argv[2] : "/usr/bin/true";
-        const char *replay = !strcmp(argv[1], "socket") ? argv[3] : "/dev/null";
+        const char *binary = via_rl ? argv[2] : "/usr/bin/true";
+        const char *replay = via_rl ? argv[3] : "/dev/null";
         runs[k].api = &apis[k]; runs[k].label = labels[k];
         double start = now_ms();
         runs[k].world = apis[k].open(binary, replay, logs[k], 60000, message, sizeof(message));
@@ -265,8 +294,15 @@ int main(int argc, char **argv)
 
     pthread_t *threads = calloc((size_t)copies, sizeof(pthread_t));
     double start = now_ms();
-    for (int k = 0; k < copies; k++) pthread_create(&threads[k], NULL, run_sequence, &runs[k]);
-    for (int k = 0; k < copies; k++) pthread_join(threads[k], NULL);
+    /* BOPL_CHECK_SERIAL=1 runs the sequences one after another (separates
+     * shared-state bugs from races). */
+    const char *serial_env = getenv("BOPL_CHECK_SERIAL");
+    int serial = serial_env && serial_env[0] == '1';
+    for (int k = 0; k < copies; k++) {
+        pthread_create(&threads[k], NULL, run_sequence, &runs[k]);
+        if (serial) pthread_join(threads[k], NULL);
+    }
+    if (!serial) for (int k = 0; k < copies; k++) pthread_join(threads[k], NULL);
     printf("all sequences: %.0f ms wall\n", now_ms() - start);
 
     int status = 0;
@@ -276,6 +312,11 @@ int main(int argc, char **argv)
         for (int p = 0; p < 3; p++) if (runs[k].checksum[p] != runs[0].checksum[p]) status = 1;
     }
     if (copies > 1) printf("copies agree: %s\n", status ? "NO" : "yes");
+    if (copies > 1) {
+        double total_us = 0; int n = 0;
+        for (int k = 0; k < copies; k++) if (runs[k].steps[1]) { total_us += runs[k].step_us[1]; n++; }
+        if (n) printf("phase b mean step over %d concurrent: %.1f us wall, %.1f us aggregate per decision\n", n, total_us / n, total_us / n / n);
+    }
     if (runs[0].checksum[0] != runs[0].checksum[2]) { printf("dirty reset (c) != clean reset (a): NO\n"); status = 1; }
     else printf("dirty reset reproduces clean reset: yes\n");
     printf("summary %s a=%016llx b=%016llx c=%016llx\n", argv[1], (unsigned long long)runs[0].checksum[0],

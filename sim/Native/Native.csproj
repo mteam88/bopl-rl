@@ -19,6 +19,12 @@
     <NativeLib>Shared</NativeLib>
     <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
+    <!-- Many worlds share this runtime (NativeApi: one RlWorld per handle, all
+         on trainer threads). Workstation GC on purpose: server GC was tried
+         (2026-09-09) and cost 6x the RSS (3.5 GB vs 0.54 GB for 16 worlds) for
+         no throughput gain in backend_check worlds. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>

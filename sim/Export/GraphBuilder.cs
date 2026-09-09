@@ -27,7 +27,7 @@ namespace BoplSim.Export
 			if (parent != null) go.transform.SetParentInternal(parent);
 
 			string goId = (string)node["id"];
-			if (goId != null) db.ObjectsById[goId] = go;
+			if (goId != null) db.Register(goId, go, asset);
 
 			if (node["components"] is JArray components)
 			{
@@ -57,7 +57,7 @@ namespace BoplSim.Export
 						target = go.AddComponentSilent(type);
 					}
 					if (!asset && target is Object component) component.persistent = true;
-					if (id != null) db.ObjectsById[id] = target;
+					if (id != null) db.Register(id, target, asset);
 					if (comp["properties"] is JObject props)
 						pending.Add(new PendingProperties { Target = target, Properties = props });
 				}

@@ -4,7 +4,9 @@
 # at the 500M run's shape (16 workers x 2 buffers, set encoder, 4 banks):
 #   m0  BOPL_BANK_BRANCHES=0, socket Host   (upstream serial bank chain)
 #   m1  BOPL_BANK_BRANCHES=1, socket Host   (parallel graph branches)
-#   m2  BOPL_BANK_BRANCHES=1, in-process BoplSimNative.so
+#   m2  BOPL_BANK_BRANCHES=1, in-process BoplSimNative.so, all worlds in one runtime
+#   m3  BOPL_BANK_BRANCHES=1, in-process BoplSimNative.so, one runtime per world
+#       (BOPL_RL_WORLDS_PER_RUNTIME=1; section 2 shape, ~240 MB per world)
 # Writes one JSON line per run to $OUT/results.jsonl and a summary to
 # $OUT/summary.txt.
 #
@@ -32,11 +34,12 @@ fi
 ulimit -c 0
 STEPS=$((UPDATES * 24 * 128))  # learner rows (16 workers * 3/2) * horizon
 run() {
-  local mode=$1 tag=$2 dir="$OUT/w16b2-m$mode-$tag" branches=1 game="$GAME"
+  local mode=$1 tag=$2 dir="$OUT/w16b2-m$mode-$tag" branches=1 game="$GAME" per_runtime=4096
   [ "$mode" = 0 ] && branches=0
   [ "$mode" = 2 ] && game="$LIB"
+  [ "$mode" = 3 ] && game="$LIB" && per_runtime=1
   rm -rf "$dir"
-  BOPL_BANK_BRANCHES=$branches native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
+  BOPL_BANK_BRANCHES=$branches BOPL_RL_WORLDS_PER_RUNTIME=$per_runtime native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
     --output "$dir" --game "$game" --encoder set --hidden 128 --layers 1 \
     --steps "$STEPS" --seed 73 --workers 16 --buffers 2 --banks 4 --horizon 128 \
     --learner-passes 1 --learning-rate 0.0003 --training-maps 0,1,2 --episode-ticks 7200 --stocks 0 \
@@ -56,14 +59,16 @@ for round in $(seq 1 "$ROUNDS"); do
   run 0 "$round"
   run 1 "$round"
   [ -f "$LIB" ] && run 2 "$round"
+  [ -f "$LIB" ] && run 3 "$round"
 done
 python3 - "$OUT" <<'EOF'
 import json, sys, statistics as st
 out = sys.argv[1]
 rows = [json.loads(l) for l in open(out + '/results.jsonl')]
 lines = []
-names = {0: 'm0 serial banks, socket', 1: 'm1 parallel banks, socket', 2: 'm2 parallel banks, in-process'}
-for mode in (0, 1, 2):
+names = {0: 'm0 serial banks, socket', 1: 'm1 parallel banks, socket',
+         2: 'm2 parallel banks, in-process, one runtime', 3: 'm3 parallel banks, in-process, runtime per world'}
+for mode in (0, 1, 2, 3):
     rs = [r for r in rows if r['mode'] == mode]
     if not rs: continue
     sps = st.median(r['learner_sps_median'] for r in rs)

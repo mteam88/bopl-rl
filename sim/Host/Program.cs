@@ -18,6 +18,10 @@ namespace BoplSim.Host
 	{
 		public static int Main(string[] args)
 		{
+			// Single world on the main thread: bind it once so the gameplay's
+			// per-world statics (RlWorldState) hold their fresh-process values.
+			RlWorldState.Attach();
+			World.Bind(World.Current);
 			try { return Run(args); }
 			catch (Exception error)
 			{
@@ -30,6 +34,7 @@ namespace BoplSim.Host
 		{
 			// Headless-player replacement under native/rl/bopl_rl.c (BOPL_RL_SOCKET set, or "rl").
 			if (RlMode.Requested(args)) return RlMode.Run(args);
+			if (args.Length > 0 && args[0] == "worlds") return WorldsCheck.Run(args);
 			string mode = args.Length > 0 ? args[0] : "reset";
 			string replayPath = null;
 			int level = 0, players = 2, ticks = 240, stocks = 0, gameMode = 0;
