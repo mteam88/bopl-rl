@@ -41,6 +41,7 @@ namespace UnityEngine
 		// compare by identity even when both are destroyed - destroyedA ==
 		// destroyedB is FALSE unless they are the same object (Unity compares
 		// instance ids).
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 		private static bool CompareBaseObjects(Object a, Object b)
 		{
 			bool an = a is null;
@@ -51,8 +52,11 @@ namespace UnityEngine
 			return ReferenceEquals(a, b);
 		}
 
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 		public static bool operator ==(Object a, Object b) => CompareBaseObjects(a, b);
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 		public static bool operator !=(Object a, Object b) => !CompareBaseObjects(a, b);
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 		public static implicit operator bool(Object o) => !(o is null) && !o.destroyed;
 
 		public static void DontDestroyOnLoad(Object target)
