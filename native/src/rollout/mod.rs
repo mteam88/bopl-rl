@@ -318,6 +318,9 @@ pub struct RolloutWorld {
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
+    /// AntiLockPlatform runtime (map 2): platform index, waypoint, velocity,
+    /// and the AnimateVelocity home (set to the body position one tick late).
+    pub orbits: Vec<(usize, usize, Vec2, Vec2)>,
     pub next_platform_id: u32,
     pub next_entity_id: u32,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
@@ -364,6 +367,7 @@ impl RolloutWorld {
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
+            orbits: Vec::with_capacity(4),
             next_platform_id: 0,
             next_entity_id: 0,
             entities: Vec::with_capacity(192),
@@ -498,6 +502,7 @@ impl RolloutWorld {
         }
         self.next_platform_id = 100;
         self.sudden_death_delays.clear();
+        self.orbits.clear();
         for (index, p) in def.platforms.iter().enumerate() {
             let id = self.next_id();
             let entity = self.entities.len();
@@ -518,6 +523,10 @@ impl RolloutWorld {
             self.next_platform_id += 1;
             self.sudden_death_delays
                 .push(self.rng.fix_range(Fix::ZERO, p.sudden_death_max_delay));
+            if p.orbit.is_some() {
+                self.orbits
+                    .push((self.platforms.len() - 1, 0, Vec2::ZERO, p.surface.center));
+            }
         }
 
         // Players at their team spawns (GameSessionHandler.SpawnPlayers: one
@@ -1444,34 +1453,116 @@ impl RolloutWorld {
         }
     }
 
-    /// Map platform motion: sudden death sinking (AnimateVelocity), and the
-    /// map-2 orbiter (AntiLockPlatform) later.
-    fn platforms_tick(&mut self, _data: &data::RolloutData) {
+    /// Map platform motion: the map-2 orbiter (AntiLockPlatform), sudden
+    /// death sinking (AnimateVelocity) for authored and spawned platforms,
+    /// and scene-bounds destruction of spawned platforms.
+    fn platforms_tick(&mut self, data: &data::RolloutData) {
+        // AntiLockPlatform: after DelaySeconds, chase the waypoints with
+        // OrbitForce while AnimateVelocity damps with -mu * velocity (home
+        // tracks the body, so the spring pull is zero). Halts once sudden
+        // death starts. Riders follow via their surface-local anchor.
         if !self.sudden_death {
-            return;
+            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+            let map = &data.maps[self.map];
+            for orbit in &mut self.orbits {
+                let platform_index = orbit.0;
+                let def = &map.platforms[self.platform_defs[platform_index]];
+                let Some(o) = def.orbit.as_ref() else { continue };
+                if sim_time < o.delay || o.path.is_empty() {
+                    continue;
+                }
+                let platform = &mut self.platforms[platform_index];
+                let position = platform.surface.center;
+                // Per tick, in the .NET order: AnimateVelocity computes the
+                // spring against last tick's home (AntiLock re-homes after
+                // it), AntiLock adds OrbitForce, DetPhysics integrates with
+                // 1/mass and applies airDrag, then positions move.
+                let spring = (orbit.3 - position) * def.speed - orbit.2 * def.mu;
+                let direction = (o.path[orbit.1] - position).normalized_safe();
+                orbit.3 = position;
+                let acceleration = spring + direction * (o.force / o.mass);
+                orbit.2 = (orbit.2 + acceleration * DT) * o.air_drag;
+                let shift = orbit.2 * DT;
+                platform.surface.center += shift;
+                platform.collider.inner.center += shift;
+                let current = o.path[orbit.1];
+                let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
+                if (current - previous).dot(platform.surface.center - current) > Fix::ZERO {
+                    orbit.1 = (orbit.1 + 1) % o.path.len();
+                }
+                // Carry grounded riders (.NET parents players to the sticky
+                // platform, so they move with it).
+                let platform_id = platform.id;
+                for slot in &mut self.players {
+                    if slot.base.alive && slot.base.ground == Some(platform_id) {
+                        slot.base.position += shift;
+                        slot.base.sync_collider();
+                    }
+                }
+            }
         }
-        let map = &data::get().maps[self.map];
-        let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
-        for (i, def_index) in self.platform_defs.iter().enumerate() {
-            if *def_index == usize::MAX {
+        if self.sudden_death {
+            let map = &data.maps[self.map];
+            let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
+            for i in 0..self.platforms.len() {
+                let def_index = self.platform_defs[i];
+                let (speed_scale, accel, delay, curve) = if def_index == usize::MAX {
+                    let Some(spawn) = self
+                        .spawned
+                        .iter()
+                        .find(|s| s.active && s.platform_index == i)
+                    else {
+                        continue;
+                    };
+                    (
+                        data.platform.sudden_death_speed,
+                        data.platform.sudden_death_acceleration,
+                        spawn.sudden_death_delay,
+                        &data.platform.sudden_death_y_speed,
+                    )
+                } else {
+                    let def = &map.platforms[def_index];
+                    (
+                        def.sudden_death_speed,
+                        def.sudden_death_acceleration,
+                        self.sudden_death_delays[def_index],
+                        &def.sudden_death_y_speed,
+                    )
+                };
+                // AnimateVelocity.UpdateSim: home -= down * curve(t - delay)
+                //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
+                let steps = (elapsed * accel).to_int().clamp(0, 5);
+                let scale = speed_scale * Fix::from_int(2 << steps);
+                let speed = curve_eval(curve, elapsed - delay);
+                let drop = speed * scale * DT;
+                if drop == Fix::ZERO {
+                    continue;
+                }
+                let platform = &mut self.platforms[i];
+                platform.surface.center.y -= drop;
+                platform.collider.inner.center.y -= drop;
+            }
+        }
+        // DestroyIfOutsideSceneBounds on ResizablePlatforms; a still-formed
+        // owner dies with it (the StickyRect == null path in UpdateSim).
+        for i in 0..self.spawned.len() {
+            if !self.spawned[i].active {
                 continue;
             }
-            let def = &map.platforms[*def_index];
-            let delay = self.sudden_death_delays[*def_index];
-            // AnimateVelocity.UpdateSim: home -= down * curve(t - delay)
-            //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
-            let steps = (elapsed * def.sudden_death_acceleration)
-                .to_int()
-                .clamp(0, 5);
-            let scale = def.sudden_death_speed * Fix::from_int(2 << steps);
-            let speed = curve_eval(&def.sudden_death_y_speed, elapsed - delay);
-            let drop = speed * scale * DT;
-            if drop == Fix::ZERO {
+            let platform_index = self.spawned[i].platform_index;
+            let center = self.platforms[platform_index].surface.center;
+            if center.y >= Fix::from_f32(-11.3) && center.x.abs() <= Fix::from_f64(131.25) {
                 continue;
             }
-            let platform = &mut self.platforms[i];
-            platform.surface.center.y -= drop;
-            platform.collider.inner.center.y -= drop;
+            let owner = self.spawned[i].owner;
+            self.spawned[i].active = false;
+            self.remove_platform(platform_index);
+            let formed = self.players[owner].active == ActiveAbility::Platform
+                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION;
+            if formed && self.players[owner].base.alive {
+                self.players[owner].active = ActiveAbility::None;
+                self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT);
+            }
         }
     }
 
@@ -1766,6 +1857,8 @@ impl RolloutWorld {
             let s = &platform.surface;
             e.x = s.center.x.0;
             e.y = s.center.y.0;
+            e.vx = 0;
+            e.vy = 0;
             let right = s.right * s.extents.x;
             let up = s.up * s.extents.y;
             e.right_x = right.x.0;
@@ -1774,6 +1867,13 @@ impl RolloutWorld {
             e.up_y = up.y.0;
             e.radius = s.radius.0;
             e.rotation = s.right.normalized_angle().0;
+        }
+        // The orbiter carries real velocity in the .NET observation and the
+        // policy encoder consumes it.
+        for orbit in &self.orbits {
+            let e = &mut self.entities[self.platform_entities[orbit.0]];
+            e.vx = orbit.2.x.0;
+            e.vy = orbit.2.y.0;
         }
     }
 

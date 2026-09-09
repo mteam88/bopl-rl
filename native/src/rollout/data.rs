@@ -22,6 +22,10 @@ struct RawCurveKey {
 }
 #[derive(Deserialize)]
 struct RawAnimateVelocity {
+    #[serde(default)]
+    speed: i64,
+    #[serde(default)]
+    mu: i64,
     sudden_death_speed: i64,
     sudden_death_max_delay: i64,
     sudden_death_acceleration: i64,
@@ -31,6 +35,8 @@ struct RawAnimateVelocity {
 struct RawOrbit {
     force: i64,
     delay: i64,
+    mass: i64,
+    air_drag: i64,
     path: Vec<RawVec2>,
 }
 #[derive(Deserialize)]
@@ -174,6 +180,10 @@ struct RawRollout {
 /// A platform's authored geometry plus the behaviours that move it.
 pub struct PlatformDef {
     pub surface: Surface,
+    /// AnimateVelocity home spring (speed * (home - position)) and damping
+    /// (-mu * velocity).
+    pub speed: Fix,
+    pub mu: Fix,
     /// Sudden death sinking (AnimateVelocity.ActivateSuddenDeath).
     pub sudden_death_speed: Fix,
     pub sudden_death_max_delay: Fix,
@@ -185,6 +195,9 @@ pub struct PlatformDef {
 pub struct OrbitDef {
     pub force: Fix,
     pub delay: Fix,
+    pub mass: Fix,
+    /// Per-tick velocity multiplier (PhysicsBody.airDrag from airFriction01).
+    pub air_drag: Fix,
     pub path: Vec<Vec2>,
 }
 pub struct MapDef {
@@ -308,6 +321,8 @@ fn map_def(raw: &RawMap) -> MapDef {
                     extents: p.extents.get() * scale,
                     radius: Fix(p.radius) * scale,
                 },
+                speed: Fix(p.animate_velocity.speed),
+                mu: Fix(p.animate_velocity.mu),
                 sudden_death_speed: Fix(p.animate_velocity.sudden_death_speed),
                 sudden_death_max_delay: Fix(p.animate_velocity.sudden_death_max_delay),
                 sudden_death_acceleration: Fix(p.animate_velocity.sudden_death_acceleration),
@@ -320,6 +335,8 @@ fn map_def(raw: &RawMap) -> MapDef {
                 orbit: p.orbit.as_ref().map(|o| OrbitDef {
                     force: Fix(o.force),
                     delay: Fix(o.delay),
+                    mass: Fix(o.mass),
+                    air_drag: Fix(o.air_drag),
                     path: o.path.iter().map(RawVec2::get).collect(),
                 }),
             }

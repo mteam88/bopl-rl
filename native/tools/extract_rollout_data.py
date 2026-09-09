@@ -159,6 +159,10 @@ def extract_map(index):
                 entry["orbit"] = {
                     "force": fix(anti, "OrbitForce"),
                     "delay": fix(anti, "DelaySeconds"),
+                    # The force-driven motion needs the body dynamics too:
+                    # velocity += (spring + force/mass) * dt, then *= airDrag.
+                    "mass": fix(body, "mass"),
+                    "air_drag": fix(body, "airFriction01"),
                     "path": [vec2(anti, f"OrbitPath.Array.data[{i}]") for i in range(n)],
                 }
             platforms.append(entry)
