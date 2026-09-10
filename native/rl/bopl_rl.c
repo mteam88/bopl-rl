@@ -48,6 +48,8 @@ typedef struct {
  * is unlinked once mapped). Verified by native/rl/backend_check.c. */
 typedef struct InprocLib {
     struct InprocLib *next;
+    dev_t device;
+    ino_t inode;
     uint32_t capacity, used;
     uint32_t (*abi_version)(void);
     uint32_t (*world_capacity)(void);
@@ -293,9 +295,11 @@ static int copy_file(const char *from, const char *to) {
 }
 /* dlopen one runtime of the library: the file itself for the first, a
  * private copy for every further one. Returns NULL with w->error set. */
-static InprocLib *load_inproc_lib(BoplRl *w, const char *library, bool first) {
+static InprocLib *load_inproc_lib(BoplRl *w, const char *library, bool first,
+                                  dev_t device, ino_t inode) {
     InprocLib *lib=calloc(1, sizeof(*lib));
     if (!lib) { fail(w, "RL library table"); return NULL; }
+    lib->device=device; lib->inode=inode;
     char parent[4096], path[4096+80], scratch[4096+40];
     void *handle=NULL;
     const char *keep=getenv("BOPL_RL_INPROC_KEEP");
@@ -348,11 +352,18 @@ static BoplRl *open_inproc(BoplRl *w, const char *library, const char *replay, c
     if (!p) { error_text(error, capacity, "RL handle allocation failed"); free(w); return NULL; }
     w->inproc=p;
     snprintf(w->directory, sizeof(w->directory), "%s", "");
+    struct stat identity;
+    if (stat(library, &identity)) {
+        fail(w, "RL library identity");
+        error_text(error, capacity, w->error); free(p); free(w); return NULL;
+    }
     pthread_mutex_lock(&inproc_libs_lock);
     InprocLib *lib=inproc_libs;
-    while (lib && lib->used>=lib->capacity) lib=lib->next;
+    while (lib && (lib->device!=identity.st_dev || lib->inode!=identity.st_ino
+                   || lib->used>=lib->capacity)) lib=lib->next;
     if (!lib) {
-        lib=load_inproc_lib(w, library, inproc_libs==NULL);
+        lib=load_inproc_lib(w, library, inproc_libs==NULL,
+                            identity.st_dev, identity.st_ino);
         if (!lib) { pthread_mutex_unlock(&inproc_libs_lock); goto failed; }
         lib->next=inproc_libs; inproc_libs=lib;
     }
