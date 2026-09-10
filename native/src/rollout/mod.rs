@@ -287,6 +287,7 @@ pub struct PlatformState {
     /// the active ability body. RlObservation therefore reports this value.
     pub reported_position: Vec2,
     pub reported_tick: u32,
+    pub hurtbox_disabled: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1041,6 +1042,15 @@ impl RolloutWorld {
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = registered_action;
                         self.players[index].telemetry.ability_activations[s] += 1;
+                        let masked = Action {
+                            angle: registered_action.angle,
+                            buttons: (registered_action.buttons & 1) | 2,
+                        };
+                        // Dash is registered after SlimeController in this
+                        // prefab, so its freshly enabled UpdateSim runs later
+                        // in the same pass. That performs anticipation setup
+                        // now; platform and bow begin updating next tick.
+                        self.dash_move(index, masked);
                         return;
                     }
                     ABILITY_BOW => {
@@ -1401,6 +1411,7 @@ impl RolloutWorld {
                     st.phase = PLATFORM_ROTATION;
                     st.time_passed = Fix::ZERO;
                     st.cursor = position + Vec2::UP * pd.spawn_radius;
+                    st.hurtbox_disabled = true;
                 }
             }
             PLATFORM_ROTATION => {
@@ -2485,7 +2496,7 @@ impl RolloutWorld {
                 dash_box.up_y = up.y.0;
                 dash_box.rotation = angle.0;
             } else {
-                dash_box.flags = E_TRIGGER;
+                dash_box.flags = E_ENABLED | E_TRIGGER;
                 dash_box.x = 0;
                 dash_box.y = 0;
                 dash_box.vx = 0;
@@ -2514,7 +2525,7 @@ impl RolloutWorld {
                 bow_box.up_y = (up_dir * extents.y).y.0;
                 bow_box.rotation = right_dir.normalized_angle().0;
             } else {
-                bow_box.flags = E_TRIGGER;
+                bow_box.flags = E_ENABLED | E_TRIGGER;
                 bow_box.x = 0;
                 bow_box.y = 0;
                 bow_box.vx = 0;
@@ -2534,7 +2545,11 @@ impl RolloutWorld {
                 circle.x = position.x.0;
                 circle.y = position.y.0;
             } else {
-                circle.flags = E_TRIGGER;
+                circle.flags = if slot.platform.hurtbox_disabled {
+                    E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
                 circle.x = 0;
                 circle.y = 0;
             }

@@ -32,7 +32,7 @@ static Sample sample(const BoplRlState *state, uint32_t initial_entities) {
     }
     for (uint32_t i = 0; i < state->header.entity_count; i++) {
         const BoplRlEntity *e = &state->entities[i];
-        if (i < initial_entities && e->kind == 0 && e->owner == 1)
+        if (i < initial_entities && e->kind == 0 && out.circle_flags == 0)
             out.circle_flags = e->flags;
         if (i < initial_entities || e->kind != 2 || !(e->flags & 1)) continue;
         out.spawned++;

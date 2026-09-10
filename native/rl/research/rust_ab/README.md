@@ -11,6 +11,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 
 - `move_ab.c`: fixed-action angle sweep, positions per decision.
 - `state_ab.c`: idle/run/turn/stop, SlimeController state and timers.
+- `dash_phase_ab.c`: tick-level dash activation, anticipation, collider, and
+  displacement phases.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
 - `hit_ab.c`: charge and fire at the opponent, hit outcome and death cause.
