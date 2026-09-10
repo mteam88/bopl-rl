@@ -222,6 +222,8 @@ pub struct Arrow {
     pub entity: Option<usize>,
     pub position: Vec2,
     pub velocity: Vec2,
+    /// Arrow.UpdateSim aligns the sprite before DetPhysics applies gravity.
+    pub rotation: Fix,
     pub time_passed: Fix,
     /// Projectile.DelayedEnableHurtOwner: 5 units of travel time.
     pub hurt_owner_after: Fix,
@@ -1810,6 +1812,7 @@ impl RolloutWorld {
             entity,
             position,
             velocity,
+            rotation: Fix::ZERO,
             time_passed: Fix::ZERO,
             hurt_owner_after,
             can_hurt_owner: false,
@@ -1887,6 +1890,16 @@ impl RolloutWorld {
             {
                 arrow.can_hurt_owner = true;
             }
+            // Arrow.UpdateSim runs in the updater pass, before DetPhysics
+            // integrates gravity and position. Preserve that authored phase
+            // for the policy-visible collider orientation.
+            let speed = arrow.velocity.length();
+            let up = if speed == Fix::ZERO {
+                Vec2::UP
+            } else {
+                arrow.velocity * (Fix::ONE / speed)
+            };
+            arrow.rotation = up.perp_cw().normalized_angle();
             arrow.velocity.y += gravity * DT;
             arrow.position += arrow.velocity * DT;
         }
@@ -2694,11 +2707,7 @@ impl RolloutWorld {
             e.y = arrow.position.y.0;
             e.vx = arrow.velocity.x.0;
             e.vy = arrow.velocity.y.0;
-            let speed = arrow.velocity.length();
-            if speed > Fix::ZERO {
-                let up = arrow.velocity * (Fix::ONE / speed);
-                e.rotation = up.perp_cw().normalized_angle().0;
-            }
+            e.rotation = arrow.rotation.0;
         }
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
