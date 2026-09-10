@@ -17,13 +17,9 @@ impl RawVec2 {
 }
 #[derive(Deserialize)]
 struct RawAnimateVelocity {
-    #[serde(default)]
     speed: i64,
-    #[serde(default)]
     mu: i64,
-    #[serde(default)]
     rotation_speed: i64,
-    #[serde(default)]
     rotation_mu: i64,
     sudden_death_speed: i64,
     sudden_death_max_delay: i64,

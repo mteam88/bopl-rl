@@ -46,6 +46,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   phases and transformed-player following.
 - `platform_boundary_ab.c`: platform-form death below water while the separate
   spawned `ResizablePlatform` remains collidable.
+- `platform_rotation_ab.c`: spawned-platform orientation and angular velocity
+  across one or more ABI-compatible backends; pair it with the Rust-only
+  `platform_rotation_trace` binary to inspect the private spring home rotation.
 - `recast_ab.c`: two platform casts, including the evicted platform's live
   shrink/removal interval.
 - `stock_respawn_ab.c`: stock consumption, directional point selection, early

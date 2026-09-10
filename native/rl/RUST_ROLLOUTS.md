@@ -56,8 +56,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   consuming it, matching `Arrow.OnCollide`.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
-  ejection and same-pass exit reattachment, one-platform-per-player,
-  curve-driven old-body removal, transform following, and squish deaths.
+  the authored translational and rotational home springs, ejection and
+  same-pass exit reattachment, one-platform-per-player, curve-driven old-body
+  removal, transform following, and squish deaths. Resizing preserves the
+  scalar body orientation exactly, as `ResizablePlatform.ResizePlatform` does.
 - **Observation**: `bopl_layout.h` layout with the .NET entity id
   assignment order (circles, boxes, rounded rects by first-seen), matching
   kinds/layers/owner/flags, slime ability slots, cooldowns and timers
@@ -112,6 +114,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | exploitable | A movement body crossing a blast boundary was pre-marked dead, then skipped by match death bookkeeping | fixed: the marker is consumed once and crossing on the current tick is caught |
 | exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall now destroy the arrow and kill when owner rules allow |
 | behavior-changing | Resizing kept the prefab mass/inertia instead of `10 + MassPerArea * area` and `ApproximateMOI` | fixed, including live observation `inverse_mass` |
+| exploitable | Spawned platforms had no rotation spring because the extractor omitted `rotationSpeed`/`rotationMu`; terrain contact torque accumulated into a large persistent tilt | fixed: both fields are required extracted data, the authored 40 / 1/6 spring runs every tick, and resize no longer reconstructs or pins body rotation |
+| behavior-changing | Platform aim used scalar-angle interpolation instead of Unity's sine-weighted `Vec2.Slerp`, leaving a fixed home-angle offset | fixed with the source formula, including its dot ceiling and zero-sine fallback |
 | behavior-changing | Bow parsed but ignored `maxNumberOfArrows = 20` | fixed with per-owner oldest-projectile eviction |
 | behavior-changing | Ability entry/spawn and Dash/Bow/Platform updater phases were delayed or collapsed into the public player position | fixed: current input drives live bodies immediately while Unity's component-specific report phases remain explicit |
 | behavior-changing | Bow used the original slime hurtbox during transforms, lost ordinary-slime pushes, raycasted after aerial control, and exposed charge one animator pass early | fixed with active ability colliders and source updater/animator ordering |
@@ -236,36 +240,21 @@ action repeat 1 and compares every observation field per tick):
   `sudden_death_ab` (RNG-aligned sink trajectories) has a maximum Y error of
   3.3e-9 units on the Q32 build and 6.1e-9 on f64 — the extra 12 raw units
   over the 90 sink ticks are the per-product rounding difference above.
-  `platform_boundary_ab` prints the same death tick (461), the same
-  rounded-rectangle counts and phases on both builds, with the minimum Y
-  7.6e-5 units apart. Traced tick by tick (a temporary dump of
-  `platform_dynamics` before integration), that gap is not chaotic growth
-  but one specific property of the reference arithmetic: while the player
-  holds the Platform size phase, `platform_size_tick` -> `reshape_platform`
-  re-derives the body orientation as `right.normalized_angle()` from the
-  basis DetPhysics rebuilt with `Vec2::angle(orientation)`. In Q32.32 that
-  round trip is not idempotent near orientation ~ pi. Iterating the two
-  functions alone in the `q32` build from 13466626368 gives 13466659237,
-  13466691985, 13466724775, 13466757442, ... — exactly the per-tick
-  orientations in the trace — i.e. one table cell (2^15 raw = 7.6e-6 rad)
-  upward per application: `Fix.FastCos` evaluates the sine table at the
-  truncated reduced argument, which for this quadrant lies a cell boundary
-  above the requested angle (the returned vector's true angle is theta +
-  32.7-32.9k raw), and `Fix.Acos` (`Atan(Sqrt(1 - x^2) / x) + PI`, accurate
-  to 44 raw here) reads it back just below that boundary, so the next
-  truncation drops another cell. Away from pi the same round trip snaps to
-  the grid once and is then stable (1e9 raw -> 999987935 -> fixed). The f64
-  libm round trip moves one raw unit per tick, and the rotated
-  corner-anchoring shift carries the growing orientation gap (3e-4 rad by
-  the death tick) into the centre position. The earlier settled offset of
-  78465 raw between the two builds' formed orientations is the same table
-  quantization inside the `PLATFORM_ROTATION` `slerp` loop
-  (`Vec2::angle(a + (b - a) t)`; at t = 2/3 it stalls within 1.5 cells of
-  the quantized aim angle, 81920 raw bound). This is the one place the f64
-  tree knowingly differs from the reference's angle model by more than
-  rounding; it is not worth emulating: against .NET the same scenario's
-  platform orientation differs from both Rust builds by 2e-2 to 4e-3 rad
-  (the physics thread's open platform-rotation item), 500x the f64/Q32 gap.
+  `platform_boundary_ab` originally printed the same death tick (461), RR
+  counts and phases, with minimum Y 7.6e-5 units apart. The cause was a
+  Rust-only algorithmic mistake rather than an inherent f64 difference:
+  every size tick reconstructed `body.orientation` by the round trip
+  `orientation -> Vec2::angle -> normalized_angle`. Near pi the Q32 sine
+  table walks one 2^15-raw cell (7.6e-6 rad) per application, while libm f64
+  moved one raw unit. Unity's `PlatformTransform.State.Size` retains the
+  transformed `PlayerBody.right`, and `ResizablePlatform.ResizePlatform`
+  changes geometry, mass and inertia without writing rotation. Both Rust
+  number modes now do the same, so resizing and removal never feed collider
+  axes back into scalar body orientation. The remaining small f64/Q32 formed
+  orientation offset came from a simplified scalar-angle `slerp`, not an
+  accumulating resize drift. The rollout now uses Unity's sine-weighted vector
+  formula; in the near-pi paired trace the final f64/Q32 home angles differ by
+  9.1e-7 rad and the settled f64/.NET no-contact difference is 3.0e-5 rad.
 
 ## Raycast broad phase
 
@@ -299,23 +288,25 @@ At 300 episodes with that harness fixed (seeds 1000-1299), the base
 (`7f6761b`), platform/phase implementation, discrete-arrow implementation,
 and the final semantic-audit implementation were:
 
-| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust final |
-|---|---:|---:|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 |
-| timeouts | 0 | 0 | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 153 | 138 | 138 |
-| self deaths | 165 | 153 | 146 | 160 | 160 |
-| opponent deaths | 2 | 3 | 1 | 2 | 2 |
-| dash activations | 221 | 284 | 240 | 217 | 217 |
-| bow activations | 498 | 560 | 510 | 489 | 491 |
-| platform activations | 86 | 129 | 113 | 87 | 88 |
-| arrows fired | 484 | 551 | 497 | 476 | 476 |
-| arrow hits | 2 | 3 | 1 | 2 | 2 |
-| winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 |
+| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust pre-rotation fix | Rust current |
+|---|---:|---:|---:|---:|---:|---:|
+| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 | 62.3 |
+| timeouts | 0 | 0 | 0 | 0 | 0 | 0 |
+| environment deaths | 133 | 144 | 153 | 138 | 138 | 135 |
+| self deaths | 165 | 153 | 146 | 160 | 160 | 163 |
+| opponent deaths | 2 | 3 | 1 | 2 | 2 | 2 |
+| dash activations | 221 | 284 | 240 | 217 | 217 | 219 |
+| bow activations | 498 | 560 | 510 | 489 | 491 | 492 |
+| platform activations | 86 | 129 | 113 | 87 | 88 | 87 |
+| arrows fired | 484 | 551 | 497 | 476 | 476 | 479 |
+| arrow hits | 2 | 3 | 1 | 2 | 2 | 2 |
+| winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 | 297/300 |
 
-The episode-length gap fell from +10.4 to -0.6 decisions (94% by absolute
-gap). Mean position divergence remains under 0.002 through decision 16, then
-grows chaotically (0.083/0.197 at decisions 31/46 after the change).
+The episode-length gap fell from +10.4 to -0.7 decisions. Mean position
+divergence remains under 0.002 through decision 16, then grows chaotically
+(0.083/0.199 at decisions 31/46). Restoring the spawned-platform rotation
+spring reduced the later decision-106/121 divergences from 1.436/2.690 to
+1.238/1.580 units and improved winner agreement by one episode.
 
 Scripted A/B traces (`native/rl/research/rust_ab/*.c`, built against
 `bopl_rl.h` the same way as `fidelity_gate.c`) cover movement states, bow
@@ -327,13 +318,28 @@ boundary. In `platform_ab`, the orbiter position is identical to 12 decimal
 places at every sampled tick with the Q32.32 `Fix` (with the f64 `Fix` it
 drifts one raw unit per tick, 2.3e-7 units at tick 1620; see "Number type")
 and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform deltas fell
-from 1.385/1.743 to 0.047/0.011 units; their final deltas are 0.044/0.002. The
-player's maximum/final delta is 0.041/0.041 after matching Platform's
+from 1.385/1.743 to 0.047/0.041 units; their final deltas are 0.046/0.039. The
+player's maximum/final delta is 0.033/0.032 after matching Platform's
 synchronous exit callback (previous maximum: 0.788). In `ability_hitbox_ab`,
 the swept implementation missed an arrow/Bow collision that .NET delivered at
 tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
 counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
 backends retain one live arrow (`1/1`).
+
+`platform_rotation_ab` isolates the rotation repair. In an airborne short-size
+case with no RR contact, f64 remains exactly at 3.139446572168 rad from tick
+329 through 700; Q32 behaves equivalently, while .NET's initial scheduling
+kick damps to 5.6e-9 rad/s. In an intentionally tall platform that bears
+against terrain, the old f64 build reached 1.398 rad maximum displacement and
+1.396 rad/s maximum angular speed over ticks 329-700. The repaired build
+reaches 0.0205 rad and 0.0349 rad/s, close to .NET's contact-loaded 0.0110 rad
+and 0.0306 rad/s. Its maximum/final orientation error against .NET is
+0.0115/0.0092 rad, down from 1.3954/0.8556. The overnight-2 replay's platform
+18 changes from a visible 1.5830 -> 1.0453 rad rotation by age 190 to 1.5830
+-> 1.5768 rad under the
+same continuing terrain load; angular speed falls from -0.3406 to -0.0048
+rad/s. The .NET replay lands that platform elsewhere, with no continuing
+contact, and settles at 1.5831333 rad and zero angular speed by age 170.
 
 `ability_spawner_ab` observes no layer-13 pickup on either backend under the
 default RL configuration and one only in .NET with

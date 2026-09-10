@@ -290,6 +290,9 @@ pub struct PlatformState {
     pub released: bool,
     pub cursor: Vec2,
     pub active_corner: Vec2,
+    /// PlatformTransform's PlayerBody.right, authored by assigning `body.up`
+    /// during State.Rotation and then held constant through State.Size.
+    pub sizing_right: Vec2,
     /// Index into `RolloutWorld::platforms` for the platform being shaped.
     pub platform_index: usize,
     pub hurtbox_disabled: bool,
@@ -1469,12 +1472,21 @@ impl RolloutWorld {
                 if aim != Vec2::ZERO {
                     up = slerp(up, aim, DT * pd.rotation_speed);
                 }
-                self.reshape_platform(platform_index, center, up, pd.spawn_extents, radius);
-                self.platform_dynamics[platform_index].home_rotation =
-                    up.perp_cw().normalized_angle();
+                // PlatformTransform writes the aimed `up` into the spawned
+                // platform's FixTransform. DetPhysics then copies that scalar
+                // rotation into the body before integrating it. Resizing only
+                // changes the collider geometry; it must not re-derive or pin
+                // the body's orientation.
+                let rotation = up.perp_cw().normalized_angle();
+                self.platform_dynamics[platform_index].body.orientation = rotation;
+                self.platform_dynamics[platform_index].home_rotation = rotation;
+                self.platforms[platform_index].surface.right = up.perp_cw();
+                self.platforms[platform_index].surface.up = up;
+                self.reshape_platform(platform_index, center, pd.spawn_extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
-                slot.base.rotation = up.perp_cw().normalized_angle();
+                slot.base.rotation = rotation;
+                slot.platform.sizing_right = up.perp_cw();
                 // SpriteAnimator invokes EnterSize after PlatformTransform's
                 // UpdateSim pass. The newly selected Size state therefore
                 // starts on the following tick, one pass after the authored
@@ -1535,13 +1547,14 @@ impl RolloutWorld {
     /// quadratic clamp when both axes grow).
     fn platform_size_tick(&mut self, index: usize, aim: Vec2, pd: &data::PlatformAbilityData) {
         let platform_index = self.players[index].platform.platform_index;
-        let (center, right_unit, up, extents, radius) = {
+        let (center, extents, radius) = {
             let s = &self.platforms[platform_index].surface;
-            (s.center, s.right, s.up, s.extents, s.radius)
+            (s.center, s.extents, s.radius)
         };
         let (x, y) = (extents.x, extents.y);
-        let rotation = right_unit.normalized_angle();
-        let basis = Vec2::angle(rotation);
+        // PlatformTransform.State.Size uses the transformed player's stable
+        // `body.right`, not the potentially wobbling platform collider axes.
+        let basis = self.players[index].platform.sizing_right;
         let conj = Vec2::new(basis.x, -basis.y);
         let st = &mut self.players[index].platform;
         st.cursor += aim * CURSOR_SENSITIVITY * DT;
@@ -1618,7 +1631,7 @@ impl RolloutWorld {
         let shift_local = Vec2::new((a - x) * st.active_corner.x, (a2 - y) * st.active_corner.y);
         let shift = shift_local.complex_mul(basis);
         let new_center = center + shift;
-        self.reshape_platform(platform_index, new_center, up, Vec2::new(a, a2), radius);
+        self.reshape_platform(platform_index, new_center, Vec2::new(a, a2), radius);
         self.players[index].base.position = new_center;
     }
 
@@ -1664,13 +1677,7 @@ impl RolloutWorld {
         // CreatePlatform immediately calls ResizePlatform with the prefab
         // dimensions after ManualInit. That recomputes mass and inertia even
         // though the geometry itself did not change.
-        self.reshape_platform(
-            platform_index,
-            position,
-            Vec2::UP,
-            pd.spawn_extents,
-            pd.spawn_radius,
-        );
+        self.reshape_platform(platform_index, position, pd.spawn_extents, pd.spawn_radius);
         // CreatePlatform explicitly activates a new body's sudden-death mode
         // only when the global transition is already in progress.
         let delay = if self.sudden_death {
@@ -1741,25 +1748,15 @@ impl RolloutWorld {
         }
     }
 
-    fn reshape_platform(
-        &mut self,
-        index: usize,
-        center: Vec2,
-        up: Vec2,
-        extents: Vec2,
-        radius: Fix,
-    ) {
+    fn reshape_platform(&mut self, index: usize, center: Vec2, extents: Vec2, radius: Fix) {
         let old_center = self.platforms[index].surface.center;
         let platform = &mut self.platforms[index];
-        let right = up.perp_cw();
         platform.surface.center = center;
-        platform.surface.right = right;
-        platform.surface.up = up;
         platform.surface.extents = extents;
         platform.surface.radius = radius;
         platform.collider.inner.center = center;
-        platform.collider.inner.right = right * extents.x;
-        platform.collider.inner.up = up * extents.y;
+        platform.collider.inner.right = platform.surface.right * extents.x;
+        platform.collider.inner.up = platform.surface.up * extents.y;
         platform.collider.inner.inverse_extents =
             Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         platform.collider.radius = radius;
@@ -1776,7 +1773,6 @@ impl RolloutWorld {
         let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
         dynamics.body.inverse_mass = Fix::ONE / mass;
         dynamics.body.inverse_inertia = Fix::ONE / inertia;
-        dynamics.body.orientation = right.normalized_angle();
         dynamics.home_position += center - old_center;
     }
 
@@ -2111,8 +2107,8 @@ impl RolloutWorld {
             ));
         }
         for (index, extents, radius) in removal_resizes {
-            let surface = &self.platforms[index].surface;
-            self.reshape_platform(index, surface.center, surface.up, extents, radius);
+            let center = self.platforms[index].surface.center;
+            self.reshape_platform(index, center, extents, radius);
         }
         removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
         for index in removal_destroys {
@@ -2700,7 +2696,10 @@ impl RolloutWorld {
             e.up_x = up.x.raw();
             e.up_y = up.y.raw();
             e.radius = s.radius.raw();
-            e.rotation = s.right.normalized_angle().raw();
+            // RlObservation publishes PhysicsBody.orientation directly. The
+            // collider basis is derived output and must not be converted back
+            // into an angle (especially around the Q32 sine-table boundary).
+            e.rotation = dynamics.body.orientation.raw();
             e.angular_velocity = dynamics.body.angular_velocity.raw();
             e.inverse_mass = dynamics.body.inverse_mass.raw();
         }
@@ -2878,19 +2877,22 @@ fn make_platform(id: u32, surface: &Surface) -> Platform {
     }
 }
 
-/// Vec2.Slerp for unit vectors: rotate `from` toward `to` by fraction `t` of
-/// the angle between them.
+/// The game's sine-weighted `Vec2.Slerp`, including its 0.9999 dot ceiling
+/// and zero-sine fallback. PlatformTransform feeds the result back into the
+/// next tick without normalizing it, so the vector form is observable near
+/// the target and cannot be replaced by scalar-angle interpolation.
 fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
-    let a = from.normalized_angle();
-    let b = to.normalized_angle();
-    let mut delta = b - a;
-    if delta > Fix::PI {
-        delta -= Fix::TAU;
-    } else if delta < -Fix::PI {
-        delta += Fix::TAU;
+    let dot = from
+        .dot(to)
+        .max(-Fix::ONE)
+        .min(Fix::ONE)
+        .min(Fix::from_f32(0.9999));
+    let angle = dot.acos().expect("clamped slerp dot");
+    let mut denominator = angle.sin();
+    if denominator == Fix::ZERO {
+        denominator = Fix::from_f32(0.00001);
     }
-    let t = t.max(Fix::ZERO).min(Fix::ONE);
-    Vec2::angle(a + delta * t)
+    (from * ((Fix::ONE - t) * angle).sin() + to * (t * angle).sin()) / denominator
 }
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
@@ -3034,5 +3036,61 @@ impl RolloutWorld {
         let digest = sha256(out);
         self.replay_buffer.extend_from_slice(&digest);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> CConfig {
+        let player = CPlayerConfig {
+            abilities: [ABILITY_PLATFORM, ABILITY_DASH, ABILITY_BOW],
+            ..CPlayerConfig::default()
+        };
+        CConfig {
+            seed: 7,
+            map: 0,
+            players: 2,
+            slots: 3,
+            stocks: 10,
+            warmup_ticks: 240,
+            max_episode_ticks: 7200,
+            player: [player; MAX_PLAYERS],
+            ..CConfig::default()
+        }
+    }
+
+    #[test]
+    fn spawned_platform_uses_authored_rotation_spring() {
+        let platform = &data::get().platform;
+        assert_eq!(platform.spawn_rotation_speed.raw(), 171_798_691_840);
+        assert_eq!(platform.spawn_rotation_mu.raw(), 715_828_032);
+    }
+
+    #[test]
+    fn resizing_platform_does_not_rederive_body_rotation() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let index = world.spawn_ability_platform(0, Vec2::new(Fix::from_int(3), Fix::from_int(4)));
+        let orientation = Fix::from_f64(3.135_432_668_56);
+        let right = Vec2::angle(orientation);
+        let up = right.perp();
+        world.platform_dynamics[index].body.orientation = orientation;
+        world.platform_dynamics[index].home_rotation = orientation;
+        world.platforms[index].surface.right = right;
+        world.platforms[index].surface.up = up;
+
+        world.reshape_platform(
+            index,
+            Vec2::new(Fix::from_int(5), Fix::from_int(6)),
+            Vec2::new(Fix::from_f64(0.75), Fix::from_f64(3.25)),
+            Fix::from_f64(0.25),
+        );
+
+        assert_eq!(world.platform_dynamics[index].body.orientation, orientation);
+        assert_eq!(world.platform_dynamics[index].home_rotation, orientation);
+        assert_eq!(world.platforms[index].surface.right, right);
+        assert_eq!(world.platforms[index].surface.up, up);
     }
 }
