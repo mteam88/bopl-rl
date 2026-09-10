@@ -2877,19 +2877,22 @@ fn make_platform(id: u32, surface: &Surface) -> Platform {
     }
 }
 
-/// Vec2.Slerp for unit vectors: rotate `from` toward `to` by fraction `t` of
-/// the angle between them.
+/// The game's sine-weighted `Vec2.Slerp`, including its 0.9999 dot ceiling
+/// and zero-sine fallback. PlatformTransform feeds the result back into the
+/// next tick without normalizing it, so the vector form is observable near
+/// the target and cannot be replaced by scalar-angle interpolation.
 fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
-    let a = from.normalized_angle();
-    let b = to.normalized_angle();
-    let mut delta = b - a;
-    if delta > Fix::PI {
-        delta -= Fix::TAU;
-    } else if delta < -Fix::PI {
-        delta += Fix::TAU;
+    let dot = from
+        .dot(to)
+        .max(-Fix::ONE)
+        .min(Fix::ONE)
+        .min(Fix::from_f32(0.9999));
+    let angle = dot.acos().expect("clamped slerp dot");
+    let mut denominator = angle.sin();
+    if denominator == Fix::ZERO {
+        denominator = Fix::from_f32(0.00001);
     }
-    let t = t.max(Fix::ZERO).min(Fix::ONE);
-    Vec2::angle(a + delta * t)
+    (from * ((Fix::ONE - t) * angle).sin() + to * (t * angle).sin()) / denominator
 }
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent

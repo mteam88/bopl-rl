@@ -115,6 +115,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall now destroy the arrow and kill when owner rules allow |
 | behavior-changing | Resizing kept the prefab mass/inertia instead of `10 + MassPerArea * area` and `ApproximateMOI` | fixed, including live observation `inverse_mass` |
 | exploitable | Spawned platforms had no rotation spring because the extractor omitted `rotationSpeed`/`rotationMu`; terrain contact torque accumulated into a large persistent tilt | fixed: both fields are required extracted data, the authored 40 / 1/6 spring runs every tick, and resize no longer reconstructs or pins body rotation |
+| behavior-changing | Platform aim used scalar-angle interpolation instead of Unity's sine-weighted `Vec2.Slerp`, leaving a fixed home-angle offset | fixed with the source formula, including its dot ceiling and zero-sine fallback |
 | behavior-changing | Bow parsed but ignored `maxNumberOfArrows = 20` | fixed with per-owner oldest-projectile eviction |
 | behavior-changing | Ability entry/spawn and Dash/Bow/Platform updater phases were delayed or collapsed into the public player position | fixed: current input drives live bodies immediately while Unity's component-specific report phases remain explicit |
 | behavior-changing | Bow used the original slime hurtbox during transforms, lost ordinary-slime pushes, raycasted after aerial control, and exposed charge one animator pass early | fixed with active ability colliders and source updater/animator ordering |
@@ -250,8 +251,10 @@ action repeat 1 and compares every observation field per tick):
   changes geometry, mass and inertia without writing rotation. Both Rust
   number modes now do the same, so resizing and removal never feed collider
   axes back into scalar body orientation. The remaining small f64/Q32 formed
-  orientation offset comes from quantization in the authored Rotation-state
-  `slerp`, not an accumulating resize drift.
+  orientation offset came from a simplified scalar-angle `slerp`, not an
+  accumulating resize drift. The rollout now uses Unity's sine-weighted vector
+  formula; in the near-pi paired trace the final f64/Q32 home angles differ by
+  9.1e-7 rad and the settled f64/.NET no-contact difference is 3.0e-5 rad.
 
 ## Raycast broad phase
 
@@ -315,8 +318,8 @@ boundary. In `platform_ab`, the orbiter position is identical to 12 decimal
 places at every sampled tick with the Q32.32 `Fix` (with the f64 `Fix` it
 drifts one raw unit per tick, 2.3e-7 units at tick 1620; see "Number type")
 and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform deltas fell
-from 1.385/1.743 to 0.047/0.041 units; their final deltas are 0.045/0.040. The
-player's maximum/final delta is 0.035/0.033 after matching Platform's
+from 1.385/1.743 to 0.047/0.041 units; their final deltas are 0.046/0.039. The
+player's maximum/final delta is 0.033/0.032 after matching Platform's
 synchronous exit callback (previous maximum: 0.788). In `ability_hitbox_ab`,
 the swept implementation missed an arrow/Bow collision that .NET delivered at
 tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
@@ -324,14 +327,16 @@ counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
 backends retain one live arrow (`1/1`).
 
 `platform_rotation_ab` isolates the rotation repair. In an airborne short-size
-case with no RR contact, f64 remains exactly at 3.135432668496 rad from tick
+case with no RR contact, f64 remains exactly at 3.139446572168 rad from tick
 329 through 700; Q32 behaves equivalently, while .NET's initial scheduling
 kick damps to 5.6e-9 rad/s. In an intentionally tall platform that bears
 against terrain, the old f64 build reached 1.398 rad maximum displacement and
 1.396 rad/s maximum angular speed over ticks 329-700. The repaired build
-reaches 0.0203 rad and 0.0298 rad/s, close to .NET's contact-loaded 0.0110 rad
-and 0.0306 rad/s. The overnight-2 replay's platform 18 changes from a visible
-1.5830 -> 1.0453 rad rotation by age 190 to 1.5830 -> 1.5768 rad under the
+reaches 0.0205 rad and 0.0349 rad/s, close to .NET's contact-loaded 0.0110 rad
+and 0.0306 rad/s. Its maximum/final orientation error against .NET is
+0.0115/0.0092 rad, down from 1.3954/0.8556. The overnight-2 replay's platform
+18 changes from a visible 1.5830 -> 1.0453 rad rotation by age 190 to 1.5830
+-> 1.5768 rad under the
 same continuing terrain load; angular speed falls from -0.3406 to -0.0048
 rad/s. The .NET replay lands that platform elsewhere, with no continuing
 contact, and settles at 1.5831333 rad and zero angular speed by age 170.
