@@ -1,7 +1,7 @@
 //! Static match data extracted from the reference export by
 //! `tools/extract_rollout_data.py` (native/data/rollout.json). Everything is
 //! raw Q32.32 exactly as serialized in Unity; parsed once per process.
-use crate::{fixed::Fix, surface::Surface, vector::Vec2};
+use crate::{curve::Curve, fixed::Fix, surface::Surface, vector::Vec2};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
@@ -16,11 +16,6 @@ impl RawVec2 {
     }
 }
 #[derive(Deserialize)]
-struct RawCurveKey {
-    time: i64,
-    value: i64,
-}
-#[derive(Deserialize)]
 struct RawAnimateVelocity {
     #[serde(default)]
     speed: i64,
@@ -33,7 +28,7 @@ struct RawAnimateVelocity {
     sudden_death_speed: i64,
     sudden_death_max_delay: i64,
     sudden_death_acceleration: i64,
-    sudden_death_y_speed: Vec<RawCurveKey>,
+    sudden_death_y_speed: Curve,
 }
 #[derive(Deserialize)]
 struct RawBody {
@@ -157,8 +152,8 @@ struct RawPlatformAbility {
     max_size_time: i64,
     face_height: i64,
     ejection_offset: i64,
-    ejection_curve: Vec<RawCurveKey>,
-    enter_scale_curve: Vec<RawCurveKey>,
+    ejection_curve: Curve,
+    enter_scale_curve: Curve,
     anims: RawPlatformAnims,
 }
 #[derive(Deserialize)]
@@ -177,6 +172,7 @@ struct RawResizable {
     extents: RawVec2,
     radius: i64,
     mass_per_area: i64,
+    remove_curve: Curve,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
 }
@@ -209,7 +205,7 @@ pub struct PlatformDef {
     pub sudden_death_speed: Fix,
     pub sudden_death_max_delay: Fix,
     pub sudden_death_acceleration: Fix,
-    pub sudden_death_y_speed: Vec<(Fix, Fix)>,
+    pub sudden_death_y_speed: Curve,
     /// Map 2's AntiLockPlatform orbit (force toward waypoints after a delay).
     pub orbit: Option<OrbitDef>,
 }
@@ -267,8 +263,8 @@ pub struct PlatformAbilityData {
     pub max_size_time: Fix,
     pub face_height: Fix,
     pub ejection_offset: Fix,
-    pub ejection_curve: Vec<(Fix, Fix)>,
-    pub enter_scale_curve: Vec<(Fix, Fix)>,
+    pub ejection_curve: Curve,
+    pub enter_scale_curve: Curve,
     pub anticipation_ticks: u32,
     pub enter_ticks: u32,
     pub to_exit_ticks: u32,
@@ -276,6 +272,7 @@ pub struct PlatformAbilityData {
     pub spawn_extents: Vec2,
     pub spawn_radius: Fix,
     pub spawn_mass_per_area: Fix,
+    pub remove_curve: Curve,
     pub spawn_speed: Fix,
     pub spawn_mu: Fix,
     pub spawn_rotation_speed: Fix,
@@ -285,7 +282,7 @@ pub struct PlatformAbilityData {
     pub sudden_death_speed: Fix,
     pub sudden_death_max_delay: Fix,
     pub sudden_death_acceleration: Fix,
-    pub sudden_death_y_speed: Vec<(Fix, Fix)>,
+    pub sudden_death_y_speed: Curve,
 }
 pub struct DashData {
     pub cooldown: Fix,
@@ -325,10 +322,6 @@ fn constants(physics: &RawPhysics) -> crate::world::MovementConstants {
 
 fn ticks(frames: &[i32]) -> u32 {
     frames.iter().map(|d| d.unsigned_abs()).sum()
-}
-
-fn curve(keys: &[RawCurveKey]) -> Vec<(Fix, Fix)> {
-    keys.iter().map(|k| (Fix(k.time), Fix(k.value))).collect()
 }
 
 fn body(raw: &RawBody, orientation: Fix) -> crate::physics::Body {
@@ -379,12 +372,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                 sudden_death_speed: Fix(p.animate_velocity.sudden_death_speed),
                 sudden_death_max_delay: Fix(p.animate_velocity.sudden_death_max_delay),
                 sudden_death_acceleration: Fix(p.animate_velocity.sudden_death_acceleration),
-                sudden_death_y_speed: p
-                    .animate_velocity
-                    .sudden_death_y_speed
-                    .iter()
-                    .map(|k| (Fix(k.time), Fix(k.value)))
-                    .collect(),
+                sudden_death_y_speed: p.animate_velocity.sudden_death_y_speed.clone(),
                 orbit: p.orbit.as_ref().map(|o| OrbitDef {
                     force: Fix(o.force),
                     delay: Fix(o.delay),
@@ -460,8 +448,8 @@ pub fn get() -> &'static RolloutData {
                 max_size_time: Fix(plat.max_size_time),
                 face_height: Fix(plat.face_height),
                 ejection_offset: Fix(plat.ejection_offset),
-                ejection_curve: curve(&plat.ejection_curve),
-                enter_scale_curve: curve(&plat.enter_scale_curve),
+                ejection_curve: plat.ejection_curve.clone(),
+                enter_scale_curve: plat.enter_scale_curve.clone(),
                 anticipation_ticks: ticks(&plat.anims.anticipation),
                 enter_ticks: ticks(&plat.anims.enter),
                 to_exit_ticks: ticks(&plat.anims.to_exit),
@@ -469,6 +457,7 @@ pub fn get() -> &'static RolloutData {
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
                 spawn_radius: Fix(raw.prefabs.resizable_platform.radius),
                 spawn_mass_per_area: Fix(raw.prefabs.resizable_platform.mass_per_area),
+                remove_curve: raw.prefabs.resizable_platform.remove_curve.clone(),
                 spawn_speed: Fix(raw.prefabs.resizable_platform.animate_velocity.speed),
                 spawn_mu: Fix(raw.prefabs.resizable_platform.animate_velocity.mu),
                 spawn_rotation_speed: Fix(raw
@@ -493,12 +482,12 @@ pub fn get() -> &'static RolloutData {
                     .resizable_platform
                     .animate_velocity
                     .sudden_death_acceleration),
-                sudden_death_y_speed: curve(
-                    &raw.prefabs
-                        .resizable_platform
-                        .animate_velocity
-                        .sudden_death_y_speed,
-                ),
+                sudden_death_y_speed: raw
+                    .prefabs
+                    .resizable_platform
+                    .animate_velocity
+                    .sudden_death_y_speed
+                    .clone(),
             },
         }
     })

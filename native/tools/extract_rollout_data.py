@@ -79,7 +79,7 @@ def fix(props, key):
 
 
 def curve(props, prefix):
-    """AnimationCurveFixed: keys with time/value Fix raws."""
+    """AnimationCurveFixed: runtime wrap modes and exact KeyFrameF raws."""
     n = props.get(f"{prefix}.keys.Array.size", 0)
     keys = []
     for i in range(n):
@@ -87,8 +87,18 @@ def curve(props, prefix):
         keys.append({
             "time": raw(props, f"{base}.time.m_rawValue"),
             "value": raw(props, f"{base}.value.m_rawValue"),
+            "in_tangent": raw(props, f"{base}.inTangent.m_rawValue"),
+            "out_tangent": raw(props, f"{base}.outTangent.m_rawValue"),
         })
-    return keys
+    # The normalized object records UnityEngine.WrapMode as observed by the
+    # runtime. Do not use m_Pre/PostInfinity: those are Unity's serialized
+    # internal codes and differ from the public enum values.
+    anim = props[f"{prefix}.Anim"]
+    return {
+        "pre_wrap": anim["preWrap"],
+        "post_wrap": anim["postWrap"],
+        "keys": keys,
+    }
 
 
 def physics_body(props):
@@ -337,6 +347,7 @@ def main():
         },
         "body": physics_body(rp_body),
         "mass_per_area": fix(rp_res, "MassPerArea"),
+        "remove_curve": curve(rp_res, "RemoveAnimation"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
     }
 

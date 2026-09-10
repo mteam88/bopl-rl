@@ -1329,7 +1329,7 @@ impl RolloutWorld {
                 let time_passed = st.time_passed;
                 let platform_index = st.platform_index;
                 let ticks = st.ticks;
-                let radius = curve_eval(&pd.enter_scale_curve, time_passed);
+                let radius = pd.enter_scale_curve.evaluate(time_passed);
                 let (center, mut up) = {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up)
@@ -1365,10 +1365,10 @@ impl RolloutWorld {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up, s.radius + s.extents.y)
                 };
-                let eject = curve_eval(
-                    &pd.ejection_curve,
-                    (time_passed - exit_time) / pd.time_in_exit,
-                ) * span;
+                let eject = pd
+                    .ejection_curve
+                    .evaluate((time_passed - exit_time) / pd.time_in_exit)
+                    * span;
                 let slot = &mut self.players[index];
                 slot.base.position = center + up * eject;
                 if eject + pd.face_height >= span {
@@ -1891,7 +1891,7 @@ impl RolloutWorld {
                 //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
                 let steps = (elapsed * accel).to_int().clamp(0, 5);
                 let scale = speed_scale * Fix::from_int(2 << steps);
-                let speed = curve_eval(curve, elapsed - delay);
+                let speed = curve.evaluate(elapsed - delay);
                 let drop = speed * scale * DT;
                 self.platform_dynamics[i].home_position.y -= drop;
             }
@@ -2545,29 +2545,6 @@ fn new_size(mut w: Fix, mut h: Fix, r: Fix, cap: Fix, min: Fix) -> (Fix, Fix) {
         }
     }
     (w, h)
-}
-
-/// Linear interpolation over serialized AnimationCurveFixed keys (tangents are
-/// not exported; the sudden-death sink curve is smooth enough for this).
-fn curve_eval(keys: &[(Fix, Fix)], t: Fix) -> Fix {
-    if keys.is_empty() {
-        return Fix::ZERO;
-    }
-    if t <= keys[0].0 {
-        return keys[0].1;
-    }
-    for pair in keys.windows(2) {
-        let (t0, v0) = pair[0];
-        let (t1, v1) = pair[1];
-        if t <= t1 {
-            if t1 == t0 {
-                return v1;
-            }
-            let alpha = (t - t0) / (t1 - t0);
-            return v0 + (v1 - v0) * alpha;
-        }
-    }
-    keys[keys.len() - 1].1
 }
 
 // ---- Replay export (ReplayArchive.Encode: BOPLREP2, little endian) ----
