@@ -112,7 +112,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 |---|---|---|
 | exploitable | Spawned/map platforms were immutable surfaces, allowing a transformed player to phase a platform through terrain | fixed: extracted bodies, springs, RR-RR contacts, impulses/correction, riders and transform following |
 | exploitable | A movement body crossing a blast boundary was pre-marked dead, then skipped by match death bookkeeping | fixed: the marker is consumed once and crossing on the current tick is caught |
-| exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall now destroy the arrow and kill when owner rules allow |
+| exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall kill when owner rules allow; the PlayerBody callback leaves the arrow live, as in Unity |
 | behavior-changing | Resizing kept the prefab mass/inertia instead of `10 + MassPerArea * area` and `ApproximateMOI` | fixed, including live observation `inverse_mass` |
 | exploitable | Spawned platforms had no rotation spring because the extractor omitted `rotationSpeed`/`rotationMu`; terrain contact torque accumulated into a large persistent tilt | fixed: both fields are required extracted data, the authored 40 / 1/6 spring runs every tick, and resize no longer reconstructs or pins body rotation |
 | behavior-changing | Platform aim used scalar-angle interpolation instead of Unity's sine-weighted `Vec2.Slerp`, leaving a fixed home-angle offset | fixed with the source formula, including its dot ceiling and zero-sine fallback |
@@ -121,11 +121,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | Bow used the original slime hurtbox during transforms, lost ordinary-slime pushes, raycasted after aerial control, and exposed charge one animator pass early | fixed with active ability colliders and source updater/animator ordering |
 | behavior-changing | Respawn point/timing choice was absent and fast-spawn upward motion lagged one pass | fixed: three directional points, early jump confirm, exact selection publication and launch phase |
 | behavior-changing | Curve tangents and old-platform shrink removal were absent | fixed: exported Hermite tangents/exact evaluator and collidable `being_removed` bodies |
+| behavior-changing | Destroying a recast platform detached riders immediately instead of on their next updater pass | fixed: preserve the destroyed ground through the removal observation, then apply Unity's 0.05-unit normal separation and ordinary-slime gravity phase |
 | behavior-changing | Rust arrow flight was swept while Unity integrates first and dispatches discrete Circle/RR, Circle/Circle, then Circle/Box contacts | fixed; terrain callbacks consume the arrow before player callbacks, while a PlayerBody kill leaves it flying |
 | behavior-changing | Cosmetic level-intro ground delays consumed RNG only in .NET, shifting later sudden-death samples | fixed: Rust consumes the samples without rendering the intro; sink activation and trajectories now align |
 | behavior-changing | Arrow rotation used post-gravity velocity and its boundary cull ran after physics | fixed: policy-visible rotation and side/water lifetime use the authored pre-physics phases |
 | exploitable | Rust deleted a spawned platform when its transformed owner crossed a blast boundary | fixed: the owner dies, but the separate `ResizablePlatform` remains collidable as in Unity |
 | behavior-changing | An end-of-tick Rust boundary pass killed ordinary/Bow bodies one tick before Unity's pre-`PlayerBody` boundary component | fixed with component-specific boundary phases |
+| behavior-changing | Match termination consumed deaths after physics in the same tick, while Unity's earlier `GameSessionHandler` sees them next tick | fixed: result consumption now runs at the beginning of the following updater pass |
+| behavior-changing | Keyboard-configured players discarded the high S/D bits and used joystick aim for movement | fixed: W/A/S/D drive motion while the angle byte remains independent ability aim |
 | configured scope | Ability pickups | disabled on both RL backends by default; explicit .NET-only diagnostic opt-in above |
 | exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
@@ -290,21 +293,21 @@ and the final semantic-audit implementation were:
 
 | | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust pre-rotation fix | Rust current |
 |---|---:|---:|---:|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 | 62.3 |
+| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 | 62.4 |
 | timeouts | 0 | 0 | 0 | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 153 | 138 | 138 | 135 |
-| self deaths | 165 | 153 | 146 | 160 | 160 | 163 |
+| environment deaths | 133 | 144 | 153 | 138 | 138 | 134 |
+| self deaths | 165 | 153 | 146 | 160 | 160 | 164 |
 | opponent deaths | 2 | 3 | 1 | 2 | 2 | 2 |
-| dash activations | 221 | 284 | 240 | 217 | 217 | 219 |
-| bow activations | 498 | 560 | 510 | 489 | 491 | 492 |
-| platform activations | 86 | 129 | 113 | 87 | 88 | 87 |
-| arrows fired | 484 | 551 | 497 | 476 | 476 | 479 |
+| dash activations | 221 | 284 | 240 | 217 | 217 | 218 |
+| bow activations | 498 | 560 | 510 | 489 | 491 | 494 |
+| platform activations | 86 | 129 | 113 | 87 | 88 | 86 |
+| arrows fired | 484 | 551 | 497 | 476 | 476 | 480 |
 | arrow hits | 2 | 3 | 1 | 2 | 2 | 2 |
 | winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 | 297/300 |
 
-The episode-length gap fell from +10.4 to -0.7 decisions. Mean position
+The episode-length gap fell from +10.4 to -0.6 decisions. Mean position
 divergence remains under 0.002 through decision 16, then grows chaotically
-(0.083/0.199 at decisions 31/46). Restoring the spawned-platform rotation
+(0.082/0.198 at decisions 31/46). Restoring the spawned-platform rotation
 spring reduced the later decision-106/121 divergences from 1.436/2.690 to
 1.238/1.580 units and improved winner agreement by one episode.
 
@@ -325,6 +328,12 @@ the swept implementation missed an arrow/Bow collision that .NET delivered at
 tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
 counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
 backends retain one live arrow (`1/1`).
+`dash_arrow_ab` covers the separate Dash raycast callback path. Unity calls
+`Arrow.OnCollide` with Dash's Player-layer `PlayerBody` hitbox, so it returns
+before destroying the arrow; `PlayerCollision` can still kill the dasher.
+Rust previously killed both. At activation ticks 284/285 the repaired trace
+matches the .NET victim and death tick and retains one live arrow (`1/1`,
+previously `1/0`).
 
 `platform_rotation_ab` isolates the rotation repair. In an airborne short-size
 case with no RR contact, f64 remains exactly at 3.139446572168 rad from tick
@@ -445,13 +454,13 @@ then new/old at 100.2k/100.5k. Including resets they measured 62.5k/66.5k and
 measurable throughput cost in this test.
 
 After the final semantic-audit fixes, a new bracketed baseline/final pair
-under `CPUQuota=600%`, `nice -n 15` measured stepping at
-144.5k/139.5k then 135.8k/139.3k ticks/s (baseline/final then
-final/baseline). Averaging each side gives 141.9k baseline versus 137.6k final
-(-3.0%); including resets gives 94.5k versus 90.8k (-3.9%). Different reset
-counts follow the corrected outcomes, and the ordering reversal again shows
-that a few percent is background-load noise rather than a demonstrated hot
-path regression.
+under `CPUQuota=800%`, `nice -n 10` measured stepping at
+1.685M/1.700M then 1.714M/1.878M ticks/s (baseline/final then
+final/baseline). Averaging each side gives 1.781M baseline versus 1.707M final
+(-4.2%); including resets gives 0.957M versus 0.914M (-4.4%). Different reset
+counts follow the corrected outcomes, and the large run-to-run spread means
+the small difference should be treated as a bounded microbenchmark cost, not
+as a precise trainer-throughput regression.
 
 ### Speed work (2026-09-10)
 

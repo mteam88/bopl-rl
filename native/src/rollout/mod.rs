@@ -38,6 +38,23 @@ pub struct CAction {
     pub reserved: u8,
     pub buttons: u16,
 }
+impl CAction {
+    fn aim_action(self) -> Action {
+        Action {
+            angle: self.angle,
+            buttons: (self.buttons & 0xFF) as u8,
+        }
+    }
+
+    fn input_direction(self, keyboard: bool) -> Vec2 {
+        if !keyboard {
+            return self.aim_action().direction();
+        }
+        let x = i64::from(self.buttons & 512 != 0) - i64::from(self.buttons & 128 != 0);
+        let y = i64::from(self.buttons & 64 != 0) - i64::from(self.buttons & 256 != 0);
+        Vec2::new(Fix::from_int(x), Fix::from_int(y))
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CPlayerConfig {
@@ -310,6 +327,7 @@ pub enum ActiveAbility {
 pub struct PlayerSlot {
     pub base: Player,
     pub team: u32,
+    pub keyboard: bool,
     pub stocks: u32,
     pub kills: u32,
     pub deaths: u32,
@@ -336,6 +354,10 @@ pub struct PlayerSlot {
     pub reported_tick: u32,
     /// First original-slime pass after Dash re-enables it.
     pub dash_exit_followup: bool,
+    /// A platform destroyed later in the previous updater pass. Unity keeps
+    /// the rider grounded until its own next update, then separates it using
+    /// the destroyed StickyRoundedRectangle's last surface normal.
+    pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
     pub platform: PlatformState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -665,6 +687,7 @@ impl RolloutWorld {
                     local: Fix::ZERO,
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
+                    skip_next_gravity: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
                     dash: DashState::default(),
@@ -676,6 +699,7 @@ impl RolloutWorld {
                     },
                 },
                 team,
+                keyboard: config.player[i].keyboard != 0,
                 stocks: self.stocks,
                 kills: 0,
                 deaths: 0,
@@ -696,6 +720,7 @@ impl RolloutWorld {
                 reported_position: spawn,
                 reported_tick: u32::MAX,
                 dash_exit_followup: false,
+                removed_ground_normal: None,
                 bow: BowState::default(),
                 platform: PlatformState::default(),
                 obs_state: STATE_FALL,
@@ -753,7 +778,7 @@ impl RolloutWorld {
             }
         }
         for (index, action) in actions.iter().enumerate() {
-            self.update_obs_state(index, *action);
+            self.update_obs_state(index, action.direction());
         }
     }
 
@@ -763,7 +788,7 @@ impl RolloutWorld {
     /// State.ability. `land`/`stop`/`turn` last exactly their animation and
     /// then chain like the .NET callbacks (land->idle, stop->idle,
     /// turn->run); reversals while running pass through `stop`.
-    fn update_obs_state(&mut self, index: usize, action: Action) {
+    fn update_obs_state(&mut self, index: usize, dir: Vec2) {
         let slot = &mut self.players[index];
         if !slot.base.alive
             || slot.respawn_ticks > 0
@@ -776,7 +801,6 @@ impl RolloutWorld {
             slot.obs_state = STATE_FALL;
             return;
         }
-        let dir = action.direction();
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
         // direction table only emits unit vectors) and the tangential ground
         // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
@@ -908,24 +932,31 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction], registered_actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        // GameSessionHandler (hierarchy 100) runs before every instantiated
+        // player/ability prefab (100,000,000+). A death produced by a player
+        // component or DetPhysics is therefore visible to the match result
+        // check on the following tick, not later in the tick that killed it.
+        self.session_result_tick();
         for index in 0..self.players.len() {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
-            let action = Action {
-                angle: actions[index].angle,
-                buttons: (actions[index].buttons & 0xFF) as u8,
-            };
+            let action = actions[index].aim_action();
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
-            let registered_action = Action {
-                angle: registered_actions[index].angle,
-                buttons: (registered_actions[index].buttons & 0xFF) as u8,
-            };
+            let registered_action = registered_actions[index].aim_action();
+            let movement_input = actions[index].input_direction(self.players[index].keyboard);
             let jump_down = registered_action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
-            self.player_tick(index, action, registered_action, jump_pressed, data);
+            self.player_tick(
+                index,
+                action,
+                registered_action,
+                movement_input,
+                jump_pressed,
+                data,
+            );
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
             // the match-level death exactly once; otherwise the later
@@ -976,11 +1007,8 @@ impl RolloutWorld {
                 self.players[index].base.sync_collider();
                 self.players[index].base.late_step(&self.platforms);
             }
-            let action = Action {
-                angle: actions[index].angle,
-                buttons: (actions[index].buttons & 0xFF) as u8,
-            };
-            self.update_obs_state(index, action);
+            let input = actions[index].input_direction(self.players[index].keyboard);
+            self.update_obs_state(index, input);
         }
         self.arrows_integrate(data);
         self.platforms_tick(data);
@@ -1001,6 +1029,7 @@ impl RolloutWorld {
         index: usize,
         action: Action,
         registered_action: Action,
+        movement_input: Vec2,
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
@@ -1009,8 +1038,24 @@ impl RolloutWorld {
             slot.active != ActiveAbility::None || slot.base.dash.active
         };
         if !self.playable(index) {
-            self.respawn_tick(index, registered_action, jump_pressed, data);
+            self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
+        }
+        if let Some(normal) = self.players[index].removed_ground_normal.take() {
+            let slot = &mut self.players[index];
+            // Ordinary SlimeController explicitly zeros rotation before
+            // UnGround(false). PlayerPhysics already skipped gravity earlier
+            // in this pass while `isGrounded` was still true. BowTransform,
+            // by contrast, owns this check and applies gravity after it.
+            if slot.active == ActiveAbility::None {
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
+                slot.base.skip_next_gravity = true;
+            }
+            slot.base.position += normal * Fix::from_f32(0.05);
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
         }
         if !in_ability {
             for s in 0..3 {
@@ -1062,7 +1107,7 @@ impl RolloutWorld {
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
                         // now; platform and bow begin updating next tick.
-                        self.dash_move(index, masked);
+                        self.dash_move(index, masked, movement_input);
                         return;
                     }
                     ABILITY_BOW => {
@@ -1141,7 +1186,7 @@ impl RolloutWorld {
                 angle: source.angle,
                 buttons: (source.buttons & 1) | if starting { 2 } else { 0 },
             };
-            self.dash_move(index, masked);
+            self.dash_move(index, masked, movement_input);
             if !self.players[index].base.dash.active {
                 // Dash finished this tick.
                 self.players[index].active = ActiveAbility::None;
@@ -1153,7 +1198,9 @@ impl RolloutWorld {
             angle: action.angle,
             buttons: action.buttons & 1,
         };
-        self.players[index].base.step(masked, &self.platforms);
+        self.players[index]
+            .base
+            .step_with_input(masked, movement_input, &self.platforms);
         if self.players[index].dash_exit_followup {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
@@ -1163,8 +1210,10 @@ impl RolloutWorld {
     }
 
     /// base.step with the dash shove check from World::step.
-    fn dash_move(&mut self, index: usize, action: Action) {
-        self.players[index].base.step(action, &self.platforms);
+    fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
+        self.players[index]
+            .base
+            .step_with_input(action, movement_input, &self.platforms);
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
@@ -1188,9 +1237,11 @@ impl RolloutWorld {
                 crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
 
-            // Dash.performDash raycasts the Projectile layer too. Arrow's
-            // callback sticks/destroys the projectile, then PlayerCollision
-            // kills the dasher unless this is an owner-safe young arrow.
+            // Dash.performDash raycasts the Projectile layer too. It first
+            // calls Arrow.OnCollide with Dash's Player-layer hitbox. Dash has
+            // PlayerBody rather than BoplBody, so Arrow returns without
+            // landing or destroying itself. PlayerCollision then kills the
+            // dasher unless this is an owner-safe young arrow.
             let mut arrow_hits: Vec<_> = self
                 .arrows
                 .iter()
@@ -1213,7 +1264,6 @@ impl RolloutWorld {
             for (arrow_index, _) in arrow_hits {
                 let arrow = self.arrows[arrow_index];
                 let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
-                self.destroy_arrow(arrow_index);
                 if lethal {
                     let cause = if arrow.owner == caster_id {
                         CAUSE_ACCIDENT
@@ -1714,14 +1764,14 @@ impl RolloutWorld {
     }
 
     /// Remove a platform from the world (RemovePlatform / scene-bounds
-    /// destruction), detaching any players standing on it.
+    /// destruction). Riders retain Unity's destroyed ground reference until
+    /// their own next updater pass.
     fn remove_platform(&mut self, index: usize) {
         let id = self.platforms[index].id;
+        let surface = self.platforms[index].surface.clone();
         for slot in &mut self.players {
-            if slot.base.ground == Some(id) {
-                slot.base.grounded = false;
-                slot.base.ground = None;
-                slot.base.grounded_speed = Fix::ZERO;
+            if slot.base.alive && slot.base.ground == Some(id) {
+                slot.removed_ground_normal = Some(surface.normal(slot.base.position));
             }
         }
         let entity = self.platform_entities[index];
@@ -2307,7 +2357,7 @@ impl RolloutWorld {
         // synchronized here: its UpdateSim copied the platform's FixTransform
         // before DetPhysics moved/corrected it, matching Unity's phase order.
         for slot in &mut self.players {
-            if slot.base.alive && slot.base.grounded {
+            if slot.base.alive && slot.base.grounded && slot.removed_ground_normal.is_none() {
                 slot.base.late_step(&self.platforms);
                 slot.base.sync_collider();
             }
@@ -2373,7 +2423,7 @@ impl RolloutWorld {
     fn respawn_tick(
         &mut self,
         index: usize,
-        action: Action,
+        input_direction: Vec2,
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
@@ -2386,13 +2436,12 @@ impl RolloutWorld {
             // StockRespawnChooser.UpdateSim: choose a point from the full
             // directional input, then decrement and allow a jump edge to
             // confirm immediately.
-            let direction = action.direction();
             let threshold = Fix::from_f32(0.3);
-            if direction.x < -threshold {
+            if input_direction.x < -threshold {
                 slot.respawn_selected = 0;
-            } else if direction.x > threshold {
+            } else if input_direction.x > threshold {
                 slot.respawn_selected = 2;
-            } else if direction.y.abs() > threshold {
+            } else if input_direction.y.abs() > threshold {
                 slot.respawn_selected = 1;
             }
             slot.respawn_ticks -= 1;
@@ -2436,28 +2485,11 @@ impl RolloutWorld {
         }
     }
 
-    /// GameSessionHandler.UpdateSim: sudden death activation and win checks.
-    fn session_tick(&mut self) {
-        let map = &data::get().maps[self.map];
-        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        if !self.sudden_death && sim_time > map.sudden_death_time {
-            self.sudden_death = true;
-            self.sudden_death_tick = self.tick;
-            // On the following Updater pass each AnimateVelocity notices the
-            // global flag and samples in registration order: authored bodies,
-            // then live ability-spawned bodies.
-            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
-                *delay = self
-                    .rng
-                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
-            }
-            let spawned_max_delay = data::get().platform.sudden_death_max_delay;
-            for spawn in &mut self.spawned {
-                if spawn.active {
-                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, spawned_max_delay);
-                }
-            }
-        }
+    /// GameSessionHandler.UpdateSim's winner check. Its authored hierarchy is
+    /// before player components and physics, so it consumes the previous
+    /// tick's deaths. The rest of the current updater pass still runs after it
+    /// marks the game ended; RlBridge observes terminal only after the pass.
+    fn session_result_tick(&mut self) {
         let alive_teams: Vec<u32> = {
             let mut teams: Vec<u32> = self
                 .players
@@ -2477,6 +2509,31 @@ impl RolloutWorld {
                     if p.team == winner && !p.out {
                         p.won = true;
                     }
+                }
+            }
+        }
+    }
+
+    /// Remaining post-physics session work: sudden-death activation and the
+    /// RL episode limit. Winner resolution belongs to `session_result_tick`.
+    fn session_tick(&mut self) {
+        let map = &data::get().maps[self.map];
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        if !self.sudden_death && sim_time > map.sudden_death_time {
+            self.sudden_death = true;
+            self.sudden_death_tick = self.tick;
+            // On the following Updater pass each AnimateVelocity notices the
+            // global flag and samples in registration order: authored bodies,
+            // then live ability-spawned bodies.
+            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
+                *delay = self
+                    .rng
+                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
+            }
+            let spawned_max_delay = data::get().platform.sudden_death_max_delay;
+            for spawn in &mut self.spawned {
+                if spawn.active {
+                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, spawned_max_delay);
                 }
             }
         }
@@ -3092,5 +3149,89 @@ mod tests {
         assert_eq!(world.platform_dynamics[index].home_rotation, orientation);
         assert_eq!(world.platforms[index].surface.right, right);
         assert_eq!(world.platforms[index].surface.up, up);
+    }
+
+    #[test]
+    fn match_result_consumes_deaths_on_the_following_tick() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.stocks = 0;
+        world.reset(&config).unwrap();
+
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT);
+        assert!(
+            !world.terminal,
+            "a collision death must not end its own updater pass"
+        );
+
+        world.session_tick();
+        assert!(
+            !world.terminal,
+            "post-physics session work must not observe a same-pass death"
+        );
+
+        world.session_result_tick();
+        assert!(world.terminal);
+        assert!(world.players[1].won);
+    }
+
+    #[test]
+    fn keyboard_motion_is_independent_of_ability_aim() {
+        let action = CAction {
+            angle: 65,    // up in the joystick/aim table
+            buttons: 512, // D in the keyboard movement bits
+            ..CAction::default()
+        };
+        assert_eq!(action.input_direction(true), Vec2::RIGHT);
+        assert_ne!(action.aim_action().direction(), Vec2::RIGHT);
+        assert_eq!(
+            action.input_direction(false),
+            action.aim_action().direction()
+        );
+    }
+
+    #[test]
+    fn destroyed_platform_detaches_rider_on_its_next_update() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let platform_index =
+            world.spawn_ability_platform(0, Vec2::new(Fix::ZERO, Fix::from_int(30)));
+        let platform_id = world.platforms[platform_index].id;
+        let position = world.platforms[platform_index]
+            .surface
+            .position(Fix::ZERO, world.players[0].base.radius);
+        let normal = world.platforms[platform_index].surface.normal(position);
+        {
+            let player = &mut world.players[0].base;
+            player.position = position;
+            player.velocity = Vec2::ZERO;
+            player.external_velocity = Vec2::ZERO;
+            player.rotation = Fix::from_f32(0.5);
+            player.grounded = true;
+            player.ground = Some(platform_id);
+            player.local = Fix::ZERO;
+        }
+
+        world.remove_platform(platform_index);
+        assert!(world.players[0].base.grounded);
+        assert_eq!(world.players[0].base.ground, Some(platform_id));
+        assert_eq!(world.players[0].removed_ground_normal, Some(normal));
+
+        world.player_tick(
+            0,
+            Action::default(),
+            Action::default(),
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+        assert!(!world.players[0].base.grounded);
+        assert_eq!(world.players[0].base.ground, None);
+        assert_eq!(world.players[0].base.rotation, Fix::ZERO);
+        assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
+        assert_eq!(
+            world.players[0].base.position,
+            position + normal * Fix::from_f32(0.05)
+        );
     }
 }

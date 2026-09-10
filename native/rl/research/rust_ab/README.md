@@ -10,12 +10,17 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 ```
 
 - `move_ab.c`: fixed-action angle sweep, positions per decision.
+- `keyboard_ab.c`: keyboard-configured W/A/S/D movement with an independent
+  joystick aim byte, including the high `S/D` action bits.
 - `state_ab.c`: idle/run/turn/stop, SlimeController state and timers.
 - `entity_velocity_ab.c`: distinguishes the one-tick-stale public player
   position and zero-velocity trigger PhysicsBody from the current-tick moving
   PlayerBody state in slime records.
 - `dash_phase_ab.c`: tick-level dash activation, anticipation, collider, and
   displacement phases.
+- `dash_arrow_ab.c`: dashing through an incoming arrow; verifies the dash
+  victim dies under the same owner rules while the PlayerBody contact leaves
+  the projectile live.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
 - `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
   position, charge/release flags, and deferred arrow registration/flight.

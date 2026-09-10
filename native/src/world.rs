@@ -49,6 +49,11 @@ pub struct Player {
     pub local: Fix,
     pub grounded_speed: Fix,
     pub previous_jump: bool,
+    /// PlayerPhysics already ran on the tick where SlimeController notices
+    /// that its attached platform was destroyed, so gravity starts one pass
+    /// later for the ordinary slime.
+    #[serde(default)]
+    pub(crate) skip_next_gravity: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -324,6 +329,9 @@ impl Player {
             .move_unblocked(self.local, self.radius, allowed, DT);
     }
     pub(crate) fn gravity_step(&mut self, platforms: &[Platform]) {
+        if std::mem::take(&mut self.skip_next_gravity) {
+            return;
+        }
         if !self.grounded {
             crate::player_physics::apply_gravity(
                 &mut self.velocity,
@@ -337,6 +345,14 @@ impl Player {
         }
     }
     pub(crate) fn step(&mut self, action: Action, platforms: &[Platform]) {
+        self.step_with_input(action, action.direction(), platforms);
+    }
+
+    /// Run the ordinary slime movement with `input` while keeping `action`'s
+    /// joystick direction available to abilities such as Dash. Gamepad input
+    /// uses the same vector for both; keyboard players use W/A/S/D for motion
+    /// and the joystick byte independently for ability aim.
+    pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, platforms: &[Platform]) {
         let jump = action.buttons & 1 != 0;
         if self.dash.active {
             self.previous_jump = jump;
@@ -346,7 +362,7 @@ impl Player {
         self.gravity_step(platforms);
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
-            self.enter_dash(action, platforms);
+            self.enter_dash(action, input, platforms);
             self.previous_jump = jump;
             self.dash_step(action, platforms);
             return;
@@ -355,7 +371,6 @@ impl Player {
             self.jump(platforms);
         }
         self.previous_jump = jump;
-        let input = action.direction();
         if self.grounded {
             self.move_grounded(input, platforms);
         } else {

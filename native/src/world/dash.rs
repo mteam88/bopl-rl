@@ -2,14 +2,19 @@
 use super::*;
 
 impl Player {
-    pub(super) fn enter_dash(&mut self, action: Action, platforms: &[Platform]) {
+    pub(super) fn enter_dash(
+        &mut self,
+        action: Action,
+        movement_input: Vec2,
+        platforms: &[Platform],
+    ) {
         let mut old = self.clone();
         // OldUpdate enters the ability, but SlimeController.UpdateSim still calls
         // Move once on its now-inactive original body before returning.
         if old.grounded {
-            old.move_grounded(action.direction(), platforms);
+            old.move_grounded(movement_input, platforms);
         } else {
-            old.velocity += Vec2::new(action.direction().x * old.constants.air_accel, Fix::ZERO);
+            old.velocity += Vec2::new(movement_input.x * old.constants.air_accel, Fix::ZERO);
             old.velocity += (-Vec2::RIGHT)
                 * (old.constants.air_accel / (old.constants.max_speed + old.constants.air_accel))
                 * old.velocity.x;
