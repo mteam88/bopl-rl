@@ -2313,28 +2313,10 @@ impl RolloutWorld {
             }
         }
 
-        // DestroyIfOutsideSceneBounds on ResizablePlatforms; a still-formed
-        // owner dies with it (the StickyRect == null path in UpdateSim).
-        for i in 0..self.spawned.len() {
-            if !self.spawned[i].active {
-                continue;
-            }
-            let platform_index = self.spawned[i].platform_index;
-            let center = self.platforms[platform_index].surface.center;
-            if center.y >= Fix::from_f32(-11.3) && center.x.abs() <= Fix::from_f64(131.25) {
-                continue;
-            }
-            let owner = self.spawned[i].owner;
-            self.spawned[i].active = false;
-            self.remove_platform(platform_index);
-            let formed = self.players[owner].active == ActiveAbility::Platform
-                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION
-                && self.players[owner].platform.platform_index == platform_index;
-            if formed && self.players[owner].base.alive {
-                self.players[owner].active = ActiveAbility::None;
-                self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT);
-            }
-        }
+        // The Platform ability object has DestroyIfOutsideSceneBounds, so its
+        // transformed owner is handled by deaths_tick using the position it
+        // copied before physics. The separate ResizablePlatform prefab has no
+        // boundary component: it remains a collidable body after that death.
     }
 
     fn playable_slot(&self, slot: &PlayerSlot) -> bool {
