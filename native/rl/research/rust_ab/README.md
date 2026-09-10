@@ -14,6 +14,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_phase_ab.c`: tick-level dash activation, anticipation, collider, and
   displacement phases.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
+- `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
+  position, charge/release flags, and deferred arrow registration/flight.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
 - `hit_ab.c`: charge and fire at the opponent, hit outcome and death cause.
 - `bow_test.c`: Rust-only bow scenario used while porting.

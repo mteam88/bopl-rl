@@ -210,9 +210,14 @@ const TIMER_START: Fix = Fix(-6_442_450_944); // -1.5s
 #[derive(Clone, Copy, Default)]
 pub struct Arrow {
     pub active: bool,
+    /// Instantiated this tick, but not added to DetPhysics/updatables until
+    /// the next scheduler pass.
+    pub registered: bool,
+    pub born_tick: u32,
+    pub id: u32,
     /// Owning player id (1-based).
     pub owner: u32,
-    pub entity: usize,
+    pub entity: Option<usize>,
     pub position: Vec2,
     pub velocity: Vec2,
     pub time_passed: Fix,
@@ -268,6 +273,10 @@ pub struct BowState {
     /// Remaining ticks of the fireGround/fireAir animation before exit.
     pub fire_ticks_left: u32,
     pub loading_frame: u32,
+    /// Ability.UpdateSim publishes the collider position before BowTransform
+    /// and PlayerBody advance the ability body later in the same pass.
+    pub reported_position: Vec2,
+    pub reported_tick: u32,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -902,6 +911,7 @@ impl RolloutWorld {
     /// session end checks.
     fn game_tick(&mut self, actions: &[CAction], registered_actions: &[CAction]) {
         let data = data::get();
+        self.register_pending_arrows();
         for index in 0..self.players.len() {
             let action = Action {
                 angle: actions[index].angle,
@@ -1027,6 +1037,29 @@ impl RolloutWorld {
                 let ability = slot.abilities[s];
                 {
                     let slot = &mut self.players[index];
+                    // Player.Position is published before PlayerBody moves.
+                    // When an airborne slime enters a separate ability body,
+                    // SyncPhysicsTo copies the newer FixTransform position,
+                    // which is one velocity integration ahead of the last
+                    // observed player position.
+                    if !slot.base.grounded {
+                        // Reproduce the pending PlayerBody movement rather
+                        // than merely integrating its old velocity: gravity,
+                        // air control, and collision rays all run before the
+                        // transform which EnterAbility copies is published.
+                        let movement_action = Action {
+                            angle: action.angle,
+                            buttons: action.buttons & 1,
+                        };
+                        slot.base.step(movement_action, &self.platforms);
+                        // In Unity the old PlayerBody integrates its previous
+                        // velocity before PlayerPhysics applies gravity. The
+                        // rollout's combined step applies gravity first, so a
+                        // second gravity-only phase produces the velocity in
+                        // the PlayerInfo package while retaining the correctly
+                        // advanced transform.
+                        slot.base.gravity_step(&self.platforms);
+                    }
                     slot.ability_origin = slot.base.position;
                     slot.ability_origin_velocity = slot.base.velocity + slot.base.external_velocity;
                     slot.ability_origin_rotation = slot.base.rotation;
@@ -1064,12 +1097,19 @@ impl RolloutWorld {
                         // vector; airborne entry slows to a tenth (slow-mo).
                         slot.bow = BowState {
                             aim: slot.base.up,
+                            reported_position: slot.base.position,
+                            reported_tick: u32::MAX,
                             ..BowState::default()
                         };
                         if !slot.base.grounded {
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                         }
+                        // BowTransform follows Ability in the prefab updater
+                        // list, so a newly enabled Bow updates later in this
+                        // same pass (like Dash, unlike a newly instantiated
+                        // projectile which is deferred).
+                        self.bow_tick(index, registered_action, data);
                         return;
                     }
                     ABILITY_PLATFORM => {
@@ -1158,7 +1198,7 @@ impl RolloutWorld {
                 .arrows
                 .iter()
                 .enumerate()
-                .filter(|(_, arrow)| arrow.active)
+                .filter(|(_, arrow)| arrow.active && arrow.registered)
                 .filter_map(|(arrow_index, arrow)| {
                     (Circle {
                         center: arrow.position,
@@ -1221,6 +1261,8 @@ impl RolloutWorld {
     /// physics, post-fire recoil flight, and the exit conditions.
     fn bow_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let bow = &data.bow;
+        self.players[index].bow.reported_position = self.players[index].base.position;
+        self.players[index].bow.reported_tick = self.tick;
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let dir = action.direction();
@@ -1756,29 +1798,14 @@ impl RolloutWorld {
         {
             self.destroy_arrow(oldest);
         }
-        let radius = data::get().arrow.radius;
         let free = self.arrows.iter().position(|a| !a.active);
-        let entity = match free {
-            Some(i) => self.arrows[i].entity,
-            None => {
-                self.entities.push(CEntity::default());
-                self.entities.len() - 1
-            }
-        };
+        let entity = free.and_then(|i| self.arrows[i].entity);
         let id = self.next_id();
-        self.entities[entity] = CEntity {
-            id,
-            kind: 0,
-            layer: LAYER_PROJECTILE,
-            owner,
-            flags: E_ACTIVE | E_ENABLED,
-            hierarchy: 200_000_000 + id,
-            radius: radius.0,
-            inverse_mass: Fix::from_f64(0.2).0,
-            ..CEntity::default()
-        };
         let arrow = Arrow {
             active: true,
+            registered: false,
+            born_tick: self.tick,
+            id,
             owner,
             entity,
             position,
@@ -1796,10 +1823,50 @@ impl RolloutWorld {
     fn destroy_arrow(&mut self, index: usize) {
         let arrow = &mut self.arrows[index];
         arrow.active = false;
-        let entity = &mut self.entities[arrow.entity];
-        entity.flags = E_ENABLED | E_DESTROYED;
-        entity.vx = 0;
-        entity.vy = 0;
+        arrow.registered = false;
+        if let Some(entity) = arrow.entity {
+            let entity = &mut self.entities[entity];
+            entity.flags = E_ENABLED | E_DESTROYED;
+            entity.vx = 0;
+            entity.vy = 0;
+        }
+    }
+
+    /// Updater defers objects instantiated during a pass until the next pass.
+    /// Register them before player/ability updates so same-tick dash casts can
+    /// see the newly live projectile, then let arrows_tick advance them later.
+    fn register_pending_arrows(&mut self) {
+        let radius = data::get().arrow.radius;
+        for i in 0..self.arrows.len() {
+            if !self.arrows[i].active
+                || self.arrows[i].registered
+                || self.arrows[i].born_tick >= self.tick
+            {
+                continue;
+            }
+            let entity = match self.arrows[i].entity {
+                Some(entity) => entity,
+                None => {
+                    self.entities.push(CEntity::default());
+                    let entity = self.entities.len() - 1;
+                    self.arrows[i].entity = Some(entity);
+                    entity
+                }
+            };
+            let arrow = &mut self.arrows[i];
+            self.entities[entity] = CEntity {
+                id: arrow.id,
+                kind: 0,
+                layer: LAYER_PROJECTILE,
+                owner: arrow.owner,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 200_000_000 + arrow.id,
+                radius: radius.0,
+                inverse_mass: Fix::from_f64(0.2).0,
+                ..CEntity::default()
+            };
+            arrow.registered = true;
+        }
     }
 
     /// Ballistic flight, swept collision against players and platforms, the
@@ -1810,7 +1877,7 @@ impl RolloutWorld {
         let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
         let radius = data.arrow.radius;
         for i in 0..self.arrows.len() {
-            if !self.arrows[i].active {
+            if !self.arrows[i].active || !self.arrows[i].registered {
                 continue;
             }
             {
@@ -2506,8 +2573,10 @@ impl RolloutWorld {
                 dash_box.owner = slot.base.id;
                 dash_box.x = position.x.0;
                 dash_box.y = position.y.0;
-                dash_box.vx = velocity.x.0;
-                dash_box.vy = velocity.y.0;
+                // DPhysicsBox is a trigger body; PlayerBody velocity is not
+                // stored on its PhysicsBody observation record.
+                dash_box.vx = 0;
+                dash_box.vy = 0;
                 let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
                 let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
                 dash_box.right_x = right.x.0;
@@ -2537,8 +2606,8 @@ impl RolloutWorld {
                 bow_box.owner = slot.base.id;
                 bow_box.x = position.x.0;
                 bow_box.y = position.y.0;
-                bow_box.vx = velocity.x.0;
-                bow_box.vy = velocity.y.0;
+                bow_box.vx = 0;
+                bow_box.vy = 0;
                 bow_box.right_x = (right_dir * extents.x).x.0;
                 bow_box.right_y = (right_dir * extents.x).y.0;
                 bow_box.up_x = (up_dir * extents.y).x.0;
@@ -2575,10 +2644,10 @@ impl RolloutWorld {
             }
         }
         for arrow in &self.arrows {
-            if !arrow.active {
+            if !arrow.active || !arrow.registered {
                 continue;
             }
-            let e = &mut self.entities[arrow.entity];
+            let e = &mut self.entities[arrow.entity.expect("registered arrow entity")];
             e.x = arrow.position.x.0;
             e.y = arrow.position.y.0;
             e.vx = arrow.velocity.x.0;
@@ -2730,6 +2799,8 @@ impl RolloutWorld {
             }
             let position = if slot.platform.reported_tick.checked_add(1) == Some(tick) {
                 slot.platform.reported_position
+            } else if slot.bow.reported_tick.checked_add(1) == Some(tick) {
+                slot.bow.reported_position
             } else {
                 slot.base.position
             };

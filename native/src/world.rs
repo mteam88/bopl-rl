@@ -309,7 +309,7 @@ impl Player {
             .surface
             .move_unblocked(self.local, self.radius, allowed, DT);
     }
-    fn gravity_step(&mut self, platforms: &[Platform]) {
+    pub(crate) fn gravity_step(&mut self, platforms: &[Platform]) {
         if !self.grounded {
             crate::player_physics::apply_gravity(
                 &mut self.velocity,
