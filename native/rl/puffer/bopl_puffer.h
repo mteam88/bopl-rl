@@ -23,6 +23,10 @@ typedef struct {
      * learner's score in them. A match whose opponent weights were swapped
      * while it ran (see c_step) counts in neither. */
     float hist_n_bank[8], hist_score_bank[8];
+    /* Matches the learner played against a scripted bot in bank b (SCRIPTED_BOTS.md),
+     * kept out of hist_*_bank so the pool's swap/Elo statistics only see the
+     * bank's frozen weights. */
+    float bot_n_bank[8], bot_score_bank[8];
     /* Hold head (learner decisions, n-averaged): how often each hold length
      * was chosen when the button state was free, and how many decisions the
      * button head was ignored because a latch was in force. */
@@ -42,6 +46,12 @@ typedef struct {
     double map_matches[BOPL_COUNTER_MAPS]; /* completed matches per map */
 } BoplCounters;
 _Static_assert(sizeof(BoplCounters)==BOPL_COUNTER_SIZE*sizeof(double), "BoplCounters layout");
+/* Fraction of a scripted bank's matches that the bot plays; the rest fall to
+ * the bank's frozen weights, so a curriculum can start on bots and hand over
+ * to self-play. Process-wide and exported: train.py lowers it between updates
+ * through ctypes (`bopl_scripted_share` in the trainer module), which is why
+ * it is a plain global read once per c_reset rather than a kwarg. */
+float bopl_scripted_share=1.0f;
 typedef struct {
     Log log;
     /* Base pointers assigned by PufferLib's vector (slot 0 of this environment).
@@ -465,6 +475,15 @@ static void c_reset(BoplPuffer *env) {
         memset(env->bot_select, 0, sizeof(env->bot_select));
         uint32_t kind=(env->scripted_kinds>>(4*env->active_bank))&15u;
         if (kind) {
+            /* Below full share, a draw from the bot stream decides whether this
+             * match is the bot's or the bank's frozen weights'. */
+            float share=bopl_scripted_share;
+            if (share<1.0f) {
+                env->bot_rng=env->bot_rng*747796405u+2891336453u;
+                if ((float)(env->bot_rng>>8)*(1.0f/16777216.0f)>=share) kind=0;
+            }
+        }
+        if (kind) {
             env->bot_select[1-env->side]=(uint8_t)kind;
             env->bot_select_level[1-env->side]=(uint8_t)env->scripted_level;
         }
@@ -573,7 +592,10 @@ static void c_step(BoplPuffer *env) {
                     /* The pool's Elo/swap statistics skip a match whose opponent
                      * weights the trainer replaced while it ran (the swap
                      * cleared boundary_reached; the next c_reset raises it). */
-                    if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
+                    int scripted=0;
+                    for (int p=0; p<env->players; p++) scripted|=env->bot_select[p];
+                    if (scripted) { env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=won; }
+                    else if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
                 }
             }
         }

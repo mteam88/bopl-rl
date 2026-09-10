@@ -1,0 +1,143 @@
+# Overnight sweep 1 (2026-09-10): what makes 200M learner steps produce the
+# most skill, and how should scripted bots enter training?
+#
+# Every trial runs the full 200M (fixed_cost, no early stop): depth over
+# breadth, 60 trials. Rust rollout backend (BOPL_RL_BACKEND=rust, set by the
+# launch unit), so a trial is ~30 min of training plus ~5 min of evaluations at
+# 64-256 workers; 60 trials is roughly 35 hours of wall clock on a quiet box.
+#
+# Score: mean win rate (timeouts = losses) on the training maps against eight
+# fixed opponents: the four hard scripted bots, mixed-medium, and three frozen
+# run-007 anchors (100M, 300M, final). Bots are lineage-free; the 007 anchors
+# catch a trial that only learned to exploit bots. random/initial are still
+# evaluated for the dashboard but saturate too early to score.
+#
+# Swept (10 dims): batch (workers), learning rate, learner passes, entropy
+# level/half-life, buttons-head entropy scale, kill reward, and the scripted
+# curriculum: how many banks bots take (0/1/2 of 4 = 0/12.5/25% of matches),
+# their level, and how fast they hand their matches back to self-play.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "percentile"
+downsample = 10                    # one point per evaluation (eval_every 20M)
+fixed_cost = true                  # every trial runs [fixed].steps
+early_stop = false
+max_suggestion_cost = 2.1e8
+max_runs = 60
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "14G"
+nice = 10
+max_seconds = 7200                 # 2 h hard wall; a healthy trial is ~35 min
+poll_seconds = 60
+
+[scoring]
+scorer = "anchors"
+opponents = ["mixed-hard", "archer-hard", "pursuer-hard", "evasive-hard", "mixed-medium",
+             "run007-100m", "run007-300m", "run007-final"]
+include_heldout = false
+
+[fixed]
+steps = 200000000
+workers = 128
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 1
+learning_rate = 3e-4
+entropy = 0.01
+entropy_floor = 0.001              # capped to entropy/2 when entropy sweeps lower
+entropy_half_life = 150000000
+entropy_head_scale = "1,1,1"
+entropy_free_rows = 1
+reward_kill = 0.1
+reward_timeout = -1
+scripted_bots = ["mixed", "archer"]  # ordered candidates; scripted_banks takes the first N
+scripted_level = "hard"
+scripted_decay = 200000000
+scripted_opponents = "mixed-hard,archer-hard,pursuer-hard,evasive-hard,mixed-medium"
+evaluation_opponents = "native/artifacts/rl/sweeps/anchors/opponents.json"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 10000000
+eval_every = 20000000
+evaluation_games = 8
+heldout_games = 4
+frozen_games = 8
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.workers]
+distribution = "uniform_pow2"
+min = 64
+max = 256
+scale = "auto"
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 5e-5
+max = 2e-3
+scale = 0.5
+
+[params.learner_passes]
+distribution = "int_uniform"
+min = 1
+max = 4
+scale = "auto"
+
+[params.entropy]
+distribution = "log_normal"
+min = 2e-3
+max = 3e-2
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 2e7
+max = 4e8
+scale = 0.5
+integer = true
+
+[params.head_scale_buttons]
+distribution = "log_normal"
+min = 0.25
+max = 8.0
+scale = 0.5
+
+[params.reward_kill]
+distribution = "uniform"
+min = 0.0
+max = 0.5
+scale = "auto"
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 0
+max = 2
+scale = "auto"
+default = 1
+
+[params.scripted_level_index]
+distribution = "int_uniform"
+min = 0
+max = 2
+scale = "auto"
+
+[params.scripted_decay]
+distribution = "log_normal"
+min = 2.5e7                        # bots gone after 12.5% of the run
+max = 4e8                          # still playing half their banks' matches at the end
+scale = 0.5
+integer = true

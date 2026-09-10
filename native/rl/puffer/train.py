@@ -40,6 +40,17 @@ def scripted_bots(value):
     return names
 
 
+def scripted_share(learner_steps, decay):
+    """Fraction of a scripted bank's matches the bot plays: 1 without a decay, else linear to 0 at `decay`."""
+    return 1.0 if not decay else max(0.0, 1.0 - learner_steps / decay)
+
+
+def set_scripted_share(_C, share):
+    """Write the C environment's process-wide bot share (bopl_puffer.h bopl_scripted_share)."""
+    import ctypes
+    ctypes.c_float.in_dll(ctypes.CDLL(_C.__file__), 'bopl_scripted_share').value = float(share)
+
+
 def entropy_coefficient(learner_steps, initial, floor, half_life):
     """Exponential decay in learner decisions, independent of the run budget."""
     return max(floor, initial * math.exp2(-learner_steps / half_life))
@@ -59,7 +70,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
-                 'scripted_bots', 'scripted_level')
+                 'scripted_bots', 'scripted_level', 'scripted_decay')
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -94,7 +105,8 @@ def recorded_hypers(config):
                 opponent_timeout=pool['opponent_timeout'], elo_init=pool['elo_init'], elo_k=pool['elo_k'],
                 pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
                 entropy_free_rows=config.get('entropy_free_rows', 0),
-                scripted_bots=config.get('scripted_bots', []), scripted_level=config.get('scripted_level', 'hard'))
+                scripted_bots=config.get('scripted_bots', []), scripted_level=config.get('scripted_level', 'hard'),
+                scripted_decay=config.get('scripted_decay', 0))
 
 
 def offset_counters(counts, base):
@@ -177,6 +189,12 @@ def arguments():
                         'last banks: those banks play the scripted bot instead of frozen snapshots, so the fraction '
                         'of the learner\'s historical games against bots is len(list)/banks')
     p.add_argument('--scripted-level', choices=sorted(SCRIPTED_LEVELS, key=SCRIPTED_LEVELS.get), default='hard')
+    p.add_argument('--scripted-decay', type=int, default=0,
+                   help='Learner decisions over which the scripted banks hand their matches to self-play: the bot '
+                        'share falls linearly from 1 to 0 at this step (0 = bots play every match of their banks). '
+                        'With a decay the pool manages the scripted banks too, so their frozen weights are real opponents')
+    p.add_argument('--scripted-opponents', default='mixed-hard',
+                   help='Comma-separated kind-level scripted opponents for the periodic evaluations (evaluate.py); empty disables')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
     p.add_argument('--no-eval', action='store_true', help='Disable diagnostic evaluation for isolated throughput measurements')
     p.add_argument('--eval-every', type=int, default=1_000_000, help='Learner decisions between diagnostic evaluations')
@@ -204,6 +222,8 @@ def arguments():
         p.error('half the workers must divide evenly among the banks')
     if len(a.scripted_bots) >= a.banks:
         p.error('scripted-bots must leave at least one policy bank for the self-play pool')
+    if a.scripted_decay < 0 or (a.scripted_decay and not a.scripted_bots):
+        p.error('scripted-decay needs scripted-bots and a non-negative step count')
     if a.hidden < 8 or a.hidden % 8:
         p.error('hidden must be a positive multiple of eight')
     if a.cudagraphs != -1 and a.cudagraphs < 1:
@@ -310,11 +330,15 @@ def main():
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
     # Scripted banks are the LAST ones so the self-play pool, which only
-    # manages banks 0..policy_banks-1, never swaps weights into them.
-    policy_banks = a.banks - len(a.scripted_bots)
+    # manages banks 0..policy_banks-1, never swaps weights into them. Under a
+    # decay the bots hand a growing share of their banks' matches to the banks'
+    # frozen weights, so the pool must manage every bank; bot matches stay out
+    # of the pool's statistics (bopl_puffer.h bot_*_bank).
+    policy_banks = a.banks if a.scripted_decay else a.banks - len(a.scripted_bots)
+    scripted_first_bank = a.banks - len(a.scripted_bots)
     scripted_kinds = 0
     for i, name in enumerate(a.scripted_bots):
-        scripted_kinds |= SCRIPTED_KINDS[name] << 4 * (policy_banks + i)
+        scripted_kinds |= SCRIPTED_KINDS[name] << 4 * (scripted_first_bank + i)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
@@ -333,7 +357,7 @@ def main():
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
-                  scripted_bots=a.scripted_bots, scripted_level=a.scripted_level,
+                  scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_decay=a.scripted_decay,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
@@ -448,7 +472,8 @@ def main():
                        '--evaluation-maps', ','.join(map(str, a.evaluation_maps)),
                        '--heldout-maps', ','.join(map(str, a.heldout_maps)),
                        '--games-per-opponent', str(a.evaluation_games), '--heldout-games', str(a.heldout_games),
-                       '--frozen-games', str(a.frozen_games), '--workers', str(a.evaluation_workers), '--game', str(game)]
+                       '--frozen-games', str(a.frozen_games), '--workers', str(a.evaluation_workers), '--game', str(game),
+                       '--scripted-opponents', a.scripted_opponents]
             if frozen_manifest:
                 command += ['--opponents', str(frozen_manifest)]
             with (output/'evaluation.log').open('a') as log:
@@ -458,11 +483,18 @@ def main():
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         previous, previous_elapsed = counts, elapsed_before
         free, applied_scale = None, list(a.head_scale)
+        share = scripted_share(counts['learner_steps'], a.scripted_decay)
+        if a.scripted_bots:
+            set_scripted_share(_C, share)
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
             while counts['learner_steps'] < a.steps and not stop:
                 before = time.monotonic()
                 _C.rollouts(trainer)
+                if a.scripted_decay:
+                    # Matches starting during the next rollout draw against this share.
+                    share = scripted_share(counts['learner_steps'], a.scripted_decay)
+                    set_scripted_share(_C, share)
                 rolled = time.monotonic()
                 # Configure the native loss before training. Native train_impl
                 # copies this scalar into a device buffer each update, so CUDA
@@ -509,12 +541,13 @@ def main():
                     n = float(flat.get('env/n', 0.0))
                     scripted = {}
                     for i, name in enumerate(a.scripted_bots):
-                        bank = policy_banks + i
-                        games = round(float(flat.get(f'env/hist_n_bank_{bank}', 0.0)) * n)
-                        wins = round(float(flat.get(f'env/hist_score_bank_{bank}', 0.0)) * n)
+                        bank = scripted_first_bank + i
+                        games = round(float(flat.get(f'env/bot_n_bank_{bank}', 0.0)) * n)
+                        wins = round(float(flat.get(f'env/bot_score_bank_{bank}', 0.0)) * n)
                         scripted[f'{name}-{a.scripted_level}'] = dict(
                             bank=bank, games=games, winrate=wins/games if games else None)
                     record['scripted'] = scripted
+                    record['scripted_share'] = share
                 record['free_fraction'] = free
                 record['entropy_head_scale_applied'] = applied_scale
                 # The native trainer's own per-update timers (seconds, averaged

@@ -128,6 +128,11 @@ void my_log(Log *log, Dict *out) {
     for (int bank=0; bank<8; bank++) if (log->hist_n_bank[bank]) {
         dict_set(out, bank_n[bank], log->hist_n_bank[bank]); dict_set(out, bank_score[bank], log->hist_score_bank[bank]);
     }
+    static const char *bot_n[8]={"bot_n_bank_0","bot_n_bank_1","bot_n_bank_2","bot_n_bank_3","bot_n_bank_4","bot_n_bank_5","bot_n_bank_6","bot_n_bank_7"};
+    static const char *bot_score[8]={"bot_score_bank_0","bot_score_bank_1","bot_score_bank_2","bot_score_bank_3","bot_score_bank_4","bot_score_bank_5","bot_score_bank_6","bot_score_bank_7"};
+    for (int bank=0; bank<8; bank++) if (log->bot_n_bank[bank]) {
+        dict_set(out, bot_n[bank], log->bot_n_bank[bank]); dict_set(out, bot_score[bank], log->bot_score_bank[bank]);
+    }
     for (int map=0; map<31; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);
     }

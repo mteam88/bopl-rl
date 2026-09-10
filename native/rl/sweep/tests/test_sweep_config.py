@@ -155,5 +155,81 @@ class FlagRendering(unittest.TestCase):
         self.assertEqual(argv[argv.index('--entropy-head-scale') + 1], '1,1,1')
 
 
+CURRICULUM = '''
+[sweep]
+name = "curriculum"
+method = "Protein"
+fixed_cost = true
+early_stop = false
+max_runs = 3
+
+[fixed]
+steps = 200000000
+workers = 64
+banks = 4
+scripted_bots = ["mixed", "archer"]
+scripted_level = "hard"
+scripted_decay = 100000000
+entropy = 0.01
+entropy_floor = 0.004
+no_eval = true
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 0
+max = 2
+scale = "auto"
+
+[params.scripted_level_index]
+distribution = "int_uniform"
+min = 0
+max = 2
+scale = "auto"
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-5
+max = 1e-2
+scale = 0.5
+default = 3e-4
+'''
+
+
+class ScriptedCurriculum(unittest.TestCase):
+    def test_defaults_from_fixed(self):
+        spec = load_text(CURRICULUM)
+        self.assertEqual(spec.defaults(), {'scripted_banks': 2, 'scripted_level_index': 2,
+                                           'learning_rate': 3e-4})
+        self.assertTrue(spec.fixed_cost)
+        self.assertFalse(spec.early_stop)
+
+    def test_fixed_cost_adds_a_steps_space(self):
+        config = load_text(CURRICULUM).sweep_config()
+        self.assertEqual(config['steps']['max'], 200000000)
+        self.assertLess(config['steps']['min'], config['steps']['max'])
+        import pufferlib.sweep
+        pufferlib.sweep.Protein(config, cost_param='steps')
+
+    def test_steps_in_params_rejected_with_fixed_cost(self):
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(CURRICULUM + '\n[params.steps]\ndistribution = "log_normal"\nmin = 1e7\nmax = 2e8\nscale = "time"\n')
+
+    def test_virtual_params_render(self):
+        spec = load_text(CURRICULUM)
+        argv = spec.trial_arguments({'scripted_banks': 1.4, 'scripted_level_index': 0.2,
+                                     'learning_rate': 1e-3, 'steps': 12345}, Path('/tmp/x'))
+        self.assertEqual(argv[argv.index('--scripted-bots') + 1], 'mixed')
+        self.assertEqual(argv[argv.index('--scripted-level') + 1], 'easy')
+        self.assertEqual(argv[argv.index('--scripted-decay') + 1], '100000000')
+        self.assertEqual(argv[argv.index('--steps') + 1], '200000000')
+
+    def test_no_bots_drops_the_decay(self):
+        spec = load_text(CURRICULUM)
+        argv = spec.trial_arguments({'scripted_banks': 0, 'scripted_level_index': 2,
+                                     'learning_rate': 1e-3}, Path('/tmp/x'))
+        self.assertEqual(argv[argv.index('--scripted-bots') + 1], '')
+        self.assertNotIn('--scripted-decay', argv)
+
+
 if __name__ == '__main__':
     unittest.main()

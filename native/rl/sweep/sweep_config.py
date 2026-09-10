@@ -45,13 +45,20 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'elo_k', 'pool_seed', 'cudagraphs', 'no_eval', 'eval_every',
                'evaluation_maps', 'heldout_maps', 'evaluation_baseline',
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
-               'frozen_games', 'evaluation_workers')
+               'frozen_games', 'evaluation_workers', 'scripted_bots', 'scripted_level',
+               'scripted_decay', 'scripted_opponents')
 STORE_TRUE = ('no_eval',)
+# Virtual swept parameters for the scripted-bot curriculum (SCRIPTED_BOTS.md):
+# scripted_banks = how many of [fixed].scripted_bots (an ordered candidate
+# list) take over banks, scripted_level_index = easy/medium/hard.
+SCRIPTED_LEVELS = ('easy', 'medium', 'hard')
+SCRIPTED_VIRTUAL = ('scripted_banks', 'scripted_level_index')
 # Virtual swept parameters composed into --entropy-head-scale "aim,buttons,hold".
 HEAD_SCALE = {'head_scale_aim': 0, 'head_scale_buttons': 1, 'head_scale_hold': 2}
 # Parameters that must be integers on the command line even when the space
 # yields floats (log_normal steps, for example).
-ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers',
+ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'scripted_decay',
+                  'scripted_banks', 'scripted_level_index',
                   'horizon', 'learner_passes', 'entropy_half_life', 'episode_ticks',
                   'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout',
                   'checkpoint_every', 'eval_every', 'evaluation_games',
@@ -86,6 +93,10 @@ class SweepSpec:
         self.early_stop_quantile = float(sweep.get('early_stop_quantile', 0.3))
         self.max_suggestion_cost = float(sweep.get('max_suggestion_cost', 3600))
         self.max_runs = int(sweep.get('max_runs', 20))
+        # fixed_cost: every trial runs exactly [fixed].steps; Protein still gets
+        # a cost axis (the partial curve points) but suggests at the fixed budget.
+        self.fixed_cost = bool(sweep.get('fixed_cost', False))
+        self.early_stop = bool(sweep.get('early_stop', True))
         # The training GPU is shared with real runs; the GP is tiny, keep it on CPU.
         self.use_gpu = bool(sweep.get('use_gpu', False))
         self.cost = sweep.get('cost', 'learner_steps')
@@ -119,7 +130,7 @@ class SweepSpec:
         self.params = {}
         for pname, spec in dict(raw.get('params', {})).items():
             _require(pname not in RESERVED, f'Parameter name {pname!r} is reserved by PufferLib')
-            _require(pname in TRAIN_FLAGS or pname in HEAD_SCALE,
+            _require(pname in TRAIN_FLAGS or pname in HEAD_SCALE or pname in SCRIPTED_VIRTUAL,
                      f'[params.{pname}] does not map to a train.py flag')
             _require(isinstance(spec, dict) and 'distribution' in spec,
                      f'[params.{pname}] needs a distribution')
@@ -131,6 +142,16 @@ class SweepSpec:
             spec.setdefault('scale', 'auto')
             self.params[pname] = spec
         _require(self.params, 'At least one [params.*] entry is required')
+        _require(not (self.fixed_cost and 'steps' in self.params),
+                 'fixed_cost sweeps must not sweep steps')
+        if any(name in self.params for name in SCRIPTED_VIRTUAL):
+            _require(self.scripted_pool(), '[fixed].scripted_bots (ordered candidate kinds) is required '
+                     'to sweep scripted_banks/scripted_level_index')
+
+    def scripted_pool(self):
+        """Ordered bot kinds from [fixed].scripted_bots (list or comma string)."""
+        value = self.fixed.get('scripted_bots', [])
+        return [v for v in (value if isinstance(value, list) else str(value).split(',')) if v]
 
     # ---- Protein / Random / ParetoGenetic construction -----------------------
 
@@ -145,6 +166,9 @@ class SweepSpec:
         for name, spec in self.params.items():
             config[name] = dict(distribution=spec['distribution'],
                                 min=spec['min'], max=spec['max'], scale=spec['scale'])
+        if self.fixed_cost:
+            steps = int(self.fixed['steps'])
+            config['steps'] = dict(distribution='log_normal', min=steps / 16, max=steps, scale='time')
         return config
 
     def defaults(self):
@@ -158,6 +182,10 @@ class SweepSpec:
             elif name in HEAD_SCALE:
                 triple = _head_scale_triple(self.fixed.get('entropy_head_scale', '1,1,1'))
                 value = triple[HEAD_SCALE[name]]
+            elif name == 'scripted_banks':
+                value = len(self.scripted_pool())
+            elif name == 'scripted_level_index':
+                value = SCRIPTED_LEVELS.index(self.fixed.get('scripted_level', 'hard'))
             else:
                 raise ConfigError(f'[params.{name}] needs a default (in [fixed] or default = ...)')
             _require(spec['min'] <= value <= spec['max'],
@@ -184,9 +212,19 @@ class SweepSpec:
         for name, value in hypers.items():
             if name in HEAD_SCALE:
                 head_scale[HEAD_SCALE[name]] = max(0.0, min(100.0, float(value)))
+            elif name == 'scripted_banks':
+                pool = self.scripted_pool()
+                merged['scripted_bots'] = pool[:max(0, min(len(pool), round(value)))]
+            elif name == 'scripted_level_index':
+                merged['scripted_level'] = SCRIPTED_LEVELS[max(0, min(2, round(value)))]
+            elif name == 'steps' and self.fixed_cost:
+                continue
             else:
                 merged[name] = round(value) if self.is_integer(name) and not isinstance(value, int) else value
         merged['entropy_head_scale'] = ','.join(_number(s) for s in head_scale)
+        if 'scripted_bots' in merged and not merged['scripted_bots']:
+            # train.py rejects a decay without bots; without bots there is nothing to decay.
+            merged.pop('scripted_decay', None)
         if seed is not None:
             merged['seed'] = seed
         # train.py requires 0 < entropy_floor <= entropy; when entropy is swept

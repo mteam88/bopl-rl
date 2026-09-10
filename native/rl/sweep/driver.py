@@ -147,7 +147,12 @@ class Driver:
         if index == 0:
             hypers, info, suggested = self.spec.defaults(), {}, False
         else:
-            hypers, info = self.sweeper.suggest(dict(self.spec.defaults()))
+            fill = dict(self.spec.defaults())
+            if self.spec.fixed_cost:
+                fill['steps'] = int(self.spec.fixed['steps'])
+                hypers, info = self.sweeper.suggest(fill, fixed_total_timesteps=fill['steps'])
+            else:
+                hypers, info = self.sweeper.suggest(fill)
             # Plain Python numbers: numpy scalars subclass float/int but print
             # as np.float64(...) and would look odd in sweep.json.
             hypers = {name: (int(hypers[name]) if self.spec.is_integer(name)
@@ -231,7 +236,7 @@ class Driver:
             self.stop_trial(trial, 'wall-cap')
             return False
         # Protein quantile early stop against the partial score curve.
-        if (trial['early_stop'] is None and hasattr(self.sweeper, 'should_stop')
+        if (trial['early_stop'] is None and self.spec.early_stop and hasattr(self.sweeper, 'should_stop')
                 and self.spec.scoring['scorer'] != 'match'):
             learner_steps = status.get('learner_steps', 0)
             floor = min(self.spec.min_early_stop_fraction * self.budget(trial),
@@ -254,7 +259,10 @@ class Driver:
         """Feed a finished trial's persisted observations into the sweeper."""
         observations = trial.get('observations') or []
         if trial.get('is_failure') or not observations:
-            self.sweeper.observe(dict(trial['hypers']), 0, 0, is_failure=True)
+            hypers = dict(trial['hypers'])
+            if self.spec.fixed_cost:
+                hypers['steps'] = int(self.spec.fixed['steps'])
+            self.sweeper.observe(hypers, 0, 0, is_failure=True)
             return
         for entry in observations:
             hypers = dict(trial['hypers'], steps=entry['steps'])
