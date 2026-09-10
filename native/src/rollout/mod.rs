@@ -1497,6 +1497,16 @@ impl RolloutWorld {
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.active = ActiveAbility::None;
                     slot.obs_state = STATE_FALL;
+                    // Ability.ExitAbility republishes potentialCollider.position
+                    // after PlatformTransform has applied the final ejection.
+                    // SlimeController's synchronous onExitAbility callback then
+                    // enters Fall and immediately performs
+                    // VelocityBasedRaycasts. Preserve both phase boundaries:
+                    // this tick observes the ejected position, while the live
+                    // body may already have reattached for the next tick.
+                    slot.reported_position = slot.base.position;
+                    slot.reported_tick = self.tick;
+                    slot.base.collision_rays(&self.platforms);
                 }
             }
         }
