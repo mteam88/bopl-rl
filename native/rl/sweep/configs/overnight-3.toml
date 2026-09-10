@@ -7,6 +7,10 @@
 # re-derived the body orientation each tick. Fixed in main a71e1ee (gate
 # 297/300 winner agreement, loaded-platform deflection 0.02 rad vs .NET 0.01).
 # overnight-2/000 is kept as a record but is not comparable (buggy .so).
+# A first overnight-3 start (17:37, .so ed824afe) completed trials 000-002
+# before the same audit also fixed death-tick timing, dash-vs-arrow and
+# recast-rider detach (main 8821a14, .so 101b017d); it is preserved as
+# sweeps/overnight-3-ed824afe and this sweep restarted fresh at 18:50.
 #
 # overnight-1 (20 trials, 2026-09-10) ran on a Rust sim with static platforms,
 # swept arrows and a dozen phase-order gaps against Unity; its best policies
