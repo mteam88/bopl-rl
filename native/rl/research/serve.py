@@ -1,62 +1,44 @@
 """Local research dashboard with on-demand saved replay playback."""
 import argparse
+from collections import OrderedDict
+import hashlib
+import threading
 import gzip
+from functools import lru_cache
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 import json
 import mimetypes
 import re
 import os
 from pathlib import Path
-import threading
+import tempfile
 from urllib.parse import unquote,urlparse,parse_qs
 import run_insights
+from metrics_store import store
 import study_data
 from replay_library import ReplayLibrary
 
 HERE=Path(__file__).resolve().parent
-# A 400M-learner run writes ~130k metrics rows; ship a bounded series instead.
-METRICS_POINTS=2400
-METRICS_TAIL=120
-
 def read_json(path,default=None):
-    try: return json.loads(path.read_text())
-    except FileNotFoundError: return default
+    return study_data.read(path,default)
 
-_metrics_lock=threading.Lock()
-_metrics_cache={}
 
-def read_metrics(file):
-    """Parse an append-only metrics.jsonl incrementally, tolerating a torn tail."""
-    try: stat=file.stat(); size=stat.st_size
-    except OSError: return [],True
-    with _metrics_lock:
-        offset,rows,identity=_metrics_cache.get(file,(0,[],None))
-        # A relaunched run replaces the file at the same path; a cached offset
-        # into the old file would land mid-line and read as corruption forever.
-        if size<offset or identity!=(stat.st_ino,stat.st_dev): offset,rows=0,[]
-        identity=(stat.st_ino,stat.st_dev)
-        if size>offset:
-            with file.open('rb') as handle:
-                handle.seek(offset)
-                chunk=handle.read()
-            position=offset
-            for line in chunk.splitlines(keepends=True):
-                complete=line.endswith(b'\n')
-                try: record=json.loads(line)
-                except ValueError:
-                    if complete: return rows,False  # torn middle line: corrupt
-                    break
-                if not complete: break  # a torn final line parsed by luck; wait for the rest
-                rows.append(record); position+=len(line)
-            _metrics_cache[file]=(position,rows,identity)
-        return list(rows),True
+def compact_report(path):
+    stat=path.stat()
+    # Reports are immutable after publication. Cache their compact view only.
+    value=_compact_report(path,stat.st_ino,stat.st_mtime_ns,stat.st_size)
+    return dict(value,games=[dict(game) for game in value['games']])
 
-def downsample(rows,limit=METRICS_POINTS,tail=METRICS_TAIL):
-    """Uniform stride over the body, the tail intact for rolling windows."""
-    if len(rows)<=limit: return rows
-    body=rows[:-tail]
-    stride=-(-len(body)//(limit-tail))
-    return body[::stride]+rows[-tail:]
+
+@lru_cache(maxsize=256)
+def _compact_report(path,inode,modified,size):
+    report=json.loads(path.read_text())
+    if not report: return None
+    # The full provenance and telemetry remain available in result.json.
+    value={key:report[key] for key in ('schema','step','suite','groups','frozen_opponents') if key in report}
+    value['games']=[{key:game[key] for key in ('name','opponent','map','seed','side','save','win','loss','timeout','kills','deaths','ticks','replay','visual','mind') if key in game} for game in report.get('games',[])]
+    return value
+
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -94,20 +76,57 @@ def main():
         return (int(match.group(1)) if match else -1, str(path))
     def latest_report(directory, pattern):
         reports=sorted(directory.glob(pattern), key=step_order)
-        return read_json(reports[-1]) if reports else None
+        return compact_report(reports[-1]) if reports else None
+    def run_payload(directory,name):
+        status=dict(read_json(directory/'status.json',{'status':'starting'}))
+        if status.get('status')=='running':
+            try: os.kill(status['pid'],0)
+            except (ProcessLookupError,KeyError): status['status']='interrupted'
+        try: summary=store.read(directory/'metrics.jsonl')
+        except ValueError: raise ValueError('Invalid metrics record')
+        metrics=summary['rows']
+        evaluations=[]
+        for file in sorted(directory.glob('evaluations/*/result.json'), key=step_order):
+            report=compact_report(file); report['directory']=file.parent.name
+            for game in report['games']:
+                video=file.parent/(game['name']+'.mp4')
+                if video.exists(): game['video']=video.name
+                poster=video.with_suffix('.jpg')
+                if poster.exists(): game['poster']=poster.name
+                mind=file.parent/(game['name']+'.mind.json.gz')
+                if mind.exists(): game['mind']=mind.name
+            evaluations.append(report)
+        insights=[{key:row[key] for key in ('step','directory','games','gauges')}
+                  for row in run_insights.collect(directory)]
+        return dict(name=name,config=read_json(directory/'config.json'),status=status,
+                              metrics=metrics,metrics_total=summary['count'],map_matches=summary['map_matches'],
+                              evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
+                              insights=insights,ladder=read_json(directory/'ladder/ladder.json'),
+                              final_evaluation=latest_report(directory,'final-evaluations/*/result.json'),
+                              validation_evaluation=latest_report(directory,'validation/evaluations/*/result.json'))
+
+    def stamp(path):
+        try: value=path.stat()
+        except FileNotFoundError: return None
+        return value.st_ino,value.st_mtime_ns,value.st_size
+
+    responses=OrderedDict()
+    response_lock=threading.Lock()
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self,fmt,*args):
             if len(args)<2 or str(args[1]) not in ('200','206','304'): super().log_message(fmt,*args)
         def json(self,data):
-            payload=json.dumps(data,allow_nan=False).encode()
+            payload=json.dumps(data,allow_nan=False,separators=(',',':')).encode()
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.send_header('Cache-Control','no-store')
             if len(payload)>16384 and 'gzip' in self.headers.get('Accept-Encoding',''):
-                payload=gzip.compress(payload,5)
+                payload=gzip.compress(payload,1)
                 self.send_header('Content-Encoding','gzip')
             self.send_header('Content-Length',str(len(payload)))
             self.end_headers()
-            if self.command!='HEAD': self.wfile.write(payload)
+            if self.command!='HEAD':
+                try: self.wfile.write(payload)
+                except (BrokenPipeError,ConnectionResetError): pass
         def replay_request(self, path, prepare=False):
             parts=path.split('/')
             studies=study_data.catalog(root,extra)
@@ -164,33 +183,42 @@ def main():
                 name=path[len('/api/run/'):]
                 directory=run_directory(name)
                 if directory is None: return self.send_error(404)
-                status=read_json(directory/'status.json',{'status':'starting'})
-                if status.get('status')=='running':
-                    try: os.kill(status['pid'],0)
-                    except (ProcessLookupError,KeyError): status['status']='interrupted'
-                metrics,intact=read_metrics(directory/'metrics.jsonl')
-                if not intact: return self.send_error(500,'Invalid metrics record')
-                total=len(metrics)
-                metrics=downsample(metrics)
-                evaluations=[]
-                for file in sorted(directory.glob('evaluations/*/result.json'), key=step_order):
-                    report=read_json(file); report['directory']=file.parent.name
-                    for game in report['games']:
-                        video=file.parent/(game['name']+'.mp4')
-                        if video.exists(): game['video']=video.name
-                        poster=video.with_suffix('.jpg')
-                        if poster.exists(): game['poster']=poster.name
-                        mind=file.parent/(game['name']+'.mind.json.gz')
-                        if mind.exists(): game['mind']=mind.name
-                    evaluations.append(report)
-                insights=[{key:row[key] for key in ('step','directory','games','gauges')}
-                          for row in run_insights.collect(directory)]
-                return self.json(dict(name=name,config=read_json(directory/'config.json'),status=status,
-                                      metrics=metrics,metrics_total=total,
-                                      evaluations=evaluations,video=read_json(directory/'video-status.json',{}),
-                                      insights=insights,ladder=read_json(directory/'ladder/ladder.json'),
-                                      final_evaluation=latest_report(directory,'final-evaluations/*/result.json'),
-                                      validation_evaluation=latest_report(directory,'validation/evaluations/*/result.json')))
+                try:
+                    with response_lock:
+                        dependencies=[directory/file for file in ('config.json','status.json','metrics.jsonl','video-status.json','ladder/ladder.json')]
+                        for pattern in ('evaluations/*/result.json','final-evaluations/*/result.json','validation/evaluations/*/result.json'):
+                            for result in sorted(directory.glob(pattern)):
+                                dependencies.extend((result,result.parent))
+                        status=read_json(directory/'status.json',{})
+                        alive=True
+                        if status.get('status')=='running':
+                            try: os.kill(status['pid'],0)
+                            except (ProcessLookupError,KeyError): alive=False
+                        signature=(alive,tuple((str(p),stamp(p)) for p in dependencies))
+                        cached=responses.pop(name,None)
+                        if cached is None or cached[0]!=signature:
+                            payload=json.dumps(run_payload(directory,name),allow_nan=False,separators=(',',':')).encode()
+                            cached=(signature,'"'+hashlib.sha256(payload).hexdigest()+'"',payload,gzip.compress(payload,1))
+                        else: run_insights.collect(directory)
+                        responses[name]=cached
+                        while len(responses)>4: responses.popitem(last=False)
+                except ValueError: return self.send_error(500,'Invalid metrics record')
+                _,etag,payload,compressed=cached
+                if self.headers.get('If-None-Match')==etag:
+                    self.send_response(304); self.send_header('ETag',etag); self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type','application/json')
+                self.send_header('Cache-Control','no-cache')
+                self.send_header('ETag',etag)
+                self.send_header('Vary','Accept-Encoding')
+                if 'gzip' in self.headers.get('Accept-Encoding',''):
+                    payload=compressed; self.send_header('Content-Encoding','gzip')
+                self.send_header('Content-Length',str(len(payload))); self.end_headers()
+                if self.command!='HEAD':
+                    try: self.wfile.write(payload)
+                    except (BrokenPipeError,ConnectionResetError): pass
+                return
             if path.startswith('/studies/'):
                 parts=path[len('/studies/'):].split('/')
                 if not parts or parts[0] not in studies:return self.send_error(404)
@@ -218,15 +246,21 @@ def main():
             # Replay JSON grows with episode length (a full 7200-tick self-play match is ~12 MB);
             # compress whole-file JSON responses for clients that accept it, as the API does.
             if not requested and file.suffix in ('.json','.jsonl') and size>16384 and 'gzip' in self.headers.get('Accept-Encoding',''):
-                payload=gzip.compress(file.read_bytes(),5)
+                compressed=tempfile.TemporaryFile()
+                with file.open('rb') as source, gzip.GzipFile(fileobj=compressed,mode='wb',compresslevel=1) as target:
+                    import shutil
+                    shutil.copyfileobj(source,target,65536)
+                compressed_size=compressed.tell()
+                compressed.seek(0)
                 self.send_response(200)
                 self.send_header('Content-Type','application/json')
                 self.send_header('Content-Encoding','gzip')
-                self.send_header('Content-Length',str(len(payload)))
+                self.send_header('Content-Length',str(compressed_size))
                 self.end_headers()
                 if self.command!='HEAD':
-                    try: self.wfile.write(payload)
+                    try: shutil.copyfileobj(compressed,self.wfile,65536)
                     except (BrokenPipeError,ConnectionResetError): pass
+                compressed.close()
                 return
             if requested:
                 match=re.fullmatch(r'bytes=(\d*)-(\d*)',requested)

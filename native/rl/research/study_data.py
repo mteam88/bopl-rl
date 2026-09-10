@@ -1,37 +1,32 @@
 """Compact read-only views of nested opponent experiments for the dashboard."""
-from functools import lru_cache
+from collections import OrderedDict
+import threading
+from metrics_store import MetricsStore
+
 import json
 import os
 from pathlib import Path
 import time
 
 
-@lru_cache(maxsize=256)
-def _json(path,modified,size):
-    return json.loads(Path(path).read_text())
+store = MetricsStore(capacity=32, points=180, tail=1)
+_json_cache = OrderedDict()
+_json_lock = threading.Lock()
 
 
 def read(path,default=None):
     path=Path(path)
-    try:
-        stat=path.stat();return _json(str(path),stat.st_mtime_ns,stat.st_size)
-    except FileNotFoundError:return default
-
-
-@lru_cache(maxsize=32)
-def _metrics(path,modified,size):
-    lines=Path(path).read_text().splitlines();rows=[]
-    for index,line in enumerate(lines):
-        try:rows.append(json.loads(line))
-        except ValueError:
-            if index!=len(lines)-1:raise
-    return rows
-
-
-def metrics(path):
-    try:
-        stat=path.stat();return _metrics(str(path),stat.st_mtime_ns,stat.st_size)
-    except FileNotFoundError:return []
+    with _json_lock:
+        try: stat=path.stat()
+        except FileNotFoundError:
+            _json_cache.pop(path,None)
+            return default
+        signature=(stat.st_ino,stat.st_mtime_ns,stat.st_size)
+        cached=_json_cache.pop(path,None)
+        value=cached[1] if cached and cached[0]==signature else json.loads(path.read_text())
+        _json_cache[path]=(signature,value)
+        while len(_json_cache)>64: _json_cache.popitem(last=False)
+        return value
 
 
 def outcome(game):
@@ -83,8 +78,10 @@ def payload(name,directory,root):
         path=directory/'runs'/run['name'];source=parent/'runs'/run['name']
         retry=directory/('retry-'+run['name'])
         if extension and (retry/'status.json').exists():path=retry
-        old_metrics=metrics(source/'metrics.jsonl') if extension else []
-        current=metrics(path/'metrics.jsonl');all_metrics=old_metrics+current
+        previous=store.read(source/'metrics.jsonl') if extension else dict(rows=[],cumulative=[],totals={})
+        present=store.read(path/'metrics.jsonl')
+        old_metrics=previous['rows'];current=present['rows'];all_metrics=old_metrics+current
+        cumulative=previous['cumulative']+[{key:totals.get(key,0)+previous['totals'].get(key,0) for key in totals.keys() | previous['totals'].keys()} for totals in present['cumulative']]
         s=status(path,run.get('source_learner_steps',0));latest=current[-1] if current else old_metrics[-1] if old_metrics else {}
         checkpoints={}
         milestones=(1000000,2000000,3000000,4000000) if extension else (1000000,)
@@ -98,8 +95,8 @@ def payload(name,directory,root):
         curve=[];hits=shots=env_deaths=self_deaths=combat_deaths=0
         stride=max(1,len(all_metrics)//180)
         for index,m in enumerate(all_metrics):
-            totals=m.get('behavior',{}).get('totals',{});hits+=totals.get('arrow_hits',0);shots+=totals.get('arrows_fired',0)
-            env_deaths+=totals.get('deaths_environment',0);self_deaths+=totals.get('deaths_self',0);combat_deaths+=totals.get('deaths_opponent',0)
+            totals=cumulative[index];hits=totals.get('arrow_hits',0);shots=totals.get('arrows_fired',0)
+            env_deaths=totals.get('deaths_environment',0);self_deaths=totals.get('deaths_self',0);combat_deaths=totals.get('deaths_opponent',0)
             if index%stride==0 or index==len(all_metrics)-1:
                 curve.append(dict(steps=m.get('learner_steps',m['step']*.75),hits=hits,shots=shots,
                                   environment_deaths=env_deaths,self_deaths=self_deaths,opponent_deaths=combat_deaths,

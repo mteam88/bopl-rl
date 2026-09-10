@@ -22,7 +22,7 @@ function connection(ok) {
   $("connection").parentElement.classList.toggle("online", ok);
 }
 async function refresh() {
-  if (loading) return;
+  if (loading || document.hidden) return;
   loading = true;
   try {
     const response = await fetch("/api/studies");
@@ -155,4 +155,5 @@ $("crossplayMilestone").onchange=renderCrossplay;
 for(const id of ["detailRun","detailMilestone","detailSuite"])$(id).onchange=renderDetails;
 $("studyClip").onchange=renderClip;
 window.addEventListener("resize",() => {if(currentStudy)render();});
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();setInterval(refresh,5000);

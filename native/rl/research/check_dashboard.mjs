@@ -78,7 +78,7 @@ for (let i = 0; i < 40; i++) {
 }
 // Runs without saved evaluation games legitimately have no replay to play.
 const expectReplay = await evaluate(
-  "(data.evaluations || []).some(e => (e.games || []).some(g => g.save))",
+  "(data.evaluations || []).some(e => (e.games || []).some(g => g.visual))",
 );
 if (expectReplay)
   for (let i = 0; i < 40; i++) {
@@ -96,13 +96,14 @@ let before = null,
   after = null;
 if (expectReplay) {
   await run(
-    "document.querySelector('#viewPhysics').click(); const scrub = document.querySelector('#scrub'); scrub.value = 60; scrub.dispatchEvent(new Event('input'));",
+    "document.querySelector('#viewPhysics').click(); const scrub = document.querySelector('#scrub'); scrub.value = Math.min(60, Math.floor(Number(scrub.max) / 3)); scrub.dispatchEvent(new Event('input'));",
   );
+  const beforeFrame = await evaluate("Number(document.querySelector('#scrub').value)");
   before = await evaluate("document.querySelector('#replayTime').textContent");
   await run("document.querySelector('#play').click()");
   await sleep(400);
   after = await evaluate("document.querySelector('#replayTime').textContent");
-  if ((await evaluate("Number(document.querySelector('#scrub').value)")) <= 60)
+  if ((await evaluate("Number(document.querySelector('#scrub').value)")) <= beforeFrame)
     throw Error("Replay did not advance");
   await run("document.querySelector('#play').click()");
 }

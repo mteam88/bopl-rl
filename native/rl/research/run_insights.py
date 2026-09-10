@@ -16,6 +16,7 @@ ARROW_BIT=2
 # World-coordinate occupancy grid: 2 game units per cell.
 GRID_X0,GRID_Y0,GRID_W,GRID_H,GRID_CELL=-60,-36,60,36,2
 _lock=threading.Lock()
+_pending=None
 
 
 def circular_degrees(a,b):
@@ -39,7 +40,7 @@ def game_insights(visual,side):
     for index,frame in enumerate(frames):
         action=frame.get('actions')
         if action:
-            angle,buttons=action[side]
+            angle,buttons=action[side][:2]
             # Index 0 means the stick is released, not an angle; the aim-change
             # gauge only compares consecutive decisions that both aim somewhere.
             if angle:
@@ -93,30 +94,37 @@ def evaluate_directory(directory):
                 maps=maps)
 
 
-def collect(run_directory,budget=1):
-    """Insights for every evaluation of a run, newest first.
+def _backfill(directory):
+    global _pending
+    try:
+        value=evaluate_directory(directory)
+        sidecar=directory/'insights.json'
+        temporary=sidecar.with_suffix('.json.tmp')
+        temporary.write_text(json.dumps(value)+'\n')
+        temporary.replace(sidecar)
+    except (OSError,ValueError,KeyError):
+        pass
+    finally:
+        with _lock: _pending=None
 
-    Uses insights.json sidecars; computes at most `budget` missing directories
-    per call (newest first) so one request never scans a whole long run.
-    """
-    rows=[]
-    with _lock:
-        for result in sorted(run_directory.glob('evaluations/*/result.json'),key=lambda p:int(p.parent.name),reverse=True):
-            directory=result.parent
-            sidecar=directory/'insights.json'
-            try:
-                value=json.loads(sidecar.read_text())
-                if value.get('schema')!=SCHEMA: raise ValueError
-            except (OSError,ValueError):
-                if budget<1:
-                    continue
-                budget-=1
-                try: value=evaluate_directory(directory)
-                except (OSError,ValueError,KeyError): continue
-                temporary=sidecar.with_suffix('.json.tmp')
-                try:
-                    temporary.write_text(json.dumps(value)+'\n'); temporary.replace(sidecar)
-                except OSError: pass
-            rows.append(dict(value,directory=directory.name))
+
+def collect(run_directory):
+    """Read published insights; one background worker backfills missing results."""
+    global _pending
+    rows=[];missing=None
+    for result in sorted(run_directory.glob('evaluations/*/result.json'),key=lambda p:int(p.parent.name),reverse=True):
+        directory=result.parent
+        try:
+            value=json.loads((directory/'insights.json').read_text())
+            if value.get('schema')!=SCHEMA: raise ValueError
+        except (OSError,ValueError):
+            if missing is None: missing=directory
+            continue
+        rows.append(dict(value,directory=directory.name))
+    if missing is not None:
+        with _lock:
+            if _pending is None:
+                _pending=missing
+                threading.Thread(target=_backfill,args=(missing,),daemon=True,name='insights').start()
     rows.sort(key=lambda r:r['step'])
     return rows

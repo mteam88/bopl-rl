@@ -57,12 +57,13 @@ Required (all currently written by `train.py`):
   `sps` is physical decisions/s, `learner_sps` is reported directly (readers
   prefer it over `sps * learner_fraction`), `learner_fraction` is measured, and
   padded `native_agent_steps` stays a separate field the dashboard ignores.
-- `matches`, `map_matches` ({map_id: completed matches})
+- `matches`, `map_matches` ({map_id: completed matches}), cumulative since run start.
 - `policy_loss`, `value_loss`, `entropy` (joint, nats), `kl`, `clip_fraction`,
   `gradient_norm`, `explained_variance`, `mean_reward`
 - `action_rates` ({jump,dash,arrow,platform}: fraction of learner decisions)
 - `behavior` — accumulated from learner decision telemetry directly, as
-  dedicated cumulative counters that include unfinished episodes. Episode-log
+  dedicated counters that include unfinished episodes. Each metrics row reports
+  the delta for that update, not the lifetime total. Episode-log
   derived numbers (e.g. Puffer's `static_vec_log`, which drops unfinished
   episodes and clears env logs once any `n>0`) are not acceptable here; only
   `episodes`, `wins` and `timeouts` count completed episodes. Shape matches
@@ -222,3 +223,28 @@ pinned at 0 Elo.
   per episode prominently, so we can revisit the number with data.
 - Timeout/truncation semantics must stay visible: keep `behavior.totals.timeouts`
   and `episodes`, and keep `reward.timeout` in `config.reward`.
+
+## Dashboard reader limits
+
+The source JSONL remains complete. The server reads new complete lines once and
+retains at most 2,400 chart samples per run (eight recently viewed runs). It keeps
+the latest 120 updates unchanged and progressively doubles the sampling stride
+for older history. `metrics_total` counts all source records; top-level
+`map_matches` takes the latest cumulative counters without summing updates. Study readers retain
+180 samples per file and accumulate counters before sampling, so continuation
+curves preserve exact totals across both source and resumed runs.
+
+A partial final line waits for the next append. A malformed complete line fails
+the request; file replacement or truncation resets the reader. Initial visits
+scan a run once with bounded memory. Later polls read only appended data.
+
+Evaluation listings carry chart groups and replay metadata; full telemetry and
+provenance remain in each evaluation's `result.json`. Four encoded run responses
+are cached, invalidated by changes to metrics, status, configuration, evaluation
+reports/directories, video status, or the ladder. Run responses support ETags;
+the browser skips unchanged responses, overlapping polls, and hidden-tab polls.
+Replay-derived insights backfill on one background worker. Large JSON downloads
+compress through a temporary file rather than retaining the whole file in RAM.
+
+Reader regression check: `python3 native/rl/research/check_metrics_store.py`.
+HTTP cache check: `python3 native/rl/research/check_dashboard_api.py`.

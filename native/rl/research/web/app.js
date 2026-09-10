@@ -51,7 +51,10 @@ function connect(ok) {
     : "Connection interrupted";
   $("connection").parentElement.classList.toggle("online", ok);
 }
+let refreshing = false, runEtag = null;
 async function refresh() {
+  if (refreshing || document.hidden) return;
+  refreshing = true;
   try {
     const [runs, studies] = await Promise.all(
       ["/api/runs", "/api/series"].map(async (url) => {
@@ -102,16 +105,22 @@ async function refresh() {
     const requestedRun = runName;
     const response = await fetch(
       "/api/run/" + encodeURIComponent(requestedRun),
+      { cache: "no-store", headers: runEtag ? { "If-None-Match": runEtag } : {} },
     );
+    if (requestedRun !== runName) return;
+    if (response.status === 304) { connect(true); return; }
     if (!response.ok) throw Error("Run unavailable");
     const nextData = await response.json();
     if (requestedRun !== runName) return;
+    runEtag = response.headers.get("ETag");
     data = nextData;
     connect(true);
     update();
   } catch (error) {
     connect(false);
     $("notice").textContent = error.message;
+  } finally {
+    refreshing = false;
   }
 }
 function updateSeries() {
@@ -251,8 +260,7 @@ function update() {
   $("evaluationMatrix").hidden = !matrix;
   if (matrix) {
     $("matrixSuite").textContent = final ? "Final · fresh game seeds" : `Checkpoint · ${short(matrix.step)} decisions`;
-    const played = {};
-    for (const row of data.metrics) for (const [map, count] of Object.entries(row.map_matches || {})) played[map] = (played[map] || 0) + count;
+    const played = data.map_matches || {};
     $("mapCoverage").textContent = `Training maps: ${(c.training_maps || [0]).join(", ")}.` +
       (Object.keys(played).length ? ` Completed matches: ${Object.entries(played).map(([map,count]) => `map ${map}: ${fmt.format(count)}`).join(" · ")}.` : "");
     const opponentName = (name) => name === "random" ? "Random buttons" : name === "initial" ? "Starting policy" : name.replace(/^trained-s/, "Previous seed ");
@@ -1124,6 +1132,7 @@ function animate(now) {
   requestAnimationFrame(animate);
 }
 function resetRun(name) {
+  runEtag = null;
   runName = name;
   data = null;
   selectedEvaluation = null;
@@ -1165,6 +1174,7 @@ window.addEventListener("resize", () => {
   updateSeries();
   if (data) update();
 });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
 setInterval(refresh, 5000);
 requestAnimationFrame(animate);
