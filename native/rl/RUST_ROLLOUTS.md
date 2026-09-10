@@ -285,23 +285,25 @@ At 300 episodes with that harness fixed (seeds 1000-1299), the base
 (`7f6761b`), platform/phase implementation, discrete-arrow implementation,
 and the final semantic-audit implementation were:
 
-| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust final |
-|---|---:|---:|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 |
-| timeouts | 0 | 0 | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 153 | 138 | 138 |
-| self deaths | 165 | 153 | 146 | 160 | 160 |
-| opponent deaths | 2 | 3 | 1 | 2 | 2 |
-| dash activations | 221 | 284 | 240 | 217 | 217 |
-| bow activations | 498 | 560 | 510 | 489 | 491 |
-| platform activations | 86 | 129 | 113 | 87 | 88 |
-| arrows fired | 484 | 551 | 497 | 476 | 476 |
-| arrow hits | 2 | 3 | 1 | 2 | 2 |
-| winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 |
+| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust pre-rotation fix | Rust current |
+|---|---:|---:|---:|---:|---:|---:|
+| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 | 62.3 |
+| timeouts | 0 | 0 | 0 | 0 | 0 | 0 |
+| environment deaths | 133 | 144 | 153 | 138 | 138 | 135 |
+| self deaths | 165 | 153 | 146 | 160 | 160 | 163 |
+| opponent deaths | 2 | 3 | 1 | 2 | 2 | 2 |
+| dash activations | 221 | 284 | 240 | 217 | 217 | 219 |
+| bow activations | 498 | 560 | 510 | 489 | 491 | 492 |
+| platform activations | 86 | 129 | 113 | 87 | 88 | 87 |
+| arrows fired | 484 | 551 | 497 | 476 | 476 | 479 |
+| arrow hits | 2 | 3 | 1 | 2 | 2 | 2 |
+| winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 | 297/300 |
 
-The episode-length gap fell from +10.4 to -0.6 decisions (94% by absolute
-gap). Mean position divergence remains under 0.002 through decision 16, then
-grows chaotically (0.083/0.197 at decisions 31/46 after the change).
+The episode-length gap fell from +10.4 to -0.7 decisions. Mean position
+divergence remains under 0.002 through decision 16, then grows chaotically
+(0.083/0.199 at decisions 31/46). Restoring the spawned-platform rotation
+spring reduced the later decision-106/121 divergences from 1.436/2.690 to
+1.238/1.580 units and improved winner agreement by one episode.
 
 Scripted A/B traces (`native/rl/research/rust_ab/*.c`, built against
 `bopl_rl.h` the same way as `fidelity_gate.c`) cover movement states, bow
@@ -313,13 +315,26 @@ boundary. In `platform_ab`, the orbiter position is identical to 12 decimal
 places at every sampled tick with the Q32.32 `Fix` (with the f64 `Fix` it
 drifts one raw unit per tick, 2.3e-7 units at tick 1620; see "Number type")
 and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform deltas fell
-from 1.385/1.743 to 0.047/0.011 units; their final deltas are 0.044/0.002. The
-player's maximum/final delta is 0.041/0.041 after matching Platform's
+from 1.385/1.743 to 0.047/0.041 units; their final deltas are 0.045/0.040. The
+player's maximum/final delta is 0.035/0.033 after matching Platform's
 synchronous exit callback (previous maximum: 0.788). In `ability_hitbox_ab`,
 the swept implementation missed an arrow/Bow collision that .NET delivered at
 tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
 counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
 backends retain one live arrow (`1/1`).
+
+`platform_rotation_ab` isolates the rotation repair. In an airborne short-size
+case with no RR contact, f64 remains exactly at 3.135432668496 rad from tick
+329 through 700; Q32 behaves equivalently, while .NET's initial scheduling
+kick damps to 5.6e-9 rad/s. In an intentionally tall platform that bears
+against terrain, the old f64 build reached 1.398 rad maximum displacement and
+1.396 rad/s maximum angular speed over ticks 329-700. The repaired build
+reaches 0.0203 rad and 0.0298 rad/s, close to .NET's contact-loaded 0.0110 rad
+and 0.0306 rad/s. The overnight-2 replay's platform 18 changes from a visible
+1.5830 -> 1.0453 rad rotation by age 190 to 1.5830 -> 1.5768 rad under the
+same continuing terrain load; angular speed falls from -0.3406 to -0.0048
+rad/s. The .NET replay lands that platform elsewhere, with no continuing
+contact, and settles at 1.5831333 rad and zero angular speed by age 170.
 
 `ability_spawner_ab` observes no layer-13 pickup on either backend under the
 default RL configuration and one only in .NET with
