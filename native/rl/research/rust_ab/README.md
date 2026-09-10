@@ -11,6 +11,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 
 - `move_ab.c`: fixed-action angle sweep, positions per decision.
 - `state_ab.c`: idle/run/turn/stop, SlimeController state and timers.
+- `entity_velocity_ab.c`: distinguishes the one-tick-stale public player
+  position and zero-velocity trigger PhysicsBody from the current-tick moving
+  PlayerBody state in slime records.
 - `dash_phase_ab.c`: tick-level dash activation, anticipation, collider, and
   displacement phases.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
