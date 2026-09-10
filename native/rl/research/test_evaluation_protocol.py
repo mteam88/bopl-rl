@@ -6,7 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
+from evaluation_protocol import (SCRIPTED_NAMES,checkpoint_identity,map_ids,opponents,schedule,
+                                 scripted_names,scripted_opponent)
 
 
 class EvaluationProtocolTests(unittest.TestCase):
@@ -39,6 +40,40 @@ class EvaluationProtocolTests(unittest.TestCase):
         identity=lambda t:(t['opponent'],t['map'],t['seed'],t['side'])
         self.assertFalse(set(map(identity,tasks))&set(map(identity,diagnostic)))
 
+    def test_scripted_opponents_schedule_on_every_map_with_paired_sides(self):
+        scripted=['mixed-hard','archer-medium']
+        tasks,groups=schedule([0],[1,2],[],8,4,16,10001,20001,30001,scripted=scripted)
+        counts=Counter((t['opponent'],t['map']) for t in tasks)
+        for name in scripted:
+            self.assertEqual(counts[name,0],8)
+            for m in (1,2): self.assertEqual(counts[name,m],4)
+            self.assertIn((name,0),groups); self.assertIn((name,1),groups)
+        pairs=defaultdict(set)
+        for task in tasks:
+            if task['opponent'] in scripted:
+                pairs[task['opponent'],task['map'],task['seed']].add(task['side'])
+        self.assertTrue(pairs and all(sides=={0,1} for sides in pairs.values()))
+        self.assertEqual(len({t['name'] for t in tasks}),len(tasks))
+        # One replay saved per scripted group, like every other opponent.
+        for name in scripted:
+            self.assertEqual(sum(t['save'] for t in tasks if t['opponent']==name),3)
+        # Without scripted opponents the schedule is exactly the old one.
+        old,_=schedule([0],[1,2],[],8,4,16,10001,20001,30001)
+        identity=lambda t:(t['opponent'],t['map'],t['seed'],t['side'])
+        self.assertEqual([identity(t) for t in old],
+                         [identity(t) for t in tasks if t['opponent'] not in scripted])
+
+    def test_scripted_names_parse_and_reject(self):
+        self.assertEqual(scripted_opponent('mixed-hard'),(4,2))
+        self.assertEqual(scripted_opponent('archer-easy'),(1,0))
+        for name in ('random','initial','trained-s73','mixed','mixed-extreme','bow-hard'):
+            self.assertIsNone(scripted_opponent(name))
+        self.assertEqual(scripted_names('mixed-hard,evasive-medium'),['mixed-hard','evasive-medium'])
+        self.assertEqual(scripted_names(''),[])
+        for value in ('mixed','mixed-hard,mixed-hard','pursuer-hardest'):
+            with self.assertRaises(ValueError): scripted_names(value)
+        self.assertEqual(len(SCRIPTED_NAMES),12)
+
     def test_invalid_maps_and_counts_fail(self):
         for value in ('','0,0','-1','31'):
             with self.assertRaises(ValueError): map_ids(value)
@@ -68,6 +103,10 @@ class EvaluationProtocolTests(unittest.TestCase):
             sidecar.write_text(json.dumps(metadata))
             manifest.write_text(json.dumps(dict(schema=2, opponents=[item, item])))
             with self.assertRaisesRegex(ValueError, 'distinct'):
+                opponents(manifest)
+            # Scripted bot names are reserved alongside random/initial/selfplay.
+            manifest.write_text(json.dumps(dict(schema=2, opponents=[dict(item, name='mixed-hard')])))
+            with self.assertRaisesRegex(ValueError, 'distinct safe names'):
                 opponents(manifest)
 
     def test_native_identity_requires_a_valid_sidecar(self):

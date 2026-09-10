@@ -6,17 +6,18 @@ import unittest
 import numpy as np
 import torch
 
+import layout
 from native_checkpoint import write_checkpoint
 from native_policy import load
 
 
 class NativeCheckpointTests(unittest.TestCase):
     def test_checkpoint_loads_with_physical_and_learner_counters(self):
-        for architecture, obs in (("puffernet-mingru", 11), ("bopl-set-mingru-v1", 3257)):
+        for architecture, obs in (("puffernet-mingru", 11), (layout.ARCHITECTURE, layout.OBS_SIZE)):
             with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
                 hidden = 8
-                encoder = hidden * obs if obs == 11 else hidden * 905 + 64 * 49 + hidden * (hidden + 128)
-                weights = np.linspace(-.02, .02, encoder + 273 * hidden + 3 * hidden**2, dtype=np.float32)
+                encoder = hidden * obs if obs == 11 else layout.set_encoder_weights(hidden)
+                weights = np.linspace(-.02, .02, encoder + layout.DECODER * hidden + 3 * hidden**2, dtype=np.float32)
                 path = Path(directory) / "policy-000000032.bin"
                 kwargs = dict(obs_size=obs, hidden=hidden, num_layers=1, architecture=architecture,
                               game_steps=32, learner_steps=24, config=dict(training_maps=[0, 1, 2], episode_ticks=7200))
@@ -25,8 +26,13 @@ class NativeCheckpointTests(unittest.TestCase):
                 self.assertEqual(result, metadata)
                 self.assertEqual(metadata["step"], 32)
                 self.assertEqual(metadata["learner_steps"], 24)
-                for output in policy.step(torch.ones(1, obs), policy.initial(1)):
+                self.assertEqual(metadata["action_sizes"], layout.ACTION_SIZES)
+                logits, value, state = policy.step(torch.ones(1, obs), policy.initial(1))
+                self.assertEqual(tuple(logits.shape), (1, layout.LOGITS))
+                for output in (logits, value, state):
                     self.assertTrue(torch.isfinite(output).all())
+                with self.assertRaises(ValueError):
+                    write_checkpoint(Path(directory) / "v1.bin", weights.tofile, **dict(kwargs, architecture="bopl-set-mingru-v1"))
                 with self.assertRaises(FileExistsError):
                     write_checkpoint(path, weights.tofile, **kwargs)
                 self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [path.name, path.name + ".json"])
@@ -41,7 +47,7 @@ class NativeCheckpointTests(unittest.TestCase):
                 raise RuntimeError("Native save failed")
             with self.assertRaises(RuntimeError):
                 write_checkpoint(path, failed, **kwargs)
-            count = 8 * (11 + 273) + 3 * 8**2
+            count = 8 * (11 + layout.DECODER) + 3 * 8**2
             for weights in (np.zeros(count - 1, np.float32), np.full(count, np.nan, np.float32)):
                 with self.assertRaises(ValueError):
                     write_checkpoint(path, weights.tofile, **kwargs)

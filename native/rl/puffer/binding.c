@@ -1,8 +1,10 @@
 #include "bopl_puffer.h"
 #define OBS_SIZE BOPL_OBS_SIZE
-#define NUM_ATNS 2
-#define ACT_SIZES {256, 16}
+#define NUM_ATNS BOPL_NUM_ATNS
+#define ACT_SIZES {BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD}
 #define OBS_TENSOR_T FloatTensor
+/* Per-agent action mask over the concatenated heads (see BoplPuffer.action_mask). */
+#define MY_ACTION_MASK BOPL_LOGITS
 #define Env BoplPuffer
 /* Every player is routed through per-slot pointers (my_setup_perm), so the
  * trainer's agent permutation and the historical-opponent slots actually take
@@ -70,6 +72,10 @@ void my_init(Env *env, Dict *kwargs) {
      * final trainer's timeout penalty. */
     env->reward_kill=(float)option(kwargs, "reward_kill_milli", 100)/1000.0f;
     env->reward_timeout=(float)option(kwargs, "reward_timeout_milli", 0)/1000.0f;
+    /* Scripted opponent banks (bopl_bots.h): nibble b of scripted_kinds is the
+     * bot kind bank b plays instead of frozen weights (0 = policy bank). */
+    env->scripted_kinds=(uint32_t)option(kwargs, "scripted_kinds", 0);
+    env->scripted_level=option(kwargs, "scripted_level", BOPL_BOT_HARD);
     if (env->players<1 || env->players>6 || env->repeat<1 || env->repeat>16) abort();
     for (int i=0; i<env->players; i++) {
         env->config.player[i].abilities[0]=(uint32_t)option(kwargs, "ability1", 2);
@@ -88,6 +94,7 @@ void my_setup_perm(StaticVec *vec, Env *env, int slot_base) {
         env->action_ptr[s]=vec->actions+(size_t)phys*NUM_ATNS;
         env->reward_ptr[s]=vec->rewards+phys;
         env->terminal_ptr[s]=vec->terminals+phys;
+        env->mask_ptr[s]=vec->action_mask+(size_t)phys*MY_ACTION_MASK;
     }
 }
 void my_log(Log *log, Dict *out) {
@@ -102,10 +109,10 @@ void my_log(Log *log, Dict *out) {
         "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
         "map_28_fraction", "map_29_fraction", "map_30_fraction"
     };
-    if (out->capacity<64) {
-        DictItem *items=realloc(out->items,64*sizeof(DictItem));
+    if (out->capacity<96) {
+        DictItem *items=realloc(out->items,96*sizeof(DictItem));
         if (!items) abort();
-        out->items=items;out->capacity=64;
+        out->items=items;out->capacity=96;
     }
     dict_set(out, "perf", log->perf); dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return); dict_set(out, "episode_length", log->episode_length);
@@ -113,10 +120,18 @@ void my_log(Log *log, Dict *out) {
     dict_set(out, "observation_overflow", log->observation_overflow); dict_set(out, "game_errors", log->game_errors);
     dict_set(out, "learner_episodes", log->learner_episodes); dict_set(out, "learner_wins", log->learner_wins);
     dict_set(out, "historical_episodes", log->historical_episodes); dict_set(out, "historical_wins", log->historical_wins);
+    static const char *hold_keys[BOPL_ACT_HOLD]={"hold_1","hold_2","hold_4","hold_8","hold_16"};
+    for (int h=0; h<BOPL_ACT_HOLD; h++) dict_set(out, hold_keys[h], log->hold_choice[h]);
+    dict_set(out, "latched_decisions", log->latched_decisions);
     static const char *bank_n[8]={"hist_n_bank_0","hist_n_bank_1","hist_n_bank_2","hist_n_bank_3","hist_n_bank_4","hist_n_bank_5","hist_n_bank_6","hist_n_bank_7"};
     static const char *bank_score[8]={"hist_score_bank_0","hist_score_bank_1","hist_score_bank_2","hist_score_bank_3","hist_score_bank_4","hist_score_bank_5","hist_score_bank_6","hist_score_bank_7"};
     for (int bank=0; bank<8; bank++) if (log->hist_n_bank[bank]) {
         dict_set(out, bank_n[bank], log->hist_n_bank[bank]); dict_set(out, bank_score[bank], log->hist_score_bank[bank]);
+    }
+    static const char *bot_n[8]={"bot_n_bank_0","bot_n_bank_1","bot_n_bank_2","bot_n_bank_3","bot_n_bank_4","bot_n_bank_5","bot_n_bank_6","bot_n_bank_7"};
+    static const char *bot_score[8]={"bot_score_bank_0","bot_score_bank_1","bot_score_bank_2","bot_score_bank_3","bot_score_bank_4","bot_score_bank_5","bot_score_bank_6","bot_score_bank_7"};
+    for (int bank=0; bank<8; bank++) if (log->bot_n_bank[bank]) {
+        dict_set(out, bot_n[bank], log->bot_n_bank[bank]); dict_set(out, bot_score[bank], log->bot_score_bank[bank]);
     }
     for (int map=0; map<31; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);

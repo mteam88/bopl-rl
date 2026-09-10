@@ -6,10 +6,14 @@ Each thread and batch size owns a C context; recurrent state belongs to the
 caller, so independent games cannot leak memory into one another.
 
 Checkpoint sidecar: <weights.bin>.json, schema 1, backend=pufferlib-native,
-architecture=puffernet-mingru or bopl-set-mingru-v1, precision=float32, obs_size, hidden, num_layers,
-action_sizes=[256,16], weights_sha256, and step (physical player decisions,
-matching dashboard metrics and evaluation reports). Record learner_steps
-separately for checkpoint cadence and the training budget.
+architecture=puffernet-mingru or layout.ARCHITECTURE (bopl-set-mingru-v2),
+precision=float32, obs_size, hidden, num_layers, action_sizes=layout.ACTION_SIZES
+([256,16,5]: aim, buttons, hold length), weights_sha256, and step (physical
+player decisions, matching dashboard metrics and evaluation reports). Record
+learner_steps separately for checkpoint cadence and the training budget.
+
+step() returns layout.LOGITS policy logits (heads concatenated in
+layout.ACTION_SIZES order), the value, and the next recurrent state.
 """
 import argparse
 import ctypes
@@ -22,10 +26,12 @@ import threading
 import numpy as np
 import torch
 
+import layout
+
 ROOT = Path(__file__).resolve().parents[3]
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 LIBRARY = ROOT / "native/artifacts/rl/libbopl_policy_eval.so"
-ARCHITECTURES = {"puffernet-mingru", "bopl-set-mingru-v1"}
+ARCHITECTURES = {"puffernet-mingru", layout.ARCHITECTURE}
 
 
 def build(output=LIBRARY):
@@ -74,19 +80,19 @@ class NativePolicy:
         self.num_layers = int(num_layers)
         if self.obs_size < 1 or self.hidden < 8 or self.hidden % 8 or self.num_layers < 1:
             raise ValueError("Positive dimensions and hidden size divisible by eight are required")
-        encoder_weights = self.hidden * self.obs_size
-        if self.architecture == "bopl-set-mingru-v1":
-            if self.obs_size != 3257:
-                raise ValueError("Bopl set checkpoints require 3257 observation features")
-            encoder_weights = self.hidden * 905 + 64 * (21 + 28) + self.hidden * (self.hidden + 128)
-        expected = encoder_weights + self.hidden * 273 + self.num_layers * 3 * self.hidden**2
+        if self.architecture == layout.ARCHITECTURE and self.obs_size != layout.OBS_SIZE:
+            raise ValueError(f"Bopl set checkpoints require {layout.OBS_SIZE} observation features")
+        # layout.policy_weights for the set encoder; the linear encoder accepts any obs width.
+        encoder_weights = (layout.set_encoder_weights(self.hidden) if self.architecture == layout.ARCHITECTURE
+                           else self.hidden * self.obs_size)
+        expected = encoder_weights + self.hidden * layout.DECODER + self.num_layers * 3 * self.hidden**2
         self.weights = np.asarray(weights, dtype=np.float32).reshape(-1).copy()
         if self.weights.size != expected or not np.isfinite(self.weights).all():
             raise ValueError(f"Expected {expected} finite native weights, got {self.weights.size}")
         self.weights.flags.writeable = False
         self.lib = _library(library)
         self.create = self.lib.bopl_policy_eval_create
-        if self.architecture == "bopl-set-mingru-v1":
+        if self.architecture == layout.ARCHITECTURE:
             self.create = self.lib.bopl_policy_eval_create_set
             self.create.argtypes = self.lib.bopl_policy_eval_create.argtypes
             self.create.restype = ctypes.c_void_p
@@ -118,12 +124,13 @@ class NativePolicy:
             self.local.contexts[batch] = _Context(self.lib, self.create, self.weights, batch, self.obs_size,
                                                 self.hidden, self.num_layers)
         context = self.local.contexts[batch]
-        output = np.empty((batch, 273), dtype=np.float32)
+        output = np.empty((batch, layout.DECODER), dtype=np.float32)
         next_state = np.empty_like(current)
         self.lib.bopl_policy_eval_step(context.handle, obs, current, output, next_state)
         if not np.isfinite(output).all() or not np.isfinite(next_state).all():
             raise FloatingPointError("Native checkpoint produced nonfinite policy output")
-        return torch.from_numpy(output[:, :272].copy()), torch.from_numpy(output[:, 272].copy()), torch.from_numpy(next_state)
+        return (torch.from_numpy(output[:, :layout.LOGITS].copy()), torch.from_numpy(output[:, layout.LOGITS].copy()),
+                torch.from_numpy(next_state))
 
 
 def load(path, device="cpu", metadata=None, library=LIBRARY):
@@ -132,7 +139,7 @@ def load(path, device="cpu", metadata=None, library=LIBRARY):
     path = Path(path)
     meta = dict(metadata) if metadata is not None else json.loads(Path(str(path) + ".json").read_text())
     expected = {"schema": 1, "backend": "pufferlib-native",
-                "precision": "float32", "action_sizes": [256, 16]}
+                "precision": "float32", "action_sizes": list(layout.ACTION_SIZES)}
     for key, value in expected.items():
         if meta.get(key) != value:
             raise ValueError(f"Unsupported native checkpoint {key}: {meta.get(key)!r}")

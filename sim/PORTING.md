@@ -11,6 +11,18 @@ decides the question (usually: the oracle trace).
   mechanical copy`). Presentation/Steam/menu classes compile against data-only
   stubs and are simply never driven.
 - `Properties/AssemblyInfo.cs` was not copied (Unity assembly metadata).
+- **Many-worlds deviation (2026-09-09, `native/rl/SIM_OVERHAUL.md` section
+  3)**: the per-match static fields (~110, every one carries the comment
+  `// per world: RlWorldState`) are `[System.ThreadStatic] internal static`
+  and their initialisers moved to `sim/Gameplay/RlWorldState.cs`, which
+  restores them when a thread binds a `UnityShim.World` and captures them on
+  unbind. Auto-properties with such backing state (`GameTime.PlayerTimeScale`,
+  `GameSessionHandler.SuddenDeathInProgress`, `ReplaySession.Playing/Recording`)
+  became explicit properties over a thread-static field. `Player.InputProfile.
+  GenerateInputVectorTable` fills a local and publishes it whole. Behaviour in
+  a single world is unchanged; the change lets many worlds tick concurrently
+  in one process. Process-wide constants (layer indices, `Constants.*`,
+  `achievementNames`) stayed plain statics on purpose.
 
 ## Shim deviations (sim/UnityShim, ~5.7k LOC)
 
@@ -314,5 +326,9 @@ the worker process + unix socket with direct calls. Smoke test:
       sort; the same fix resolved the REAL g3 physics divergence
       (Mjolnir/Portal iterate FindObjectsOfType<SlimeController> newest-first
       in Unity). All 15 committed fixtures now match unfiltered.
-- [ ] native_check checksum vs the socket path (RL thread) — same 240-step
-      zero-action sequence, compare FNV-1a over the decoded states.
+- [x] native_check checksum vs the socket path — `native/rl/backend_check.c`
+      runs the same sequence through `bopl_rl.c` + `Host` and through the .so:
+      identical (`5381bf21573b20a6` for the 240 zero-action ticks, plus a
+      242-decision scripted game with respawns and a dirty reset). The same
+      tool dlopens up to 16 file copies of the .so in one process, all
+      agreeing (2026-09-08, `native/rl/evidence/trainer-step/`).

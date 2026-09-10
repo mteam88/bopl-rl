@@ -40,7 +40,7 @@ def game_insights(visual,side):
     for index,frame in enumerate(frames):
         action=frame.get('actions')
         if action:
-            angle,buttons=action[side][:2]
+            angle,buttons=action[side][:2]  # heads: aim, buttons (, hold length index since layout v2)
             # Index 0 means the stick is released, not an angle; the aim-change
             # gauge only compares consecutive decisions that both aim somewhere.
             if angle:

@@ -25,15 +25,15 @@ struct Query {
     speed: i64,
 }
 fn vector(raw: [i64; 2]) -> Vec2 {
-    Vec2::new(Fix(raw[0]), Fix(raw[1]))
+    Vec2::new(Fix::from_raw(raw[0]), Fix::from_raw(raw[1]))
 }
 
 fn evaluate(query: Query) -> Result<Value, String> {
     let center = vector(query.center);
     let extent = vector(query.extent);
     let origin = vector(query.origin);
-    let basis = Vec2::angle(Fix(query.angle));
-    let direction = Vec2::angle(Fix(query.direction));
+    let basis = Vec2::angle(Fix::from_raw(query.angle));
+    let direction = Vec2::angle(Fix::from_raw(query.direction));
     if extent.x <= Fix::ZERO || extent.y <= Fix::ZERO || query.radius < 0 {
         return Err("invalid geometry".into());
     }
@@ -45,21 +45,21 @@ fn evaluate(query: Query) -> Result<Value, String> {
     };
     let circle = Circle {
         center,
-        radius: Fix(query.radius),
+        radius: Fix::from_raw(query.radius),
     };
     let rounded = RoundedRect {
         inner,
-        radius: Fix(query.radius),
+        radius: Fix::from_raw(query.radius),
     };
     let surface = Surface {
         center,
         right: basis,
         up: basis.perp(),
         extents: extent,
-        radius: Fix(query.radius),
+        radius: Fix::from_raw(query.radius),
     };
     let point_result = |result: Result<Vec2, bopl_sim::fixed::MathError>| match result {
-        Ok(point) => json!([point.x.0, point.y.0]),
+        Ok(point) => json!([point.x.raw(), point.y.raw()]),
         Err(bopl_sim::fixed::MathError::DivisionByZero) => json!({"error":"division_by_zero"}),
         Err(_) => json!({"error":"domain"}),
     };
@@ -67,26 +67,27 @@ fn evaluate(query: Query) -> Result<Value, String> {
         "surface_normal" => return Ok(point_result(Ok(surface.normal(origin)))),
         "surface_closest" => return Ok(point_result(surface.closest_point(origin))),
         "surface_position" => {
-            return Ok(point_result(Ok(
-                surface.position(Fix(query.local), Fix(query.player_radius))
-            )));
+            return Ok(point_result(Ok(surface.position(
+                Fix::from_raw(query.local),
+                Fix::from_raw(query.player_radius),
+            ))));
         }
         "surface_move" => {
             return Ok(json!(
                 surface
                     .move_unblocked(
-                        Fix(query.local),
-                        Fix(query.player_radius),
-                        Fix(query.speed),
+                        Fix::from_raw(query.local),
+                        Fix::from_raw(query.player_radius),
+                        Fix::from_raw(query.speed),
                         Fix::ONE / Fix::from_int(60)
                     )
-                    .0
+                    .raw()
             ));
         }
         "surface_local" => {
             return Ok(
-                match surface.local_position(origin, Fix(query.player_radius)) {
-                    Ok(value) => json!(value.0),
+                match surface.local_position(origin, Fix::from_raw(query.player_radius)) {
+                    Ok(value) => json!(value.raw()),
                     Err(bopl_sim::fixed::MathError::DivisionByZero) => {
                         json!({"error":"division_by_zero"})
                     }
@@ -102,7 +103,7 @@ fn evaluate(query: Query) -> Result<Value, String> {
         "rounded_overlap" => return Ok(json!(rounded.overlaps(origin))),
         "closest" => {
             return Ok(match rounded.closest_point(origin) {
-                Ok(point) => json!([point.x.0, point.y.0]),
+                Ok(point) => json!([point.x.raw(), point.y.raw()]),
                 Err(bopl_sim::fixed::MathError::DivisionByZero) => {
                     json!({"error":"division_by_zero"})
                 }
@@ -112,7 +113,7 @@ fn evaluate(query: Query) -> Result<Value, String> {
         name => return Err(format!("unknown operation: {name}")),
     };
     Ok(match hit {
-        Some(hit) => json!({"hit":true,"near":hit.near.0,"far":hit.far.0}),
+        Some(hit) => json!({"hit":true,"near":hit.near.raw(),"far":hit.far.raw()}),
         None => json!({"hit":false}),
     })
 }

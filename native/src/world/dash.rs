@@ -48,7 +48,7 @@ impl Player {
     }
     pub(super) fn dash_step(&mut self, action: Action, platforms: &[Platform]) {
         self.dash.time += DT;
-        if self.dash.time < Fix(42_949_672) {
+        if self.dash.time < Fix::from_raw(42_949_672) {
             let aim = action.direction();
             if aim.length() > Fix::from_f32(0.4) {
                 self.dash.input = aim;
@@ -97,8 +97,13 @@ impl Player {
             }
         } else {
             if self.dash.updates > 2 {
-                if let Some(id) = self.dash.hit_ground {
-                    let platform = platforms.iter().find(|p| p.id == id).unwrap();
+                // Unity's `hitGround != null` is false once the platform has been
+                // destroyed mid-dash, so the C# falls through to the free dash.
+                let landing = self
+                    .dash
+                    .hit_ground
+                    .and_then(|id| platforms.iter().find(|p| p.id == id));
+                if let Some(platform) = landing {
                     self.position = platform.surface.position(self.dash.hit_local, self.radius);
                     self.attach(platform, self.position);
                     self.dash.local = self.local;
@@ -121,7 +126,6 @@ impl Player {
                 self.local = self.dash.saved_local;
                 self.velocity = self.dash.input * Fix::from_int(60);
                 self.external_velocity = Vec2::ZERO;
-                self.collision_rays(platforms);
             }
             self.dash.updates += 1;
         }

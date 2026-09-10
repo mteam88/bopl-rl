@@ -406,7 +406,8 @@ namespace UnityEngine.EventSystems
 
 	public class EventSystem : UIBehaviour
 	{
-		public static EventSystem current { get; set; }
+		// Per world: set by this world's EventSystem object.
+		public static EventSystem current { get => UnityShim.World.Current.eventSystem; set => UnityShim.World.Current.eventSystem = value; }
 		public GameObject currentSelectedGameObject { get; private set; }
 		public bool sendNavigationEvents { get; set; } = true;
 		public bool alreadySelecting => false;

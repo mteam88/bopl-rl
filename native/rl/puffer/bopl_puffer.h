@@ -1,6 +1,8 @@
 #ifndef BOPL_PUFFER_H
 #define BOPL_PUFFER_H
 #include "bopl_rl.h"
+#include "bopl_layout.h"
+#include "bopl_bots.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -8,9 +10,6 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { BOPL_OBS_ENTITIES=96, BOPL_OBS_SLIMES=12, BOPL_ABILITY_COUNT=39,
-       BOPL_PLAYER_FEATURES=148, BOPL_ENTITY_FEATURES=21, BOPL_SLIME_FEATURES=28,
-       BOPL_OBS_SIZE=10+6*BOPL_PLAYER_FEATURES+BOPL_OBS_ENTITIES*BOPL_ENTITY_FEATURES+BOPL_OBS_SLIMES*BOPL_SLIME_FEATURES+7 };
 enum { BOPL_EVENT_FIELDS=9, BOPL_TELEMETRY_SIZE=16,
        BOPL_REWARD_OUTCOME=9, BOPL_REWARD_KILLS, BOPL_REWARD_DEATHS,
        BOPL_EPISODES, BOPL_WINS, BOPL_TIMEOUTS, BOPL_TICKS };
@@ -24,6 +23,14 @@ typedef struct {
      * learner's score in them. A match whose opponent weights were swapped
      * while it ran (see c_step) counts in neither. */
     float hist_n_bank[8], hist_score_bank[8];
+    /* Matches the learner played against a scripted bot in bank b (SCRIPTED_BOTS.md),
+     * kept out of hist_*_bank so the pool's swap/Elo statistics only see the
+     * bank's frozen weights. */
+    float bot_n_bank[8], bot_score_bank[8];
+    /* Hold head (learner decisions, n-averaged): how often each hold length
+     * was chosen when the button state was free, and how many decisions the
+     * button head was ignored because a latch was in force. */
+    float hold_choice[BOPL_ACT_HOLD], latched_decisions;
     float map_fraction[31];
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
@@ -39,12 +46,24 @@ typedef struct {
     double map_matches[BOPL_COUNTER_MAPS]; /* completed matches per map */
 } BoplCounters;
 _Static_assert(sizeof(BoplCounters)==BOPL_COUNTER_SIZE*sizeof(double), "BoplCounters layout");
+/* Fraction of a scripted bank's matches that the bot plays; the rest fall to
+ * the bank's frozen weights, so a curriculum can start on bots and hand over
+ * to self-play. Process-wide and exported: train.py lowers it between updates
+ * through ctypes (`bopl_scripted_share` in the trainer module), which is why
+ * it is a plain global read once per c_reset rather than a kwarg. */
+float bopl_scripted_share=1.0f;
 typedef struct {
     Log log;
     /* Base pointers assigned by PufferLib's vector (slot 0 of this environment).
      * Everything is routed through the per-slot pointers below instead, filled
      * by my_setup_perm from the vector's agent permutation. */
     float *observations, *actions, *rewards, *terminals;
+    /* PufferLib action mask (MY_ACTION_MASK = BOPL_LOGITS bytes per agent, 1 =
+     * allowed). While a player's buttons are latched, the button head is
+     * masked to the latched state and the hold head to length 1, so the
+     * sampler returns them with log-probability 0 and the loss kernel gives
+     * those heads no gradient or entropy: latched decisions are not decisions. */
+    unsigned char *action_mask;
     /* Vector slots this environment consumes (PufferLib's "num_agents"). A
      * self-play or evaluation environment uses one slot per player. A
      * historical environment (banks>0, two players) uses slot 0 for the
@@ -53,6 +72,7 @@ typedef struct {
      * the rest idle. Player p writes to and reads from slot bopl_slot(env, p). */
     int num_agents, players, banks;
     float *obs_ptr[BOPL_MAX_SLOTS], *action_ptr[BOPL_MAX_SLOTS], *reward_ptr[BOPL_MAX_SLOTS], *terminal_ptr[BOPL_MAX_SLOTS];
+    unsigned char *mask_ptr[BOPL_MAX_SLOTS];
     /* PufferLib selfplay-pool protocol (MY_USES_TAGS): tag 0 self-play,
      * 1+active_bank historical. boundary_reached is raised at every match
      * start and cleared by the trainer (count_aligned reset) right after it
@@ -102,6 +122,20 @@ typedef struct {
     float last_telemetry[6*BOPL_TELEMETRY_SIZE];
     BoplRlTelemetry previous_telemetry[6];
     uint32_t deaths[6], kills[6], steps;
+    /* Button latch (hold head). hold_left: decisions the latched button state
+     * still applies after this one; held: that state; hold_run: consecutive
+     * decisions each button has been down (0 when up). Aim is never latched. */
+    int hold_left[6]; uint16_t held[6]; int hold_run[6][4];
+    /* Scripted opponents (bopl_bots.h, SCRIPTED_BOTS.md). Training: banks whose
+     * nibble in scripted_kinds is set play a bot instead of frozen weights (the
+     * bank's GPU rows still run; their sampled actions are ignored). Evaluation:
+     * research_bot pins a bot on a player. bot_select is the per-player
+     * assignment of the current match; bots draw from their own rng stream so
+     * a scripted run's map/seed/side sequences match an unscripted one. */
+    uint32_t scripted_kinds; int scripted_level;
+    uint8_t bot_select[6], bot_select_level[6];
+    BoplBot bots[6];
+    uint32_t bot_rng;
     /* Reward shaping. Phase-1 comparison keeps the old trainer's values (kill
      * 0.1, timeout 0); the final trainer uses sparse outcome only, with a
      * timeout penalty paid by both players. */
@@ -199,16 +233,22 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
                 if (state->slimes[j].owner==player->id) { slime=&state->slimes[j]; break; }
             if (slime) {
             for (int slot=0; slot<3; slot++) {
-                float *ability=out+16+slot*44;
-                uint32_t id=slime->abilities[slot]; ability[id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT]=1;
+                float *ability=out+16+slot*BOPL_ABILITY_FEATURES;
+                uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
+                ability[id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT]=1;
                 double cooldown=bopl_fix(slime->cooldowns[slot]), timer=bopl_fix(slime->timers[slot]);
                 ability[40]=bopl_clip(cooldown>0?timer/cooldown:0);
                 ability[41]=bopl_clip(cooldown/60.0);
-                ability[42]=(slime->ability_flags[slot]&2)!=0; ability[43]=(slime->ability_flags[slot]&4)!=0;
+                ability[42]=(flags&2)!=0; ability[43]=(flags&4)!=0;
+                /* v2: in use right now, and the bow's charge (loadingFrame 0..4;
+                 * a full charge fires a 5x arrow). Visible for every player, as
+                 * the bow sprite is on screen for a human. */
+                ability[44]=(flags&BOPL_ABILITY_ACTIVE)!=0;
+                ability[45]=(flags&BOPL_ABILITY_ACTIVE)?((flags>>BOPL_ABILITY_CHARGE_SHIFT)&BOPL_ABILITY_CHARGE_MASK)/4.0f:0.0f;
             }
             } else for (int slot=0; slot<3; slot++) {
                 uint32_t id=env->config.player[index].abilities[slot];
-                out[16+slot*44+(id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT)]=1;
+                out[16+slot*BOPL_ABILITY_FEATURES+(id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT)]=1;
             }
         }
         for (int i=0; i<count; i++) {
@@ -245,16 +285,49 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
     }
 }
 static void compute_observations(BoplPuffer *env) { compute_observations_from(env, bopl_rl_state(env->world)); }
-static void bopl_previous_action(float *previous, BoplRlAction action) {
+/* Own-action tail (BOPL_PREVIOUS_FEATURES): the decision as applied to the game
+ * (latched buttons, live aim), the latch remaining after it, and how long each
+ * button has been held. hold_left/hold_run may be NULL (no latch state). */
+static void bopl_previous_action(float *previous, BoplRlAction action, int hold_left, const int *hold_run) {
     double angle=(action.angle-1)*6.283185307179586/255.0;
     previous[0]=action.angle==0;
     previous[1]=action.angle?cos(angle):0; previous[2]=action.angle?sin(angle):0;
     for (int bit=0; bit<4; bit++) previous[3+bit]=(action.buttons&(1<<bit))!=0;
+    previous[7]=bopl_clip((double)hold_left/BOPL_HOLD_MAX);
+    for (int bit=0; bit<4; bit++) previous[8+bit]=bopl_clip((hold_run?hold_run[bit]:0)/(double)BOPL_HOLD_MAX);
+}
+/* Apply the hold head: a free button state adopts the head's buttons and
+ * latches them for BOPL_HOLD_LENGTHS[hold] decisions; a latched one ignores
+ * the button head. Returns the buttons to send; updates latch bookkeeping. */
+static uint16_t bopl_latch(BoplPuffer *env, int player, uint16_t buttons, int hold, int *fresh) {
+    if (env->hold_left[player]>0) { env->hold_left[player]--; *fresh=0; }
+    else { env->held[player]=buttons; env->hold_left[player]=BOPL_HOLD_LENGTHS[hold]-1; *fresh=1; }
+    uint16_t applied=env->held[player];
+    for (int bit=0; bit<4; bit++) env->hold_run[player][bit]=(applied&(1<<bit))?env->hold_run[player][bit]+1:0;
+    return applied;
 }
 /* The vector slot player p is routed through this match. */
 static int bopl_slot(const BoplPuffer *env, int player) {
     if (!env->banks) return player;
     return player==env->side?0:1+env->active_bank;
+}
+/* Publish the action mask for player i's next decision from its latch state. */
+static void bopl_write_mask(BoplPuffer *env, int player) {
+    unsigned char *mask=env->mask_ptr[bopl_slot(env, player)];
+    if (!mask) return;
+    memset(mask, 1, BOPL_LOGITS);
+    if (env->hold_left[player]>0) {
+        memset(mask+BOPL_ACT_AIM, 0, BOPL_ACT_BUTTONS+BOPL_ACT_HOLD);
+        mask[BOPL_ACT_AIM+env->held[player]]=1;
+        mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS]=1;
+    } else if (env->hold_run[player][BOPL_BUTTON_ARROW]>0) {
+        /* The arrow was down through the decision just applied, so this free
+         * decision must let go of it: a latch with the arrow is a charge that
+         * fires when it expires, never an indefinite hold (run 005 collapsed
+         * to holding the arrow for the whole episode and never firing). The
+         * head still picks the other three buttons and the next hold length. */
+        for (int b=0; b<BOPL_ACT_BUTTONS; b++) if (b&(1<<BOPL_BUTTON_ARROW)) mask[BOPL_ACT_AIM+b]=0;
+    }
 }
 static uint32_t bopl_side_random(BoplPuffer *env) {
     uint32_t x=env->side_rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->side_rng=x;
@@ -316,9 +389,19 @@ static void init(BoplPuffer *env) {
     env->scratch=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
     if (!env->history || !env->sample || !env->scratch) abort();
     if (env->banks && (env->active_bank<0 || env->active_bank>=env->banks)) { fprintf(stderr, "Bopl RL: historical environment without a bank\n"); abort(); }
+    for (int bank=0; bank<BOPL_MAX_BANKS; bank++) {
+        uint32_t kind=(env->scripted_kinds>>(4*bank))&15u;
+        if (kind>BOPL_BOT_KINDS) { fprintf(stderr, "Bopl RL: unknown scripted bot kind %u\n", kind); abort(); }
+    }
+    if (env->scripted_level<0 || env->scripted_level>=BOPL_BOT_LEVELS) { fprintf(stderr, "Bopl RL: scripted bot level\n"); abort(); }
+    env->bot_rng=env->rng*2654435761u ^ 0x9E3779B9u;
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
-    if (!env->no_autoreset) {
+    /* The spare is a second runtime (~240 MB) for an in-process game, the
+     * same memory as its second process for a socket game; BOPL_RL_INPROC_SPARE=0
+     * drops it and pays every reset (~8 ms) on the lockstep instead. */
+    const char *inproc_spare=getenv("BOPL_RL_INPROC_SPARE");
+    if (!env->no_autoreset && !(bopl_rl_in_process(game) && inproc_spare && inproc_spare[0]=='0')) {
         length=snprintf(env->spare_log, sizeof(env->spare_log), "%s/worker-%ld-%u-spare.log", logs, (long)getpid(), env->rng);
         if (length<0 || (size_t)length>=sizeof(env->spare_log)) abort();
         /* Game start-up takes seconds; overlap it with the other workers' start-up. */
@@ -380,17 +463,42 @@ static void c_reset(BoplPuffer *env) {
          * clears rows that held another slot's observation before the
          * trainer's agent permutation was installed (create_pufferl resets
          * under identity routing). */
-        for (int bank=0; bank<env->banks; bank++) memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float));
+        for (int bank=0; bank<env->banks; bank++) {
+            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float));
+            if (env->mask_ptr[1+bank]) memset(env->mask_ptr[1+bank], 1, BOPL_LOGITS);
+        }
         env->side=(int)(bopl_side_random(env)&1u);
         /* A fresh recurrent state for the row this match's opponent runs on. */
         *env->terminal_ptr[1+env->active_bank]=1;
+        /* A scripted bank drives this match's opponent player from C; the
+         * bank's GPU row still steps (fixed graph) but its actions are unread. */
+        memset(env->bot_select, 0, sizeof(env->bot_select));
+        uint32_t kind=(env->scripted_kinds>>(4*env->active_bank))&15u;
+        if (kind) {
+            /* Below full share, a draw from the bot stream decides whether this
+             * match is the bot's or the bank's frozen weights'. */
+            float share=bopl_scripted_share;
+            if (share<1.0f) {
+                env->bot_rng=env->bot_rng*747796405u+2891336453u;
+                if ((float)(env->bot_rng>>8)*(1.0f/16777216.0f)>=share) kind=0;
+            }
+        }
+        if (kind) {
+            env->bot_select[1-env->side]=(uint8_t)kind;
+            env->bot_select_level[1-env->side]=(uint8_t)env->scripted_level;
+        }
+    }
+    for (int i=0; i<env->players; i++) if (env->bot_select[i]) {
+        env->bot_rng=env->bot_rng*747796405u+2891336453u;
+        bopl_bot_reset(&env->bots[i], env->bot_select[i], env->bot_select_level[i], env->bot_rng);
     }
     env->boundary_reached=1; env->matches++;
     compute_observations(env);
     size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
     for (int i=0; i<2; i++) memcpy(env->history+i*env->players*BOPL_OBS_SIZE, env->scratch, bytes);
     env->delay_cursor=0;
-    for (int i=0; i<env->players; i++) env->scratch[(i+1)*BOPL_OBS_SIZE-7]=1;
+    memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
+    for (int i=0; i<env->players; i++) { env->scratch[(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES]=1; bopl_write_mask(env, i); }
     bopl_publish(env);
 }
 static void c_step(BoplPuffer *env) {
@@ -398,16 +506,30 @@ static void c_step(BoplPuffer *env) {
     memset(telemetry, 0, (size_t)env->players*BOPL_TELEMETRY_SIZE*sizeof(float));
     for (int s=0; s<env->num_agents; s++) { *env->reward_ptr[s]=0; *env->terminal_ptr[s]=0; }
     env->stepped++;
-    BoplRlAction actions[6]={{0}};
-    for (int i=0; i<env->players; i++) {
-        const float *action=env->action_ptr[bopl_slot(env, i)];
-        float angle=action[0], buttons=action[1];
-        if (!isfinite(angle) || !isfinite(buttons) || angle<0 || angle>255 || buttons<0 || buttons>15
-            || floorf(angle)!=angle || floorf(buttons)!=buttons) { fprintf(stderr, "Invalid PufferLib action\n"); abort(); }
-        actions[i].angle=(uint8_t)angle; actions[i].buttons=(uint16_t)buttons;
-    }
     const BoplRlState *before=bopl_rl_state(env->world);
     if (!before) bopl_failed(env, "state");
+    BoplRlAction actions[6]={{0}};
+    int fresh[6]={0}, holds[6]={0};
+    for (int i=0; i<env->players; i++) {
+        float angle, buttons, hold;
+        if (env->bot_select[i]) {
+            /* Scripted player: decide from the true current state through the
+             * same latch/mask constraints; the routed slot's action is unread. */
+            uint8_t decided[3];
+            bopl_bot_decide(&env->bots[i], before, i, env->hold_left[i], env->held[i], env->hold_run[i], decided);
+            angle=decided[0]; buttons=decided[1]; hold=decided[2];
+        } else {
+            const float *action=env->action_ptr[bopl_slot(env, i)];
+            angle=action[0]; buttons=action[1]; hold=action[2];
+        }
+        if (!isfinite(angle) || !isfinite(buttons) || !isfinite(hold) || angle<0 || angle>255 || buttons<0 || buttons>15
+            || hold<0 || hold>BOPL_ACT_HOLD-1 || floorf(angle)!=angle || floorf(buttons)!=buttons || floorf(hold)!=hold) {
+            fprintf(stderr, "Invalid PufferLib action\n"); abort();
+        }
+        holds[i]=(int)hold;
+        actions[i].angle=(uint8_t)angle;
+        actions[i].buttons=bopl_latch(env, i, (uint16_t)buttons, holds[i], &fresh[i]);
+    }
     uint32_t ticks=before->header.episode_ticks;
     // Sample at phase 3 of each four-tick decision. At t=12 return the
     // observation from t=3, giving an exact nine-tick delay thereafter.
@@ -454,6 +576,7 @@ static void c_step(BoplPuffer *env) {
             c->kills+=(double)((int64_t)player->kills-env->kills[i]);
             for (int field=0; field<BOPL_TELEMETRY_SIZE; field++) c->telemetry[field]+=stats[field];
             for (int bit=0; bit<4; bit++) c->buttons[bit]+=(actions[i].buttons>>bit)&1u;
+            if (fresh[i]) env->log.hold_choice[holds[i]]++; else env->log.latched_decisions++;
         } else c->opponent_game_decisions++;
         env->deaths[i]=player->deaths; env->kills[i]=player->kills;
         if (terminal) {
@@ -469,7 +592,10 @@ static void c_step(BoplPuffer *env) {
                     /* The pool's Elo/swap statistics skip a match whose opponent
                      * weights the trainer replaced while it ran (the swap
                      * cleared boundary_reached; the next c_reset raises it). */
-                    if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
+                    int scripted=0;
+                    for (int p=0; p<env->players; p++) scripted|=env->bot_select[p];
+                    if (scripted) { env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=won; }
+                    else if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
                 }
             }
         }
@@ -484,8 +610,9 @@ static void c_step(BoplPuffer *env) {
     } else compute_observations(env);
     if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
-        float *previous=env->scratch+(size_t)(i+1)*BOPL_OBS_SIZE-7;
-        bopl_previous_action(previous, actions[i]);
+        float *previous=env->scratch+(size_t)(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES;
+        bopl_previous_action(previous, actions[i], env->hold_left[i], env->hold_run[i]);
+        bopl_write_mask(env, i);
     }
     bopl_publish(env);
 }

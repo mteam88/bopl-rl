@@ -263,7 +263,7 @@ function update() {
     const played = data.map_matches || {};
     $("mapCoverage").textContent = `Training maps: ${(c.training_maps || [0]).join(", ")}.` +
       (Object.keys(played).length ? ` Completed matches: ${Object.entries(played).map(([map,count]) => `map ${map}: ${fmt.format(count)}`).join(" · ")}.` : "");
-    const opponentName = (name) => name === "random" ? "Random buttons" : name === "initial" ? "Starting policy" : name.replace(/^trained-s/, "Previous seed ");
+    const opponentName = (name) => name === "random" ? "Random buttons" : name === "initial" ? "Starting policy" : /^(archer|pursuer|evasive|mixed)-(easy|medium|hard)$/.test(name) ? `Scripted ${name.replace("-", " (")})` : name.replace(/^trained-s/, "Previous seed ");
     $("evaluationRows").replaceChildren(...matrix.groups.map((g) => {
       const row = document.createElement("tr");
       const trained = (c.training_maps || [0]).includes(g.map);
@@ -874,7 +874,7 @@ function selectEvaluation() {
       )
       .map((g) => [
         g.name,
-        `${g.opponent === "selfplay" ? "Self-play" : g.opponent === "initial" ? "vs starting policy" : g.opponent === "random" ? "vs random" : "vs " + g.opponent.replace(/^trained-s/, "previous seed ")} · map ${g.map}`,
+        `${g.opponent === "selfplay" ? "Self-play" : g.opponent === "initial" ? "vs starting policy" : g.opponent === "random" ? "vs random" : /^(archer|pursuer|evasive|mixed)-(easy|medium|hard)$/.test(g.opponent) ? `vs scripted ${g.opponent.replace("-", " (")})` : "vs " + g.opponent.replace(/^trained-s/, "previous seed ")} · map ${g.map}`,
       ]),
   );
   selectMatch();

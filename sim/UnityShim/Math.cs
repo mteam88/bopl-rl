@@ -895,9 +895,11 @@ namespace UnityEngine
 	// Unity's Xorshift128 - documented deviation in sim/PORTING.md.
 	public static class Random
 	{
-		private static System.Random rng = new System.Random(42);
+		// Per world (World.random): a world's draws follow its own history,
+		// exactly as in a process that hosts only that world.
+		private static System.Random rng => UnityShim.World.Current.random;
 
-		public static void InitState(int seed) => rng = new System.Random(seed);
+		public static void InitState(int seed) => UnityShim.World.Current.random = new System.Random(seed);
 
 		public static float value => (float)rng.NextDouble();
 

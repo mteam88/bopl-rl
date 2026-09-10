@@ -57,7 +57,10 @@ impl Vec2 {
         )
     }
     pub fn normalized_angle(self) -> Fix {
-        let x = self.x.checked_rem(Fix(Fix::ONE.0 + 1), true).unwrap();
+        let x = self
+            .x
+            .checked_rem(Fix::from_raw(Fix::ONE.raw() + 1), true)
+            .unwrap();
         let angle = x.acos().expect("normalized vector outside cosine domain");
         if self.y > Fix::ZERO {
             angle

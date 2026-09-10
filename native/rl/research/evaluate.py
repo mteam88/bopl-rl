@@ -12,12 +12,22 @@ from environment import Environment,configure
 from native_policy import load
 from common import atomic_json
 import decision_dump
+import layout
 from telemetry import FIELDS,summarize
-from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
+from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent
+
+def masked(logits,mask):
+    """Apply the environment's action mask (1 = allowed) the way the trainer samples: disallowed logits -> -inf."""
+    return logits.masked_fill(torch.from_numpy(np.asarray(mask,dtype=np.uint8)==0),float('-inf'))
 
 def sample(logits,generator):
+    """One index per head (aim, buttons, hold), shape (batch, layout.NUM_ATNS)."""
     return torch.stack([torch.multinomial(part.softmax(-1),1,generator=generator).squeeze(-1)
-                        for part in logits.split([256,16],-1)],-1)
+                        for part in logits.split(layout.ACTION_SIZES,-1)],-1)
+
+def random_action(rng):
+    """Scripted opponent without a hold output: hold index 0 (length 1) keeps every decision free."""
+    return torch.tensor([rng.integers(layout.ACT_AIM),rng.integers(layout.ACT_BUTTONS),0])
 
 def wilson(wins,n):
     if not n: return [0,1]
@@ -37,6 +47,8 @@ def main():
     parser.add_argument('--heldout-maps',type=map_ids,default=[1,2])
     parser.add_argument('--opponents',type=Path,help='Manifest of frozen trained opponents and SHA256 identities')
     parser.add_argument('--frozen-games',type=int,default=16)
+    parser.add_argument('--scripted-opponents',type=scripted_names,default='mixed-hard',
+                        help='Comma-separated scripted bot names (kind-level, e.g. mixed-hard,archer-medium); empty disables')
     parser.add_argument('--seed-base',type=int,default=10001)
     parser.add_argument('--heldout-seed-base',type=int,default=20001)
     parser.add_argument('--selfplay-seed',type=int,default=30001)
@@ -64,7 +76,8 @@ def main():
     if set(args.heldout_maps)&set(config['training_maps']):
         raise ValueError('A held-out map was used for training')
     tasks,group_keys=schedule(args.evaluation_maps,args.heldout_maps,frozen,args.games_per_opponent,
-                              args.heldout_games,args.frozen_games,args.seed_base,args.heldout_seed_base,args.selfplay_seed)
+                              args.heldout_games,args.frozen_games,args.seed_base,args.heldout_seed_base,args.selfplay_seed,
+                              scripted=args.scripted_opponents)
     out=args.run/('evaluations' if args.suite=='diagnostic' else 'final-evaluations')/f'{step:09d}'
     if (out/'result.json').exists():
         previous=json.loads((out/'result.json').read_text())
@@ -91,30 +104,40 @@ def main():
                 state=policy.initial(2,'cpu')
                 opponent=models.get(task['opponent'])
                 other_state=opponent.initial(2,'cpu') if opponent is not None else None
+                # Scripted bots decide inside the C environment from the true
+                # game state; the caller's action floats for them are ignored.
+                scripted=scripted_opponent(task['opponent'])
+                env.bot(0,0); env.bot(1,0)
+                if scripted is not None: env.bot(1-task['side'],*scripted)
                 generator=torch.Generator().manual_seed(task['seed']*7+task['side'])
                 rng=np.random.default_rng(task['seed']*11+task['side'])
                 frames=[env.frame()] if task['save'] else []
                 mind=[]
-                button_counts=np.zeros(4,dtype=np.int64); decisions=0; events=[]
+                button_counts=np.zeros(4,dtype=np.int64); hold_counts=np.zeros(layout.ACT_HOLD,dtype=np.int64)
+                latched_decisions=0; decisions=0; events=[]
                 while not env.ended:
                     observation=torch.from_numpy(env.obs.copy())
+                    mask=env.mask.copy()
                     with torch.no_grad():
                         logits,values,state=policy.step(observation,state)
+                        logits=masked(logits,mask)
                         actions=sample(logits,generator)
                         other=1-task['side']
                         if opponent is not None:
                             old_logits,_,other_state=opponent.step(observation,other_state)
-                            actions[other]=sample(old_logits,generator)[other]
+                            actions[other]=sample(masked(old_logits,mask),generator)[other]
                         elif task['opponent']=='random':
-                            actions[other]=torch.tensor([rng.integers(256),rng.integers(16)])
+                            actions[other]=random_action(rng)
                     if task['save']:
                         side=task['side']
                         mind.append(decision_dump.decision(env.state.header.episode_ticks,
-                                    logits[side],values[side],actions[side]))
+                                    logits[side],values[side],actions[side],mask[side]))
                     env.step(actions.numpy())
                     events.append(env.telemetry[task['side']].copy())
-                    buttons=int(actions[task['side'],1])
+                    buttons=int(actions[task['side'],1])  # masked to the latched state while a hold is in force
                     for i in range(4): button_counts[i]+=bool(buttons&(1<<i))
+                    if mask[task['side'],layout.ACT_AIM+layout.ACT_BUTTONS:].all(): hold_counts[int(actions[task['side'],2])]+=1  # free decision (the hold head is unmasked; the button head may be arrow-release masked)
+                    else: latched_decisions+=1
                     decisions+=1
                     if task['save']:
                         frames[-1]['actions']=actions.tolist()
@@ -123,7 +146,10 @@ def main():
                 timeout=bool(final['flags']&2); win=bool(me['flags']&2) and not timeout
                 result={**task,'win':win,'timeout':timeout,'kills':me['kills'],'deaths':me['deaths'],
                         'ticks':final['t'],'final_players':final['players'],'behavior':summarize(np.asarray(events)),
-                        'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist()))}
+                        'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist())),
+                        # Hold head: share of free (unlatched) decisions choosing each hold length, as the trainer's hold_* log.
+                        'hold_rates':dict(zip([str(n) for n in layout.HOLD_LENGTHS],(hold_counts/max(1,hold_counts.sum())).tolist())),
+                        'latched_fraction':latched_decisions/max(1,decisions)}
                 if task['save']:
                     replay=out/(task['name']+'.rep'); env.replay(replay)
                     visual=out/(task['name']+'.json')
@@ -156,7 +182,8 @@ def main():
         raise ValueError('Checkpoint or frozen opponents changed during evaluation')
     report=dict(schema=2,decision_dump_schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
                 checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
-                frozen_opponents=frozen,evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
+                frozen_opponents=frozen,scripted_opponents=args.scripted_opponents,
+                evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
                 training_maps=config['training_maps'],
                 seed_base=args.seed_base,heldout_seed_base=args.heldout_seed_base,selfplay_seed=args.selfplay_seed,
                 interval_note='Descriptive Wilson interval; does not adjust for correlation within seed pairs',

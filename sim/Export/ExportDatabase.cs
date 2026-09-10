@@ -12,8 +12,41 @@ namespace BoplSim.Export
 	// Loads native/reference-export/{maps.json,map-N.json,assets.json,manifest.json}
 	// plus sim/Export/settings.json (layers/tags/collision matrix) and installs
 	// scene/resource loading into the UnityShim World.
+	//
+	// One database serves every world of the process (many worlds per runtime).
+	// The immutable inputs (export bytes, parsed scene JSON, settings, type
+	// lookups) are shared, guarded by `gate` where they are lazily filled. The
+	// *objects* built from them are per world (Store): a fresh process has its
+	// own copy of every asset, and gameplay mutates assets in place (material
+	// colours, ScriptableObject fields, prefab templates poked before
+	// Instantiate) - sharing them across worlds would race and, worse, leak
+	// one match's state into another.
 	public sealed class ExportDatabase
 	{
+		private readonly object gate = new object();
+
+		// Per-world object graph: built asset templates, every id the export
+		// gave an object (scene objects and asset sub-objects), placeholder
+		// textures/text assets. Lives on the World (fresh per reset-all).
+		private sealed class Store
+		{
+			public readonly Dictionary<string, UnityEngine.Object> BuiltAssets = new Dictionary<string, UnityEngine.Object>();
+			public readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
+			public readonly Dictionary<string, Texture2D> spriteTextures = new Dictionary<string, Texture2D>();
+			public readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
+		}
+
+		private static Store Current
+		{
+			get
+			{
+				var world = World.Current;
+				return (Store)(world.assetStore ??= new Store());
+			}
+		}
+
+		internal void Register(string id, object target, bool asset) => Current.ObjectsById[id] = target;
+
 		// Levels occupy build indices 6.. (first six scenes are menus, not exported).
 		public const int LevelSceneOffset = 6;
 
@@ -35,19 +68,24 @@ namespace BoplSim.Export
 		private JsonSliceIndex assets;
 		private JsonSliceIndex sprites;
 		internal readonly Dictionary<string, string> GuidByResourcePath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		internal readonly Dictionary<string, UnityEngine.Object> BuiltAssets = new Dictionary<string, UnityEngine.Object>();
-		internal readonly Dictionary<string, object> ObjectsById = new Dictionary<string, object>();
 		internal readonly Dictionary<string, int> WarningCounts = new Dictionary<string, int>();
 		internal readonly Dictionary<string, string> AssetNames = new Dictionary<string, string>();
-		private readonly Dictionary<string, Texture2D> spriteTextures = new Dictionary<string, Texture2D>();
 		// Level scenes only: boot/WinnerTriangle load once, levels on every reset.
 		// A level tree is ~10 MB; a training run rotates a handful of maps, a
 		// map sweep (reset_check) touches dozens, so the cache is capped.
 		private readonly Dictionary<string, JArray> sceneJsonCache = new Dictionary<string, JArray>();
 		private const int SceneCacheCapacity = 8;
+		// Non-level scenes (boot, WinnerTriangle) are loaded once per world; with
+		// many worlds per process the boot tree (5 MB of text) is worth keeping
+		// while worlds are being opened, but not forever: weak references.
+		private readonly Dictionary<string, WeakReference<JArray>> weakSceneJsonCache = new Dictionary<string, WeakReference<JArray>>();
 		private static readonly JsonLoadSettings NoLineInfo = new JsonLoadSettings { LineInfoHandling = LineInfoHandling.Ignore };
 		private readonly Dictionary<string, Type> typeCache = new Dictionary<string, Type>();
-		private readonly Dictionary<string, TextAsset> textAssets = new Dictionary<string, TextAsset>();
+		// Parsed asset entries, shared by every world (read-only once parsed):
+		// each world builds its own objects from them, but parsing assets.json
+		// slices per world made a 32-world boot mostly allocation and GC.
+		private readonly Dictionary<string, JObject> assetJsonCache = new Dictionary<string, JObject>();
+		private readonly Dictionary<string, JObject> spriteJsonCache = new Dictionary<string, JObject>();
 		private readonly HashSet<string> warnedScenes = new HashSet<string>();
 
 		private static readonly Assembly[] SearchAssemblies =
@@ -129,31 +167,50 @@ namespace BoplSim.Export
 			return db;
 		}
 
+		// settings.json, parsed once; applied to each world by Install.
+		private string[] settingLayers;
+		private List<string> settingTags;
+		private uint[] settingCollisionMatrix;
+		private float? settingFixedDeltaTime, settingTimeScale;
+
 		private void LoadSettings(string settingsPath)
 		{
 			var settings = JObject.Parse(File.ReadAllText(settingsPath));
-			var world = World.Current;
 			var layers = (JArray)settings["layers"];
-			for (int i = 0; i < 32 && i < layers.Count; i++)
-				world.layerNames[i] = (string)layers[i] ?? "";
-			// Custom tags follow Unity's seven builtin tags (already in tagNames).
-			foreach (var tag in (JArray)settings["tags"])
-				if (!world.tagNames.Contains((string)tag)) world.tagNames.Add((string)tag);
+			settingLayers = new string[Math.Min(32, layers.Count)];
+			for (int i = 0; i < settingLayers.Length; i++)
+				settingLayers[i] = (string)layers[i] ?? "";
+			settingTags = new List<string>();
+			foreach (var tag in (JArray)settings["tags"]) settingTags.Add((string)tag);
 			var matrix = (JArray)settings["collisionMatrix"];
-			world.collisionMatrix = new uint[32];
+			settingCollisionMatrix = new uint[32];
 			for (int i = 0; i < 32 && i < matrix.Count; i++)
-				world.collisionMatrix[i] = (uint)matrix[i];
-			world.collisionMatrixLoaded = true;
+				settingCollisionMatrix[i] = (uint)matrix[i];
 			// OrbitItems reads Time.fixedDeltaTime inside UpdateSim (SEMANTICS.md
 			// §2.5): must be the exact TimeManager value (0.01666667f), not 1f/60f.
-			if (settings["fixedDeltaTime"] != null) Time.fixedDeltaTime = (float)settings["fixedDeltaTime"];
-			if (settings["timeScale"] != null) Time.timeScale = (float)settings["timeScale"];
+			if (settings["fixedDeltaTime"] != null) settingFixedDeltaTime = (float)settings["fixedDeltaTime"];
+			if (settings["timeScale"] != null) settingTimeScale = (float)settings["timeScale"];
 		}
 
-		// Wire this database into the current World.
+		private void ApplySettings(World world)
+		{
+			if (settingLayers == null) return;
+			for (int i = 0; i < settingLayers.Length; i++) world.layerNames[i] = settingLayers[i];
+			// Custom tags follow Unity's seven builtin tags (already in tagNames).
+			foreach (var tag in settingTags)
+				if (!world.tagNames.Contains(tag)) world.tagNames.Add(tag);
+			world.collisionMatrix = (uint[])settingCollisionMatrix.Clone();
+			world.collisionMatrixLoaded = true;
+			if (settingFixedDeltaTime.HasValue) world.time.fixedDeltaTime = settingFixedDeltaTime.Value;
+			if (settingTimeScale.HasValue) world.time.timeScale = settingTimeScale.Value;
+		}
+
+		// Wire this database into the current World (settings, scene and
+		// resource loading). Call once per world.
 		public void Install()
 		{
 			var world = World.Current;
+			ApplySettings(world);
 			world.sceneCountInBuildSettings = LevelSceneOffset + Maps.Count;
 			world.sceneLoader = LoadSceneByBuildIndex;
 			world.resourceLoader = LoadResource;
@@ -201,7 +258,15 @@ namespace BoplSim.Export
 			// Non-level scenes are not worth their tree (scene-boot.json alone is 5 MB
 			// of text): parse and drop.
 			bool isLevel = !ExtraScenes.ContainsKey(buildIndex);
-			if (!isLevel || !sceneJsonCache.TryGetValue(map.File, out var sceneJson))
+			JArray sceneJson = null;
+			bool cached;
+			lock (gate)
+			{
+				cached = isLevel
+					? sceneJsonCache.TryGetValue(map.File, out sceneJson)
+					: weakSceneJsonCache.TryGetValue(map.File, out var weak) && weak.TryGetTarget(out sceneJson);
+			}
+			if (!cached)
 			{
 				using (var text = new StreamReader(Path.Combine(exportDir, map.File), System.Text.Encoding.UTF8))
 				using (var reader = new Newtonsoft.Json.JsonTextReader(text))
@@ -209,10 +274,14 @@ namespace BoplSim.Export
 					sceneJson = JArray.Load(reader, NoLineInfo);
 					while (reader.Read()) { } // as JArray.Parse: trailing content throws
 				}
-				if (isLevel)
+				lock (gate)
 				{
-					if (sceneJsonCache.Count >= SceneCacheCapacity) sceneJsonCache.Clear();
-					sceneJsonCache[map.File] = sceneJson;
+					if (isLevel)
+					{
+						if (sceneJsonCache.Count >= SceneCacheCapacity) sceneJsonCache.Clear();
+						sceneJsonCache[map.File] = sceneJson;
+					}
+					else weakSceneJsonCache[map.File] = new WeakReference<JArray>(sceneJson);
 				}
 			}
 			var pending = new List<PendingProperties>();
@@ -238,11 +307,13 @@ namespace BoplSim.Export
 
 		// ---- assets ------------------------------------------------------------
 
-		// Build (once) the prefab template / ScriptableObject stored under guid.
+		// Build (once per world) the prefab template / ScriptableObject stored
+		// under guid.
 		internal UnityEngine.Object BuildAsset(string guid)
 		{
-			if (BuiltAssets.TryGetValue(guid, out var built)) return built;
-			var entry = assets.Parse(guid);
+			var store = Current;
+			if (store.BuiltAssets.TryGetValue(guid, out var built)) return built;
+			var entry = ParseShared(assets, guid, assetJsonCache);
 			if (entry == null) return null;
 			var data = (JObject)entry["data"];
 			string path = (string)entry["path"];
@@ -250,7 +321,7 @@ namespace BoplSim.Export
 			{
 				var pending = new List<PendingProperties>();
 				var root = GraphBuilder.BuildGameObject(data, true, null, pending, this);
-				BuiltAssets[guid] = root; // registered before apply so asset cycles resolve
+				store.BuiltAssets[guid] = root; // registered before apply so asset cycles resolve
 				foreach (var item in pending)
 					PropertyApplier.Apply(item.Target, item.Properties, this);
 				return root;
@@ -267,8 +338,8 @@ namespace BoplSim.Export
 			obj.isAsset = true;
 			obj.name = Path.GetFileNameWithoutExtension(path);
 			string id = (string)data["id"];
-			if (id != null) ObjectsById[id] = obj;
-			BuiltAssets[guid] = obj;
+			if (id != null) store.ObjectsById[id] = obj;
+			store.BuiltAssets[guid] = obj;
 			if (data["properties"] is JObject props) PropertyApplier.Apply(obj, props, this);
 			// Unity fires OnEnable after deserializing a ScriptableObject asset.
 			if (obj is ScriptableObject so) ScriptableObject.DispatchOnEnable(so);
@@ -290,12 +361,14 @@ namespace BoplSim.Export
 		// assets the export does not carry (sprites, materials, audio...).
 		internal object ResolveReference(string id, Type expectedType)
 		{
-			if (ObjectsById.TryGetValue(id, out var found)) return found;
+			var store = Current;
+			object found;
+			if (store.ObjectsById.TryGetValue(id, out found)) return found;
 			var parts = id.Split('-');
 			if (parts.Length >= 3 && assets.ContainsKey(parts[2]))
 			{
 				BuildAsset(parts[2]);
-				if (ObjectsById.TryGetValue(id, out found)) return found;
+				if (store.ObjectsById.TryGetValue(id, out found)) return found;
 				// Reference to the asset root itself uses the root id already registered
 				// during build; anything else inside the asset was registered too. A miss
 				// here means the exporter saw a sub-object we did not create (skipped type).
@@ -305,11 +378,11 @@ namespace BoplSim.Export
 			// Sprites: v5 exports real metrics (sprites.json) - the sim path reads
 			// texture dims, pixelsPerUnit, pivot, bounds, textureRect
 			// (ResizablePlatform, GrowthFlare, StretchableLightning...).
-			var spriteJson = sprites?.Parse(id);
+			var spriteJson = sprites == null ? null : ParseShared(sprites, id, spriteJsonCache);
 			if (spriteJson != null)
 			{
-				var sprite = BuildSprite(spriteJson);
-				ObjectsById[id] = sprite;
+				var sprite = BuildSprite(store, spriteJson);
+				store.ObjectsById[id] = sprite;
 				return sprite;
 			}
 			// Textures, materials, audio, animator controllers: not exported.
@@ -318,11 +391,27 @@ namespace BoplSim.Export
 			var placeholder = CreatePlaceholder(id, expectedType);
 			if (placeholder != null)
 			{
-				ObjectsById[id] = placeholder;
+				store.ObjectsById[id] = placeholder;
 				return placeholder;
 			}
 			Warn("unresolved reference guid " + (parts.Length >= 3 ? parts[2] : id));
 			return null;
+		}
+
+		// Parse-once cache in front of a slice index. Parsing (immutable bytes)
+		// runs outside the lock so worlds booting together parse different
+		// entries in parallel; a duplicate parse is harmless (first one wins).
+		private JObject ParseShared(JsonSliceIndex index, string key, Dictionary<string, JObject> cache)
+		{
+			lock (gate) if (cache.TryGetValue(key, out var cached)) return cached;
+			var parsed = index.Parse(key);
+			if (parsed == null) return null;
+			lock (gate)
+			{
+				if (cache.TryGetValue(key, out var cached)) return cached;
+				cache[key] = parsed;
+				return parsed;
+			}
 		}
 
 		// sprites.json floats arrive as exact {f32:bits}.
@@ -338,12 +427,12 @@ namespace BoplSim.Export
 		private static Vector3 Vec3(JToken t) => t == null ? default : new Vector3(F32(t["x"]), F32(t["y"]), F32(t["z"]));
 		private static Rect RectOf(JToken t) => t == null ? default : new Rect(F32(t["x"]), F32(t["y"]), F32(t["w"]), F32(t["h"]));
 
-		private Sprite BuildSprite(JObject data)
+		private Sprite BuildSprite(Store store, JObject data)
 		{
 			// Atlas sprites share the shim Texture2D their textureId names.
 			string texId = (string)data["textureId"];
 			Texture2D texture = null;
-			if (texId == null || !spriteTextures.TryGetValue(texId, out texture))
+			if (texId == null || !store.spriteTextures.TryGetValue(texId, out texture))
 			{
 				string path = (string)data["path"] ?? "";
 				texture = new Texture2D((int)data["textureWidth"], (int)data["textureHeight"])
@@ -351,7 +440,7 @@ namespace BoplSim.Export
 					name = Path.GetFileNameWithoutExtension(path),
 					isAsset = true,
 				};
-				if (texId != null) spriteTextures[texId] = texture;
+				if (texId != null) store.spriteTextures[texId] = texture;
 			}
 			var bounds = new Bounds { center = Vec3(data["bounds"]?["center"]), extents = Vec3(data["bounds"]?["extents"]) };
 			var border = data["border"] == null ? default
@@ -394,18 +483,20 @@ namespace BoplSim.Export
 
 		private UnityEngine.Object LoadResource(string path, Type type)
 		{
+			// GuidByResourcePath is filled by Load(), read-only after.
 			if (GuidByResourcePath.TryGetValue(path, out var guid))
 				return BuildAsset(guid);
 			if (type == typeof(TextAsset) || type == typeof(UnityEngine.Object))
 			{
-				if (textAssets.TryGetValue(path, out var cached)) return cached;
+				var store = Current;
+				if (store.textAssets.TryGetValue(path, out var cached)) return cached;
 				if (projectDir != null)
 				{
 					string file = Path.Combine(projectDir, "Assets", "Resources", path + ".txt");
 					if (File.Exists(file))
 					{
 						var asset = new TextAsset(File.ReadAllText(file)) { name = path };
-						textAssets[path] = asset;
+						store.textAssets[path] = asset;
 						return asset;
 					}
 				}
@@ -418,31 +509,40 @@ namespace BoplSim.Export
 
 		internal Type ResolveType(string fullName)
 		{
-			if (typeCache.TryGetValue(fullName, out var cached)) return cached;
-			Type resolved = null;
-			foreach (var assembly in SearchAssemblies)
+			lock (gate)
 			{
-				resolved = assembly.GetType(fullName);
-				if (resolved != null) break;
+				if (typeCache.TryGetValue(fullName, out var cached)) return cached;
+				Type resolved = null;
+				foreach (var assembly in SearchAssemblies)
+				{
+					resolved = assembly.GetType(fullName);
+					if (resolved != null) break;
+				}
+				typeCache[fullName] = resolved;
+				return resolved;
 			}
-			typeCache[fullName] = resolved;
-			return resolved;
 		}
 
 		internal void Warn(string key)
 		{
-			WarningCounts.TryGetValue(key, out int count);
-			WarningCounts[key] = count + 1;
+			lock (gate)
+			{
+				WarningCounts.TryGetValue(key, out int count);
+				WarningCounts[key] = count + 1;
+			}
 		}
 
 		public void DumpWarnings(string context)
 		{
-			if (WarningCounts.Count == 0) return;
-			var lines = new List<string>();
-			foreach (var pair in WarningCounts) lines.Add(pair.Value + "x " + pair.Key);
-			lines.Sort();
-			Debug.Log("Export[" + context + "] " + WarningCounts.Count + " warning kinds:\n  " + string.Join("\n  ", lines));
-			WarningCounts.Clear();
+			lock (gate)
+			{
+				if (WarningCounts.Count == 0) return;
+				var lines = new List<string>();
+				foreach (var pair in WarningCounts) lines.Add(pair.Value + "x " + pair.Key);
+				lines.Sort();
+				Debug.Log("Export[" + context + "] " + WarningCounts.Count + " warning kinds:\n  " + string.Join("\n  ", lines));
+				WarningCounts.Clear();
+			}
 		}
 	}
 

@@ -95,7 +95,10 @@ namespace UnityEngine
 
 		private static MethodInfo[] MessagesFor(Type type)
 		{
-			if (messageCache.TryGetValue(type, out var cached)) return cached;
+			lock (messageCache)
+			{
+				if (messageCache.TryGetValue(type, out var cached)) return cached;
+			}
 			var methods = new MethodInfo[messageNames.Length];
 			for (var t = type; t != null && t != typeof(MonoBehaviour); t = t.BaseType)
 			{
@@ -106,7 +109,7 @@ namespace UnityEngine
 					if (index >= 0 && methods[index] == null) methods[index] = m;
 				}
 			}
-			messageCache[type] = methods;
+			lock (messageCache) messageCache[type] = methods;
 			return methods;
 		}
 

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 mod dash;
 
-pub const DT: Fix = Fix(71_582_788);
+pub const DT: Fix = Fix::from_raw(71_582_788);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Platform {
     pub id: u32,
@@ -74,10 +74,17 @@ pub struct Action {
 }
 impl Action {
     pub fn direction(self) -> Vec2 {
-        if self.angle == 0 {
+        static DIRECTIONS: std::sync::OnceLock<[Vec2; 256]> = std::sync::OnceLock::new();
+        // The 255 stick directions are fixed; evaluating each once with the
+        // same expression gives the same value as evaluating it per call.
+        DIRECTIONS.get_or_init(|| std::array::from_fn(|angle| Self::direction_of(angle as u8)))
+            [usize::from(self.angle)]
+    }
+    fn direction_of(angle: u8) -> Vec2 {
+        if angle == 0 {
             return Vec2::ZERO;
         }
-        let angle = Fix::TAU * (Fix::from_int(i64::from(self.angle) - 1) / Fix::from_int(255));
+        let angle = Fix::TAU * (Fix::from_int(i64::from(angle) - 1) / Fix::from_int(255));
         Vec2::new(angle.cos(), angle.sin())
     }
 }
@@ -170,7 +177,7 @@ impl World {
     }
 }
 
-fn closest(
+pub(crate) fn closest(
     platforms: &[Platform],
     origin: Vec2,
     direction: Vec2,
@@ -179,8 +186,15 @@ fn closest(
 ) -> Option<(usize, Fix, Vec2)> {
     let mut nearest = Fix::MAX;
     let mut result = None;
+    // Broad phase: the segment's endpoints once, then each platform's bounds
+    // (RoundedRect::raycast_within) before its raycast; the platforms move, so
+    // the bounds are recomputed per query rather than cached.
+    let end = origin + direction * distance;
     for (index, platform) in platforms.iter().enumerate() {
         if exclude == Some(platform.id) {
+            continue;
+        }
+        if !platform.collider.bounds().may_reach(origin, end) {
             continue;
         }
         if let Some(hit) = platform.collider.raycast(origin, direction)
@@ -234,7 +248,7 @@ impl Player {
             .expect("valid attachment");
         self.apply_ground_state(motion);
     }
-    fn collision_rays(&mut self, platforms: &[Platform]) {
+    pub(crate) fn collision_rays(&mut self, platforms: &[Platform]) {
         let velocity = self.velocity + self.external_velocity;
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
@@ -309,7 +323,7 @@ impl Player {
             .surface
             .move_unblocked(self.local, self.radius, allowed, DT);
     }
-    fn gravity_step(&mut self, platforms: &[Platform]) {
+    pub(crate) fn gravity_step(&mut self, platforms: &[Platform]) {
         if !self.grounded {
             crate::player_physics::apply_gravity(
                 &mut self.velocity,
@@ -322,7 +336,7 @@ impl Player {
             self.collision_rays(platforms);
         }
     }
-    fn step(&mut self, action: Action, platforms: &[Platform]) {
+    pub(crate) fn step(&mut self, action: Action, platforms: &[Platform]) {
         let jump = action.buttons & 1 != 0;
         if self.dash.active {
             self.previous_jump = jump;
@@ -361,13 +375,13 @@ impl Player {
         self.position += (self.velocity + self.external_velocity) * DT;
         self.external_velocity *= Fix::from_f64(0.95);
     }
-    fn outside_bounds(&self) -> bool {
+    pub(crate) fn outside_bounds(&self) -> bool {
         self.position.y < Fix::from_f32(-11.3)
             || self.position.y > Fix::from_f64(72.5)
             || self.position.x < Fix::from_f64(-131.25)
             || self.position.x > Fix::from_f64(131.25)
     }
-    fn push_from(&mut self, other: Vec2, lower_id: bool) {
+    pub(crate) fn push_from(&mut self, other: Vec2, lower_id: bool) {
         let Some(direction) = crate::player_collision::overlap_push_direction(
             self.position,
             self.up,
@@ -377,13 +391,13 @@ impl Player {
         ) else {
             return;
         };
-        self.external_velocity += direction * Fix(21_474_836) * Fix::from_int(35);
+        self.external_velocity += direction * Fix::from_raw(21_474_836) * Fix::from_int(35);
     }
-    fn sync_collider(&mut self) {
+    pub(crate) fn sync_collider(&mut self) {
         let extents = if self.dash.active {
-            Vec2::new(Fix(5_626_406_912), Fix(4_359_391_744))
+            Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
         } else {
-            Vec2::new(Fix(5_712_306_688), Fix(3_478_923_520))
+            Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
         };
         let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         let basis = Vec2::angle(self.rotation);
@@ -394,7 +408,16 @@ impl Player {
             inverse_extents: inv,
         };
     }
-    fn late_step(&mut self, platforms: &[Platform]) {
+    /// Detach from the ground without the jump impulse (PlayerPhysics.UnGround).
+    pub(crate) fn force_unground(&mut self, platforms: &[Platform]) {
+        if let Some(platform) = self.platform(platforms) {
+            let surface = platform.surface.clone();
+            let mut motion = self.ground_state();
+            motion.unground(Some(&surface), false);
+            self.apply_ground_state(motion);
+        }
+    }
+    pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
         if self.alive && self.grounded && !self.dash.active {
             let platform = self.platform(platforms).unwrap();
             self.position = platform.surface.position(self.local, self.radius);

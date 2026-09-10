@@ -9,8 +9,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if parts.len() != 3 {
             return Err("expected operation and two raw integers".into());
         }
-        let a = Fix(parts[1].parse()?);
-        let b = Fix(parts[2].parse()?);
+        let a = Fix::from_raw(parts[1].parse()?);
+        let b = Fix::from_raw(parts[2].parse()?);
         let result = match parts[0] {
             "add" => Ok(a + b),
             "sub" => Ok(a - b),
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("unknown operation: {}", parts[0]).into()),
         };
         match result {
-            Ok(value) => writeln!(output, "{}", value.0)?,
+            Ok(value) => writeln!(output, "{}", value.raw())?,
             Err(MathError::DivisionByZero) => writeln!(output, "division_by_zero")?,
             Err(MathError::Domain) => writeln!(output, "domain")?,
             Err(MathError::Overflow) => writeln!(output, "overflow")?,

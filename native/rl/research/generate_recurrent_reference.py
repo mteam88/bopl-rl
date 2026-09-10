@@ -11,6 +11,7 @@ from torch.nn import functional as F
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'native/rl/research'))
 from native_policy import NativePolicy,REVISION
+from layout import DECODER,OBS_SIZE
 
 def main():
     source=ROOT/'native/artifacts/rl/dependencies'/f'PufferLib-{REVISION}'/'pufferlib/models.py'
@@ -24,13 +25,13 @@ def main():
     outdir=args.output
     outdir.mkdir(parents=True,exist_ok=True)
     summary=[]
-    for obs,hidden,layers in [(11,16,2),(3257,128,1),(3257,128,2)]:
+    for obs,hidden,layers in [(11,16,2),(OBS_SIZE,128,1),(OBS_SIZE,128,2)]:
         T,B=17,3
-        count=hidden*(obs+273)+layers*3*hidden*hidden
+        count=hidden*(obs+DECODER)+layers*3*hidden*hidden
         flat_weights=(rng.normal(size=count)*.025).astype(np.float32)
-        encoder_end=hidden*obs; decoder_end=encoder_end+273*hidden
+        encoder_end=hidden*obs; decoder_end=encoder_end+DECODER*hidden
         encoder=torch.tensor(flat_weights[:encoder_end].reshape(hidden,obs),requires_grad=True)
-        decoder=torch.tensor(flat_weights[encoder_end:decoder_end].reshape(273,hidden),requires_grad=True)
+        decoder=torch.tensor(flat_weights[encoder_end:decoder_end].reshape(DECODER,hidden),requires_grad=True)
         recurrent=upstream.MinGRU(hidden,layers)
         with torch.no_grad():
             for i,layer in enumerate(recurrent.layers):

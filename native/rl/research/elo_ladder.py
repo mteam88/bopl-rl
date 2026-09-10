@@ -17,9 +17,11 @@ import re
 import time
 import numpy as np
 from environment import Environment,configure
-from evaluation_protocol import map_ids,opponents
+from evaluation_protocol import map_ids,opponents,scripted_names,scripted_opponent
+import layout
 
 SCHEMA=1
+HEAD_BOUNDS=[sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS+1)]  # logits row offsets per head
 ELO_SCALE=400/math.log(10)
 
 
@@ -43,14 +45,16 @@ class Model:
     def start(self,task,side,rng):
         import torch
         state=self.policy.initial(2,'cpu')
-        def act(observation):
+        def act(observation,mask):
             nonlocal state
             with torch.no_grad():
                 batch=torch.from_numpy(np.ascontiguousarray(observation,dtype=np.float32))
                 logits,_,state=self.policy.step(batch,state)
-            row=as_numpy(logits)[side]
+            # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices.
+            row=np.where(np.asarray(mask[side])!=0,as_numpy(logits)[side],-np.inf)
             action=[]
-            for part in (row[:256],row[256:272]):
+            for lo,hi in zip(HEAD_BOUNDS,HEAD_BOUNDS[1:]):  # aim, buttons, hold
+                part=row[lo:hi]
                 weights=np.exp(part-part.max()); weights/=weights.sum()
                 action.append(rng.choice(len(part),p=weights))
             return np.asarray(action,dtype=np.int64)
@@ -61,7 +65,23 @@ class Random:
     name='random'; kind='anchor'; step=None; sha256=None
 
     def start(self,task,side,rng):
-        return lambda observation: np.asarray([rng.integers(256),rng.integers(16)],dtype=np.int64)
+        # No hold output: hold index 0 (length 1) leaves every decision's buttons free.
+        return lambda observation,mask: np.asarray([rng.integers(layout.ACT_AIM),rng.integers(layout.ACT_BUTTONS),0],dtype=np.int64)
+
+
+class Scripted:
+    """A hand-coded bot anchor (bopl_bots.h) deciding inside the C environment."""
+    kind='anchor'; step=None; sha256=None
+
+    def __init__(self,name):
+        self.name=name; self.bot=scripted_opponent(name)
+
+    def attach(self,env,side):
+        env.bot(side,*self.bot)
+
+    def start(self,task,side,rng):
+        # The environment ignores this player's action floats while the bot is pinned.
+        return lambda observation,mask: np.zeros(layout.NUM_ATNS,dtype=np.int64)
 
 
 def select_checkpoints(run,count):
@@ -103,6 +123,8 @@ def main():
     parser.add_argument('--games-per-pair',type=int,default=8,help='Per map; even, half per side')
     parser.add_argument('--maps',type=map_ids,default=None,help='Defaults to the run config training maps')
     parser.add_argument('--anchors',type=Path,help='Manifest of frozen native reference checkpoints (evaluation opponents format)')
+    parser.add_argument('--scripted-anchors',type=scripted_names,default='mixed-hard',
+                        help='Comma-separated scripted bot anchors (kind-level); empty disables')
     parser.add_argument('--seed-base',type=int,default=50001)
     parser.add_argument('--episode-ticks',type=int,default=None,help='Defaults to the run config value')
     parser.add_argument('--library',type=Path,default=None,help='CPU evaluation library for native_policy.load')
@@ -113,7 +135,7 @@ def main():
     config=json.loads((args.run/'config.json').read_text())
     maps=args.maps if args.maps is not None else config['training_maps']
     limit=args.episode_ticks or config['episode_ticks']
-    participants=[Random()]
+    participants=[Random(),*map(Scripted,args.scripted_anchors)]
     for item in opponents(args.anchors) if args.anchors else []:
         participants.append(Model(item['name'],item['path'],'anchor',library=args.library))
     for step,path in select_checkpoints(args.run,args.checkpoints):
@@ -141,11 +163,15 @@ def main():
                 env.reset(task['seed'],task['map'])
                 rng=np.random.default_rng((task['seed'],task['map'],task['side'],
                                            int(hashlib.sha256((task['a']+task['b']).encode()).hexdigest()[:8],16)))
+                env.bot(0,0); env.bot(1,0)  # detach any bot from the previous task
+                for name,side in ((task['a'],task['side']),(task['b'],1-task['side'])):
+                    attach=getattr(by_name[name],'attach',None)
+                    if attach: attach(env,side)
                 actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
                         1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
                 while not env.ended:
-                    observation=env.obs.copy()
-                    env.step(np.stack([actors[0](observation),actors[1](observation)]))
+                    observation=env.obs.copy(); mask=env.mask.copy()
+                    env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
                 final=env.frame()
                 timeout=bool(final['flags']&2)
                 a_won=bool(final['players'][task['side']]['flags']&2) and not timeout

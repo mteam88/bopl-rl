@@ -13,23 +13,31 @@ namespace UnityShim
 	// HierarchyNumber and simulation order - gameplay-critical.
 	public static class ScriptExecutionOrder
 	{
+		// Process-wide (the table is the same for every world); the cache is
+		// filled lazily from several world threads, hence the lock.
 		private static Dictionary<string, int> byTypeName = new Dictionary<string, int>();
 		private static readonly Dictionary<Type, int> cache = new Dictionary<Type, int>();
 
 		public static void Install(Dictionary<string, int> table)
 		{
-			byTypeName = table ?? new Dictionary<string, int>();
-			cache.Clear();
+			lock (cache)
+			{
+				byTypeName = table ?? new Dictionary<string, int>();
+				cache.Clear();
+			}
 		}
 
 		public static int Of(Type type)
 		{
-			if (cache.TryGetValue(type, out var cached)) return cached;
-			// Unity keys execution order by script (class) name; inheritance does
-			// not propagate the setting.
-			int order = byTypeName.TryGetValue(type.Name, out var found) ? found : 0;
-			cache[type] = order;
-			return order;
+			lock (cache)
+			{
+				if (cache.TryGetValue(type, out var cached)) return cached;
+				// Unity keys execution order by script (class) name; inheritance does
+				// not propagate the setting.
+				int order = byTypeName.TryGetValue(type.Name, out var found) ? found : 0;
+				cache[type] = order;
+				return order;
+			}
 		}
 
 		// Stable sort by execution order (List<T>.Sort is unstable; ties must

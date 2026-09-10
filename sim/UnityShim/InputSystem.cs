@@ -336,7 +336,7 @@ namespace UnityEngine.InputSystem
 
 	public class PlayerInputManager : MonoBehaviour
 	{
-		public static PlayerInputManager instance { get; set; }
+		public static PlayerInputManager instance { get => UnityShim.World.Current.playerInputManager; set => UnityShim.World.Current.playerInputManager = value; }
 		public bool joiningEnabled { get; private set; }
 		public int playerCount => 0;
 		public int maxPlayerCount { get; set; } = -1;

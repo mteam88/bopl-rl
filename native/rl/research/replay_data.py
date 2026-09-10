@@ -76,13 +76,26 @@ for name in ('error','source_hash','catalog_hash'):
     function = getattr(LIB, 'bopl_rl_'+name)
     function.argtypes = [C.c_void_p]; function.restype = C.c_char_p
 LIB.research_pack.argtypes = [C.POINTER(State),C.POINTER(Config),C.POINTER(C.c_float)]
-LIB.research_previous.argtypes = [C.POINTER(C.c_float),C.POINTER(Action),C.c_int]
+LIB.research_previous.argtypes = [C.POINTER(C.c_float),C.POINTER(Action),C.POINTER(C.c_int),C.c_int]
 
 def action_array(actions):
     return (Action*len(actions))(*(Action(int(a),0,int(b)) for a,b in actions))
 
-def previous(observations, actions):
-    LIB.research_previous(observations.ctypes.data_as(C.POINTER(C.c_float)), action_array(actions), len(actions))
+def hold_run(runs, buttons):
+    """Advance per-player hold runs by one decision: consecutive decisions each
+    of the four buttons has been down, the current decision inclusive (the live
+    environment's hold_run, bopl_puffer.h). runs: int array (players, 4)."""
+    runs=np.asarray(runs,dtype=np.int32)
+    bits=(np.asarray(buttons,dtype=np.int64)[:,None]>>np.arange(4))&1
+    return np.where(bits==1,runs+1,0).astype(np.int32)
+
+def previous(observations, actions, hold_run=None):
+    """Write each player's own-action tail from its last decision. Replays have
+    no hold head, so no latch is in force (latch remaining 0); hold_run carries
+    the per-player (players, 4) consecutive-decision button runs, None for zeros."""
+    runs=None if hold_run is None else np.ascontiguousarray(hold_run,dtype=np.int32).reshape(len(actions),4)
+    LIB.research_previous(observations.ctypes.data_as(C.POINTER(C.c_float)), action_array(actions),
+                          None if runs is None else runs.ctypes.data_as(C.POINTER(C.c_int)), len(actions))
 
 class ReplayWorld:
     def __init__(self, meta, log, limit=None, game=None):

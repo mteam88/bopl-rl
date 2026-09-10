@@ -27,9 +27,14 @@ sys.path.insert(0, str(ROOT / 'native/tools'))
 import reference  # noqa: E402  (player selection: explicit > BOPL_RL_GAME > IL2CPP)
 sys.path.insert(0, str(HERE))
 import counters  # noqa: E402
+sys.path.insert(0, str(ROOT / 'native/rl/research'))
+import layout  # noqa: E402  (bopl_layout.h mirror: observation offsets and action heads)
 
-OBS = 10 + 6*148 + 96*21 + 12*28 + 7
-PLAYER0 = 10
+OBS = layout.OBS_SIZE
+PLAYER0 = layout.PLAYER0
+PLAYER = layout.PLAYER_FEATURES
+NUM_ATNS = layout.NUM_ATNS  # aim, buttons, hold length index
+PREVIOUS = layout.PREVIOUS_FEATURES  # (the layout() helper below shadows the module)
 STRIDE = 8 + 14  # bopl_vec_layout row: num_agents, players, banks, tag, side, bank, matches, stepped, slots[14]
 
 def layout(lib, vec, count):
@@ -120,7 +125,7 @@ def main():
         obs = np.ctypeslib.as_array((ctypes.c_float*(total*OBS)).from_address(vec.obs_ptr)).reshape(total, OBS)
         rewards = np.ctypeslib.as_array((ctypes.c_float*total).from_address(vec.rewards_ptr))
         terminals = np.ctypeslib.as_array((ctypes.c_float*total).from_address(vec.terminals_ptr))
-        actions = np.zeros((total, 2), dtype=np.float32)
+        actions = np.zeros((total, NUM_ATNS), dtype=np.float32)  # hold stays 0 (length 1): no latch overrides the button echo
 
         def active_rows(e):
             if not e['banks']: return e['slots']
@@ -134,11 +139,11 @@ def main():
             antisymmetric (before spawn both are zero, so distinctness is checked separately)."""
             ra, rb = obs[a], obs[b]
             if not (ra[PLAYER0] == 1 and ra[PLAYER0+1] == 1 and rb[PLAYER0] == 1 and rb[PLAYER0+1] == 1): return False
-            other_a = ra[PLAYER0+148:PLAYER0+2*148]; other_b = rb[PLAYER0+148:PLAYER0+2*148]
+            other_a = ra[PLAYER0+PLAYER:PLAYER0+2*PLAYER]; other_b = rb[PLAYER0+PLAYER:PLAYER0+2*PLAYER]
             if not (other_a[0] == 1 and other_a[1] == 0 and other_b[0] == 1 and other_b[1] == 0): return False
             return abs(other_a[9] + other_b[9]) < 1e-5 and abs(other_a[10] + other_b[10]) < 1e-5
         def separated(a, b):
-            return abs(obs[a, PLAYER0+148+9]) > 1e-6 or abs(obs[a, PLAYER0+148+10]) > 1e-6
+            return abs(obs[a, PLAYER0+PLAYER+9]) > 1e-6 or abs(obs[a, PLAYER0+PLAYER+10]) > 1e-6
         ok_pairs = all(pair_ok(*active_rows(e)) for e in envs)
         ok_idle = all(not obs[r].any() for e in envs for r in idle_rows(e))
         check(f'b{num_buffers}: active rows are two mutually visible players', ok_pairs)
@@ -169,7 +174,7 @@ def main():
             expect['learner_episodes'] += sum(int(terminals[r]) for r in learner_rows)
         action_echo_ok = True; blank_after_ok = True; terminal_pairs_ok = True; previous_active = {i: active_rows(e) for i, e in enumerate(envs)}
         for step in range(args.steps):
-            for r in range(total): actions[r] = (1 + (r*37+step) % 255, (r+step) % 16)
+            for r in range(total): actions[r] = (1 + (r*37+step) % 255, (r+step) % 16, 0)
             vec.cpu_step(actions.ctypes.data); account()
             cur = layout(lib, vec, 4)
             for i, e in enumerate(cur):
@@ -178,11 +183,11 @@ def main():
                     if not pair_ok(*rows): action_echo_ok = False
                     seen_apart[i] |= separated(*rows)
                     for k, r in enumerate(rows):
-                        # previous-action tail: [angle==0, cos, sin, buttons bits]
-                        tail = obs[r, OBS-7:]
-                        angle, buttons = actions[r]
+                        # previous-action tail: [angle==0, cos, sin, buttons bits, latch left, 4 button runs]
+                        tail = obs[r, OBS-PREVIOUS:]
+                        angle, buttons, _hold = actions[r]
                         want_bits = [(int(buttons) >> b) & 1 for b in range(4)]
-                        if terminals[r] == 0 and (tail[0] != (angle == 0) or list(tail[3:7]) != want_bits
+                        if terminals[r] == 0 and (tail[0] != (angle == 0) or list(tail[3:7]) != want_bits or tail[7] != 0
                                                   or abs(tail[1]-np.cos((angle-1)*2*np.pi/255)) > 1e-5): action_echo_ok = False
                 else:
                     # A match ended this step: both previous active rows were terminated with equal-magnitude
@@ -247,7 +252,7 @@ def main():
     vec.reset()
     rewards = np.ctypeslib.as_array((ctypes.c_float*4).from_address(vec.rewards_ptr))
     terminals = np.ctypeslib.as_array((ctypes.c_float*4).from_address(vec.terminals_ptr))
-    actions = np.zeros((4, 2), dtype=np.float32); seen = 0; both = True; nonterminal_zero = True
+    actions = np.zeros((4, NUM_ATNS), dtype=np.float32); seen = 0; both = True; nonterminal_zero = True
     for step in range(60):
         vec.cpu_step(actions.ctypes.data)
         for pair in ((0, 1), (2, 3)):

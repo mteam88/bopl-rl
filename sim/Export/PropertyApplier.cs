@@ -244,7 +244,10 @@ namespace BoplSim.Export
 		private static MemberInfo ResolveMember(Type type, string name)
 		{
 			var key = (type, name);
-			if (memberCache.TryGetValue(key, out var cached)) return cached;
+			lock (memberCache)
+			{
+				if (memberCache.TryGetValue(key, out var cached)) return cached;
+			}
 			MemberInfo resolved = FindField(type, name);
 			if (resolved == null && name.StartsWith("m_", StringComparison.Ordinal) && name.Length > 2)
 			{
@@ -255,7 +258,7 @@ namespace BoplSim.Export
 			}
 			resolved ??= type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 			if (resolved is PropertyInfo p && (!p.CanWrite || !p.CanRead)) resolved = null;
-			memberCache[key] = resolved;
+			lock (memberCache) memberCache[key] = resolved;
 			return resolved;
 		}
 

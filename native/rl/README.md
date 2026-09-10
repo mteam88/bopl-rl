@@ -163,3 +163,23 @@ A short smoke verifies execution and artifact compatibility. It does not establi
 learning strength or whole-game competence. Report measured learner decisions,
 completed matches and evaluation results separately from throughput and compile
 success. Qualification and long-run results belong in the experiment evidence.
+
+## Hyperparameter / reward sweeps
+
+`sweep/driver.py` runs many short `train.py` trials under PufferLib's Protein
+(cost-aware Bayesian search over a Pareto front of cost vs score) instead of
+one long run at a time. One TOML per sweep declares fixed flags, swept
+parameters as PufferLib spaces, and a scorer — an external yardstick (anchor
+win rates from the run's own evaluations, a behaviour rate, or a head-to-head
+match), never the self-play win rate. Trials are ordinary run directories
+under `native/artifacts/rl/sweeps/<name>/`, launched in their own systemd
+scopes with a memory cap and a wall cap; the driver's `sweep.json` makes the
+whole sweep kill-and-resume safe, and `summary.md`/`launch-best.sh` are
+regenerated after every trial. The dashboard lists trials via
+`serve.py --run-root-glob 'name=native/artifacts/rl/sweeps/name/[0-9]*'`.
+See `sweep/README.md`.
+
+```sh
+native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \
+  --config native/rl/sweep/configs/smoke.toml --dry-run 3
+```

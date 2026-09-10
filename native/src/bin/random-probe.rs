@@ -22,7 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let value = match op.kind.as_str() {
                 "int" => i64::from(rng.int_range(op.min as i32, op.max as i32)),
                 "uint" => i64::from(rng.uint_range(op.min as u32, op.max as u32)),
-                "fix" => rng.fix_range(Fix(op.min), Fix(op.max)).0,
+                "fix" => rng
+                    .fix_range(Fix::from_raw(op.min), Fix::from_raw(op.max))
+                    .raw(),
                 _ => return Err("Unknown RNG operation".into()),
             };
             results.push([value, i64::from(rng.state)]);

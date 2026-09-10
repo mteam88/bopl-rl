@@ -7,6 +7,7 @@ import numpy as np
 
 from environment import Environment,configure
 from evaluation_protocol import map_ids
+from layout import ACT_AIM,ACT_BUTTONS
 from telemetry import FIELDS
 
 
@@ -22,11 +23,12 @@ def main():
             for game in range(args.games):
                 seed=91001+game;env.reset(seed,map_id)
                 initial=env.obs.copy()
-                env.step([[64,4],[192,4]]);env.reset(seed,map_id)
+                env.step([[64,4,0],[192,4,0]]);env.reset(seed,map_id)
                 np.testing.assert_array_equal(env.obs,initial)
                 rng=np.random.default_rng(seed);ticks=0;decisions=0;digest=hashlib.sha256()
                 while not env.ended:
-                    actions=np.stack([rng.integers(256,size=2),rng.integers(16,size=2)],axis=-1)
+                    # Random aim and buttons; hold index 0 (length 1) so no decision is latched.
+                    actions=np.stack([rng.integers(ACT_AIM,size=2),rng.integers(ACT_BUTTONS,size=2),np.zeros(2,np.int64)],axis=-1)
                     env.step(actions);decisions+=1
                     assert np.isfinite(env.obs).all()
                     assert not env.obs[:,[5,7]].any(), 'Policy observation capacity exceeded'

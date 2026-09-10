@@ -3,31 +3,26 @@ using UnityShim;
 
 namespace UnityEngine
 {
+	// Per world: the values live on World.Current.time (many worlds per process).
 	public static class Time
 	{
-		public static float deltaTime;
-		public static float fixedDeltaTime = 1f / 60f;
-		public static int frameCount;
-		public static float time;
-		public static float unscaledTime;
-		public static float unscaledDeltaTime;
-		public static float timeScale = 1f;
-		public static float realtimeSinceStartup => unscaledTime;
-		public static float fixedTime;
-		public static float smoothDeltaTime;
-		public static float maximumDeltaTime = 1f / 3f;
-		public static float timeSinceLevelLoad;
-		public static float captureDeltaTime;
+		private static TimeState S => World.Current.time;
 
-		internal static void Advance(float unscaledDelta)
-		{
-			unscaledDeltaTime = unscaledDelta;
-			deltaTime = unscaledDelta * timeScale;
-			smoothDeltaTime = deltaTime;
-			unscaledTime += unscaledDelta;
-			time += deltaTime;
-			timeSinceLevelLoad += deltaTime;
-		}
+		public static float deltaTime { get => S.deltaTime; set => S.deltaTime = value; }
+		public static float fixedDeltaTime { get => S.fixedDeltaTime; set => S.fixedDeltaTime = value; }
+		public static int frameCount { get => S.frameCount; set => S.frameCount = value; }
+		public static float time { get => S.time; set => S.time = value; }
+		public static float unscaledTime { get => S.unscaledTime; set => S.unscaledTime = value; }
+		public static float unscaledDeltaTime { get => S.unscaledDeltaTime; set => S.unscaledDeltaTime = value; }
+		public static float timeScale { get => S.timeScale; set => S.timeScale = value; }
+		public static float realtimeSinceStartup => S.unscaledTime;
+		public static float fixedTime { get => S.fixedTime; set => S.fixedTime = value; }
+		public static float smoothDeltaTime { get => S.smoothDeltaTime; set => S.smoothDeltaTime = value; }
+		public static float maximumDeltaTime { get => S.maximumDeltaTime; set => S.maximumDeltaTime = value; }
+		public static float timeSinceLevelLoad { get => S.timeSinceLevelLoad; set => S.timeSinceLevelLoad = value; }
+		public static float captureDeltaTime { get => S.captureDeltaTime; set => S.captureDeltaTime = value; }
+
+		internal static void Advance(float unscaledDelta) => S.Advance(unscaledDelta);
 	}
 
 	public static class Debug
@@ -219,9 +214,11 @@ namespace UnityEngine
 			=> Newtonsoft.Json.JsonConvert.PopulateObject(json, objectToOverwrite);
 	}
 
+	// Per world (a fresh process starts with empty prefs; Settings.Init writes
+	// and reads them during boot).
 	public static class PlayerPrefs
 	{
-		private static readonly System.Collections.Generic.Dictionary<string, object> store = new();
+		private static System.Collections.Generic.Dictionary<string, object> store => UnityShim.World.Current.playerPrefs;
 		public static int GetInt(string key, int defaultValue = 0) => store.TryGetValue(key, out var v) && v is int i ? i : defaultValue;
 		public static void SetInt(string key, int value) => store[key] = value;
 		public static float GetFloat(string key, float defaultValue = 0f) => store.TryGetValue(key, out var v) && v is float f ? f : defaultValue;
