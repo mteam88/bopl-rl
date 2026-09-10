@@ -908,6 +908,11 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction], registered_actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        // GameSessionHandler (hierarchy 100) runs before every instantiated
+        // player/ability prefab (100,000,000+). A death produced by a player
+        // component or DetPhysics is therefore visible to the match result
+        // check on the following tick, not later in the tick that killed it.
+        self.session_result_tick();
         for index in 0..self.players.len() {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
@@ -2436,28 +2441,11 @@ impl RolloutWorld {
         }
     }
 
-    /// GameSessionHandler.UpdateSim: sudden death activation and win checks.
-    fn session_tick(&mut self) {
-        let map = &data::get().maps[self.map];
-        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        if !self.sudden_death && sim_time > map.sudden_death_time {
-            self.sudden_death = true;
-            self.sudden_death_tick = self.tick;
-            // On the following Updater pass each AnimateVelocity notices the
-            // global flag and samples in registration order: authored bodies,
-            // then live ability-spawned bodies.
-            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
-                *delay = self
-                    .rng
-                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
-            }
-            let spawned_max_delay = data::get().platform.sudden_death_max_delay;
-            for spawn in &mut self.spawned {
-                if spawn.active {
-                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, spawned_max_delay);
-                }
-            }
-        }
+    /// GameSessionHandler.UpdateSim's winner check. Its authored hierarchy is
+    /// before player components and physics, so it consumes the previous
+    /// tick's deaths. The rest of the current updater pass still runs after it
+    /// marks the game ended; RlBridge observes terminal only after the pass.
+    fn session_result_tick(&mut self) {
         let alive_teams: Vec<u32> = {
             let mut teams: Vec<u32> = self
                 .players
@@ -2477,6 +2465,31 @@ impl RolloutWorld {
                     if p.team == winner && !p.out {
                         p.won = true;
                     }
+                }
+            }
+        }
+    }
+
+    /// Remaining post-physics session work: sudden-death activation and the
+    /// RL episode limit. Winner resolution belongs to `session_result_tick`.
+    fn session_tick(&mut self) {
+        let map = &data::get().maps[self.map];
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        if !self.sudden_death && sim_time > map.sudden_death_time {
+            self.sudden_death = true;
+            self.sudden_death_tick = self.tick;
+            // On the following Updater pass each AnimateVelocity notices the
+            // global flag and samples in registration order: authored bodies,
+            // then live ability-spawned bodies.
+            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
+                *delay = self
+                    .rng
+                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
+            }
+            let spawned_max_delay = data::get().platform.sudden_death_max_delay;
+            for spawn in &mut self.spawned {
+                if spawn.active {
+                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, spawned_max_delay);
                 }
             }
         }
@@ -3092,5 +3105,29 @@ mod tests {
         assert_eq!(world.platform_dynamics[index].home_rotation, orientation);
         assert_eq!(world.platforms[index].surface.right, right);
         assert_eq!(world.platforms[index].surface.up, up);
+    }
+
+    #[test]
+    fn match_result_consumes_deaths_on_the_following_tick() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.stocks = 0;
+        world.reset(&config).unwrap();
+
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT);
+        assert!(
+            !world.terminal,
+            "a collision death must not end its own updater pass"
+        );
+
+        world.session_tick();
+        assert!(
+            !world.terminal,
+            "post-physics session work must not observe a same-pass death"
+        );
+
+        world.session_result_tick();
+        assert!(world.terminal);
+        assert!(world.players[1].won);
     }
 }
