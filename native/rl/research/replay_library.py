@@ -29,7 +29,7 @@ class ReplayLibrary:
                 return cached[1]
             matches = []
             evaluated = 0
-            for file in sorted((directory / 'evaluations').rglob('result.json')):
+            for file in sorted((directory / 'evaluations').rglob('result.json'), key=lambda p: (int(p.parent.name) if p.parent.name.isdigit() else -1, str(p))):
                 report = study_data.read(file, {})
                 for game in report.get('games', []):
                     evaluated += 1

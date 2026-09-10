@@ -67,7 +67,7 @@ class Random:
 def select_checkpoints(run,count):
     """Evenly spaced playable checkpoints, always keeping first and last."""
     rows=[]
-    for path in sorted(run.glob('checkpoints/policy-*.bin')):
+    for path in sorted(run.glob('checkpoints/policy-*.bin'), key=lambda p: int(p.stem.split('-')[-1])):
         match=re.fullmatch(r'policy-(\d+)\.bin',path.name)
         if match: rows.append((int(match.group(1)),path))
     if len(rows)<=count: return rows

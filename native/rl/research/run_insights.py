@@ -101,7 +101,7 @@ def collect(run_directory,budget=1):
     """
     rows=[]
     with _lock:
-        for result in sorted(run_directory.glob('evaluations/*/result.json'),reverse=True):
+        for result in sorted(run_directory.glob('evaluations/*/result.json'),key=lambda p:int(p.parent.name),reverse=True):
             directory=result.parent
             sidecar=directory/'insights.json'
             try:
