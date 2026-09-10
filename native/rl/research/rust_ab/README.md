@@ -18,5 +18,6 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `platform_ab.c`: grounded platform transform overlap, jump-and-land player
   carry, and the map-2 AntiLockPlatform trajectory.
 
-All of them printed byte-identical traces on 2026-09-09 (see
-RUST_ROLLOUTS.md "Fidelity gate").
+See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
+numeric tolerances. Do not infer fidelity from an all-identical dual-backend
+trace unless `bopl_rl.c` includes the library-identity pool fix (`1cd34b2`).

@@ -2370,6 +2370,7 @@ impl RolloutWorld {
             e.radius = s.radius.0;
             e.rotation = s.right.normalized_angle().0;
             e.angular_velocity = dynamics.body.angular_velocity.0;
+            e.inverse_mass = dynamics.body.inverse_mass.0;
         }
     }
 

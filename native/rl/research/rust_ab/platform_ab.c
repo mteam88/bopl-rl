@@ -14,14 +14,18 @@ static double f(int64_t raw) { return (double)raw / 4294967296.0; }
 typedef struct {
     double px, py;
     double map_x, map_y, map_vx, map_vy;
+    double map_inverse_mass;
     double spawn_x, spawn_y, spawn_vx, spawn_vy;
+    double spawn_inverse_mass;
 } Sample;
 
 static Sample sample(const BoplRlState *state, uint32_t initial_entities) {
     Sample out = {
         .px = f(state->players[0].x), .py = f(state->players[0].y),
         .map_x = NAN, .map_y = NAN, .map_vx = NAN, .map_vy = NAN,
+        .map_inverse_mass = NAN,
         .spawn_x = NAN, .spawn_y = NAN, .spawn_vx = NAN, .spawn_vy = NAN,
+        .spawn_inverse_mass = NAN,
     };
     double nearest = INFINITY;
     for (uint32_t i = 0; i < state->header.entity_count; i++) {
@@ -31,12 +35,14 @@ static Sample sample(const BoplRlState *state, uint32_t initial_entities) {
         if (i >= initial_entities) {
             out.spawn_x = x; out.spawn_y = y;
             out.spawn_vx = f(entity->vx); out.spawn_vy = f(entity->vy);
+            out.spawn_inverse_mass = f(entity->inverse_mass);
         } else {
             const double distance = hypot(x - out.px, y - out.py);
             if (distance < nearest) {
                 nearest = distance;
                 out.map_x = x; out.map_y = y;
                 out.map_vx = f(entity->vx); out.map_vy = f(entity->vy);
+                out.map_inverse_mass = f(entity->inverse_mass);
             }
         }
     }
@@ -50,6 +56,7 @@ static Sample sample_last_map(const BoplRlState *state, uint32_t initial_entitie
         if (entity->kind != 2 || !(entity->flags & 1)) continue;
         out.map_x = f(entity->x); out.map_y = f(entity->y);
         out.map_vx = f(entity->vx); out.map_vy = f(entity->vy);
+        out.map_inverse_mass = f(entity->inverse_mass);
     }
     return out;
 }
@@ -73,13 +80,15 @@ static void row(const char *scenario, unsigned tick, BoplRl **world,
     Sample r = scenario[0] == 'o' && scenario[1] == 'r'
         ? sample_last_map(bopl_rl_state(world[1]), initial[1])
         : sample(bopl_rl_state(world[1]), initial[1]);
-    printf("%s,%u,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,"
-           "%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f\n",
+    printf("%s,%u,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,"
+           "%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f\n",
            scenario, tick,
            n.px, n.py, n.map_x, n.map_y, n.map_vx, n.map_vy,
-           n.spawn_x, n.spawn_y, n.spawn_vx, n.spawn_vy,
+           n.map_inverse_mass, n.spawn_x, n.spawn_y, n.spawn_vx, n.spawn_vy,
+           n.spawn_inverse_mass,
            r.px, r.py, r.map_x, r.map_y, r.map_vx, r.map_vy,
-           r.spawn_x, r.spawn_y, r.spawn_vx, r.spawn_vy);
+           r.map_inverse_mass, r.spawn_x, r.spawn_y, r.spawn_vx, r.spawn_vy,
+           r.spawn_inverse_mass);
 }
 
 int main(int argc, char **argv) {
@@ -101,9 +110,9 @@ int main(int argc, char **argv) {
     }
 
     puts("scenario,tick,net_px,net_py,net_map_x,net_map_y,net_map_vx,net_map_vy,"
-         "net_spawn_x,net_spawn_y,net_spawn_vx,net_spawn_vy,"
+         "net_map_inverse_mass,net_spawn_x,net_spawn_y,net_spawn_vx,net_spawn_vy,net_spawn_inverse_mass,"
          "rust_px,rust_py,rust_map_x,rust_map_y,rust_map_vx,rust_map_vy,"
-         "rust_spawn_x,rust_spawn_y,rust_spawn_vx,rust_spawn_vy");
+         "rust_map_inverse_mass,rust_spawn_x,rust_spawn_y,rust_spawn_vx,rust_spawn_vy,rust_spawn_inverse_mass");
     BoplRlConfig config;
     bopl_rl_default_config(&config, 2);
     config.seed = 7; config.map = 0; config.stocks = 0;
