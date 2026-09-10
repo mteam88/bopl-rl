@@ -39,7 +39,7 @@ def game_insights(visual,side):
     for index,frame in enumerate(frames):
         action=frame.get('actions')
         if action:
-            angle,buttons=action[side][:2]  # heads: aim, buttons (, hold length index since layout v2)
+            angle,buttons=action[side]
             # Index 0 means the stick is released, not an angle; the aim-change
             # gauge only compares consecutive decisions that both aim somewhere.
             if angle:
@@ -101,7 +101,7 @@ def collect(run_directory,budget=1):
     """
     rows=[]
     with _lock:
-        for result in sorted(run_directory.glob('evaluations/*/result.json'),reverse=True):
+        for result in sorted(run_directory.glob('evaluations/*/result.json'),key=lambda p:int(p.parent.name),reverse=True):
             directory=result.parent
             sidecar=directory/'insights.json'
             try:

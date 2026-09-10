@@ -15,7 +15,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run',type=Path,required=True)
     args=parser.parse_args(); run=args.run.resolve(); rendered=[]
     while True:
-        results=sorted(run.glob('evaluations/*/result.json'))
+        results=sorted(run.glob('evaluations/*/result.json'),key=lambda p:int(p.parent.name))
         candidates=[]
         for file in results:
             report=json.loads(file.read_text()); game=next(g for g in report['games'] if g['name']=='selfplay')

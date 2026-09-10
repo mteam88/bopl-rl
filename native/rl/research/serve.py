@@ -87,8 +87,13 @@ def main():
         if name in extra_runs: return extra_runs[name]
         if re.fullmatch(r'[A-Za-z0-9_.-]+',name) and (root/name/'config.json').is_file(): return root/name
         return None
+    def step_order(path):
+        # Evaluation/checkpoint directories are named by step, zero-padded to 9 digits;
+        # runs past 1e9 game steps break lexical order, so sort numerically.
+        match=re.search(r'(\d+)',path.parent.name if path.name=='result.json' else path.stem)
+        return (int(match.group(1)) if match else -1, str(path))
     def latest_report(directory, pattern):
-        reports=sorted(directory.glob(pattern))
+        reports=sorted(directory.glob(pattern), key=step_order)
         return read_json(reports[-1]) if reports else None
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self,fmt,*args):
@@ -141,7 +146,7 @@ def main():
                         if not re.fullmatch(r'[A-Za-z0-9_-]+',name): continue
                         directory=root/name
                         diagnostic=[dict(step=r['step'],groups=r['groups'])
-                                    for p in sorted(directory.glob('evaluations/*/result.json')) if (r:=read_json(p))]
+                                    for p in sorted(directory.glob('evaluations/*/result.json'), key=step_order) if (r:=read_json(p))]
                         final=latest_report(directory,'final-evaluations/*/result.json')
                         members.append(dict(**member,status=read_json(directory/'status.json',{'status':'queued'}),
                                             evaluations=diagnostic,final_groups=final['groups'] if final else None))
@@ -168,7 +173,7 @@ def main():
                 total=len(metrics)
                 metrics=downsample(metrics)
                 evaluations=[]
-                for file in sorted(directory.glob('evaluations/*/result.json')):
+                for file in sorted(directory.glob('evaluations/*/result.json'), key=step_order):
                     report=read_json(file); report['directory']=file.parent.name
                     for game in report['games']:
                         video=file.parent/(game['name']+'.mp4')
