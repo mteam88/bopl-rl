@@ -97,8 +97,13 @@ impl Player {
             }
         } else {
             if self.dash.updates > 2 {
-                if let Some(id) = self.dash.hit_ground {
-                    let platform = platforms.iter().find(|p| p.id == id).unwrap();
+                // Unity's `hitGround != null` is false once the platform has been
+                // destroyed mid-dash, so the C# falls through to the free dash.
+                let landing = self
+                    .dash
+                    .hit_ground
+                    .and_then(|id| platforms.iter().find(|p| p.id == id));
+                if let Some(platform) = landing {
                     self.position = platform.surface.position(self.dash.hit_local, self.radius);
                     self.attach(platform, self.position);
                     self.dash.local = self.local;
