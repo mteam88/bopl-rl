@@ -982,7 +982,6 @@ impl RolloutWorld {
         self.arrows_integrate(data);
         self.platforms_tick(data);
         self.arrows_contacts(data);
-        self.deaths_tick();
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -1119,6 +1118,13 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Platform {
             self.platform_ability_tick(index, registered_action, data);
+            // PlatformTransform updates before its own
+            // DestroyIfOutsideSceneBounds component. Unlike the ordinary
+            // slime, this ability body's position is final for this updater
+            // pass (the separate platform moves later in DetPhysics).
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
+            }
             return;
         }
         if self.players[index].active == ActiveAbility::Dash {
@@ -1294,6 +1300,10 @@ impl RolloutWorld {
         let this = &mut *self;
         let slot = &mut this.players[index];
         let platforms: &[Platform] = &this.platforms;
+        // Bow's boundary component runs after BowTransform but before
+        // PlayerBody performs this pass's position integration. Retain the
+        // pre-integration boundary result instead of testing the new position.
+        let boundary_death = slot.base.outside_bounds();
         if slot.base.grounded {
             if slot.bow.has_fired {
                 // Landed after firing: exit with the landing (justlanded).
@@ -1363,8 +1373,8 @@ impl RolloutWorld {
                 exit = true;
             }
         }
-        if slot.base.outside_bounds() {
-            slot.base.alive = false; // deaths_tick attributes it
+        if boundary_death {
+            slot.base.alive = false; // game_tick attributes it after this updater
         }
         if exit {
             slot.active = ActiveAbility::None;
@@ -2321,20 +2331,6 @@ impl RolloutWorld {
 
     fn playable_slot(&self, slot: &PlayerSlot) -> bool {
         slot.base.alive && slot.respawn_ticks == 0
-    }
-
-    fn deaths_tick(&mut self) {
-        for index in 0..self.players.len() {
-            let slot = &mut self.players[index];
-            if !slot.base.alive || slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0 {
-                continue;
-            }
-            // Catch a body that crossed the boundary during this tick. The
-            // shared movement slice will only pre-mark it on the next tick.
-            if slot.base.outside_bounds() {
-                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
-            }
-        }
     }
 
     pub fn kill(&mut self, index: usize, killer: u32, cause: u32) {
