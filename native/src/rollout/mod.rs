@@ -938,23 +938,24 @@ impl RolloutWorld {
                 if !self.playable(pa) || !self.playable(pb) {
                     continue;
                 }
-                // A body box disabled by a non-dash ability (bow, platform)
-                // collides with nothing, so the pair never shoves.
-                let a_boxless = self.players[pa].active != ActiveAbility::None
-                    && !self.players[pa].base.dash.active;
-                let b_boxless = self.players[pb].active != ActiveAbility::None
-                    && !self.players[pb].base.dash.active;
-                if a_boxless || b_boxless {
+                // Non-instant abilities disable the original slime box, but
+                // Bow and Platform anticipation replace it with their own
+                // Player-layer trigger. The active ability has no
+                // SlimeController callback; the ordinary slime on the other
+                // side still receives its one-sided overlap push.
+                let collider_enabled = |slot: &PlayerSlot| match slot.active {
+                    ActiveAbility::None | ActiveAbility::Dash | ActiveAbility::Bow => true,
+                    ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
+                };
+                if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
                     continue;
                 }
                 let a_pos = self.players[pa].base.position;
                 let b_pos = self.players[pb].base.position;
-                let a_dash = self.players[pa].base.dash.active;
-                let b_dash = self.players[pb].base.dash.active;
-                if !a_dash {
+                if self.players[pa].active == ActiveAbility::None {
                     self.players[pa].base.push_from(b_pos, true);
                 }
-                if !b_dash {
+                if self.players[pb].active == ActiveAbility::None {
                     self.players[pb].base.push_from(a_pos, false);
                 }
             }
