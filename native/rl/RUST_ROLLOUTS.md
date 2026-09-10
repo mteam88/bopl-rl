@@ -293,21 +293,21 @@ and the final semantic-audit implementation were:
 
 | | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust pre-rotation fix | Rust current |
 |---|---:|---:|---:|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 | 62.3 |
+| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 | 62.4 |
 | timeouts | 0 | 0 | 0 | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 153 | 138 | 138 | 135 |
-| self deaths | 165 | 153 | 146 | 160 | 160 | 163 |
+| environment deaths | 133 | 144 | 153 | 138 | 138 | 134 |
+| self deaths | 165 | 153 | 146 | 160 | 160 | 164 |
 | opponent deaths | 2 | 3 | 1 | 2 | 2 | 2 |
-| dash activations | 221 | 284 | 240 | 217 | 217 | 219 |
-| bow activations | 498 | 560 | 510 | 489 | 491 | 492 |
-| platform activations | 86 | 129 | 113 | 87 | 88 | 87 |
-| arrows fired | 484 | 551 | 497 | 476 | 476 | 479 |
+| dash activations | 221 | 284 | 240 | 217 | 217 | 218 |
+| bow activations | 498 | 560 | 510 | 489 | 491 | 494 |
+| platform activations | 86 | 129 | 113 | 87 | 88 | 86 |
+| arrows fired | 484 | 551 | 497 | 476 | 476 | 480 |
 | arrow hits | 2 | 3 | 1 | 2 | 2 | 2 |
 | winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 | 297/300 |
 
-The episode-length gap fell from +10.4 to -0.7 decisions. Mean position
+The episode-length gap fell from +10.4 to -0.6 decisions. Mean position
 divergence remains under 0.002 through decision 16, then grows chaotically
-(0.083/0.199 at decisions 31/46). Restoring the spawned-platform rotation
+(0.082/0.198 at decisions 31/46). Restoring the spawned-platform rotation
 spring reduced the later decision-106/121 divergences from 1.436/2.690 to
 1.238/1.580 units and improved winner agreement by one episode.
 
@@ -454,13 +454,13 @@ then new/old at 100.2k/100.5k. Including resets they measured 62.5k/66.5k and
 measurable throughput cost in this test.
 
 After the final semantic-audit fixes, a new bracketed baseline/final pair
-under `CPUQuota=600%`, `nice -n 15` measured stepping at
-144.5k/139.5k then 135.8k/139.3k ticks/s (baseline/final then
-final/baseline). Averaging each side gives 141.9k baseline versus 137.6k final
-(-3.0%); including resets gives 94.5k versus 90.8k (-3.9%). Different reset
-counts follow the corrected outcomes, and the ordering reversal again shows
-that a few percent is background-load noise rather than a demonstrated hot
-path regression.
+under `CPUQuota=800%`, `nice -n 10` measured stepping at
+1.685M/1.700M then 1.714M/1.878M ticks/s (baseline/final then
+final/baseline). Averaging each side gives 1.781M baseline versus 1.707M final
+(-4.2%); including resets gives 0.957M versus 0.914M (-4.4%). Different reset
+counts follow the corrected outcomes, and the large run-to-run spread means
+the small difference should be treated as a bounded microbenchmark cost, not
+as a precise trainer-throughput regression.
 
 ### Speed work (2026-09-10)
 
