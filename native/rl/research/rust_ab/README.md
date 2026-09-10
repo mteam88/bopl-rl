@@ -10,6 +10,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 ```
 
 - `move_ab.c`: fixed-action angle sweep, positions per decision.
+- `keyboard_ab.c`: keyboard-configured W/A/S/D movement with an independent
+  joystick aim byte, including the high `S/D` action bits.
 - `state_ab.c`: idle/run/turn/stop, SlimeController state and timers.
 - `entity_velocity_ab.c`: distinguishes the one-tick-stale public player
   position and zero-velocity trigger PhysicsBody from the current-tick moving

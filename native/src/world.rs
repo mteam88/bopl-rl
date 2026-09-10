@@ -337,6 +337,14 @@ impl Player {
         }
     }
     pub(crate) fn step(&mut self, action: Action, platforms: &[Platform]) {
+        self.step_with_input(action, action.direction(), platforms);
+    }
+
+    /// Run the ordinary slime movement with `input` while keeping `action`'s
+    /// joystick direction available to abilities such as Dash. Gamepad input
+    /// uses the same vector for both; keyboard players use W/A/S/D for motion
+    /// and the joystick byte independently for ability aim.
+    pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, platforms: &[Platform]) {
         let jump = action.buttons & 1 != 0;
         if self.dash.active {
             self.previous_jump = jump;
@@ -346,7 +354,7 @@ impl Player {
         self.gravity_step(platforms);
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
-            self.enter_dash(action, platforms);
+            self.enter_dash(action, input, platforms);
             self.previous_jump = jump;
             self.dash_step(action, platforms);
             return;
@@ -355,7 +363,6 @@ impl Player {
             self.jump(platforms);
         }
         self.previous_jump = jump;
-        let input = action.direction();
         if self.grounded {
             self.move_grounded(input, platforms);
         } else {

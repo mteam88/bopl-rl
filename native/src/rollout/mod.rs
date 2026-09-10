@@ -38,6 +38,23 @@ pub struct CAction {
     pub reserved: u8,
     pub buttons: u16,
 }
+impl CAction {
+    fn aim_action(self) -> Action {
+        Action {
+            angle: self.angle,
+            buttons: (self.buttons & 0xFF) as u8,
+        }
+    }
+
+    fn input_direction(self, keyboard: bool) -> Vec2 {
+        if !keyboard {
+            return self.aim_action().direction();
+        }
+        let x = i64::from(self.buttons & 512 != 0) - i64::from(self.buttons & 128 != 0);
+        let y = i64::from(self.buttons & 64 != 0) - i64::from(self.buttons & 256 != 0);
+        Vec2::new(Fix::from_int(x), Fix::from_int(y))
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CPlayerConfig {
@@ -310,6 +327,7 @@ pub enum ActiveAbility {
 pub struct PlayerSlot {
     pub base: Player,
     pub team: u32,
+    pub keyboard: bool,
     pub stocks: u32,
     pub kills: u32,
     pub deaths: u32,
@@ -676,6 +694,7 @@ impl RolloutWorld {
                     },
                 },
                 team,
+                keyboard: config.player[i].keyboard != 0,
                 stocks: self.stocks,
                 kills: 0,
                 deaths: 0,
@@ -753,7 +772,7 @@ impl RolloutWorld {
             }
         }
         for (index, action) in actions.iter().enumerate() {
-            self.update_obs_state(index, *action);
+            self.update_obs_state(index, action.direction());
         }
     }
 
@@ -763,7 +782,7 @@ impl RolloutWorld {
     /// State.ability. `land`/`stop`/`turn` last exactly their animation and
     /// then chain like the .NET callbacks (land->idle, stop->idle,
     /// turn->run); reversals while running pass through `stop`.
-    fn update_obs_state(&mut self, index: usize, action: Action) {
+    fn update_obs_state(&mut self, index: usize, dir: Vec2) {
         let slot = &mut self.players[index];
         if !slot.base.alive
             || slot.respawn_ticks > 0
@@ -776,7 +795,6 @@ impl RolloutWorld {
             slot.obs_state = STATE_FALL;
             return;
         }
-        let dir = action.direction();
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
         // direction table only emits unit vectors) and the tangential ground
         // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
@@ -916,21 +934,23 @@ impl RolloutWorld {
         for index in 0..self.players.len() {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
-            let action = Action {
-                angle: actions[index].angle,
-                buttons: (actions[index].buttons & 0xFF) as u8,
-            };
+            let action = actions[index].aim_action();
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
-            let registered_action = Action {
-                angle: registered_actions[index].angle,
-                buttons: (registered_actions[index].buttons & 0xFF) as u8,
-            };
+            let registered_action = registered_actions[index].aim_action();
+            let movement_input = actions[index].input_direction(self.players[index].keyboard);
             let jump_down = registered_action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
-            self.player_tick(index, action, registered_action, jump_pressed, data);
+            self.player_tick(
+                index,
+                action,
+                registered_action,
+                movement_input,
+                jump_pressed,
+                data,
+            );
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
             // the match-level death exactly once; otherwise the later
@@ -981,11 +1001,8 @@ impl RolloutWorld {
                 self.players[index].base.sync_collider();
                 self.players[index].base.late_step(&self.platforms);
             }
-            let action = Action {
-                angle: actions[index].angle,
-                buttons: (actions[index].buttons & 0xFF) as u8,
-            };
-            self.update_obs_state(index, action);
+            let input = actions[index].input_direction(self.players[index].keyboard);
+            self.update_obs_state(index, input);
         }
         self.arrows_integrate(data);
         self.platforms_tick(data);
@@ -1006,6 +1023,7 @@ impl RolloutWorld {
         index: usize,
         action: Action,
         registered_action: Action,
+        movement_input: Vec2,
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
@@ -1014,7 +1032,7 @@ impl RolloutWorld {
             slot.active != ActiveAbility::None || slot.base.dash.active
         };
         if !self.playable(index) {
-            self.respawn_tick(index, registered_action, jump_pressed, data);
+            self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
         }
         if !in_ability {
@@ -1067,7 +1085,7 @@ impl RolloutWorld {
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
                         // now; platform and bow begin updating next tick.
-                        self.dash_move(index, masked);
+                        self.dash_move(index, masked, movement_input);
                         return;
                     }
                     ABILITY_BOW => {
@@ -1146,7 +1164,7 @@ impl RolloutWorld {
                 angle: source.angle,
                 buttons: (source.buttons & 1) | if starting { 2 } else { 0 },
             };
-            self.dash_move(index, masked);
+            self.dash_move(index, masked, movement_input);
             if !self.players[index].base.dash.active {
                 // Dash finished this tick.
                 self.players[index].active = ActiveAbility::None;
@@ -1158,7 +1176,9 @@ impl RolloutWorld {
             angle: action.angle,
             buttons: action.buttons & 1,
         };
-        self.players[index].base.step(masked, &self.platforms);
+        self.players[index]
+            .base
+            .step_with_input(masked, movement_input, &self.platforms);
         if self.players[index].dash_exit_followup {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
@@ -1168,8 +1188,10 @@ impl RolloutWorld {
     }
 
     /// base.step with the dash shove check from World::step.
-    fn dash_move(&mut self, index: usize, action: Action) {
-        self.players[index].base.step(action, &self.platforms);
+    fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
+        self.players[index]
+            .base
+            .step_with_input(action, movement_input, &self.platforms);
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
@@ -2378,7 +2400,7 @@ impl RolloutWorld {
     fn respawn_tick(
         &mut self,
         index: usize,
-        action: Action,
+        input_direction: Vec2,
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
@@ -2391,13 +2413,12 @@ impl RolloutWorld {
             // StockRespawnChooser.UpdateSim: choose a point from the full
             // directional input, then decrement and allow a jump edge to
             // confirm immediately.
-            let direction = action.direction();
             let threshold = Fix::from_f32(0.3);
-            if direction.x < -threshold {
+            if input_direction.x < -threshold {
                 slot.respawn_selected = 0;
-            } else if direction.x > threshold {
+            } else if input_direction.x > threshold {
                 slot.respawn_selected = 2;
-            } else if direction.y.abs() > threshold {
+            } else if input_direction.y.abs() > threshold {
                 slot.respawn_selected = 1;
             }
             slot.respawn_ticks -= 1;
@@ -3129,5 +3150,20 @@ mod tests {
         world.session_result_tick();
         assert!(world.terminal);
         assert!(world.players[1].won);
+    }
+
+    #[test]
+    fn keyboard_motion_is_independent_of_ability_aim() {
+        let action = CAction {
+            angle: 65,    // up in the joystick/aim table
+            buttons: 512, // D in the keyboard movement bits
+            ..CAction::default()
+        };
+        assert_eq!(action.input_direction(true), Vec2::RIGHT);
+        assert_ne!(action.aim_action().direction(), Vec2::RIGHT);
+        assert_eq!(
+            action.input_direction(false),
+            action.aim_action().direction()
+        );
     }
 }
