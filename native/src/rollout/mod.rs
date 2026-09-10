@@ -283,6 +283,10 @@ pub struct PlatformState {
     pub active_corner: Vec2,
     /// Index into `RolloutWorld::platforms` for the platform being shaped.
     pub platform_index: usize,
+    /// Player.Position is written before PlatformTransform.UpdateSim moves
+    /// the active ability body. RlObservation therefore reports this value.
+    pub reported_position: Vec2,
+    pub reported_tick: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -309,6 +313,13 @@ pub struct PlayerSlot {
     pub cooldowns: [Fix; 3],
     pub active: ActiveAbility,
     pub active_slot: usize,
+    /// The original SlimeController stays at the ability entry point while
+    /// the active ability's separate body moves.
+    pub ability_origin: Vec2,
+    pub ability_origin_velocity: Vec2,
+    pub ability_origin_rotation: Fix,
+    pub ability_origin_state: u32,
+    pub ability_entry_action: Action,
     pub ability_time: Fix,
     pub bow: BowState,
     pub platform: PlatformState,
@@ -515,7 +526,10 @@ impl RolloutWorld {
                 kind: 0,
                 layer: LAYER_PLAYER,
                 owner: 0,
-                flags: E_ENABLED | E_TRIGGER,
+                // The ability GameObject starts inactive. Its collider keeps
+                // its trigger body in DetPhysics, but neither activeInHierarchy
+                // nor enabled is set; Ability receives its owner on first use.
+                flags: E_TRIGGER,
                 hierarchy: 100_000_030 + 30 * i as u32,
                 radius: data.platform.hurtbox_radius.0,
                 inverse_mass: -(1 << 32),
@@ -553,7 +567,7 @@ impl RolloutWorld {
                     flags: if body {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
                     } else {
-                        E_ENABLED | E_TRIGGER
+                        E_TRIGGER
                     },
                     hierarchy: hier + 30 * i as u32,
                     right_x: extents.x.0,
@@ -657,9 +671,17 @@ impl RolloutWorld {
                 cooldowns,
                 active: ActiveAbility::None,
                 active_slot: 0,
+                ability_origin: spawn,
+                ability_origin_velocity: Vec2::ZERO,
+                ability_origin_rotation: Fix::ZERO,
+                ability_origin_state: STATE_FALL,
+                ability_entry_action: Action::default(),
                 ability_time: Fix::ZERO,
                 bow: BowState::default(),
-                platform: PlatformState::default(),
+                platform: PlatformState {
+                    reported_tick: u32::MAX,
+                    ..PlatformState::default()
+                },
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
@@ -997,11 +1019,19 @@ impl RolloutWorld {
             self.players[index].ability_time = Fix::ZERO;
             for s in 0..3 {
                 let slot = &self.players[index];
-                let button_down = action.buttons & (2 << s) as u8 != 0;
+                let button_down = registered_action.buttons & (2 << s) as u8 != 0;
                 if !button_down || slot.timers[s] < slot.cooldowns[s] {
                     continue;
                 }
-                match slot.abilities[s] {
+                let ability = slot.abilities[s];
+                {
+                    let slot = &mut self.players[index];
+                    slot.ability_origin = slot.base.position;
+                    slot.ability_origin_velocity = slot.base.velocity + slot.base.external_velocity;
+                    slot.ability_origin_rotation = slot.base.rotation;
+                    slot.ability_origin_state = slot.obs_state;
+                }
+                match ability {
                     ABILITY_DASH => {
                         // The movement slice implements the dash; unlock its
                         // internal cooldown gate and let base.step enter it.
@@ -1009,18 +1039,15 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
                         self.players[index].active_slot = s;
+                        self.players[index].ability_entry_action = registered_action;
                         self.players[index].telemetry.ability_activations[s] += 1;
-                        let masked = Action {
-                            angle: action.angle,
-                            buttons: (action.buttons & 1) | 2,
-                        };
-                        self.dash_move(index, masked);
                         return;
                     }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
                         self.players[index].active_slot = s;
+                        self.players[index].ability_entry_action = registered_action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
                         // BowTransform.OnEnterAbility: aim starts at the up
@@ -1033,19 +1060,21 @@ impl RolloutWorld {
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                         }
-                        self.bow_tick(index, action, data);
                         return;
                     }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
                         self.players[index].active_slot = s;
+                        self.players[index].ability_entry_action = registered_action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
                         // PlatformTransform.OnEnterAbility: the body freezes at
                         // its position; the ability object carries no velocity.
                         slot.platform = PlatformState {
                             active_corner: Vec2::new(Fix::ONE, Fix::ONE),
+                            reported_position: slot.base.position,
+                            reported_tick: self.tick,
                             ..PlatformState::default()
                         };
                         slot.base.velocity = Vec2::ZERO;
@@ -1053,7 +1082,6 @@ impl RolloutWorld {
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
-                        self.platform_ability_tick(index, action, data);
                         return;
                     }
                     // Other catalog abilities are never simulated here.
@@ -1063,17 +1091,23 @@ impl RolloutWorld {
         }
 
         if self.players[index].active == ActiveAbility::Bow {
-            self.bow_tick(index, action, data);
+            self.bow_tick(index, registered_action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
-            self.platform_ability_tick(index, action, data);
+            self.platform_ability_tick(index, registered_action, data);
             return;
         }
-        if self.players[index].base.dash.active {
+        if self.players[index].active == ActiveAbility::Dash {
+            let starting = !self.players[index].base.dash.active;
+            let source = if starting {
+                self.players[index].ability_entry_action
+            } else {
+                registered_action
+            };
             let masked = Action {
-                angle: action.angle,
-                buttons: action.buttons & 1,
+                angle: source.angle,
+                buttons: (source.buttons & 1) | if starting { 2 } else { 0 },
             };
             self.dash_move(index, masked);
             if !self.players[index].base.dash.active {
@@ -1344,6 +1378,10 @@ impl RolloutWorld {
     /// cap, and the ejection along the platform's up vector.
     fn platform_ability_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let pd = &data.platform;
+        // SlimeController/Player.Update has already published the ability
+        // body's current transform before PlatformTransform changes it.
+        self.players[index].platform.reported_position = self.players[index].base.position;
+        self.players[index].platform.reported_tick = self.tick;
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let aim = action.direction();
@@ -1385,7 +1423,11 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.base.position = center;
                 slot.base.rotation = up.perp_cw().normalized_angle();
-                if ticks >= pd.anticipation_ticks + pd.enter_ticks {
+                // SpriteAnimator invokes EnterSize after PlatformTransform's
+                // UpdateSim pass. The newly selected Size state therefore
+                // starts on the following tick, one pass after the authored
+                // Enter animation has accumulated all of its frame ticks.
+                if ticks > pd.anticipation_ticks + pd.enter_ticks {
                     slot.platform.phase = PLATFORM_SIZE;
                 }
             }
@@ -1557,6 +1599,16 @@ impl RolloutWorld {
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
         self.platform_entities.push(entity);
+        // CreatePlatform immediately calls ResizePlatform with the prefab
+        // dimensions after ManualInit. That recomputes mass and inertia even
+        // though the geometry itself did not change.
+        self.reshape_platform(
+            platform_index,
+            position,
+            Vec2::UP,
+            pd.spawn_extents,
+            pd.spawn_radius,
+        );
         let delay = self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay);
         self.spawned.push(SpawnedPlatform {
             active: true,
@@ -1942,12 +1994,6 @@ impl RolloutWorld {
         {
             return;
         }
-        let before: Vec<_> = self
-            .platforms
-            .iter()
-            .map(|p| (p.surface.center, p.surface.right))
-            .collect();
-
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
@@ -2108,34 +2154,14 @@ impl RolloutWorld {
         }
 
         // StickyRoundedRectangle riders are positioned from their surface
-        // local after physics. PlatformTransform bodies retain their local
-        // offset from the controlled platform (zero until ejection).
+        // local after physics. PlatformTransform itself is intentionally not
+        // synchronized here: its UpdateSim copied the platform's FixTransform
+        // before DetPhysics moved/corrected it, matching Unity's phase order.
         for slot in &mut self.players {
             if slot.base.alive && slot.base.grounded {
                 slot.base.late_step(&self.platforms);
                 slot.base.sync_collider();
             }
-        }
-        for spawn in self
-            .spawned
-            .iter()
-            .copied()
-            .filter(|s| s.active && !s.being_removed)
-        {
-            let slot = &mut self.players[spawn.owner];
-            if slot.active != ActiveAbility::Platform
-                || slot.platform.phase == PLATFORM_ANTICIPATION
-                || slot.platform.platform_index != spawn.platform_index
-            {
-                continue;
-            }
-            let (old_center, old_right) = before[spawn.platform_index];
-            let platform = &self.platforms[spawn.platform_index];
-            let old_inverse = Vec2::new(old_right.x, -old_right.y);
-            let local = (slot.base.position - old_center).complex_mul(old_inverse);
-            slot.base.position =
-                platform.surface.center + local.complex_mul(platform.surface.right);
-            slot.base.sync_collider();
         }
 
         // DestroyIfOutsideSceneBounds on ResizablePlatforms; a still-formed
@@ -2446,6 +2472,7 @@ impl RolloutWorld {
                 let angle = slot.base.dash.input.normalized_angle();
                 let basis = Vec2::angle(angle);
                 dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                dash_box.owner = slot.base.id;
                 dash_box.x = position.x.0;
                 dash_box.y = position.y.0;
                 dash_box.vx = velocity.x.0;
@@ -2458,7 +2485,7 @@ impl RolloutWorld {
                 dash_box.up_y = up.y.0;
                 dash_box.rotation = angle.0;
             } else {
-                dash_box.flags = E_ENABLED | E_TRIGGER;
+                dash_box.flags = E_TRIGGER;
                 dash_box.x = 0;
                 dash_box.y = 0;
                 dash_box.vx = 0;
@@ -2476,6 +2503,7 @@ impl RolloutWorld {
                 };
                 let right_dir = up_dir.perp_cw();
                 bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                bow_box.owner = slot.base.id;
                 bow_box.x = position.x.0;
                 bow_box.y = position.y.0;
                 bow_box.vx = velocity.x.0;
@@ -2486,7 +2514,7 @@ impl RolloutWorld {
                 bow_box.up_y = (up_dir * extents.y).y.0;
                 bow_box.rotation = right_dir.normalized_angle().0;
             } else {
-                bow_box.flags = E_ENABLED | E_TRIGGER;
+                bow_box.flags = E_TRIGGER;
                 bow_box.x = 0;
                 bow_box.y = 0;
                 bow_box.vx = 0;
@@ -2497,10 +2525,16 @@ impl RolloutWorld {
             let circle = &mut self.entities[circle_e];
             if alive && anticipating {
                 circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                circle.owner = slot.base.id;
+                circle.x = position.x.0;
+                circle.y = position.y.0;
+            } else if alive && slot.active == ActiveAbility::Platform {
+                circle.flags = E_ACTIVE | E_TRIGGER;
+                circle.owner = slot.base.id;
                 circle.x = position.x.0;
                 circle.y = position.y.0;
             } else {
-                circle.flags = E_ENABLED | E_TRIGGER;
+                circle.flags = E_TRIGGER;
                 circle.x = 0;
                 circle.y = 0;
             }
@@ -2552,15 +2586,16 @@ impl RolloutWorld {
             let mut flags = S_ACTIVE;
             if respawning {
                 flags |= S_SUPPRESS_INPUT;
+            } else if in_ability {
+                // onEnterAbility disables the original slime GameObject but
+                // its spawned/simulated state remains visible to observation.
+                flags = S_SPAWNED | S_IN_ABILITY | S_SIMULATED;
             } else {
                 flags |= S_SPAWNED;
             }
-            if in_ability && !respawning {
-                flags |= S_IN_ABILITY;
-            } else if !respawning {
+            if !in_ability && !respawning {
                 flags |= S_SIMULATED;
             }
-            let state = slot.obs_state;
             let mut ability_flags = [0u32; 3];
             for s in 0..3 {
                 if slot.abilities[s] == 0 {
@@ -2574,28 +2609,43 @@ impl RolloutWorld {
                     f |= 4;
                 }
                 if in_ability && slot.active_slot == s {
-                    // Active bit only: the .NET observation reads loadingFrame
-                    // and hasFired off the slot's ability component through
-                    // reflection and always sees zero (verified empirically:
-                    // charge bits stay 0 through a 96-tick hold while launch
-                    // speeds prove the internal frame reached 4), so exposing
-                    // the real charge here would feed the policy an input it
-                    // never saw in training.
                     f |= 8;
+                    if slot.active == ActiveAbility::Bow {
+                        // RlObservation reflects BowTransform.loadingFrame
+                        // into bits 4..6 and hasFired into bit 7.
+                        f |= (slot.bow.loading_frame & 7) << 4;
+                        if slot.bow.has_fired {
+                            f |= 0x80;
+                        }
+                    }
                 }
                 ability_flags[s] = f;
             }
-            let velocity = slot.base.velocity + slot.base.external_velocity;
+            let (slime_position, velocity, rotation, state) = if in_ability {
+                (
+                    slot.ability_origin,
+                    slot.ability_origin_velocity,
+                    slot.ability_origin_rotation,
+                    slot.ability_origin_state,
+                )
+            } else {
+                (
+                    slot.base.position,
+                    slot.base.velocity + slot.base.external_velocity,
+                    slot.base.rotation,
+                    slot.obs_state,
+                )
+            };
             slimes.push(CSlime {
                 id: self.entities[slot.body_entity].id,
                 owner: slot.base.id,
                 flags,
                 state,
-                x: slot.base.position.x.0,
-                y: slot.base.position.y.0,
+                x: slime_position.x.0,
+                y: slime_position.y.0,
                 vx: velocity.x.0,
                 vy: velocity.y.0,
-                rotation: slot.base.rotation.0,
+                rotation: rotation.0,
                 scale: 1 << 32,
                 abilities: slot.abilities,
                 ability_flags,
@@ -2640,6 +2690,14 @@ impl RolloutWorld {
             if slot.won {
                 player_flags |= 2;
             }
+            if slot.active == ActiveAbility::Platform {
+                player_flags |= 32;
+            }
+            let position = if slot.platform.reported_tick.checked_add(1) == Some(tick) {
+                slot.platform.reported_position
+            } else {
+                slot.base.position
+            };
             state.players[i] = CPlayer {
                 id: slot.base.id,
                 team: slot.team,
@@ -2649,8 +2707,8 @@ impl RolloutWorld {
                 kills: slot.kills,
                 deaths: slot.deaths,
                 cause_of_death: slot.cause_of_death,
-                x: slot.base.position.x.0,
-                y: slot.base.position.y.0,
+                x: position.x.0,
+                y: position.y.0,
                 scale: 1 << 32,
                 invisible_time: 0,
                 ability_time: slot.ability_time.0,
