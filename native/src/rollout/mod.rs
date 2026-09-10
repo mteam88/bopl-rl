@@ -354,6 +354,10 @@ pub struct PlayerSlot {
     pub reported_tick: u32,
     /// First original-slime pass after Dash re-enables it.
     pub dash_exit_followup: bool,
+    /// A platform destroyed later in the previous updater pass. Unity keeps
+    /// the rider grounded until its own next update, then separates it using
+    /// the destroyed StickyRoundedRectangle's last surface normal.
+    pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
     pub platform: PlatformState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -683,6 +687,7 @@ impl RolloutWorld {
                     local: Fix::ZERO,
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
+                    skip_next_gravity: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
                     dash: DashState::default(),
@@ -715,6 +720,7 @@ impl RolloutWorld {
                 reported_position: spawn,
                 reported_tick: u32::MAX,
                 dash_exit_followup: false,
+                removed_ground_normal: None,
                 bow: BowState::default(),
                 platform: PlatformState::default(),
                 obs_state: STATE_FALL,
@@ -1034,6 +1040,22 @@ impl RolloutWorld {
         if !self.playable(index) {
             self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
+        }
+        if let Some(normal) = self.players[index].removed_ground_normal.take() {
+            let slot = &mut self.players[index];
+            // Ordinary SlimeController explicitly zeros rotation before
+            // UnGround(false). PlayerPhysics already skipped gravity earlier
+            // in this pass while `isGrounded` was still true. BowTransform,
+            // by contrast, owns this check and applies gravity after it.
+            if slot.active == ActiveAbility::None {
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
+                slot.base.skip_next_gravity = true;
+            }
+            slot.base.position += normal * Fix::from_f32(0.05);
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
         }
         if !in_ability {
             for s in 0..3 {
@@ -1742,14 +1764,14 @@ impl RolloutWorld {
     }
 
     /// Remove a platform from the world (RemovePlatform / scene-bounds
-    /// destruction), detaching any players standing on it.
+    /// destruction). Riders retain Unity's destroyed ground reference until
+    /// their own next updater pass.
     fn remove_platform(&mut self, index: usize) {
         let id = self.platforms[index].id;
+        let surface = self.platforms[index].surface.clone();
         for slot in &mut self.players {
-            if slot.base.ground == Some(id) {
-                slot.base.grounded = false;
-                slot.base.ground = None;
-                slot.base.grounded_speed = Fix::ZERO;
+            if slot.base.alive && slot.base.ground == Some(id) {
+                slot.removed_ground_normal = Some(surface.normal(slot.base.position));
             }
         }
         let entity = self.platform_entities[index];
@@ -2335,7 +2357,7 @@ impl RolloutWorld {
         // synchronized here: its UpdateSim copied the platform's FixTransform
         // before DetPhysics moved/corrected it, matching Unity's phase order.
         for slot in &mut self.players {
-            if slot.base.alive && slot.base.grounded {
+            if slot.base.alive && slot.base.grounded && slot.removed_ground_normal.is_none() {
                 slot.base.late_step(&self.platforms);
                 slot.base.sync_collider();
             }
@@ -3165,6 +3187,51 @@ mod tests {
         assert_eq!(
             action.input_direction(false),
             action.aim_action().direction()
+        );
+    }
+
+    #[test]
+    fn destroyed_platform_detaches_rider_on_its_next_update() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let platform_index =
+            world.spawn_ability_platform(0, Vec2::new(Fix::ZERO, Fix::from_int(30)));
+        let platform_id = world.platforms[platform_index].id;
+        let position = world.platforms[platform_index]
+            .surface
+            .position(Fix::ZERO, world.players[0].base.radius);
+        let normal = world.platforms[platform_index].surface.normal(position);
+        {
+            let player = &mut world.players[0].base;
+            player.position = position;
+            player.velocity = Vec2::ZERO;
+            player.external_velocity = Vec2::ZERO;
+            player.rotation = Fix::from_f32(0.5);
+            player.grounded = true;
+            player.ground = Some(platform_id);
+            player.local = Fix::ZERO;
+        }
+
+        world.remove_platform(platform_index);
+        assert!(world.players[0].base.grounded);
+        assert_eq!(world.players[0].base.ground, Some(platform_id));
+        assert_eq!(world.players[0].removed_ground_normal, Some(normal));
+
+        world.player_tick(
+            0,
+            Action::default(),
+            Action::default(),
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+        assert!(!world.players[0].base.grounded);
+        assert_eq!(world.players[0].base.ground, None);
+        assert_eq!(world.players[0].base.rotation, Fix::ZERO);
+        assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
+        assert_eq!(
+            world.players[0].base.position,
+            position + normal * Fix::from_f32(0.05)
         );
     }
 }

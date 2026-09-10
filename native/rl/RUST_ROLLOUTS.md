@@ -112,7 +112,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 |---|---|---|
 | exploitable | Spawned/map platforms were immutable surfaces, allowing a transformed player to phase a platform through terrain | fixed: extracted bodies, springs, RR-RR contacts, impulses/correction, riders and transform following |
 | exploitable | A movement body crossing a blast boundary was pre-marked dead, then skipped by match death bookkeeping | fixed: the marker is consumed once and crossing on the current tick is caught |
-| exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall now destroy the arrow and kill when owner rules allow |
+| exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall kill when owner rules allow; the PlayerBody callback leaves the arrow live, as in Unity |
 | behavior-changing | Resizing kept the prefab mass/inertia instead of `10 + MassPerArea * area` and `ApproximateMOI` | fixed, including live observation `inverse_mass` |
 | exploitable | Spawned platforms had no rotation spring because the extractor omitted `rotationSpeed`/`rotationMu`; terrain contact torque accumulated into a large persistent tilt | fixed: both fields are required extracted data, the authored 40 / 1/6 spring runs every tick, and resize no longer reconstructs or pins body rotation |
 | behavior-changing | Platform aim used scalar-angle interpolation instead of Unity's sine-weighted `Vec2.Slerp`, leaving a fixed home-angle offset | fixed with the source formula, including its dot ceiling and zero-sine fallback |
@@ -121,11 +121,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | Bow used the original slime hurtbox during transforms, lost ordinary-slime pushes, raycasted after aerial control, and exposed charge one animator pass early | fixed with active ability colliders and source updater/animator ordering |
 | behavior-changing | Respawn point/timing choice was absent and fast-spawn upward motion lagged one pass | fixed: three directional points, early jump confirm, exact selection publication and launch phase |
 | behavior-changing | Curve tangents and old-platform shrink removal were absent | fixed: exported Hermite tangents/exact evaluator and collidable `being_removed` bodies |
+| behavior-changing | Destroying a recast platform detached riders immediately instead of on their next updater pass | fixed: preserve the destroyed ground through the removal observation, then apply Unity's 0.05-unit normal separation and ordinary-slime gravity phase |
 | behavior-changing | Rust arrow flight was swept while Unity integrates first and dispatches discrete Circle/RR, Circle/Circle, then Circle/Box contacts | fixed; terrain callbacks consume the arrow before player callbacks, while a PlayerBody kill leaves it flying |
 | behavior-changing | Cosmetic level-intro ground delays consumed RNG only in .NET, shifting later sudden-death samples | fixed: Rust consumes the samples without rendering the intro; sink activation and trajectories now align |
 | behavior-changing | Arrow rotation used post-gravity velocity and its boundary cull ran after physics | fixed: policy-visible rotation and side/water lifetime use the authored pre-physics phases |
 | exploitable | Rust deleted a spawned platform when its transformed owner crossed a blast boundary | fixed: the owner dies, but the separate `ResizablePlatform` remains collidable as in Unity |
 | behavior-changing | An end-of-tick Rust boundary pass killed ordinary/Bow bodies one tick before Unity's pre-`PlayerBody` boundary component | fixed with component-specific boundary phases |
+| behavior-changing | Match termination consumed deaths after physics in the same tick, while Unity's earlier `GameSessionHandler` sees them next tick | fixed: result consumption now runs at the beginning of the following updater pass |
+| behavior-changing | Keyboard-configured players discarded the high S/D bits and used joystick aim for movement | fixed: W/A/S/D drive motion while the angle byte remains independent ability aim |
 | configured scope | Ability pickups | disabled on both RL backends by default; explicit .NET-only diagnostic opt-in above |
 | exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |

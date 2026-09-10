@@ -49,6 +49,11 @@ pub struct Player {
     pub local: Fix,
     pub grounded_speed: Fix,
     pub previous_jump: bool,
+    /// PlayerPhysics already ran on the tick where SlimeController notices
+    /// that its attached platform was destroyed, so gravity starts one pass
+    /// later for the ordinary slime.
+    #[serde(default)]
+    pub(crate) skip_next_gravity: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -324,6 +329,9 @@ impl Player {
             .move_unblocked(self.local, self.radius, allowed, DT);
     }
     pub(crate) fn gravity_step(&mut self, platforms: &[Platform]) {
+        if std::mem::take(&mut self.skip_next_gravity) {
+            return;
+        }
         if !self.grounded {
             crate::player_physics::apply_gravity(
                 &mut self.velocity,
