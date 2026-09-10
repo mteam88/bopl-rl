@@ -296,28 +296,30 @@ sim before the platform-physics work) evaluated with `evaluate.py` as
 `--scripted-opponents mixed-hard,archer-hard,pursuer-hard,evasive-hard,
 mixed-medium`, 8 games per opponent and map, 4 per held-out map, 16 per
 frozen anchor, 8 workers) on four backends: the sweep's own `.so`, the
-platform-physics tip as committed (Q32.32 `Fix`), this tree (f64 `Fix`,
+platform-physics tip 5994df7 as committed (Q32.32 `Fix`), this tree (f64 `Fix`,
 raycast broad phase, physics merged) and .NET.
 
 | opponent | sweep .so | physics tip (Q32) | this tree (f64) | .NET |
 |---|---|---|---|---|
-| archer-hard | 20/32 | 13/32 | 13/32 | 17/32 |
-| evasive-hard | 22/32 | 10/32 | 10/32 | 5/32 |
-| mixed-hard | 27/32 | 17/32 | 17/32 | 19/32 |
-| mixed-medium | 22/32 | 19/32 | 18/32 | 19/32 |
-| pursuer-hard | 17/32 | 10/32 | 9/32 | 10/32 |
-| random | 30/32 | 30/32 | 31/32 | 32/32 |
-| initial | 24/24 | 23/24 | 22/24 | 22/24 |
-| run007-100m | 38/48 | 28/48 | 29/48 | 28/48 |
-| run007-300m | 39/48 | 28/48 | 31/48 | 29/48 |
-| run007-final | 23/48 | 18/48 | 20/48 | 13/48 |
-| total | 262/360 | 196/360 | 200/360 | 194/360 |
-| timeouts | 24 | 1 | 0 | 4 |
+| archer-hard | 20/32 | 15/32 | 15/32 | 17/32 |
+| evasive-hard | 22/32 | 8/32 | 11/32 | 5/32 |
+| mixed-hard | 27/32 | 16/32 | 16/32 | 19/32 |
+| mixed-medium | 22/32 | 15/32 | 16/32 | 19/32 |
+| pursuer-hard | 17/32 | 9/32 | 9/32 | 10/32 |
+| random | 30/32 | 30/32 | 30/32 | 32/32 |
+| initial | 24/24 | 22/24 | 22/24 | 22/24 |
+| run007-100m | 38/48 | 36/48 | 34/48 | 28/48 |
+| run007-300m | 39/48 | 33/48 | 34/48 | 29/48 |
+| run007-final | 23/48 | 20/48 | 22/48 | 13/48 |
+| total | 262/360 | 204/360 | 209/360 | 194/360 |
+| timeouts | 24 | 2 | 0 | 4 |
 
 Every per-opponent difference between this tree and .NET is inside the
-two-sample binomial 95% band (largest: evasive-hard 10 vs 5 of 32, band
-±6.7; run007-final 20 vs 13 of 48, band ±9.1), and this tree matches the
-Q32 physics tip group for group (largest difference 3 of 48). The sweep
+two-sample binomial 95% band (largest: run007-final 22 vs 13 of 48, band
+±9.3; evasive-hard 11 vs 5 of 32, band ±6.9; run007-100m 34 vs 28 of 48,
+band ±9.2), and this tree matches the Q32 physics tip group for group
+(largest difference 3 of 32). The earlier physics tip d71446c gave 196/360
+(Q32) and 200/360 (this tree) with the same pattern. The sweep
 `.so` is the outlier: the policy trained on it wins 4/4 on the held-out
 maps 3/4 against most scripted bots where the other three backends win 0/4,
 and 24 of its 360 games time out (mean episode 42 s vs 20-23 s). Those are
