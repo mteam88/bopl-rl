@@ -1912,7 +1912,35 @@ impl RolloutWorld {
                 if p.base.id == a.owner && !a.can_hurt_owner {
                     continue;
                 }
-                if let Some(hit) = p.base.collider.raycast(a.position, direction)
+                // A non-instant ability disables the slime GameObject and its
+                // hurtbox. Projectile callbacks come from the active ability's
+                // own collider: Bow's aimed box or Platform's anticipation
+                // circle. Dash already keeps its oriented ability box in the
+                // shared movement collider.
+                let hit = match p.active {
+                    ActiveAbility::Bow => {
+                        let extents = data.bow.hurtbox_extents;
+                        let up = if p.bow.aim == Vec2::ZERO {
+                            Vec2::UP
+                        } else {
+                            p.bow.aim
+                        };
+                        OrientedBox {
+                            center: p.base.position,
+                            right: up.perp_cw() * extents.x,
+                            up: up * extents.y,
+                            inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                        }
+                        .raycast(a.position, direction)
+                    }
+                    ActiveAbility::Platform => Circle {
+                        center: p.base.position,
+                        radius: data.platform.hurtbox_radius,
+                    }
+                    .raycast(a.position, direction),
+                    _ => p.base.collider.raycast(a.position, direction),
+                };
+                if let Some(hit) = hit
                     && hit.near <= reach
                     && hit.far >= Fix::ZERO
                     && victim.is_none_or(|(_, d)| hit.near < d)

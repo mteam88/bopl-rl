@@ -16,6 +16,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
 - `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
   position, charge/release flags, and deferred arrow registration/flight.
+- `ability_hitbox_ab.c`: an incoming arrow grazing Bow's larger active
+  ability hurtbox after the original slime hurtbox is disabled.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
 - `hit_ab.c`: charge and fire at the opponent, hit outcome and death cause.
 - `bow_test.c`: Rust-only bow scenario used while porting.
