@@ -266,8 +266,9 @@ h2 {
   border-radius: 3px;
 }
 .stage.physics {
-  /* the replay camera frames the whole survivable area, 270.5 x 91.8 units */
-  aspect-ratio: 3/1;
+  /* the replay camera follows the action, zooming out to at most the
+     survivable area (270.5 x 91.8 units); 2:1 suits both extremes */
+  aspect-ratio: 2/1;
 }
 #arena,
 video {

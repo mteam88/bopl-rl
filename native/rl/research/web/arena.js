@@ -14,7 +14,48 @@ const BOUNDS = {
 const MARGIN = 4; // world units of breathing room around the death rectangle
 // Player hurtbox half-extents at scale 1 (rollout.json prefabs.player.hurtbox_extents).
 const HURTBOX = [1.33, 0.81];
-// The framed area is 270.5 x 91.8 units, so .stage.physics and #matchCanvas use 3:1.
+// The survivable area is 270.5 x 91.8 units; .stage.physics and #matchCanvas use 2:1.
+
+// Auto camera: frame the action (live players and their projectiles) with
+// padding, never tighter than FOCUS_MIN, never wider than the survivable
+// rectangle, and glide between targets so the view does not jitter.
+const FOCUS_PAD = 10;          // world units around the action
+const FOCUS_MIN = [80, 40];    // minimum view span (world units): a level plus jump height
+const FOCUS_EASE = 0.12;       // per-frame fraction of the remaining move (~0.35 s at 60 Hz)
+const FOCUS_SNAP_TICKS = 6;    // a jump in t larger than this is a scrub: snap the camera
+
+function focusTarget(frame, b, aspect) {
+  const xs = [], ys = [];
+  for (const p of frame.players) if (p.flags & 1) { xs.push(p.x); ys.push(p.y); }
+  // Owned circles away from their owner are projectiles (arrows); keep them in view.
+  for (const e of frame.entities) {
+    if (e.kind !== 0 || !(e.owner > 0)) continue;
+    if (frame.players.some((p) => p.id === e.owner && Math.hypot(p.x - e.x, p.y - e.y) < 2)) continue;
+    xs.push(e.x); ys.push(e.y);
+  }
+  const full = { cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2, sx: b.x1 - b.x0 + 2 * MARGIN, sy: b.y1 - b.y0 + 2 * MARGIN };
+  if (!xs.length) return full;
+  let sx = Math.max(FOCUS_MIN[0], Math.max(...xs) - Math.min(...xs) + 2 * FOCUS_PAD);
+  let sy = Math.max(FOCUS_MIN[1], Math.max(...ys) - Math.min(...ys) + 2 * FOCUS_PAD);
+  // Match the canvas aspect so the fit is exact on both axes.
+  if (sx / sy > aspect) sy = sx / aspect; else sx = sy * aspect;
+  if (sx >= full.sx || sy >= full.sy) return full;
+  // Keep the view inside the survivable rectangle (plus margin) when possible.
+  const cx = Math.min(Math.max((Math.min(...xs) + Math.max(...xs)) / 2, b.x0 - MARGIN + sx / 2), b.x1 + MARGIN - sx / 2);
+  const cy = Math.min(Math.max((Math.min(...ys) + Math.max(...ys)) / 2, b.y0 - MARGIN + sy / 2), b.y1 + MARGIN - sy / 2);
+  return { cx, cy, sx, sy };
+}
+
+function camera(canvas, frame, initial, b, aspect) {
+  const target = focusTarget(frame, b, aspect);
+  let cam = canvas._boplCamera;
+  const snap = !cam || cam.initial !== initial || Math.abs((frame.t ?? 0) - cam.t) > FOCUS_SNAP_TICKS;
+  if (snap) cam = { ...target };
+  else for (const k of ["cx", "cy", "sx", "sy"]) cam[k] += (target[k] - cam[k]) * FOCUS_EASE;
+  cam.initial = initial; cam.t = frame.t ?? 0;
+  canvas._boplCamera = cam;
+  return cam;
+}
 
 window.drawBoplArena = function(canvas,frame,initial) {
   // Render at device resolution: the whole level is small at this zoom, so
@@ -29,14 +70,14 @@ window.drawBoplArena = function(canvas,frame,initial) {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#0e1723";
   ctx.fillRect(0, 0, w, h);
-  // Camera: the whole survivable rectangle plus a margin, fixed for the
-  // replay. Geometry never drives the frame, so objects parked off-map (map 2
-  // keeps a level object at x=-100) simply show where they are.
+  // Camera: follows the action, bounded by the survivable rectangle plus a
+  // margin (see focusTarget). Geometry never drives the frame, so objects
+  // parked off-map (map 2 keeps a level object at x=-100) show where they are.
   const b = initial?.level_type === 2 ? BOUNDS.space : BOUNDS.grass;
-  const spanX = b.x1 - b.x0 + 2 * MARGIN, spanY = b.y1 - b.y0 + 2 * MARGIN;
-  const scale = Math.min(w / spanX, h / spanY),
-    mx = (b.x0 + b.x1) / 2,
-    my = (b.y0 + b.y1) / 2;
+  const cam = camera(canvas, frame, initial, b, w / h);
+  const scale = Math.min(w / cam.sx, h / cam.sy),
+    mx = cam.cx,
+    my = cam.cy;
   const point = (x, y) => [w / 2 + (x - mx) * scale, h / 2 - (y - my) * scale];
   const [left, top] = point(b.x0, b.y1), [right, bottom] = point(b.x1, b.y0);
   ctx.fillStyle = "#18263a";
@@ -66,21 +107,26 @@ window.drawBoplArena = function(canvas,frame,initial) {
   }
   // Grid labels share the bottom edge with the boundary labels (below); on
   // narrow screens skip the ones that would collide with them.
+  // When the camera is zoomed in, the boundary edges can lie outside the
+  // canvas; labels then hug the visible edge instead.
+  const edgeL = Math.max(left, 0), edgeR = Math.min(right, w), edgeB = Math.min(bottom, h);
   ctx.font = font(9);
   const lowLabel = `x ${b.x0}`, waterLabel = `${b.water ? "water" : "blast zone"}  y ${b.y0}`;
-  const labelLeft = left + 4 * ui + ctx.measureText(lowLabel).width + 6 * ui;
-  const labelRight = right - 4 * ui - ctx.measureText(waterLabel).width - 6 * ui;
+  const bottomVisible = bottom <= h + 1;
+  const labelLeft = left >= -1 && bottomVisible ? left + 4 * ui + ctx.measureText(lowLabel).width + 6 * ui : 0;
+  const labelRight = bottomVisible ? edgeR - 4 * ui - ctx.measureText(waterLabel).width - 6 * ui : w;
   ctx.fillStyle = "#6f8398";
   ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-  for (let x = Math.ceil(gx0 / 50) * 50; x <= gx1; x += 50) {
+  const gridStep = scale * 50 < 70 * ui ? 100 : scale * 10 < 40 * ui ? 50 : 10;
+  for (let x = Math.ceil(gx0 / gridStep) * gridStep; x <= gx1; x += gridStep) {
     const [px] = point(x, 0), half = ctx.measureText(String(x)).width / 2;
     if (Math.abs(x) < b.x1 && px - half > labelLeft && px + half < labelRight)
-      ctx.fillText(String(x), px, bottom - 2 * ui);
+      ctx.fillText(String(x), px, edgeB - 2 * ui);
   }
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  for (let y = Math.ceil(gy0 / 50) * 50; y <= gy1; y += 50) {
+  for (let y = Math.ceil(gy0 / gridStep) * gridStep; y <= gy1; y += gridStep) {
     const [, py] = point(0, y);
-    if (y > b.y0 && y < b.y1 && py < bottom - 16 * ui) ctx.fillText(String(y), left + 4 * ui, py);
+    if (y > b.y0 && y < b.y1 && py < edgeB - 16 * ui && py > 8 * ui) ctx.fillText(String(y), edgeL + 4 * ui, py);
   }
 
   // Death boundary: dashed blast-zone edges (sides and top), solid water line.
@@ -108,7 +154,7 @@ window.drawBoplArena = function(canvas,frame,initial) {
   ctx.fillText(lowLabel, left + 4 * ui, bottom - 2 * ui);
   ctx.fillStyle = b.water ? "#5fb8d9" : "#e0655a";
   ctx.textAlign = "right";
-  ctx.fillText(waterLabel, right - 4 * ui, bottom - 2 * ui);
+  ctx.fillText(waterLabel, edgeR - 4 * ui, bottom - 2 * ui);
 
   for (const e of frame.entities) {
     const [x, y] = point(e.x, e.y);
