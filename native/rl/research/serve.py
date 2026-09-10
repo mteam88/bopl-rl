@@ -1,6 +1,7 @@
 """Local research dashboard with on-demand saved replay playback."""
 import argparse
 from collections import OrderedDict
+import glob
 import hashlib
 import threading
 import gzip
@@ -46,27 +47,38 @@ def main():
     parser.add_argument('--host',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8876)
     parser.add_argument('--study-root',action='append',default=[],metavar='NAME=PATH',help='Read a live study from an isolated workspace')
     parser.add_argument('--run-root',action='append',default=[],metavar='NAME=PATH',help='Read a live training run directory from an isolated workspace')
+    parser.add_argument('--run-root-glob',action='append',default=[],metavar='NAME=GLOB',help='Register every run directory matching GLOB as NAME-<dirname> (e.g. a sweep tree), re-evaluated per request')
     args=parser.parse_args(); root=args.root.resolve()
     library=ReplayLibrary(root)
-    extra={};extra_runs={}
-    for attribute,target in (('study_root',extra),('run_root',extra_runs)):
+    extra={};extra_runs={};run_globs={}
+    for attribute,target in (('study_root',extra),('run_root',extra_runs),('run_root_glob',run_globs)):
         for value in getattr(args,attribute):
             name,separator,path=value.partition('=')
             if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+',name):parser.error(f'{attribute} requires NAME=PATH')
-            target[name]=Path(path).resolve()
+            target[name]=path if attribute=='run_root_glob' else Path(path).resolve()
+    def named_runs():
+        """Explicit --run-root entries plus live matches of every --run-root-glob."""
+        found=dict(extra_runs)
+        for prefix,pattern in run_globs.items():
+            for match in sorted(glob.glob(pattern)):
+                directory=Path(match)
+                if directory.is_dir() and re.fullmatch(r'[A-Za-z0-9_.-]+',directory.name):
+                    found.setdefault(f'{prefix}-{directory.name}',directory.resolve())
+        return found
     def runs():
-        candidates=[]
-        for file in [*root.glob('*/config.json'),*(path/'config.json' for path in extra_runs.values())]:
+        candidates=[];named=named_runs()
+        for file in [*root.glob('*/config.json'),*(path/'config.json' for path in named.values())]:
             try: config=read_json(file,{})
             except (OSError,ValueError): continue
             if config and config.get('schema') in (1,2) and config.get('algorithm')=='recurrent PPO':
-                name=next((n for n,p in extra_runs.items() if p==file.parent),file.parent.name)
+                name=next((n for n,p in named.items() if p==file.parent),file.parent.name)
                 candidates.append(dict(name=name,created=file.stat().st_mtime,
-                                       workspace=str(file.parent) if name in extra_runs else None,
+                                       workspace=str(file.parent) if name in named else None,
                                        status=read_json(file.parent/'status.json',{})))
         return sorted(candidates,key=lambda r:r['created'],reverse=True)
     def run_directory(name):
-        if name in extra_runs: return extra_runs[name]
+        named=named_runs()
+        if name in named: return named[name]
         if re.fullmatch(r'[A-Za-z0-9_.-]+',name) and (root/name/'config.json').is_file(): return root/name
         return None
     def step_order(path):
