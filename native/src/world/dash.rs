@@ -126,7 +126,6 @@ impl Player {
                 self.local = self.dash.saved_local;
                 self.velocity = self.dash.input * Fix::from_int(60);
                 self.external_velocity = Vec2::ZERO;
-                self.collision_rays(platforms);
             }
             self.dash.updates += 1;
         }

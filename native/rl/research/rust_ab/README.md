@@ -11,7 +11,13 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 
 - `move_ab.c`: fixed-action angle sweep, positions per decision.
 - `state_ab.c`: idle/run/turn/stop, SlimeController state and timers.
+- `dash_phase_ab.c`: tick-level dash activation, anticipation, collider, and
+  displacement phases.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
+- `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
+  position, charge/release flags, and deferred arrow registration/flight.
+- `ability_hitbox_ab.c`: an incoming arrow grazing Bow's larger active
+  ability hurtbox after the original slime hurtbox is disabled.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
 - `hit_ab.c`: charge and fire at the opponent, hit outcome and death cause.
 - `bow_test.c`: Rust-only bow scenario used while porting.
@@ -22,10 +28,14 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   gate action stream at repeat 1, every observation field compared per tick,
   first divergence and outcome agreement reported (`REPR_AB_TRACE=<episode>`
   prints the gap growth).
+- `platform_phase_ab.c`: tick-level platform button/anticipation/spawn/resize
+  phases and transformed-player following.
 - `recast_ab.c`: two platform casts, including the evicted platform's live
   shrink/removal interval.
 - `stock_respawn_ab.c`: stock consumption, directional point selection, early
   jump confirmation, and the accelerated spawn interval.
+- `sudden_death_ab.c`: authored-platform sink activation and randomized-delay
+  trajectories around the 120-second transition.
 
 See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
 numeric tolerances. Do not infer fidelity from an all-identical dual-backend
