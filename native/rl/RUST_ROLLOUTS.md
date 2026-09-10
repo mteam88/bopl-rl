@@ -39,18 +39,22 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and sudden-death platform sinking on the extracted curve. Blast-boundary
   deaths are always routed through match bookkeeping, including while an
   ability body is active.
-- **Movement**: the verified movement slice (`world.rs`) with the .NET
-  one-tick input latency (a new action takes effect on the second tick of
-  its repeat window) reproduced exactly.
+- **Movement**: the verified movement slice (`world.rs`). Registered input is
+  consumed by the live body in the current tick, as in Unity. The public
+  `Player.Position` is normally the position published by `SlimeController`
+  before the later movement/physics work in that pass; the rollout represents
+  that report phase separately from the live body.
 - **Dash, Bow, Platform** (catalog ids 2/4/14): ported from `sim/Gameplay`
   with measured timings. Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,
   fire-on-release (early release fires from transform sprite index 2, tick
   11), knockback recoil, arrow gravity -40 (the DetPhysics override, not
-  Unity's -9.82), delayed hurt-owner, the 20-arrow owner cap, and projectile
-  collision during a dash raycast. Platform: anticipation, aim rotation,
+  Unity's -9.82), policy-visible animator charge, delayed hurt-owner, the
+  20-arrow owner cap, and projectile collision during a dash raycast.
+  Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
-  ejection, one-platform-per-player, transform following, and squish deaths.
+  ejection and same-pass exit reattachment, one-platform-per-player,
+  curve-driven old-body removal, transform following, and squish deaths.
 - **Observation**: `bopl_layout.h` layout with the .NET entity id
   assignment order (circles, boxes, rounded rects by first-seen), matching
   kinds/layers/owner/flags, slime ability slots, cooldowns and timers
@@ -61,11 +65,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 
 ## Deliberate .NET quirks mirrored
 
-- The .NET observation's bow charge bits (ability_flags bits 4-6) and the
-  0x80 fired bit always read zero — its reflection read never sees the
-  live loadingFrame even though launch speeds prove the internal frame
-  reaches 4. Rust hides its real charge too, so the policy sees the
-  training distribution.
+- `Player.Position` normally reports the body position from before movement
+  in the same updater pass, while the slime/entity rows contain the live body.
+  Ability callbacks have specific exceptions: Dash publishes after its
+  transform, Platform exit publishes the final ejection, and stock selection
+  publishes the selected respawn point in that same pass.
 - The .NET `State` enum never takes the `ability` value (nothing assigns
   it): state freezes at its pre-ability value during an ability and
   resumes from `fall` after `ExitAbility` ungrounds. Rust does the same.
@@ -76,17 +80,17 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 
 - Ability pickups (`AbilitySpawner`, drops at 40 s intervals) are not
   simulated; only ids 2/4/14 have real behavior, other catalog ids tick a
-  plausible cooldown and never activate.
-- Respawns place the player at the team spawn after a fixed hold rather
-  than allowing the directional three-point selection and early jump confirm
-  in `StockRespawnChooser` (not exercised at stocks=0).
-- Serialized animation curves retain only time/value and are evaluated
-  linearly. Unity uses Hermite in/out tangents. This affects platform enter,
-  ejection and sudden-death sinking; export the tangent fields and implement
-  `AnimationCurveFixed.Evaluate` to close it.
-- Recasting Platform removes the previous body immediately. Unity leaves it
-  collidable while `ResizablePlatform.RemovePlatform` shrinks it along the
-  removal curve; model a `being_removed` body state before destroying it.
+  plausible cooldown and never activate. Besides removing a major game system,
+  this leaves the shared Unity RNG sequence different after the first spawner
+  event, so late sudden-death random delays cannot remain sample-for-sample
+  identical. Closing this requires pickup bodies/collisions and the remaining
+  catalog abilities rather than a timing-only patch.
+- Flying arrows use a swept ray against the supported hurtboxes and platforms;
+  Unity integrates the arrow circle and then uses discrete DetPhysics contacts.
+  The scripted ordinary hit matrix currently agrees on every hit/death, while a
+  deliberately high-speed tunnelling edge can differ. A faithful replacement
+  should use the generic circle/RR, circle/box and circle/circle contact order
+  and preserve callback destruction semantics.
 - Landed arrows are freed from the native entity table instead of remaining
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
@@ -104,8 +108,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | exploitable | Dash raycasts ignored arrows even though the Unity collision mask includes Projectile | fixed: ordered arrow hits before the first wall now destroy the arrow and kill when owner rules allow |
 | behavior-changing | Resizing kept the prefab mass/inertia instead of `10 + MassPerArea * area` and `ApproximateMOI` | fixed, including live observation `inverse_mass` |
 | behavior-changing | Bow parsed but ignored `maxNumberOfArrows = 20` | fixed with per-owner oldest-projectile eviction |
-| behavior-changing | Respawn point/timing choice is absent | planned as described above; stocks=0 training is unaffected |
-| behavior-changing | Curve tangents and old-platform shrink removal are absent | planned as described above |
+| behavior-changing | Ability entry/spawn and Dash/Bow/Platform updater phases were delayed or collapsed into the public player position | fixed: current input drives live bodies immediately while Unity's component-specific report phases remain explicit |
+| behavior-changing | Bow used the original slime hurtbox during transforms, lost ordinary-slime pushes, raycasted after aerial control, and exposed charge one animator pass early | fixed with active ability colliders and source updater/animator ordering |
+| behavior-changing | Respawn point/timing choice was absent and fast-spawn upward motion lagged one pass | fixed: three directional points, early jump confirm, exact selection publication and launch phase |
+| behavior-changing | Curve tangents and old-platform shrink removal were absent | fixed: exported Hermite tangents/exact evaluator and collidable `being_removed` bodies |
+| behavior-changing | Rust arrow flight is swept while Unity projectile contacts are discrete | open plan described above; common scripted hit matrix agrees |
+| exploitable | Ability pickups and all abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
 
 ## Number type: f64 behind the Q32.32 API
@@ -241,36 +249,40 @@ The A/B loader must keep pools library-specific. Before commit `1cd34b2`, a
 second in-process backend could accidentally reuse the first library's runtime
 and turn an intended .NET-vs-Rust check into .NET-vs-.NET.
 
-At 300 episodes with that harness fixed, the base (`7f6761b`) versus the
-platform/collision implementation (`243b581`) was:
+At 300 episodes with that harness fixed (seeds 1000-1299), the base
+(`7f6761b`) versus the final platform/phase implementation was:
 
 | | .NET reference | Rust before | Rust after |
 |---|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 67.1 |
+| mean length (decisions) | 63.0 | 73.4 | 66.5 |
 | timeouts | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 155 |
-| self deaths | 165 | 153 | 144 |
+| environment deaths | 133 | 144 | 153 |
+| self deaths | 165 | 153 | 146 |
 | opponent deaths | 2 | 3 | 1 |
-| dash activations | 221 | 284 | 248 |
-| bow activations | 498 | 560 | 513 |
-| platform activations | 86 | 129 | 114 |
-| arrows fired | 484 | 551 | 501 |
+| dash activations | 221 | 284 | 240 |
+| bow activations | 498 | 560 | 510 |
+| platform activations | 86 | 129 | 113 |
+| arrows fired | 484 | 551 | 497 |
 | arrow hits | 2 | 3 | 1 |
-| winner agreement | - | 267/300 | 278/300 |
+| winner agreement | - | 267/300 | 284/300 |
 
-The episode-length gap fell from 10.4 to 4.1 decisions (61%). Mean position
-divergence remains under 0.01 through decision 16, then grows chaotically
-(0.58 at decision 46 after the change).
+The episode-length gap fell from 10.4 to 3.5 decisions (66%). Mean position
+divergence remains under 0.002 through decision 16, then grows chaotically
+(0.083/0.198 at decisions 31/46 after the change).
 
 Scripted A/B traces (`native/rl/research/rust_ab/*.c`, built against
 `bopl_rl.h` the same way as `fidelity_gate.c`) cover movement states, bow
-flag/timer and charge launch-speed sequences, plus platform overlap, landing
-and map-2 orbiting. In `platform_ab`, the orbiter position was identical to 12
-decimal places at every sampled tick with the Q32.32 `Fix` (with the f64
-`Fix` it drifts one raw unit per tick, 2.3e-7 units at tick 1620; see
-"Number type") and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform
-position deltas fell from 1.385/1.743 to 0.071/0.182 units; final deltas fell
-from 1.307/1.011 to 0.040/0.119.
+flag/timer and charge launch-speed sequences, active ability hitboxes/pushes,
+stock choice, plus platform overlap, recast, landing and map-2 orbiting. Bow
+charge has zero flag-mismatch ticks over the measured load sequence. Stock
+respawn position/state/flags/timers are identical after the one-tick death
+boundary. In `platform_ab`, the orbiter position is identical to 12 decimal
+places at every sampled tick with the Q32.32 `Fix` (with the f64 `Fix` it
+drifts one raw unit per tick, 2.3e-7 units at tick 1620; see "Number type")
+and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform deltas fell
+from 1.385/1.743 to 0.047/0.011 units; their final deltas are 0.044/0.002. The
+player's maximum/final delta is 0.041/0.041 after matching Platform's
+synchronous exit callback (previous maximum: 0.788).
 
 ## Transfer test
 
@@ -344,11 +356,15 @@ Trainer-scale A/B (`bench_scale.sh` with `BOPL_RL_BACKEND=rust`): see the
 results appended below when the box is idle (the sim-only ratio is the
 upper bound; the GPU learner becomes the limit near 100k learner/s).
 
-For the platform-body change, an interleaved 2-player/repeat-4/200k-tick
-sim-only benchmark under the active sweep measured 128.5k -> 128.9k stepping
-ticks/s (+0.3%) and 89.5k -> 88.6k ticks/s including resets (-1.0%). The prior
-256-worker learner headline is about 127k learner steps/s; it was not rerun
-while the overnight sweep was consuming the box.
+For the full change set, an immediately adjacent 2-player/repeat-4/200k-tick
+pair, both limited to `CPUQuota=400%`, `CPUWeight=20`, `nice -n 19`, measured
+104.9k -> 101.3k stepping ticks/s (-3.5%) and 71.2k -> 68.1k ticks/s including
+resets (-4.3%). This was not a quiet box: the live sweep changed available CPU
+noticeably even between short runs (a reverse-order adjacent pair measured
+98.3k baseline versus 101.7k final), so treat the magnitude as load noise and
+only conclude that no large throughput regression was observed. The prior
+256-worker learner headline is about 127k learner steps/s; it was deliberately
+not rerun against the live sweep.
 
 ### Speed work (2026-09-10)
 
