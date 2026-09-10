@@ -9,6 +9,10 @@ pub mod beam;
 pub mod clone_ability;
 pub mod curve;
 pub mod dash_ability;
+#[cfg(not(feature = "q32"))]
+pub mod fixed;
+#[cfg(feature = "q32")]
+#[path = "fixed_q32.rs"]
 pub mod fixed;
 pub mod geometry;
 pub mod ordinary_ability;

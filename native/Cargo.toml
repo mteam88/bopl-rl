@@ -7,6 +7,12 @@ publish = false
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]
 
+[features]
+default = []
+# Bit-exact Q32.32 reference arithmetic (Unity's BoplFixedMath) for the golden
+# verification tooling. The default `Fix` is an f64 behind the same API.
+q32 = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

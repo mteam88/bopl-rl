@@ -30,12 +30,12 @@ impl Random {
     }
     pub fn fix_range(&mut self, min: Fix, max: Fix) -> Fix {
         if min.floor() == max.floor() {
-            let fraction = self.uint_range(min.0 as u32, max.0 as u32);
-            return Fix(min.floor().0.wrapping_add(i64::from(fraction)));
+            let fraction = self.uint_range(min.raw() as u32, max.raw() as u32);
+            return Fix::from_raw(min.floor().raw().wrapping_add(i64::from(fraction)));
         }
         let integer =
             i64::from(self.int_range(min.floor().to_int() as i32, max.floor().to_int() as i32));
-        let fraction = self.uint_range(min.0 as u32, u32::MAX);
-        Fix(integer.wrapping_shl(32).wrapping_add(i64::from(fraction)))
+        let fraction = self.uint_range(min.raw() as u32, u32::MAX);
+        Fix::from_raw(integer.wrapping_shl(32).wrapping_add(i64::from(fraction)))
     }
 }

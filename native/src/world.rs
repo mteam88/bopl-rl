@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 mod dash;
 
-pub const DT: Fix = Fix(71_582_788);
+pub const DT: Fix = Fix::from_raw(71_582_788);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Platform {
     pub id: u32,
@@ -377,13 +377,13 @@ impl Player {
         ) else {
             return;
         };
-        self.external_velocity += direction * Fix(21_474_836) * Fix::from_int(35);
+        self.external_velocity += direction * Fix::from_raw(21_474_836) * Fix::from_int(35);
     }
     pub(crate) fn sync_collider(&mut self) {
         let extents = if self.dash.active {
-            Vec2::new(Fix(5_626_406_912), Fix(4_359_391_744))
+            Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
         } else {
-            Vec2::new(Fix(5_712_306_688), Fix(3_478_923_520))
+            Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
         };
         let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         let basis = Vec2::angle(self.rotation);

@@ -401,7 +401,7 @@ fn evaluate_with(q: &Value, mut sink: Option<FrameSink<'_>>) -> Value {
             })
             .and_then(|()| {
                 runtime.tick_with(
-                    Fix(action["dt"].as_i64().unwrap()),
+                    Fix::from_raw(action["dt"].as_i64().unwrap()),
                     &mut report,
                     &mut |actors, context, report, phase| {
                         let key = format!(

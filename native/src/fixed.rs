@@ -1,12 +1,43 @@
-//! The reference game's arithmetic, including its distinct fast/slow overflow rules.
-//! Constants and lookup tables are copied as raw integers from the pinned C# source.
-use serde::{Deserialize, Serialize};
+//! The game's number type, represented as an IEEE `f64` behind the Q32.32 API.
+//!
+//! Unity's BoplFixedMath (`Assets/Scripts/Assembly-CSharp/BoplFixedMath/Fix.cs`)
+//! is a Q32.32 fixed-point type chosen for lockstep multiplayer determinism.
+//! The rollout backend only needs determinism within one binary, which IEEE
+//! doubles on one machine already provide, so this module keeps every method
+//! name and semantic contract of the fixed-point type while storing an `f64`.
+//! The cargo feature `q32` swaps in the bit-exact reference arithmetic
+//! (`fixed_q32.rs`) for the golden-verification tooling.
+//!
+//! What is kept exact (see RUST_ROLLOUTS.md, "Number type"):
+//! - Constants are the game's truncated Q32.32 values (`PI`, `HALF_PI`, `TAU`,
+//!   `DT`), not the mathematical ones, so every comparison against them lands
+//!   on the same side as in the reference.
+//! - `from_f32`/`from_f64`/`from_raw` snap to the Q32.32 grid exactly like the
+//!   reference's `(Fix)0.95m` conversions, so every authored threshold is the
+//!   same number in both representations.
+//! - Sums and differences of grid values with < 2^53 raw magnitude are exact
+//!   (`timer += DT` lands exactly where the fixed-point timer does), and the
+//!   product of an integer with a grid value is exact (`tick * DT`).
+//! - Trig arguments are reduced by the reference's `ClampSinValue` quadrant
+//!   logic, so `sin(TAU)`, `cos(HALF_PI)`, and every other multiple of the
+//!   game's `HALF_PI` are exactly zero or one, as in the table lookup.
+//! - `Atan2` keeps the reference's rational approximation (`x / (1 + 0.28 x²)`,
+//!   including its non-standard `|ratio| >= 1` branch and saturation
+//!   fallback) because the game's perimeter arithmetic genuinely uses it.
+//!
+//! What differs: general multiplication/division round to the nearest double
+//! instead of truncating to 2^-32; `sqrt`, `sin`, `cos`, `tan`, `atan`, `acos`
+//! use libm rather than the interpolated tables and the Euler series;
+//! saturating "slow" arithmetic never saturates.
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::cmp::Ordering;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+const SCALE: f64 = 4_294_967_296.0;
+
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(transparent)]
-#[serde(transparent)]
-pub struct Fix(pub i64);
+pub struct Fix(f64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MathError {
@@ -15,267 +46,163 @@ pub enum MathError {
     Overflow,
 }
 
-const SIN: &[u8; 205887 * 8] = include_bytes!("../data/sinlut.bin");
-const TAN: &[u8; 205887 * 8] = include_bytes!("../data/tanlut.bin");
-
-fn lookup(table: &[u8], index: usize) -> Fix {
-    Fix(i64::from_le_bytes(
-        table[index * 8..index * 8 + 8].try_into().unwrap(),
-    ))
-}
-
 impl Fix {
-    pub const ZERO: Self = Self(0);
-    pub const ONE: Self = Self(1 << 32);
-    pub const MIN: Self = Self(i64::MIN);
-    pub const MAX: Self = Self(i64::MAX);
-    pub const PI: Self = Self(13_493_037_704);
-    pub const HALF_PI: Self = Self(6_746_518_852);
-    pub const TAU: Self = Self(26_986_075_409);
+    pub const ZERO: Self = Self(0.0);
+    pub const ONE: Self = Self(1.0);
+    pub const MIN: Self = Self::from_raw(i64::MIN);
+    pub const MAX: Self = Self::from_raw(i64::MAX);
+    pub const PI: Self = Self::from_raw(13_493_037_704);
+    pub const HALF_PI: Self = Self::from_raw(6_746_518_852);
+    pub const TAU: Self = Self::from_raw(26_986_075_409);
+    /// Fix.cs `Cos`: `Sin(x + (x > 0 ? -3π/2 : π/2))` with the raw constant
+    /// -20239556556.
+    const COS_SHIFT_POSITIVE: Self = Self::from_raw(-20_239_556_556);
+    /// Fix.cs `Atan2`'s `(Fix)0.28m`.
+    const ATAN2_C: Self = Self::from_raw(1_202_590_842);
 
+    /// Construct from a raw Q32.32 integer (the ABI and extracted-data encoding).
+    pub const fn from_raw(raw: i64) -> Self {
+        Self(raw as f64 / SCALE)
+    }
+    /// The nearest raw Q32.32 integer (the ABI and extracted-data encoding).
+    pub const fn raw(self) -> i64 {
+        (self.0 * SCALE).round() as i64
+    }
     pub const fn from_int(value: i64) -> Self {
-        Self(value.wrapping_shl(32))
+        Self(value as f64)
     }
+    /// Floor to an integer, like the reference's arithmetic shift by 32.
     pub const fn to_int(self) -> i64 {
-        self.0 >> 32
+        self.0.floor() as i64
     }
-    pub fn from_f32(value: f32) -> Self {
-        Self((value * 4_294_967_296.0_f32) as i64)
+    /// `(Fix)0.2f` in the reference: scale and truncate toward zero onto the
+    /// Q32.32 grid, so authored thresholds are the same number in both
+    /// representations.
+    pub const fn from_f32(value: f32) -> Self {
+        Self::from_raw((value * SCALE as f32) as i64)
     }
-    pub fn from_f64(value: f64) -> Self {
-        Self((value * 4_294_967_296.0_f64) as i64)
+    /// `(Fix)0.95m` in the reference: scale and truncate toward zero onto the
+    /// Q32.32 grid.
+    pub const fn from_f64(value: f64) -> Self {
+        Self::from_raw((value * SCALE) as i64)
     }
-    pub fn to_f64(self) -> f64 {
-        self.0 as f64 / 4_294_967_296.0
+    pub const fn to_f64(self) -> f64 {
+        self.0
     }
     pub fn sign(self) -> i64 {
-        self.0.signum()
+        if self.0 > 0.0 {
+            1
+        } else if self.0 < 0.0 {
+            -1
+        } else {
+            0
+        }
     }
     pub fn sign2(self) -> i64 {
-        if self.0 < 0 { -1 } else { 1 }
+        if self.0 < 0.0 { -1 } else { 1 }
     }
     pub fn abs(self) -> Self {
-        Self(self.0.wrapping_abs())
+        Self(self.0.abs())
     }
     pub fn slow_abs(self) -> Self {
-        Self(self.0.saturating_abs())
+        Self(self.0.abs())
     }
     pub fn floor(self) -> Self {
-        Self(self.0 & !0xffff_ffff)
+        Self(self.0.floor())
     }
     pub fn ceil(self) -> Self {
-        if self.0 & 0xffff_ffff == 0 {
-            self
-        } else {
-            self.floor().slow_add(Self::ONE)
-        }
+        Self(self.0.ceil())
     }
+    /// Fix.cs `Round`: half-way values round to the even integer.
     pub fn round(self) -> Self {
-        let fraction = self.0 & 0xffff_ffff;
-        let floor = self.floor();
-        if fraction < 0x8000_0000 || (fraction == 0x8000_0000 && floor.0 & (1 << 32) == 0) {
-            floor
-        } else {
-            floor.slow_add(Self::ONE)
-        }
+        Self(self.0.round_ties_even())
     }
     pub fn slow_add(self, rhs: Self) -> Self {
-        Self(self.0.saturating_add(rhs.0))
+        Self(self.0 + rhs.0)
     }
     pub fn slow_sub(self, rhs: Self) -> Self {
-        Self(self.0.saturating_sub(rhs.0))
+        Self(self.0 - rhs.0)
     }
     pub fn slow_mul(self, rhs: Self) -> Self {
-        let a = self.0;
-        let b = rhs.0;
-        let lo_a = a & 0xffff_ffff;
-        let hi_a = a >> 32;
-        let lo_b = (b & 0xffff_ffff) as u64;
-        let hi_b = b >> 32;
-        let lo = (lo_a as u64).wrapping_mul(lo_b);
-        let cross_a = lo_a.wrapping_mul(hi_b);
-        let cross_b = hi_a.wrapping_mul(lo_b as i64);
-        let hi = hi_a.wrapping_mul(hi_b);
-        let mut overflow = false;
-        let mut result = (lo >> 32) as i64;
-        for term in [cross_a, cross_b, hi.wrapping_shl(32)] {
-            let next = result.wrapping_add(term);
-            overflow |= (result ^ term ^ next) < 0;
-            result = next;
-        }
-        let same_sign = (a ^ b) >= 0;
-        if same_sign {
-            if result < 0 || (overflow && a > 0) {
-                return Self::MAX;
-            }
-        } else if result > 0 {
-            return Self::MIN;
-        }
-        let high_word = hi >> 32;
-        if high_word != 0 && high_word != -1 {
-            return if same_sign { Self::MAX } else { Self::MIN };
-        }
-        if !same_sign && result > a.min(b) && a.min(b) < -Self::ONE.0 && a.max(b) > Self::ONE.0 {
-            return Self::MIN;
-        }
-        Self(result)
+        Self(self.0 * rhs.0)
     }
     pub fn checked_div(self, rhs: Self) -> Result<Self, MathError> {
-        if rhs.0 == 0 {
+        if rhs.0 == 0.0 {
             return Err(MathError::DivisionByZero);
         }
-        let mut remainder = self.0.unsigned_abs();
-        let mut divisor = rhs.0.unsigned_abs();
-        let mut quotient = 0_u64;
-        let mut bit = 33_i32;
-        while divisor & 15 == 0 && bit >= 4 {
-            divisor >>= 4;
-            bit -= 4;
-        }
-        while remainder != 0 && bit >= 0 {
-            let shift = (remainder.leading_zeros() as i32).min(bit);
-            remainder = remainder.wrapping_shl(shift as u32);
-            bit -= shift;
-            let part = remainder / divisor;
-            remainder %= divisor;
-            quotient = quotient.wrapping_add(part.wrapping_shl(bit as u32));
-            if part & !(u64::MAX >> bit) != 0 {
-                return Ok(if (self.0 ^ rhs.0) < 0 {
-                    Self::MIN
-                } else {
-                    Self::MAX
-                });
-            }
-            remainder = remainder.wrapping_shl(1);
-            bit -= 1;
-        }
-        quotient = quotient.wrapping_add(1);
-        let result = (quotient >> 1) as i64;
-        Ok(Self(if (self.0 ^ rhs.0) < 0 {
-            result.wrapping_neg()
-        } else {
-            result
-        }))
+        Ok(Self(self.0 / rhs.0))
     }
-    pub fn checked_rem(self, rhs: Self, slow: bool) -> Result<Self, MathError> {
-        if rhs.0 == 0 {
+    /// C# `%`: the remainder takes the dividend's sign, exactly `f64::rem`.
+    pub fn checked_rem(self, rhs: Self, _slow: bool) -> Result<Self, MathError> {
+        if rhs.0 == 0.0 {
             return Err(MathError::DivisionByZero);
-        }
-        if self.0 == i64::MIN && rhs.0 == -1 {
-            return if slow {
-                Ok(Self::ZERO)
-            } else {
-                Err(MathError::Overflow)
-            };
         }
         Ok(Self(self.0 % rhs.0))
     }
     pub fn sqrt(self) -> Result<Self, MathError> {
-        if self.0 < 0 {
+        if self.0 < 0.0 {
             return Err(MathError::Domain);
         }
-        let mut remainder = self.0 as u64;
-        let mut result = 0_u64;
-        let mut bit = 1_u64 << 62;
-        while bit > remainder {
-            bit >>= 2;
-        }
-        for pass in 0..2 {
-            while bit != 0 {
-                if remainder >= result.wrapping_add(bit) {
-                    remainder = remainder.wrapping_sub(result.wrapping_add(bit));
-                    result = (result >> 1).wrapping_add(bit);
-                } else {
-                    result >>= 1;
-                }
-                bit >>= 2;
-            }
-            if pass == 0 {
-                if remainder > u32::MAX as u64 {
-                    remainder = remainder.wrapping_sub(result);
-                    remainder = remainder.wrapping_shl(32).wrapping_sub(1 << 31);
-                    result = result.wrapping_shl(32).wrapping_add(1 << 31);
-                } else {
-                    remainder = remainder.wrapping_shl(32);
-                    result = result.wrapping_shl(32);
-                }
-                bit = 1 << 30;
-            }
-        }
-        if remainder > result {
-            result = result.wrapping_add(1);
-        }
-        Ok(Self(result as i64))
+        Ok(Self(self.0.sqrt()))
     }
-    fn sin_quadrant(self) -> (i64, bool, bool) {
+    /// Fix.cs `ClampSinValue`: reduce into `[0, HALF_PI)` with the quadrant
+    /// flags, using the game's truncated `TAU`/`PI`/`HALF_PI`. Reducing here
+    /// (rather than letting libm reduce by the true 2π) keeps the game's
+    /// multiples of `HALF_PI` exactly on the axes.
+    fn sin_quadrant(self) -> (f64, bool, bool) {
+        let tau = Self::TAU.0;
+        let pi = Self::PI.0;
+        let half_pi = Self::HALF_PI.0;
         let mut angle = self.0;
-        for i in 0..29 {
-            angle %= 7_244_019_458_077_122_842_i64 >> i;
+        if !(0.0..tau).contains(&angle) {
+            angle %= tau;
+            if angle < 0.0 {
+                angle += tau;
+            }
         }
-        if self.0 < 0 {
-            angle += Self::TAU.0;
+        let vertical = angle >= pi;
+        if vertical {
+            angle -= pi;
         }
-        let vertical = angle >= Self::PI.0;
-        while angle >= Self::PI.0 {
-            angle -= Self::PI.0;
-        }
-        let horizontal = angle >= Self::HALF_PI.0;
+        let horizontal = angle >= half_pi;
         if horizontal {
-            angle -= Self::HALF_PI.0;
+            angle -= half_pi;
         }
         (angle, horizontal, vertical)
     }
-    pub fn fast_sin(self) -> Self {
-        let (angle, horizontal, vertical) = self.sin_quadrant();
-        let index = ((angle >> 15) as usize).min(205886);
-        let raw = lookup(SIN, if horizontal { 205886 - index } else { index }).0;
-        Self(if vertical { -raw } else { raw })
-    }
-    pub fn fast_cos(self) -> Self {
-        Self(self.0.wrapping_add(if self.0 > 0 {
-            -20_239_556_556
-        } else {
-            Self::HALF_PI.0
-        }))
-        .fast_sin()
-    }
     pub fn sin(self) -> Self {
         let (angle, horizontal, vertical) = self.sin_quadrant();
-        let scaled = Self(angle) * (Self::from_int(205886) / Self::HALF_PI);
-        let rounded = scaled.round();
-        let error = scaled - rounded;
-        let index = rounded.to_int();
-        let a = lookup(
-            SIN,
-            if horizontal { 205886 - index } else { index } as usize,
-        );
-        let b = lookup(
-            SIN,
-            if horizontal {
-                205886 - index - error.sign()
-            } else {
-                index + error.sign()
-            } as usize,
-        );
-        let offset = (error * (a - b).abs()).0;
-        let raw = a.0.wrapping_add(if horizontal {
-            offset.wrapping_neg()
+        // The mirrored quadrant reads the table from its far end,
+        // `SinLut[LUT_SIZE - 1 - i]`, i.e. sin(HALF_PI - angle).
+        let value = if horizontal {
+            (Self::HALF_PI.0 - angle).sin()
         } else {
-            offset
-        });
-        Self(if vertical { raw.wrapping_neg() } else { raw })
+            angle.sin()
+        };
+        Self(if vertical { -value } else { value })
+    }
+    /// The reference's un-interpolated table lookup; here the same as `sin`.
+    pub fn fast_sin(self) -> Self {
+        self.sin()
     }
     pub fn cos(self) -> Self {
-        Self(self.0.wrapping_add(if self.0 > 0 {
-            -20_239_556_556
-        } else {
-            Self::HALF_PI.0
-        }))
+        Self(
+            self.0
+                + if self.0 > 0.0 {
+                    Self::COS_SHIFT_POSITIVE.0
+                } else {
+                    Self::HALF_PI.0
+                },
+        )
         .sin()
     }
+    pub fn fast_cos(self) -> Self {
+        self.cos()
+    }
     pub fn tan(self) -> Self {
+        // Fix.cs `Tan`: reduce by PI, fold the second quadrant, then look up.
         let mut angle = self.0 % Self::PI.0;
-        let mut negative = angle < 0;
+        let mut negative = angle < 0.0;
         if negative {
             angle = -angle;
         }
@@ -283,119 +210,132 @@ impl Fix {
             negative = !negative;
             angle = Self::PI.0 - angle;
         }
-        let scaled = Self(angle) * (Self::from_int(205886) / Self::HALF_PI);
-        let rounded = scaled.round();
-        let error = scaled - rounded;
-        let a = lookup(TAN, rounded.to_int() as usize);
-        let b = lookup(TAN, (rounded.to_int() + error.sign()) as usize);
-        let raw = a.0.wrapping_add((error * (a - b).abs()).0);
-        Self(if negative { raw.wrapping_neg() } else { raw })
+        let value = angle.tan();
+        Self(if negative { -value } else { value })
     }
     pub fn atan(self) -> Self {
-        if self == Self::ZERO {
-            return self;
-        }
-        let negative = self.0 < 0;
-        let mut z = if negative { -self } else { self };
-        let inverted = z > Self::ONE;
-        if inverted {
-            z = Self::ONE / z;
-        }
-        let mut sum = Self::ONE;
-        let mut term = Self::ONE;
-        let square = z.slow_mul(z);
-        let twice = square.slow_mul(Self::from_int(2));
-        let base = square.slow_add(Self::ONE);
-        let increment = base.slow_mul(Self::from_int(2));
-        let mut numerator = twice;
-        let mut denominator = base.slow_mul(Self::from_int(3));
-        for _ in 2..30 {
-            term = term.slow_mul(numerator / denominator);
-            sum = sum.slow_add(term);
-            numerator = numerator.slow_add(twice);
-            denominator = denominator.slow_add(increment);
-            if term == Self::ZERO {
-                break;
-            }
-        }
-        sum = sum.slow_mul(z) / base;
-        if inverted {
-            sum = Self::HALF_PI.slow_sub(sum);
-        }
-        if negative { -sum } else { sum }
+        Self(self.0.atan())
     }
     pub fn acos(self) -> Result<Self, MathError> {
-        if self < -Self::ONE || self > Self::ONE {
+        // A normalized double's component can exceed 1 by rounding; the
+        // reference's Q32.32 normalization has the same slack of one raw unit,
+        // so accept it here and reject anything beyond as the reference does.
+        let slack = 1.0 + 1.0 / SCALE;
+        if self.0 < -slack || self.0 > slack {
             return Err(MathError::Domain);
         }
-        if self == Self::ZERO {
+        if self.0 == 0.0 {
             return Ok(Self::HALF_PI);
         }
-        let angle = (Self::ONE.slow_sub(self.slow_mul(self)).sqrt()? / self).atan();
-        Ok(if self.0 >= 0 {
-            angle
-        } else {
-            angle.slow_add(Self::PI)
-        })
+        Ok(Self(self.0.clamp(-1.0, 1.0).acos()))
     }
+    /// Fix.cs `Atan2`: the rational approximation `r / (1 + 0.28 r²)` for
+    /// `|r| < 1`, the reference's non-standard `(HALF_PI - r) / (r² + 0.28)`
+    /// otherwise, and `±HALF_PI` where the fixed-point denominator saturates.
     pub fn atan2(self, x: Self) -> Self {
         let y = self;
-        if x.0 == 0 {
-            return match y.0.cmp(&0) {
-                std::cmp::Ordering::Less => -Self::HALF_PI,
-                std::cmp::Ordering::Equal => Self::ZERO,
-                std::cmp::Ordering::Greater => Self::HALF_PI,
+        if x.0 == 0.0 {
+            return if y.0 > 0.0 {
+                Self::HALF_PI
+            } else if y.0 == 0.0 {
+                Self::ZERO
+            } else {
+                -Self::HALF_PI
             };
         }
         let ratio = y / x;
-        let c = Self(1_202_590_842); // (Fix)0.28m
-        let denominator = Self::ONE.slow_add(c.slow_mul(ratio.slow_mul(ratio)));
-        if denominator == Self::MAX {
-            return if y.0 < 0 {
+        let c = Self::ATAN2_C.0;
+        let denominator = 1.0 + c * ratio.0 * ratio.0;
+        if denominator >= Self::MAX.0 {
+            return if y.0 < 0.0 {
                 -Self::HALF_PI
             } else {
                 Self::HALF_PI
             };
         }
-        if ratio.slow_abs() < Self::ONE {
-            let angle = ratio / denominator;
-            if x.0 < 0 {
-                if y.0 < 0 {
-                    angle.slow_sub(Self::PI)
+        if ratio.0.abs() < 1.0 {
+            let angle = Self(ratio.0 / denominator);
+            if x.0 < 0.0 {
+                if y.0 < 0.0 {
+                    angle - Self::PI
                 } else {
-                    angle.slow_add(Self::PI)
+                    angle + Self::PI
                 }
             } else {
                 angle
             }
         } else {
-            // Preserve the reference's parentheses; this is not standard atan2.
-            let angle = Self::HALF_PI.slow_sub(ratio) / ratio.slow_mul(ratio).slow_add(c);
-            if y.0 < 0 {
-                angle.slow_sub(Self::PI)
-            } else {
-                angle
-            }
+            let angle = Self((Self::HALF_PI.0 - ratio.0) / (ratio.0 * ratio.0 + c));
+            if y.0 < 0.0 { angle - Self::PI } else { angle }
         }
+    }
+}
+
+impl PartialEq for Fix {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for Fix {}
+impl PartialOrd for Fix {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+    fn lt(&self, other: &Self) -> bool {
+        self.0 < other.0
+    }
+    fn le(&self, other: &Self) -> bool {
+        self.0 <= other.0
+    }
+    fn gt(&self, other: &Self) -> bool {
+        self.0 > other.0
+    }
+    fn ge(&self, other: &Self) -> bool {
+        self.0 >= other.0
+    }
+}
+impl Ord for Fix {
+    /// A total order: NaN never occurs (every division and square root is
+    /// checked), and `-0.0 == 0.0` as in the comparison operators.
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.0 < other.0 {
+            Ordering::Less
+        } else if self.0 > other.0 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }
+}
+
+/// Serialized as the raw Q32.32 integer, like the reference and the fixtures.
+impl Serialize for Fix {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(self.raw())
+    }
+}
+impl<'de> Deserialize<'de> for Fix {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        i64::deserialize(deserializer).map(Self::from_raw)
     }
 }
 
 impl Add for Fix {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self(self.0.wrapping_add(rhs.0))
+        Self(self.0 + rhs.0)
     }
 }
 impl Sub for Fix {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        Self(self.0.wrapping_sub(rhs.0))
+        Self(self.0 - rhs.0)
     }
 }
 impl Mul for Fix {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        Self(((self.0 as i128 * rhs.0 as i128) >> 32) as i64)
+        Self(self.0 * rhs.0)
     }
 }
 impl Div for Fix {
@@ -407,11 +347,7 @@ impl Div for Fix {
 impl Neg for Fix {
     type Output = Self;
     fn neg(self) -> Self {
-        Self(if self.0 == i64::MIN {
-            i64::MAX
-        } else {
-            -self.0
-        })
+        Self(-self.0)
     }
 }
 impl AddAssign for Fix {
@@ -432,5 +368,94 @@ impl MulAssign for Fix {
 impl DivAssign for Fix {
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_constants_round_trip() {
+        for raw in [
+            0,
+            1,
+            -1,
+            71_582_788,
+            13_493_037_704,
+            -6_442_450_944,
+            1 << 40,
+        ] {
+            assert_eq!(Fix::from_raw(raw).raw(), raw);
+        }
+        assert_eq!(Fix::from_f32(0.2).raw(), (0.2f32 * 4_294_967_296.0) as i64);
+        assert_eq!(
+            Fix::from_f64(0.95).raw(),
+            (0.95f64 * 4_294_967_296.0) as i64
+        );
+        assert_eq!(
+            Fix::from_f64(-11.3).raw(),
+            (-11.3f64 * 4_294_967_296.0) as i64
+        );
+    }
+
+    #[test]
+    fn timers_step_exactly() {
+        let dt = Fix::from_raw(71_582_788);
+        let mut timer = Fix::from_raw(-6_442_450_944);
+        for _ in 0..240 {
+            timer += dt;
+        }
+        assert_eq!(timer.raw(), -6_442_450_944 + 240 * 71_582_788);
+        assert_eq!((Fix::from_int(7200) * dt).raw(), 7200 * 71_582_788);
+        assert!(Fix::from_int(60) * dt < Fix::ONE);
+    }
+
+    #[test]
+    fn axes_are_exact() {
+        assert_eq!(Fix::ZERO.sin(), Fix::ZERO);
+        assert_eq!(Fix::ZERO.cos(), Fix::ONE);
+        assert_eq!(Fix::HALF_PI.sin(), Fix::ONE);
+        // The game's TAU is 2*PI + 1 raw unit, so Cos(HALF_PI) = Sin(-PI)
+        // reduces to one raw unit past PI: -2^-32 here, and the reference's
+        // interpolated table rounds the same value down to zero.
+        assert_eq!(Fix::HALF_PI.cos().raw(), -1);
+        assert_eq!(Fix::PI.sin(), Fix::ZERO);
+        assert_eq!(Fix::PI.cos(), -Fix::ONE);
+        assert_eq!(Fix::TAU.sin(), Fix::ZERO);
+        assert_eq!(Fix::TAU.cos(), Fix::ONE);
+        assert_eq!((-Fix::HALF_PI).sin(), -Fix::ONE);
+        assert_eq!((Fix::PI + Fix::HALF_PI).cos(), Fix::ZERO);
+    }
+
+    #[test]
+    fn rounding_and_signs() {
+        assert_eq!(Fix::from_f64(2.5).round(), Fix::from_int(2));
+        assert_eq!(Fix::from_f64(3.5).round(), Fix::from_int(4));
+        assert_eq!(Fix::from_f64(-1.5).to_int(), -2);
+        assert_eq!(Fix::from_f64(-0.25).sign(), -1);
+        assert_eq!(Fix::ZERO.sign(), 0);
+        assert_eq!(Fix::ZERO.sign2(), 1);
+        assert_eq!(
+            Fix::from_f64(-7.5).checked_rem(Fix::from_int(2), true),
+            Ok(Fix::from_f64(-1.5))
+        );
+        assert_eq!(
+            Fix::ONE.checked_div(Fix::ZERO),
+            Err(MathError::DivisionByZero)
+        );
+        assert_eq!((-Fix::ONE).sqrt(), Err(MathError::Domain));
+    }
+
+    #[test]
+    fn atan2_is_the_reference_approximation() {
+        let one = Fix::ONE;
+        let half = Fix::from_f64(0.5);
+        let approx = half.atan2(one).to_f64();
+        // 0.28 is the game's truncated (Fix)0.28m, 1 raw unit below 0.28.
+        assert!((approx - 0.5 / (1.0 + 0.28 * 0.25)).abs() < 1e-9);
+        assert_eq!(Fix::ZERO.atan2(Fix::ZERO), Fix::ZERO);
+        assert_eq!(one.atan2(Fix::ZERO), Fix::HALF_PI);
+        assert_eq!(one.atan2(Fix::from_raw(1)), Fix::HALF_PI);
     }
 }

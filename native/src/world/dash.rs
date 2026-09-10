@@ -48,7 +48,7 @@ impl Player {
     }
     pub(super) fn dash_step(&mut self, action: Action, platforms: &[Platform]) {
         self.dash.time += DT;
-        if self.dash.time < Fix(42_949_672) {
+        if self.dash.time < Fix::from_raw(42_949_672) {
             let aim = action.direction();
             if aim.length() > Fix::from_f32(0.4) {
                 self.dash.input = aim;

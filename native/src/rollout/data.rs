@@ -12,7 +12,7 @@ struct RawVec2 {
 }
 impl RawVec2 {
     fn get(&self) -> Vec2 {
-        Vec2::new(Fix(self.x), Fix(self.y))
+        Vec2::new(Fix::from_raw(self.x), Fix::from_raw(self.y))
     }
 }
 #[derive(Deserialize)]
@@ -302,22 +302,22 @@ pub struct RolloutData {
 
 /// Grounded friction per tick, from the verified Level1 movement goldens
 /// (player controller constants; identical on every grass map).
-const FRICTION: Fix = Fix(2_147_483_648);
-const ICE_FRICTION: Fix = Fix(3_736_621_568);
+const FRICTION: Fix = Fix::from_raw(2_147_483_648);
+const ICE_FRICTION: Fix = Fix::from_raw(3_736_621_568);
 
 fn constants(physics: &RawPhysics) -> crate::world::MovementConstants {
     crate::world::MovementConstants {
-        max_speed: Fix(physics.max_speed),
-        accel: Fix(physics.accel),
-        air_accel: Fix(physics.air_accel),
-        gravity_accel: Fix(physics.gravity_accel),
-        gravity_max_fall_speed: Fix(physics.gravity_max_fall_speed),
-        gravity_modifier: Fix(physics.gravity_modifier.unwrap_or(1 << 32)),
-        jump_strength: Fix(physics.jump_strength),
-        jump_extra_x: Fix(physics.jump_extra_x.unwrap_or(2_576_980_480)),
-        jump_momentum: Fix(physics.jump_momentum.unwrap_or(1 << 32)),
-        jump_normal_scale: Fix(physics.jump_normal_scale.unwrap_or(1 << 32)),
-        jump_teleport: Fix(physics.jump_teleport.unwrap_or(42_949_672)),
+        max_speed: Fix::from_raw(physics.max_speed),
+        accel: Fix::from_raw(physics.accel),
+        air_accel: Fix::from_raw(physics.air_accel),
+        gravity_accel: Fix::from_raw(physics.gravity_accel),
+        gravity_max_fall_speed: Fix::from_raw(physics.gravity_max_fall_speed),
+        gravity_modifier: Fix::from_raw(physics.gravity_modifier.unwrap_or(1 << 32)),
+        jump_strength: Fix::from_raw(physics.jump_strength),
+        jump_extra_x: Fix::from_raw(physics.jump_extra_x.unwrap_or(2_576_980_480)),
+        jump_momentum: Fix::from_raw(physics.jump_momentum.unwrap_or(1 << 32)),
+        jump_normal_scale: Fix::from_raw(physics.jump_normal_scale.unwrap_or(1 << 32)),
+        jump_teleport: Fix::from_raw(physics.jump_teleport.unwrap_or(42_949_672)),
         friction: FRICTION,
         ice_friction: ICE_FRICTION,
     }
@@ -332,20 +332,20 @@ fn body(raw: &RawBody, orientation: Fix) -> crate::physics::Body {
         inverse_mass: if raw.mass == 0 {
             Fix::ZERO
         } else {
-            Fix::ONE / Fix(raw.mass)
+            Fix::ONE / Fix::from_raw(raw.mass)
         },
         inverse_inertia: if raw.moment_of_inertia == 0 {
             Fix::ZERO
         } else {
-            Fix::ONE / Fix(raw.moment_of_inertia)
+            Fix::ONE / Fix::from_raw(raw.moment_of_inertia)
         },
         orientation,
-        bounciness: Fix(raw.bounciness),
-        static_friction: Fix(raw.static_friction),
-        dynamic_friction: Fix(raw.dynamic_friction),
-        gravity_scale: Fix(raw.gravity_scale),
-        air_drag: Fix(raw.air_drag),
-        rotational_drag: Fix(raw.rotational_drag),
+        bounciness: Fix::from_raw(raw.bounciness),
+        static_friction: Fix::from_raw(raw.static_friction),
+        dynamic_friction: Fix::from_raw(raw.dynamic_friction),
+        gravity_scale: Fix::from_raw(raw.gravity_scale),
+        air_drag: Fix::from_raw(raw.air_drag),
+        rotational_drag: Fix::from_raw(raw.rotational_drag),
         ..crate::physics::Body::default()
     }
 }
@@ -355,32 +355,34 @@ fn map_def(raw: &RawMap) -> MapDef {
         .platforms
         .iter()
         .map(|p| {
-            let rotation = Fix(p.rotation);
+            let rotation = Fix::from_raw(p.rotation);
             let right = Vec2::new(rotation.cos(), rotation.sin());
             let up = right.perp();
-            let scale = Fix(p.scale);
+            let scale = Fix::from_raw(p.scale);
             PlatformDef {
                 surface: Surface {
                     center: p.position.get(),
                     right,
                     up,
                     extents: p.extents.get() * scale,
-                    radius: Fix(p.radius) * scale,
+                    radius: Fix::from_raw(p.radius) * scale,
                 },
-                speed: Fix(p.animate_velocity.speed),
-                mu: Fix(p.animate_velocity.mu),
-                rotation_speed: Fix(p.animate_velocity.rotation_speed),
-                rotation_mu: Fix(p.animate_velocity.rotation_mu),
+                speed: Fix::from_raw(p.animate_velocity.speed),
+                mu: Fix::from_raw(p.animate_velocity.mu),
+                rotation_speed: Fix::from_raw(p.animate_velocity.rotation_speed),
+                rotation_mu: Fix::from_raw(p.animate_velocity.rotation_mu),
                 body: body(&p.body, rotation),
-                sudden_death_speed: Fix(p.animate_velocity.sudden_death_speed),
-                sudden_death_max_delay: Fix(p.animate_velocity.sudden_death_max_delay),
-                sudden_death_acceleration: Fix(p.animate_velocity.sudden_death_acceleration),
+                sudden_death_speed: Fix::from_raw(p.animate_velocity.sudden_death_speed),
+                sudden_death_max_delay: Fix::from_raw(p.animate_velocity.sudden_death_max_delay),
+                sudden_death_acceleration: Fix::from_raw(
+                    p.animate_velocity.sudden_death_acceleration,
+                ),
                 sudden_death_y_speed: p.animate_velocity.sudden_death_y_speed.clone(),
                 orbit: p.orbit.as_ref().map(|o| OrbitDef {
-                    force: Fix(o.force),
-                    delay: Fix(o.delay),
-                    mass: Fix(o.mass),
-                    air_drag: Fix(o.air_drag),
+                    force: Fix::from_raw(o.force),
+                    delay: Fix::from_raw(o.delay),
+                    mass: Fix::from_raw(o.mass),
+                    air_drag: Fix::from_raw(o.air_drag),
                     path: o.path.iter().map(RawVec2::get).collect(),
                 }),
             }
@@ -415,7 +417,7 @@ fn map_def(raw: &RawMap) -> MapDef {
         water_extents: raw.water.extents.get(),
         team_spawns,
         respawn_points,
-        sudden_death_time: Fix(raw.session.time_before_sudden_death),
+        sudden_death_time: Fix::from_raw(raw.session.time_before_sudden_death),
     }
 }
 
@@ -436,23 +438,23 @@ pub fn get() -> &'static RolloutData {
             maps: raw.maps.iter().map(map_def).collect(),
             player: MovementData {
                 constants: constants(&raw.prefabs.player.physics),
-                radius: Fix(raw.prefabs.player.physics.radius),
+                radius: Fix::from_raw(raw.prefabs.player.physics.radius),
                 hurtbox_extents: raw.prefabs.player.hurtbox_extents.get(),
                 spawn_anim_ticks: raw.prefabs.player.spawn_anim_ticks,
                 fast_spawn_anim_ticks: raw.prefabs.player.fast_spawn_anim_ticks,
             },
             dash: DashData {
-                cooldown: Fix(raw.prefabs.dash.cooldown),
+                cooldown: Fix::from_raw(raw.prefabs.dash.cooldown),
                 hurtbox_extents: raw.prefabs.dash.hurtbox_extents.get(),
             },
             bow: BowData {
-                cooldown: Fix(bow.cooldown),
+                cooldown: Fix::from_raw(bow.cooldown),
                 hurtbox_extents: bow.hurtbox_extents.get(),
-                arrow_speed: Fix(bow.arrow_speed),
+                arrow_speed: Fix::from_raw(bow.arrow_speed),
                 knockback: Fix::from_int(bow.knockback),
-                aireal_control_blend: Fix(bow.aireal_control_blend),
-                time_before_arrows_hurt_owner: Fix(bow.time_before_arrows_hurt_owner),
-                max_slow_mo_speed: Fix(bow.max_slow_mo_speed),
+                aireal_control_blend: Fix::from_raw(bow.aireal_control_blend),
+                time_before_arrows_hurt_owner: Fix::from_raw(bow.time_before_arrows_hurt_owner),
+                max_slow_mo_speed: Fix::from_raw(bow.max_slow_mo_speed),
                 max_arrows: bow.max_arrows,
                 constants: constants(&bow.physics),
                 transform_ticks: ticks(&bow.anims.transform),
@@ -461,21 +463,21 @@ pub fn get() -> &'static RolloutData {
                 fire_ground_ticks: ticks(&bow.anims.fire_ground),
             },
             arrow: ArrowData {
-                radius: Fix(raw.prefabs.arrow.radius),
-                gravity_scale: Fix(raw.prefabs.arrow.body.gravity_scale),
+                radius: Fix::from_raw(raw.prefabs.arrow.radius),
+                gravity_scale: Fix::from_raw(raw.prefabs.arrow.body.gravity_scale),
             },
             platform: PlatformAbilityData {
-                cooldown: Fix(plat.cooldown),
-                hurtbox_radius: Fix(plat.hurtbox_radius),
-                time_in_exit: Fix(plat.time_in_exit),
-                size_change_speed: Fix(plat.size_change_speed),
-                max_size: Fix(plat.max_size),
-                min_size: Fix(plat.min_size),
-                rotation_speed: Fix(plat.rotation_speed),
-                max_area: Fix(plat.max_area),
-                max_size_time: Fix(plat.max_size_time),
-                face_height: Fix(plat.face_height),
-                ejection_offset: Fix(plat.ejection_offset),
+                cooldown: Fix::from_raw(plat.cooldown),
+                hurtbox_radius: Fix::from_raw(plat.hurtbox_radius),
+                time_in_exit: Fix::from_raw(plat.time_in_exit),
+                size_change_speed: Fix::from_raw(plat.size_change_speed),
+                max_size: Fix::from_raw(plat.max_size),
+                min_size: Fix::from_raw(plat.min_size),
+                rotation_speed: Fix::from_raw(plat.rotation_speed),
+                max_area: Fix::from_raw(plat.max_area),
+                max_size_time: Fix::from_raw(plat.max_size_time),
+                face_height: Fix::from_raw(plat.face_height),
+                ejection_offset: Fix::from_raw(plat.ejection_offset),
                 ejection_curve: plat.ejection_curve.clone(),
                 enter_scale_curve: plat.enter_scale_curve.clone(),
                 anticipation_ticks: ticks(&plat.anims.anticipation),
@@ -483,33 +485,39 @@ pub fn get() -> &'static RolloutData {
                 to_exit_ticks: ticks(&plat.anims.to_exit),
                 exit_ticks: ticks(&plat.anims.exit),
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
-                spawn_radius: Fix(raw.prefabs.resizable_platform.radius),
-                spawn_mass_per_area: Fix(raw.prefabs.resizable_platform.mass_per_area),
+                spawn_radius: Fix::from_raw(raw.prefabs.resizable_platform.radius),
+                spawn_mass_per_area: Fix::from_raw(raw.prefabs.resizable_platform.mass_per_area),
                 remove_curve: raw.prefabs.resizable_platform.remove_curve.clone(),
-                spawn_speed: Fix(raw.prefabs.resizable_platform.animate_velocity.speed),
-                spawn_mu: Fix(raw.prefabs.resizable_platform.animate_velocity.mu),
-                spawn_rotation_speed: Fix(raw
-                    .prefabs
-                    .resizable_platform
-                    .animate_velocity
-                    .rotation_speed),
-                spawn_rotation_mu: Fix(raw.prefabs.resizable_platform.animate_velocity.rotation_mu),
+                spawn_speed: Fix::from_raw(raw.prefabs.resizable_platform.animate_velocity.speed),
+                spawn_mu: Fix::from_raw(raw.prefabs.resizable_platform.animate_velocity.mu),
+                spawn_rotation_speed: Fix::from_raw(
+                    raw.prefabs
+                        .resizable_platform
+                        .animate_velocity
+                        .rotation_speed,
+                ),
+                spawn_rotation_mu: Fix::from_raw(
+                    raw.prefabs.resizable_platform.animate_velocity.rotation_mu,
+                ),
                 spawn_body: body(&raw.prefabs.resizable_platform.body, Fix::ZERO),
-                sudden_death_speed: Fix(raw
-                    .prefabs
-                    .resizable_platform
-                    .animate_velocity
-                    .sudden_death_speed),
-                sudden_death_max_delay: Fix(raw
-                    .prefabs
-                    .resizable_platform
-                    .animate_velocity
-                    .sudden_death_max_delay),
-                sudden_death_acceleration: Fix(raw
-                    .prefabs
-                    .resizable_platform
-                    .animate_velocity
-                    .sudden_death_acceleration),
+                sudden_death_speed: Fix::from_raw(
+                    raw.prefabs
+                        .resizable_platform
+                        .animate_velocity
+                        .sudden_death_speed,
+                ),
+                sudden_death_max_delay: Fix::from_raw(
+                    raw.prefabs
+                        .resizable_platform
+                        .animate_velocity
+                        .sudden_death_max_delay,
+                ),
+                sudden_death_acceleration: Fix::from_raw(
+                    raw.prefabs
+                        .resizable_platform
+                        .animate_velocity
+                        .sudden_death_acceleration,
+                ),
                 sudden_death_y_speed: raw
                     .prefabs
                     .resizable_platform

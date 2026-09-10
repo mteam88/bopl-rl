@@ -191,7 +191,7 @@ impl RoundedRect {
             });
         }
         let mut near = edges.first().copied().unwrap_or(Fix::MAX);
-        let mut far = edges.first().copied().unwrap_or(Fix(1));
+        let mut far = edges.first().copied().unwrap_or(Fix::from_raw(1));
         let mut found = !edges.is_empty();
         for center in self.corners() {
             if let Some(hit) = (Circle {

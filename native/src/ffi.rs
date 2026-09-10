@@ -137,14 +137,14 @@ pub unsafe extern "C" fn bopl_observe(
         for (index, p) in unsafe { &(*handle).world }.players.iter().enumerate() {
             let velocity = p.velocity + p.external_velocity;
             let value = Observation {
-                x: p.position.x.0,
-                y: p.position.y.0,
-                vx: velocity.x.0,
-                vy: velocity.y.0,
-                rotation: p.rotation.0,
-                local: p.local.0,
-                grounded_speed: p.grounded_speed.0,
-                cooldown: p.cooldown.0,
+                x: p.position.x.raw(),
+                y: p.position.y.raw(),
+                vx: velocity.x.raw(),
+                vy: velocity.y.raw(),
+                rotation: p.rotation.raw(),
+                local: p.local.raw(),
+                grounded_speed: p.grounded_speed.raw(),
+                cooldown: p.cooldown.raw(),
                 id: p.id,
                 ground_id: p.ground.unwrap_or(0),
                 alive: u8::from(p.alive),

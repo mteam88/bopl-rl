@@ -195,13 +195,13 @@ const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
 const ENVIRONMENT: u32 = 0xFFFF_FFFF;
 /// PlatformTransform.cursorSensitivity.
-const CURSOR_SENSITIVITY: Fix = Fix(107_374_182_400); // 25.0
+const CURSOR_SENSITIVITY: Fix = Fix::from_raw(107_374_182_400); // 25.0
 
 /// Slime controllers wake this many ticks into the warmup (measured against
 /// the .NET reset: ability cooldown timers read -1.5s + (240-62)/60 = 1.4667s
 /// after a 240-tick warmup).
 const SLIME_AWAKE_TICK: u32 = 62;
-const TIMER_START: Fix = Fix(-6_442_450_944); // -1.5s
+const TIMER_START: Fix = Fix::from_raw(-6_442_450_944); // -1.5s
 
 /// A live arrow (Arrow.cs + Projectile.cs): a ballistic projectile that
 /// kills players on contact and sticks to whatever it hits. A stuck arrow's
@@ -517,7 +517,7 @@ impl RolloutWorld {
                 owner: 0,
                 flags: E_ENABLED | E_TRIGGER,
                 hierarchy: 100_000_030 + 30 * i as u32,
-                radius: data.platform.hurtbox_radius.0,
+                radius: data.platform.hurtbox_radius.raw(),
                 inverse_mass: -(1 << 32),
                 ..CEntity::default()
             });
@@ -530,10 +530,10 @@ impl RolloutWorld {
             owner: 0,
             flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
             hierarchy: 146,
-            x: def.water_position.x.0,
-            y: def.water_position.y.0,
-            right_x: def.water_extents.x.0,
-            up_y: def.water_extents.y.0,
+            x: def.water_position.x.raw(),
+            y: def.water_position.y.raw(),
+            right_x: def.water_extents.x.raw(),
+            up_y: def.water_extents.y.raw(),
             inverse_mass: -(1 << 32),
             ..CEntity::default()
         });
@@ -556,8 +556,8 @@ impl RolloutWorld {
                         E_ENABLED | E_TRIGGER
                     },
                     hierarchy: hier + 30 * i as u32,
-                    right_x: extents.x.0,
-                    up_y: extents.y.0,
+                    right_x: extents.x.raw(),
+                    up_y: extents.y.raw(),
                     inverse_mass: -(1 << 32),
                     ..CEntity::default()
                 });
@@ -576,7 +576,7 @@ impl RolloutWorld {
                 owner: 0,
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 105 + 7 * index as u32,
-                inverse_mass: p.body.inverse_mass.0,
+                inverse_mass: p.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
             self.platforms
@@ -1532,7 +1532,7 @@ impl RolloutWorld {
             owner: 0,
             flags: E_ACTIVE | E_ENABLED,
             hierarchy: 300_000_000 + id,
-            inverse_mass: pd.spawn_body.inverse_mass.0,
+            inverse_mass: pd.spawn_body.inverse_mass.raw(),
             ..CEntity::default()
         });
         let surface = Surface {
@@ -1704,8 +1704,8 @@ impl RolloutWorld {
             owner,
             flags: E_ACTIVE | E_ENABLED,
             hierarchy: 200_000_000 + id,
-            radius: radius.0,
-            inverse_mass: Fix::from_f64(0.2).0,
+            radius: radius.raw(),
+            inverse_mass: Fix::from_f64(0.2).raw(),
             ..CEntity::default()
         };
         let arrow = Arrow {
@@ -2428,17 +2428,17 @@ impl RolloutWorld {
                 body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
             }
             let extents = data.player.hurtbox_extents;
-            body.x = position.x.0;
-            body.y = position.y.0;
-            body.vx = velocity.x.0;
-            body.vy = velocity.y.0;
+            body.x = position.x.raw();
+            body.y = position.y.raw();
+            body.vx = velocity.x.raw();
+            body.vy = velocity.y.raw();
             let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
             let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
-            body.right_x = right.x.0;
-            body.right_y = right.y.0;
-            body.up_x = up.x.0;
-            body.up_y = up.y.0;
-            body.rotation = rotation.0;
+            body.right_x = right.x.raw();
+            body.right_y = right.y.raw();
+            body.up_x = up.x.raw();
+            body.up_y = up.y.raw();
+            body.rotation = rotation.raw();
 
             let dash_box = &mut self.entities[dash_e];
             if alive && dashing {
@@ -2446,17 +2446,17 @@ impl RolloutWorld {
                 let angle = slot.base.dash.input.normalized_angle();
                 let basis = Vec2::angle(angle);
                 dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                dash_box.x = position.x.0;
-                dash_box.y = position.y.0;
-                dash_box.vx = velocity.x.0;
-                dash_box.vy = velocity.y.0;
+                dash_box.x = position.x.raw();
+                dash_box.y = position.y.raw();
+                dash_box.vx = velocity.x.raw();
+                dash_box.vy = velocity.y.raw();
                 let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
                 let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
-                dash_box.right_x = right.x.0;
-                dash_box.right_y = right.y.0;
-                dash_box.up_x = up.x.0;
-                dash_box.up_y = up.y.0;
-                dash_box.rotation = angle.0;
+                dash_box.right_x = right.x.raw();
+                dash_box.right_y = right.y.raw();
+                dash_box.up_x = up.x.raw();
+                dash_box.up_y = up.y.raw();
+                dash_box.rotation = angle.raw();
             } else {
                 dash_box.flags = E_ENABLED | E_TRIGGER;
                 dash_box.x = 0;
@@ -2476,15 +2476,15 @@ impl RolloutWorld {
                 };
                 let right_dir = up_dir.perp_cw();
                 bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                bow_box.x = position.x.0;
-                bow_box.y = position.y.0;
-                bow_box.vx = velocity.x.0;
-                bow_box.vy = velocity.y.0;
-                bow_box.right_x = (right_dir * extents.x).x.0;
-                bow_box.right_y = (right_dir * extents.x).y.0;
-                bow_box.up_x = (up_dir * extents.y).x.0;
-                bow_box.up_y = (up_dir * extents.y).y.0;
-                bow_box.rotation = right_dir.normalized_angle().0;
+                bow_box.x = position.x.raw();
+                bow_box.y = position.y.raw();
+                bow_box.vx = velocity.x.raw();
+                bow_box.vy = velocity.y.raw();
+                bow_box.right_x = (right_dir * extents.x).x.raw();
+                bow_box.right_y = (right_dir * extents.x).y.raw();
+                bow_box.up_x = (up_dir * extents.y).x.raw();
+                bow_box.up_y = (up_dir * extents.y).y.raw();
+                bow_box.rotation = right_dir.normalized_angle().raw();
             } else {
                 bow_box.flags = E_ENABLED | E_TRIGGER;
                 bow_box.x = 0;
@@ -2497,8 +2497,8 @@ impl RolloutWorld {
             let circle = &mut self.entities[circle_e];
             if alive && anticipating {
                 circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                circle.x = position.x.0;
-                circle.y = position.y.0;
+                circle.x = position.x.raw();
+                circle.y = position.y.raw();
             } else {
                 circle.flags = E_ENABLED | E_TRIGGER;
                 circle.x = 0;
@@ -2510,34 +2510,34 @@ impl RolloutWorld {
                 continue;
             }
             let e = &mut self.entities[arrow.entity];
-            e.x = arrow.position.x.0;
-            e.y = arrow.position.y.0;
-            e.vx = arrow.velocity.x.0;
-            e.vy = arrow.velocity.y.0;
+            e.x = arrow.position.x.raw();
+            e.y = arrow.position.y.raw();
+            e.vx = arrow.velocity.x.raw();
+            e.vy = arrow.velocity.y.raw();
             let speed = arrow.velocity.length();
             if speed > Fix::ZERO {
                 let up = arrow.velocity * (Fix::ONE / speed);
-                e.rotation = up.perp_cw().normalized_angle().0;
+                e.rotation = up.perp_cw().normalized_angle().raw();
             }
         }
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
             let s = &platform.surface;
             let dynamics = &self.platform_dynamics[i];
-            e.x = s.center.x.0;
-            e.y = s.center.y.0;
-            e.vx = dynamics.body.velocity.x.0;
-            e.vy = dynamics.body.velocity.y.0;
+            e.x = s.center.x.raw();
+            e.y = s.center.y.raw();
+            e.vx = dynamics.body.velocity.x.raw();
+            e.vy = dynamics.body.velocity.y.raw();
             let right = s.right * s.extents.x;
             let up = s.up * s.extents.y;
-            e.right_x = right.x.0;
-            e.right_y = right.y.0;
-            e.up_x = up.x.0;
-            e.up_y = up.y.0;
-            e.radius = s.radius.0;
-            e.rotation = s.right.normalized_angle().0;
-            e.angular_velocity = dynamics.body.angular_velocity.0;
-            e.inverse_mass = dynamics.body.inverse_mass.0;
+            e.right_x = right.x.raw();
+            e.right_y = right.y.raw();
+            e.up_x = up.x.raw();
+            e.up_y = up.y.raw();
+            e.radius = s.radius.raw();
+            e.rotation = s.right.normalized_angle().raw();
+            e.angular_velocity = dynamics.body.angular_velocity.raw();
+            e.inverse_mass = dynamics.body.inverse_mass.raw();
         }
     }
 
@@ -2591,20 +2591,24 @@ impl RolloutWorld {
                 owner: slot.base.id,
                 flags,
                 state,
-                x: slot.base.position.x.0,
-                y: slot.base.position.y.0,
-                vx: velocity.x.0,
-                vy: velocity.y.0,
-                rotation: slot.base.rotation.0,
+                x: slot.base.position.x.raw(),
+                y: slot.base.position.y.raw(),
+                vx: velocity.x.raw(),
+                vy: velocity.y.raw(),
+                rotation: slot.base.rotation.raw(),
                 scale: 1 << 32,
                 abilities: slot.abilities,
                 ability_flags,
                 cooldowns: [
-                    slot.cooldowns[0].0,
-                    slot.cooldowns[1].0,
-                    slot.cooldowns[2].0,
+                    slot.cooldowns[0].raw(),
+                    slot.cooldowns[1].raw(),
+                    slot.cooldowns[2].raw(),
                 ],
-                timers: [slot.timers[0].0, slot.timers[1].0, slot.timers[2].0],
+                timers: [
+                    slot.timers[0].raw(),
+                    slot.timers[1].raw(),
+                    slot.timers[2].raw(),
+                ],
             });
         }
     }
@@ -2629,7 +2633,7 @@ impl RolloutWorld {
             entity_count: entities.len() as u32,
             warmup_ticks: warmup,
             slime_count: slimes.len() as u32,
-            simulation_time: (Fix::from_int(i64::from(tick)) * DT).0,
+            simulation_time: (Fix::from_int(i64::from(tick)) * DT).raw(),
             player_time_scale: 1 << 32,
         };
         for (i, slot) in players.iter().enumerate() {
@@ -2649,11 +2653,11 @@ impl RolloutWorld {
                 kills: slot.kills,
                 deaths: slot.deaths,
                 cause_of_death: slot.cause_of_death,
-                x: slot.base.position.x.0,
-                y: slot.base.position.y.0,
+                x: slot.base.position.x.raw(),
+                y: slot.base.position.y.raw(),
                 scale: 1 << 32,
                 invisible_time: 0,
-                ability_time: slot.ability_time.0,
+                ability_time: slot.ability_time.raw(),
             };
             state.telemetry[i] = slot.telemetry;
         }

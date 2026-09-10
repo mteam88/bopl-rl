@@ -180,7 +180,7 @@ impl State {
     /// first minimum-age invisibility slot. Aliases and strict ties matter.
     pub fn invisibility_ended(&mut self) -> Result<()> {
         let mut youngest = None;
-        let mut minimum = Fix(i64::MAX);
+        let mut minimum = Fix::from_raw(i64::MAX);
         for i in 0..self.slots.len() {
             let ability = self.ability(i)?;
             let Some(crate::ability::Handler::Invisibility(instant)) = &ability.handler else {

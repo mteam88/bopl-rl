@@ -108,6 +108,111 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | Curve tangents and old-platform shrink removal are absent | planned as described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
 
+## Number type: f64 behind the Q32.32 API
+
+Unity's `BoplFixedMath/Fix.cs` is Q32.32 fixed point (i64 raw, i128
+products, a 205887-entry sine table, an Euler-series `Atan`) because the game
+needs lockstep determinism across machines. The rollout only needs
+determinism within one binary (replays re-simulate recorded actions and A/B
+traces compare two runs on one box), which IEEE doubles already give. The
+profile of the live trainer put ~35% of sim time in `Fix::checked_div`,
+`Fix::sin`/`fast_sin`/`atan`/`acos`, so `native/src/fixed.rs` now stores an
+`f64` behind the identical `Fix` API; game logic is untouched. The cargo
+feature `q32` (`native/src/fixed_q32.rs`) restores the bit-exact reference
+arithmetic for the golden verification tooling (`just verify` builds with it
+and rebuilds the default afterwards). Raw Q32.32 values only exist at the
+boundaries: `Fix::from_raw`/`Fix::raw` convert for the `bopl_rl.h` structs
+(`bopl_puffer.h` still divides by 2^32), the embedded `rollout.json`, the
+level fixtures and the `bopl.h` state dump. The ABI version and the
+observation layout are unchanged.
+
+Decisions, each checked against `Fix.cs`:
+
+- **Constants stay the game's truncated values**: `PI` = 13493037704/2^32,
+  `HALF_PI`, `TAU` (= 2·PI + 1 raw), `DT` = 71582788/2^32 (< 1/60). Every
+  raw value with < 2^53 magnitude is exact in f64, so every comparison
+  against an authored constant lands on the same side in both builds.
+- **`from_f32`/`from_f64` snap to the Q32.32 grid** exactly as the
+  reference's `(Fix)0.2f` / `(Fix)0.95m` casts do (scale, truncate toward
+  zero), so thresholds such as the 0.2/0.01 ground-alignment deadzones, the
+  0.4 stick deadzone, -11.3 water level and 0.95 external-velocity decay are
+  the same numbers, not their decimal ideals.
+- **Timers are exact.** `DT` is a dyadic rational with a 27-bit numerator, so
+  `timer += DT` (k·71582788/2^32 has < 2^53 bits for k < 1.2e8) and
+  `Fix::from_int(tick) * DT` are exact in f64 and equal the fixed-point sums
+  bit for bit: ability cooldown readiness (`timers >= cooldowns`), the -1.5 s
+  warmup start, the 4 s dash gate, `dash.time == DT`, `dash.time < 0.01`,
+  the 60·DT < 1 s boundary and the sudden-death time all flip on the same
+  tick. Unit tests in `fixed.rs` pin this.
+- **Saturation/overflow**: the game relies on none of it in the rollout's
+  code paths. `slow_*` become plain arithmetic. The only saturation-dependent
+  branch, `Atan2`'s `1 + 0.28·r² == MaxValue` fallback to `±HALF_PI`, is kept
+  as a `>= MAX` test so near-vertical inputs return the same value.
+- **Mul/Div rounding**: Q32.32 `*` floors the 2^-32 grid, `/` rounds to
+  nearest; f64 rounds both to the nearest double. This is the source of every
+  observed divergence (see below) and is accepted: the reference's own result
+  is off the real number by up to one raw unit per operation in the same
+  places.
+- **Trig**: `sin`/`cos` keep the reference's `ClampSinValue` quadrant
+  reduction (modulo the game's `TAU`, fold at `PI` and `HALF_PI`), then call
+  libm, so `sin(0)=0`, `sin(HALF_PI)=1`, `sin(PI)=0`, `cos(0)=1`,
+  `cos(PI)=-1`, `sin(TAU)=0`, `cos(TAU)=1` exactly; axis-aligned platforms
+  and flat-ground rotations (`TAU` from `normalized_angle`) produce exact
+  unit bases as in the table lookup. `Cos(HALF_PI)` is -2^-32 (the game's
+  `TAU` is one raw unit above 2·PI, and the reference's interpolated `Sin`
+  rounds that same value down to 0). `fast_sin`/`fast_cos` (Unity's
+  un-interpolated lookup, index = angle >> 15, i.e. the angle truncated to
+  7.6e-6 rad) are hardware sin/cos: the game does not depend on the
+  truncation error (it only biases `Vec2(angle)` bases by < 7.6e-6 rad; no
+  comparison reads those bases against an exact constant, and orientation is
+  integrated separately from the vector so nothing drifts).
+  `atan`/`acos`/`tan` are libm; `acos` accepts inputs within one raw unit of
+  ±1 (a normalized double's component cannot exceed 1, and the Q32.32
+  normalization has the same one-unit slack) and rejects the rest as Domain
+  like the reference.
+- **`Atan2` keeps the reference formula**: `r/(1 + 0.28 r²)` for `|r| < 1`
+  and the non-standard `(HALF_PI - r)/(r² + 0.28)` otherwise
+  (`Fix.cs:41975`). `Tools.Angle2` feeds it `tan(θ/2)` for the corner arcs
+  of `StickyRoundedRectangle`, so the game's perimeter coordinate genuinely
+  uses this approximation (max error 0.005 rad); a true atan2 would move
+  every corner attachment systematically.
+- **`Round`** is half-to-even in the reference and `round_ties_even` here;
+  `Floor`/`to_int` floor toward -inf like the arithmetic shift; `%` keeps the
+  dividend's sign like C#.
+
+Verification of the representation change (`native/rl/research/rust_ab/repr_ab.c`
+drives the Q32 and f64 builds with the fidelity gate's action stream at
+action repeat 1 and compares every observation field per tick):
+
+- With warmup 0 and tolerance 0, the first divergence is at tick 1:
+  `player0.y` differs by exactly one raw unit (2^-32), the truncation of
+  `velocity.y * DT` in `Player::step` versus the correctly rounded product.
+  With the 240-tick warmup, the reset state differs on platform and body
+  basis vectors by 5-12335 raw units (1e-9 to 2.9e-6 units): the `Vec2::angle`
+  table truncation on maps with tilted platforms (3, 4), and one-unit
+  products elsewhere. No discrete field (state, flags, ability flags,
+  timers, telemetry, entity presence) differs at the first divergence.
+- Over 300 episodes (seeds 1000-1299, maps 0-4) the two builds produce the
+  same winner in 300/300 and the same episode length in 298/300; the two
+  remaining episodes end one tick apart after the position gap grew from
+  1e-8 through chaotic platform-riding dynamics (×1.05 per tick during a
+  Platform transform) to 2e-2 units before the final water crossing, with
+  every discrete field agreeing along the way (`REPR_AB_TRACE=34`).
+- The 300-episode gate against .NET is identical to the Q32 build's, column
+  for column (67.1 mean decisions, 278/300 winner agreement, same death and
+  activation counts), and every scripted A/B trace keeps its tolerance:
+  `move`/`state`/`bow`/`aim`/`hit` are textually identical,
+  `platform_ab` overlap maxima are unchanged (0.545/0.043/0.183 units),
+  `stock_respawn_ab` differs from the Q32 build by at most 5.6e-9 units, and
+  the map-2 orbiter (previously identical to 12 places) now drifts from .NET
+  by 3e-10 units per tick — one raw unit per tick from the reference's
+  truncated `AnimateVelocity` impulse products — reaching 2.6e-7 units at
+  tick 1620.
+- Sim-only throughput (`benchmark.c`, 2 players, repeat 4, 200k ticks, same
+  background load, interleaved): 141k -> 563k stepping ticks/s (4.0x), 94k ->
+  321k ticks/s including resets (3.4x). The `.so` shrinks from 2.8 MB to
+  1.2 MB (no sine/tangent tables).
+
 ## Fidelity gate
 
 `native/rl/fidelity_gate.c` drives both backends with identical seeded
