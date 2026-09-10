@@ -79,7 +79,7 @@ def fix(props, key):
 
 
 def curve(props, prefix):
-    """AnimationCurveFixed: keys with time/value Fix raws."""
+    """AnimationCurveFixed: runtime wrap modes and exact KeyFrameF raws."""
     n = props.get(f"{prefix}.keys.Array.size", 0)
     keys = []
     for i in range(n):
@@ -87,8 +87,32 @@ def curve(props, prefix):
         keys.append({
             "time": raw(props, f"{base}.time.m_rawValue"),
             "value": raw(props, f"{base}.value.m_rawValue"),
+            "in_tangent": raw(props, f"{base}.inTangent.m_rawValue"),
+            "out_tangent": raw(props, f"{base}.outTangent.m_rawValue"),
         })
-    return keys
+    # The normalized object records UnityEngine.WrapMode as observed by the
+    # runtime. Do not use m_Pre/PostInfinity: those are Unity's serialized
+    # internal codes and differ from the public enum values.
+    anim = props[f"{prefix}.Anim"]
+    return {
+        "pre_wrap": anim["preWrap"],
+        "post_wrap": anim["postWrap"],
+        "keys": keys,
+    }
+
+
+def physics_body(props):
+    """BoplBody fields consumed by DetPhysics/PhysTools."""
+    return {
+        "mass": fix(props, "mass"),
+        "bounciness": fix(props, "bounciness"),
+        "static_friction": fix(props, "friction"),
+        "dynamic_friction": fix(props, "dynamicFriction"),
+        "moment_of_inertia": fix(props, "momentOfInertia"),
+        "gravity_scale": fix(props, "gravityScale"),
+        "air_drag": fix(props, "airFriction01"),
+        "rotational_drag": fix(props, "rotationalDrag01"),
+    }
 
 
 def animations(guid):
@@ -151,8 +175,7 @@ def extract_map(index):
                     "sudden_death_acceleration": fix(av, "SuddenDeathAcceleration"),
                     "sudden_death_y_speed": curve(av, "suddenDeathYSpeed"),
                 },
-                "inverse_mass": None,
-                "gravity_scale": body.get("gravityScale.m_rawValue") if body else None,
+                "body": physics_body(body),
             }
             if anti is not None:
                 n = anti.get("OrbitPath.Array.size", 0)
@@ -309,6 +332,7 @@ def main():
     rp_rr = component(rp, "DPhysicsRoundedRect")
     rp_av = component(rp, "AnimateVelocity")
     rp_res = component(rp, "ResizablePlatform")
+    rp_body = component(rp, "BoplBody")
     out["prefabs"]["resizable_platform"] = {
         "layer": rp["data"].get("layer"),
         "extents": vec2(rp_rr, "startExtents"),
@@ -321,6 +345,9 @@ def main():
             "sudden_death_acceleration": fix(rp_av, "SuddenDeathAcceleration"),
             "sudden_death_y_speed": curve(rp_av, "suddenDeathYSpeed"),
         },
+        "body": physics_body(rp_body),
+        "mass_per_area": fix(rp_res, "MassPerArea"),
+        "remove_curve": curve(rp_res, "RemoveAnimation"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
     }
 

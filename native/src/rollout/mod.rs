@@ -8,7 +8,8 @@
 //! byte-exactness; the .NET sim stays the reference (native/rl/RUST_ROLLOUTS.md).
 use crate::{
     fixed::Fix,
-    geometry::{OrientedBox, RoundedRect},
+    geometry::{Circle, OrientedBox, RoundedRect},
+    physics::{Body, positional_correction, resolve},
     random::Random,
     surface::Surface,
     vector::Vec2,
@@ -186,6 +187,7 @@ const LAYER_WALL: u32 = 11;
 const LAYER_WATER: u32 = 4;
 
 const CAUSE_OTHER: u32 = 0;
+const CAUSE_SQUISHED: u32 = 1;
 const CAUSE_ACCIDENT: u32 = 2;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
@@ -223,11 +225,28 @@ pub struct Arrow {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedPlatform {
     pub active: bool,
+    /// ResizablePlatform.RemovePlatform keeps the body live while shrinking.
+    pub being_removed: bool,
     /// Owning player index (not id).
     pub owner: usize,
     /// Index into `RolloutWorld::platforms` (kept in sync on removal).
     pub platform_index: usize,
     pub sudden_death_delay: Fix,
+    pub removal_time: Fix,
+    pub removal_extents: Vec2,
+    pub removal_radius: Fix,
+}
+
+/// DetPhysics body plus AnimateVelocity state for one rounded platform.
+#[derive(Clone, Copy, Default)]
+pub struct PlatformDynamics {
+    pub body: Body,
+    pub home_position: Vec2,
+    pub home_rotation: Fix,
+    pub speed: Fix,
+    pub mu: Fix,
+    pub rotation_speed: Fix,
+    pub rotation_mu: Fix,
 }
 
 /// PlatformTransform.State.
@@ -322,6 +341,8 @@ pub struct RolloutWorld {
     pub rng: Random,
     pub players: Vec<PlayerSlot>,
     pub platforms: Vec<Platform>,
+    /// Parallel to `platforms`: rigid body and home spring state.
+    pub platform_dynamics: Vec<PlatformDynamics>,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
     /// usize::MAX for spawned (ability) platforms.
     pub platform_defs: Vec<usize>,
@@ -332,9 +353,8 @@ pub struct RolloutWorld {
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
-    /// AntiLockPlatform runtime (map 2): platform index, waypoint, velocity,
-    /// and the AnimateVelocity home (set to the body position one tick late).
-    pub orbits: Vec<(usize, usize, Vec2, Vec2)>,
+    /// AntiLockPlatform runtime (map 2): platform index and waypoint.
+    pub orbits: Vec<(usize, usize)>,
     pub next_platform_id: u32,
     pub next_entity_id: u32,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
@@ -384,6 +404,7 @@ impl RolloutWorld {
             rng: Random::new(1),
             players: Vec::with_capacity(MAX_PLAYERS),
             platforms: Vec::with_capacity(64),
+            platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
@@ -465,6 +486,7 @@ impl RolloutWorld {
         self.spawned.clear();
         self.players.clear();
         self.platforms.clear();
+        self.platform_dynamics.clear();
         self.platform_defs.clear();
         self.platform_entities.clear();
         self.entities.clear();
@@ -544,19 +566,27 @@ impl RolloutWorld {
                 owner: 0,
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 105 + 7 * index as u32,
-                inverse_mass: Fix::from_f64(1.0 / 15.0).0,
+                inverse_mass: p.body.inverse_mass.0,
                 ..CEntity::default()
             });
             self.platforms
                 .push(make_platform(self.next_platform_id, &p.surface));
+            self.platform_dynamics.push(PlatformDynamics {
+                body: p.body,
+                home_position: p.surface.center,
+                home_rotation: p.body.orientation,
+                speed: p.speed,
+                mu: p.mu,
+                rotation_speed: p.rotation_speed,
+                rotation_mu: p.rotation_mu,
+            });
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
             self.sudden_death_delays
                 .push(self.rng.fix_range(Fix::ZERO, p.sudden_death_max_delay));
             if p.orbit.is_some() {
-                self.orbits
-                    .push((self.platforms.len() - 1, 0, Vec2::ZERO, p.surface.center));
+                self.orbits.push((self.platforms.len() - 1, 0));
             }
         }
 
@@ -840,6 +870,20 @@ impl RolloutWorld {
                 buttons: (actions[index].buttons & 0xFF) as u8,
             };
             self.player_tick(index, action, data);
+            // The shared movement slice marks a body dead when its previous
+            // position is beyond a blast boundary. Convert that marker into
+            // the match-level death exactly once; otherwise the later
+            // `!alive` guard would skip stocks, telemetry, and `out` forever.
+            let boundary_death = {
+                let slot = &self.players[index];
+                !slot.out
+                    && slot.respawn_ticks == 0
+                    && !slot.base.alive
+                    && slot.base.outside_bounds()
+            };
+            if boundary_death {
+                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
+            }
         }
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
@@ -1013,13 +1057,59 @@ impl RolloutWorld {
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action) {
         self.players[index].base.step(action, &self.platforms);
-        let caster = &self.players[index].base;
-        if caster.dash.active && caster.dash.time == DT {
-            let origin = caster.position;
-            let direction = caster.dash.input;
+        let dash_cast = {
+            let caster = &self.players[index].base;
+            (caster.dash.active && caster.dash.time == DT).then_some((
+                caster.position,
+                caster.dash.input,
+                caster.id,
+            ))
+        };
+        if let Some((origin, direction, caster_id)) = dash_cast {
             let wall =
                 crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
+
+            // Dash.performDash raycasts the Projectile layer too. Arrow's
+            // callback sticks/destroys the projectile, then PlayerCollision
+            // kills the dasher unless this is an owner-safe young arrow.
+            let mut arrow_hits: Vec<_> = self
+                .arrows
+                .iter()
+                .enumerate()
+                .filter(|(_, arrow)| arrow.active)
+                .filter_map(|(arrow_index, arrow)| {
+                    (Circle {
+                        center: arrow.position,
+                        radius: data::get().arrow.radius,
+                    })
+                    .raycast(origin, direction)
+                    .filter(|hit| {
+                        hit.near <= Fix::from_int(13)
+                            && wall.is_none_or(|distance| hit.near < distance)
+                    })
+                    .map(|hit| (arrow_index, hit.near.max(Fix::ZERO)))
+                })
+                .collect();
+            arrow_hits.sort_by_key(|&(arrow_index, distance)| (distance, arrow_index));
+            for (arrow_index, _) in arrow_hits {
+                let arrow = self.arrows[arrow_index];
+                let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
+                self.destroy_arrow(arrow_index);
+                if lethal {
+                    let cause = if arrow.owner == caster_id {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    self.kill(index, arrow.owner, cause);
+                    if arrow.owner != caster_id && arrow.owner >= 1 {
+                        self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
+                    }
+                    return;
+                }
+            }
+
             let targets: Vec<usize> = self
                 .players
                 .iter()
@@ -1188,7 +1278,13 @@ impl RolloutWorld {
         } else {
             Fix::ZERO
         };
-        self.spawn_arrow(owner, position, start_velocity, hurt_owner_after);
+        self.spawn_arrow(
+            owner,
+            position,
+            start_velocity,
+            hurt_owner_after,
+            bow.max_arrows,
+        );
         self.players[index].telemetry.arrows_fired += 1;
         let this = &mut *self;
         let slot = &mut this.players[index];
@@ -1238,7 +1334,7 @@ impl RolloutWorld {
                 let time_passed = st.time_passed;
                 let platform_index = st.platform_index;
                 let ticks = st.ticks;
-                let radius = curve_eval(&pd.enter_scale_curve, time_passed);
+                let radius = pd.enter_scale_curve.evaluate(time_passed);
                 let (center, mut up) = {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up)
@@ -1247,6 +1343,8 @@ impl RolloutWorld {
                     up = slerp(up, aim, DT * pd.rotation_speed);
                 }
                 self.reshape_platform(platform_index, center, up, pd.spawn_extents, radius);
+                self.platform_dynamics[platform_index].home_rotation =
+                    up.perp_cw().normalized_angle();
                 let slot = &mut self.players[index];
                 slot.base.position = center;
                 slot.base.rotation = up.perp_cw().normalized_angle();
@@ -1272,10 +1370,10 @@ impl RolloutWorld {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up, s.radius + s.extents.y)
                 };
-                let eject = curve_eval(
-                    &pd.ejection_curve,
-                    (time_passed - exit_time) / pd.time_in_exit,
-                ) * span;
+                let eject = pd
+                    .ejection_curve
+                    .evaluate((time_passed - exit_time) / pd.time_in_exit)
+                    * span;
                 let slot = &mut self.players[index];
                 slot.base.position = center + up * eject;
                 if eject + pd.face_height >= span {
@@ -1383,10 +1481,10 @@ impl RolloutWorld {
         self.players[index].base.position = new_center;
     }
 
-    /// Spawn a ResizablePlatform for `owner` (replacing their previous one)
+    /// Spawn a ResizablePlatform for `owner` (starting removal of the previous one)
     /// and return its index in `platforms`.
     fn spawn_ability_platform(&mut self, owner: usize, position: Vec2) -> usize {
-        self.remove_spawned_platform_of(owner);
+        self.begin_removing_spawned_platform_of(owner);
         let pd = &data::get().platform;
         let entity = self.entities.len();
         let id = self.next_id();
@@ -1397,7 +1495,7 @@ impl RolloutWorld {
             owner: 0,
             flags: E_ACTIVE | E_ENABLED,
             hierarchy: 300_000_000 + id,
-            inverse_mass: Fix::from_f64(1.0 / 15.0).0,
+            inverse_mass: pd.spawn_body.inverse_mass.0,
             ..CEntity::default()
         });
         let surface = Surface {
@@ -1410,28 +1508,44 @@ impl RolloutWorld {
         let platform_index = self.platforms.len();
         self.platforms
             .push(make_platform(self.next_platform_id, &surface));
+        self.platform_dynamics.push(PlatformDynamics {
+            body: pd.spawn_body,
+            home_position: position,
+            home_rotation: Fix::ZERO,
+            speed: pd.spawn_speed,
+            mu: pd.spawn_mu,
+            rotation_speed: pd.spawn_rotation_speed,
+            rotation_mu: pd.spawn_rotation_mu,
+        });
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
         self.platform_entities.push(entity);
         let delay = self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay);
         self.spawned.push(SpawnedPlatform {
             active: true,
+            being_removed: false,
             owner,
             platform_index,
             sudden_death_delay: delay,
+            removal_time: Fix::ZERO,
+            removal_extents: Vec2::ZERO,
+            removal_radius: Fix::ZERO,
         });
         platform_index
     }
 
-    fn remove_spawned_platform_of(&mut self, owner: usize) {
+    fn begin_removing_spawned_platform_of(&mut self, owner: usize) {
         if let Some(i) = self
             .spawned
             .iter()
-            .position(|s| s.active && s.owner == owner)
+            .rposition(|s| s.active && !s.being_removed && s.owner == owner)
         {
             let platform_index = self.spawned[i].platform_index;
-            self.spawned[i].active = false;
-            self.remove_platform(platform_index);
+            let surface = &self.platforms[platform_index].surface;
+            self.spawned[i].being_removed = true;
+            self.spawned[i].removal_time = Fix::ZERO;
+            self.spawned[i].removal_extents = surface.extents;
+            self.spawned[i].removal_radius = surface.radius;
         }
     }
 
@@ -1449,8 +1563,15 @@ impl RolloutWorld {
         let entity = self.platform_entities[index];
         self.entities[entity].flags = E_ENABLED | E_DESTROYED;
         self.platforms.remove(index);
+        self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
         self.platform_entities.remove(index);
+        self.orbits.retain(|orbit| orbit.0 != index);
+        for orbit in &mut self.orbits {
+            if orbit.0 > index {
+                orbit.0 -= 1;
+            }
+        }
         for s in &mut self.spawned {
             if s.active && s.platform_index > index {
                 s.platform_index -= 1;
@@ -1471,6 +1592,7 @@ impl RolloutWorld {
         extents: Vec2,
         radius: Fix,
     ) {
+        let old_center = self.platforms[index].surface.center;
         let platform = &mut self.platforms[index];
         let right = up.perp_cw();
         platform.surface.center = center;
@@ -1484,9 +1606,50 @@ impl RolloutWorld {
         platform.collider.inner.inverse_extents =
             Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         platform.collider.radius = radius;
+        let dynamics = &mut self.platform_dynamics[index];
+        // ResizablePlatform.ResizePlatform recomputes these from geometry on
+        // every resize; keeping the prefab's mass makes long/thin platforms
+        // react far too strongly to contacts.
+        let pd = &data::get().platform;
+        let mass = Fix::from_int(10)
+            + pd.spawn_mass_per_area * platform_area(extents.x, extents.y, radius);
+        let w = extents.x + radius;
+        let h = extents.y + radius;
+        let longest = w.max(h);
+        let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
+        dynamics.body.inverse_mass = Fix::ONE / mass;
+        dynamics.body.inverse_inertia = Fix::ONE / inertia;
+        dynamics.body.orientation = right.normalized_angle();
+        dynamics.home_position += center - old_center;
     }
 
-    fn spawn_arrow(&mut self, owner: u32, position: Vec2, velocity: Vec2, hurt_owner_after: Fix) {
+    fn spawn_arrow(
+        &mut self,
+        owner: u32,
+        position: Vec2,
+        velocity: Vec2,
+        hurt_owner_after: Fix,
+        max_arrows: u32,
+    ) {
+        // BowTransform uses a per-owner RingBuffer and destroys its oldest
+        // arrow when the authored capacity is reached. Native arrow slots are
+        // reused, so age (not vector position) identifies the oldest one.
+        let owner_count = self
+            .arrows
+            .iter()
+            .filter(|arrow| arrow.active && arrow.owner == owner)
+            .count() as u32;
+        if max_arrows > 0
+            && owner_count >= max_arrows
+            && let Some((oldest, _)) = self
+                .arrows
+                .iter()
+                .enumerate()
+                .filter(|(_, arrow)| arrow.active && arrow.owner == owner)
+                .max_by_key(|(_, arrow)| arrow.time_passed)
+        {
+            self.destroy_arrow(oldest);
+        }
         let radius = data::get().arrow.radius;
         let free = self.arrows.iter().position(|a| !a.active);
         let entity = match free {
@@ -1612,54 +1775,144 @@ impl RolloutWorld {
         }
     }
 
-    /// Map platform motion: the map-2 orbiter (AntiLockPlatform), sudden
-    /// death sinking (AnimateVelocity) for authored and spawned platforms,
-    /// and scene-bounds destruction of spawned platforms.
-    fn platforms_tick(&mut self, data: &data::RolloutData) {
-        // AntiLockPlatform: after DelaySeconds, chase the waypoints with
-        // OrbitForce while AnimateVelocity damps with -mu * velocity (home
-        // tracks the body, so the spring pull is zero). Halts once sudden
-        // death starts. Riders follow via their surface-local anchor.
-        if !self.sudden_death {
-            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-            let map = &data.maps[self.map];
-            for orbit in &mut self.orbits {
-                let platform_index = orbit.0;
-                let def = &map.platforms[self.platform_defs[platform_index]];
-                let Some(o) = def.orbit.as_ref() else { continue };
-                if sim_time < o.delay || o.path.is_empty() {
+    /// Stable rounded-rectangle broad phase, matching the RR subset of the
+    /// generic DetPhysics sweep (strict touching-edge rejection included).
+    fn platform_pairs(&self) -> Vec<[usize; 2]> {
+        if self.platforms.len() < 2 {
+            return Vec::new();
+        }
+        let mut mean = Vec2::ZERO;
+        for platform in &self.platforms {
+            mean += platform.surface.center;
+        }
+        mean = mean / Fix::from_int(self.platforms.len() as i64);
+        let mut variance = Vec2::ZERO;
+        for platform in &self.platforms {
+            let delta = mean - platform.surface.center;
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        let sweep_x = variance.x > variance.y;
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
+        let bounds: Vec<_> = self
+            .platforms
+            .iter()
+            .map(|platform| {
+                let r = platform.collider;
+                let extent = Vec2::new(
+                    r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
+                    r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
+                );
+                [r.inner.center - extent, r.inner.center + extent]
+            })
+            .collect();
+        let mut active: Vec<_> = (0..self.platforms.len()).collect();
+        active.sort_by(|&a, &b| {
+            (axis(bounds[a][0]) - axis(bounds[b][0]))
+                .sign()
+                .cmp(&0)
+                .then(a.cmp(&b))
+        });
+        let mut pairs = Vec::new();
+        let mut window = Vec::new();
+        for b in active {
+            window.retain(|&a: &usize| axis(bounds[a][1]) > axis(bounds[b][0]));
+            for &a in &window {
+                if other(bounds[a][1]) <= other(bounds[b][0])
+                    || other(bounds[a][0]) >= other(bounds[b][1])
+                {
                     continue;
                 }
-                let platform = &mut self.platforms[platform_index];
-                let position = platform.surface.center;
-                // Per tick, in the .NET order: AnimateVelocity computes the
-                // spring against last tick's home (AntiLock re-homes after
-                // it), AntiLock adds OrbitForce, DetPhysics integrates with
-                // 1/mass and applies airDrag, then positions move.
-                let spring = (orbit.3 - position) * def.speed - orbit.2 * def.mu;
-                let direction = (o.path[orbit.1] - position).normalized_safe();
-                orbit.3 = position;
-                let acceleration = spring + direction * (o.force / o.mass);
-                orbit.2 = (orbit.2 + acceleration * DT) * o.air_drag;
-                let shift = orbit.2 * DT;
-                platform.surface.center += shift;
-                platform.collider.inner.center += shift;
-                let current = o.path[orbit.1];
-                let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
-                if (current - previous).dot(platform.surface.center - current) > Fix::ZERO {
-                    orbit.1 = (orbit.1 + 1) % o.path.len();
-                }
-                // Carry grounded riders (.NET parents players to the sticky
-                // platform, so they move with it).
-                let platform_id = platform.id;
-                for slot in &mut self.players {
-                    if slot.base.alive && slot.base.ground == Some(platform_id) {
-                        slot.base.position += shift;
-                        slot.base.sync_collider();
-                    }
-                }
+                pairs.push(if a < b { [a, b] } else { [b, a] });
             }
+            window.push(b);
         }
+        pairs
+    }
+
+    /// Rounded-platform rigid-body stage. The order matches DetPhysics:
+    /// gameplay forces (AnimateVelocity and AntiLockPlatform), integration,
+    /// broad phase, narrow phase, collision impulse, positional correction,
+    /// then transform/rider synchronization.
+    fn platforms_tick(&mut self, data: &data::RolloutData) {
+        // ResizablePlatform.UpdateSim runs every tick while an evicted platform
+        // remains a normal collidable body. It evaluates before incrementing
+        // time and destroys at the final key without applying another resize.
+        let removal_end = data
+            .platform
+            .remove_curve
+            .keys
+            .last()
+            .expect("authored platform removal curve")
+            .time;
+        let mut removal_resizes = Vec::new();
+        let mut removal_destroys = Vec::new();
+        for spawn in &mut self.spawned {
+            if !spawn.active || !spawn.being_removed {
+                continue;
+            }
+            if spawn.removal_time >= removal_end {
+                spawn.active = false;
+                removal_destroys.push(spawn.platform_index);
+                continue;
+            }
+            let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
+            spawn.removal_time += DT;
+            let minimum = Fix::from_f32(0.1);
+            removal_resizes.push((
+                spawn.platform_index,
+                Vec2::new(
+                    minimum + (spawn.removal_extents.x - minimum) * amount,
+                    minimum + (spawn.removal_extents.y - minimum) * amount,
+                ),
+                minimum + (spawn.removal_radius - minimum) * amount,
+            ));
+        }
+        for (index, extents, radius) in removal_resizes {
+            let surface = &self.platforms[index].surface;
+            self.reshape_platform(index, surface.center, surface.up, extents, radius);
+        }
+        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
+        for index in removal_destroys {
+            self.remove_platform(index);
+        }
+
+        // Most short episodes never create or disturb a platform. Preserve
+        // that hot path without changing semantics: a body exactly at its
+        // home with zero velocity cannot produce motion or a new contact.
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let orbit_running = !self.sudden_death
+            && self.orbits.iter().any(|orbit| {
+                data.maps[self.map].platforms[self.platform_defs[orbit.0]]
+                    .orbit
+                    .as_ref()
+                    .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
+            });
+        let disturbed =
+            self.platforms
+                .iter()
+                .zip(&self.platform_dynamics)
+                .any(|(platform, dynamics)| {
+                    platform.surface.center != dynamics.home_position
+                        || dynamics.body.velocity != Vec2::ZERO
+                        || dynamics.body.angular_velocity != Fix::ZERO
+                        || dynamics.body.orientation != dynamics.home_rotation
+                });
+        if !self.sudden_death
+            && !orbit_running
+            && !disturbed
+            && !self.spawned.iter().any(|spawn| spawn.active)
+        {
+            return;
+        }
+        let before: Vec<_> = self
+            .platforms
+            .iter()
+            .map(|p| (p.surface.center, p.surface.right))
+            .collect();
+
+        // ActivateSuddenDeath moves the spring home; the body follows through
+        // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
             let map = &data.maps[self.map];
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
@@ -1692,16 +1945,162 @@ impl RolloutWorld {
                 //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
                 let steps = (elapsed * accel).to_int().clamp(0, 5);
                 let scale = speed_scale * Fix::from_int(2 << steps);
-                let speed = curve_eval(curve, elapsed - delay);
+                let speed = curve.evaluate(elapsed - delay);
                 let drop = speed * scale * DT;
-                if drop == Fix::ZERO {
-                    continue;
-                }
-                let platform = &mut self.platforms[i];
-                platform.surface.center.y -= drop;
-                platform.collider.inner.center.y -= drop;
+                self.platform_dynamics[i].home_position.y -= drop;
             }
         }
+
+        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
+        // mass and 60 Hz impulse conversions: their intermediate fixed-point
+        // rounding is observable over long-running springs (notably map 2's
+        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
+        for i in 0..self.platforms.len() {
+            let position = self.platforms[i].surface.center;
+            let dynamics = &mut self.platform_dynamics[i];
+            let spring = (dynamics.home_position - position) * dynamics.speed
+                - dynamics.body.velocity * dynamics.mu;
+            let impulse = spring * DT / dynamics.body.inverse_mass;
+            dynamics.body.force += impulse * Fix::from_int(60);
+            let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
+            if angle_delta.abs() > Fix::PI {
+                angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
+            }
+            dynamics.body.angular_velocity = (dynamics.body.angular_velocity
+                + angle_delta * dynamics.rotation_speed * DT)
+                * (Fix::ONE - dynamics.rotation_mu);
+        }
+
+        // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
+        // and re-home at the pre-integration position, preserving the existing
+        // one-tick-lagged home behavior.
+        if !self.sudden_death {
+            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+            let map = &data.maps[self.map];
+            for orbit in &mut self.orbits {
+                let platform_index = orbit.0;
+                let def = &map.platforms[self.platform_defs[platform_index]];
+                let Some(o) = def.orbit.as_ref() else {
+                    continue;
+                };
+                if sim_time < o.delay || o.path.is_empty() {
+                    continue;
+                }
+                let position = self.platforms[platform_index].surface.center;
+                let direction = (o.path[orbit.1] - position).normalized_safe();
+                let dynamics = &mut self.platform_dynamics[platform_index];
+                dynamics.body.force += direction * o.force;
+                dynamics.home_position = position;
+                // AntiLockPlatform computes this tick's force first, then
+                // advances the target from the same pre-physics position.
+                let current = o.path[orbit.1];
+                let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
+                if (current - previous).dot(position - current) > Fix::ZERO {
+                    orbit.1 = (orbit.1 + 1) % o.path.len();
+                }
+            }
+        }
+
+        // DetPhysics integrates every rounded body before it constructs any
+        // contacts. All rollout platforms have gravityScale=0, but pass the
+        // game's -40 gravity for completeness.
+        for i in 0..self.platforms.len() {
+            let dynamics = &mut self.platform_dynamics[i];
+            let shift = dynamics.body.integrate(DT, Fix::from_int(-40));
+            let orientation = dynamics.body.orientation;
+            let platform = &mut self.platforms[i];
+            platform.surface.center += shift;
+            platform.surface.right = Vec2::angle(orientation);
+            platform.surface.up = platform.surface.right.perp();
+            platform.collider.inner.center = platform.surface.center;
+            platform.collider.inner.right = platform.surface.right * platform.surface.extents.x;
+            platform.collider.inner.up = platform.surface.up * platform.surface.extents.y;
+        }
+        // CollisionInformation stores the shape as it was during narrow phase;
+        // PlayerCollision's later squish callback tests that copy, before the
+        // RR positional corrections below move either platform.
+        let callback_colliders: Vec<_> = self.platforms.iter().map(|p| p.collider).collect();
+
+        // RR-only sweep/narrow-phase. Contacts are all captured before any
+        // impulse or correction, just like DetPhysics' collision buffer.
+        let contacts: Vec<_> = self
+            .platform_pairs()
+            .into_iter()
+            .filter_map(|[a, b]| {
+                crate::physics::contact::rounded_rounded(
+                    self.platforms[a].collider,
+                    self.platforms[b].collider,
+                )
+                .map(|contact| (a, b, contact))
+            })
+            .collect();
+        for (a, b, contact) in contacts {
+            let pos_a = self.platforms[a].surface.center;
+            let pos_b = self.platforms[b].surface.center;
+            let (left, right) = self.platform_dynamics.split_at_mut(b);
+            let body_a = &mut left[a].body;
+            let body_b = &mut right[0].body;
+            resolve(contact, body_a, body_b, pos_a, pos_b);
+            let correction =
+                positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+            for (index, delta) in [(a, correction[0]), (b, correction[1])] {
+                self.platforms[index].surface.center += delta;
+                self.platforms[index].collider.inner.center += delta;
+            }
+        }
+
+        // PlayerCollision kills a grounded slime when a different wall's
+        // rounded rectangle contains its squish point (the stock player
+        // prefab uses the body centre). Player boxes are triggers, so this is
+        // a callback effect rather than a rigid-body response.
+        let squished: Vec<_> = self
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
+            .filter(|(_, slot)| {
+                callback_colliders.iter().enumerate().any(|(i, &collider)| {
+                    Some(self.platforms[i].id) != slot.base.ground
+                        && collider.overlaps(slot.base.position)
+                })
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in squished {
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED);
+        }
+
+        // StickyRoundedRectangle riders are positioned from their surface
+        // local after physics. PlatformTransform bodies retain their local
+        // offset from the controlled platform (zero until ejection).
+        for slot in &mut self.players {
+            if slot.base.alive && slot.base.grounded {
+                slot.base.late_step(&self.platforms);
+                slot.base.sync_collider();
+            }
+        }
+        for spawn in self
+            .spawned
+            .iter()
+            .copied()
+            .filter(|s| s.active && !s.being_removed)
+        {
+            let slot = &mut self.players[spawn.owner];
+            if slot.active != ActiveAbility::Platform
+                || slot.platform.phase == PLATFORM_ANTICIPATION
+                || slot.platform.platform_index != spawn.platform_index
+            {
+                continue;
+            }
+            let (old_center, old_right) = before[spawn.platform_index];
+            let platform = &self.platforms[spawn.platform_index];
+            let old_inverse = Vec2::new(old_right.x, -old_right.y);
+            let local = (slot.base.position - old_center).complex_mul(old_inverse);
+            slot.base.position =
+                platform.surface.center + local.complex_mul(platform.surface.right);
+            slot.base.sync_collider();
+        }
+
         // DestroyIfOutsideSceneBounds on ResizablePlatforms; a still-formed
         // owner dies with it (the StickyRect == null path in UpdateSim).
         for i in 0..self.spawned.len() {
@@ -1717,12 +2116,17 @@ impl RolloutWorld {
             self.spawned[i].active = false;
             self.remove_platform(platform_index);
             let formed = self.players[owner].active == ActiveAbility::Platform
-                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION;
+                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION
+                && self.players[owner].platform.platform_index == platform_index;
             if formed && self.players[owner].base.alive {
                 self.players[owner].active = ActiveAbility::None;
                 self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT);
             }
         }
+    }
+
+    fn playable_slot(&self, slot: &PlayerSlot) -> bool {
+        slot.base.alive && slot.respawn_ticks == 0
     }
 
     fn deaths_tick(&mut self) {
@@ -1731,10 +2135,9 @@ impl RolloutWorld {
             if !slot.base.alive || slot.respawn_ticks > 0 {
                 continue;
             }
-            // The movement slice already kills on the blast zones and water
-            // (DestroyIfOutsideSceneBounds); death cause is environmental.
-            if !slot.base.alive || slot.base.outside_bounds() {
-                slot.base.alive = false;
+            // Catch a body that crossed the boundary during this tick. The
+            // shared movement slice will only pre-mark it on the next tick.
+            if slot.base.outside_bounds() {
                 self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
             }
         }
@@ -2014,10 +2417,11 @@ impl RolloutWorld {
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
             let s = &platform.surface;
+            let dynamics = &self.platform_dynamics[i];
             e.x = s.center.x.0;
             e.y = s.center.y.0;
-            e.vx = 0;
-            e.vy = 0;
+            e.vx = dynamics.body.velocity.x.0;
+            e.vy = dynamics.body.velocity.y.0;
             let right = s.right * s.extents.x;
             let up = s.up * s.extents.y;
             e.right_x = right.x.0;
@@ -2026,13 +2430,8 @@ impl RolloutWorld {
             e.up_y = up.y.0;
             e.radius = s.radius.0;
             e.rotation = s.right.normalized_angle().0;
-        }
-        // The orbiter carries real velocity in the .NET observation and the
-        // policy encoder consumes it.
-        for orbit in &self.orbits {
-            let e = &mut self.entities[self.platform_entities[orbit.0]];
-            e.vx = orbit.2.x.0;
-            e.vy = orbit.2.y.0;
+            e.angular_velocity = dynamics.body.angular_velocity.0;
+            e.inverse_mass = dynamics.body.inverse_mass.0;
         }
     }
 
@@ -2207,29 +2606,6 @@ fn new_size(mut w: Fix, mut h: Fix, r: Fix, cap: Fix, min: Fix) -> (Fix, Fix) {
         }
     }
     (w, h)
-}
-
-/// Linear interpolation over serialized AnimationCurveFixed keys (tangents are
-/// not exported; the sudden-death sink curve is smooth enough for this).
-fn curve_eval(keys: &[(Fix, Fix)], t: Fix) -> Fix {
-    if keys.is_empty() {
-        return Fix::ZERO;
-    }
-    if t <= keys[0].0 {
-        return keys[0].1;
-    }
-    for pair in keys.windows(2) {
-        let (t0, v0) = pair[0];
-        let (t1, v1) = pair[1];
-        if t <= t1 {
-            if t1 == t0 {
-                return v1;
-            }
-            let alpha = (t - t0) / (t1 - t0);
-            return v0 + (v1 - v0) * alpha;
-        }
-    }
-    keys[keys.len() - 1].1
 }
 
 // ---- Replay export (ReplayArchive.Encode: BOPLREP2, little endian) ----
