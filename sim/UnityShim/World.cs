@@ -24,7 +24,16 @@ namespace UnityShim
 
 		public static World Current
 		{
-			get => current ??= new World();
+			get
+			{
+				if (current == null)
+				{
+					if (Environment.GetEnvironmentVariable("BOPL_TRACE_LAZY_WORLD") != null)
+						Console.Error.WriteLine("[lazy-world] created at:\n" + Environment.StackTrace);
+					current = new World();
+				}
+				return current;
+			}
 			set => current = value;
 		}
 

@@ -456,6 +456,121 @@ symbols' 11% self time; inlining the null-compare helps everything around it.
 Next by share: items 1-3 (resets 38%, GC 12.5%). Stop when `c_step` per decision on a spawn-heavy loadout is < 100 us
 of CPU or the remaining share is spread thin.
 
+### Done 2026-09-09: items 3, 6, 7, 8 (per-commit gates and numbers)
+
+- **Item 3, allocation diet** (two rounds): unboxed physics sync/callback
+  shapes, cached sort comparisons, `UnsafeAccessor` observation reads, then
+  pooled contact-callback shape boxes. A `Host alloc` mode measures
+  per-phase/per-type allocations. Physics tick now allocation-free; a
+  spawn-heavy tick went 2.1 -> 1.2 KB, observation encode 86 -> 3.5 B.
+- **Item 6, headless presentation split**: beam after-effects/particles/
+  audio, rope meshes and boundary splash effects no longer execute headless
+  (DeathEffect2 hitstop prefabs kept - gameplay reads the timescale). One
+  deliberate wire change: a hierarchy-only field shifted; the trainer never
+  reads it, oracle checkpoint still 5/5.
+- **Item 7, updater passes**: version-stamped `activeInHierarchy` cache per
+  world, invalidated on `SetActive`/reparent/destroy. Tick loop 44.3k ->
+  52.5k ticks/s AOT.
+- **Item 8, observation encode**: sections write straight into the pinned
+  C snapshot buffers through span-bounded `WireWriter`s (no `MemoryStream`
+  wire, no decode copy); the socket path emits identical bytes through the
+  same writers. `backend_check` socket == inproc on all phases.
+
+All four kept `backend_check` phases a/c at `5381bf21573b20a6` and the
+oracle fixtures green; phase b moved to `6d1498a4a8c4ced0` with the
+documented wire shift (item 6), verified identical with the features off.
+
+### Done 2026-09-09: reset items 1 and 2 (scene templates + post-warmup snapshots)
+
+**Item 1 - scene templates.** Level scenes build once per (world, map) as
+inert asset templates; every load clones them (`CloneRules.CloneScene`:
+shared cross-root reference map, persistent stamping, GraphBuilder-order
+creation). Bit-exact on all 5 maps x 2 loadouts x 3 episodes vs parse
+resets; oracle 5/5. Warm in-process reset 12.7 -> 3.5 ms; phase-b step
+67-92 -> 58 us. The `LoadSceneByBuildIndex`/`PropertyApplier` share
+(20.3% of the 2026-09-08 profile) is gone from steady state.
+
+**Item 2 - snapshot after warmup.** Measured first (the plan's own gate):
+over all 5 maps the only seed-dependent state at the end of the 240
+warmup ticks is the RNG state itself and `GameSessionHandler.randomDelay`
+(the per-platform intro delays, 2 draws per platform). So `WorldSnapshot`
+captures one deep copy of the world per (map + config minus seed) at
+warmup end, and every later reset with the same key restores the copy and
+replays only the seed-dependent draws: `InitSeed(new seed)`, advance the
+xorshift stream to the delay draws' position, redraw the delays, advance
+to the warmup-end position. Capture self-validates the draw layout
+(xorshift stream distances) and returns null - full resets - on any
+drift. Loadouts with a `RandomAbility` are never snapshotted (the roll
+would bake the capture seed's loadout in). `BOPL_NO_SNAPSHOT=1` is the
+kill switch; a capture failure disables snapshots for the process and
+logs loudly (slower, never wrong).
+
+The deep copy is `WorldCopier`: `MemberwiseClone` through
+`UnsafeAccessor`, per-type plans that resolve reference-field byte
+offsets by probing with sentinel instances, arrays copied by discovered
+stride, reflection fallback per top-level field whenever probing is
+ambiguous (a field is handled entirely by the fast path or entirely by
+reflection - mixing the two double-copied slots and corrupted the graph,
+found via the `FindMissedSlots` audit). Assets, foreign-assembly objects
+and delegates are shared, everything world-mutable is copied (~3k
+objects, ~3 ms).
+
+One AOT-only bug mattered: NativeAOT defers static constructors, and
+probing `Texture2D` ran its cctor, which constructs a `UnityEngine.Object`,
+which asks `World.Current` for an instance id - while the copier had the
+thread unbound. The lazily created stray world then made the capture's
+re-`Bind` throw, which tripped the fail-safe: **every training run before
+the fix silently ran full resets** (the one loud error line only lands in
+the per-world game log under `<out>/game-logs/`). `CopyWorld` now binds a
+thread-static scratch world for the copy's duration. `BOPL_SNAP_STATS=1`
+prints hit/miss counters to the game log so this cannot regress silently.
+
+Gates: `FindMissedSlots` 0 on all 5 maps; fresh-vs-restore checksums
+equal same-seed and cross-seed on all 5 maps (managed), RNG state and
+delay hashes bit-exact; `Host worlds --n 4` x 5 maps agree under AOT;
+`backend_check` inproc and worlds x16 unchanged (a/c
+`5381bf21573b20a6`), and identical with snapshots on vs off.
+
+Numbers (loaded box, a 1B-step run using ~5 cores throughout; A/B legs
+back-to-back): `reset_profile` warm 240-tick reset 4.7-5.2 ms fresh ->
+2.9-3.2 ms restore. `bench_scale` 16 games one runtime: 20,978 vs 20,528
+learner/s (+2.2%) with snapshots on vs off. The honest summary: after
+item 1, a fresh reset is already just a template clone plus 240 cheap
+ticks, so skipping the warmup saves only ~2 ms of the ~4.5; the restore's
+own deep copy (~3 ms) eats most of that. Snapshots are kept because they
+are strictly ahead, bit-exact, and their share grows with warmup length
+and on spawn-heavy maps, but the big reset win was item 1.
+
+### 5.1 Where the CPU goes now (perf, 16 games, one runtime, steady state, 2026-09-09)
+
+`perf record -g` for 12 s on the trainer with all stage-5 items active,
+241k samples, stack-inclusive shares:
+
+```
+Updater.TickSimulation (the actual game)              53.5%
+DoReset (snapshot restore deep copy, essentially all)  9.2%
+  scene JSON load / template clone                     0.0%   fully amortised
+libgomp barriers (the lockstep fork/join)             12.9%
+observation encode (RlObservation.WriteSections)       3.3%
+GC                                                     0.0%   the alloc diet landed
+```
+
+Top self-time: `Math.BigMul` 8.9% (Fix multiplies), `TickSimulationInner`
+3.3%, `DetPhysics.Simulate` 2.9%, `SimulateRope` 2.7%, `ClampSinValue`
+2.3%, `FastSin`/`ComplexMul`/raycasts ~4%. Presentation symbols are gone.
+
+**The cap.** The .NET sim's cost is now the tick itself: fixed-point
+physics (BigMul, sin/atan, rope simulation) plus the OpenMP lockstep
+barriers. Resets are single-digit percent and shrink further as policies
+survive longer. There is no remaining double-digit item on the shim side;
+the next 2x is either deeper physics-math work (batching, SIMD over the
+fixed-point ops - fidelity risk) or the Rust sim of section 6. On this
+box, with a concurrent 1B-run, the 16-game shape holds ~21k learner
+decisions/s; the 2026-09-08 items-4/5 measurement of the same shape on a
+load-6 box was 34.4k, so the honest like-for-like statement is the A/B
+deltas per item, not one grand total: items 4+5 +17%, item 7 +18% ticks/s,
+items 1+2 took resets from 37.6% of samples to 9.2%.
+
 ## 6. Horizon
 
 - **Rust sim for rollouts.** ~5 us per tick vs the .NET port's ~100+ us of

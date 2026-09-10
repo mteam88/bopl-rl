@@ -73,8 +73,12 @@ namespace BoplSim.Native
 		// episode state RlBridge keeps in private fields.
 		private sealed class RlWorld
 		{
-			public readonly World world = new World();
+			public World world = new World(); // replaced by snapshot restores
 			public global::Host host;
+			// Post-warmup snapshots, one per (map + config minus seed); see
+			// WorldSnapshot. Capped: a training run visits few configurations.
+			public readonly System.Collections.Generic.Dictionary<string, WorldSnapshot.Entry> snapshots
+				= new System.Collections.Generic.Dictionary<string, WorldSnapshot.Entry>();
 			public IntPtr handle;
 			public int busy;                       // 1 while a thread is inside a call
 			public bool closed, broken;
@@ -495,6 +499,50 @@ namespace BoplSim.Native
 				w.inputs = new InputPacket[count];
 				w.started = w.terminal = w.failed = false;
 				w.warmup = startTicks; w.episodeTicks = 0; w.episodeLimit = maxTicks;
+				// Reset item 2 (SIM_OVERHAUL.md stage 5): if this exact
+				// configuration (minus the seed) already ran its warmup in this
+				// world, restore the post-warmup snapshot instead of rebuilding
+				// the scene and ticking 240 times; WorldSnapshot replays the
+				// seed's RNG draws so the result is bit-identical.
+				string key = SnapshotKey(config, catalog);
+				if (SnapStats)
+				{
+					int n = Interlocked.Increment(ref statResets);
+					if (key == null) Interlocked.Increment(ref statNullKey);
+					else if (w.snapshots.ContainsKey(key)) Interlocked.Increment(ref statHits);
+					if (n <= 16 || n % 64 == 0)
+						Console.Error.WriteLine($"[snap-stats] resets={statResets} hits={statHits} nullkey={statNullKey} cached={w.snapshots.Count}");
+				}
+				if (key != null && w.snapshots.TryGetValue(key, out var snapshot))
+				{
+					World.Unbind();
+					try
+					{
+						w.world = WorldSnapshot.Restore(snapshot, seed, out w.host);
+					}
+					catch
+					{
+						// Poisoned snapshot (should not happen): rebind the old
+						// world and fall through to a full reset.
+						w.snapshots.Remove(key);
+						World.Unbind(); // Restore may have bound its half-built world
+						World.Bind(w.world);
+						key = null;
+						goto fullReset;
+					}
+					w.started = snapshot.started;
+					// Frame-split bookkeeping as a fresh warmup leaves it.
+					w.ticksThisFrame = startTicks;
+					setup.frames.Clear();
+					if (snapshot.warmupFrames != null)
+						foreach (var frame in snapshot.warmupFrames) setup.frames.Add((InputPacket[])frame.Clone());
+					w.recording = setup;
+					Observe(w, ref w.main);
+					w.valid = true;
+					SetError(w, "");
+					return Ok;
+				}
+			fullReset:
 				RlObservation.Reset();
 				RlTelemetry.Reset();
 				w.host.ResetRl(setup);
@@ -508,12 +556,62 @@ namespace BoplSim.Native
 				// but warmup_ticks is capped at 3600 < 4096, so no split occurs;
 				// frameTicks keeps accumulating into the following step commands.
 				for (int i = 0; i < startTicks; i++) Tick(w, false);
+				if (key != null && !w.terminal && w.snapshots.Count < 8)
+				{
+					try
+					{
+						var entry = WorldSnapshot.Capture(w.world, seed, w.recording?.frames, w.started);
+						if (entry != null) w.snapshots[key] = entry;
+					}
+					catch (Exception exception)
+					{
+						// Copier failure (e.g. missing AOT metadata): loud, then
+						// full resets only - slower, never wrong.
+						snapshotsBroken = true;
+						Debug.LogError("RL snapshot capture disabled: " + exception);
+					}
+				}
 				Observe(w, ref w.main);
 				w.valid = true;
 				SetError(w, "");
 				return Ok;
 			}
 			catch (Exception exception) { return GameFailed(w, exception); }
+		}
+
+		// Set when a snapshot capture fails (missing AOT metadata...): full
+		// resets from then on - slower, never wrong.
+		private static bool snapshotsBroken;
+
+		// BOPL_SNAP_STATS=1: count restore hits vs full resets on stderr.
+		private static readonly bool SnapStats = Environment.GetEnvironmentVariable("BOPL_SNAP_STATS") == "1";
+		private static int statResets, statHits, statNullKey;
+
+		// Key of a reset configuration for snapshot reuse: every config word
+		// except the seed (word 0, replayed by WorldSnapshot.Restore) and
+		// max_episode_ticks (word 7, kept outside the world state). Null turns
+		// snapshotting off for this reset: disabled, broken, or a loadout with
+		// a RandomAbility (its roll would bake the capture seed's effective
+		// loadout into the snapshot).
+		private static string SnapshotKey(uint* config, System.Collections.Generic.List<NamedSprite> catalog)
+		{
+			if (!WorldSnapshot.Enabled || snapshotsBroken) return null;
+			uint players = config[2], slots = config[3];
+			var key = new StringBuilder(96);
+			key.Append(config[1]).Append(',').Append(players).Append(',').Append(slots).Append(',')
+				.Append(config[4]).Append(',').Append(config[5]).Append(',').Append(config[6]);
+			for (uint i = 0; i < players; i++)
+			{
+				uint* p = config + 8 + i * 6;
+				key.Append(';').Append(p[0]).Append(',').Append(p[1]).Append(',').Append(p[2]);
+				for (uint j = 0; j < slots; j++)
+				{
+					uint ability = p[3 + j];
+					if (catalog[(int)ability].associatedGameObject.GetComponent<RandomAbility>() != null) return null;
+					key.Append(',').Append(ability);
+				}
+			}
+			return key.ToString();
 		}
 
 		// Client-side action validation, verbatim from bopl_rl.c check_actions.
