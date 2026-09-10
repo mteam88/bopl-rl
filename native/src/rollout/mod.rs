@@ -342,8 +342,6 @@ pub struct PlayerSlot {
     pub respawn_ticks: u32,
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
     pub respawn_spawn_ticks: u32,
-    /// One physics-phase delay after the spawn callback enables the body.
-    pub respawn_motion_delay: u32,
     pub respawn_selected: usize,
     /// Player.InputProfile's frame-edge state is updated even without a live
     /// controllable slime and is what the stock chooser reads.
@@ -690,7 +688,6 @@ impl RolloutWorld {
                 facing_right: true,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
-                respawn_motion_delay: 0,
                 respawn_selected: 1,
                 input_jump_was_down: false,
                 telemetry: CTelemetry::default(),
@@ -923,7 +920,6 @@ impl RolloutWorld {
                 !slot.out
                     && slot.respawn_ticks == 0
                     && slot.respawn_spawn_ticks == 0
-                    && slot.respawn_motion_delay == 0
                     && !slot.base.alive
                     && slot.base.outside_bounds()
             };
@@ -981,10 +977,7 @@ impl RolloutWorld {
 
     fn playable(&self, index: usize) -> bool {
         let slot = &self.players[index];
-        slot.base.alive
-            && slot.respawn_ticks == 0
-            && slot.respawn_spawn_ticks == 0
-            && slot.respawn_motion_delay == 0
+        slot.base.alive && slot.respawn_ticks == 0 && slot.respawn_spawn_ticks == 0
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -2303,11 +2296,7 @@ impl RolloutWorld {
     fn deaths_tick(&mut self) {
         for index in 0..self.players.len() {
             let slot = &mut self.players[index];
-            if !slot.base.alive
-                || slot.respawn_ticks > 0
-                || slot.respawn_spawn_ticks > 0
-                || slot.respawn_motion_delay > 0
-            {
+            if !slot.base.alive || slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0 {
                 continue;
             }
             // Catch a body that crossed the boundary during this tick. The
@@ -2348,7 +2337,6 @@ impl RolloutWorld {
             slot.stocks -= 1;
             slot.respawn_ticks = 360;
             slot.respawn_spawn_ticks = 0;
-            slot.respawn_motion_delay = 0;
             slot.respawn_selected = 1;
             slot.base.alive = true;
             slot.base.position = data::get().maps[self.map].respawn_points[1];
@@ -2396,6 +2384,11 @@ impl RolloutWorld {
                 slot.respawn_ticks = 0;
                 slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
                 slot.base.position = data.maps[self.map].respawn_points[slot.respawn_selected];
+                // The chooser is ordered before its replacement slime. Its
+                // ReSpawnFast call moves the body, then that slime's OldUpdate
+                // publishes the selected position in this same pass.
+                slot.reported_position = slot.base.position;
+                slot.reported_tick = self.tick;
                 slot.obs_state = STATE_FALL;
                 // The replacement slime runs later than its chooser in this
                 // Updater pass and advances its fresh cooldowns immediately.
@@ -2422,18 +2415,8 @@ impl RolloutWorld {
                 slot.base.grounded = false;
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
-                slot.respawn_motion_delay = 1;
             }
             return;
-        }
-
-        if slot.respawn_motion_delay > 0 {
-            // Spawn enabled simulation after this tick's DetPhysics pass.
-            // Its upward velocity therefore first changes position next tick.
-            for timer in &mut slot.timers {
-                *timer += DT;
-            }
-            slot.respawn_motion_delay -= 1;
         }
     }
 
