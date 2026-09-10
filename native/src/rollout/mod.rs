@@ -1155,11 +1155,8 @@ impl RolloutWorld {
                 .filter_map(|(i, p)| {
                     p.base
                         .collider
-                        .raycast(origin, direction)
-                        .filter(|hit| {
-                            hit.near <= Fix::from_int(13)
-                                && wall.is_none_or(|distance| hit.near < distance)
-                        })
+                        .raycast_within(origin, direction, Fix::from_int(13))
+                        .filter(|hit| wall.is_none_or(|distance| hit.near < distance))
                         .map(|_| i)
                 })
                 .collect();
@@ -1776,8 +1773,7 @@ impl RolloutWorld {
                 if p.base.id == a.owner && !a.can_hurt_owner {
                     continue;
                 }
-                if let Some(hit) = p.base.collider.raycast(a.position, direction)
-                    && hit.near <= reach
+                if let Some(hit) = p.base.collider.raycast_within(a.position, direction, reach)
                     && hit.far >= Fix::ZERO
                     && victim.is_none_or(|(_, d)| hit.near < d)
                 {

@@ -40,24 +40,51 @@ impl Circle {
         let center = self.center - origin;
         let projected = center.dot(direction);
         let radius_squared = self.radius * self.radius;
+        let inside = radius_squared > center.length_squared();
+        // The reference (Raycast.cs circle case) rejects a centre behind the
+        // origin after the discriminant; the test does not depend on it, so
+        // rejecting first skips the square root for the common miss.
+        if projected < Fix::ZERO && !inside {
+            return None;
+        }
         let discriminant = radius_squared - (direction * projected - center).length_squared();
         if discriminant < Fix::ZERO {
             return None;
         }
         let offset = discriminant.sqrt().unwrap();
-        if radius_squared > center.length_squared() {
+        if inside {
             Some(RayHit {
                 near: Fix::ZERO,
                 far: projected + offset,
             })
-        } else if projected < Fix::ZERO {
-            None
         } else {
             Some(RayHit {
                 near: projected - offset,
                 far: projected + offset,
             })
         }
+    }
+}
+
+/// Axis-aligned bounds; every point of the bounded shape lies inside.
+#[derive(Clone, Copy, Debug)]
+pub struct Bounds {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl Bounds {
+    /// Whether the segment `origin + direction * t`, `0 <= t <= distance`, can
+    /// touch the bounds: a conservative separating-axis test on each axis
+    /// with a 1e-6 unit margin, so a hit point that the narrow phase computes
+    /// with rounding error (~1e-14 units at scene scale) is never rejected.
+    /// The segment's endpoints are computed once per query by the caller.
+    pub fn may_reach(self, origin: Vec2, end: Vec2) -> bool {
+        let margin = Fix::from_f64(1e-6);
+        origin.x.min(end.x) <= self.max.x + margin
+            && origin.x.max(end.x) >= self.min.x - margin
+            && origin.y.min(end.y) <= self.max.y + margin
+            && origin.y.max(end.y) >= self.min.y - margin
     }
 }
 
@@ -83,60 +110,115 @@ impl OrientedBox {
             }),
         }
     }
+    /// Conservative axis-aligned bounds of the box grown by `radius`: the
+    /// projected half extents of the (scaled) basis vectors plus the radius.
+    pub fn bounds(self, radius: Fix) -> Bounds {
+        let extent = Vec2::new(
+            self.right.x.abs() + self.up.x.abs() + radius,
+            self.right.y.abs() + self.up.y.abs() + radius,
+        );
+        Bounds {
+            min: self.center - extent,
+            max: self.center + extent,
+        }
+    }
+    /// `raycast(origin, direction).filter(|hit| hit.near <= distance)` with the
+    /// broad phase of `RoundedRect::raycast_within`: two edge hits put `near`
+    /// on an edge; a single edge hit means the origin is inside the box and
+    /// reports `near == 0` there. Both points are inside `bounds(0)`. The one
+    /// exception is a ray from outside whose entry is exactly a corner (the
+    /// strict inequalities drop that edge and the reference still reports
+    /// `near == 0`); that is an exact-equality tie and is not preserved.
+    pub fn raycast_within(self, origin: Vec2, direction: Vec2, distance: Fix) -> Option<RayHit> {
+        if !self
+            .bounds(Fix::ZERO)
+            .may_reach(origin, origin + direction * distance)
+        {
+            return None;
+        }
+        self.raycast(origin, direction)
+            .filter(|hit| hit.near <= distance)
+    }
+}
+
+/// Up to two edge distances in side order (top, right, bottom, left), the
+/// reference's `Raycast.cs` box loop stops after the second.
+#[derive(Clone, Copy, Debug, Default)]
+struct EdgeHits {
+    hits: [Fix; 2],
+    count: usize,
+}
+
+impl EdgeHits {
+    fn push(&mut self, distance: Fix) {
+        self.hits[self.count] = distance;
+        self.count += 1;
+    }
+    fn as_slice(&self) -> &[Fix] {
+        &self.hits[..self.count]
+    }
 }
 
 // Preserve side order, strict inequalities, and the early return after two edges.
-// The reference does not use a conventional slab raycast.
-fn edge_hits(b: OrientedBox, radius: Fix, origin: Vec2, direction: Vec2) -> Vec<Fix> {
+// The reference does not use a conventional slab raycast. Each side's endpoints
+// are the same expressions as before (corner +- unit * radius), evaluated only
+// for the sides that are tested, into a fixed-size result (no allocation).
+fn edge_hits(b: OrientedBox, radius: Fix, origin: Vec2, direction: Vec2) -> EdgeHits {
     let c = b.center - origin;
     let unit_right = b.right * b.inverse_extents.x;
     let unit_down = unit_right.perp_cw();
     let horizontal_cross = unit_right.cross(direction);
     let vertical_cross = unit_down.cross(direction);
+    let mut hits = EdgeHits::default();
+    if horizontal_cross == Fix::ZERO && vertical_cross == Fix::ZERO {
+        return hits;
+    }
     let tl = c - b.right + b.up;
     let tr = c + b.right + b.up;
     let br = c + b.right - b.up;
     let bl = c - b.right - b.up;
-    let mut hits = Vec::with_capacity(2);
-    let sides = [
-        (
-            tl - unit_down * radius,
-            tr - unit_down * radius,
-            unit_right,
-            unit_down,
-            horizontal_cross,
-            true,
-            true,
-        ),
-        (
-            tr + unit_right * radius,
-            br + unit_right * radius,
-            unit_down,
-            unit_right,
-            vertical_cross,
-            false,
-            false,
-        ),
-        (
-            br + unit_down * radius,
-            bl + unit_down * radius,
-            -unit_right,
-            unit_down,
-            horizontal_cross,
-            false,
-            true,
-        ),
-        (
-            bl - unit_right * radius,
-            tl - unit_right * radius,
-            -unit_down,
-            unit_right,
-            vertical_cross,
-            true,
-            false,
-        ),
-    ];
-    for (a, b, tangent, normal, cross, use_end, negate) in sides {
+    let down_radius = unit_down * radius;
+    let right_radius = unit_right * radius;
+    for side in 0..4 {
+        // (a, b, tangent, normal, cross, use_end, negate)
+        let (a, b, tangent, normal, cross, use_end, negate) = match side {
+            0 => (
+                tl - down_radius,
+                tr - down_radius,
+                unit_right,
+                unit_down,
+                horizontal_cross,
+                true,
+                true,
+            ),
+            1 => (
+                tr + right_radius,
+                br + right_radius,
+                unit_down,
+                unit_right,
+                vertical_cross,
+                false,
+                false,
+            ),
+            2 => (
+                br + down_radius,
+                bl + down_radius,
+                -unit_right,
+                unit_down,
+                horizontal_cross,
+                false,
+                true,
+            ),
+            _ => (
+                bl - right_radius,
+                tl - right_radius,
+                -unit_down,
+                unit_right,
+                vertical_cross,
+                true,
+                false,
+            ),
+        };
         if cross == Fix::ZERO {
             continue;
         }
@@ -145,7 +227,7 @@ fn edge_hits(b: OrientedBox, radius: Fix, origin: Vec2, direction: Vec2) -> Vec<
         let projected = (direction * distance).dot(tangent);
         if distance > Fix::ZERO && projected > a.dot(tangent) && projected < b.dot(tangent) {
             hits.push(distance);
-            if hits.len() == 2 {
+            if hits.count == 2 {
                 break;
             }
         }
@@ -154,6 +236,27 @@ fn edge_hits(b: OrientedBox, radius: Fix, origin: Vec2, direction: Vec2) -> Vec<
 }
 
 impl RoundedRect {
+    /// Conservative axis-aligned bounds of the rounded rectangle: the box's
+    /// projected half extents plus the corner radius on each axis.
+    pub fn bounds(self) -> Bounds {
+        self.inner.bounds(self.radius)
+    }
+    /// `raycast(origin, direction).filter(|hit| hit.near <= distance)` with a
+    /// broad phase: a hit with `near <= distance` puts `origin + direction *
+    /// near` on the shape's boundary (edge or corner arc) or at the origin
+    /// itself (`near == 0` when the origin overlaps), and `near >= 0`, so that
+    /// point lies on the segment and inside `bounds()`; when the segment cannot
+    /// reach the bounds the narrow phase is skipped.
+    pub fn raycast_within(self, origin: Vec2, direction: Vec2, distance: Fix) -> Option<RayHit> {
+        if !self
+            .bounds()
+            .may_reach(origin, origin + direction * distance)
+        {
+            return None;
+        }
+        self.raycast(origin, direction)
+            .filter(|hit| hit.near <= distance)
+    }
     pub fn overlaps(self, point: Vec2) -> bool {
         let b = self.inner;
         let unit_up = b.up * b.inverse_extents.y;
@@ -184,6 +287,7 @@ impl RoundedRect {
     }
     pub fn raycast(self, origin: Vec2, direction: Vec2) -> Option<RayHit> {
         let edges = edge_hits(self.inner, self.radius, origin, direction);
+        let edges = edges.as_slice();
         if edges.len() == 2 {
             return Some(RayHit {
                 near: edges[0].min(edges[1]),

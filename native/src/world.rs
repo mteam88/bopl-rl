@@ -179,8 +179,15 @@ pub(crate) fn closest(
 ) -> Option<(usize, Fix, Vec2)> {
     let mut nearest = Fix::MAX;
     let mut result = None;
+    // Broad phase: the segment's endpoints once, then each platform's bounds
+    // (RoundedRect::raycast_within) before its raycast; the platforms move, so
+    // the bounds are recomputed per query rather than cached.
+    let end = origin + direction * distance;
     for (index, platform) in platforms.iter().enumerate() {
         if exclude == Some(platform.id) {
+            continue;
+        }
+        if !platform.collider.bounds().may_reach(origin, end) {
             continue;
         }
         if let Some(hit) = platform.collider.raycast(origin, direction)
