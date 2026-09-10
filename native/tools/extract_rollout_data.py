@@ -244,6 +244,9 @@ def main():
         }.items()},
         "hurtbox_extents": vec2(box, "startExtents"),
         "spawn_anim_ticks": sum(abs(d) for d in slime_anims["spawn"]),
+        # SlimeController.ReSpawnFast uses SpeedUpAnimation(anim, 4): C#
+        # integer division per frame, with every duration clamped to >= 1.
+        "fast_spawn_anim_ticks": sum(max(1, abs(d) // 4) for d in slime_anims["spawn"]),
         "land_anim_ticks": sum(abs(d) for d in slime_anims["land"]),
         "anims": {k: v for k, v in slime_anims.items() if k in (
             "spawn", "land", "stop", "runTurnAround", "idle", "run")},
