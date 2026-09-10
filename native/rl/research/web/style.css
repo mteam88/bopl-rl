@@ -261,9 +261,13 @@ h2 {
 .stage {
   position: relative;
   background: #18263a;
-  aspect-ratio: 4/3; /* taller than the video: the replay camera fits the level vertically */
+  aspect-ratio: 16/9; /* game videos */
   overflow: hidden;
   border-radius: 3px;
+}
+.stage.physics {
+  /* the replay camera frames the whole survivable area, 270.5 x 91.8 units */
+  aspect-ratio: 3/1;
 }
 #arena,
 video {

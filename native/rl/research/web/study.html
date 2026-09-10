@@ -55,7 +55,7 @@
     <p id="matchStatus" role="status" class="caption">Choose a match to prepare its replay.</p>
     <div id="matchStage" hidden>
       <p id="matchIdentity" class="match-identity"></p>
-      <canvas id="matchCanvas" width="960" height="720" aria-label="Native game replay physics view"></canvas>
+      <canvas id="matchCanvas" width="1440" height="480" aria-label="Native game replay physics view"></canvas>
       <div id="matchHud" class="match-hud"></div>
       <div class="match-controls"><button id="matchPlay" type="button">Play</button><button id="matchBack" type="button" aria-label="Previous replay frame">− frame</button><button id="matchForward" type="button" aria-label="Next replay frame">+ frame</button><label>Speed<select id="matchSpeed" aria-label="Replay playback speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label><span id="matchTime"></span><a id="matchDownload">Native replay ↗</a></div>
       <input id="matchSeek" type="range" min="0" max="1" step="1" value="0" aria-label="Seek full match">

@@ -90,5 +90,6 @@
     for (const id of Object.keys(filters)) node(`match${id}`).replaceChildren();
     refresh();
   });
+  window.addEventListener("resize", draw);
   setInterval(refresh,30000);
 })();

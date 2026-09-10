@@ -957,6 +957,7 @@ function setView(next) {
   if (next === "video") playing = false;
   $("video").hidden = next !== "video";
   $("arena").style.display = next === "physics" ? "block" : "none";
+  document.querySelector(".stage").classList.toggle("physics", next === "physics");
   $("arenaLabel").style.display = next === "physics" ? "block" : "none";
   $("viewVideo").classList.toggle("active", next === "video");
   $("viewPhysics").classList.toggle("active", next === "physics");
@@ -1173,6 +1174,7 @@ $("heatmapMap").onchange = drawHeatmap;
 window.addEventListener("resize", () => {
   updateSeries();
   if (data) update();
+  drawFrame(); // the arena canvas is re-sized to its displayed pixels
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
