@@ -74,10 +74,17 @@ pub struct Action {
 }
 impl Action {
     pub fn direction(self) -> Vec2 {
-        if self.angle == 0 {
+        static DIRECTIONS: std::sync::OnceLock<[Vec2; 256]> = std::sync::OnceLock::new();
+        // The 255 stick directions are fixed; evaluating each once with the
+        // same expression gives the same value as evaluating it per call.
+        DIRECTIONS.get_or_init(|| std::array::from_fn(|angle| Self::direction_of(angle as u8)))
+            [usize::from(self.angle)]
+    }
+    fn direction_of(angle: u8) -> Vec2 {
+        if angle == 0 {
             return Vec2::ZERO;
         }
-        let angle = Fix::TAU * (Fix::from_int(i64::from(self.angle) - 1) / Fix::from_int(255));
+        let angle = Fix::TAU * (Fix::from_int(i64::from(angle) - 1) / Fix::from_int(255));
         Vec2::new(angle.cos(), angle.sin())
     }
 }

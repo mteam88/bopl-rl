@@ -35,6 +35,27 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssi
 
 const SCALE: f64 = 4_294_967_296.0;
 
+/// `v.round() as i64` (half away from zero) without the libm call. `v as i64`
+/// truncates toward zero exactly (saturating beyond i64), and `v - t` is exact:
+/// a double with a fractional part has |v| < 2^52, where the integer part
+/// converts back exactly; a double at or beyond 2^52 is already an integer.
+#[inline]
+const fn round_i64(v: f64) -> i64 {
+    let t = v as i64;
+    let fraction = v - t as f64;
+    // Saturating like the `as` conversion for |v| >= 2^63 (fraction is then
+    // the whole overshoot, never a panic).
+    t.saturating_add((fraction >= 0.5) as i64)
+        .saturating_sub((fraction <= -0.5) as i64)
+}
+
+/// `v.floor() as i64` without the libm call, by the same argument.
+#[inline]
+const fn floor_i64(v: f64) -> i64 {
+    let t = v as i64;
+    t.saturating_sub((t as f64 > v) as i64)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(transparent)]
 pub struct Fix(f64);
@@ -66,14 +87,14 @@ impl Fix {
     }
     /// The nearest raw Q32.32 integer (the ABI and extracted-data encoding).
     pub const fn raw(self) -> i64 {
-        (self.0 * SCALE).round() as i64
+        round_i64(self.0 * SCALE)
     }
     pub const fn from_int(value: i64) -> Self {
         Self(value as f64)
     }
     /// Floor to an integer, like the reference's arithmetic shift by 32.
     pub const fn to_int(self) -> i64 {
-        self.0.floor() as i64
+        floor_i64(self.0)
     }
     /// `(Fix)0.2f` in the reference: scale and truncate toward zero onto the
     /// Q32.32 grid, so authored thresholds are the same number in both
@@ -445,6 +466,46 @@ mod tests {
             Err(MathError::DivisionByZero)
         );
         assert_eq!((-Fix::ONE).sqrt(), Err(MathError::Domain));
+    }
+
+    #[test]
+    fn integer_conversions_match_libm() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut samples = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            2.5,
+            -2.5,
+            0.499_999_999_999_999_94,
+            -0.499_999_999_999_999_94,
+            4_503_599_627_370_495.5,
+            -4_503_599_627_370_495.5,
+            9.3e18,
+            -9.3e18,
+            1e30,
+            -1e30,
+            f64::MAX,
+            f64::MIN,
+        ];
+        for _ in 0..100_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let magnitude = 2f64.powi((state >> 58) as i32 - 6);
+            let v = (state as f64 / u64::MAX as f64 - 0.5) * magnitude;
+            samples.push(v);
+            samples.push(v.trunc() + 0.5);
+            samples.push(v.trunc() - 0.5);
+            samples.push(v * SCALE);
+        }
+        for v in samples {
+            assert_eq!(round_i64(v), v.round() as i64, "round {v:e}");
+            assert_eq!(floor_i64(v), v.floor() as i64, "floor {v:e}");
+        }
     }
 
     #[test]
