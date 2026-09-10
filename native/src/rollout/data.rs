@@ -26,10 +26,25 @@ struct RawAnimateVelocity {
     speed: i64,
     #[serde(default)]
     mu: i64,
+    #[serde(default)]
+    rotation_speed: i64,
+    #[serde(default)]
+    rotation_mu: i64,
     sudden_death_speed: i64,
     sudden_death_max_delay: i64,
     sudden_death_acceleration: i64,
     sudden_death_y_speed: Vec<RawCurveKey>,
+}
+#[derive(Deserialize)]
+struct RawBody {
+    mass: i64,
+    bounciness: i64,
+    static_friction: i64,
+    dynamic_friction: i64,
+    moment_of_inertia: i64,
+    gravity_scale: i64,
+    air_drag: i64,
+    rotational_drag: i64,
 }
 #[derive(Deserialize)]
 struct RawOrbit {
@@ -47,6 +62,7 @@ struct RawPlatform {
     extents: RawVec2,
     radius: i64,
     animate_velocity: RawAnimateVelocity,
+    body: RawBody,
     orbit: Option<RawOrbit>,
 }
 #[derive(Deserialize)]
@@ -161,6 +177,7 @@ struct RawResizable {
     extents: RawVec2,
     radius: i64,
     animate_velocity: RawAnimateVelocity,
+    body: RawBody,
 }
 #[derive(Deserialize)]
 struct RawPrefabs {
@@ -184,6 +201,9 @@ pub struct PlatformDef {
     /// (-mu * velocity).
     pub speed: Fix,
     pub mu: Fix,
+    pub rotation_speed: Fix,
+    pub rotation_mu: Fix,
+    pub body: crate::physics::Body,
     /// Sudden death sinking (AnimateVelocity.ActivateSuddenDeath).
     pub sudden_death_speed: Fix,
     pub sudden_death_max_delay: Fix,
@@ -254,6 +274,11 @@ pub struct PlatformAbilityData {
     pub exit_ticks: u32,
     pub spawn_extents: Vec2,
     pub spawn_radius: Fix,
+    pub spawn_speed: Fix,
+    pub spawn_mu: Fix,
+    pub spawn_rotation_speed: Fix,
+    pub spawn_rotation_mu: Fix,
+    pub spawn_body: crate::physics::Body,
     /// AnimateVelocity sudden-death sinking of spawned platforms.
     pub sudden_death_speed: Fix,
     pub sudden_death_max_delay: Fix,
@@ -304,6 +329,29 @@ fn curve(keys: &[RawCurveKey]) -> Vec<(Fix, Fix)> {
     keys.iter().map(|k| (Fix(k.time), Fix(k.value))).collect()
 }
 
+fn body(raw: &RawBody, orientation: Fix) -> crate::physics::Body {
+    crate::physics::Body {
+        inverse_mass: if raw.mass == 0 {
+            Fix::ZERO
+        } else {
+            Fix::ONE / Fix(raw.mass)
+        },
+        inverse_inertia: if raw.moment_of_inertia == 0 {
+            Fix::ZERO
+        } else {
+            Fix::ONE / Fix(raw.moment_of_inertia)
+        },
+        orientation,
+        bounciness: Fix(raw.bounciness),
+        static_friction: Fix(raw.static_friction),
+        dynamic_friction: Fix(raw.dynamic_friction),
+        gravity_scale: Fix(raw.gravity_scale),
+        air_drag: Fix(raw.air_drag),
+        rotational_drag: Fix(raw.rotational_drag),
+        ..crate::physics::Body::default()
+    }
+}
+
 fn map_def(raw: &RawMap) -> MapDef {
     let platforms = raw
         .platforms
@@ -323,6 +371,9 @@ fn map_def(raw: &RawMap) -> MapDef {
                 },
                 speed: Fix(p.animate_velocity.speed),
                 mu: Fix(p.animate_velocity.mu),
+                rotation_speed: Fix(p.animate_velocity.rotation_speed),
+                rotation_mu: Fix(p.animate_velocity.rotation_mu),
+                body: body(&p.body, rotation),
                 sudden_death_speed: Fix(p.animate_velocity.sudden_death_speed),
                 sudden_death_max_delay: Fix(p.animate_velocity.sudden_death_max_delay),
                 sudden_death_acceleration: Fix(p.animate_velocity.sudden_death_acceleration),
@@ -415,6 +466,15 @@ pub fn get() -> &'static RolloutData {
                 exit_ticks: ticks(&plat.anims.exit),
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
                 spawn_radius: Fix(raw.prefabs.resizable_platform.radius),
+                spawn_speed: Fix(raw.prefabs.resizable_platform.animate_velocity.speed),
+                spawn_mu: Fix(raw.prefabs.resizable_platform.animate_velocity.mu),
+                spawn_rotation_speed: Fix(raw
+                    .prefabs
+                    .resizable_platform
+                    .animate_velocity
+                    .rotation_speed),
+                spawn_rotation_mu: Fix(raw.prefabs.resizable_platform.animate_velocity.rotation_mu),
+                spawn_body: body(&raw.prefabs.resizable_platform.body, Fix::ZERO),
                 sudden_death_speed: Fix(raw
                     .prefabs
                     .resizable_platform
