@@ -165,6 +165,7 @@ const E_TRIGGER: u32 = 8;
 const S_ACTIVE: u32 = 1;
 const S_SPAWNED: u32 = 2;
 const S_IN_ABILITY: u32 = 4;
+const S_SUPPRESS_INPUT: u32 = 8;
 const S_SIMULATED: u32 = 16;
 
 // Slime states (SlimeController.State).
@@ -174,6 +175,7 @@ const STATE_FALL: u32 = 2;
 const STATE_LAND: u32 = 4;
 const STATE_TURN: u32 = 6;
 const STATE_STOP: u32 = 7;
+const STATE_NOTHING: u32 = 8;
 // SlimeController animation lengths driving the state machine (rollout.json
 // player anims: land 6x6, stop 1x6, runTurnAround 4x3 ticks).
 const LAND_TICKS: u32 = 36;
@@ -319,6 +321,14 @@ pub struct PlayerSlot {
     pub facing_right: bool,
     /// Respawn countdown while holding a consumed stock (StockRespawn).
     pub respawn_ticks: u32,
+    /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
+    pub respawn_spawn_ticks: u32,
+    /// One physics-phase delay after the spawn callback enables the body.
+    pub respawn_motion_delay: u32,
+    pub respawn_selected: usize,
+    /// Player.InputProfile's frame-edge state is updated even without a live
+    /// controllable slime and is what the stock chooser reads.
+    pub input_jump_was_down: bool,
     pub telemetry: CTelemetry,
     // Fixed entity table indices.
     pub circle_entity: usize,
@@ -654,6 +664,10 @@ impl RolloutWorld {
                 state_ticks: 0,
                 facing_right: true,
                 respawn_ticks: 0,
+                respawn_spawn_ticks: 0,
+                respawn_motion_delay: 0,
+                respawn_selected: 1,
+                input_jump_was_down: false,
                 telemetry: CTelemetry::default(),
                 circle_entity: i,
                 body_entity: players + 1 + 3 * i,
@@ -815,11 +829,12 @@ impl RolloutWorld {
             let mut frame = [CAction::default(); MAX_PLAYERS];
             frame[..actions.len()].copy_from_slice(actions);
             self.recording.push(frame);
-            self.game_tick(if i == 0 {
+            let effective = if i == 0 {
                 &held[..actions.len()]
             } else {
                 actions
-            });
+            };
+            self.game_tick(effective, actions);
             if i == 0 {
                 self.held[..actions.len()].copy_from_slice(actions);
             }
@@ -848,7 +863,7 @@ impl RolloutWorld {
                 let mut frame = [CAction::default(); MAX_PLAYERS];
                 frame[..actions.len()].copy_from_slice(actions);
                 self.recording.push(frame);
-                self.game_tick(actions);
+                self.game_tick(actions, actions);
                 if self.terminal {
                     break;
                 }
@@ -862,14 +877,24 @@ impl RolloutWorld {
     /// deaths, session bookkeeping. Mirrors Updater.TickSimulation order
     /// loosely: inputs -> slime updates (abilities + movement) -> physics ->
     /// session end checks.
-    fn game_tick(&mut self, actions: &[CAction]) {
+    fn game_tick(&mut self, actions: &[CAction], registered_actions: &[CAction]) {
         let data = data::get();
         for index in 0..self.players.len() {
             let action = Action {
                 angle: actions[index].angle,
                 buttons: (actions[index].buttons & 0xFF) as u8,
             };
-            self.player_tick(index, action, data);
+            // Updater updates Player's frame-dependent button edges before
+            // any MonoUpdatable, including while its slime is parked for a
+            // stock choice.
+            let registered_action = Action {
+                angle: registered_actions[index].angle,
+                buttons: (registered_actions[index].buttons & 0xFF) as u8,
+            };
+            let jump_down = registered_action.buttons & 1 != 0;
+            let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
+            self.players[index].input_jump_was_down = jump_down;
+            self.player_tick(index, action, registered_action, jump_pressed, data);
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
             // the match-level death exactly once; otherwise the later
@@ -878,6 +903,8 @@ impl RolloutWorld {
                 let slot = &self.players[index];
                 !slot.out
                     && slot.respawn_ticks == 0
+                    && slot.respawn_spawn_ticks == 0
+                    && slot.respawn_motion_delay == 0
                     && !slot.base.alive
                     && slot.base.outside_bounds()
             };
@@ -934,17 +961,27 @@ impl RolloutWorld {
 
     fn playable(&self, index: usize) -> bool {
         let slot = &self.players[index];
-        slot.base.alive && slot.respawn_ticks == 0
+        slot.base.alive
+            && slot.respawn_ticks == 0
+            && slot.respawn_spawn_ticks == 0
+            && slot.respawn_motion_delay == 0
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
-    fn player_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+    fn player_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        registered_action: Action,
+        jump_pressed: bool,
+        data: &data::RolloutData,
+    ) {
         let in_ability = {
             let slot = &self.players[index];
             slot.active != ActiveAbility::None || slot.base.dash.active
         };
         if !self.playable(index) {
-            self.respawn_tick(index);
+            self.respawn_tick(index, registered_action, jump_pressed, data);
             return;
         }
         if !in_ability {
@@ -2132,7 +2169,11 @@ impl RolloutWorld {
     fn deaths_tick(&mut self) {
         for index in 0..self.players.len() {
             let slot = &mut self.players[index];
-            if !slot.base.alive || slot.respawn_ticks > 0 {
+            if !slot.base.alive
+                || slot.respawn_ticks > 0
+                || slot.respawn_spawn_ticks > 0
+                || slot.respawn_motion_delay > 0
+            {
                 continue;
             }
             // Catch a body that crossed the boundary during this tick. The
@@ -2165,37 +2206,99 @@ impl RolloutWorld {
             self.players[killer as usize - 1].kills += 1;
         }
         let slot = &mut self.players[index];
-        // Stocks: consume one and schedule the respawn (StockRespawn: a
-        // 360-tick chooser; here a fixed 360-tick hold, then the team spawn).
+        // Stocks: spawn the replacement clone at the chooser's safe center
+        // point. Since Player.Kill sees that clone, it does not mark the
+        // player eliminated and leaves CauseOfDeath at NotDeadYet.
         if slot.stocks > 0 && !self.sudden_death {
             slot.stocks -= 1;
             slot.respawn_ticks = 360;
-            slot.base.alive = true; // still in the match, body held offscreen
-            slot.base.position = Vec2::new(Fix::ZERO, Fix::from_int(1000));
+            slot.respawn_spawn_ticks = 0;
+            slot.respawn_motion_delay = 0;
+            slot.respawn_selected = 1;
+            slot.base.alive = true;
+            slot.base.position = data::get().maps[self.map].respawn_points[1];
             slot.base.velocity = Vec2::ZERO;
+            slot.base.external_velocity = Vec2::ZERO;
+            slot.base.rotation = Fix::ZERO;
             slot.base.grounded = false;
             slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.obs_state = STATE_NOTHING;
+            slot.cause_of_death = CAUSE_NOT_DEAD_YET;
+            slot.timers.fill(Fix::from_f32(-1.5));
         } else {
             slot.out = true;
         }
     }
 
-    fn respawn_tick(&mut self, index: usize) {
+    fn respawn_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        jump_pressed: bool,
+        data: &data::RolloutData,
+    ) {
         let slot = &mut self.players[index];
-        if !slot.base.alive || slot.respawn_ticks == 0 {
+        if !slot.base.alive {
             return;
         }
-        slot.respawn_ticks -= 1;
-        if slot.respawn_ticks == 0 {
-            let map = &data::get().maps[self.map];
-            let spawn = map.team_spawns[slot.team as usize % map.team_spawns.len()];
-            slot.base.position = spawn;
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.external_velocity = Vec2::ZERO;
-            slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
-            slot.cause_of_death = CAUSE_NOT_DEAD_YET;
+
+        if slot.respawn_ticks > 0 {
+            // StockRespawnChooser.UpdateSim: choose a point from the full
+            // directional input, then decrement and allow a jump edge to
+            // confirm immediately.
+            let direction = action.direction();
+            let threshold = Fix::from_f32(0.3);
+            if direction.x < -threshold {
+                slot.respawn_selected = 0;
+            } else if direction.x > threshold {
+                slot.respawn_selected = 2;
+            } else if direction.y.abs() > threshold {
+                slot.respawn_selected = 1;
+            }
+            slot.respawn_ticks -= 1;
+            if slot.respawn_ticks == 0 || jump_pressed {
+                slot.respawn_ticks = 0;
+                slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
+                slot.base.position = data.maps[self.map].respawn_points[slot.respawn_selected];
+                slot.obs_state = STATE_FALL;
+                // The replacement slime runs later than its chooser in this
+                // Updater pass and advances its fresh cooldowns immediately.
+                for timer in &mut slot.timers {
+                    *timer += DT;
+                }
+            }
+            return;
+        }
+
+        if slot.respawn_spawn_ticks > 0 {
+            // OldUpdate continues cooldowns during ReSpawnFast's suppressed
+            // animation, but movement and ability input remain disabled.
+            for timer in &mut slot.timers {
+                *timer += DT;
+            }
+            slot.respawn_spawn_ticks -= 1;
+            if slot.respawn_spawn_ticks == 0 {
+                // SlimeController.Spawn pops the clone upward at 1/4 jump
+                // strength, then reenables simulation and input.
+                slot.base.velocity =
+                    Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
+                slot.base.external_velocity = Vec2::ZERO;
+                slot.base.grounded = false;
+                slot.base.ground = None;
+                slot.base.grounded_speed = Fix::ZERO;
+                slot.respawn_motion_delay = 1;
+            }
+            return;
+        }
+
+        if slot.respawn_motion_delay > 0 {
+            // Spawn enabled simulation after this tick's DetPhysics pass.
+            // Its upward velocity therefore first changes position next tick.
+            for timer in &mut slot.timers {
+                *timer += DT;
+            }
+            slot.respawn_motion_delay -= 1;
         }
     }
 
@@ -2301,6 +2404,7 @@ impl RolloutWorld {
             };
             let slot = &self.players[index];
             let alive = slot.base.alive;
+            let choosing_respawn = slot.respawn_ticks > 0;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
             let in_ability = slot.active != ActiveAbility::None;
@@ -2316,6 +2420,8 @@ impl RolloutWorld {
             let body = &mut self.entities[body_e];
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
+            } else if choosing_respawn {
+                body.flags = E_ACTIVE | E_TRIGGER;
             } else if dashing || in_ability {
                 body.flags = E_ENABLED | E_TRIGGER;
             } else {
@@ -2442,10 +2548,16 @@ impl RolloutWorld {
                 continue; // destroyed with the player, like the .NET sim
             }
             let in_ability = slot.active != ActiveAbility::None;
-            let mut flags = S_ACTIVE | S_SPAWNED;
-            if in_ability {
-                flags |= S_IN_ABILITY;
+            let respawning = slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0;
+            let mut flags = S_ACTIVE;
+            if respawning {
+                flags |= S_SUPPRESS_INPUT;
             } else {
+                flags |= S_SPAWNED;
+            }
+            if in_ability && !respawning {
+                flags |= S_IN_ABILITY;
+            } else if !respawning {
                 flags |= S_SIMULATED;
             }
             let state = slot.obs_state;

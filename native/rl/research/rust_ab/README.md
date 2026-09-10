@@ -19,6 +19,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   carry, and the map-2 AntiLockPlatform trajectory.
 - `recast_ab.c`: two platform casts, including the evicted platform's live
   shrink/removal interval.
+- `stock_respawn_ab.c`: stock consumption, directional point selection, early
+  jump confirmation, and the accelerated spawn interval.
 
 See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
 numeric tolerances. Do not infer fidelity from an all-identical dual-backend

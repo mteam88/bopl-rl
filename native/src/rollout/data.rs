@@ -101,6 +101,7 @@ struct RawPlayer {
     physics: RawPhysics,
     hurtbox_extents: RawVec2,
     spawn_anim_ticks: u32,
+    fast_spawn_anim_ticks: u32,
 }
 #[derive(Deserialize)]
 struct RawDash {
@@ -222,6 +223,7 @@ pub struct MapDef {
     pub water_position: Vec2,
     pub water_extents: Vec2,
     pub team_spawns: Vec<Vec2>,
+    pub respawn_points: [Vec2; 3],
     pub sudden_death_time: Fix,
 }
 pub struct MovementData {
@@ -229,6 +231,7 @@ pub struct MovementData {
     pub radius: Fix,
     pub hurtbox_extents: Vec2,
     pub spawn_anim_ticks: u32,
+    pub fast_spawn_anim_ticks: u32,
 }
 pub struct BowData {
     pub cooldown: Fix,
@@ -383,11 +386,35 @@ fn map_def(raw: &RawMap) -> MapDef {
             }
         })
         .collect();
+    let team_spawns: Vec<Vec2> = raw.session.team_spawns.iter().map(RawVec2::get).collect();
+    let (mut min_x, mut max_x, mut max_y) =
+        (Fix::from_int(-12), Fix::from_int(12), Fix::from_int(8));
+    if let Some(first) = team_spawns.first().copied() {
+        min_x = first.x;
+        max_x = first.x;
+        max_y = first.y;
+        for spawn in &team_spawns[1..] {
+            min_x = min_x.min(spawn.x);
+            max_x = max_x.max(spawn.x);
+            max_y = max_y.max(spawn.y);
+        }
+    }
+    let two = Fix::from_int(2);
+    let middle = (min_x + max_x) / two;
+    let half_span = ((max_x - min_x) / two).max(Fix::from_int(14));
+    // SceneBounds.Camera_YMax (40) minus StockRespawn's six-unit margin.
+    let respawn_y = (max_y + Fix::from_int(12)).min(Fix::from_int(34));
+    let respawn_points = [
+        Vec2::new(middle - half_span, respawn_y),
+        Vec2::new(middle, respawn_y),
+        Vec2::new(middle + half_span, respawn_y),
+    ];
     MapDef {
         platforms,
         water_position: raw.water.position.get(),
         water_extents: raw.water.extents.get(),
-        team_spawns: raw.session.team_spawns.iter().map(RawVec2::get).collect(),
+        team_spawns,
+        respawn_points,
         sudden_death_time: Fix(raw.session.time_before_sudden_death),
     }
 }
@@ -412,6 +439,7 @@ pub fn get() -> &'static RolloutData {
                 radius: Fix(raw.prefabs.player.physics.radius),
                 hurtbox_extents: raw.prefabs.player.hurtbox_extents.get(),
                 spawn_anim_ticks: raw.prefabs.player.spawn_anim_ticks,
+                fast_spawn_anim_ticks: raw.prefabs.player.fast_spawn_anim_ticks,
             },
             dash: DashData {
                 cooldown: Fix(raw.prefabs.dash.cooldown),
