@@ -17,6 +17,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `bow_test.c`: Rust-only bow scenario used while porting.
 - `platform_ab.c`: grounded platform transform overlap, jump-and-land player
   carry, and the map-2 AntiLockPlatform trajectory.
+- `recast_ab.c`: two platform casts, including the evicted platform's live
+  shrink/removal interval.
 
 See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
 numeric tolerances. Do not infer fidelity from an all-identical dual-backend

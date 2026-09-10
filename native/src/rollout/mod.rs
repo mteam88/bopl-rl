@@ -225,11 +225,16 @@ pub struct Arrow {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedPlatform {
     pub active: bool,
+    /// ResizablePlatform.RemovePlatform keeps the body live while shrinking.
+    pub being_removed: bool,
     /// Owning player index (not id).
     pub owner: usize,
     /// Index into `RolloutWorld::platforms` (kept in sync on removal).
     pub platform_index: usize,
     pub sudden_death_delay: Fix,
+    pub removal_time: Fix,
+    pub removal_extents: Vec2,
+    pub removal_radius: Fix,
 }
 
 /// DetPhysics body plus AnimateVelocity state for one rounded platform.
@@ -1476,10 +1481,10 @@ impl RolloutWorld {
         self.players[index].base.position = new_center;
     }
 
-    /// Spawn a ResizablePlatform for `owner` (replacing their previous one)
+    /// Spawn a ResizablePlatform for `owner` (starting removal of the previous one)
     /// and return its index in `platforms`.
     fn spawn_ability_platform(&mut self, owner: usize, position: Vec2) -> usize {
-        self.remove_spawned_platform_of(owner);
+        self.begin_removing_spawned_platform_of(owner);
         let pd = &data::get().platform;
         let entity = self.entities.len();
         let id = self.next_id();
@@ -1518,22 +1523,29 @@ impl RolloutWorld {
         let delay = self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay);
         self.spawned.push(SpawnedPlatform {
             active: true,
+            being_removed: false,
             owner,
             platform_index,
             sudden_death_delay: delay,
+            removal_time: Fix::ZERO,
+            removal_extents: Vec2::ZERO,
+            removal_radius: Fix::ZERO,
         });
         platform_index
     }
 
-    fn remove_spawned_platform_of(&mut self, owner: usize) {
+    fn begin_removing_spawned_platform_of(&mut self, owner: usize) {
         if let Some(i) = self
             .spawned
             .iter()
-            .position(|s| s.active && s.owner == owner)
+            .rposition(|s| s.active && !s.being_removed && s.owner == owner)
         {
             let platform_index = self.spawned[i].platform_index;
-            self.spawned[i].active = false;
-            self.remove_platform(platform_index);
+            let surface = &self.platforms[platform_index].surface;
+            self.spawned[i].being_removed = true;
+            self.spawned[i].removal_time = Fix::ZERO;
+            self.spawned[i].removal_extents = surface.extents;
+            self.spawned[i].removal_radius = surface.radius;
         }
     }
 
@@ -1823,6 +1835,48 @@ impl RolloutWorld {
     /// broad phase, narrow phase, collision impulse, positional correction,
     /// then transform/rider synchronization.
     fn platforms_tick(&mut self, data: &data::RolloutData) {
+        // ResizablePlatform.UpdateSim runs every tick while an evicted platform
+        // remains a normal collidable body. It evaluates before incrementing
+        // time and destroys at the final key without applying another resize.
+        let removal_end = data
+            .platform
+            .remove_curve
+            .keys
+            .last()
+            .expect("authored platform removal curve")
+            .time;
+        let mut removal_resizes = Vec::new();
+        let mut removal_destroys = Vec::new();
+        for spawn in &mut self.spawned {
+            if !spawn.active || !spawn.being_removed {
+                continue;
+            }
+            if spawn.removal_time >= removal_end {
+                spawn.active = false;
+                removal_destroys.push(spawn.platform_index);
+                continue;
+            }
+            let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
+            spawn.removal_time += DT;
+            let minimum = Fix::from_f32(0.1);
+            removal_resizes.push((
+                spawn.platform_index,
+                Vec2::new(
+                    minimum + (spawn.removal_extents.x - minimum) * amount,
+                    minimum + (spawn.removal_extents.y - minimum) * amount,
+                ),
+                minimum + (spawn.removal_radius - minimum) * amount,
+            ));
+        }
+        for (index, extents, radius) in removal_resizes {
+            let surface = &self.platforms[index].surface;
+            self.reshape_platform(index, surface.center, surface.up, extents, radius);
+        }
+        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
+        for index in removal_destroys {
+            self.remove_platform(index);
+        }
+
         // Most short episodes never create or disturb a platform. Preserve
         // that hot path without changing semantics: a body exactly at its
         // home with zero velocity cannot produce motion or a new contact.
@@ -2025,10 +2079,16 @@ impl RolloutWorld {
                 slot.base.sync_collider();
             }
         }
-        for spawn in self.spawned.iter().copied().filter(|s| s.active) {
+        for spawn in self
+            .spawned
+            .iter()
+            .copied()
+            .filter(|s| s.active && !s.being_removed)
+        {
             let slot = &mut self.players[spawn.owner];
             if slot.active != ActiveAbility::Platform
                 || slot.platform.phase == PLATFORM_ANTICIPATION
+                || slot.platform.platform_index != spawn.platform_index
             {
                 continue;
             }
@@ -2056,7 +2116,8 @@ impl RolloutWorld {
             self.spawned[i].active = false;
             self.remove_platform(platform_index);
             let formed = self.players[owner].active == ActiveAbility::Platform
-                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION;
+                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION
+                && self.players[owner].platform.platform_index == platform_index;
             if formed && self.players[owner].base.alive {
                 self.players[owner].active = ActiveAbility::None;
                 self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT);
