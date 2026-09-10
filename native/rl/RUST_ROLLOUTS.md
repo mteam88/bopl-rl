@@ -325,6 +325,12 @@ the swept implementation missed an arrow/Bow collision that .NET delivered at
 tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
 counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
 backends retain one live arrow (`1/1`).
+`dash_arrow_ab` covers the separate Dash raycast callback path. Unity calls
+`Arrow.OnCollide` with Dash's Player-layer `PlayerBody` hitbox, so it returns
+before destroying the arrow; `PlayerCollision` can still kill the dasher.
+Rust previously killed both. At activation ticks 284/285 the repaired trace
+matches the .NET victim and death tick and retains one live arrow (`1/1`,
+previously `1/0`).
 
 `platform_rotation_ab` isolates the rotation repair. In an airborne short-size
 case with no RR contact, f64 remains exactly at 3.139446572168 rad from tick

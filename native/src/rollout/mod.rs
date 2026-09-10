@@ -1215,9 +1215,11 @@ impl RolloutWorld {
                 crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
 
-            // Dash.performDash raycasts the Projectile layer too. Arrow's
-            // callback sticks/destroys the projectile, then PlayerCollision
-            // kills the dasher unless this is an owner-safe young arrow.
+            // Dash.performDash raycasts the Projectile layer too. It first
+            // calls Arrow.OnCollide with Dash's Player-layer hitbox. Dash has
+            // PlayerBody rather than BoplBody, so Arrow returns without
+            // landing or destroying itself. PlayerCollision then kills the
+            // dasher unless this is an owner-safe young arrow.
             let mut arrow_hits: Vec<_> = self
                 .arrows
                 .iter()
@@ -1240,7 +1242,6 @@ impl RolloutWorld {
             for (arrow_index, _) in arrow_hits {
                 let arrow = self.arrows[arrow_index];
                 let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
-                self.destroy_arrow(arrow_index);
                 if lethal {
                     let cause = if arrow.owner == caster_id {
                         CAUSE_ACCIDENT
