@@ -93,7 +93,10 @@ argument is `rl`. `RlMode`:
    `RlBridge.Pump`. `BOPL_RL_BOOTSTRAP` (`native/fixtures/movement.rep`) is a
    legacy-format replay that `ResetRl` cannot take, so a default 2-player
    level-0 setup is used instead; the first harness reset replaces it anyway
-   (`reset_check` proves resets are isolated from prior gameplay).
+   (`reset_check` proves resets are isolated from prior gameplay). RL sessions
+   disable `AbilitySpawner` by default because fixed-loadout Rust rollouts do
+   not simulate pickups. Set `BOPL_RL_ABILITY_SPAWNS=1` to opt the .NET oracle
+   back into the authored 40-second pickup spawns for full-game diagnostics.
 3. Runs the engine-frame loop until `Application.Quit`: per frame
    `RlBridge.Pump(host)` (= the RL branch of `Host.Update`), then the frame
    boundary used by the oracle-verified `Program.Run` loop — raw

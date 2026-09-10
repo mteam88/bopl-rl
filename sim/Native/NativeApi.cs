@@ -501,6 +501,7 @@ namespace BoplSim.Native
 				RlObservation.Reset();
 				RlTelemetry.Reset();
 				w.host.ResetRl(setup);
+				ConfigureRlScene();
 				setup.frames.Clear();
 				w.recording = setup;
 				// Pump returns after a reset command: the engine frame ends and
@@ -687,6 +688,20 @@ namespace BoplSim.Native
 		}
 
 		private static bool IsAbsolute(byte* path) => path != null && *path == (byte)'/';
+
+		private static bool AbilitySpawnsEnabled
+			=> string.Equals(Environment.GetEnvironmentVariable("BOPL_RL_ABILITY_SPAWNS"), "1", StringComparison.Ordinal);
+
+		// NativeApi is the in-process RL-mode boundary. Fixed-loadout rollouts
+		// default to no pickups so this oracle consumes the same gameplay RNG and
+		// exposes the same bodies as the Rust slice. Do not alter AbilitySpawner's
+		// authored behavior outside RL sessions.
+		private static void ConfigureRlScene()
+		{
+			if (AbilitySpawnsEnabled) return;
+			foreach (var spawner in UnityEngine.Object.FindObjectsOfType<AbilitySpawner>(true))
+				spawner.enabled = false;
+		}
 
 		private static string ReadUtf8(byte* text) => Marshal.PtrToStringUTF8((IntPtr)text);
 

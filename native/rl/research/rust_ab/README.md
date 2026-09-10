@@ -25,6 +25,11 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   ability hurtbox after the original slime hurtbox is disabled; also verifies
   post-integration discrete contact and that a PlayerBody kill leaves the
   arrow flying.
+- `arrow_bounds_ab.c`: `Arrow.prefab` side-boundary destruction phase and
+  removal from the live projectile observation.
+- `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
+  pickup boundary; default RL configuration is 0/0, while the explicit .NET
+  `BOPL_RL_ABILITY_SPAWNS=1` opt-in proves the original spawner remains live.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
@@ -39,6 +44,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   prints the gap growth).
 - `platform_phase_ab.c`: tick-level platform button/anticipation/spawn/resize
   phases and transformed-player following.
+- `platform_boundary_ab.c`: platform-form death below water while the separate
+  spawned `ResizablePlatform` remains collidable.
 - `recast_ab.c`: two platform casts, including the evicted platform's live
   shrink/removal interval.
 - `stock_respawn_ab.c`: stock consumption, directional point selection, early

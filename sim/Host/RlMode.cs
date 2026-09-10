@@ -31,6 +31,20 @@ namespace BoplSim.Host
 	// Updater.TickSimulation inside RlBridge. See sim/RL.md.
 	public static class RlMode
 	{
+		private static bool AbilitySpawnsEnabled
+			=> string.Equals(Environment.GetEnvironmentVariable("BOPL_RL_ABILITY_SPAWNS"), "1", StringComparison.Ordinal);
+
+		// RL rollouts with fixed loadouts must not consume gameplay RNG or add
+		// pickup bodies that the Rust slice does not simulate. Keep the authored
+		// AbilitySpawner behavior untouched and apply this only at the RL host
+		// boundary. An explicit opt-in preserves a way to exercise the full game.
+		private static void ConfigureRlScene()
+		{
+			if (AbilitySpawnsEnabled) return;
+			foreach (var spawner in UnityEngine.Object.FindObjectsOfType<AbilitySpawner>(true))
+				spawner.enabled = false;
+		}
+
 		public static bool Requested(string[] args)
 			=> (args.Length > 0 && args[0] == "rl") || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BOPL_RL_SOCKET"));
 
@@ -88,6 +102,11 @@ namespace BoplSim.Host
 					Path.Combine(repoRoot, "sim", "Export", "settings.json"),
 					repoRoot);
 				db.Install();
+				// Every reset loads a fresh level. Disable its spawner as soon as
+				// scene construction completes, before Starts or warmup ticks run.
+				SceneManager.sceneLoaded += (_, mode) => {
+					if (mode == LoadSceneMode.Single) ConfigureRlScene();
+				};
 				var host = Program.Bootstrap(db);
 
 				// The player reaches Host.Update's RL branch by playing the argv
@@ -96,6 +115,7 @@ namespace BoplSim.Host
 				// real reset from the harness replaces it (reset_check.c proves
 				// resets are isolated from prior gameplay).
 				host.ResetRl(BootstrapSetup(replayPath));
+				ConfigureRlScene();
 				// Bootstrap scene load completes its frame like every load below.
 				EndFrame();
 				// Boot leaves ~110 MiB of dead parse trees (boot scene, built

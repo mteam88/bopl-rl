@@ -222,6 +222,8 @@ pub struct Arrow {
     pub entity: Option<usize>,
     pub position: Vec2,
     pub velocity: Vec2,
+    /// Arrow.UpdateSim aligns the sprite before DetPhysics applies gravity.
+    pub rotation: Fix,
     pub time_passed: Fix,
     /// Projectile.DelayedEnableHurtOwner: 5 units of travel time.
     pub hurt_owner_after: Fix,
@@ -617,6 +619,14 @@ impl RolloutWorld {
             }
         }
 
+        // GameSessionHandler.Init samples one randomDelay per authored ground
+        // for the level-intro animation. The rollout starts after that cosmetic
+        // animation, but must consume the same samples so later gameplay RNG
+        // (notably AnimateVelocity's sudden-death delays) stays aligned.
+        for _ in &def.platforms {
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        }
+
         // Players at their team spawns (GameSessionHandler.SpawnPlayers: one
         // authored spawn per team slot, wrapped for extra teams).
         for i in 0..players {
@@ -972,7 +982,6 @@ impl RolloutWorld {
         self.arrows_integrate(data);
         self.platforms_tick(data);
         self.arrows_contacts(data);
-        self.deaths_tick();
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -1109,6 +1118,13 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Platform {
             self.platform_ability_tick(index, registered_action, data);
+            // PlatformTransform updates before its own
+            // DestroyIfOutsideSceneBounds component. Unlike the ordinary
+            // slime, this ability body's position is final for this updater
+            // pass (the separate platform moves later in DetPhysics).
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
+            }
             return;
         }
         if self.players[index].active == ActiveAbility::Dash {
@@ -1281,6 +1297,10 @@ impl RolloutWorld {
         let this = &mut *self;
         let slot = &mut this.players[index];
         let platforms: &[Platform] = &this.platforms;
+        // Bow's boundary component runs after BowTransform but before
+        // PlayerBody performs this pass's position integration. Retain the
+        // pre-integration boundary result instead of testing the new position.
+        let boundary_death = slot.base.outside_bounds();
         if slot.base.grounded {
             if slot.bow.has_fired {
                 // Landed after firing: exit with the landing (justlanded).
@@ -1350,8 +1370,8 @@ impl RolloutWorld {
                 exit = true;
             }
         }
-        if slot.base.outside_bounds() {
-            slot.base.alive = false; // deaths_tick attributes it
+        if boundary_death {
+            slot.base.alive = false; // game_tick attributes it after this updater
         }
         if exit {
             slot.active = ActiveAbility::None;
@@ -1799,6 +1819,7 @@ impl RolloutWorld {
             entity,
             position,
             velocity,
+            rotation: Fix::ZERO,
             time_passed: Fix::ZERO,
             hurt_owner_after,
             can_hurt_owner: false,
@@ -1865,10 +1886,19 @@ impl RolloutWorld {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
-        for arrow in &mut self.arrows {
-            if !arrow.active || !arrow.registered {
+        for i in 0..self.arrows.len() {
+            if !self.arrows[i].active || !self.arrows[i].registered {
                 continue;
             }
+            // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
+            // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
+            // NeverDestroyAbove flag leaves top exits alive.
+            let position = self.arrows[i].position;
+            if position.y < Fix::from_f32(-11.3) || position.x.abs() > Fix::from_f64(131.25) {
+                self.destroy_arrow(i);
+                continue;
+            }
+            let arrow = &mut self.arrows[i];
             arrow.time_passed += DT;
             if !arrow.can_hurt_owner
                 && arrow.hurt_owner_after > Fix::ZERO
@@ -1876,6 +1906,16 @@ impl RolloutWorld {
             {
                 arrow.can_hurt_owner = true;
             }
+            // Arrow.UpdateSim runs in the updater pass, before DetPhysics
+            // integrates gravity and position. Preserve that authored phase
+            // for the policy-visible collider orientation.
+            let speed = arrow.velocity.length();
+            let up = if speed == Fix::ZERO {
+                Vec2::UP
+            } else {
+                arrow.velocity * (Fix::ONE / speed)
+            };
+            arrow.rotation = up.perp_cw().normalized_angle();
             arrow.velocity.y += gravity * DT;
             arrow.position += arrow.velocity * DT;
         }
@@ -1973,14 +2013,6 @@ impl RolloutWorld {
                 if arrow.owner != victim_id && arrow.owner >= 1 {
                     self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
                 }
-            }
-
-            // DestroyIfOutsideSceneBounds runs independently of contacts and
-            // has NeverDestroyAbove enabled on Arrow.
-            let out = arrow.position.y < Fix::from_f32(-11.3)
-                || arrow.position.x.abs() > Fix::from_f64(131.25);
-            if out {
-                self.destroy_arrow(i);
             }
         }
     }
@@ -2285,46 +2317,14 @@ impl RolloutWorld {
             }
         }
 
-        // DestroyIfOutsideSceneBounds on ResizablePlatforms; a still-formed
-        // owner dies with it (the StickyRect == null path in UpdateSim).
-        for i in 0..self.spawned.len() {
-            if !self.spawned[i].active {
-                continue;
-            }
-            let platform_index = self.spawned[i].platform_index;
-            let center = self.platforms[platform_index].surface.center;
-            if center.y >= Fix::from_f32(-11.3) && center.x.abs() <= Fix::from_f64(131.25) {
-                continue;
-            }
-            let owner = self.spawned[i].owner;
-            self.spawned[i].active = false;
-            self.remove_platform(platform_index);
-            let formed = self.players[owner].active == ActiveAbility::Platform
-                && self.players[owner].platform.phase != PLATFORM_ANTICIPATION
-                && self.players[owner].platform.platform_index == platform_index;
-            if formed && self.players[owner].base.alive {
-                self.players[owner].active = ActiveAbility::None;
-                self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT);
-            }
-        }
+        // The Platform ability object has DestroyIfOutsideSceneBounds, so its
+        // transformed owner is handled by deaths_tick using the position it
+        // copied before physics. The separate ResizablePlatform prefab has no
+        // boundary component: it remains a collidable body after that death.
     }
 
     fn playable_slot(&self, slot: &PlayerSlot) -> bool {
         slot.base.alive && slot.respawn_ticks == 0
-    }
-
-    fn deaths_tick(&mut self) {
-        for index in 0..self.players.len() {
-            let slot = &mut self.players[index];
-            if !slot.base.alive || slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0 {
-                continue;
-            }
-            // Catch a body that crossed the boundary during this tick. The
-            // shared movement slice will only pre-mark it on the next tick.
-            if slot.base.outside_bounds() {
-                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
-            }
-        }
     }
 
     pub fn kill(&mut self, index: usize, killer: u32, cause: u32) {
@@ -2683,11 +2683,7 @@ impl RolloutWorld {
             e.y = arrow.position.y.raw();
             e.vx = arrow.velocity.x.raw();
             e.vy = arrow.velocity.y.raw();
-            let speed = arrow.velocity.length();
-            if speed > Fix::ZERO {
-                let up = arrow.velocity * (Fix::ONE / speed);
-                e.rotation = up.perp_cw().normalized_angle().raw();
-            }
+            e.rotation = arrow.rotation.raw();
         }
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
