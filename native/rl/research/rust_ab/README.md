@@ -25,6 +25,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   shrink/removal interval.
 - `stock_respawn_ab.c`: stock consumption, directional point selection, early
   jump confirmation, and the accelerated spawn interval.
+- `sudden_death_ab.c`: authored-platform sink activation and randomized-delay
+  trajectories around the 120-second transition.
 
 See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
 numeric tolerances. Do not infer fidelity from an all-identical dual-backend

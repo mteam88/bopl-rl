@@ -608,8 +608,8 @@ impl RolloutWorld {
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
-            self.sudden_death_delays
-                .push(self.rng.fix_range(Fix::ZERO, p.sudden_death_max_delay));
+            // AnimateVelocity samples this only when sudden death activates.
+            self.sudden_death_delays.push(Fix::ZERO);
             if p.orbit.is_some() {
                 self.orbits.push((self.platforms.len() - 1, 0));
             }
@@ -1620,7 +1620,13 @@ impl RolloutWorld {
             pd.spawn_extents,
             pd.spawn_radius,
         );
-        let delay = self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay);
+        // CreatePlatform explicitly activates a new body's sudden-death mode
+        // only when the global transition is already in progress.
+        let delay = if self.sudden_death {
+            self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay)
+        } else {
+            Fix::ZERO
+        };
         self.spawned.push(SpawnedPlatform {
             active: true,
             being_removed: false,
@@ -2346,6 +2352,20 @@ impl RolloutWorld {
         if !self.sudden_death && sim_time > map.sudden_death_time {
             self.sudden_death = true;
             self.sudden_death_tick = self.tick;
+            // On the following Updater pass each AnimateVelocity notices the
+            // global flag and samples in registration order: authored bodies,
+            // then live ability-spawned bodies.
+            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
+                *delay = self
+                    .rng
+                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
+            }
+            let spawned_max_delay = data::get().platform.sudden_death_max_delay;
+            for spawn in &mut self.spawned {
+                if spawn.active {
+                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, spawned_max_delay);
+                }
+            }
         }
         let alive_teams: Vec<u32> = {
             let mut teams: Vec<u32> = self
