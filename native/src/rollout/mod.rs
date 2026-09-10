@@ -1310,8 +1310,10 @@ impl RolloutWorld {
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
-            // Post-fire flight: full gravity, blended air control, exit on
-            // landing.
+            // Post-fire flight. BowTransform raycasts immediately after full
+            // gravity, before its later aerial-control blend. This matters
+            // for grounded shots: the downward recoil reattaches and exits
+            // before horizontal aim can skew the landing ray.
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
@@ -1320,23 +1322,26 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            let before = slot.base.velocity;
-            crate::player_physics::air_movement(
-                &mut slot.base.velocity,
-                dir.x,
-                bow.constants.air_accel,
-                bow.constants.max_speed,
-            )
-            .expect("valid bow air constants");
-            slot.base.velocity = before + (slot.base.velocity - before) * bow.aireal_control_blend;
-            let speed = slot.base.velocity.length();
-            if speed > bow.constants.max_speed {
-                slot.base.velocity *= bow.constants.max_speed / speed;
-            }
             slot.base.collision_rays(platforms);
             if slot.base.grounded {
                 exit = true;
             } else {
+                // The modified velocity is then consumed by PlayerBody's
+                // later integration in the same updater pass.
+                let before = slot.base.velocity;
+                crate::player_physics::air_movement(
+                    &mut slot.base.velocity,
+                    dir.x,
+                    bow.constants.air_accel,
+                    bow.constants.max_speed,
+                )
+                .expect("valid bow air constants");
+                slot.base.velocity =
+                    before + (slot.base.velocity - before) * bow.aireal_control_blend;
+                let speed = slot.base.velocity.length();
+                if speed > bow.constants.max_speed {
+                    slot.base.velocity *= bow.constants.max_speed / speed;
+                }
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }

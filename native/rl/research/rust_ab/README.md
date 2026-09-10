@@ -19,6 +19,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
 - `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
   position, charge/release flags, and deferred arrow registration/flight.
+- `bow_ground_exit_ab.c`: grounded fire/landing callback order and the
+  following original-slime movement.
 - `ability_hitbox_ab.c`: an incoming arrow grazing Bow's larger active
   ability hurtbox after the original slime hurtbox is disabled.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
