@@ -187,6 +187,13 @@ class Driver:
         if env.get('BOPL_RL_BACKEND', '').lower() != 'rust':
             env.setdefault('BOPL_RL_GAME', str(self.spec.fixed.get('game', DEFAULT_GAME)))
             env.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
+        # train.py defaults OMP_NUM_THREADS to --workers (128 spinning threads
+        # on 12 CPUs). Measured 2026-09-10 at 128 workers on the f64 sim, quiet
+        # box, two adjacent pairs: 12 passive threads 201-206k learner/s vs
+        # 128 active 174k (+16%); 6/24 passive within 3% of 12, 12 active no
+        # better than 128 active (the spin policy is what costs).
+        env.setdefault('BOPL_OMP_THREADS', str(os.cpu_count() or 12))
+        env.setdefault('OMP_WAIT_POLICY', 'passive')
         return env
 
     def launch(self, trial):
