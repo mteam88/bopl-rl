@@ -213,6 +213,25 @@ action repeat 1 and compares every observation field per tick):
   321k ticks/s including resets (3.4x). The `.so` shrinks from 2.8 MB to
   1.2 MB (no sine/tangent tables).
 
+## Raycast broad phase
+
+`world::closest` (the three collision rays per player per tick from
+`collision_cast`/`movement_limit`, the dash and arrow sweeps) tests each
+platform's axis-aligned bounds (`OrientedBox::bounds(radius)`: centre +-
+(|right| + |up| + radius) per axis) against the query segment before the
+rounded-rectangle narrow phase; `raycast_within(origin, direction, distance)`
+does the same for the player boxes hit by dashes and arrows. The test is
+conservative: every accepted hit has `near >= 0` and puts
+`origin + direction * near` on the shape's boundary or at an origin inside
+the shape, hence inside the bounds and on the segment; a 1e-6 unit margin
+covers evaluation rounding. The single case it does not preserve is a box
+ray from outside whose entry is exactly a corner (the reference's strict
+inequalities drop that edge and still report `near = 0`), an exact-equality
+tie. The edge test itself (`geometry::edge_hits`, Raycast.cs' side loop:
+side order, strict inequalities, stop after two) writes into a two-slot
+array instead of a `Vec`. Both Rust builds (Q32 and f64) are bit-identical
+before and after over 300 gate episodes at tolerance 0 (`repr_ab`).
+
 ## Fidelity gate
 
 `native/rl/fidelity_gate.c` drives both backends with identical seeded
@@ -246,9 +265,10 @@ divergence remains under 0.01 through decision 16, then grows chaotically
 Scripted A/B traces (`native/rl/research/rust_ab/*.c`, built against
 `bopl_rl.h` the same way as `fidelity_gate.c`) cover movement states, bow
 flag/timer and charge launch-speed sequences, plus platform overlap, landing
-and map-2 orbiting. In `platform_ab`, the orbiter position is identical to 12
-decimal places at every sampled tick and the landing player settles within
-0.0001 units. For the overlap scenario, the maximum map/spawned-platform
+and map-2 orbiting. In `platform_ab`, the orbiter position was identical to 12
+decimal places at every sampled tick with the Q32.32 `Fix` (with the f64
+`Fix` it drifts one raw unit per tick, 2.3e-7 units at tick 1620; see
+"Number type") and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform
 position deltas fell from 1.385/1.743 to 0.071/0.182 units; final deltas fell
 from 1.307/1.011 to 0.040/0.119.
 
@@ -267,6 +287,44 @@ Every group is within its Wilson interval of the .NET result. Residual
 behavioral gap: Rust episodes average ~890 ticks vs ~640 on .NET, and the
 policy fires ~3.6 arrows/min vs ~2.3 (it takes longer to close out the
 random opponent). Win rates and death-cause mixes agree.
+
+### Rust-trained checkpoint across sim builds (2026-09-10)
+
+`overnight-1/012` final policy (policy-266698752, trained on the Sep 9 Rust
+sim before the platform-physics work) evaluated with `evaluate.py` as
+`train.py` invokes it (`--opponents anchors/opponents.json`,
+`--scripted-opponents mixed-hard,archer-hard,pursuer-hard,evasive-hard,
+mixed-medium`, 8 games per opponent and map, 4 per held-out map, 16 per
+frozen anchor, 8 workers) on four backends: the sweep's own `.so`, the
+platform-physics tip as committed (Q32.32 `Fix`), this tree (f64 `Fix`,
+raycast broad phase, physics merged) and .NET.
+
+| opponent | sweep .so | physics tip (Q32) | this tree (f64) | .NET |
+|---|---|---|---|---|
+| archer-hard | 20/32 | 13/32 | 13/32 | 17/32 |
+| evasive-hard | 22/32 | 10/32 | 10/32 | 5/32 |
+| mixed-hard | 27/32 | 17/32 | 17/32 | 19/32 |
+| mixed-medium | 22/32 | 19/32 | 18/32 | 19/32 |
+| pursuer-hard | 17/32 | 10/32 | 9/32 | 10/32 |
+| random | 30/32 | 30/32 | 31/32 | 32/32 |
+| initial | 24/24 | 23/24 | 22/24 | 22/24 |
+| run007-100m | 38/48 | 28/48 | 29/48 | 28/48 |
+| run007-300m | 39/48 | 28/48 | 31/48 | 29/48 |
+| run007-final | 23/48 | 18/48 | 20/48 | 13/48 |
+| total | 262/360 | 196/360 | 200/360 | 194/360 |
+| timeouts | 24 | 1 | 0 | 4 |
+
+Every per-opponent difference between this tree and .NET is inside the
+two-sample binomial 95% band (largest: evasive-hard 10 vs 5 of 32, band
+±6.7; run007-final 20 vs 13 of 48, band ±9.1), and this tree matches the
+Q32 physics tip group for group (largest difference 3 of 48). The sweep
+`.so` is the outlier: the policy trained on it wins 4/4 on the held-out
+maps 3/4 against most scripted bots where the other three backends win 0/4,
+and 24 of its 360 games time out (mean episode 42 s vs 20-23 s). Those are
+the exploits the physics branch closed (a transformed player phasing a
+platform through terrain, dash raycasts ignoring arrows), so evaluation
+numbers recorded by the overnight-1 sweep on its own sim are inflated
+relative to the game; the f64 representation does not move them.
 
 ## Throughput
 
@@ -289,3 +347,33 @@ sim-only benchmark under the active sweep measured 128.5k -> 128.9k stepping
 ticks/s (+0.3%) and 89.5k -> 88.6k ticks/s including resets (-1.0%). The prior
 256-worker learner headline is about 127k learner steps/s; it was not rerun
 while the overnight sweep was consuming the box.
+
+### Speed work (2026-09-10)
+
+Sim-only (`benchmark.c`, 2 players, repeat 4, 200k ticks, all builds
+interleaved in one quiet window) and trainer-scale (`bench_scale.sh 300 --
+"128 12 passive so"`, `BOPL_RL_BACKEND=rust`, inside a 600% CPU quota):
+
+| build | stepping ticks/s | incl. resets | learner/s (128 workers) | eval_env ms/step |
+|---|---|---|---|---|
+| Q32.32 `Fix` (baseline, merge 88a77d5) | 143k | 96k | 100k | 1.42 |
+| f64 `Fix` (ca04fea) | 547k | 316k | 172k | 0.60 |
+| + raycast broad phase, no-alloc edge test (829009d) | 1.87M | 1.14M | 207k | 0.38 |
+| + stick table, libm-free raw() (8797fc3) | 2.19M | 1.28M | – | – |
+| + platform-physics d71446c merged (55b4f31) | 2.09M | 1.21M | 187k* | 0.52* |
+| physics tip as committed (Q32.32) | 129k | 86k | – | – |
+
+\* measured as the overnight sweep resumed (load 30 vs 6-13 for the rows
+above); the contended pair that followed gave 58k -> 109k for baseline ->
+final, the same 1.9x.
+
+Where the time goes now (perf on the trainer process, 128 workers): 60% of
+samples are libcuda's spin in `cuStreamSynchronize` (the rollout policy
+forward), 15% the Rust sim, 5% libm (sin/acos from the game's angle round
+trip), 5% observation `memmove`, 4% the C environment. `eval_gpu` (0.36-0.40
+ms/step) now equals `eval_env`; further sim speedups have little headroom at
+this shape. Inside the sim (`perf` on `benchmark.c`): `world::closest`
+23% (the per-platform bounds test itself; caching bounds on `Platform` would
+need every collider write to refresh them), `acos` 11% and `sin` 10%
+(`normalized_angle` / `Vec2::angle`, the game's stored-rotation model),
+`game_tick` 9%, `refresh_entities` 8% (observation encoding, untouched).
