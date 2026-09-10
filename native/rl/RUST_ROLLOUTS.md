@@ -95,8 +95,8 @@ At 300 episodes (commit 56bd3b6):
   decisions, deaths environment 133 vs 144, self 165 vs 153, opponent 2 vs
   3, arrows fired 484 vs 551, arrow hits 2 vs 3, timeouts 0 vs 0.
 
-Scripted A/B traces (`/tmp` tools built against `bopl_rl.h`) match tick for
-tick on: movement states including curvature-induced stops, bow flag/timer
+Scripted A/B traces (`native/rl/research/rust_ab/*.c`, built against
+`bopl_rl.h` the same way as `fidelity_gate.c`) match tick for tick on: movement states including curvature-induced stops, bow flag/timer
 sequences, charge launch-speed curves (within 2 ticks at every hold
 length), and the map 2 orbiter trajectory.
 
