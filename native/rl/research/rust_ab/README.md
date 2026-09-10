@@ -25,6 +25,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   ability hurtbox after the original slime hurtbox is disabled; also verifies
   post-integration discrete contact and that a PlayerBody kill leaves the
   arrow flying.
+- `arrow_bounds_ab.c`: `Arrow.prefab` side-boundary destruction phase and
+  removal from the live projectile observation.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary; default RL configuration is 0/0, while the explicit .NET
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in proves the original spawner remains live.

@@ -1879,10 +1879,21 @@ impl RolloutWorld {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
-        for arrow in &mut self.arrows {
-            if !arrow.active || !arrow.registered {
+        for i in 0..self.arrows.len() {
+            if !self.arrows[i].active || !self.arrows[i].registered {
                 continue;
             }
+            // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
+            // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
+            // NeverDestroyAbove flag leaves top exits alive.
+            let position = self.arrows[i].position;
+            if position.y < Fix::from_f32(-11.3)
+                || position.x.abs() > Fix::from_f64(131.25)
+            {
+                self.destroy_arrow(i);
+                continue;
+            }
+            let arrow = &mut self.arrows[i];
             arrow.time_passed += DT;
             if !arrow.can_hurt_owner
                 && arrow.hurt_owner_after > Fix::ZERO
@@ -1999,13 +2010,6 @@ impl RolloutWorld {
                 }
             }
 
-            // DestroyIfOutsideSceneBounds runs independently of contacts and
-            // has NeverDestroyAbove enabled on Arrow.
-            let out = arrow.position.y < Fix::from_f32(-11.3)
-                || arrow.position.x.abs() > Fix::from_f64(131.25);
-            if out {
-                self.destroy_arrow(i);
-            }
         }
     }
 
