@@ -336,6 +336,7 @@ def main():
             "sudden_death_y_speed": curve(rp_av, "suddenDeathYSpeed"),
         },
         "body": physics_body(rp_body),
+        "mass_per_area": fix(rp_res, "MassPerArea"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
     }
 

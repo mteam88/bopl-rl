@@ -8,7 +8,7 @@
 //! byte-exactness; the .NET sim stays the reference (native/rl/RUST_ROLLOUTS.md).
 use crate::{
     fixed::Fix,
-    geometry::{OrientedBox, RoundedRect},
+    geometry::{Circle, OrientedBox, RoundedRect},
     physics::{Body, positional_correction, resolve},
     random::Random,
     surface::Surface,
@@ -187,6 +187,7 @@ const LAYER_WALL: u32 = 11;
 const LAYER_WATER: u32 = 4;
 
 const CAUSE_OTHER: u32 = 0;
+const CAUSE_SQUISHED: u32 = 1;
 const CAUSE_ACCIDENT: u32 = 2;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
@@ -864,6 +865,20 @@ impl RolloutWorld {
                 buttons: (actions[index].buttons & 0xFF) as u8,
             };
             self.player_tick(index, action, data);
+            // The shared movement slice marks a body dead when its previous
+            // position is beyond a blast boundary. Convert that marker into
+            // the match-level death exactly once; otherwise the later
+            // `!alive` guard would skip stocks, telemetry, and `out` forever.
+            let boundary_death = {
+                let slot = &self.players[index];
+                !slot.out
+                    && slot.respawn_ticks == 0
+                    && !slot.base.alive
+                    && slot.base.outside_bounds()
+            };
+            if boundary_death {
+                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
+            }
         }
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
@@ -1037,13 +1052,59 @@ impl RolloutWorld {
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action) {
         self.players[index].base.step(action, &self.platforms);
-        let caster = &self.players[index].base;
-        if caster.dash.active && caster.dash.time == DT {
-            let origin = caster.position;
-            let direction = caster.dash.input;
+        let dash_cast = {
+            let caster = &self.players[index].base;
+            (caster.dash.active && caster.dash.time == DT).then_some((
+                caster.position,
+                caster.dash.input,
+                caster.id,
+            ))
+        };
+        if let Some((origin, direction, caster_id)) = dash_cast {
             let wall =
                 crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
+
+            // Dash.performDash raycasts the Projectile layer too. Arrow's
+            // callback sticks/destroys the projectile, then PlayerCollision
+            // kills the dasher unless this is an owner-safe young arrow.
+            let mut arrow_hits: Vec<_> = self
+                .arrows
+                .iter()
+                .enumerate()
+                .filter(|(_, arrow)| arrow.active)
+                .filter_map(|(arrow_index, arrow)| {
+                    (Circle {
+                        center: arrow.position,
+                        radius: data::get().arrow.radius,
+                    })
+                    .raycast(origin, direction)
+                    .filter(|hit| {
+                        hit.near <= Fix::from_int(13)
+                            && wall.is_none_or(|distance| hit.near < distance)
+                    })
+                    .map(|hit| (arrow_index, hit.near.max(Fix::ZERO)))
+                })
+                .collect();
+            arrow_hits.sort_by_key(|&(arrow_index, distance)| (distance, arrow_index));
+            for (arrow_index, _) in arrow_hits {
+                let arrow = self.arrows[arrow_index];
+                let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
+                self.destroy_arrow(arrow_index);
+                if lethal {
+                    let cause = if arrow.owner == caster_id {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    self.kill(index, arrow.owner, cause);
+                    if arrow.owner != caster_id && arrow.owner >= 1 {
+                        self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
+                    }
+                    return;
+                }
+            }
+
             let targets: Vec<usize> = self
                 .players
                 .iter()
@@ -1212,7 +1273,13 @@ impl RolloutWorld {
         } else {
             Fix::ZERO
         };
-        self.spawn_arrow(owner, position, start_velocity, hurt_owner_after);
+        self.spawn_arrow(
+            owner,
+            position,
+            start_velocity,
+            hurt_owner_after,
+            bow.max_arrows,
+        );
         self.players[index].telemetry.arrows_fired += 1;
         let this = &mut *self;
         let slot = &mut this.players[index];
@@ -1528,11 +1595,49 @@ impl RolloutWorld {
             Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         platform.collider.radius = radius;
         let dynamics = &mut self.platform_dynamics[index];
+        // ResizablePlatform.ResizePlatform recomputes these from geometry on
+        // every resize; keeping the prefab's mass makes long/thin platforms
+        // react far too strongly to contacts.
+        let pd = &data::get().platform;
+        let mass = Fix::from_int(10)
+            + pd.spawn_mass_per_area * platform_area(extents.x, extents.y, radius);
+        let w = extents.x + radius;
+        let h = extents.y + radius;
+        let longest = w.max(h);
+        let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
+        dynamics.body.inverse_mass = Fix::ONE / mass;
+        dynamics.body.inverse_inertia = Fix::ONE / inertia;
         dynamics.body.orientation = right.normalized_angle();
         dynamics.home_position += center - old_center;
     }
 
-    fn spawn_arrow(&mut self, owner: u32, position: Vec2, velocity: Vec2, hurt_owner_after: Fix) {
+    fn spawn_arrow(
+        &mut self,
+        owner: u32,
+        position: Vec2,
+        velocity: Vec2,
+        hurt_owner_after: Fix,
+        max_arrows: u32,
+    ) {
+        // BowTransform uses a per-owner RingBuffer and destroys its oldest
+        // arrow when the authored capacity is reached. Native arrow slots are
+        // reused, so age (not vector position) identifies the oldest one.
+        let owner_count = self
+            .arrows
+            .iter()
+            .filter(|arrow| arrow.active && arrow.owner == owner)
+            .count() as u32;
+        if max_arrows > 0
+            && owner_count >= max_arrows
+            && let Some((oldest, _)) = self
+                .arrows
+                .iter()
+                .enumerate()
+                .filter(|(_, arrow)| arrow.active && arrow.owner == owner)
+                .max_by_key(|(_, arrow)| arrow.time_passed)
+        {
+            self.destroy_arrow(oldest);
+        }
         let radius = data::get().arrow.radius;
         let free = self.arrows.iter().position(|a| !a.active);
         let entity = match free {
@@ -1792,14 +1897,17 @@ impl RolloutWorld {
             }
         }
 
-        // AnimateVelocity.UpdateSim. AddForce(..., Impulse) cancels the
-        // authored inverse mass and 60 Hz factor, yielding spring * DT here.
+        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
+        // mass and 60 Hz impulse conversions: their intermediate fixed-point
+        // rounding is observable over long-running springs (notably map 2's
+        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         for i in 0..self.platforms.len() {
             let position = self.platforms[i].surface.center;
             let dynamics = &mut self.platform_dynamics[i];
             let spring = (dynamics.home_position - position) * dynamics.speed
                 - dynamics.body.velocity * dynamics.mu;
-            dynamics.body.velocity += spring * DT;
+            let impulse = spring * DT / dynamics.body.inverse_mass;
+            dynamics.body.force += impulse * Fix::from_int(60);
             let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
             if angle_delta.abs() > Fix::PI {
                 angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
@@ -1829,6 +1937,13 @@ impl RolloutWorld {
                 let dynamics = &mut self.platform_dynamics[platform_index];
                 dynamics.body.force += direction * o.force;
                 dynamics.home_position = position;
+                // AntiLockPlatform computes this tick's force first, then
+                // advances the target from the same pre-physics position.
+                let current = o.path[orbit.1];
+                let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
+                if (current - previous).dot(position - current) > Fix::ZERO {
+                    orbit.1 = (orbit.1 + 1) % o.path.len();
+                }
             }
         }
 
@@ -1847,6 +1962,10 @@ impl RolloutWorld {
             platform.collider.inner.right = platform.surface.right * platform.surface.extents.x;
             platform.collider.inner.up = platform.surface.up * platform.surface.extents.y;
         }
+        // CollisionInformation stores the shape as it was during narrow phase;
+        // PlayerCollision's later squish callback tests that copy, before the
+        // RR positional corrections below move either platform.
+        let callback_colliders: Vec<_> = self.platforms.iter().map(|p| p.collider).collect();
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.
@@ -1876,25 +1995,25 @@ impl RolloutWorld {
             }
         }
 
-        // Advance orbit targets from the post-physics position.
-        if !self.sudden_death {
-            let map = &data.maps[self.map];
-            for orbit in &mut self.orbits {
-                let def = &map.platforms[self.platform_defs[orbit.0]];
-                let Some(o) = def.orbit.as_ref() else {
-                    continue;
-                };
-                if o.path.is_empty() {
-                    continue;
-                }
-                let current = o.path[orbit.1];
-                let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
-                if (current - previous).dot(self.platforms[orbit.0].surface.center - current)
-                    > Fix::ZERO
-                {
-                    orbit.1 = (orbit.1 + 1) % o.path.len();
-                }
-            }
+        // PlayerCollision kills a grounded slime when a different wall's
+        // rounded rectangle contains its squish point (the stock player
+        // prefab uses the body centre). Player boxes are triggers, so this is
+        // a callback effect rather than a rigid-body response.
+        let squished: Vec<_> = self
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
+            .filter(|(_, slot)| {
+                callback_colliders.iter().enumerate().any(|(i, &collider)| {
+                    Some(self.platforms[i].id) != slot.base.ground
+                        && collider.overlaps(slot.base.position)
+                })
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in squished {
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED);
         }
 
         // StickyRoundedRectangle riders are positioned from their surface
@@ -1945,16 +2064,19 @@ impl RolloutWorld {
         }
     }
 
+    fn playable_slot(&self, slot: &PlayerSlot) -> bool {
+        slot.base.alive && slot.respawn_ticks == 0
+    }
+
     fn deaths_tick(&mut self) {
         for index in 0..self.players.len() {
             let slot = &mut self.players[index];
             if !slot.base.alive || slot.respawn_ticks > 0 {
                 continue;
             }
-            // The movement slice already kills on the blast zones and water
-            // (DestroyIfOutsideSceneBounds); death cause is environmental.
-            if !slot.base.alive || slot.base.outside_bounds() {
-                slot.base.alive = false;
+            // Catch a body that crossed the boundary during this tick. The
+            // shared movement slice will only pre-mark it on the next tick.
+            if slot.base.outside_bounds() {
                 self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
             }
         }

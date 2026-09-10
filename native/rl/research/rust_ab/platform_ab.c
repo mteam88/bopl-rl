@@ -1,7 +1,7 @@
 /* Platform-body A/B: grounded transform overlapping terrain, then a cold
  * spawn falling onto an authored platform. One output row per simulation tick.
  *
- * cc -O2 -I. -o ../../target/release/platform_ab \
+ * cc -O2 -I. -o ../target/release/platform_ab \
  *   research/rust_ab/platform_ab.c bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
@@ -73,8 +73,8 @@ static void row(const char *scenario, unsigned tick, BoplRl **world,
     Sample r = scenario[0] == 'o' && scenario[1] == 'r'
         ? sample_last_map(bopl_rl_state(world[1]), initial[1])
         : sample(bopl_rl_state(world[1]), initial[1]);
-    printf("%s,%u,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,"
-           "%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f\n",
+    printf("%s,%u,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,"
+           "%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f,%.12f\n",
            scenario, tick,
            n.px, n.py, n.map_x, n.map_y, n.map_vx, n.map_vy,
            n.spawn_x, n.spawn_y, n.spawn_vx, n.spawn_vy,
@@ -151,7 +151,8 @@ int main(int argc, char **argv) {
                         bopl_rl_error(world[backend]));
                 return 1;
             }
-        if (tick >= 1540) row("orbiter", tick, world, initial);
+        if ((tick >= 650 && tick <= 720) || tick >= 1540)
+            row("orbiter", tick, world, initial);
     }
 
     bopl_rl_close(world[0]);

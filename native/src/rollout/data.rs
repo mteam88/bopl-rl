@@ -176,6 +176,7 @@ struct RawPlatformAnims {
 struct RawResizable {
     extents: RawVec2,
     radius: i64,
+    mass_per_area: i64,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
 }
@@ -274,6 +275,7 @@ pub struct PlatformAbilityData {
     pub exit_ticks: u32,
     pub spawn_extents: Vec2,
     pub spawn_radius: Fix,
+    pub spawn_mass_per_area: Fix,
     pub spawn_speed: Fix,
     pub spawn_mu: Fix,
     pub spawn_rotation_speed: Fix,
@@ -466,6 +468,7 @@ pub fn get() -> &'static RolloutData {
                 exit_ticks: ticks(&plat.anims.exit),
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
                 spawn_radius: Fix(raw.prefabs.resizable_platform.radius),
+                spawn_mass_per_area: Fix(raw.prefabs.resizable_platform.mass_per_area),
                 spawn_speed: Fix(raw.prefabs.resizable_platform.animate_velocity.speed),
                 spawn_mu: Fix(raw.prefabs.resizable_platform.animate_velocity.mu),
                 spawn_rotation_speed: Fix(raw
