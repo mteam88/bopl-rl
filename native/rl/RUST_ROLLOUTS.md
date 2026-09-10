@@ -81,17 +81,25 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 
 ## Known approximations (documented divergence)
 
-- Ability pickups (`AbilitySpawner`, drops at 40 s intervals) are not
-  simulated; only ids 2/4/14 have real behavior, other catalog ids tick a
-  plausible cooldown and never activate. Besides removing a major game system,
-  this leaves the shared Unity RNG sequence different after the first spawner
-  event, so late sudden-death random delays cannot remain sample-for-sample
-  identical. Closing this requires pickup bodies/collisions and the remaining
-  catalog abilities rather than a timing-only patch.
+- Fixed-loadout RL sessions disable `AbilitySpawner` on both backends. Rust
+  intentionally has no spawner path: the extractor retains each map's
+  `ability_spawner` position in `rollout.json`, but `rollout/mod.rs` never
+  reads it. The .NET Host and NativeAOT RL boundaries disable the authored
+  component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
+  oracle back into full-game pickup spawning for diagnostics. This is an RL
+  configuration choice, not an open default-backend divergence.
+- Only ids 2/4/14 have real behavior. Other catalog ids tick a plausible
+  cooldown and never activate. Closing this scope requires the remaining
+  catalog abilities and their dynamic bodies/collision pairs.
 - Landed arrows are freed from the native entity table instead of remaining
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
   so the remaining difference is primarily observation/entity history.
+- On final elimination, Unity's `SlimeController.DropAbilities` can create a
+  pickup in the terminal snapshot. Rust has no corresponding terminal-only
+  entity. No later gameplay tick can consume it and reset reseeds the RNG, so
+  this remains an observation-only difference rather than the disabled
+  periodic-spawner gameplay gap.
 - The rollout only contains dynamic bodies needed by ids 2/4/14. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
@@ -110,8 +118,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | Respawn point/timing choice was absent and fast-spawn upward motion lagged one pass | fixed: three directional points, early jump confirm, exact selection publication and launch phase |
 | behavior-changing | Curve tangents and old-platform shrink removal were absent | fixed: exported Hermite tangents/exact evaluator and collidable `being_removed` bodies |
 | behavior-changing | Rust arrow flight was swept while Unity integrates first and dispatches discrete Circle/RR, Circle/Circle, then Circle/Box contacts | fixed; terrain callbacks consume the arrow before player callbacks, while a PlayerBody kill leaves it flying |
-| exploitable | Ability pickups and all abilities other than 2/4/14 are absent | open scope described above |
+| behavior-changing | Cosmetic level-intro ground delays consumed RNG only in .NET, shifting later sudden-death samples | fixed: Rust consumes the samples without rendering the intro; sink activation and trajectories now align |
+| behavior-changing | Arrow rotation used post-gravity velocity and its boundary cull ran after physics | fixed: policy-visible rotation and side/water lifetime use the authored pre-physics phases |
+| exploitable | Rust deleted a spawned platform when its transformed owner crossed a blast boundary | fixed: the owner dies, but the separate `ResizablePlatform` remains collidable as in Unity |
+| behavior-changing | An end-of-tick Rust boundary pass killed ordinary/Bow bodies one tick before Unity's pre-`PlayerBody` boundary component | fixed with component-specific boundary phases |
+| configured scope | Ability pickups | disabled on both RL backends by default; explicit .NET-only diagnostic opt-in above |
+| exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
+| cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | not changed; the episode cannot advance and reset reseeds RNG |
 
 ## Fidelity gate
 
@@ -123,22 +137,22 @@ second in-process backend could accidentally reuse the first library's runtime
 and turn an intended .NET-vs-Rust check into .NET-vs-.NET.
 
 At 300 episodes with that harness fixed (seeds 1000-1299), the base
-(`7f6761b`), platform/phase implementation, and discrete-arrow implementation
-were:
+(`7f6761b`), platform/phase implementation, discrete-arrow implementation,
+and the final semantic-audit implementation were:
 
-| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows |
-|---|---:|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 |
-| timeouts | 0 | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 153 | 138 |
-| self deaths | 165 | 153 | 146 | 160 |
-| opponent deaths | 2 | 3 | 1 | 2 |
-| dash activations | 221 | 284 | 240 | 217 |
-| bow activations | 498 | 560 | 510 | 489 |
-| platform activations | 86 | 129 | 113 | 87 |
-| arrows fired | 484 | 551 | 497 | 476 |
-| arrow hits | 2 | 3 | 1 | 2 |
-| winner agreement | - | 267/300 | 284/300 | 296/300 |
+| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows | Rust final |
+|---|---:|---:|---:|---:|---:|
+| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 | 62.5 |
+| timeouts | 0 | 0 | 0 | 0 | 0 |
+| environment deaths | 133 | 144 | 153 | 138 | 138 |
+| self deaths | 165 | 153 | 146 | 160 | 160 |
+| opponent deaths | 2 | 3 | 1 | 2 | 2 |
+| dash activations | 221 | 284 | 240 | 217 | 217 |
+| bow activations | 498 | 560 | 510 | 489 | 491 |
+| platform activations | 86 | 129 | 113 | 87 | 88 |
+| arrows fired | 484 | 551 | 497 | 476 | 476 |
+| arrow hits | 2 | 3 | 1 | 2 | 2 |
+| winner agreement | - | 267/300 | 284/300 | 296/300 | 296/300 |
 
 The episode-length gap fell from +10.4 to -0.6 decisions (94% by absolute
 gap). Mean position divergence remains under 0.002 through decision 16, then
@@ -160,6 +174,17 @@ the swept implementation missed an arrow/Bow collision that .NET delivered at
 tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
 counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
 backends retain one live arrow (`1/1`).
+
+`ability_spawner_ab` observes no layer-13 pickup on either backend under the
+default RL configuration and one only in .NET with
+`BOPL_RL_ABILITY_SPAWNS=1`. With spawns enabled, `sudden_death_ab` reached
+1.427 units maximum Y error. Disabling them alone still left 1.584 units from
+the skipped intro RNG draws; after preserving that RNG phase, all three map-0
+platforms begin moving on the same ticks (7236/7252/7257), maximum Y error is
+3.259e-9, and final error is 4.650e-10. `arrow_bounds_ab` matches the side-exit
+lifetime at tick 414 (Rust was one tick early), `platform_boundary_ab` matches
+owner death at tick 461 while retaining 7 active rounded bodies, and the stock
+water-death trace now matches tick 198 (Rust was one tick early).
 
 ## Transfer test
 
@@ -208,3 +233,12 @@ runs under the same limits measured old/new stepping at 96.9k/99.3k ticks/s,
 then new/old at 100.2k/100.5k. Including resets they measured 62.5k/66.5k and
 67.1k/67.3k. The ordering reversal is background-load noise; there is no
 measurable throughput cost in this test.
+
+After the final semantic-audit fixes, a new bracketed baseline/final pair
+under `CPUQuota=600%`, `nice -n 15` measured stepping at
+144.5k/139.5k then 135.8k/139.3k ticks/s (baseline/final then
+final/baseline). Averaging each side gives 141.9k baseline versus 137.6k final
+(-3.0%); including resets gives 94.5k versus 90.8k (-3.9%). Different reset
+counts follow the corrected outcomes, and the ordering reversal again shows
+that a few percent is background-load noise rather than a demonstrated hot
+path regression.
