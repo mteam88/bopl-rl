@@ -1255,14 +1255,19 @@ impl RolloutWorld {
                 b.released = true;
             }
             // loadingFrame = getNumberOfPassedSprites() of the "load" anim =
-            // currentSpriteIndex+1: it jumps to 1 the tick "transform" ends
-            // (load starts at index 0) and increments one tick after each
-            // sprite boundary (currentSpritePos must exceed the duration).
+            // currentSpriteIndex+1. SpriteAnimator runs after BowTransform, so
+            // the Loading callback which ends "transform" is first visible to
+            // BowTransform on the following pass. Later frame changes likewise
+            // require currentSpritePos to exceed their authored duration.
             // Measured .NET boundaries: frames 1/2/3/4 at ability ticks
-            // 30/38/45/52.
-            if !b.has_fired && b.ticks >= bow.transform_ticks {
+            // 31/39/46/53.
+            if !b.has_fired && b.ticks > bow.transform_ticks {
                 let since = b.ticks - bow.transform_ticks;
-                let passed = bow.load_frame_ticks.iter().filter(|t| since > **t).count() as u32;
+                let passed = bow
+                    .load_frame_ticks
+                    .iter()
+                    .filter(|t| since > **t + 1)
+                    .count() as u32;
                 b.loading_frame = (1 + passed).min(4);
             }
             // "…|| animator.getNumberOfPassedSprites() > 2" during transform:
@@ -1494,6 +1499,16 @@ impl RolloutWorld {
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.active = ActiveAbility::None;
                     slot.obs_state = STATE_FALL;
+                    // Ability.ExitAbility republishes potentialCollider.position
+                    // after PlatformTransform has applied the final ejection.
+                    // SlimeController's synchronous onExitAbility callback then
+                    // enters Fall and immediately performs
+                    // VelocityBasedRaycasts. Preserve both phase boundaries:
+                    // this tick observes the ejected position, while the live
+                    // body may already have reattached for the next tick.
+                    slot.reported_position = slot.base.position;
+                    slot.reported_tick = self.tick;
+                    slot.base.collision_rays(&self.platforms);
                 }
             }
         }
