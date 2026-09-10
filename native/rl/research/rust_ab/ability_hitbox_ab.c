@@ -1,4 +1,7 @@
-/* Incoming-arrow A/B while the target changes from its slime hurtbox to Bow. */
+/* Incoming-arrow A/B while the target changes from its slime hurtbox to Bow.
+ * This is also a discrete-contact/persistence regression: Unity hits the
+ * moving Bow box at the post-integration endpoint and leaves the arrow live
+ * after PlayerCollision kills the PlayerBody-backed target. */
 #include "bopl_rl.h"
 #include <stdio.h>
 #include <stdlib.h>

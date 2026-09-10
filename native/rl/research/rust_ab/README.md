@@ -22,7 +22,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `bow_ground_exit_ab.c`: grounded fire/landing callback order and the
   following original-slime movement.
 - `ability_hitbox_ab.c`: an incoming arrow grazing Bow's larger active
-  ability hurtbox after the original slime hurtbox is disabled.
+  ability hurtbox after the original slime hurtbox is disabled; also verifies
+  post-integration discrete contact and that a PlayerBody kill leaves the
+  arrow flying.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
