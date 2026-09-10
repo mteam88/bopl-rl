@@ -273,10 +273,6 @@ pub struct BowState {
     /// Remaining ticks of the fireGround/fireAir animation before exit.
     pub fire_ticks_left: u32,
     pub loading_frame: u32,
-    /// Ability.UpdateSim publishes the collider position before BowTransform
-    /// and PlayerBody advance the ability body later in the same pass.
-    pub reported_position: Vec2,
-    pub reported_tick: u32,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -292,10 +288,6 @@ pub struct PlatformState {
     pub active_corner: Vec2,
     /// Index into `RolloutWorld::platforms` for the platform being shaped.
     pub platform_index: usize,
-    /// Player.Position is written before PlatformTransform.UpdateSim moves
-    /// the active ability body. RlObservation therefore reports this value.
-    pub reported_position: Vec2,
-    pub reported_tick: u32,
     pub hurtbox_disabled: bool,
 }
 
@@ -331,6 +323,12 @@ pub struct PlayerSlot {
     pub ability_origin_state: u32,
     pub ability_entry_action: Action,
     pub ability_time: Fix,
+    /// SlimeController/Ability publishes Player.Position before the live body
+    /// advances later in the same updater pass.
+    pub reported_position: Vec2,
+    pub reported_tick: u32,
+    /// First original-slime pass after Dash re-enables it.
+    pub dash_exit_followup: bool,
     pub bow: BowState,
     pub platform: PlatformState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -396,9 +394,6 @@ pub struct RolloutWorld {
     pub sample_slimes: Vec<CSlime>,
     pub sample: Box<CState>,
     pub sample_valid: bool,
-    /// Actions currently in effect; new registrations lag one tick (.NET
-    /// controllers act on inputs the tick after they arrive).
-    pub held: [CAction; MAX_PLAYERS],
     /// Registered actions per simulated tick (warmup included), for the
     /// BOPLREP2 replay export.
     pub recording: Vec<[CAction; MAX_PLAYERS]>,
@@ -453,7 +448,6 @@ impl RolloutWorld {
             sample_slimes: Vec::with_capacity(MAX_PLAYERS),
             sample: empty_state(),
             sample_valid: false,
-            held: [CAction::default(); MAX_PLAYERS],
             recording: Vec::new(),
             replay_config: CConfig::default(),
             replay_buffer: Vec::new(),
@@ -508,7 +502,6 @@ impl RolloutWorld {
         self.terminal = false;
         self.failed = false;
         self.sample_valid = false;
-        self.held = [CAction::default(); MAX_PLAYERS];
         self.recording.clear();
         self.replay_config = *config;
         self.rng = Random::new(config.seed.max(1));
@@ -687,11 +680,11 @@ impl RolloutWorld {
                 ability_origin_state: STATE_FALL,
                 ability_entry_action: Action::default(),
                 ability_time: Fix::ZERO,
+                reported_position: spawn,
+                reported_tick: u32::MAX,
+                dash_exit_followup: false,
                 bow: BowState::default(),
-                platform: PlatformState {
-                    reported_tick: u32::MAX,
-                    ..PlatformState::default()
-                },
+                platform: PlatformState::default(),
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
@@ -852,24 +845,15 @@ impl RolloutWorld {
             }
         }
         self.sample_valid = false;
-        for i in 0..repeat.max(1) {
-            // The .NET sim's controllers act on an input one tick after it is
-            // registered, so a new action takes effect on the second tick of
-            // its window. Replicate that latency: the first tick still runs
-            // the previously held actions.
-            let held = self.held;
+        for _ in 0..repeat.max(1) {
             let mut frame = [CAction::default(); MAX_PLAYERS];
             frame[..actions.len()].copy_from_slice(actions);
             self.recording.push(frame);
-            let effective = if i == 0 {
-                &held[..actions.len()]
-            } else {
-                actions
-            };
-            self.game_tick(effective, actions);
-            if i == 0 {
-                self.held[..actions.len()].copy_from_slice(actions);
-            }
+            // RlBridge registers this frame before Updater.TickSimulation.
+            // Live SlimeController/PlayerBody state therefore consumes the
+            // current input immediately. Only Player.Position is stale; that
+            // publication phase is represented explicitly in PlayerSlot.
+            self.game_tick(actions, actions);
             if self.terminal {
                 break;
             }
@@ -913,6 +897,8 @@ impl RolloutWorld {
         let data = data::get();
         self.register_pending_arrows();
         for index in 0..self.players.len() {
+            self.players[index].reported_position = self.players[index].base.position;
+            self.players[index].reported_tick = self.tick;
             let action = Action {
                 angle: actions[index].angle,
                 buttons: (actions[index].buttons & 0xFF) as u8,
@@ -952,23 +938,24 @@ impl RolloutWorld {
                 if !self.playable(pa) || !self.playable(pb) {
                     continue;
                 }
-                // A body box disabled by a non-dash ability (bow, platform)
-                // collides with nothing, so the pair never shoves.
-                let a_boxless = self.players[pa].active != ActiveAbility::None
-                    && !self.players[pa].base.dash.active;
-                let b_boxless = self.players[pb].active != ActiveAbility::None
-                    && !self.players[pb].base.dash.active;
-                if a_boxless || b_boxless {
+                // Non-instant abilities disable the original slime box, but
+                // Bow and Platform anticipation replace it with their own
+                // Player-layer trigger. The active ability has no
+                // SlimeController callback; the ordinary slime on the other
+                // side still receives its one-sided overlap push.
+                let collider_enabled = |slot: &PlayerSlot| match slot.active {
+                    ActiveAbility::None | ActiveAbility::Dash | ActiveAbility::Bow => true,
+                    ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
+                };
+                if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
                     continue;
                 }
                 let a_pos = self.players[pa].base.position;
                 let b_pos = self.players[pb].base.position;
-                let a_dash = self.players[pa].base.dash.active;
-                let b_dash = self.players[pb].base.dash.active;
-                if !a_dash {
+                if self.players[pa].active == ActiveAbility::None {
                     self.players[pa].base.push_from(b_pos, true);
                 }
-                if !b_dash {
+                if self.players[pb].active == ActiveAbility::None {
                     self.players[pb].base.push_from(a_pos, false);
                 }
             }
@@ -1037,27 +1024,11 @@ impl RolloutWorld {
                 let ability = slot.abilities[s];
                 {
                     let slot = &mut self.players[index];
-                    // Player.Position is published before PlayerBody moves.
-                    // When an airborne slime enters a separate ability body,
-                    // SyncPhysicsTo copies the newer FixTransform position,
-                    // which is one velocity integration ahead of the last
-                    // observed player position.
+                    // PlayerPhysics updates before SlimeController. If this
+                    // airborne body enters an ability, its PlayerInfo package
+                    // has current gravity/collision state but PlayerBody has
+                    // not performed another position integration.
                     if !slot.base.grounded {
-                        // Reproduce the pending PlayerBody movement rather
-                        // than merely integrating its old velocity: gravity,
-                        // air control, and collision rays all run before the
-                        // transform which EnterAbility copies is published.
-                        let movement_action = Action {
-                            angle: action.angle,
-                            buttons: action.buttons & 1,
-                        };
-                        slot.base.step(movement_action, &self.platforms);
-                        // In Unity the old PlayerBody integrates its previous
-                        // velocity before PlayerPhysics applies gravity. The
-                        // rollout's combined step applies gravity first, so a
-                        // second gravity-only phase produces the velocity in
-                        // the PlayerInfo package while retaining the correctly
-                        // advanced transform.
                         slot.base.gravity_step(&self.platforms);
                     }
                     slot.ability_origin = slot.base.position;
@@ -1097,8 +1068,6 @@ impl RolloutWorld {
                         // vector; airborne entry slows to a tenth (slow-mo).
                         slot.bow = BowState {
                             aim: slot.base.up,
-                            reported_position: slot.base.position,
-                            reported_tick: u32::MAX,
                             ..BowState::default()
                         };
                         if !slot.base.grounded {
@@ -1123,8 +1092,6 @@ impl RolloutWorld {
                         // its position; the ability object carries no velocity.
                         slot.platform = PlatformState {
                             active_corner: Vec2::new(Fix::ONE, Fix::ONE),
-                            reported_position: slot.base.position,
-                            reported_tick: self.tick,
                             ..PlatformState::default()
                         };
                         slot.base.velocity = Vec2::ZERO;
@@ -1172,12 +1139,27 @@ impl RolloutWorld {
             buttons: action.buttons & 1,
         };
         self.players[index].base.step(masked, &self.platforms);
+        if self.players[index].dash_exit_followup {
+            self.players[index].reported_position = self.players[index].base.position;
+            self.players[index].reported_tick = self.tick;
+            self.players[index].dash_exit_followup = false;
+        }
         let _ = data;
     }
 
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action) {
         self.players[index].base.step(action, &self.platforms);
+        // Dash precedes Ability in the prefab updater order, so the public
+        // player position sees Dash's post-update transform on every active
+        // pass, including activation and teleport/exit.
+        if self.players[index].active == ActiveAbility::Dash {
+            self.players[index].reported_position = self.players[index].base.position;
+            self.players[index].reported_tick = self.tick;
+            if !self.players[index].base.dash.active {
+                self.players[index].dash_exit_followup = true;
+            }
+        }
         let dash_cast = {
             let caster = &self.players[index].base;
             (caster.dash.active && caster.dash.time == DT).then_some((
@@ -1258,8 +1240,6 @@ impl RolloutWorld {
     /// physics, post-fire recoil flight, and the exit conditions.
     fn bow_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let bow = &data.bow;
-        self.players[index].bow.reported_position = self.players[index].base.position;
-        self.players[index].bow.reported_tick = self.tick;
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let dir = action.direction();
@@ -1327,8 +1307,10 @@ impl RolloutWorld {
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
-            // Post-fire flight: full gravity, blended air control, exit on
-            // landing.
+            // Post-fire flight. BowTransform raycasts immediately after full
+            // gravity, before its later aerial-control blend. This matters
+            // for grounded shots: the downward recoil reattaches and exits
+            // before horizontal aim can skew the landing ray.
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
@@ -1337,23 +1319,26 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            let before = slot.base.velocity;
-            crate::player_physics::air_movement(
-                &mut slot.base.velocity,
-                dir.x,
-                bow.constants.air_accel,
-                bow.constants.max_speed,
-            )
-            .expect("valid bow air constants");
-            slot.base.velocity = before + (slot.base.velocity - before) * bow.aireal_control_blend;
-            let speed = slot.base.velocity.length();
-            if speed > bow.constants.max_speed {
-                slot.base.velocity *= bow.constants.max_speed / speed;
-            }
             slot.base.collision_rays(platforms);
             if slot.base.grounded {
                 exit = true;
             } else {
+                // The modified velocity is then consumed by PlayerBody's
+                // later integration in the same updater pass.
+                let before = slot.base.velocity;
+                crate::player_physics::air_movement(
+                    &mut slot.base.velocity,
+                    dir.x,
+                    bow.constants.air_accel,
+                    bow.constants.max_speed,
+                )
+                .expect("valid bow air constants");
+                slot.base.velocity =
+                    before + (slot.base.velocity - before) * bow.aireal_control_blend;
+                let speed = slot.base.velocity.length();
+                if speed > bow.constants.max_speed {
+                    slot.base.velocity *= bow.constants.max_speed / speed;
+                }
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
@@ -1427,10 +1412,6 @@ impl RolloutWorld {
     /// cap, and the ejection along the platform's up vector.
     fn platform_ability_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let pd = &data.platform;
-        // SlimeController/Player.Update has already published the ability
-        // body's current transform before PlatformTransform changes it.
-        self.players[index].platform.reported_position = self.players[index].base.position;
-        self.players[index].platform.reported_tick = self.tick;
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let aim = action.direction();
@@ -2337,6 +2318,7 @@ impl RolloutWorld {
         }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
+        slot.dash_exit_followup = false;
         if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
             self.players[killer as usize - 1].kills += 1;
         }
@@ -2562,7 +2544,6 @@ impl RolloutWorld {
             let bow_aim = slot.bow.aim;
             let position = slot.base.position;
             let rotation = slot.base.rotation;
-            let velocity = slot.base.velocity + slot.base.external_velocity;
             let basis = Vec2::angle(rotation);
             let data = data::get();
 
@@ -2579,8 +2560,12 @@ impl RolloutWorld {
             let extents = data.player.hurtbox_extents;
             body.x = position.x.raw();
             body.y = position.y.raw();
-            body.vx = velocity.x.raw();
-            body.vy = velocity.y.raw();
+            // The hurtbox has PlayerBody movement on the same GameObject but
+            // no BoplBody. DPhysicsBox therefore registers an infinite-mass
+            // trigger PhysicsBody whose observed velocity remains zero; the
+            // moving velocity is exposed by the separate slime record.
+            body.vx = 0;
+            body.vy = 0;
             let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
             let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
             body.right_x = right.x.raw();
@@ -2826,10 +2811,8 @@ impl RolloutWorld {
             if slot.active == ActiveAbility::Platform {
                 player_flags |= 32;
             }
-            let position = if slot.platform.reported_tick.checked_add(1) == Some(tick) {
-                slot.platform.reported_position
-            } else if slot.bow.reported_tick.checked_add(1) == Some(tick) {
-                slot.bow.reported_position
+            let position = if slot.reported_tick.checked_add(1) == Some(tick) {
+                slot.reported_position
             } else {
                 slot.base.position
             };
