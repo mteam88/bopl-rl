@@ -72,6 +72,10 @@ void my_init(Env *env, Dict *kwargs) {
      * final trainer's timeout penalty. */
     env->reward_kill=(float)option(kwargs, "reward_kill_milli", 100)/1000.0f;
     env->reward_timeout=(float)option(kwargs, "reward_timeout_milli", 0)/1000.0f;
+    /* Scripted opponent banks (bopl_bots.h): nibble b of scripted_kinds is the
+     * bot kind bank b plays instead of frozen weights (0 = policy bank). */
+    env->scripted_kinds=(uint32_t)option(kwargs, "scripted_kinds", 0);
+    env->scripted_level=option(kwargs, "scripted_level", BOPL_BOT_HARD);
     if (env->players<1 || env->players>6 || env->repeat<1 || env->repeat>16) abort();
     for (int i=0; i<env->players; i++) {
         env->config.player[i].abilities[0]=(uint32_t)option(kwargs, "ability1", 2);

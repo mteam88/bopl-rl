@@ -67,6 +67,25 @@ void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
     env->rng=seed; env->config.map=map; c_reset(env);
     memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
 }
+/* Scripted opponents (bopl_bots.h): pin a bot on one player. It decides inside
+ * research_step from the true game state; the caller's action floats for that
+ * player are ignored. kind 0 detaches. Persists across research_reset (each
+ * match re-seeds the bot from the environment's dedicated stream); this call
+ * also re-arms the bot for the already-reset current episode. */
+int research_bot(BoplPuffer *env, int player, int kind, int level) {
+    if (player<0 || player>=env->players || kind<0 || kind>BOPL_BOT_KINDS
+        || level<0 || level>=BOPL_BOT_LEVELS) return -1;
+    env->bot_select[player]=(uint8_t)kind;
+    env->bot_select_level[player]=(uint8_t)level;
+    if (kind) {
+        env->bot_rng=env->bot_rng*747796405u+2891336453u;
+        bopl_bot_reset(&env->bots[player], kind, level, env->bot_rng);
+    }
+    return 0;
+}
+const char *research_bot_name(int kind) {
+    return kind>=0 && kind<=BOPL_BOT_KINDS?BOPL_BOT_NAMES[kind]:NULL;
+}
 void research_step(BoplPuffer *env, const float *actions) { memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float)); c_step(env); }
 const float *research_obs(BoplPuffer *env) { return env->observations; }
 const float *research_telemetry(BoplPuffer *env) { return env->last_telemetry; }

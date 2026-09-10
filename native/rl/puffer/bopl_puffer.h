@@ -2,6 +2,7 @@
 #define BOPL_PUFFER_H
 #include "bopl_rl.h"
 #include "bopl_layout.h"
+#include "bopl_bots.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -115,6 +116,16 @@ typedef struct {
      * still applies after this one; held: that state; hold_run: consecutive
      * decisions each button has been down (0 when up). Aim is never latched. */
     int hold_left[6]; uint16_t held[6]; int hold_run[6][4];
+    /* Scripted opponents (bopl_bots.h, SCRIPTED_BOTS.md). Training: banks whose
+     * nibble in scripted_kinds is set play a bot instead of frozen weights (the
+     * bank's GPU rows still run; their sampled actions are ignored). Evaluation:
+     * research_bot pins a bot on a player. bot_select is the per-player
+     * assignment of the current match; bots draw from their own rng stream so
+     * a scripted run's map/seed/side sequences match an unscripted one. */
+    uint32_t scripted_kinds; int scripted_level;
+    uint8_t bot_select[6], bot_select_level[6];
+    BoplBot bots[6];
+    uint32_t bot_rng;
     /* Reward shaping. Phase-1 comparison keeps the old trainer's values (kill
      * 0.1, timeout 0); the final trainer uses sparse outcome only, with a
      * timeout penalty paid by both players. */
@@ -368,6 +379,12 @@ static void init(BoplPuffer *env) {
     env->scratch=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
     if (!env->history || !env->sample || !env->scratch) abort();
     if (env->banks && (env->active_bank<0 || env->active_bank>=env->banks)) { fprintf(stderr, "Bopl RL: historical environment without a bank\n"); abort(); }
+    for (int bank=0; bank<BOPL_MAX_BANKS; bank++) {
+        uint32_t kind=(env->scripted_kinds>>(4*bank))&15u;
+        if (kind>BOPL_BOT_KINDS) { fprintf(stderr, "Bopl RL: unknown scripted bot kind %u\n", kind); abort(); }
+    }
+    if (env->scripted_level<0 || env->scripted_level>=BOPL_BOT_LEVELS) { fprintf(stderr, "Bopl RL: scripted bot level\n"); abort(); }
+    env->bot_rng=env->rng*2654435761u ^ 0x9E3779B9u;
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
     /* The spare is a second runtime (~240 MB) for an in-process game, the
@@ -443,6 +460,18 @@ static void c_reset(BoplPuffer *env) {
         env->side=(int)(bopl_side_random(env)&1u);
         /* A fresh recurrent state for the row this match's opponent runs on. */
         *env->terminal_ptr[1+env->active_bank]=1;
+        /* A scripted bank drives this match's opponent player from C; the
+         * bank's GPU row still steps (fixed graph) but its actions are unread. */
+        memset(env->bot_select, 0, sizeof(env->bot_select));
+        uint32_t kind=(env->scripted_kinds>>(4*env->active_bank))&15u;
+        if (kind) {
+            env->bot_select[1-env->side]=(uint8_t)kind;
+            env->bot_select_level[1-env->side]=(uint8_t)env->scripted_level;
+        }
+    }
+    for (int i=0; i<env->players; i++) if (env->bot_select[i]) {
+        env->bot_rng=env->bot_rng*747796405u+2891336453u;
+        bopl_bot_reset(&env->bots[i], env->bot_select[i], env->bot_select_level[i], env->bot_rng);
     }
     env->boundary_reached=1; env->matches++;
     compute_observations(env);
@@ -458,11 +487,22 @@ static void c_step(BoplPuffer *env) {
     memset(telemetry, 0, (size_t)env->players*BOPL_TELEMETRY_SIZE*sizeof(float));
     for (int s=0; s<env->num_agents; s++) { *env->reward_ptr[s]=0; *env->terminal_ptr[s]=0; }
     env->stepped++;
+    const BoplRlState *before=bopl_rl_state(env->world);
+    if (!before) bopl_failed(env, "state");
     BoplRlAction actions[6]={{0}};
     int fresh[6]={0}, holds[6]={0};
     for (int i=0; i<env->players; i++) {
-        const float *action=env->action_ptr[bopl_slot(env, i)];
-        float angle=action[0], buttons=action[1], hold=action[2];
+        float angle, buttons, hold;
+        if (env->bot_select[i]) {
+            /* Scripted player: decide from the true current state through the
+             * same latch/mask constraints; the routed slot's action is unread. */
+            uint8_t decided[3];
+            bopl_bot_decide(&env->bots[i], before, i, env->hold_left[i], env->held[i], env->hold_run[i], decided);
+            angle=decided[0]; buttons=decided[1]; hold=decided[2];
+        } else {
+            const float *action=env->action_ptr[bopl_slot(env, i)];
+            angle=action[0]; buttons=action[1]; hold=action[2];
+        }
         if (!isfinite(angle) || !isfinite(buttons) || !isfinite(hold) || angle<0 || angle>255 || buttons<0 || buttons>15
             || hold<0 || hold>BOPL_ACT_HOLD-1 || floorf(angle)!=angle || floorf(buttons)!=buttons || floorf(hold)!=hold) {
             fprintf(stderr, "Invalid PufferLib action\n"); abort();
@@ -471,8 +511,6 @@ static void c_step(BoplPuffer *env) {
         actions[i].angle=(uint8_t)angle;
         actions[i].buttons=bopl_latch(env, i, (uint16_t)buttons, holds[i], &fresh[i]);
     }
-    const BoplRlState *before=bopl_rl_state(env->world);
-    if (!before) bopl_failed(env, "state");
     uint32_t ticks=before->header.episode_ticks;
     // Sample at phase 3 of each four-tick decision. At t=12 return the
     // observation from t=3, giving an exact nine-tick delay thereafter.

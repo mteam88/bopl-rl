@@ -185,8 +185,13 @@ the slot is negotiated explicitly between the Rifts.
   once the 400M run shows more decisions per hour would change the outcome, and
   then scoped to the training loadout, mechanic by mechanic with Unity goldens,
   arrows first. No rewrite now.
-- **Native scripted evaluation opponents** (archer/pursuer/evasive) as fixed
-  anchors after launch; the ladder grows a scripted-anchor option then.
+- **Native scripted evaluation opponents** — done (2026-09-09,
+  `native/rl/SCRIPTED_BOTS.md`): archer/pursuer/evasive/mixed at three levels
+  in `puffer/bopl_bots.h`, wired as named evaluation opponents
+  (`evaluate.py --scripted-opponents`, default `mixed-hard`), ladder anchors
+  (`elo_ladder.py --scripted-anchors`), and optional training banks
+  (`train.py --scripted-bots`, resume-safe). Mixed-hard beats random/initial
+  94% and still beats 007's 777M checkpoint 56%.
 - **Evaluation side asymmetry** (notes.md 2026-09-07 22:26). Across the examined
   evaluations, pooled side-0 / left-spawn wins are ~.54 vs ~.36 for side 1.
   Side 0 has more wins in each evaluated checkpoint, including the first,

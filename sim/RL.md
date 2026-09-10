@@ -338,6 +338,18 @@ ran, and a changed `--entropy` is refused.
 `native/artifacts/rl/long-run-1b/launch-005-s73-1b.sh` is the idempotent
 launcher (adds `--resume` when `pool/state.json` exists; `STEPS=` extends).
 
+## Scripted opponents (2026-09-09)
+
+`native/rl/puffer/bopl_bots.h` adds hand-coded archer/pursuer/evasive/mixed
+bots (three difficulty levels) that read the true sim state but act through
+the exact policy interface (4-tick decisions, latch, arrow-release mask).
+They serve as named evaluation opponents (`evaluate.py --scripted-opponents`,
+default `mixed-hard`), ladder anchors (`elo_ladder.py --scripted-anchors`)
+and optional training banks (`train.py --scripted-bots mixed`, the last banks,
+outside the self-play pool, resume-safe). No change to the action space,
+observations, masks, rewards, or the sim itself. Design, measured game
+constants, strength tables and pitfalls: `native/rl/SCRIPTED_BOTS.md`.
+
 ## Known gaps
 
 - **Memory** (fixed 2026-09-08, `602709e` + `2c0b01c`): the export's
