@@ -145,7 +145,9 @@ def arguments():
     p.add_argument('--game', type=Path)
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
-    p.add_argument('--buffers', type=int, choices=(1, 2))
+    p.add_argument('--buffers', type=int, choices=(1, 2, 4, 8),
+                   help='Rollout buffers (independent OMP teams + CUDA streams). 4 measured +11%% learner/s over 2 '
+                        'at 128 workers on the f64 sim (2026-09-10): GPU sync of one buffer overlaps env stepping of the others')
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
     p.add_argument('--encoder', choices=('linear', 'set'), default='linear')
