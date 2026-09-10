@@ -343,6 +343,8 @@ def main():
         "animate_velocity": {
             "speed": fix(rp_av, "speed"),
             "mu": fix(rp_av, "mu"),
+            "rotation_speed": fix(rp_av, "rotationSpeed"),
+            "rotation_mu": fix(rp_av, "rotationMu"),
             "sudden_death_speed": fix(rp_av, "suddenDeathSpeed"),
             "sudden_death_max_delay": fix(rp_av, "MaxRandomSuddenDeathDelay"),
             "sudden_death_acceleration": fix(rp_av, "SuddenDeathAcceleration"),
