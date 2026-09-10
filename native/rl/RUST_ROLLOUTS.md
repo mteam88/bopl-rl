@@ -50,7 +50,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   fire-on-release (early release fires from transform sprite index 2, tick
   11), knockback recoil, arrow gravity -40 (the DetPhysics override, not
   Unity's -9.82), policy-visible animator charge, delayed hurt-owner, the
-  20-arrow owner cap, and projectile collision during a dash raycast.
+  20-arrow owner cap, projectile collision during a dash raycast, and
+  post-integration discrete circle contacts in DetPhysics group order.
+  Terrain consumes an arrow; PlayerBody-backed hurtboxes kill without
+  consuming it, matching `Arrow.OnCollide`.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
   ejection and same-pass exit reattachment, one-platform-per-player,
@@ -85,12 +88,6 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   event, so late sudden-death random delays cannot remain sample-for-sample
   identical. Closing this requires pickup bodies/collisions and the remaining
   catalog abilities rather than a timing-only patch.
-- Flying arrows use a swept ray against the supported hurtboxes and platforms;
-  Unity integrates the arrow circle and then uses discrete DetPhysics contacts.
-  The scripted ordinary hit matrix currently agrees on every hit/death, while a
-  deliberately high-speed tunnelling edge can differ. A faithful replacement
-  should use the generic circle/RR, circle/box and circle/circle contact order
-  and preserve callback destruction semantics.
 - Landed arrows are freed from the native entity table instead of remaining
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
@@ -112,7 +109,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | Bow used the original slime hurtbox during transforms, lost ordinary-slime pushes, raycasted after aerial control, and exposed charge one animator pass early | fixed with active ability colliders and source updater/animator ordering |
 | behavior-changing | Respawn point/timing choice was absent and fast-spawn upward motion lagged one pass | fixed: three directional points, early jump confirm, exact selection publication and launch phase |
 | behavior-changing | Curve tangents and old-platform shrink removal were absent | fixed: exported Hermite tangents/exact evaluator and collidable `being_removed` bodies |
-| behavior-changing | Rust arrow flight is swept while Unity projectile contacts are discrete | open plan described above; common scripted hit matrix agrees |
+| behavior-changing | Rust arrow flight was swept while Unity integrates first and dispatches discrete Circle/RR, Circle/Circle, then Circle/Box contacts | fixed; terrain callbacks consume the arrow before player callbacks, while a PlayerBody kill leaves it flying |
 | exploitable | Ability pickups and all abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
 
@@ -250,25 +247,26 @@ second in-process backend could accidentally reuse the first library's runtime
 and turn an intended .NET-vs-Rust check into .NET-vs-.NET.
 
 At 300 episodes with that harness fixed (seeds 1000-1299), the base
-(`7f6761b`) versus the final platform/phase implementation was:
+(`7f6761b`), platform/phase implementation, and discrete-arrow implementation
+were:
 
-| | .NET reference | Rust before | Rust after |
-|---|---:|---:|---:|
-| mean length (decisions) | 63.0 | 73.4 | 66.5 |
-| timeouts | 0 | 0 | 0 |
-| environment deaths | 133 | 144 | 153 |
-| self deaths | 165 | 153 | 146 |
-| opponent deaths | 2 | 3 | 1 |
-| dash activations | 221 | 284 | 240 |
-| bow activations | 498 | 560 | 510 |
-| platform activations | 86 | 129 | 113 |
-| arrows fired | 484 | 551 | 497 |
-| arrow hits | 2 | 3 | 1 |
-| winner agreement | - | 267/300 | 284/300 |
+| | .NET reference | Rust base | Rust platform/phase | Rust discrete arrows |
+|---|---:|---:|---:|---:|
+| mean length (decisions) | 63.0 | 73.4 | 66.5 | 62.4 |
+| timeouts | 0 | 0 | 0 | 0 |
+| environment deaths | 133 | 144 | 153 | 138 |
+| self deaths | 165 | 153 | 146 | 160 |
+| opponent deaths | 2 | 3 | 1 | 2 |
+| dash activations | 221 | 284 | 240 | 217 |
+| bow activations | 498 | 560 | 510 | 489 |
+| platform activations | 86 | 129 | 113 | 87 |
+| arrows fired | 484 | 551 | 497 | 476 |
+| arrow hits | 2 | 3 | 1 | 2 |
+| winner agreement | - | 267/300 | 284/300 | 296/300 |
 
-The episode-length gap fell from 10.4 to 3.5 decisions (66%). Mean position
-divergence remains under 0.002 through decision 16, then grows chaotically
-(0.083/0.198 at decisions 31/46 after the change).
+The episode-length gap fell from +10.4 to -0.6 decisions (94% by absolute
+gap). Mean position divergence remains under 0.002 through decision 16, then
+grows chaotically (0.083/0.197 at decisions 31/46 after the change).
 
 Scripted A/B traces (`native/rl/research/rust_ab/*.c`, built against
 `bopl_rl.h` the same way as `fidelity_gate.c`) cover movement states, bow
@@ -282,7 +280,11 @@ drifts one raw unit per tick, 2.3e-7 units at tick 1620; see "Number type")
 and the landing player settles within 0.0001 units. For the overlap scenario, the maximum map/spawned-platform deltas fell
 from 1.385/1.743 to 0.047/0.011 units; their final deltas are 0.044/0.002. The
 player's maximum/final delta is 0.041/0.041 after matching Platform's
-synchronous exit callback (previous maximum: 0.788).
+synchronous exit callback (previous maximum: 0.788). In `ability_hitbox_ab`,
+the swept implementation missed an arrow/Bow collision that .NET delivered at
+tick 144 and incorrectly removed its arrow (`144/2` versus no death, arrow
+counts `1/0`). Discrete contacts match the death exactly at `144/2` and both
+backends retain one live arrow (`1/1`).
 
 ## Transfer test
 
@@ -365,6 +367,12 @@ noticeably even between short runs (a reverse-order adjacent pair measured
 only conclude that no large throughput regression was observed. The prior
 256-worker learner headline is about 127k learner steps/s; it was deliberately
 not rerun against the live sweep.
+
+For the discrete-arrow change alone, two back-to-back, bracketed 400k-tick
+runs under the same limits measured old/new stepping at 96.9k/99.3k ticks/s,
+then new/old at 100.2k/100.5k. Including resets they measured 62.5k/66.5k and
+67.1k/67.3k. The ordering reversal is background-load noise; there is no
+measurable throughput cost in this test.
 
 ### Speed work (2026-09-10)
 

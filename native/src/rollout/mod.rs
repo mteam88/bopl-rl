@@ -203,10 +203,12 @@ const CURSOR_SENSITIVITY: Fix = Fix::from_raw(107_374_182_400); // 25.0
 const SLIME_AWAKE_TICK: u32 = 62;
 const TIMER_START: Fix = Fix::from_raw(-6_442_450_944); // -1.5s
 
-/// A live arrow (Arrow.cs + Projectile.cs): a ballistic projectile that
-/// kills players on contact and sticks to whatever it hits. A stuck arrow's
-/// collider is destroyed in the .NET sim, so it vanishes from the observation;
-/// here the slot is simply freed.
+/// A live arrow (Arrow.cs + Projectile.cs): a ballistic projectile that kills
+/// players on contact and sticks to supported non-player geometry. Ordinary
+/// PlayerBody hurtboxes do not satisfy Arrow's `BoplBody` check, so an arrow
+/// keeps flying after killing a slime. A stuck arrow's collider is destroyed
+/// in the .NET sim, so it vanishes from the observation; here the slot is
+/// simply freed.
 #[derive(Clone, Copy, Default)]
 pub struct Arrow {
     pub active: bool,
@@ -967,8 +969,9 @@ impl RolloutWorld {
             };
             self.update_obs_state(index, action);
         }
-        self.arrows_tick(data);
+        self.arrows_integrate(data);
         self.platforms_tick(data);
+        self.arrows_contacts(data);
         self.deaths_tick();
         self.tick += 1;
         self.episode_ticks += 1;
@@ -1855,109 +1858,129 @@ impl RolloutWorld {
         }
     }
 
-    /// Ballistic flight, swept collision against players and platforms, the
-    /// hurt-owner delay, and the scene-bounds despawn (never upward).
-    fn arrows_tick(&mut self, data: &data::RolloutData) {
+    /// DetPhysics integrates every BoplBody before constructing contact
+    /// manifolds. Keep projectile time/gravity in that body phase; contacts
+    /// run after platform integration below.
+    fn arrows_integrate(&mut self, data: &data::RolloutData) {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
+        for arrow in &mut self.arrows {
+            if !arrow.active || !arrow.registered {
+                continue;
+            }
+            arrow.time_passed += DT;
+            if !arrow.can_hurt_owner
+                && arrow.hurt_owner_after > Fix::ZERO
+                && arrow.time_passed > arrow.hurt_owner_after
+            {
+                arrow.can_hurt_owner = true;
+            }
+            arrow.velocity.y += gravity * DT;
+            arrow.position += arrow.velocity * DT;
+        }
+    }
+
+    /// DetPhysics contact group order for Arrow's circle is Circle/RR,
+    /// Circle/Circle, then Circle/Box. Arrow.OnCollide consumes wall contacts,
+    /// but intentionally returns without destroying itself for PlayerBody
+    /// hurtboxes; PlayerCollision can therefore kill one or more slimes while
+    /// the arrow continues flying.
+    fn arrows_contacts(&mut self, data: &data::RolloutData) {
         let radius = data.arrow.radius;
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active || !self.arrows[i].registered {
                 continue;
             }
-            {
-                let a = &mut self.arrows[i];
-                a.time_passed += DT;
-                if !a.can_hurt_owner
-                    && a.hurt_owner_after > Fix::ZERO
-                    && a.time_passed > a.hurt_owner_after
-                {
-                    a.can_hurt_owner = true;
-                }
-                a.velocity.y += gravity * DT;
-            }
-            let a = self.arrows[i];
-            let speed = a.velocity.length();
-            if speed == Fix::ZERO {
+            let arrow = self.arrows[i];
+            let circle = Circle {
+                center: arrow.position,
+                radius,
+            };
+
+            // Circle/RR callbacks precede all player shape groups. If an arrow
+            // overlaps terrain and a player in the same physics pass, the wall
+            // callback destroys its components before PlayerCollision runs.
+            if self.platforms.iter().any(|platform| {
+                crate::physics::contact::circle_rounded(circle, platform.collider).is_some()
+            }) {
+                self.destroy_arrow(i);
                 continue;
             }
-            let direction = a.velocity * (Fix::ONE / speed);
-            let reach = speed * DT + radius;
-            let wall = crate::world::closest(&self.platforms, a.position, direction, reach, None)
-                .map(|(_, near, _)| near);
-            let mut victim: Option<(usize, Fix)> = None;
-            for (j, p) in self.players.iter().enumerate() {
-                if !p.base.alive || p.respawn_ticks > 0 {
-                    continue;
-                }
-                if p.active == ActiveAbility::Platform && p.platform.phase != PLATFORM_ANTICIPATION
+
+            let mut victims = Vec::new();
+            // Platform anticipation replaces the original slime box with a
+            // Player-layer circle and is the only supported player circle.
+            for (j, player) in self.players.iter().enumerate() {
+                if !self.playable(j)
+                    || player.active != ActiveAbility::Platform
+                    || player.platform.phase != PLATFORM_ANTICIPATION
+                    || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
                 {
                     continue;
                 }
-                if p.base.id == a.owner && !a.can_hurt_owner {
+                let hurtbox = Circle {
+                    center: player.base.position,
+                    radius: data.platform.hurtbox_radius,
+                };
+                if crate::physics::contact::circle_circle(circle, hurtbox).is_some() {
+                    victims.push(j);
+                }
+            }
+
+            // Normal, Dash, and Bow hurtboxes are Player-layer boxes. Formed
+            // Platform has no player hurtbox until the original slime exits.
+            for (j, player) in self.players.iter().enumerate() {
+                if !self.playable(j)
+                    || player.active == ActiveAbility::Platform
+                    || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
+                {
                     continue;
                 }
-                // A non-instant ability disables the slime GameObject and its
-                // hurtbox. Projectile callbacks come from the active ability's
-                // own collider: Bow's aimed box or Platform's anticipation
-                // circle. Dash already keeps its oriented ability box in the
-                // shared movement collider.
-                let hit = match p.active {
+                let hurtbox = match player.active {
                     ActiveAbility::Bow => {
                         let extents = data.bow.hurtbox_extents;
-                        let up = if p.bow.aim == Vec2::ZERO {
+                        let up = if player.bow.aim == Vec2::ZERO {
                             Vec2::UP
                         } else {
-                            p.bow.aim
+                            player.bow.aim
                         };
                         OrientedBox {
-                            center: p.base.position,
+                            center: player.base.position,
                             right: up.perp_cw() * extents.x,
                             up: up * extents.y,
                             inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                         }
-                        .raycast_within(a.position, direction, reach)
                     }
-                    ActiveAbility::Platform => Circle {
-                        center: p.base.position,
-                        radius: data.platform.hurtbox_radius,
-                    }
-                    .raycast(a.position, direction),
-                    _ => p.base.collider.raycast_within(a.position, direction, reach),
+                    _ => player.base.collider,
                 };
-                if let Some(hit) = hit
-                    && hit.near <= reach
-                    && hit.far >= Fix::ZERO
-                    && victim.is_none_or(|(_, d)| hit.near < d)
-                {
-                    victim = Some((j, hit.near.max(Fix::ZERO)));
+                if crate::physics::contact::circle_box(circle, hurtbox).is_some() {
+                    victims.push(j);
                 }
             }
-            match (victim, wall) {
-                (Some((j, d)), w) if w.is_none_or(|wd| d <= wd) => {
-                    let victim_id = self.players[j].base.id;
-                    let cause = if a.owner == victim_id {
-                        CAUSE_ACCIDENT
-                    } else {
-                        CAUSE_OTHER
-                    };
-                    self.kill(j, a.owner, cause);
-                    if a.owner != victim_id && a.owner >= 1 {
-                        self.players[a.owner as usize - 1].telemetry.arrow_hits += 1;
-                    }
-                    self.destroy_arrow(i);
+
+            for victim in victims {
+                if !self.players[victim].base.alive {
+                    continue;
                 }
-                (_, Some(_)) => self.destroy_arrow(i),
-                _ => {
-                    let a = &mut self.arrows[i];
-                    a.position += a.velocity * DT;
-                    let out = a.position.y < Fix::from_f32(-11.3)
-                        || a.position.x.abs() > Fix::from_f64(131.25);
-                    if out {
-                        self.destroy_arrow(i);
-                    }
+                let victim_id = self.players[victim].base.id;
+                let cause = if arrow.owner == victim_id {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
+                self.kill(victim, arrow.owner, cause);
+                if arrow.owner != victim_id && arrow.owner >= 1 {
+                    self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
                 }
+            }
+
+            // DestroyIfOutsideSceneBounds runs independently of contacts and
+            // has NeverDestroyAbove enabled on Arrow.
+            let out = arrow.position.y < Fix::from_f32(-11.3)
+                || arrow.position.x.abs() > Fix::from_f64(131.25);
+            if out {
+                self.destroy_arrow(i);
             }
         }
     }
