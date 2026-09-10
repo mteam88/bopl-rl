@@ -617,6 +617,14 @@ impl RolloutWorld {
             }
         }
 
+        // GameSessionHandler.Init samples one randomDelay per authored ground
+        // for the level-intro animation. The rollout starts after that cosmetic
+        // animation, but must consume the same samples so later gameplay RNG
+        // (notably AnimateVelocity's sudden-death delays) stays aligned.
+        for _ in &def.platforms {
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        }
+
         // Players at their team spawns (GameSessionHandler.SpawnPlayers: one
         // authored spawn per team slot, wrapped for extra teams).
         for i in 0..players {
