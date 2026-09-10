@@ -88,7 +88,7 @@ scale = "auto"
 [params.learning_rate]
 distribution = "log_normal"
 min = 5e-5
-max = 2e-3
+max = 8e-3  # raised from 2e-3 mid-sweep (2026-09-10, after trials 011-014 pinned the old cap)
 scale = 0.5
 
 [params.learner_passes]
