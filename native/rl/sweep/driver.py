@@ -181,8 +181,12 @@ class Driver:
     def environment(self):
         env = dict(os.environ)
         env['PYTHONPATH'] = str(PUFFERLIB_DIR)
-        env.setdefault('BOPL_RL_GAME', str(self.spec.fixed.get('game', DEFAULT_GAME)))
-        env.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
+        # Rust picks its own game path and hosts every world in one runtime
+        # (train.py); the .NET defaults below would otherwise leak through
+        # train.py's setdefault and load one library copy per 4 worlds.
+        if env.get('BOPL_RL_BACKEND', '').lower() != 'rust':
+            env.setdefault('BOPL_RL_GAME', str(self.spec.fixed.get('game', DEFAULT_GAME)))
+            env.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
         return env
 
     def launch(self, trial):

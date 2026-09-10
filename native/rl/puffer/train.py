@@ -383,6 +383,7 @@ def main():
     started = time.monotonic()
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
     trainer = None
+    pending = []  # background evaluation (process, log) pairs
     stop = False
     def request_stop(signum, frame):
         nonlocal stop
@@ -463,10 +464,22 @@ def main():
         config['evaluation_baseline_identity'] = checkpoint_identity(Path(config['evaluation_baseline']))
         atomic_json(output/'config.json', config)
         evaluated_steps = set()
+        # Evaluation runs in the background: the trainer keeps rolling out while
+        # evaluate.py plays the saved checkpoint (a blocking eval cost 22-33% of
+        # trial wall time in the overnight-1 sweep). At most one is in flight;
+        # the next eval, the final save and shutdown all wait for it.
+        def finish_evaluation():
+            while pending:
+                process, log = pending.pop()
+                code = process.wait()
+                log.close()
+                if code:
+                    raise subprocess.CalledProcessError(code, process.args)
         def evaluate(checkpoint):
             if (checkpoint_identity(Path(config['evaluation_baseline'])) != config['evaluation_baseline_identity']
                     or opponents(frozen_manifest) != frozen):
                 raise RuntimeError('Frozen evaluation checkpoint identity changed during training')
+            finish_evaluation()
             command = [sys.executable, str(ROOT/'native/rl/research/evaluate.py'), '--run', str(output),
                        '--checkpoint', str(checkpoint), '--initial', config['evaluation_baseline'],
                        '--evaluation-maps', ','.join(map(str, a.evaluation_maps)),
@@ -476,8 +489,8 @@ def main():
                        '--scripted-opponents', a.scripted_opponents]
             if frozen_manifest:
                 command += ['--opponents', str(frozen_manifest)]
-            with (output/'evaluation.log').open('a') as log:
-                subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+            log = (output/'evaluation.log').open('a')
+            pending.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             evaluated_steps.add(counts['game_steps'])
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
@@ -576,8 +589,12 @@ def main():
             final = save()
             if not a.no_eval and not stop and counts['game_steps'] not in evaluated_steps:
                 evaluate(final)
+            finish_evaluation()
         status('stopped' if stop else 'complete', checkpoint=str(final))
     except BaseException as error:
+        for process, log in pending:
+            process.terminate()
+            log.close()
         status('failed', failure=f'{type(error).__name__}: {error}')
         raise
     finally:
