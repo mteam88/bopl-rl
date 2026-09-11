@@ -155,47 +155,44 @@ positions had drifted 0.2 units through a jump/landing loop.
 | Sticky perimeter extents were `e`; Unity reads `One / (One / e)` back from the collider | `StickyRoundedRectangle.UpdateBounds` (:104), `DPhysicsRoundedRect.CalcExtents` (:351-359), refreshed after animate-in at GameSessionHandler.cs:769 | `data::surface_extents` on map and spawned platforms |
 | Collider axes were `basis * e`; Unity builds `ComplexMul(Vec2.right / inverseExtents, basis)` (one raw unit apart on negated products and non-power-of-two extents) | `Box.SetRotation` (Box.cs:31-35), `RoundedRect.SetRotation` (RoundedRect.cs:22-26) | `OrientedBox::from_basis`; platform and hurtbox rows expose those axes |
 | `ability_time` counted every ability tick; Unity accumulates `timeSinceEnteredAbility` only while invisible | Player.cs:337-353 | stays zero |
+| Grounded hurtbox phase: riders were re-positioned before the collider sync and the body row read the live position; Unity syncs the Player-layer box in `DetPhysics.Simulate` and moves a grounded body afterwards in `LateUpdateSim`, so the observed box of a walking slime lags one phase | Updater.cs:303-323, PlayerPhysics.cs:138-146, `RlObservation.Collider` | `sync_collider` before the late phase, which runs after arrow contacts; the body row reports the synced box |
+| Dash exit tick: the ejected slime kept the leave velocity until the next tick; `Dash.ExitAbility` hands over an ungrounded body and `onExitAbility` enters Fall, whose `VelocityBasedRaycasts` can land on the ejection tick | Dash.cs:224-241, SlimeController.cs:249 and 263-272, PlayerPhysics.cs:495-509 | `collision_rays` on the exit tick after the ejected position is published; the `dash_exit_followup` flag and a double gravity step on airborne dash entry are gone |
+| Landing-tick publication: the pre-tick position was published; `PlayerPhysics.UpdateSim` applies gravity and `AttachToGround` before `SlimeController.OldUpdate` publishes `body.position` | PlayerPhysics.cs:116-131, SlimeController.cs:712 | publish after the gravity phase |
+| Warmup shorter than 63 ticks had live slimes from tick 0; `SpawnPlayers` instantiates them on tick 63 (no slime rows and `Player.Position` zero before, then the spawn animation) | `GameSessionHandler.SpawnPlayers`, SlimeController.cs:516-533 | `unspawned` countdown per player; timers keep -1.5 s + (tick-62)*DT for every warmup (`warm_ab` 0/60/63/100/240 match) |
 
-Evidence (300 gate episodes, seeds 1000-1299, `repr_ab` at tolerance 0):
-the Q32 build's post-warmup state is bit-identical to .NET in 300/300
-episodes (previously 4-47 fields differed in every episode; player x by up to
-2.5e-3 units); 32.7% of all compared ticks are identical to .NET (0% before).
-Fidelity-gate divergence at decision 16 fell from 0.0018 to 0.0004 units with
-the outcome table unchanged (62.4 decisions, 297/300 winner agreement, both
-number modes identical column for column). `move_ab` is now textually
-identical to .NET (was 1e-4 off), `stock_respawn_ab`'s respawn position is
-within 6e-9 (was 8e-7), `platform_ab`'s landed player within 1.2e-9 (was
-1.8e-4). f64 and Q32 agree on 300/300 winners and lengths. The seed-140001
-game is won on both Rust builds (f64 t=4394, Q32 t=5346; .NET t=2020 — the
-game remains chaotic after the first discrete difference, below). Sim-only
-throughput is unchanged within noise (1.31-1.44M vs 1.18-1.47M stepping
-ticks/s); including resets it rose from 0.33-0.64M to 0.68-0.89M because the
-warmup now simulates 72 movement ticks instead of 240.
+Evidence (300 gate episodes, seeds 1000-1299, `repr_ab <NET> <Q32> 300 1000
+0`): identical ticks 32.7% -> 49.4%; the first divergence moved from tick 1
+(published player x, 172/300 episodes) to tick >= 63, and is now the slime
+velocity on a bow-fire tick (111/300, below), a collider axis or position
+within 2e-6 units (130/300) or the entity count after a death (15/300;
+Rust keeps destroyed rows in its fixed table, consumers filter on the
+active bit). `state_ab`, `hit_ab`, `move_ab` and `entity_velocity_ab` are
+textually identical to .NET, `ability_hitbox_ab` unchanged (144/2 both),
+`dash_phase_ab` tick 281 within 1e-7 (was 0.004/0.038). `TICK_STEP_OK`;
+sim-only throughput unchanged within noise (1.6-2.0M stepping ticks/s both
+builds on a loaded box). The idle bot gate is 8/9: `evasive` loses the
+seed-140001 map-1 game that the f64 build previously won by chaos; the Q32
+build is now bit-identical to .NET through tick 690 (was 407) and loses it
+before and after, see the first open item.
 
 Open, found by the same comparison (not changed here):
 
-- Grounded hurtbox phase: `PlayerPhysics.LateUpdateSim` (PlayerPhysics.cs:
-  138-146) re-positions a grounded body from `LocalPlatformPos` *after*
-  `DetPhysics.Simulate` synced the colliders (Updater.cs:303-323), so
-  Unity's Player-layer box of a grounded slime sits at the pre-late position
-  (in the seed-140001 trace: current-tick position in 1500/1500 airborne
-  ticks, previous or mid-tick position in 280/283 grounded ticks). Rust runs
-  `late_step` before `sync_collider` for riders (`rollout/mod.rs`, the
-  "StickyRoundedRectangle riders" loop), so its grounded hurtbox is current.
-  Arrow contacts against a walking slime therefore see positions up to one
-  tick apart. Proposed fix: sync before the late step, then re-run
-  `ability_hitbox_ab`/`hit_ab` and the gate.
-- Dash exit tick: on the ejection tick .NET's live slime also runs the
-  ordinary movement step and can land (seed 140001, t=165: live x -66.79 vs
-  Rust -68.49 with the dash velocity retained; the published positions
-  agree). `dash_phase_ab` shows the same signature at tick 281 (0.004/0.038
-  units), which then persists. This is the first discrete state difference
-  in the seed-140001 game.
-- Landing-tick publication: on ticks where the slime lands (state 4) .NET
-  publishes a `Player.Position` that is neither the previous nor the current
-  live position (seed 140001, t=71/110/158); Rust publishes the previous
-  one. The `entity_velocity_ab` and `state_ab` traces do not cover a landing
-  tick.
+- Platform transform start: from the first `State.Rotation` tick the
+  transformed body's position is 2.5e-3 units off and grows x6 per 10 ticks
+  (seed 140001, map 1, evasive side 0, ticks 690-696); .NET also reports the
+  circle's `orientation` following the Slerp'd `up` (4.97 -> 4.71 rad) where
+  Rust reports 0 (PlatformTransform.cs:275-289).
+- Arrow landings carry momentum: in Unity the arrow body's contact kicks the
+  platform it lands on (`bow_test` seed 37 map 0: platform id 12 gets
+  (19.8, -4.1) u/s and carries the rider 3.4 units); Rust's discrete arrows
+  land without an impulse.
+- Bow fire tick: the firing slime's `vx` differs (`repr_ab` episode 4 map 4
+  tick 65: 4.21 vs 4.88 u/s, `vy` equal) - the `Fire` knockback path
+  (BowTransform.cs:158-171).
+- `arrows_fired = 0` with `arrow_hits > 0` did not reproduce (40 random
+  episodes and the scripted bow on both backends); both counters go through
+  `RlTelemetry.Add` behind the same `Counting` flag, so only a shot on an
+  uncounted tick could produce it, and warmup inputs are zero packets.
 
 ## Number type: f64 behind the Q32.32 API
 

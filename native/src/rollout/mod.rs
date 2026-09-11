@@ -354,8 +354,6 @@ pub struct PlayerSlot {
     /// advances later in the same updater pass.
     pub reported_position: Vec2,
     pub reported_tick: u32,
-    /// First original-slime pass after Dash re-enables it.
-    pub dash_exit_followup: bool,
     /// A platform destroyed later in the previous updater pass. Unity keeps
     /// the rider grounded until its own next update, then separates it using
     /// the destroyed StickyRoundedRectangle's last surface normal.
@@ -369,6 +367,9 @@ pub struct PlayerSlot {
     /// Countdown for the land/stop/turn animation states.
     pub state_ticks: u32,
     pub facing_right: bool,
+    /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
+    /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
+    pub unspawned: u32,
     /// Respawn countdown while holding a consumed stock (StockRespawn).
     pub respawn_ticks: u32,
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
@@ -733,8 +734,10 @@ impl RolloutWorld {
                     _ => Fix::from_int(4),
                 };
             }
-            let elapsed_since_awake = self.warmup.saturating_sub(SLIME_AWAKE_TICK);
-            let timer0 = TIMER_START + DT * Fix::from_int(i64::from(elapsed_since_awake));
+            // -1.5 s on the wake tick, one DT per tick since (every phase
+            // below, including the pre-instantiation ticks, advances it).
+            let since_awake = i64::from(self.warmup) - i64::from(SLIME_AWAKE_TICK);
+            let timer0 = TIMER_START + DT * Fix::from_int(since_awake);
             self.players.push(PlayerSlot {
                 base: Player {
                     alive: true,
@@ -760,6 +763,7 @@ impl RolloutWorld {
                         up: Vec2::UP,
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
+                    collider_rotation: Fix::ZERO,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
@@ -782,13 +786,13 @@ impl RolloutWorld {
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
-                dash_exit_followup: false,
                 removed_ground_normal: None,
                 bow: BowState::default(),
                 platform: PlatformState::default(),
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
+                unspawned: 0,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
@@ -839,10 +843,18 @@ impl RolloutWorld {
         }
         // A warmup that ends inside the spawn animation hands the rest of it
         // to the episode (respawn_tick counts it down and launches the same
-        // way); one that ends before the slimes exist leaves them parked.
+        // way); one that ends before SpawnPlayers ran leaves the slimes
+        // uninstantiated (no slime or hurtbox rows, Player.Position zero)
+        // until that tick.
         if spawn_anim > 0 {
             for slot in &mut self.players {
                 slot.respawn_spawn_ticks = spawn_anim;
+            }
+        }
+        if self.warmup <= SLIME_AWAKE_TICK {
+            for slot in &mut self.players {
+                slot.unspawned = SLIME_AWAKE_TICK + 1 - self.warmup;
+                slot.base.position = Vec2::ZERO;
             }
         }
         // Replays drive every simulated tick from boot, warmup included.
@@ -1100,17 +1112,29 @@ impl RolloutWorld {
                 }
             }
         }
-        for index in 0..self.players.len() {
+        // DetPhysics.Simulate syncs every collider from the body position the
+        // updater pass left (Updater.cs:303-323); a grounded slime's body only
+        // moves to its new surface local in PlayerPhysics.LateUpdateSim
+        // (PlayerPhysics.cs:138-146), after the contacts below.
+        for (index, action) in actions.iter().enumerate() {
             if self.playable(index) {
                 self.players[index].base.sync_collider();
-                self.players[index].base.late_step(&self.platforms);
             }
-            let input = actions[index].input_direction(self.players[index].keyboard);
+            let input = action.input_direction(self.players[index].keyboard);
             self.update_obs_state(index, input);
         }
         self.arrows_integrate(data);
         self.platforms_tick(data);
         self.arrows_contacts(data);
+        // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
+        // StickyRoundedRectangle riders from their surface local after
+        // physics; their Player-layer box keeps the position DetPhysics
+        // synced above until the next Simulate.
+        for slot in &mut self.players {
+            if slot.base.alive && slot.base.grounded && slot.removed_ground_normal.is_none() {
+                slot.base.late_step(&self.platforms);
+            }
+        }
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -1118,7 +1142,10 @@ impl RolloutWorld {
 
     fn playable(&self, index: usize) -> bool {
         let slot = &self.players[index];
-        slot.base.alive && slot.respawn_ticks == 0 && slot.respawn_spawn_ticks == 0
+        slot.base.alive
+            && slot.unspawned == 0
+            && slot.respawn_ticks == 0
+            && slot.respawn_spawn_ticks == 0
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -1156,8 +1183,18 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
         }
         if !in_ability {
+            let slot = &mut self.players[index];
+            // PlayerPhysics.UpdateSim (PlayerPhysics.cs:116-131) applies
+            // gravity and the landing raycasts before SlimeController runs.
+            // SlimeController.OldUpdate then publishes body.position
+            // (SlimeController.cs:712): on a landing tick that is the
+            // AttachToGround position, before Move slides along the surface.
+            if !slot.base.grounded {
+                slot.base.gravity_step(&self.platforms);
+            }
+            slot.reported_position = slot.base.position;
             for s in 0..3 {
-                self.players[index].timers[s] += DT;
+                slot.timers[s] += DT;
             }
         }
         // Player.UpdatePlayer (Player.cs:337-353) accumulates
@@ -1176,13 +1213,8 @@ impl RolloutWorld {
                 let ability = slot.abilities[s];
                 {
                     let slot = &mut self.players[index];
-                    // PlayerPhysics updates before SlimeController. If this
-                    // airborne body enters an ability, its PlayerInfo package
-                    // has current gravity/collision state but PlayerBody has
-                    // not performed another position integration.
-                    if !slot.base.grounded {
-                        slot.base.gravity_step(&self.platforms);
-                    }
+                    // The PlayerInfo package carries the post-gravity state;
+                    // PlayerBody has not integrated the position yet.
                     slot.ability_origin = slot.base.position;
                     slot.ability_origin_velocity = slot.base.velocity + slot.base.external_velocity;
                     slot.ability_origin_rotation = slot.base.rotation;
@@ -1299,28 +1331,29 @@ impl RolloutWorld {
         };
         self.players[index]
             .base
-            .step_with_input(masked, movement_input, &self.platforms);
-        if self.players[index].dash_exit_followup {
-            self.players[index].reported_position = self.players[index].base.position;
-            self.players[index].reported_tick = self.tick;
-            self.players[index].dash_exit_followup = false;
-        }
-        let _ = data;
+            .move_step(masked, movement_input, &self.platforms);
     }
 
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
         self.players[index]
             .base
-            .step_with_input(action, movement_input, &self.platforms);
+            .move_step(action, movement_input, &self.platforms);
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
         if self.players[index].active == ActiveAbility::Dash {
-            self.players[index].reported_position = self.players[index].base.position;
-            self.players[index].reported_tick = self.tick;
-            if !self.players[index].base.dash.active {
-                self.players[index].dash_exit_followup = true;
+            let slot = &mut self.players[index];
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = self.tick;
+            if !slot.base.dash.active {
+                // Dash.ExitAbility hands over an ungrounded body (Dash.cs:234),
+                // so SlimeController.onExitAbility enters Fall and immediately
+                // runs VelocityBasedRaycasts (SlimeController.cs:249, 263-272)
+                // with the leave velocity: the slime can land on the ejection
+                // tick, after the ejected position was published.
+                slot.obs_state = STATE_FALL;
+                slot.base.collision_rays(&self.platforms);
             }
         }
         let dash_cast = {
@@ -2454,16 +2487,10 @@ impl RolloutWorld {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED);
         }
 
-        // StickyRoundedRectangle riders are positioned from their surface
-        // local after physics. PlatformTransform itself is intentionally not
-        // synchronized here: its UpdateSim copied the platform's FixTransform
-        // before DetPhysics moved/corrected it, matching Unity's phase order.
-        for slot in &mut self.players {
-            if slot.base.alive && slot.base.grounded && slot.removed_ground_normal.is_none() {
-                slot.base.late_step(&self.platforms);
-                slot.base.sync_collider();
-            }
-        }
+        // Riders follow in game_tick's late phase. PlatformTransform itself is
+        // intentionally not synchronized: its UpdateSim copied the platform's
+        // FixTransform before DetPhysics moved/corrected it, matching Unity's
+        // phase order.
 
         // The Platform ability object has DestroyIfOutsideSceneBounds, so its
         // transformed owner is handled by deaths_tick using the position it
@@ -2493,7 +2520,6 @@ impl RolloutWorld {
         }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
-        slot.dash_exit_followup = false;
         if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
             self.players[killer as usize - 1].kills += 1;
         }
@@ -2531,6 +2557,23 @@ impl RolloutWorld {
     ) {
         let slot = &mut self.players[index];
         if !slot.base.alive {
+            return;
+        }
+
+        if slot.unspawned > 0 {
+            // GameSessionHandler.SpawnPlayers instantiates the slime at its
+            // team spawn on SLIME_AWAKE_TICK+1 and BeforeSpawnInit starts the
+            // spawn animation with physics off (SlimeController.cs:516-533).
+            for timer in &mut slot.timers {
+                *timer += DT;
+            }
+            slot.unspawned -= 1;
+            if slot.unspawned == 0 {
+                let spawns = &data.maps[self.map].team_spawns;
+                slot.base.position = spawns[slot.team as usize % spawns.len()];
+                slot.reported_position = slot.base.position;
+                slot.respawn_spawn_ticks = data.player.spawn_anim_ticks;
+            }
             return;
         }
 
@@ -2583,7 +2626,6 @@ impl RolloutWorld {
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
             }
-            return;
         }
     }
 
@@ -2710,7 +2752,7 @@ impl RolloutWorld {
                 (s.body_entity, s.dash_entity, s.circle_entity)
             };
             let slot = &self.players[index];
-            let alive = slot.base.alive;
+            let alive = slot.base.alive && slot.unspawned == 0;
             let choosing_respawn = slot.respawn_ticks > 0;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
@@ -2719,8 +2761,6 @@ impl RolloutWorld {
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_aim = slot.bow.aim;
             let position = slot.base.position;
-            let rotation = slot.base.rotation;
-            let basis = Vec2::angle(rotation);
             let data = data::get();
 
             let body = &mut self.entities[body_e];
@@ -2733,9 +2773,14 @@ impl RolloutWorld {
             } else {
                 body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
             }
+            // The observation reads the PhysicsBody DetPhysics synced, not
+            // the live body (RlObservation.Collider; PlayerPhysics.cs:138-146
+            // moves a grounded body after the sync).
             let extents = data.player.hurtbox_extents;
-            body.x = position.x.raw();
-            body.y = position.y.raw();
+            let synced = slot.base.collider.center;
+            let rotation = slot.base.collider_rotation;
+            body.x = synced.x.raw();
+            body.y = synced.y.raw();
             // The hurtbox has PlayerBody movement on the same GameObject but
             // no BoplBody. DPhysicsBox therefore registers an infinite-mass
             // trigger PhysicsBody whose observed velocity remains zero; the
@@ -2743,7 +2788,7 @@ impl RolloutWorld {
             body.vx = 0;
             body.vy = 0;
             // Box.SetRotation: axis length `One / inverseExtents`, not `extents`.
-            let hurtbox = OrientedBox::from_basis(position, basis, extents);
+            let hurtbox = OrientedBox::from_basis(synced, Vec2::angle(rotation), extents);
             let (right, up) = (hurtbox.right, hurtbox.up);
             body.right_x = right.x.raw();
             body.right_y = right.y.raw();
@@ -2869,8 +2914,8 @@ impl RolloutWorld {
     fn fill_slimes(&self, slimes: &mut Vec<CSlime>) {
         slimes.clear();
         for slot in &self.players {
-            if !slot.base.alive {
-                continue; // destroyed with the player, like the .NET sim
+            if !slot.base.alive || slot.unspawned > 0 {
+                continue; // not instantiated yet, or destroyed with the player
             }
             let in_ability = slot.active != ActiveAbility::None;
             let respawning = slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0;
@@ -2888,7 +2933,7 @@ impl RolloutWorld {
                 flags |= S_SIMULATED;
             }
             let mut ability_flags = [0u32; 3];
-            for s in 0..3 {
+            for (s, flags) in ability_flags.iter_mut().enumerate() {
                 if slot.abilities[s] == 0 {
                     continue;
                 }
@@ -2910,7 +2955,7 @@ impl RolloutWorld {
                         }
                     }
                 }
-                ability_flags[s] = f;
+                *flags = f;
             }
             let (slime_position, velocity, rotation, state) = if in_ability {
                 (
