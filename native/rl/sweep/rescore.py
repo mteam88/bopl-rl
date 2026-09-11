@@ -50,7 +50,9 @@ def rescore(sweep_dir, pool_path, out, last_k=3, games=240, first_pass_games=6, 
             continue
         if trial['status'] != 'complete' or not trial.get('observations'):
             continue  # killed trials keep their partial curve for Protein; their last checkpoint is no final
-        run_dir = Path(trial.get('run_dir') or sweep_dir / trial['id'])
+        run_dir = sweep_dir / trial['id']  # the recorded run_dir goes stale when a sweep is moved
+        if not run_dir.is_dir():
+            run_dir = Path(trial.get('run_dir') or run_dir)
         workspace = out / trial['id'] / 'reference'
         curve = scoring.reference_curve(run_dir, pool, last_k=last_k, games=games, first_pass_games=first_pass_games,
                                         band=band, round_games=round_games, workers=workers, seed_base=seed_base,
