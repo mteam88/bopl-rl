@@ -2169,9 +2169,16 @@ impl RolloutWorld {
             let up = if speed == Fix::ZERO {
                 Vec2::UP
             } else {
-                arrow.velocity * (Fix::ONE / speed)
+                arrow.velocity / speed
             };
-            arrow.rotation = up.perp_cw().normalized_angle();
+            // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
+            // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
+            // arrow's FixTransform, so a straight shot reads 0, not 2pi.
+            arrow.rotation = up
+                .perp_cw()
+                .normalized_angle()
+                .checked_rem(Fix::TAU, true)
+                .expect("finite angle");
             arrow.velocity.y += gravity * DT;
             arrow.position += arrow.velocity * DT;
         }
