@@ -1436,6 +1436,10 @@ impl RolloutWorld {
             // slime, this ability body's position is final for this updater
             // pass (the separate platform moves later in DetPhysics).
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                // The slime takes over the ability body's position
+                // (DestroyIfOutsideSceneBounds.cs:137, SlimeController.cs:217).
+                let slot = &mut self.players[index];
+                slot.reported_position = slot.base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false);
             }
             return;
