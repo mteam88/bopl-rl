@@ -145,7 +145,7 @@ the bot camped 16 u from an idle foe until the timeout.
 | Fire delay | ~8–12 ticks after the latch expires (per-hold totals in `BOT_FIRE_DELAY`) |
 | Bow | 2.5 s cooldown from morph exit; the bow morph hovers (no fall) and drifts with the aim |
 | Dash | 13-unit raycast teleport at the press decision; wall hits attach; exit slide ~7 u; 4 s cooldown; body contact barely pushes (<0.5 u/s), so dash is mobility, not a weapon |
-| Platform | morph freezes the body (~72 ticks, hurtbox disabled after ~24), spawns a platform and ejects upward; 6 s cooldown |
+| Platform | morph freezes the body (~72 ticks, hurtbox disabled after ~24), spawns a platform and ejects the slime 3.78 u along the platform's *up*, which follows the aim held during the morph (a sideways aim ejects sideways — see v2); 6 s cooldown |
 | Slime | walk 19 u/s; air accel ~3 u/tick capped ~22; jump launches ~58 u/s decaying by v' = v·(1−1.7/45) − 1.7 per tick (terminal −45); slope jumps launch along the surface normal, not the aim |
 | Death | water y < −11.3 (non-space maps); blast zones |x| > 131.25, y > 72.5 |
 | Walls | rounded rects with unit axes + corner radius; walking off an edge wraps around the corner and sticks — leaving ground needs a jump or dash |
@@ -257,6 +257,124 @@ Policy matchups above were measured before the 2026-09-09 routing fixes
 flip-flops); the idle gate was re-run after those fixes. Full numbers come
 from `evaluate.py --scripted-opponents`. `research/check_scripted_bots.py`
 is the cheap idle sweep (maps 0–2, both sides; ~10 s, no GPU).
+
+## v2 bots (kinds 5–8: `archer-v2`, `pursuer-v2`, `evasive-v2`, `mixed-v2`)
+
+`puffer/bopl_bots_v2_play.h`, dispatched from `bopl_bots_v2.h`; the same
+easy/medium/hard knobs. v1 is untouched (kinds 1–4 byte-identical on the
+fingerprint). v2 reuses the v1 view, navigation, shot solver and personalities'
+shape, and adds layers for the three failure modes the 816-game loss taxonomy
+measured on v1 (66% of non-wins were platform squishes, 10% own arrows, ~15%
+attacking into a ready bow). Every game fact is cited to the Unity source in
+the header comment; the ones that changed the outcome:
+
+- **Own platform morph aims zero.** The aim during the platform morph is the
+  platform's controls: Rotation slerps the platform's up toward the aim
+  (`PlatformTransform.cs:276-289`) and Exit ejects the slime along that up by
+  radius+halfHeight = 3.78 u (`:418-428`; `EjectionOffset` is 0 in the prefab
+  data). v1 aims at the foe while morphing, so its platform stands on end and
+  throws the slime *sideways* into the nearest wall — that was the real
+  mechanism behind 127 of v1's 221 squishes ("in own platform morph at
+  death"). A zero aim vector (byte 0, below `DEADZONE`) keeps the platform
+  flat; the slime pops straight up onto its own platform, which cannot squish
+  its rider. Pressing platform also requires the whole 4.5 u ejection path to
+  be clear of other rects (`bot2_platform_press_safe`).
+- **Platform threat layer** before the personality: the foe's plant point is
+  remembered from its first platforming decision; its spawned rect (hierarchy
+  ≥ 300 000 000 on the foe morph's up axis) is tracked once it exists. Within
+  3 u (+2 hysteresis, +1.5 once sizing is possible, + closing speed) the bot
+  retreats to a standable spot ≥ 11.6 u from the plant preferring a different
+  height (sizing reaches ~19 u along one axis, ~11 u diagonally under
+  `maxArea`), dashes/jumps when the rect is about to contain it (an airborne
+  player cannot be squished), and never presses platform within 11 u of it or
+  under a ceiling. Nothing moves *toward* a live plant point: a dash toward it
+  is vetoed within 22 u, a walk within 13 u.
+- **Real dash safety.** Every dash is re-checked against the 13 u ray Dash
+  casts one tick after the press on a mask that includes arrows
+  (`Dash.cs:245-258`, `mod.rs:1230-1273`), for every arrow position over the
+  next 6 ticks and along the 7 u exit slide; own arrows count once they have
+  flown 5 u (`BowTransform.cs:183`). Dodge-dashes are not attempted at eta ≤ 4
+  (the press lands next tick and Dash pauses 0.01 s before leaving).
+- **Own motion in the arrow ETA.** Grounded velocity is 0 in the state, so v1
+  walked under its own returning mortars and uphill lobs. v2 simulates the
+  walk the chosen input produces along the ground tangent (`mod.rs:804-812`:
+  stick aligned with the tangent ≥ 0.2 runs at 19 u/s along it, mostly
+  vertical on a steep slab) and vetoes any grounded walk that meets an arrow
+  within 45 ticks, picking the best of right/left/still; the grounded dodge
+  evaluates its two runs the same way before jumping.
+- **Cooldown/charge-aware engagement.** Foe bow/dash readiness from
+  `timers > cooldowns`, its bow aim from the bow hurtbox up vector
+  (`mod.rs:2680-2695`). No charge and no closing inside 8.5 u while the foe's
+  bow is ready or its bow morph is aimed at me (cos > 0.72 within 15 u); mid
+  holds only inside 16 u of a ready bow; full holds when the foe is passive
+  (bow idle ≥ 45 decisions or still ≥ 20) or has its bow down (budget =
+  remaining cooldown). Free-hit rule only for platform morphs from range.
+  pursuer-v2/mixed-v2 dash in when the window is open (foe bow down, passive,
+  or charging elsewhere) and its dash is down, then shoot from the slide
+  (`combo`); the bow may be entered at any airborne speed
+  (`BowTransform.cs:93-97`), the arrow inherits only the residual
+  self-imposed velocity.
+
+### Measured (2026-09-11, `research/loss_taxonomy.py`, hard, maps 0–2 × 7 seed pairs × both sides = 42 games per cell)
+
+Checkpoints: `t001`/`t012`/`t002` = overnight-3 trials 001/012/002 finals,
+`run007` = `anchors/run007-final.bin`. v1 row = the loss-taxonomy baseline
+(same schedule, commit 2539b60), v2 row = kinds 5–8 at this commit.
+
+| bot | t001 | t012 | t002 | run007 | all (wins/168, timeouts) | median game |
+|---|---|---|---|---|---|---|
+| archer | 0.62 | 0.40 | 0.48 | 0.36 | 0.46 (78, 1 t/o) | 8.0 s |
+| **archer-v2** | 0.81 | 0.71 | 0.86 | 0.71 | **0.77** (130, 4 t/o) | 12.3 s |
+| pursuer | 0.57 | 0.33 | 0.67 | 0.40 | 0.49 (83, 1 t/o) | 4.5 s |
+| **pursuer-v2** | 0.95 | 0.81 | 0.88 | 0.64 | **0.82** (138, 2 t/o) | 10.6 s |
+| evasive | 0.74 | 0.52 | 0.71 | 0.50 | 0.62 (104, 5 t/o) | 12.6 s |
+| **evasive-v2** | 0.90 | 0.76 | 0.81 | 0.83 | **0.83** (139, 9 t/o) | 14.6 s |
+| mixed | 0.50 | 0.40 | 0.45 | 0.33 | 0.42 (71, 1 t/o) | 7.0 s |
+| **mixed-v2** | 0.81 | 0.81 | 0.90 | 0.60 | **0.78** (131, 4 t/o) | 11.1 s |
+
+Terminal cause of every bot non-win vs the policies (v1 → v2):
+
+| bot | squished | hit-by-arrow | own-arrow | fell-water | fell-blast-y | timeout | non-wins |
+|---|---|---|---|---|---|---|---|
+| archer | 63 → **7** | 17 → **18** | 8 → **2** | 1 → **5** | 0 → **2** | 1 → **4** | 90 → **38** |
+| pursuer | 43 → **8** | 20 → **15** | 17 → **3** | 2 → **1** | 2 → **1** | 1 → **2** | 85 → **30** |
+| evasive | 44 → **2** | 9 → **6** | 3 → **1** | 3 → **11** | 0 → **0** | 5 → **9** | 64 → **29** |
+| mixed | 71 → **14** | 16 → **11** | 6 → **2** | 2 → **4** | 1 → **2** | 1 → **4** | 97 → **37** |
+| **all** | 221 → **31** (−86%) | 62 → **50** (−19%) | 34 → **8** (−76%) | 8 → **21** | 3 → **5** | 8 → **19** | 336 → **134** |
+
+Sub-buckets that moved: `squished/map-platform` 92 → 8, `foe-platform-growing`
+55 → 10, `own-platform-settled` 37 → 5, `own-platform-spawn` 20 → 1 (squished
+while in own platform morph 127 → 2); `own-arrow/dash-into-own-arrow` 22 → 0,
+`own-mortar-returning` 11 → 3; `hit-by-arrow/dodge-too-slow-jump` 15 → 0,
+`point-blank` 14 → 7. Regressions to work on next: `killed-while-morphing-bow`
+18 → 27 (in 19 of the 27 the foe's bow was *down* at the charge decision and
+15 were mid holds: the 2.5 s cooldown re-arms during a 40-tick hold plus
+fire delay — the budget check needs the hold length added), `fell-water/jump`
+4 → 17 (13 of 17 are plain personality jumps, no dodge/hazard involved,
+11 of them evasive-v2 on maps 0 and 2: the evasive perch hopping needs
+`bot_launch_lands` before every jump, not only when dash and platform are
+down), `timeout/both-active` 3 → 13 (evasive-v2 holding range against a
+camping policy). Median bot death moved from 7.5 s to 11.1 s; bot
+wins are still mostly arrows on a grounded policy (367/538). The dash→arrow
+combo fires rarely (6 dash→arrow of 1647 dashes): the window conditions
+(foe dash down, range 8–21, ready bow, dash certifies) seldom coincide.
+
+Head-to-head, hard vs hard, maps 0–2, both sides (bot-vs-bot games are
+seed-invariant, so 6 distinct games per cell; wins of the row bot):
+
+| v2 | vs archer | vs pursuer | vs evasive | vs mixed | total |
+|---|---|---|---|---|---|
+| archer-v2 | 6/6 | 4/6 | 5/6 | 4/6 | **19/24** |
+| pursuer-v2 | 6/6 | 3/6 | 5/6 | 6/6 | **20/24** |
+| evasive-v2 | 5/6 | 6/6 | 4/6 | 5/6 | **20/24** |
+| mixed-v2 | 6/6 | 4/6 | 6/6 | 5/6 | **21/24** |
+| all v2 | 23/24 | 17/24 | 20/24 | 20/24 | **80/96** (no timeouts) |
+
+Idle gate: all eight kinds 6/6 (`check_scripted_bots.py`). Decision cost
+(wall time per `env.step` with two bots minus the no-bot baseline, loaded
+machine): v1 archer+mixed ≈ 380 µs/decision, v2 ≈ 300; v1 pursuer+evasive
+≈ 18–28 µs, v2 ≈ 26–32 — the archer's firing-spot search dominates both
+generations; v2's extra layers are within noise.
 
 ## Usage
 
