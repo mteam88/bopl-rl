@@ -1531,7 +1531,7 @@ impl RolloutWorld {
                 })
                 .collect();
             arrow_hits.sort_by_key(|&(arrow_index, distance)| (distance, arrow_index));
-            for (arrow_index, _) in arrow_hits {
+            for (arrow_index, distance) in arrow_hits {
                 let arrow = self.arrows[arrow_index];
                 let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
                 if lethal {
@@ -1540,6 +1540,12 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
+                    // The dasher dies where the ray met the arrow: Dash moves
+                    // its body to nearPos before KillPlayerOnCollision and
+                    // never restores it on a kill (Dash.cs:177-183).
+                    let slot = &mut self.players[index];
+                    slot.base.position = origin + direction * distance;
+                    slot.reported_position = slot.base.position;
                     self.kill(index, arrow.owner, cause, false);
                     if arrow.owner != caster_id && arrow.owner >= 1 {
                         self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
