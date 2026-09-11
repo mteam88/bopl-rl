@@ -33,6 +33,13 @@ const duration = (n) =>
     .padStart(2, "0")}`;
 const fileUrl = (evaluation, file) =>
   `/runs/${encodeURIComponent(runName)}/evaluations/${evaluation.directory}/${encodeURIComponent(file)}`;
+// Scripted bot names are `<kind>-<level>` with the level last; the kind may carry a
+// version suffix (mixed-v2-hard). The suffix is reserved (evaluation_protocol.opponents),
+// so any name ending in a level is a scripted bot: "mixed-v2 (hard)".
+const scriptedLabel = (name) => {
+  const m = /^([a-z][a-z0-9-]*)-(easy|medium|hard)$/.exec(name);
+  return m ? `${m[1]} (${m[2]})` : null;
+};
 function replaceOptions(select, items) {
   const previous = select.value;
   select.replaceChildren(
@@ -263,7 +270,7 @@ function update() {
     const played = data.map_matches || {};
     $("mapCoverage").textContent = `Training maps: ${(c.training_maps || [0]).join(", ")}.` +
       (Object.keys(played).length ? ` Completed matches: ${Object.entries(played).map(([map,count]) => `map ${map}: ${fmt.format(count)}`).join(" · ")}.` : "");
-    const opponentName = (name) => name === "random" ? "Random buttons" : name === "initial" ? "Starting policy" : /^(archer|pursuer|evasive|mixed)-(easy|medium|hard)$/.test(name) ? `Scripted ${name.replace("-", " (")})` : name.replace(/^trained-s/, "Previous seed ");
+    const opponentName = (name) => name === "random" ? "Random buttons" : name === "initial" ? "Starting policy" : scriptedLabel(name) ? `Scripted ${scriptedLabel(name)}` : name.replace(/^trained-s/, "Previous seed ");
     $("evaluationRows").replaceChildren(...matrix.groups.map((g) => {
       const row = document.createElement("tr");
       const trained = (c.training_maps || [0]).includes(g.map);
@@ -874,7 +881,7 @@ function selectEvaluation() {
       )
       .map((g) => [
         g.name,
-        `${g.opponent === "selfplay" ? "Self-play" : g.opponent === "initial" ? "vs starting policy" : g.opponent === "random" ? "vs random" : /^(archer|pursuer|evasive|mixed)-(easy|medium|hard)$/.test(g.opponent) ? `vs scripted ${g.opponent.replace("-", " (")})` : "vs " + g.opponent.replace(/^trained-s/, "previous seed ")} · map ${g.map}`,
+        `${g.opponent === "selfplay" ? "Self-play" : g.opponent === "initial" ? "vs starting policy" : g.opponent === "random" ? "vs random" : scriptedLabel(g.opponent) ? `vs scripted ${scriptedLabel(g.opponent)}` : "vs " + g.opponent.replace(/^trained-s/, "previous seed ")} · map ${g.map}`,
       ]),
   );
   selectMatch();
