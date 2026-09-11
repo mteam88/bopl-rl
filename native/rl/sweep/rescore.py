@@ -12,8 +12,8 @@ directory is never touched:
 Per trial: the old score (the sweep's final observation), the reference
 rating of the final evaluation checkpoint with its bootstrap CI, the IQM over
 the last k evaluations (the value the reference scorer hands Protein), and
-the final evaluation's behaviour flags. Only trials with observations in
-sweep.json (finished, scored) are rescored.
+the final evaluation's behaviour flags. Only complete, scored trials are
+rescored (a killed trial's partial curve stays with Protein).
 """
 import argparse
 import json
@@ -48,8 +48,8 @@ def rescore(sweep_dir, pool_path, out, last_k=3, games=240, first_pass_games=6, 
     for trial in state['trials']:
         if trials and trial['id'] not in trials:
             continue
-        if not trial.get('observations') or trial.get('is_failure'):
-            continue
+        if trial['status'] != 'complete' or not trial.get('observations'):
+            continue  # killed trials keep their partial curve for Protein; their last checkpoint is no final
         run_dir = Path(trial.get('run_dir') or sweep_dir / trial['id'])
         workspace = out / trial['id'] / 'reference'
         curve = scoring.reference_curve(run_dir, pool, last_k=last_k, games=games, first_pass_games=first_pass_games,
