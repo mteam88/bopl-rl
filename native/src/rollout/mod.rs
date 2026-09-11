@@ -2864,24 +2864,24 @@ impl RolloutWorld {
 
             let dash_box = &mut self.entities[dash_e];
             if alive && dashing {
-                let extents = data.dash.hurtbox_extents;
-                let angle = slot.base.dash.input.normalized_angle();
-                let basis = Vec2::angle(angle);
+                // The Dash body's FixTransform rotation is
+                // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
+                // before performDash); `sync_collider` already built the
+                // synced box with the dash extents from that rotation.
                 dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                 dash_box.owner = slot.base.id;
-                dash_box.x = position.x.raw();
-                dash_box.y = position.y.raw();
+                dash_box.x = synced.x.raw();
+                dash_box.y = synced.y.raw();
                 // DPhysicsBox is a trigger body; PlayerBody velocity is not
                 // stored on its PhysicsBody observation record.
                 dash_box.vx = 0;
                 dash_box.vy = 0;
-                let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
-                let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
-                dash_box.right_x = right.x.raw();
-                dash_box.right_y = right.y.raw();
-                dash_box.up_x = up.x.raw();
-                dash_box.up_y = up.y.raw();
-                dash_box.rotation = angle.raw();
+                let collider = &slot.base.collider;
+                dash_box.right_x = collider.right.x.raw();
+                dash_box.right_y = collider.right.y.raw();
+                dash_box.up_x = collider.up.x.raw();
+                dash_box.up_y = collider.up.y.raw();
+                dash_box.rotation = rotation.raw();
             } else {
                 dash_box.flags = E_ENABLED | E_TRIGGER;
                 dash_box.x = 0;
@@ -2894,17 +2894,19 @@ impl RolloutWorld {
             // (BowTransform.cs:246; the Bow prefab has SyncRotationToPlatform
             // off), so the FixTransform rotation is the aim's angle
             // (FixTransform.cs:56-59) and DetPhysics rebuilds the box axes
-            // from that angle (Box.SetRotation, Box.cs:30-35).
+            // from that angle (Box.SetRotation, Box.cs:30-35). Its centre is
+            // the DetPhysics-synced position: a grounded Bow body also moves
+            // only in PlayerPhysics.LateUpdateSim, after the sync.
             let bow_e = self.players[index].bow_entity;
             let bow_box = &mut self.entities[bow_e];
             if alive && bowing {
                 let extents = data.bow.hurtbox_extents;
                 let rotation = bow_aim.perp_cw().normalized_angle();
-                let hurtbox = OrientedBox::from_basis(position, Vec2::angle(rotation), extents);
+                let hurtbox = OrientedBox::from_basis(synced, Vec2::angle(rotation), extents);
                 bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                 bow_box.owner = slot.base.id;
-                bow_box.x = position.x.raw();
-                bow_box.y = position.y.raw();
+                bow_box.x = synced.x.raw();
+                bow_box.y = synced.y.raw();
                 bow_box.vx = 0;
                 bow_box.vy = 0;
                 bow_box.right_x = hurtbox.right.x.raw();
