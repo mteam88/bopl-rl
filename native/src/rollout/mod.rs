@@ -1264,10 +1264,17 @@ impl RolloutWorld {
                         self.players[index].ability_entry_action = registered_action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
-                        // BowTransform.OnEnterAbility: aim starts at the up
-                        // vector; airborne entry slows to a tenth (slow-mo).
+                        // BowTransform.OnEnterAbility: aim starts at
+                        // PlayerInfo.upVector = Normalized(ground normal) when
+                        // grounded, else Vec2.up (SlimeController.cs:666); the
+                        // re-normalisation moves the unit normal by an LSB.
+                        // Airborne entry slows to a tenth (slow-mo).
                         slot.bow = BowState {
-                            aim: slot.base.up,
+                            aim: if slot.base.grounded {
+                                slot.base.up.normalized()
+                            } else {
+                                Vec2::UP
+                            },
                             ..BowState::default()
                         };
                         if !slot.base.grounded {
@@ -2882,28 +2889,29 @@ impl RolloutWorld {
                 dash_box.vx = 0;
                 dash_box.vy = 0;
             }
-            // Bow hurtbox: active while aiming/firing, up vector = aim.
+            // Bow hurtbox: active while aiming/firing. BowTransform writes
+            // `body.up = inputVector` each tick until the shot
+            // (BowTransform.cs:246; the Bow prefab has SyncRotationToPlatform
+            // off), so the FixTransform rotation is the aim's angle
+            // (FixTransform.cs:56-59) and DetPhysics rebuilds the box axes
+            // from that angle (Box.SetRotation, Box.cs:30-35).
             let bow_e = self.players[index].bow_entity;
             let bow_box = &mut self.entities[bow_e];
             if alive && bowing {
                 let extents = data.bow.hurtbox_extents;
-                let up_dir = if bow_aim == Vec2::ZERO {
-                    Vec2::UP
-                } else {
-                    bow_aim
-                };
-                let right_dir = up_dir.perp_cw();
+                let rotation = bow_aim.perp_cw().normalized_angle();
+                let hurtbox = OrientedBox::from_basis(position, Vec2::angle(rotation), extents);
                 bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                 bow_box.owner = slot.base.id;
                 bow_box.x = position.x.raw();
                 bow_box.y = position.y.raw();
                 bow_box.vx = 0;
                 bow_box.vy = 0;
-                bow_box.right_x = (right_dir * extents.x).x.raw();
-                bow_box.right_y = (right_dir * extents.x).y.raw();
-                bow_box.up_x = (up_dir * extents.y).x.raw();
-                bow_box.up_y = (up_dir * extents.y).y.raw();
-                bow_box.rotation = right_dir.normalized_angle().raw();
+                bow_box.right_x = hurtbox.right.x.raw();
+                bow_box.right_y = hurtbox.right.y.raw();
+                bow_box.up_x = hurtbox.up.x.raw();
+                bow_box.up_y = hurtbox.up.y.raw();
+                bow_box.rotation = rotation.raw();
             } else {
                 bow_box.flags = E_ENABLED | E_TRIGGER;
                 bow_box.x = 0;
