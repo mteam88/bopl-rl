@@ -178,6 +178,12 @@ const E_ACTIVE: u32 = 1;
 const E_ENABLED: u32 = 2;
 const E_DESTROYED: u32 = 4;
 const E_TRIGGER: u32 = 8;
+/// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
+/// updatable are removed before the same pass's contacts and never observed;
+/// one destroyed by a collision callback is observed once, flagged
+/// `E_DESTROYED`, and removed on the next pass (DetPhysics.Simulate's
+/// remove-destroyed step). Such rows are not emitted.
+const E_REMOVED: u32 = 1 << 31;
 
 // Slime flags (RlObservation.Slime).
 const S_ACTIVE: u32 = 1;
@@ -442,6 +448,8 @@ pub struct RolloutWorld {
     pub entities: Vec<CEntity>,
     pub slimes: Vec<CSlime>,
     pub state: Box<CState>,
+    /// Emitted rows (the fixed table minus `E_REMOVED` entries).
+    pub state_entities: Vec<CEntity>,
     pub sample_entities: Vec<CEntity>,
     pub sample_slimes: Vec<CSlime>,
     pub sample: Box<CState>,
@@ -496,6 +504,7 @@ impl RolloutWorld {
             entities: Vec::with_capacity(192),
             slimes: Vec::with_capacity(MAX_PLAYERS),
             state: empty_state(),
+            state_entities: Vec::with_capacity(192),
             sample_entities: Vec::with_capacity(192),
             sample_slimes: Vec::with_capacity(MAX_PLAYERS),
             sample: empty_state(),
@@ -540,9 +549,10 @@ impl RolloutWorld {
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
         self.entities.clone_from(&src.entities);
+        self.state_entities.clone_from(&src.state_entities);
         self.slimes.clone_from(&src.slimes);
         *self.state = *src.state;
-        self.state.entities = self.entities.as_ptr();
+        self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
         self.sample_valid = false;
         self.recording.clear();
@@ -579,6 +589,7 @@ impl RolloutWorld {
             entities: _,
             slimes: _,
             state: _,
+            state_entities: _,
             sample_entities: _,
             sample_slimes: _,
             sample: _,
@@ -1999,7 +2010,7 @@ impl RolloutWorld {
             }
         }
         let entity = self.platform_entities[index];
-        self.entities[entity].flags = E_ENABLED | E_DESTROYED;
+        self.entities[entity].flags = E_REMOVED;
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
@@ -2106,15 +2117,14 @@ impl RolloutWorld {
         }
     }
 
+    /// Updater-phase destruction (bounds, arrow cap): the collider is gone
+    /// before this pass's DetPhysics contacts and observation.
     fn destroy_arrow(&mut self, index: usize) {
         let arrow = &mut self.arrows[index];
         arrow.active = false;
         arrow.registered = false;
         if let Some(entity) = arrow.entity {
-            let entity = &mut self.entities[entity];
-            entity.flags = E_ENABLED | E_DESTROYED;
-            entity.vx = 0;
-            entity.vy = 0;
+            self.entities[entity].flags = E_REMOVED;
         }
     }
 
@@ -2164,6 +2174,9 @@ impl RolloutWorld {
         let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active || !self.arrows[i].registered {
+                if let Some(entity) = self.arrows[i].entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
                 continue;
             }
             // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
@@ -2264,7 +2277,21 @@ impl RolloutWorld {
                     self.platforms[p].surface.center += correction[1];
                     self.platforms[p].collider.inner.center += correction[1];
                 }
+                // Arrow.OnCollide destroys the components from the callback
+                // queue: this pass still observes the corrected collider and
+                // resolved body, flagged destroyed and ownerless
+                // (Arrow.cs:124-128); the next pass removes it.
                 self.destroy_arrow(i);
+                if let Some(entity) = self.arrows[i].entity {
+                    let e = &mut self.entities[entity];
+                    e.flags = E_DESTROYED;
+                    e.owner = 0;
+                    e.x = center.x.raw();
+                    e.y = center.y.raw();
+                    e.vx = arrow_body.velocity.x.raw();
+                    e.vy = arrow_body.velocity.y.raw();
+                    e.rotation = arrow.rotation.raw();
+                }
                 continue;
             }
 
@@ -2853,6 +2880,9 @@ impl RolloutWorld {
 
     fn observe_main(&mut self) {
         self.refresh_entities();
+        self.state_entities.clear();
+        self.state_entities
+            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
         self.slimes = slimes;
@@ -2860,21 +2890,22 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.state,
             &self.players,
-            &self.entities,
+            &self.state_entities,
             &self.slimes,
             self.tick,
             self.episode_ticks,
             self.warmup,
             flags,
         );
-        self.state.entities = self.entities.as_ptr();
+        self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
     }
 
     fn observe_sample(&mut self) {
         self.refresh_entities();
         self.sample_entities.clear();
-        self.sample_entities.extend_from_slice(&self.entities);
+        self.sample_entities
+            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
         self.sample_slimes = slimes;
@@ -2926,6 +2957,14 @@ impl RolloutWorld {
             let position = slot.base.position;
             let data = data::get();
 
+            if slot.out {
+                // PlayerCollision destroys the slime and its ability objects
+                // (PlayerCollision.cs:201-210) before this pass's DetPhysics.
+                for e in [body_e, dash_e, circle_e, slot.bow_entity] {
+                    self.entities[e].flags = E_REMOVED;
+                }
+                continue;
+            }
             let body = &mut self.entities[body_e];
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
