@@ -1,0 +1,1031 @@
+{
+ "schema": 1,
+ "created": 1789098646.3710375,
+ "note": "First reference pool (2026-09-11): random, hard+medium scripted bots, overnight-3 finals 001/002/009/012 (policy-266698752, 200M learner steps), run007 anchors. Rust sim 101b017d.",
+ "game": {
+  "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/ref-scorer/native/target/release/libbopl_sim.so",
+  "sha256": "101b017dbb58cf804de63ed46c863683dbfe5e4693e3aaab595c4cbfa19f151c"
+ },
+ "maps": [
+  0,
+  1,
+  2
+ ],
+ "games_per_pair": 48,
+ "seed_base": 50001,
+ "episode_ticks": 7200,
+ "observation_delay_ticks": 9,
+ "games": 5760,
+ "elapsed": 798.485216111003,
+ "fit": "Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo",
+ "members": [
+  {
+   "name": "random",
+   "kind": "random",
+   "rating": 0.0,
+   "games": 720,
+   "wins": 71,
+   "losses": 648,
+   "draws": 1
+  },
+  {
+   "name": "archer-hard",
+   "kind": "scripted",
+   "rating": 384.641,
+   "games": 720,
+   "wins": 386,
+   "losses": 321,
+   "draws": 13
+  },
+  {
+   "name": "pursuer-hard",
+   "kind": "scripted",
+   "rating": 386.051,
+   "games": 720,
+   "wins": 382,
+   "losses": 314,
+   "draws": 24
+  },
+  {
+   "name": "evasive-hard",
+   "kind": "scripted",
+   "rating": 450.349,
+   "games": 720,
+   "wins": 457,
+   "losses": 255,
+   "draws": 8
+  },
+  {
+   "name": "mixed-hard",
+   "kind": "scripted",
+   "rating": 361.197,
+   "games": 720,
+   "wins": 359,
+   "losses": 344,
+   "draws": 17
+  },
+  {
+   "name": "archer-medium",
+   "kind": "scripted",
+   "rating": 337.252,
+   "games": 720,
+   "wins": 340,
+   "losses": 376,
+   "draws": 4
+  },
+  {
+   "name": "pursuer-medium",
+   "kind": "scripted",
+   "rating": 372.442,
+   "games": 720,
+   "wins": 369,
+   "losses": 330,
+   "draws": 21
+  },
+  {
+   "name": "evasive-medium",
+   "kind": "scripted",
+   "rating": 410.629,
+   "games": 720,
+   "wins": 415,
+   "losses": 295,
+   "draws": 10
+  },
+  {
+   "name": "mixed-medium",
+   "kind": "scripted",
+   "rating": 338.194,
+   "games": 720,
+   "wins": 343,
+   "losses": 377,
+   "draws": 0
+  },
+  {
+   "name": "o3-001-final",
+   "kind": "checkpoint",
+   "path": "o3-001-final.bin",
+   "sha256": "fac04d60d5968d64cc7e4caab8c2d3c1a8ea3abe9644bdd12280e5c9ce7428fe",
+   "metadata_sha256": "3b9ad543c8a5078c4593435ead12f6c292d3de43aee583a7ff0353c3514a9e5c",
+   "rating": 338.665,
+   "games": 720,
+   "wins": 311,
+   "losses": 344,
+   "draws": 65
+  },
+  {
+   "name": "o3-002-final",
+   "kind": "checkpoint",
+   "path": "o3-002-final.bin",
+   "sha256": "43cfc84da7444c07efcf63f5e91a2886c9c38f0b01400a73268cdb470f4dc241",
+   "metadata_sha256": "ddf3a6d1c5d28036c1f9150587103021ad62ebb944b9696fa739cea7773ca4d0",
+   "rating": 396.885,
+   "games": 720,
+   "wins": 378,
+   "losses": 287,
+   "draws": 55
+  },
+  {
+   "name": "o3-009-final",
+   "kind": "checkpoint",
+   "path": "o3-009-final.bin",
+   "sha256": "db0be1f9cc633bee8ade3a3e22e57d0135e285d5232a0e1c669fb7f9345d5808",
+   "metadata_sha256": "283d35a736003ccddaf53c2d1c66d0a16c1c106ce21aa570039daae7f5b2b0f8",
+   "rating": 362.134,
+   "games": 720,
+   "wins": 342,
+   "losses": 325,
+   "draws": 53
+  },
+  {
+   "name": "o3-012-final",
+   "kind": "checkpoint",
+   "path": "o3-012-final.bin",
+   "sha256": "a34e172ea964de5e580ffb366c8c3f8049378f317b65836da14762d9e3012e0b",
+   "metadata_sha256": "dbc8a9bef6566097f89942cdd6626b23a931b1ed0e4194da9bc70e83cd067f55",
+   "rating": 408.251,
+   "games": 720,
+   "wins": 383,
+   "losses": 268,
+   "draws": 69
+  },
+  {
+   "name": "run007-100m",
+   "kind": "checkpoint",
+   "path": "run007-100m.bin",
+   "sha256": "71777969503889da84f2e88cb34fc517520c9f1633a49a6bb4566795c4ee2fb7",
+   "metadata_sha256": "d2ae5d2f2e7b97aaffb11f6d024b03ccdf38f58363d2a280ad746b57e8d94ab9",
+   "rating": 292.338,
+   "games": 720,
+   "wins": 272,
+   "losses": 402,
+   "draws": 46
+  },
+  {
+   "name": "run007-300m",
+   "kind": "checkpoint",
+   "path": "run007-300m.bin",
+   "sha256": "6b016a89da5ab03eb6270ee37325d832f9b6df077f6596d6086ddda730ca63fa",
+   "metadata_sha256": "87e422cb76ebb0398c72dde3e40c45aeec8f686654cb50480e0223f30f90e28e",
+   "rating": 299.615,
+   "games": 720,
+   "wins": 265,
+   "losses": 380,
+   "draws": 75
+  },
+  {
+   "name": "run007-final",
+   "kind": "checkpoint",
+   "path": "run007-final.bin",
+   "sha256": "0ee81016dfa41b4620bf5438191de0e5181ab99e9def2e6a6563e37501198db0",
+   "metadata_sha256": "f7456ff4141e5c6e07c0e6187674bb823176a6a72a15b819559f0e4fb3386f72",
+   "rating": 445.907,
+   "games": 720,
+   "wins": 416,
+   "losses": 223,
+   "draws": 81
+  }
+ ],
+ "matches": [
+  {
+   "a": "archer-hard",
+   "b": "archer-medium",
+   "wins_a": 27,
+   "wins_b": 21,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "evasive-hard",
+   "wins_a": 32,
+   "wins_b": 16,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "evasive-medium",
+   "wins_a": 28,
+   "wins_b": 20,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "mixed-hard",
+   "wins_a": 24,
+   "wins_b": 24,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "mixed-medium",
+   "wins_a": 25,
+   "wins_b": 23,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "o3-001-final",
+   "wins_a": 23,
+   "wins_b": 25,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "o3-002-final",
+   "wins_a": 20,
+   "wins_b": 28,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "o3-009-final",
+   "wins_a": 25,
+   "wins_b": 23,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "o3-012-final",
+   "wins_a": 15,
+   "wins_b": 33,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "pursuer-hard",
+   "wins_a": 32,
+   "wins_b": 8,
+   "draws": 8
+  },
+  {
+   "a": "archer-hard",
+   "b": "pursuer-medium",
+   "wins_a": 22,
+   "wins_b": 21,
+   "draws": 5
+  },
+  {
+   "a": "archer-hard",
+   "b": "random",
+   "wins_a": 41,
+   "wins_b": 7,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "run007-100m",
+   "wins_a": 22,
+   "wins_b": 26,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "run007-300m",
+   "wins_a": 34,
+   "wins_b": 14,
+   "draws": 0
+  },
+  {
+   "a": "archer-hard",
+   "b": "run007-final",
+   "wins_a": 16,
+   "wins_b": 32,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "evasive-hard",
+   "wins_a": 15,
+   "wins_b": 33,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "evasive-medium",
+   "wins_a": 21,
+   "wins_b": 27,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "mixed-hard",
+   "wins_a": 23,
+   "wins_b": 25,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "mixed-medium",
+   "wins_a": 34,
+   "wins_b": 14,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "o3-001-final",
+   "wins_a": 21,
+   "wins_b": 25,
+   "draws": 2
+  },
+  {
+   "a": "archer-medium",
+   "b": "o3-002-final",
+   "wins_a": 20,
+   "wins_b": 28,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "o3-009-final",
+   "wins_a": 23,
+   "wins_b": 25,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "o3-012-final",
+   "wins_a": 13,
+   "wins_b": 33,
+   "draws": 2
+  },
+  {
+   "a": "archer-medium",
+   "b": "pursuer-hard",
+   "wins_a": 18,
+   "wins_b": 30,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "pursuer-medium",
+   "wins_a": 20,
+   "wins_b": 28,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "random",
+   "wins_a": 45,
+   "wins_b": 3,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "run007-100m",
+   "wins_a": 22,
+   "wins_b": 26,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "run007-300m",
+   "wins_a": 24,
+   "wins_b": 24,
+   "draws": 0
+  },
+  {
+   "a": "archer-medium",
+   "b": "run007-final",
+   "wins_a": 20,
+   "wins_b": 28,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "evasive-medium",
+   "wins_a": 34,
+   "wins_b": 14,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "mixed-hard",
+   "wins_a": 24,
+   "wins_b": 24,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "mixed-medium",
+   "wins_a": 32,
+   "wins_b": 16,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "o3-001-final",
+   "wins_a": 36,
+   "wins_b": 12,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "o3-002-final",
+   "wins_a": 33,
+   "wins_b": 15,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "o3-009-final",
+   "wins_a": 31,
+   "wins_b": 17,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "o3-012-final",
+   "wins_a": 25,
+   "wins_b": 19,
+   "draws": 4
+  },
+  {
+   "a": "evasive-hard",
+   "b": "pursuer-hard",
+   "wins_a": 24,
+   "wins_b": 24,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "pursuer-medium",
+   "wins_a": 31,
+   "wins_b": 17,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "random",
+   "wins_a": 44,
+   "wins_b": 4,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "run007-100m",
+   "wins_a": 34,
+   "wins_b": 14,
+   "draws": 0
+  },
+  {
+   "a": "evasive-hard",
+   "b": "run007-300m",
+   "wins_a": 37,
+   "wins_b": 10,
+   "draws": 1
+  },
+  {
+   "a": "evasive-hard",
+   "b": "run007-final",
+   "wins_a": 23,
+   "wins_b": 22,
+   "draws": 3
+  },
+  {
+   "a": "evasive-medium",
+   "b": "mixed-hard",
+   "wins_a": 32,
+   "wins_b": 16,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "mixed-medium",
+   "wins_a": 27,
+   "wins_b": 21,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "o3-001-final",
+   "wins_a": 32,
+   "wins_b": 15,
+   "draws": 1
+  },
+  {
+   "a": "evasive-medium",
+   "b": "o3-002-final",
+   "wins_a": 32,
+   "wins_b": 16,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "o3-009-final",
+   "wins_a": 31,
+   "wins_b": 17,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "o3-012-final",
+   "wins_a": 27,
+   "wins_b": 18,
+   "draws": 3
+  },
+  {
+   "a": "evasive-medium",
+   "b": "pursuer-hard",
+   "wins_a": 28,
+   "wins_b": 20,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "pursuer-medium",
+   "wins_a": 28,
+   "wins_b": 20,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "random",
+   "wins_a": 42,
+   "wins_b": 6,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "run007-100m",
+   "wins_a": 32,
+   "wins_b": 15,
+   "draws": 1
+  },
+  {
+   "a": "evasive-medium",
+   "b": "run007-300m",
+   "wins_a": 28,
+   "wins_b": 20,
+   "draws": 0
+  },
+  {
+   "a": "evasive-medium",
+   "b": "run007-final",
+   "wins_a": 15,
+   "wins_b": 28,
+   "draws": 5
+  },
+  {
+   "a": "mixed-hard",
+   "b": "mixed-medium",
+   "wins_a": 24,
+   "wins_b": 24,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "o3-001-final",
+   "wins_a": 21,
+   "wins_b": 27,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "o3-002-final",
+   "wins_a": 21,
+   "wins_b": 27,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "o3-009-final",
+   "wins_a": 29,
+   "wins_b": 19,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "o3-012-final",
+   "wins_a": 13,
+   "wins_b": 35,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "pursuer-hard",
+   "wins_a": 24,
+   "wins_b": 16,
+   "draws": 8
+  },
+  {
+   "a": "mixed-hard",
+   "b": "pursuer-medium",
+   "wins_a": 26,
+   "wins_b": 14,
+   "draws": 8
+  },
+  {
+   "a": "mixed-hard",
+   "b": "random",
+   "wins_a": 40,
+   "wins_b": 8,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "run007-100m",
+   "wins_a": 24,
+   "wins_b": 23,
+   "draws": 1
+  },
+  {
+   "a": "mixed-hard",
+   "b": "run007-300m",
+   "wins_a": 33,
+   "wins_b": 15,
+   "draws": 0
+  },
+  {
+   "a": "mixed-hard",
+   "b": "run007-final",
+   "wins_a": 15,
+   "wins_b": 33,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "o3-001-final",
+   "wins_a": 19,
+   "wins_b": 29,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "o3-002-final",
+   "wins_a": 18,
+   "wins_b": 30,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "o3-009-final",
+   "wins_a": 29,
+   "wins_b": 19,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "o3-012-final",
+   "wins_a": 15,
+   "wins_b": 33,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "pursuer-hard",
+   "wins_a": 24,
+   "wins_b": 24,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "pursuer-medium",
+   "wins_a": 36,
+   "wins_b": 12,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "random",
+   "wins_a": 35,
+   "wins_b": 13,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "run007-100m",
+   "wins_a": 20,
+   "wins_b": 28,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "run007-300m",
+   "wins_a": 30,
+   "wins_b": 18,
+   "draws": 0
+  },
+  {
+   "a": "mixed-medium",
+   "b": "run007-final",
+   "wins_a": 19,
+   "wins_b": 29,
+   "draws": 0
+  },
+  {
+   "a": "o3-001-final",
+   "b": "o3-002-final",
+   "wins_a": 7,
+   "wins_b": 28,
+   "draws": 13
+  },
+  {
+   "a": "o3-001-final",
+   "b": "o3-009-final",
+   "wins_a": 14,
+   "wins_b": 21,
+   "draws": 13
+  },
+  {
+   "a": "o3-001-final",
+   "b": "o3-012-final",
+   "wins_a": 17,
+   "wins_b": 23,
+   "draws": 8
+  },
+  {
+   "a": "o3-001-final",
+   "b": "pursuer-hard",
+   "wins_a": 19,
+   "wins_b": 29,
+   "draws": 0
+  },
+  {
+   "a": "o3-001-final",
+   "b": "pursuer-medium",
+   "wins_a": 13,
+   "wins_b": 35,
+   "draws": 0
+  },
+  {
+   "a": "o3-001-final",
+   "b": "random",
+   "wins_a": 46,
+   "wins_b": 2,
+   "draws": 0
+  },
+  {
+   "a": "o3-001-final",
+   "b": "run007-100m",
+   "wins_a": 32,
+   "wins_b": 11,
+   "draws": 5
+  },
+  {
+   "a": "o3-001-final",
+   "b": "run007-300m",
+   "wins_a": 12,
+   "wins_b": 21,
+   "draws": 15
+  },
+  {
+   "a": "o3-001-final",
+   "b": "run007-final",
+   "wins_a": 18,
+   "wins_b": 22,
+   "draws": 8
+  },
+  {
+   "a": "o3-002-final",
+   "b": "o3-009-final",
+   "wins_a": 22,
+   "wins_b": 23,
+   "draws": 3
+  },
+  {
+   "a": "o3-002-final",
+   "b": "o3-012-final",
+   "wins_a": 28,
+   "wins_b": 11,
+   "draws": 9
+  },
+  {
+   "a": "o3-002-final",
+   "b": "pursuer-hard",
+   "wins_a": 20,
+   "wins_b": 27,
+   "draws": 1
+  },
+  {
+   "a": "o3-002-final",
+   "b": "pursuer-medium",
+   "wins_a": 28,
+   "wins_b": 20,
+   "draws": 0
+  },
+  {
+   "a": "o3-002-final",
+   "b": "random",
+   "wins_a": 46,
+   "wins_b": 2,
+   "draws": 0
+  },
+  {
+   "a": "o3-002-final",
+   "b": "run007-100m",
+   "wins_a": 26,
+   "wins_b": 14,
+   "draws": 8
+  },
+  {
+   "a": "o3-002-final",
+   "b": "run007-300m",
+   "wins_a": 26,
+   "wins_b": 11,
+   "draws": 11
+  },
+  {
+   "a": "o3-002-final",
+   "b": "run007-final",
+   "wins_a": 10,
+   "wins_b": 28,
+   "draws": 10
+  },
+  {
+   "a": "o3-009-final",
+   "b": "o3-012-final",
+   "wins_a": 22,
+   "wins_b": 18,
+   "draws": 8
+  },
+  {
+   "a": "o3-009-final",
+   "b": "pursuer-hard",
+   "wins_a": 21,
+   "wins_b": 27,
+   "draws": 0
+  },
+  {
+   "a": "o3-009-final",
+   "b": "pursuer-medium",
+   "wins_a": 13,
+   "wins_b": 35,
+   "draws": 0
+  },
+  {
+   "a": "o3-009-final",
+   "b": "random",
+   "wins_a": 48,
+   "wins_b": 0,
+   "draws": 0
+  },
+  {
+   "a": "o3-009-final",
+   "b": "run007-100m",
+   "wins_a": 35,
+   "wins_b": 6,
+   "draws": 7
+  },
+  {
+   "a": "o3-009-final",
+   "b": "run007-300m",
+   "wins_a": 25,
+   "wins_b": 12,
+   "draws": 11
+  },
+  {
+   "a": "o3-009-final",
+   "b": "run007-final",
+   "wins_a": 14,
+   "wins_b": 23,
+   "draws": 11
+  },
+  {
+   "a": "o3-012-final",
+   "b": "pursuer-hard",
+   "wins_a": 32,
+   "wins_b": 16,
+   "draws": 0
+  },
+  {
+   "a": "o3-012-final",
+   "b": "pursuer-medium",
+   "wins_a": 26,
+   "wins_b": 21,
+   "draws": 1
+  },
+  {
+   "a": "o3-012-final",
+   "b": "random",
+   "wins_a": 47,
+   "wins_b": 1,
+   "draws": 0
+  },
+  {
+   "a": "o3-012-final",
+   "b": "run007-100m",
+   "wins_a": 23,
+   "wins_b": 17,
+   "draws": 8
+  },
+  {
+   "a": "o3-012-final",
+   "b": "run007-300m",
+   "wins_a": 19,
+   "wins_b": 19,
+   "draws": 10
+  },
+  {
+   "a": "o3-012-final",
+   "b": "run007-final",
+   "wins_a": 13,
+   "wins_b": 19,
+   "draws": 16
+  },
+  {
+   "a": "pursuer-hard",
+   "b": "pursuer-medium",
+   "wins_a": 31,
+   "wins_b": 12,
+   "draws": 5
+  },
+  {
+   "a": "pursuer-hard",
+   "b": "random",
+   "wins_a": 43,
+   "wins_b": 5,
+   "draws": 0
+  },
+  {
+   "a": "pursuer-hard",
+   "b": "run007-100m",
+   "wins_a": 35,
+   "wins_b": 13,
+   "draws": 0
+  },
+  {
+   "a": "pursuer-hard",
+   "b": "run007-300m",
+   "wins_a": 37,
+   "wins_b": 11,
+   "draws": 0
+  },
+  {
+   "a": "pursuer-hard",
+   "b": "run007-final",
+   "wins_a": 15,
+   "wins_b": 31,
+   "draws": 2
+  },
+  {
+   "a": "pursuer-medium",
+   "b": "random",
+   "wins_a": 38,
+   "wins_b": 9,
+   "draws": 1
+  },
+  {
+   "a": "pursuer-medium",
+   "b": "run007-100m",
+   "wins_a": 34,
+   "wins_b": 13,
+   "draws": 1
+  },
+  {
+   "a": "pursuer-medium",
+   "b": "run007-300m",
+   "wins_a": 35,
+   "wins_b": 13,
+   "draws": 0
+  },
+  {
+   "a": "pursuer-medium",
+   "b": "run007-final",
+   "wins_a": 27,
+   "wins_b": 21,
+   "draws": 0
+  },
+  {
+   "a": "random",
+   "b": "run007-100m",
+   "wins_a": 6,
+   "wins_b": 42,
+   "draws": 0
+  },
+  {
+   "a": "random",
+   "b": "run007-300m",
+   "wins_a": 3,
+   "wins_b": 45,
+   "draws": 0
+  },
+  {
+   "a": "random",
+   "b": "run007-final",
+   "wins_a": 2,
+   "wins_b": 46,
+   "draws": 0
+  },
+  {
+   "a": "run007-100m",
+   "b": "run007-300m",
+   "wins_a": 14,
+   "wins_b": 26,
+   "draws": 8
+  },
+  {
+   "a": "run007-100m",
+   "b": "run007-final",
+   "wins_a": 10,
+   "wins_b": 31,
+   "draws": 7
+  },
+  {
+   "a": "run007-300m",
+   "b": "run007-final",
+   "wins_a": 6,
+   "wins_b": 23,
+   "draws": 19
+  }
+ ],
+ "pool_sha256": "57d70df96257ed56b1f4a200db9d376ad8dc46a53167f75beea5aea04910b6f2"
+}
