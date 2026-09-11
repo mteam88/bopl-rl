@@ -102,24 +102,28 @@ A diagnostic `evaluate.py` suite with `search-hard,mixed-hard` (≈400 games)
 took 100–160 s wall with two workers.
 
 **Strength (2026-09-11, Rust sim, maps 0–2 both sides).** Bot-vs-bot: 120
-games `search-hard` vs `mixed-hard` 86 W / 34 L (72%; `mixed-hard` is
-seed-invariant, so the spread comes from the search bot's random candidates).
-Against policies via `evaluate.py --games-per-opponent 32` (96 games each):
+games `search-hard` vs `mixed-hard` 87 W / 33 L (72%; `mixed-hard` is
+seed-invariant, so the spread comes from the search bot's random candidates;
+`search-medium` beat `mixed-hard` in all 6 distinct games and `mixed-medium`
+49/59). Against policies via `evaluate.py --games-per-opponent 32` (96
+games each; two builds differing only in the platform horizon and a
+rejected foe model scored 61–65, 70–81 and 51–58 on the three rows, so read
+±8 as noise):
 
 | Policy | `mixed-hard` wins | `search-hard` wins |
 | --- | --- | --- |
-| overnight-3 trial 001 final (platform squisher, fires no arrows) | 42/96 (44%) | 61/96 (64%) |
-| overnight-3 trial 012 final | 24/96 (25%) | 81/96 (84%) |
-| run007 final | 41/96 (43%) | 58/96 (60%) |
+| overnight-3 trial 001 final (platform squisher, fires no arrows) | 42/96 (44%) | 62/96 (65%) |
+| overnight-3 trial 012 final | 24/96 (25%) | 70/96 (73%) |
+| run007 final | 41/96 (43%) | 51–58/96 (53–60%) |
 
-Where it still loses: 30 of 40 losses in a 120-game `mixed-hard` set died
-*inside an arrow latch*, 22 of them a full charge (hold 16) that the rollout
+Where it still loses: 22 of 33 losses in the 120-game `mixed-hard` set died
+*inside an arrow latch*, 19 of them a full charge (hold 16) that the rollout
 had scored as a kill — the foe model said the foe would fall or stand, the
-real foe recovered or shot first. Against trial 001 the remaining losses are
-squishes. Which of Matthew's points mattered (measured): the shooting /
-approaching foe model took the head-to-head from 59% to 67%, the
+real foe recovered or shot first. Against trial 001 all remaining losses are
+squishes (32/34). Which of Matthew's points mattered (measured): the
+shooting / approaching foe model took the head-to-head from 59% to 67%, the
 best-dodge-in-hindsight foe to 72%; platform squish candidates account for
-~25% of the search bot's wins (it discovered the squish on its own — 22–36
+~25% of the search bot's wins (it discovered the squish on its own — 20–36
 of its wins in each set are `cause_of_death` 1); the pending own arrow is
 handled by the fork for free (zero shoot→dash self-kills observed); the
 cooldown terms in the heuristic were not separately measurable.
