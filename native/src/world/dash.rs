@@ -122,6 +122,7 @@ impl Player {
                     }
                     self.position = position;
                 }
+                self.dash.exit_rotation = self.rotation;
                 self.dash.active = false;
                 self.ground = None;
                 self.grounded = false;

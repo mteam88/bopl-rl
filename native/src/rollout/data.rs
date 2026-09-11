@@ -128,8 +128,19 @@ struct RawBowAnims {
 }
 #[derive(Deserialize)]
 struct RawArrowBody {
+    mass: i64,
+    bounciness: i64,
+    friction: i64,
+    #[serde(rename = "dynamicFriction")]
+    dynamic_friction: i64,
+    #[serde(rename = "momentOfInertia")]
+    moment_of_inertia: i64,
     #[serde(rename = "gravityScale")]
     gravity_scale: i64,
+    #[serde(rename = "airFriction01")]
+    air_drag: i64,
+    #[serde(rename = "rotationalDrag01")]
+    rotational_drag: i64,
 }
 #[derive(Deserialize)]
 struct RawArrow {
@@ -174,11 +185,19 @@ struct RawResizable {
     body: RawBody,
 }
 #[derive(Deserialize)]
+struct RawPickup {
+    layer: u32,
+    radius: i64,
+    mass: i64,
+    offset: RawVec2,
+}
+#[derive(Deserialize)]
 struct RawPrefabs {
     player: RawPlayer,
     dash: RawDash,
     bow: RawBow,
     arrow: RawArrow,
+    ability_pickup: RawPickup,
     platform_ability: RawPlatformAbility,
     resizable_platform: RawResizable,
 }
@@ -251,7 +270,17 @@ pub struct BowData {
 }
 pub struct ArrowData {
     pub radius: Fix,
-    pub gravity_scale: Fix,
+    /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
+    pub body: crate::physics::Body,
+}
+/// AbilityPickup_Dynamic prefab: the circle a final death drops
+/// (SlimeController.DropAbilities).
+pub struct PickupData {
+    pub layer: u32,
+    pub radius: Fix,
+    pub inverse_mass: Fix,
+    /// DPhysicsCircle centre offset from the FixTransform (DetPhysics.cs:2513).
+    pub offset: Vec2,
 }
 pub struct PlatformAbilityData {
     pub cooldown: Fix,
@@ -296,6 +325,7 @@ pub struct RolloutData {
     pub dash: DashData,
     pub bow: BowData,
     pub arrow: ArrowData,
+    pub pickup: PickupData,
     pub platform: PlatformAbilityData,
 }
 
@@ -486,7 +516,31 @@ pub fn get() -> &'static RolloutData {
             },
             arrow: ArrowData {
                 radius: Fix::from_raw(raw.prefabs.arrow.radius),
-                gravity_scale: Fix::from_raw(raw.prefabs.arrow.body.gravity_scale),
+                body: {
+                    let b = &raw.prefabs.arrow.body;
+                    body(
+                        &RawBody {
+                            mass: b.mass,
+                            bounciness: b.bounciness,
+                            static_friction: b.friction,
+                            dynamic_friction: b.dynamic_friction,
+                            moment_of_inertia: b.moment_of_inertia,
+                            gravity_scale: b.gravity_scale,
+                            air_drag: b.air_drag,
+                            rotational_drag: b.rotational_drag,
+                        },
+                        Fix::ZERO,
+                    )
+                },
+            },
+            pickup: {
+                let p = &raw.prefabs.ability_pickup;
+                PickupData {
+                    layer: p.layer,
+                    radius: Fix::from_raw(p.radius),
+                    inverse_mass: Fix::ONE / Fix::from_raw(p.mass),
+                    offset: p.offset.get(),
+                }
             },
             platform: PlatformAbilityData {
                 cooldown: Fix::from_raw(plat.cooldown),

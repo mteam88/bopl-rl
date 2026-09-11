@@ -102,11 +102,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
   so the remaining difference is primarily observation/entity history.
-- On final elimination, Unity's `SlimeController.DropAbilities` can create a
-  pickup in the terminal snapshot. Rust has no corresponding terminal-only
-  entity. No later gameplay tick can consume it and reset reseeds the RNG, so
-  this remains an observation-only difference rather than the disabled
-  periodic-spawner gameplay gap.
+- On final elimination, `SlimeController.DropAbilities` spawns a
+  `DynamicAbilityPickup`; Rust emits that terminal row (layer 13, at the dying
+  body + (0, 0.04)) but does not simulate pickup flight, swaps or the
+  `RandomFix` draw, which only matter with three or more players.
 - The rollout only contains dynamic bodies needed by ids 2/4/14. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
@@ -137,9 +136,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | configured scope | Ability pickups | disabled on both RL backends by default; explicit .NET-only diagnostic opt-in above |
 | exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
-| cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | not changed; the episode cannot advance and reset reseeds RNG |
+| cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | fixed: the terminal pickup row is emitted (flight unsimulated, see above) |
 
-## Warmup and static-geometry audit (2026-09-11)
+## Warmup, phase and physics audit (2026-09-11)
 
 Trigger: v1 `evasive-hard` (kind 3, level 2) lost to an idle opponent on
 map 1, side 0, seed 140001 on the Rust sim (t=3246) while winning on .NET.
@@ -159,40 +158,48 @@ positions had drifted 0.2 units through a jump/landing loop.
 | Dash exit tick: the ejected slime kept the leave velocity until the next tick; `Dash.ExitAbility` hands over an ungrounded body and `onExitAbility` enters Fall, whose `VelocityBasedRaycasts` can land on the ejection tick | Dash.cs:224-241, SlimeController.cs:249 and 263-272, PlayerPhysics.cs:495-509 | `collision_rays` on the exit tick after the ejected position is published; the `dash_exit_followup` flag and a double gravity step on airborne dash entry are gone |
 | Landing-tick publication: the pre-tick position was published; `PlayerPhysics.UpdateSim` applies gravity and `AttachToGround` before `SlimeController.OldUpdate` publishes `body.position` | PlayerPhysics.cs:116-131, SlimeController.cs:712 | publish after the gravity phase |
 | Warmup shorter than 63 ticks had live slimes from tick 0; `SpawnPlayers` instantiates them on tick 63 (no slime rows and `Player.Position` zero before, then the spawn animation) | `GameSessionHandler.SpawnPlayers`, SlimeController.cs:516-533 | `unspawned` countdown per player; timers keep -1.5 s + (tick-62)*DT for every warmup (`warm_ab` 0/60/63/100/240 match) |
+| The deactivated slime skipped the entry pass's `Move`; `SlimeController.UpdateSim` still calls it once, and that frozen body is what the hurtbox row shows during the ability | SlimeController.cs:1067-1084, PlayerPhysics.cs:230-260 | `ability_origin` from a `move_only` clone |
+| Platform transform ran in physics order; Unity's `PlatformTransform.UpdateSim` copies the platform FixTransform before DetPhysics moves it, `AnimateVelocity.Init` homes on the current position, and `Box.UpdateExtents` rescales the existing axes | PlatformTransform.cs:122, 281-300, AnimateVelocity.cs:74-79 and 126-129, Box.cs:37-44, Updater.cs:265-273 | component/physics phase order; sizing keeps stable axes |
+| Bow aim started at the raw ground normal and hurtbox axes were `basis * e` | SlimeController.cs:666 (`Normalized(upVector)`), BowTransform.cs:246, Box.cs:30-35, FixTransform.cs:56-59 | re-normalised normal; `Box.SetRotation` axes |
+| Dash/Bow hurtbox rows read the live body; DetPhysics syncs them before the movement phase, the Dash rotation being `Tools.GetRotationFromDirection` | Dash.cs:123-124, Box.cs:30-35 | rows report the synced box |
+| Bow exits: the landing exit re-derives the surface local through `SyncPhysicsTo(AbilityExitInfo)`; the animation-end exit ungrounds, publishes, then raycasts | BowTransform.cs:116-130 and 225-239, PlayerPhysics.cs:548, 556-570, 577, SlimeController.cs:251-259, Ability.cs:151 | `bow_exit` |
+| Grounded Bow entry kept the slime velocity; `SyncPhysicsTo(PlayerInfo)` re-derives the body from its local with zero velocity and `OnEnterAbility` clears the external one | PlayerPhysics.cs:526-535, BowTransform.cs:91 | zero velocity, surface position |
+| Bow aiming clamped before the landing raycast; `Vec2.Lerp`/speed clamps evaluated in a different operand order | BowTransform.cs:222, 240-243, 249, 262, Fix.cs:41608 | Unity's order |
+| Arrow facing used a vector division and unwrapped angles; DetPhysics divides per component and wraps into [0, 2pi) | DetPhysics.cs:1645 | per-component division, wrap |
+| Ability exits landed one tick early: the slime's `SpriteAnimator` (hierarchy 7) fires the land callback at F+N+1; the jump edge follows `Player`'s input profile | SpriteAnimator.cs:190-231, SlimeController.cs:249, 796 | 37-tick land after exits |
+| A landing arrow left its platform untouched; DetPhysics resolves the Circle/RR contact (impulse and correction) before the landing callback | DetPhysics.cs:3012-3048, 3195-3199, BoplBody.cs:215-229 | `arrows_contacts` applies the impulse |
+| Dead players' rows stayed; `PlayerCollision` destroys slime and ability objects, DetPhysics drops updatable-phase casualties before this pass's contacts and callback casualties one pass later | PlayerCollision.cs:201-210, Arrow.cs:124-128, DetPhysics.cs:2513 | updatable-phase deaths vanish, callback deaths are observed once as destroyed rows |
+| Platform aim reset rotation without stick input and Slerp operands were reordered; a landing in the entry pass's `PlayerPhysics.UpdateSim` sets `State.land` before `EnterAbility` freezes the state machine | PlatformTransform.cs:276-285, SlimeController.cs:1126-1128 | rotation only overridden while aiming; land observed on the entry tick |
+| RR pair roles: `Fix` multiplication floors, so `IdPair(active, current)` order changes impulses and corrections by an LSB | DetPhysics.cs:2169-2236 | pairs follow the sweep |
+| Sweep axis used active platforms only; DetPhysics means over active colliders but spreads over every registered one, including frozen inactive hurtboxes | DetPhysics.cs:2827-2894, 2498-2530 | every row feeds the variance; inactive rows keep their frozen FixTransform |
+| Ability rows froze at the slime's post-exit position; `Ability.ExitAbility` deactivates the ability body where it ended, `AttachToGround` aligns a landing Dash, Bow and Platform zero their rotation first | Ability.cs:151-152, PlayerPhysics.cs:508, BowTransform.cs:119 and 225, PlatformTransform.cs:462 | published exit pose, `dash.exit_rotation` (this flipped the sweep axis in a three-platform chain: ep 98) |
+| Final death dropped no pickup; `DropAbilities` spawns a `DynamicAbilityPickup` circle at body + (0, 0.04) | SlimeController.cs:274-310, DynamicAbilityPickup.cs:147-155 | terminal row (layer 13) |
+| `PlatformArea` factor grouping, `ResizePlatform`'s swapped `(rHeight, rWidth)` mass arguments and `State.Size`'s operand order each round differently | DPhysicsRoundedRect.cs:621-627, ResizablePlatform.cs:53, PlatformTransform.cs:335-336 and 354 | source expressions |
+| A jump that re-attaches in the same pass showed `fall`; `Jump` ungrounds (`State.fall`) and `Move`'s air raycasts land it again | SlimeController.cs:868, 956-958, 1126-1128, PlayerPhysics.cs:236-238 | `jumped_this_frame` |
+| Boundary deaths inside an ability used `Accident` and the slime's position; the ability body exits with a default `AbilityExitInfo` (`Other`), the Bow after `UnGround` and before `PlayerBody` integrates, and the slime takes that position | DestroyIfOutsideSceneBounds.cs:135-148, SlimeController.cs:215-219, BowTransform.cs:120 and 124 | cause `Other`, pre-integration Bow position |
+| A dasher killed by an arrow died at the slime's origin; Dash moves its body to `nearPos` before `KillPlayerOnCollision` and keeps it on a kill | Dash.cs:177-183 | dies at the ray hit |
+| Removal sizes used a symmetric lerp and resized before the spring; `Fix.Lerp` clamps only `a`'s weight (the curve's overshoot past 1 scales the original size) and `ResizablePlatform` follows `AnimateVelocity` in its prefab | Fix.cs:41606-41609, ResizablePlatform.cs:123-134, ResizablePlatform.prefab component order | one-sided clamp; resize after the spring impulse |
+| A death inside an ability dropped the pickup at the frozen slime; `killPlayer` on the ability object moves the slime to the ability body first | PlayerCollision.cs:124-131, SlimeController.cs:215-219 | drop at the ability body |
 
 Evidence (300 gate episodes, seeds 1000-1299, `repr_ab <NET> <Q32> 300 1000
-0`): identical ticks 32.7% -> 49.4%; the first divergence moved from tick 1
-(published player x, 172/300 episodes) to tick >= 63, and is now the slime
-velocity on a bow-fire tick (111/300, below), a collider axis or position
-within 2e-6 units (130/300) or the entity count after a death (15/300;
-Rust keeps destroyed rows in its fixed table, consumers filter on the
-active bit). `state_ab`, `hit_ab`, `move_ab` and `entity_velocity_ab` are
-textually identical to .NET, `ability_hitbox_ab` unchanged (144/2 both),
-`dash_phase_ab` tick 281 within 1e-7 (was 0.004/0.038). `TICK_STEP_OK`;
-sim-only throughput unchanged within noise (1.6-2.0M stepping ticks/s both
-builds on a loaded box). The idle bot gate is 8/9: `evasive` loses the
-seed-140001 map-1 game that the f64 build previously won by chaos; the Q32
-build is now bit-identical to .NET through tick 690 (was 407) and loses it
-before and after, see the first open item.
-
-Open, found by the same comparison (not changed here):
-
-- Platform transform start: from the first `State.Rotation` tick the
-  transformed body's position is 2.5e-3 units off and grows x6 per 10 ticks
-  (seed 140001, map 1, evasive side 0, ticks 690-696); .NET also reports the
-  circle's `orientation` following the Slerp'd `up` (4.97 -> 4.71 rad) where
-  Rust reports 0 (PlatformTransform.cs:275-289).
-- Arrow landings carry momentum: in Unity the arrow body's contact kicks the
-  platform it lands on (`bow_test` seed 37 map 0: platform id 12 gets
-  (19.8, -4.1) u/s and carries the rider 3.4 units); Rust's discrete arrows
-  land without an impulse.
-- Bow fire tick: the firing slime's `vx` differs (`repr_ab` episode 4 map 4
-  tick 65: 4.21 vs 4.88 u/s, `vy` equal) - the `Fire` knockback path
-  (BowTransform.cs:158-171).
-- `arrows_fired = 0` with `arrow_hits > 0` did not reproduce (40 random
-  episodes and the scripted bow on both backends); both counters go through
-  `RlTelemetry.Add` behind the same `Counting` flag, so only a shot on an
-  uncounted tick could produce it, and warmup inputs are zero packets.
+0`, every observation field at tolerance 0): bit-identical ticks 32.7% at
+the branch base -> 52.8% after the phase fixes -> 70.7% (arrow impulse) ->
+90.0% (removal rows) -> 98.4% (sweep axis, frozen rows) -> 99.9% (exit
+poses) -> 100.0% (74809/74809 ticks) with 300/300 equal lengths and
+winners. The last classes were closed in order: RR pair roles, frozen
+inactive rows feeding the sweep axis, ability boundary deaths, the dash-arrow
+death position, the removal lerp and the pickup drop position. What remains
+unmodelled is only visible after the terminal tick (the dropped pickup's
+gravity) or with three or more players (pickup flight/swaps and their
+`RandomFix` draw). `entity_count` differs by design: Rust keeps a fixed
+table and marks rows with `E_REMOVED`, consumers filter on the active bit.
+`TICK_STEP_OK` and the scripted-bot idle gate is 9/9. Sim-only cost
+(`benchmark.c`, 2 players, repeat 4, 200k ticks, `perf stat`): retired
+instructions +8.0% over the branch base (1728M -> 1867M), cycles +6-11%;
+wall-clock on the loaded box is within its noise. The per-pass Player-layer
+box sync and the hurtbox rows are the added work Unity also does; the sine
+table is consulted only when the rotation changed (`collider_basis`) and the
+active body row copies the synced box.
 
 ## Number type: f64 behind the Q32.32 API
 
@@ -269,60 +276,19 @@ Decisions, each checked against `Fix.cs`:
   `Floor`/`to_int` floor toward -inf like the arithmetic shift; `%` keeps the
   dividend's sign like C#.
 
-Verification of the representation change (`native/rl/research/rust_ab/repr_ab.c`
-drives the Q32 and f64 builds with the fidelity gate's action stream at
-action repeat 1 and compares every observation field per tick):
-
-- With warmup 0 and tolerance 0, the first divergence is at tick 1:
-  `player0.y` differs by exactly one raw unit (2^-32), the truncation of
-  `velocity.y * DT` in `Player::step` versus the correctly rounded product.
-  With the 240-tick warmup, the reset state differed on platform and body
-  basis vectors by 5-12335 raw units (1e-9 to 2.9e-6 units): the `Vec2::angle`
-  table truncation on maps with tilted platforms (3, 4), and one-unit
-  products elsewhere. No discrete field (state, flags, ability flags,
-  timers, telemetry, entity presence) differs at the first divergence.
-  Since the f64 `fast_sin` reproduces the table (above), the f64/Q32 reset
-  states differ only by one-unit products (player x by 1-21 raw units).
-- Over 300 episodes (seeds 1000-1299, maps 0-4) the two builds produce the
-  same winner in 300/300 and the same episode length in 298/300; the two
-  remaining episodes end one tick apart after the position gap grew from
-  1e-8 through chaotic platform-riding dynamics (×1.05 per tick during a
-  Platform transform) to 2e-2 units before the final water crossing, with
-  every discrete field agreeing along the way (`REPR_AB_TRACE=34`).
-- The 300-episode gate against .NET is identical to the Q32 build's, column
-  for column (67.1 mean decisions, 278/300 winner agreement, same death and
-  activation counts, before the platform-physics merges; 62.5 vs 63.0 and
-  296/300 after them, still identical to the Q32 build), and every scripted
-  A/B trace keeps its tolerance:
-  `move`/`state`/`bow`/`aim`/`hit` are textually identical,
-  `platform_ab` overlap maxima are unchanged (0.545/0.043/0.183 units),
-  `stock_respawn_ab` differs from the Q32 build by at most 5.6e-9 units, and
-  the map-2 orbiter (previously identical to 12 places) now drifts from .NET
-  by 3e-10 units per tick — one raw unit per tick from the reference's
-  truncated `AnimateVelocity` impulse products — reaching 2.6e-7 units at
-  tick 1620.
-- After the platform-physics merges (final 68c6aa0) the same comparison
-  holds: `repr_ab` at tolerance 0 gives 300/300 winners and 300/300 lengths
-  between the `q32` and f64 builds of one tree, and the physics tip built as
-  committed is bit-identical to the merged `q32` build. Against .NET,
-  `sudden_death_ab` (RNG-aligned sink trajectories) has a maximum Y error of
-  3.3e-9 units on the Q32 build and 6.1e-9 on f64 — the extra 12 raw units
-  over the 90 sink ticks are the per-product rounding difference above.
-  `platform_boundary_ab` originally printed the same death tick (461), RR
-  counts and phases, with minimum Y 7.6e-5 units apart. The cause was a
-  Rust-only algorithmic mistake rather than an inherent f64 difference:
-  every size tick reconstructed `body.orientation` by the round trip
-  `orientation -> Vec2::angle -> normalized_angle`. Near pi the Q32 sine
-  table walks one 2^15-raw cell (7.6e-6 rad) per application, while libm f64
-  moved one raw unit. Unity's `PlatformTransform.State.Size` retains the
-  transformed `PlayerBody.right`, and `ResizablePlatform.ResizePlatform`
-  changes geometry, mass and inertia without writing rotation. Both Rust
-  number modes now do the same, so resizing and removal never feed collider
-  axes back into scalar body orientation. The remaining small f64/Q32 formed
-  orientation offset came from a simplified scalar-angle `slerp`, not an
-  accumulating resize drift. The rollout now uses Unity's sine-weighted vector
-  formula; in the near-pi paired trace the final f64/Q32 home angles differ by
-  9.1e-7 rad and the settled f64/.NET no-contact difference is 3.0e-5 rad.
+Verification of the representation change (`repr_ab` drives two builds
+with the fidelity gate's action stream at action repeat 1 and compares every
+observation field per tick): the Q32 and f64 builds of one tree give 300/300
+winners and lengths at tolerance 0, differing only by one-raw-unit products
+(`velocity.y * DT` truncation versus the correctly rounded double) that grow
+chaotically through platform riding; no discrete field differs at a first
+divergence. Every scripted A/B trace keeps its tolerance on both builds. One
+Rust-only mistake surfaced here rather than any inherent f64 difference: size
+ticks reconstructed `body.orientation` through `Vec2::angle -> normalized_angle`,
+which walks one sine-table cell (7.6e-6 rad) per application near pi in Q32;
+`PlatformTransform.State.Size` retains `PlayerBody.right` and
+`ResizablePlatform.ResizePlatform` never writes rotation, so neither build does
+now.
 
 ## Raycast broad phase
 
@@ -498,34 +464,9 @@ Single-thread sim-only A/B (`native/rl/benchmark.c`, 2 players, repeat 4,
 | reset cost | ~9 ms | ~1 ms |
 | library startup | 1.1 s | 0.3 ms |
 
-Trainer-scale A/B (`bench_scale.sh` with `BOPL_RL_BACKEND=rust`): see the
-results appended below when the box is idle (the sim-only ratio is the
-upper bound; the GPU learner becomes the limit near 100k learner/s).
-
-For the full change set, an immediately adjacent 2-player/repeat-4/200k-tick
-pair, both limited to `CPUQuota=400%`, `CPUWeight=20`, `nice -n 19`, measured
-104.9k -> 101.3k stepping ticks/s (-3.5%) and 71.2k -> 68.1k ticks/s including
-resets (-4.3%). This was not a quiet box: the live sweep changed available CPU
-noticeably even between short runs (a reverse-order adjacent pair measured
-98.3k baseline versus 101.7k final), so treat the magnitude as load noise and
-only conclude that no large throughput regression was observed. The prior
-256-worker learner headline is about 127k learner steps/s; it was deliberately
-not rerun against the live sweep.
-
-For the discrete-arrow change alone, two back-to-back, bracketed 400k-tick
-runs under the same limits measured old/new stepping at 96.9k/99.3k ticks/s,
-then new/old at 100.2k/100.5k. Including resets they measured 62.5k/66.5k and
-67.1k/67.3k. The ordering reversal is background-load noise; there is no
-measurable throughput cost in this test.
-
-After the final semantic-audit fixes, a new bracketed baseline/final pair
-under `CPUQuota=800%`, `nice -n 10` measured stepping at
-1.685M/1.700M then 1.714M/1.878M ticks/s (baseline/final then
-final/baseline). Averaging each side gives 1.781M baseline versus 1.707M final
-(-4.2%); including resets gives 0.957M versus 0.914M (-4.4%). Different reset
-counts follow the corrected outcomes, and the large run-to-run spread means
-the small difference should be treated as a bounded microbenchmark cost, not
-as a precise trainer-throughput regression.
+Bracketed before/after pairs for each change set (2 players, repeat 4,
+200k-400k ticks, same CPU quota and nice) stayed within the run-to-run load
+noise of the box (-4% to +3%); none showed a measurable throughput cost.
 
 ### Speed work (2026-09-10)
 

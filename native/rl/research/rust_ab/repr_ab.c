@@ -180,7 +180,7 @@ static int compare(const BoplRlState *a, const BoplRlState *b, int64_t tol, Diff
         n += disc(d, what, ea->flags, eb->flags);
         snprintf(what, sizeof what, "entity%u.kind", ea->id);
         n += disc(d, what, ea->kind, eb->kind);
-        if (!(ea->flags & 1) || !(eb->flags & 1)) continue; /* inactive entities are zeroed */
+        if (!(ea->flags & 1) || !(eb->flags & 1)) continue; /* inactive rows keep their frozen FixTransform pose; compare active ones */
         snprintf(what, sizeof what, "entity%u.x", ea->id);
         n += cont(d, what, ea->x, eb->x, tol);
         snprintf(what, sizeof what, "entity%u.y", ea->id);

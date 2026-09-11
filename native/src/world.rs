@@ -54,6 +54,10 @@ pub struct Player {
     /// later for the ordinary slime.
     #[serde(default)]
     pub(crate) skip_next_gravity: bool,
+    /// PlayerPhysics.jumpedThisFrame: set by Jump, cleared once the tick's
+    /// state machine has seen it.
+    #[serde(default)]
+    pub(crate) jumped_this_frame: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -63,6 +67,10 @@ pub struct Player {
     pub collider: OrientedBox,
     #[serde(default)]
     pub collider_rotation: Fix,
+    /// `Vec2::angle(collider_rotation)`, kept so an unchanged rotation does
+    /// not pay for the sine table again (zero until the first sync).
+    #[serde(default)]
+    pub collider_basis: Vec2,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DashState {
@@ -75,6 +83,12 @@ pub struct DashState {
     pub hit_local: Fix,
     pub saved_local: Fix,
     pub local: Fix,
+    /// The Dash body's rotation when Ability.ExitAbility deactivated it:
+    /// the dash direction, or the platform alignment of a landing
+    /// (PlayerPhysics.AttachToGround, PlayerPhysics.cs:508). The frozen
+    /// FixTransform keeps it for DetPhysics' sync of inactive colliders.
+    #[serde(default)]
+    pub exit_rotation: Fix,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
@@ -218,10 +232,10 @@ pub(crate) fn closest(
     result
 }
 impl Player {
-    fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
+    pub(crate) fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
         platforms.iter().find(|p| Some(p.id) == self.ground)
     }
-    fn align(&mut self, platform: &Platform) {
+    pub(crate) fn align(&mut self, platform: &Platform) {
         self.up = platform.surface.normal(self.position);
         self.rotation = self.up.perp_cw().normalized_angle();
     }
@@ -284,6 +298,7 @@ impl Player {
         self.velocity = normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum
             + up * self.constants.jump_strength;
         self.position += self.velocity * self.constants.jump_teleport;
+        self.jumped_this_frame = true;
         let mut motion = self.ground_state();
         motion.unground(Some(&platform.surface), true);
         self.apply_ground_state(motion);
@@ -384,6 +399,20 @@ impl Player {
             self.jump(platforms);
         }
         self.previous_jump = jump;
+        self.move_only(input, platforms);
+        if self.outside_bounds() {
+            self.alive = false;
+            return;
+        }
+        self.position += (self.velocity + self.external_velocity) * DT;
+        self.external_velocity *= Fix::from_f64(0.95);
+    }
+    /// PlayerPhysics.Move (PlayerPhysics.cs:230-260) without PlayerBody's
+    /// integration. SlimeController.UpdateSim still calls it on the tick
+    /// OldUpdate entered an ability (SlimeController.cs:1067-1084), on the
+    /// slime body the ability has already copied; that body is deactivated,
+    /// so only its observed velocity (and a landing) change.
+    pub(crate) fn move_only(&mut self, input: Vec2, platforms: &[Platform]) {
         if self.grounded {
             self.move_grounded(input, platforms);
         } else {
@@ -396,12 +425,6 @@ impl Player {
             .expect("valid movement air constants");
             self.collision_rays(platforms);
         }
-        if self.outside_bounds() {
-            self.alive = false;
-            return;
-        }
-        self.position += (self.velocity + self.external_velocity) * DT;
-        self.external_velocity *= Fix::from_f64(0.95);
     }
     pub(crate) fn outside_bounds(&self) -> bool {
         self.position.y < Fix::from_f32(-11.3)
@@ -428,8 +451,11 @@ impl Player {
             Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
         };
         let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
-        let basis = Vec2::angle(self.rotation);
-        self.collider_rotation = self.rotation;
+        if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
+            self.collider_basis = Vec2::angle(self.rotation);
+            self.collider_rotation = self.rotation;
+        }
+        let basis = self.collider_basis;
         self.collider = OrientedBox {
             center: self.position,
             right: (Vec2::RIGHT / inv.x).complex_mul(basis),

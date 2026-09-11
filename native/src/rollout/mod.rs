@@ -178,6 +178,12 @@ const E_ACTIVE: u32 = 1;
 const E_ENABLED: u32 = 2;
 const E_DESTROYED: u32 = 4;
 const E_TRIGGER: u32 = 8;
+/// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
+/// updatable are removed before the same pass's contacts and never observed;
+/// one destroyed by a collision callback is observed once, flagged
+/// `E_DESTROYED`, and removed on the next pass (DetPhysics.Simulate's
+/// remove-destroyed step). Such rows are not emitted.
+const E_REMOVED: u32 = 1 << 31;
 
 // Slime flags (RlObservation.Slime).
 const S_ACTIVE: u32 = 1;
@@ -270,6 +276,15 @@ pub struct SpawnedPlatform {
 #[derive(Clone, Copy, Default)]
 pub struct PlatformDynamics {
     pub body: Body,
+    /// FixTransform rotation written by a component this tick.
+    /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
+    /// has computed its torque against the stale orientation
+    /// (DetPhysics.cs:2504-2506).
+    pub transform_rotation: Option<Fix>,
+    /// Tick on which Updater adds a body registered mid-tick and calls
+    /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
+    /// position physics had already corrected on the spawn tick.
+    pub init_tick: Option<u32>,
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -386,6 +401,19 @@ pub struct PlayerSlot {
     pub bow_entity: usize,
 }
 
+impl PlayerSlot {
+    /// SlimeController.ExitAbility enters Fall and raycasts at once
+    /// (SlimeController.cs:249, 263-272). A landing on this pass begins the
+    /// land animation after the slime's SpriteAnimator (hierarchy 100000007,
+    /// before every ability component) has already run, so it ends one tick
+    /// later than a landing in PlayerPhysics.UpdateSim; `update_obs_state`
+    /// adds this marker to LAND_TICKS.
+    fn exit_to_fall(&mut self) {
+        self.obs_state = STATE_FALL;
+        self.state_ticks = 1;
+    }
+}
+
 pub struct RolloutWorld {
     pub valid: bool,
     pub failed: bool,
@@ -420,6 +448,8 @@ pub struct RolloutWorld {
     pub entities: Vec<CEntity>,
     pub slimes: Vec<CSlime>,
     pub state: Box<CState>,
+    /// Emitted rows (the fixed table minus `E_REMOVED` entries).
+    pub state_entities: Vec<CEntity>,
     pub sample_entities: Vec<CEntity>,
     pub sample_slimes: Vec<CSlime>,
     pub sample: Box<CState>,
@@ -474,6 +504,7 @@ impl RolloutWorld {
             entities: Vec::with_capacity(192),
             slimes: Vec::with_capacity(MAX_PLAYERS),
             state: empty_state(),
+            state_entities: Vec::with_capacity(192),
             sample_entities: Vec::with_capacity(192),
             sample_slimes: Vec::with_capacity(MAX_PLAYERS),
             sample: empty_state(),
@@ -512,14 +543,16 @@ impl RolloutWorld {
         self.spawned.clone_from(&src.spawned);
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
-        self.sudden_death_delays.clone_from(&src.sudden_death_delays);
+        self.sudden_death_delays
+            .clone_from(&src.sudden_death_delays);
         self.orbits.clone_from(&src.orbits);
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
         self.entities.clone_from(&src.entities);
+        self.state_entities.clone_from(&src.state_entities);
         self.slimes.clone_from(&src.slimes);
         *self.state = *src.state;
-        self.state.entities = self.entities.as_ptr();
+        self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
         self.sample_valid = false;
         self.recording.clear();
@@ -529,13 +562,42 @@ impl RolloutWorld {
         // Exhaustive: a new field must be added to the copy above (or listed
         // here as deliberately skipped) before this compiles again.
         let RolloutWorld {
-            valid: _, failed: _, started: _, terminal: _, map: _, stocks: _, warmup: _, limit: _,
-            tick: _, episode_ticks: _, rng: _, players: _, platforms: _, platform_dynamics: _,
-            platform_defs: _, platform_entities: _, arrows: _, spawned: _, sudden_death: _,
-            sudden_death_tick: _, sudden_death_delays: _, orbits: _, next_platform_id: _,
-            next_entity_id: _, entities: _, slimes: _, state: _, sample_entities: _,
-            sample_slimes: _, sample: _, sample_valid: _, recording: _, replay_config: _,
-            replay_buffer: _, error: _,
+            valid: _,
+            failed: _,
+            started: _,
+            terminal: _,
+            map: _,
+            stocks: _,
+            warmup: _,
+            limit: _,
+            tick: _,
+            episode_ticks: _,
+            rng: _,
+            players: _,
+            platforms: _,
+            platform_dynamics: _,
+            platform_defs: _,
+            platform_entities: _,
+            arrows: _,
+            spawned: _,
+            sudden_death: _,
+            sudden_death_tick: _,
+            sudden_death_delays: _,
+            orbits: _,
+            next_platform_id: _,
+            next_entity_id: _,
+            entities: _,
+            slimes: _,
+            state: _,
+            state_entities: _,
+            sample_entities: _,
+            sample_slimes: _,
+            sample: _,
+            sample_valid: _,
+            recording: _,
+            replay_config: _,
+            replay_buffer: _,
+            error: _,
         } = src;
     }
 
@@ -692,6 +754,8 @@ impl RolloutWorld {
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
                 home_position: p.surface.center,
+                transform_rotation: None,
+                init_tick: None,
                 home_rotation: p.body.orientation,
                 speed: p.speed,
                 mu: p.mu,
@@ -754,6 +818,7 @@ impl RolloutWorld {
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
                     skip_next_gravity: false,
+                    jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
                     dash: DashState::default(),
@@ -764,6 +829,7 @@ impl RolloutWorld {
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
                     collider_rotation: Fix::ZERO,
+                    collider_basis: Vec2::ZERO,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
@@ -907,8 +973,15 @@ impl RolloutWorld {
         {
             return;
         }
-        if !slot.base.grounded {
+        // PlayerPhysics.Jump ungrounds the body and OnNoLongerGrounded sets
+        // State.fall (SlimeController.cs:956-958) before Move's air raycasts
+        // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
+        // then lands it again through attachToGround.
+        if std::mem::take(&mut slot.base.jumped_this_frame) || !slot.base.grounded {
             slot.obs_state = STATE_FALL;
+            slot.state_ticks = 0;
+        }
+        if !slot.base.grounded {
             return;
         }
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
@@ -924,9 +997,10 @@ impl RolloutWorld {
         let input_right = align >= Fix::ZERO;
         match slot.obs_state {
             STATE_FALL => {
-                // attachToGround: land animation, then idle.
+                // attachToGround: land animation, then idle (one tick longer
+                // after an ability exit, see `PlayerSlot::exit_to_fall`).
                 slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS;
+                slot.state_ticks += LAND_TICKS;
             }
             STATE_LAND => {
                 slot.state_ticks = slot.state_ticks.saturating_sub(1);
@@ -999,7 +1073,7 @@ impl RolloutWorld {
             // Live SlimeController/PlayerBody state therefore consumes the
             // current input immediately. Only Player.Position is stale; that
             // publication phase is represented explicitly in PlayerSlot.
-            self.game_tick(actions, actions);
+            self.game_tick(actions);
             if self.terminal {
                 break;
             }
@@ -1025,7 +1099,7 @@ impl RolloutWorld {
                 let mut frame = [CAction::default(); MAX_PLAYERS];
                 frame[..actions.len()].copy_from_slice(actions);
                 self.recording.push(frame);
-                self.game_tick(actions, actions);
+                self.game_tick(actions);
                 if self.terminal {
                     break;
                 }
@@ -1039,7 +1113,7 @@ impl RolloutWorld {
     /// deaths, session bookkeeping. Mirrors Updater.TickSimulation order
     /// loosely: inputs -> slime updates (abilities + movement) -> physics ->
     /// session end checks.
-    fn game_tick(&mut self, actions: &[CAction], registered_actions: &[CAction]) {
+    fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
@@ -1047,26 +1121,22 @@ impl RolloutWorld {
         // component or DetPhysics is therefore visible to the match result
         // check on the following tick, not later in the tick that killed it.
         self.session_result_tick();
-        for index in 0..self.players.len() {
+        for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
-            let action = actions[index].aim_action();
+            let action = packet.aim_action();
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
-            let registered_action = registered_actions[index].aim_action();
-            let movement_input = actions[index].input_direction(self.players[index].keyboard);
-            let jump_down = registered_action.buttons & 1 != 0;
+            let movement_input = packet.input_direction(self.players[index].keyboard);
+            let jump_down = action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
+            // SlimeController.Jump reads that same edge
+            // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
+            // movement slice's copy must not go stale while an ability runs.
+            self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
-            self.player_tick(
-                index,
-                action,
-                registered_action,
-                movement_input,
-                jump_pressed,
-                data,
-            );
+            self.player_tick(index, action, movement_input, jump_pressed, data);
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
             // the match-level death exactly once; otherwise the later
@@ -1080,7 +1150,17 @@ impl RolloutWorld {
                     && slot.base.outside_bounds()
             };
             if boundary_death {
-                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
+                // The ordinary slime's boundary component kills with
+                // Accident (DestroyIfOutsideSceneBounds.cs:148); an ability
+                // body's exits through Ability.ExitAbility with a default
+                // AbilityExitInfo, whose causeOfDeath is Other
+                // (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:219).
+                let cause = if self.players[index].active == ActiveAbility::None {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
+                self.kill(index, ENVIRONMENT, cause, false);
             }
         }
         // Slime-vs-slime shove (World::step parity).
@@ -1124,6 +1204,21 @@ impl RolloutWorld {
             self.update_obs_state(index, input);
         }
         self.arrows_integrate(data);
+        // DetPhysics.Simulate drops last pass's callback casualties, then
+        // syncs every registered collider; the sweep axis below reads them.
+        for slot in &self.players {
+            if slot.out {
+                for e in [
+                    slot.body_entity,
+                    slot.dash_entity,
+                    slot.circle_entity,
+                    slot.bow_entity,
+                ] {
+                    self.entities[e].flags = E_REMOVED;
+                }
+            }
+        }
+        self.refresh_actor_entities();
         self.platforms_tick(data);
         self.arrows_contacts(data);
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
@@ -1153,7 +1248,6 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         action: Action,
-        registered_action: Action,
         movement_input: Vec2,
         jump_pressed: bool,
         data: &data::RolloutData,
@@ -1206,18 +1300,31 @@ impl RolloutWorld {
         if !in_ability {
             for s in 0..3 {
                 let slot = &self.players[index];
-                let button_down = registered_action.buttons & (2 << s) as u8 != 0;
+                let button_down = action.buttons & (2 << s) as u8 != 0;
                 if !button_down || slot.timers[s] < slot.cooldowns[s] {
                     continue;
                 }
                 let ability = slot.abilities[s];
                 {
                     let slot = &mut self.players[index];
+                    // A landing in this pass's PlayerPhysics.UpdateSim already
+                    // set State.land through attachToGround
+                    // (SlimeController.cs:1126-1128) before EnterAbility
+                    // freezes the state machine.
+                    if slot.base.grounded && slot.obs_state == STATE_FALL {
+                        slot.obs_state = STATE_LAND;
+                        slot.state_ticks += LAND_TICKS;
+                    }
                     // The PlayerInfo package carries the post-gravity state;
-                    // PlayerBody has not integrated the position yet.
-                    slot.ability_origin = slot.base.position;
-                    slot.ability_origin_velocity = slot.base.velocity + slot.base.external_velocity;
-                    slot.ability_origin_rotation = slot.base.rotation;
+                    // PlayerBody has not integrated the position yet. The
+                    // deactivated slime still gets this pass's Move
+                    // (SlimeController.cs:1084), which is what its record
+                    // shows for the rest of the ability.
+                    let mut frozen = slot.base.clone();
+                    frozen.move_only(movement_input, &self.platforms);
+                    slot.ability_origin = frozen.position;
+                    slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
+                    slot.ability_origin_rotation = frozen.rotation;
                     slot.ability_origin_state = slot.obs_state;
                 }
                 match ability {
@@ -1228,11 +1335,11 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
                         self.players[index].active_slot = s;
-                        self.players[index].ability_entry_action = registered_action;
+                        self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let masked = Action {
-                            angle: registered_action.angle,
-                            buttons: (registered_action.buttons & 1) | 2,
+                            angle: action.angle,
+                            buttons: (action.buttons & 1) | 2,
                         };
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
@@ -1245,31 +1352,56 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
                         self.players[index].active_slot = s;
-                        self.players[index].ability_entry_action = registered_action;
+                        self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
-                        // BowTransform.OnEnterAbility: aim starts at the up
-                        // vector; airborne entry slows to a tenth (slow-mo).
+                        // BowTransform.OnEnterAbility: aim starts at
+                        // PlayerInfo.upVector = Normalized(ground normal) when
+                        // grounded, else Vec2.up (SlimeController.cs:666); the
+                        // re-normalisation moves the unit normal by an LSB.
+                        // Airborne entry slows to a tenth (slow-mo).
                         slot.bow = BowState {
-                            aim: slot.base.up,
+                            aim: if slot.base.grounded {
+                                slot.base.up.normalized()
+                            } else {
+                                Vec2::UP
+                            },
                             ..BowState::default()
                         };
-                        if !slot.base.grounded {
+                        if slot.base.grounded {
+                            // SyncPhysicsTo(PlayerInfo) re-derives the body
+                            // from the surface local with no self-imposed
+                            // velocity (PlayerPhysics.cs:526-535), and
+                            // OnEnterAbility clears the external one
+                            // (BowTransform.cs:91): this pass's PlayerBody
+                            // integration does not move the Bow.
+                            let platforms: &[Platform] = &self.platforms;
+                            if let Some(platform) = slot.base.platform(platforms) {
+                                slot.base.position =
+                                    platform.surface.position(slot.base.local, slot.base.radius);
+                            }
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        } else {
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
+                            // The Bow's own PlayerPhysics starts with no
+                            // attached ground (PlayerPhysics.cs:548), so a
+                            // later UnGround has nothing to push off from.
+                            slot.base.ground = None;
                         }
                         // BowTransform follows Ability in the prefab updater
                         // list, so a newly enabled Bow updates later in this
                         // same pass (like Dash, unlike a newly instantiated
                         // projectile which is deferred).
-                        self.bow_tick(index, registered_action, data);
+                        self.bow_tick(index, action, data);
                         return;
                     }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
                         self.players[index].active_slot = s;
-                        self.players[index].ability_entry_action = registered_action;
+                        self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
                         // PlatformTransform.OnEnterAbility: the body freezes at
@@ -1280,6 +1412,9 @@ impl RolloutWorld {
                         };
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // PlatformTransform.OnEnterAbility (PlatformTransform.cs:122).
+                        slot.base.rotation = Fix::ZERO;
+                        slot.base.up = Vec2::UP;
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
@@ -1292,17 +1427,21 @@ impl RolloutWorld {
         }
 
         if self.players[index].active == ActiveAbility::Bow {
-            self.bow_tick(index, registered_action, data);
+            self.bow_tick(index, action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
-            self.platform_ability_tick(index, registered_action, data);
+            self.platform_ability_tick(index, action, data);
             // PlatformTransform updates before its own
             // DestroyIfOutsideSceneBounds component. Unlike the ordinary
             // slime, this ability body's position is final for this updater
             // pass (the separate platform moves later in DetPhysics).
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT);
+                // The slime takes over the ability body's position
+                // (DestroyIfOutsideSceneBounds.cs:137, SlimeController.cs:217).
+                let slot = &mut self.players[index];
+                slot.reported_position = slot.base.position;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false);
             }
             return;
         }
@@ -1311,7 +1450,7 @@ impl RolloutWorld {
             let source = if starting {
                 self.players[index].ability_entry_action
             } else {
-                registered_action
+                action
             };
             let masked = Action {
                 angle: source.angle,
@@ -1352,7 +1491,7 @@ impl RolloutWorld {
                 // runs VelocityBasedRaycasts (SlimeController.cs:249, 263-272)
                 // with the leave velocity: the slime can land on the ejection
                 // tick, after the ejected position was published.
-                slot.obs_state = STATE_FALL;
+                slot.exit_to_fall();
                 slot.base.collision_rays(&self.platforms);
             }
         }
@@ -1393,7 +1532,7 @@ impl RolloutWorld {
                 })
                 .collect();
             arrow_hits.sort_by_key(|&(arrow_index, distance)| (distance, arrow_index));
-            for (arrow_index, _) in arrow_hits {
+            for (arrow_index, distance) in arrow_hits {
                 let arrow = self.arrows[arrow_index];
                 let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
                 if lethal {
@@ -1402,7 +1541,13 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(index, arrow.owner, cause);
+                    // The dasher dies where the ray met the arrow: Dash moves
+                    // its body to nearPos before KillPlayerOnCollision and
+                    // never restores it on a kill (Dash.cs:177-183).
+                    let slot = &mut self.players[index];
+                    slot.base.position = origin + direction * distance;
+                    slot.reported_position = slot.base.position;
+                    self.kill(index, arrow.owner, cause, false);
                     if arrow.owner != caster_id && arrow.owner >= 1 {
                         self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
                     }
@@ -1437,6 +1582,18 @@ impl RolloutWorld {
     /// physics, post-fire recoil flight, and the exit conditions.
     fn bow_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let bow = &data.bow;
+        // SpriteAnimator (hierarchy 100000016) updates before BowTransform
+        // (100000021). The fireGround/fireAir callback runs on the update
+        // after the animation's last frame tick (SpriteAnimator.cs:190-231)
+        // and exits the ability before this pass's aim and movement.
+        let b = &mut self.players[index].bow;
+        if b.has_fired {
+            if b.fire_ticks_left == 0 {
+                bow_exit(&mut self.players[index], &self.platforms);
+                return;
+            }
+            b.fire_ticks_left -= 1;
+        }
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let dir = action.direction();
@@ -1483,9 +1640,18 @@ impl RolloutWorld {
         let slot = &mut this.players[index];
         let platforms: &[Platform] = &this.platforms;
         // Bow's boundary component runs after BowTransform but before
-        // PlayerBody performs this pass's position integration. Retain the
-        // pre-integration boundary result instead of testing the new position.
-        let boundary_death = slot.base.outside_bounds();
+        // PlayerBody performs this pass's position integration; its
+        // ExitAbility deactivates the Bow, so the body is never integrated.
+        // BowTransform.ExitAbility ungrounds the body first
+        // (BowTransform.cs:120), so a grounded Bow dies 0.05 off its
+        // surface, and that is the position the slime takes over
+        // (BowTransform.cs:124, SlimeController.cs:217).
+        if slot.base.outside_bounds() {
+            slot.base.alive = false; // game_tick attributes it after this updater
+            slot.base.force_unground(platforms);
+            slot.reported_position = slot.base.position;
+            return;
+        }
         if slot.base.grounded {
             if slot.bow.has_fired {
                 // Landed after firing: exit with the landing (justlanded).
@@ -1495,8 +1661,9 @@ impl RolloutWorld {
                 slot.base.step(Action::default(), platforms);
             }
         } else if !slot.bow.has_fired {
-            // Airborne aiming: near-frozen fall (gravity_modifier 0.03),
-            // speed clamped to maxSlowMoSpeed.
+            // Airborne aiming: near-frozen fall (gravity_modifier 0.03), the
+            // landing raycast on the unclamped velocity (BowTransform.cs:222),
+            // then Vec2.Normalized(v) * maxSlowMoSpeed (BowTransform.cs:249).
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
@@ -1505,11 +1672,14 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            let speed = slot.base.velocity.length();
-            if speed > bow.max_slow_mo_speed {
-                slot.base.velocity *= bow.max_slow_mo_speed / speed;
-            }
             slot.base.collision_rays(platforms);
+            if slot.base.grounded {
+                // Landed while aiming: physics.Move(zero) in the same pass
+                // (BowTransform.cs:240-243); the shot later exits on landing.
+                slot.base.move_only(Vec2::ZERO, platforms);
+            } else if slot.base.velocity.length() > bow.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * bow.max_slow_mo_speed;
+            }
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
@@ -1539,30 +1709,20 @@ impl RolloutWorld {
                     bow.constants.max_speed,
                 )
                 .expect("valid bow air constants");
-                slot.base.velocity =
-                    before + (slot.base.velocity - before) * bow.aireal_control_blend;
-                let speed = slot.base.velocity.length();
-                if speed > bow.constants.max_speed {
-                    slot.base.velocity *= bow.constants.max_speed / speed;
+                // Vec2.Lerp = a*(1-t) + b*t per component (Fix.cs:41608),
+                // then Vec2.Normalized(v) * Speed (BowTransform.cs:262).
+                let after = slot.base.velocity;
+                let blend = bow.aireal_control_blend;
+                slot.base.velocity = before * (Fix::ONE - blend) + after * blend;
+                if slot.base.velocity.length() > bow.constants.max_speed {
+                    slot.base.velocity = slot.base.velocity.normalized() * bow.constants.max_speed;
                 }
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
         }
-        if slot.bow.has_fired && slot.bow.fire_ticks_left > 0 {
-            slot.bow.fire_ticks_left -= 1;
-            if slot.bow.fire_ticks_left == 0 {
-                exit = true;
-            }
-        }
-        if boundary_death {
-            slot.base.alive = false; // game_tick attributes it after this updater
-        }
         if exit {
-            slot.active = ActiveAbility::None;
-            // ExitAbility ungrounds the body, so the state machine resumes
-            // from fall (and lands again next tick if still grounded).
-            slot.obs_state = STATE_FALL;
+            bow_exit(slot, platforms);
         }
     }
 
@@ -1638,6 +1798,8 @@ impl RolloutWorld {
                     st.time_passed = Fix::ZERO;
                     st.cursor = position + Vec2::UP * pd.spawn_radius;
                     st.hurtbox_disabled = true;
+                    // body.rotation = 0 on entry (PlatformTransform.cs:122).
+                    st.sizing_right = Vec2::RIGHT;
                 }
             }
             PLATFORM_ROTATION => {
@@ -1651,24 +1813,32 @@ impl RolloutWorld {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up)
                 };
+                // With the stick past the deadzone, PlatformTransform writes
+                // the aimed `up` into its own and the spawned platform's
+                // FixTransform and the spring's home
+                // (PlatformTransform.cs:276-285); DetPhysics.Simulate copies
+                // that scalar into the body before integrating
+                // (DetPhysics.cs:2504-2506). Otherwise the player's rotation
+                // keeps its previous scalar (0 from EnterAbility,
+                // PlatformTransform.cs:122) and the platform's FixTransform
+                // still holds the orientation SyncGameObject wrote after the
+                // last pass, so the body integrates undisturbed. Resizing only
+                // changes the collider geometry.
                 if aim != Vec2::ZERO {
                     up = slerp(up, aim, DT * pd.rotation_speed);
+                    let rotation = up.perp_cw().normalized_angle();
+                    self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
+                    self.platform_dynamics[platform_index].home_rotation = rotation;
+                    self.platforms[platform_index].surface.right = up.perp_cw();
+                    self.platforms[platform_index].surface.up = up;
+                    self.players[index].base.rotation = rotation;
+                    // FixTransform.up stores the exact Slerp axes
+                    // (FixTransform.cs:49-59); State.Size sizes along them.
+                    self.players[index].platform.sizing_right = up.perp_cw();
                 }
-                // PlatformTransform writes the aimed `up` into the spawned
-                // platform's FixTransform. DetPhysics then copies that scalar
-                // rotation into the body before integrating it. Resizing only
-                // changes the collider geometry; it must not re-derive or pin
-                // the body's orientation.
-                let rotation = up.perp_cw().normalized_angle();
-                self.platform_dynamics[platform_index].body.orientation = rotation;
-                self.platform_dynamics[platform_index].home_rotation = rotation;
-                self.platforms[platform_index].surface.right = up.perp_cw();
-                self.platforms[platform_index].surface.up = up;
                 self.reshape_platform(platform_index, center, pd.spawn_extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
-                slot.base.rotation = rotation;
-                slot.platform.sizing_right = up.perp_cw();
                 // SpriteAnimator invokes EnterSize after PlatformTransform's
                 // UpdateSim pass. The newly selected Size state therefore
                 // starts on the following tick, one pass after the authored
@@ -1708,7 +1878,7 @@ impl RolloutWorld {
                     slot.base.ground = None;
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.active = ActiveAbility::None;
-                    slot.obs_state = STATE_FALL;
+                    slot.exit_to_fall();
                     // Ability.ExitAbility republishes potentialCollider.position
                     // after PlatformTransform has applied the final ejection.
                     // SlimeController's synchronous onExitAbility callback then
@@ -1735,15 +1905,22 @@ impl RolloutWorld {
         };
         let (x, y) = (extents.x, extents.y);
         // PlatformTransform.State.Size uses the transformed player's stable
-        // `body.right`, not the potentially wobbling platform collider axes.
+        // `body.right` (the exact Slerp vector, FixTransform.cs:49-59), not
+        // the potentially wobbling platform collider axes. The cursor is
+        // rotated into that frame with `new Vec2(-body.rotation)`
+        // (PlatformTransform.cs:294): trig of the scalar, not the conjugate.
         let basis = self.players[index].platform.sizing_right;
-        let conj = Vec2::new(basis.x, -basis.y);
+        let conj = Vec2::angle(-self.players[index].base.rotation);
+        // The cursor is measured from the ability's own fixTrans.position
+        // (PlatformTransform.cs:294-300): the platform centre as it was
+        // before the previous DetPhysics pass moved it, not the live one.
+        let body_position = self.players[index].base.position;
         let st = &mut self.players[index].platform;
         st.cursor += aim * CURSOR_SENSITIVITY * DT;
-        let mut local = (st.cursor - center).complex_mul(conj);
+        let mut local = (st.cursor - body_position).complex_mul(conj);
         local.x = local.x.max(-x - radius).min(x + radius);
         local.y = local.y.max(-y - radius).min(y + radius);
-        st.cursor = center + local.complex_mul(basis);
+        st.cursor = body_position + local.complex_mul(basis);
         let reach = pd.min_size + radius * Fix::from_int(2);
         if local.x >= x && x <= pd.min_size {
             st.active_corner.x = Fix::ONE;
@@ -1766,8 +1943,10 @@ impl RolloutWorld {
         let mut a2 = (y + dir.y * DT * pd.size_change_speed).max(pd.min_size);
         let cap = pd.max_area;
         if dir.x >= Fix::ZERO && dir.y >= Fix::ZERO {
-            let gx = dir.x * DT * pd.size_change_speed;
-            let gy = dir.y * DT * pd.size_change_speed;
+            // `vec8.x *= fix * SizeChangeSpeed`: the scalar product first
+            // (PlatformTransform.cs:335-336), unlike `a` above.
+            let gx = dir.x * (DT * pd.size_change_speed);
+            let gy = dir.y * (DT * pd.size_change_speed);
             let grow = gx.min(gy);
             let skew = gx - gy;
             if skew > Fix::ZERO {
@@ -1793,7 +1972,8 @@ impl RolloutWorld {
                 let c1 = (Fix::from_int(8) * radius + Fix::from_int(4) * a2 + Fix::from_int(4) * a)
                     * quarter;
                 let disc = (c1 * c1 * quarter - c0).sqrt().unwrap_or(Fix::ZERO);
-                let root = -(c1 * Fix::from_f64(0.5)) + disc;
+                // `-fix11 * 0.5f`: negate, then scale (PlatformTransform.cs:354).
+                let root = (-c1) * Fix::from_f64(0.5) + disc;
                 a2 += root;
                 a += root;
             } else {
@@ -1850,6 +2030,8 @@ impl RolloutWorld {
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
             home_position: position,
+            transform_rotation: None,
+            init_tick: Some(self.tick + 1),
             home_rotation: Fix::ZERO,
             speed: pd.spawn_speed,
             mu: pd.spawn_mu,
@@ -1910,7 +2092,7 @@ impl RolloutWorld {
             }
         }
         let entity = self.platform_entities[index];
-        self.entities[entity].flags = E_ENABLED | E_DESTROYED;
+        self.entities[entity].flags = E_REMOVED;
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
@@ -1941,15 +2123,25 @@ impl RolloutWorld {
         // (ResizablePlatform.cs:105): the perimeter reads `One / (One / e)`.
         platform.surface.extents = data::surface_extents(extents);
         platform.surface.radius = radius;
-        platform.collider.inner = OrientedBox::from_basis(center, platform.surface.right, extents);
+        // Box.UpdateExtents (Box.cs:37-44) rescales the existing axes rather
+        // than rebuilding them from the rotation.
+        let inner = &mut platform.collider.inner;
+        inner.center = center;
+        inner.right *= inner.inverse_extents.x;
+        inner.up *= inner.inverse_extents.y;
+        inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        inner.right *= extents.x;
+        inner.up *= extents.y;
         platform.collider.radius = radius;
         let dynamics = &mut self.platform_dynamics[index];
         // ResizablePlatform.ResizePlatform recomputes these from geometry on
         // every resize; keeping the prefab's mass makes long/thin platforms
         // react far too strongly to contacts.
+        // ResizePlatform passes (rHeight, rWidth) into PlatformArea's
+        // (rWidth, rHeight) parameters (ResizablePlatform.cs:53).
         let pd = &data::get().platform;
         let mass = Fix::from_int(10)
-            + pd.spawn_mass_per_area * platform_area(extents.x, extents.y, radius);
+            + pd.spawn_mass_per_area * platform_area(extents.y, extents.x, radius);
         let w = extents.x + radius;
         let h = extents.y + radius;
         let longest = w.max(h);
@@ -2009,15 +2201,14 @@ impl RolloutWorld {
         }
     }
 
+    /// Updater-phase destruction (bounds, arrow cap): the collider is gone
+    /// before this pass's DetPhysics contacts and observation.
     fn destroy_arrow(&mut self, index: usize) {
         let arrow = &mut self.arrows[index];
         arrow.active = false;
         arrow.registered = false;
         if let Some(entity) = arrow.entity {
-            let entity = &mut self.entities[entity];
-            entity.flags = E_ENABLED | E_DESTROYED;
-            entity.vx = 0;
-            entity.vy = 0;
+            self.entities[entity].flags = E_REMOVED;
         }
     }
 
@@ -2064,9 +2255,12 @@ impl RolloutWorld {
     fn arrows_integrate(&mut self, data: &data::RolloutData) {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
-        let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
+        let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active || !self.arrows[i].registered {
+                if let Some(entity) = self.arrows[i].entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
                 continue;
             }
             // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
@@ -2092,9 +2286,16 @@ impl RolloutWorld {
             let up = if speed == Fix::ZERO {
                 Vec2::UP
             } else {
-                arrow.velocity * (Fix::ONE / speed)
+                arrow.velocity / speed
             };
-            arrow.rotation = up.perp_cw().normalized_angle();
+            // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
+            // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
+            // arrow's FixTransform, so a straight shot reads 0, not 2pi.
+            arrow.rotation = up
+                .perp_cw()
+                .normalized_angle()
+                .checked_rem(Fix::TAU, true)
+                .expect("finite angle");
             arrow.velocity.y += gravity * DT;
             arrow.position += arrow.velocity * DT;
         }
@@ -2117,13 +2318,64 @@ impl RolloutWorld {
                 radius,
             };
 
-            // Circle/RR callbacks precede all player shape groups. If an arrow
-            // overlaps terrain and a player in the same physics pass, the wall
-            // callback destroys its components before PlayerCollision runs.
-            if self.platforms.iter().any(|platform| {
-                crate::physics::contact::circle_rounded(circle, platform.collider).is_some()
-            }) {
+            // Circle/RR: DetPhysics tests every pair first, then applies the
+            // collision impulse and positional correction to the arrow and
+            // the platform bodies (DetPhysics.cs:3012-3048); Arrow.OnCollide
+            // only runs from the callback queue afterwards
+            // (DetPhysics.cs:3195-3199), so a landing arrow kicks its
+            // platform before the wall callback destroys it. That callback
+            // precedes all player shape groups: an arrow overlapping terrain
+            // and a player in the same pass never reaches PlayerCollision.
+            let contacts: Vec<_> = self
+                .platforms
+                .iter()
+                .enumerate()
+                .filter_map(|(p, platform)| {
+                    crate::physics::contact::circle_rounded(circle, platform.collider)
+                        .map(|contact| (p, contact))
+                })
+                .collect();
+            if !contacts.is_empty() {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    ..data.arrow.body
+                };
+                let mut center = circle.center;
+                for (p, contact) in contacts {
+                    let platform_body = &mut self.platform_dynamics[p].body;
+                    resolve(
+                        contact,
+                        &mut arrow_body,
+                        platform_body,
+                        center,
+                        self.platforms[p].surface.center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        arrow_body.inverse_mass,
+                        platform_body.inverse_mass,
+                        false,
+                    );
+                    center += correction[0];
+                    self.platforms[p].surface.center += correction[1];
+                    self.platforms[p].collider.inner.center += correction[1];
+                }
+                // Arrow.OnCollide destroys the components from the callback
+                // queue: this pass still observes the corrected collider and
+                // resolved body, flagged destroyed and ownerless
+                // (Arrow.cs:124-128); the next pass removes it.
                 self.destroy_arrow(i);
+                if let Some(entity) = self.arrows[i].entity {
+                    let e = &mut self.entities[entity];
+                    e.flags = E_DESTROYED;
+                    e.owner = 0;
+                    e.x = center.x.raw();
+                    e.y = center.y.raw();
+                    e.vx = arrow_body.velocity.x.raw();
+                    e.vy = arrow_body.velocity.y.raw();
+                    e.rotation = arrow.rotation.raw();
+                }
                 continue;
             }
 
@@ -2188,7 +2440,7 @@ impl RolloutWorld {
                 } else {
                     CAUSE_OTHER
                 };
-                self.kill(victim, arrow.owner, cause);
+                self.kill(victim, arrow.owner, cause, true);
                 if arrow.owner != victim_id && arrow.owner >= 1 {
                     self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
                 }
@@ -2202,14 +2454,42 @@ impl RolloutWorld {
         if self.platforms.len() < 2 {
             return Vec::new();
         }
+        // DetPhysics picks the sweep axis from every registered collider:
+        // the mean over the active ones, the spread over all of them,
+        // including frozen inactive hurtboxes (DetPhysics.cs:2827-2894).
+        // Rounded rectangles have just integrated; the other rows were
+        // synced by `refresh_actor_entities`.
+        let others: Vec<Vec2> = self
+            .entities
+            .iter()
+            .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
+            .map(|e| {
+                (
+                    Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
+                    e.flags & 3 == 3,
+                )
+            })
+            .filter_map(|(p, active)| active.then_some(p))
+            .collect();
         let mut mean = Vec2::ZERO;
         for platform in &self.platforms {
             mean += platform.surface.center;
         }
-        mean = mean / Fix::from_int(self.platforms.len() as i64);
+        for p in &others {
+            mean += *p;
+        }
+        mean = mean / Fix::from_int((self.platforms.len() + others.len()) as i64);
         let mut variance = Vec2::ZERO;
         for platform in &self.platforms {
             let delta = mean - platform.surface.center;
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        for e in self
+            .entities
+            .iter()
+            .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
+        {
+            let delta = mean - Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y));
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
         let sweep_x = variance.x > variance.y;
@@ -2244,7 +2524,11 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                pairs.push(if a < b { [a, b] } else { [b, a] });
+                // IdPair(active, current): the body that entered the sweep
+                // first is collider A (DetPhysics.cs:2169-2236). Fix
+                // multiplication floors, so swapping A and B changes the
+                // impulse and correction by an LSB.
+                pairs.push([a, b]);
             }
             window.push(b);
         }
@@ -2279,23 +2563,16 @@ impl RolloutWorld {
             }
             let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
             spawn.removal_time += DT;
+            // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
+            // so the curve's overshoot past 1 scales the original size.
             let minimum = Fix::from_f32(0.1);
+            let lerp =
+                |o: Fix| minimum * (Fix::ONE - amount.clamp(Fix::ZERO, Fix::ONE)) + o * amount;
             removal_resizes.push((
                 spawn.platform_index,
-                Vec2::new(
-                    minimum + (spawn.removal_extents.x - minimum) * amount,
-                    minimum + (spawn.removal_extents.y - minimum) * amount,
-                ),
-                minimum + (spawn.removal_radius - minimum) * amount,
+                Vec2::new(lerp(spawn.removal_extents.x), lerp(spawn.removal_extents.y)),
+                lerp(spawn.removal_radius),
             ));
-        }
-        for (index, extents, radius) in removal_resizes {
-            let center = self.platforms[index].surface.center;
-            self.reshape_platform(index, center, extents, radius);
-        }
-        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
-        for index in removal_destroys {
-            self.remove_platform(index);
         }
 
         // Most short episodes never create or disturb a platform. Preserve
@@ -2372,6 +2649,24 @@ impl RolloutWorld {
         // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         for i in 0..self.platforms.len() {
             let position = self.platforms[i].surface.center;
+            if self.platform_dynamics[i].init_tick == Some(self.tick) {
+                // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on
+                // the current position and clears inSuddenDeath, so an
+                // in-progress sudden death is re-activated with a fresh delay
+                // (AnimateVelocity.cs:126-129, 111-118).
+                self.platform_dynamics[i].init_tick = None;
+                self.platform_dynamics[i].home_position = position;
+                if self.sudden_death {
+                    let max_delay = data.platform.sudden_death_max_delay;
+                    if let Some(spawn) = self
+                        .spawned
+                        .iter_mut()
+                        .find(|s| s.active && s.platform_index == i)
+                    {
+                        spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
+                    }
+                }
+            }
             let dynamics = &mut self.platform_dynamics[i];
             let spring = (dynamics.home_position - position) * dynamics.speed
                 - dynamics.body.velocity * dynamics.mu;
@@ -2384,6 +2679,19 @@ impl RolloutWorld {
             dynamics.body.angular_velocity = (dynamics.body.angular_velocity
                 + angle_delta * dynamics.rotation_speed * DT)
                 * (Fix::ONE - dynamics.rotation_mu);
+        }
+
+        // ResizablePlatform follows AnimateVelocity in its prefab
+        // (ResizablePlatform.prefab component order), so the spring impulse
+        // above used the pre-resize mass while DetPhysics integrates it with
+        // the new one.
+        for (index, extents, radius) in removal_resizes {
+            let center = self.platforms[index].surface.center;
+            self.reshape_platform(index, center, extents, radius);
+        }
+        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
+        for index in removal_destroys {
+            self.remove_platform(index);
         }
 
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
@@ -2421,6 +2729,9 @@ impl RolloutWorld {
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
+            if let Some(rotation) = dynamics.transform_rotation.take() {
+                dynamics.body.orientation = rotation;
+            }
             let shift = dynamics.body.integrate(DT, Fix::from_int(-40));
             let orientation = dynamics.body.orientation;
             let platform = &mut self.platforms[i];
@@ -2430,7 +2741,8 @@ impl RolloutWorld {
             // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
             let inner = &mut platform.collider.inner;
             inner.center = platform.surface.center;
-            inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
+            inner.right =
+                (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
             inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(platform.surface.right);
         }
         // CollisionInformation stores the shape as it was during narrow phase;
@@ -2454,9 +2766,13 @@ impl RolloutWorld {
         for (a, b, contact) in contacts {
             let pos_a = self.platforms[a].surface.center;
             let pos_b = self.platforms[b].surface.center;
-            let (left, right) = self.platform_dynamics.split_at_mut(b);
-            let body_a = &mut left[a].body;
-            let body_b = &mut right[0].body;
+            let (body_a, body_b) = if a < b {
+                let (left, right) = self.platform_dynamics.split_at_mut(b);
+                (&mut left[a].body, &mut right[0].body)
+            } else {
+                let (left, right) = self.platform_dynamics.split_at_mut(a);
+                (&mut right[0].body, &mut left[b].body)
+            };
             resolve(contact, body_a, body_b, pos_a, pos_b);
             let correction =
                 positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
@@ -2484,7 +2800,7 @@ impl RolloutWorld {
             .map(|(index, _)| index)
             .collect();
         for index in squished {
-            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED);
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true);
         }
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is
@@ -2502,7 +2818,9 @@ impl RolloutWorld {
         slot.base.alive && slot.respawn_ticks == 0
     }
 
-    pub fn kill(&mut self, index: usize, killer: u32, cause: u32) {
+    /// `by_callback`: the death came from a DetPhysics collision callback
+    /// (after this pass's contacts) rather than an updatable.
+    pub fn kill(&mut self, index: usize, killer: u32, cause: u32, by_callback: bool) {
         let players = self.players.len();
         let slot = &mut self.players[index];
         slot.base.alive = false;
@@ -2518,6 +2836,10 @@ impl RolloutWorld {
         } else {
             slot.telemetry.deaths_other += 1;
         }
+        // SlimeController.DropAbilities reads the slime body. A death inside
+        // an ability first moves that body to the ability object's position
+        // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
+        let drop_position = slot.base.position;
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
@@ -2545,6 +2867,50 @@ impl RolloutWorld {
             slot.timers.fill(Fix::from_f32(-1.5));
         } else {
             slot.out = true;
+            // PlayerCollision destroys the slime and its ability objects
+            // (PlayerCollision.cs:201-210). DetPhysics drops updatable-phase
+            // casualties before this pass's contacts; callback casualties are
+            // observed once as destroyed rows without an owner and dropped at
+            // the next pass (DetPhysics.Simulate's remove-destroyed step).
+            let rows = [
+                slot.body_entity,
+                slot.dash_entity,
+                slot.circle_entity,
+                slot.bow_entity,
+            ];
+            for e in rows {
+                let row = &mut self.entities[e];
+                if by_callback {
+                    row.flags = (row.flags & E_TRIGGER) | E_DESTROYED;
+                    row.owner = 0;
+                } else {
+                    row.flags = E_REMOVED;
+                }
+            }
+            // A final death drops the last ability as a DynamicAbilityPickup
+            // at the slime body (SlimeController.cs:274-310). Its circle is
+            // registered at once with the collider disabled for
+            // `disabledSeconds` (DynamicAbilityPickup.cs:147-155), so
+            // DetPhysics neither integrates the launch impulse nor moves it
+            // while this match still runs. The pickup's later flight, swaps
+            // and the RandomFix launch draw are not simulated: with two
+            // players the drop ends the match.
+            let pickup = &data::get().pickup;
+            let id = self.next_id();
+            let position = drop_position + pickup.offset;
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: pickup.layer,
+                owner: 0,
+                flags: E_ACTIVE,
+                hierarchy: 300_000_000 + id,
+                x: position.x.raw(),
+                y: position.y.raw(),
+                radius: pickup.radius.raw(),
+                inverse_mass: pickup.inverse_mass.raw(),
+                ..CEntity::default()
+            });
         }
     }
 
@@ -2690,6 +3056,9 @@ impl RolloutWorld {
 
     fn observe_main(&mut self) {
         self.refresh_entities();
+        self.state_entities.clear();
+        self.state_entities
+            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
         self.slimes = slimes;
@@ -2697,21 +3066,22 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.state,
             &self.players,
-            &self.entities,
+            &self.state_entities,
             &self.slimes,
             self.tick,
             self.episode_ticks,
             self.warmup,
             flags,
         );
-        self.state.entities = self.entities.as_ptr();
+        self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
     }
 
     fn observe_sample(&mut self) {
         self.refresh_entities();
         self.sample_entities.clear();
-        self.sample_entities.extend_from_slice(&self.entities);
+        self.sample_entities
+            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
         self.sample_slimes = slimes;
@@ -2746,6 +3116,15 @@ impl RolloutWorld {
 
     /// Update the entity table from live state (positions, flags).
     fn refresh_entities(&mut self) {
+        self.refresh_actor_entities();
+        self.refresh_platform_entities();
+    }
+
+    /// Player, ability and arrow rows as DetPhysics syncs them. An inactive
+    /// GameObject's FixTransform is frozen, and DetPhysics still copies it
+    /// into the collider every pass (DetPhysics.cs:2498-2530), so inactive
+    /// rows keep the position of their last active pass.
+    fn refresh_actor_entities(&mut self) {
         for index in 0..self.players.len() {
             let (body_e, dash_e, circle_e) = {
                 let s = &self.players[index];
@@ -2760,10 +3139,19 @@ impl RolloutWorld {
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_aim = slot.bow.aim;
-            let position = slot.base.position;
+            // Ability.ExitAbility deactivates the ability body where it
+            // ended (Ability.cs:151-152) and DetPhysics still syncs that
+            // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
+            // the exit pass writes the published exit position.
+            let exit_position = slot.reported_position;
+            let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
+            if slot.out {
+                continue; // rows were settled by `kill`
+            }
             let body = &mut self.entities[body_e];
+            let body_was_active = body.flags & E_ACTIVE != 0;
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
             } else if choosing_respawn {
@@ -2776,103 +3164,146 @@ impl RolloutWorld {
             // The observation reads the PhysicsBody DetPhysics synced, not
             // the live body (RlObservation.Collider; PlayerPhysics.cs:138-146
             // moves a grounded body after the sync).
-            let extents = data.player.hurtbox_extents;
             let synced = slot.base.collider.center;
             let rotation = slot.base.collider_rotation;
-            body.x = synced.x.raw();
-            body.y = synced.y.raw();
-            // The hurtbox has PlayerBody movement on the same GameObject but
-            // no BoplBody. DPhysicsBox therefore registers an infinite-mass
-            // trigger PhysicsBody whose observed velocity remains zero; the
-            // moving velocity is exposed by the separate slime record.
-            body.vx = 0;
-            body.vy = 0;
-            // Box.SetRotation: axis length `One / inverseExtents`, not `extents`.
-            let hurtbox = OrientedBox::from_basis(synced, Vec2::angle(rotation), extents);
-            let (right, up) = (hurtbox.right, hurtbox.up);
-            body.right_x = right.x.raw();
-            body.right_y = right.y.raw();
-            body.up_x = up.x.raw();
-            body.up_y = up.y.raw();
-            body.rotation = rotation.raw();
+            let body_active = body.flags & E_ACTIVE != 0;
+            // onEnterAbility deactivates the slime after this pass's Move
+            // (SlimeController.cs:1084); its frozen FixTransform is what the
+            // hurtbox shows for the rest of the ability.
+            let (center, angle) = if body_active {
+                (synced, rotation)
+            } else {
+                (slot.ability_origin, slot.ability_origin_rotation)
+            };
+            if body_active || body_was_active {
+                body.x = center.x.raw();
+                body.y = center.y.raw();
+                // The hurtbox has PlayerBody movement on the same GameObject
+                // but no BoplBody. DPhysicsBox therefore registers an
+                // infinite-mass trigger PhysicsBody whose observed velocity
+                // remains zero; the moving velocity is exposed by the
+                // separate slime record.
+                body.vx = 0;
+                body.vy = 0;
+                // Box.SetRotation: axis length `One / inverseExtents`, not
+                // `extents`. An active row is the synced Player-layer box
+                // itself (the slime is never dashing while its row is active).
+                let hurtbox = if body_active {
+                    slot.base.collider
+                } else {
+                    OrientedBox::from_basis(center, Vec2::angle(angle), data.player.hurtbox_extents)
+                };
+                body.right_x = hurtbox.right.x.raw();
+                body.right_y = hurtbox.right.y.raw();
+                body.up_x = hurtbox.up.x.raw();
+                body.up_y = hurtbox.up.y.raw();
+                body.rotation = angle.raw();
+            }
 
             let dash_box = &mut self.entities[dash_e];
+            let dash_was_active = dash_box.flags & E_ACTIVE != 0;
             if alive && dashing {
-                let extents = data.dash.hurtbox_extents;
-                let angle = slot.base.dash.input.normalized_angle();
-                let basis = Vec2::angle(angle);
                 dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                 dash_box.owner = slot.base.id;
-                dash_box.x = position.x.raw();
-                dash_box.y = position.y.raw();
+            } else {
+                dash_box.flags = E_ENABLED | E_TRIGGER;
+            }
+            // Ability.ExitAbility deactivates the body where it ended
+            // (Ability.cs:151-152); that pass still syncs it.
+            if (alive && dashing) || dash_was_active {
+                // The Dash body's FixTransform rotation is
+                // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
+                // before performDash); `sync_collider` already built the
+                // synced box with the dash extents from that rotation.
+                // On the exit pass the slime body has taken over, so the
+                // box is rebuilt at the teleport/landing pose.
+                let (center, angle) = if alive && dashing {
+                    (synced, rotation)
+                } else {
+                    (exit_position, dash_exit_rotation)
+                };
+                let collider =
+                    OrientedBox::from_basis(center, Vec2::angle(angle), data.dash.hurtbox_extents);
+                dash_box.x = center.x.raw();
+                dash_box.y = center.y.raw();
                 // DPhysicsBox is a trigger body; PlayerBody velocity is not
                 // stored on its PhysicsBody observation record.
                 dash_box.vx = 0;
                 dash_box.vy = 0;
-                let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
-                let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
-                dash_box.right_x = right.x.raw();
-                dash_box.right_y = right.y.raw();
-                dash_box.up_x = up.x.raw();
-                dash_box.up_y = up.y.raw();
+                dash_box.right_x = collider.right.x.raw();
+                dash_box.right_y = collider.right.y.raw();
+                dash_box.up_x = collider.up.x.raw();
+                dash_box.up_y = collider.up.y.raw();
                 dash_box.rotation = angle.raw();
-            } else {
-                dash_box.flags = E_ENABLED | E_TRIGGER;
-                dash_box.x = 0;
-                dash_box.y = 0;
-                dash_box.vx = 0;
-                dash_box.vy = 0;
             }
-            // Bow hurtbox: active while aiming/firing, up vector = aim.
+            // Bow hurtbox: active while aiming/firing. BowTransform writes
+            // `body.up = inputVector` each tick until the shot
+            // (BowTransform.cs:246; the Bow prefab has SyncRotationToPlatform
+            // off), so the FixTransform rotation is the aim's angle
+            // (FixTransform.cs:56-59) and DetPhysics rebuilds the box axes
+            // from that angle (Box.SetRotation, Box.cs:30-35). Its centre is
+            // the DetPhysics-synced position: a grounded Bow body also moves
+            // only in PlayerPhysics.LateUpdateSim, after the sync.
             let bow_e = self.players[index].bow_entity;
             let bow_box = &mut self.entities[bow_e];
+            let bow_was_active = bow_box.flags & E_ACTIVE != 0;
             if alive && bowing {
-                let extents = data.bow.hurtbox_extents;
-                let up_dir = if bow_aim == Vec2::ZERO {
-                    Vec2::UP
-                } else {
-                    bow_aim
-                };
-                let right_dir = up_dir.perp_cw();
                 bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                 bow_box.owner = slot.base.id;
-                bow_box.x = position.x.raw();
-                bow_box.y = position.y.raw();
-                bow_box.vx = 0;
-                bow_box.vy = 0;
-                bow_box.right_x = (right_dir * extents.x).x.raw();
-                bow_box.right_y = (right_dir * extents.x).y.raw();
-                bow_box.up_x = (up_dir * extents.y).x.raw();
-                bow_box.up_y = (up_dir * extents.y).y.raw();
-                bow_box.rotation = right_dir.normalized_angle().raw();
             } else {
                 bow_box.flags = E_ENABLED | E_TRIGGER;
-                bow_box.x = 0;
-                bow_box.y = 0;
+            }
+            if (alive && bowing) || bow_was_active {
+                let extents = data.bow.hurtbox_extents;
+                // Both exits zero the Bow body's rotation before
+                // ExitAbility (BowTransform.cs:119, 225).
+                let (center, rotation) = if alive && bowing {
+                    (synced, bow_aim.perp_cw().normalized_angle())
+                } else {
+                    (exit_position, Fix::ZERO)
+                };
+                let hurtbox = OrientedBox::from_basis(center, Vec2::angle(rotation), extents);
+                bow_box.x = center.x.raw();
+                bow_box.y = center.y.raw();
                 bow_box.vx = 0;
                 bow_box.vy = 0;
+                bow_box.right_x = hurtbox.right.x.raw();
+                bow_box.right_y = hurtbox.right.y.raw();
+                bow_box.up_x = hurtbox.up.x.raw();
+                bow_box.up_y = hurtbox.up.y.raw();
+                bow_box.rotation = rotation.raw();
             }
             // The Platform ability's hurtbox circle is live during
             // anticipation only (hurtBox.enabled until CreatePlatform).
             let circle = &mut self.entities[circle_e];
+            let circle_was_active = circle.flags & E_ACTIVE != 0;
+            let transforming = alive && slot.active == ActiveAbility::Platform;
             if alive && anticipating {
                 circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                 circle.owner = slot.base.id;
-                circle.x = position.x.raw();
-                circle.y = position.y.raw();
-            } else if alive && slot.active == ActiveAbility::Platform {
+            } else if transforming {
                 circle.flags = E_ACTIVE | E_TRIGGER;
                 circle.owner = slot.base.id;
-                circle.x = position.x.raw();
-                circle.y = position.y.raw();
             } else {
                 circle.flags = if slot.platform.hurtbox_disabled {
                     E_TRIGGER
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                circle.x = 0;
-                circle.y = 0;
+            }
+            if transforming || circle_was_active {
+                // DetPhysics copies the ability body's FixTransform rotation
+                // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
+                // in ExitAbility, PlatformTransform.cs:462, at the ejected
+                // position the exit pass published).
+                let (center, rotation) = if transforming {
+                    (slot.base.position, slot.base.rotation)
+                } else {
+                    (exit_position, Fix::ZERO)
+                };
+                circle.x = center.x.raw();
+                circle.y = center.y.raw();
+                circle.rotation = rotation.raw();
             }
         }
         for arrow in &self.arrows {
@@ -2886,6 +3317,9 @@ impl RolloutWorld {
             e.vy = arrow.velocity.y.raw();
             e.rotation = arrow.rotation.raw();
         }
+    }
+
+    fn refresh_platform_entities(&mut self) {
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
             let s = &platform.surface;
@@ -3093,13 +3527,21 @@ fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
     if denominator == Fix::ZERO {
         denominator = Fix::from_f32(0.00001);
     }
-    (from * ((Fix::ONE - t) * angle).sin() + to * (t * angle).sin()) / denominator
+    // Vec2.Slerp (Vec2.cs:168-175): each term is scaled by the reciprocal
+    // separately, after its own sine product.
+    let inverse = Fix::ONE / denominator;
+    from * ((Fix::ONE - t) * angle).sin() * inverse + to * (t * angle).sin() * inverse
 }
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
 /// width/height: 4wr + 4hr + 4wh + pi r^2.
+/// DPhysicsRoundedRect.PlatformArea (DPhysicsRoundedRect.cs:621-627), with
+/// its factor grouping: each product rounds differently from `4 * w * r`.
 fn platform_area(w: Fix, h: Fix, r: Fix) -> Fix {
-    Fix::from_int(4) * w * r + Fix::from_int(4) * h * r + Fix::from_int(4) * w * h + Fix::PI * r * r
+    let two = Fix::from_int(2);
+    let ends = two * h * r;
+    let middle = (two * h + two * r) * two * w;
+    ends * two + middle + Fix::PI * r * r
 }
 
 /// PlatformTransform.GetNewSize: clamp one growing axis to the area cap.
@@ -3240,6 +3682,46 @@ impl RolloutWorld {
     }
 }
 
+/// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
+/// fire animation's end (BowTransform.cs:116-130).
+fn bow_exit(slot: &mut PlayerSlot, platforms: &[Platform]) {
+    slot.active = ActiveAbility::None;
+    slot.exit_to_fall();
+    if slot.base.grounded {
+        // Landing exit (BowTransform.cs:225-239): the slime's
+        // SyncPhysicsTo(AbilityExitInfo) (PlayerPhysics.cs:556-570)
+        // re-derives its surface local from the exit position;
+        // LocalPlayerPosFromPos does not invert
+        // PositionFromLocalPlayerPos exactly, so the rider shifts.
+        let platform = slot
+            .base
+            .platform(platforms)
+            .expect("grounded bow has a platform");
+        let radius = slot.base.radius;
+        let position = platform.surface.position(slot.base.local, radius);
+        slot.base.local = platform
+            .surface
+            .local_position(position, radius)
+            .expect("exit position lies on the platform");
+        slot.base.position = position;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.align(platform);
+        // Ability.ExitAbility publishes the collider position
+        // (Ability.cs:151) before the slime's LateUpdateSim slides.
+        slot.reported_position = position;
+    } else {
+        // Animation-end exit (BowTransform.cs:116-130): UnGround
+        // nudges the body off any retained ground and zeroes the
+        // rotation; the slime then enters fall and immediately
+        // raycasts for a landing (SlimeController.cs:251-259), its
+        // own attached ground cleared first (PlayerPhysics.cs:577).
+        slot.base.force_unground(platforms);
+        slot.reported_position = slot.base.position; // Ability.cs:151
+        slot.base.ground = None;
+        slot.base.collision_rays(platforms);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3302,7 +3784,7 @@ mod tests {
         config.stocks = 0;
         world.reset(&config).unwrap();
 
-        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT);
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, true);
         assert!(
             !world.terminal,
             "a collision death must not end its own updater pass"
@@ -3361,14 +3843,7 @@ mod tests {
         assert_eq!(world.players[0].base.ground, Some(platform_id));
         assert_eq!(world.players[0].removed_ground_normal, Some(normal));
 
-        world.player_tick(
-            0,
-            Action::default(),
-            Action::default(),
-            Vec2::ZERO,
-            false,
-            data::get(),
-        );
+        world.player_tick(0, Action::default(), Vec2::ZERO, false, data::get());
         assert!(!world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, None);
         assert_eq!(world.players[0].base.rotation, Fix::ZERO);
