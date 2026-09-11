@@ -42,7 +42,7 @@ fn main() {
     );
     for tick in 1..=end_tick {
         let buttons =
-            u16::from(tick == jump_tick) | u16::from(tick >= 276 && tick < release_tick) * 2;
+            u16::from(tick == jump_tick) | (u16::from(tick >= 276 && tick < release_tick) * 2);
         world
             .step(
                 &[

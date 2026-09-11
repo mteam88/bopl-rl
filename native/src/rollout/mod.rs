@@ -1116,11 +1116,11 @@ impl RolloutWorld {
         // updater pass left (Updater.cs:303-323); a grounded slime's body only
         // moves to its new surface local in PlayerPhysics.LateUpdateSim
         // (PlayerPhysics.cs:138-146), after the contacts below.
-        for index in 0..self.players.len() {
+        for (index, action) in actions.iter().enumerate() {
             if self.playable(index) {
                 self.players[index].base.sync_collider();
             }
-            let input = actions[index].input_direction(self.players[index].keyboard);
+            let input = action.input_direction(self.players[index].keyboard);
             self.update_obs_state(index, input);
         }
         self.arrows_integrate(data);
@@ -2626,7 +2626,6 @@ impl RolloutWorld {
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
             }
-            return;
         }
     }
 
@@ -2934,7 +2933,7 @@ impl RolloutWorld {
                 flags |= S_SIMULATED;
             }
             let mut ability_flags = [0u32; 3];
-            for s in 0..3 {
+            for (s, flags) in ability_flags.iter_mut().enumerate() {
                 if slot.abilities[s] == 0 {
                     continue;
                 }
@@ -2956,7 +2955,7 @@ impl RolloutWorld {
                         }
                     }
                 }
-                ability_flags[s] = f;
+                *flags = f;
             }
             let (slime_position, velocity, rotation, state) = if in_ability {
                 (
