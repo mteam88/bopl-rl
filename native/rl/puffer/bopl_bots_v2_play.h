@@ -424,7 +424,7 @@ static void bot2_platform_threat(const BotView *view, const BotView2 *v, BoplBot
 }
 
 /* ---- arrow dodge (v1 rule with the own-walk-aware ETA) ---------------------- */
-static void bot2_dodge(const BotView *view, BoplBot *bot, BotAction *act, double *eta_out, int *dbg) {
+static void bot2_dodge(const BotView *view, const BotView2 *v, BoplBot *bot, BotAction *act, double *eta_out, int *dbg) {
     double dir=1;
     double eta=bot_arrow_eta(view, &dir);
     *eta_out=eta;
@@ -435,16 +435,29 @@ static void bot2_dodge(const BotView *view, BoplBot *bot, BotAction *act, double
     if (bot->threat_seen<=wait) return;
     double away=-dir;
     if (view->grounded) {
-        if (view->dash_ready && eta<12 && bot2_dash_safe(view, away, 0.35))
+        /* Dash first (60 u/s beats anything), but not inside the last ticks:
+         * the press lands next tick and Dash pauses 0.01 s before leaving
+         * (Dash.cs:228-258), so at eta<=4 the body is still there. */
+        if (view->dash_ready && eta<14 && eta>4 && bot2_dash_safe(view, away, 0.35))
             { bot_act(act, bot_aim_byte(away, 0.35), BOT_DASH, 0); *dbg=1; return; }
-        double ahead=bot_drop(view, view->x+away*2.2, view->y+0.5);
-        if (ahead>4.5) away=-away;
-        /* Jump only when the launch clears every arrow; else run. */
+        /* Runs are simulated along the ground I stand on (a steep slab turns
+         * a "sideways" run into a climb), off-ledge runs excluded. */
+        double tx, ty; bot2_ground_tangent(view, v, &tx, &ty);
+        double e_run[2]={-1, -1}; uint8_t aim_run[2];
+        for (int k=0; k<2; k++) {
+            double sgn=k==0?away:-away;
+            aim_run[k]=bot_aim_byte(sgn*tx, sgn*ty);
+            if (bot_drop(view, view->x+sgn*2.2, view->y+0.5)>4.5) continue;
+            double wvx, wvy; bot2_walk_velocity(view, v, aim_run[k], &wvx, &wvy);
+            e_run[k]=bot2_arrow_eta(view, wvx, wvy, 40, NULL);
+        }
+        int best=e_run[0]>=e_run[1]?0:1;
+        if (e_run[best]>40) { bot_act(act, aim_run[best], 0, 0); *dbg=4; return; }
+        /* Jump only when the launch clears every arrow; else the better run. */
         if (!bot_launch_hits_arrow(view, -22) && !bot_launch_hits_arrow(view, 0) && !bot_launch_hits_arrow(view, 22))
-            { bot_act(act, bot_aim_byte(away, 0.2), BOT_JUMP, 0); *dbg=2; return; }
-        double other=-away;
-        double e_a=bot2_arrow_eta(view, away*19, 0, 40, NULL), e_b=bot2_arrow_eta(view, other*19, 0, 40, NULL);
-        bot_act(act, bot_aim_byte(e_a>=e_b?away:other, 0.2), 0, 0); *dbg=4; return;
+            { bot_act(act, bot_aim_byte(e_run[0]>=e_run[1]?away:-away, 0.2), BOT_JUMP, 0); *dbg=2; return; }
+        if (e_run[best]<0) aim_run[best]=bot_aim_byte(-away*tx, -away*ty);  /* both sides drop: the lesser evil is uphill/away */
+        bot_act(act, aim_run[best], 0, 0); *dbg=4; return;
     }
     if (view->dash_ready && eta<12 && bot2_dash_safe(view, away, -0.2))
         { bot_act(act, bot_aim_byte(away, -0.2), BOT_DASH, 0); *dbg=1; return; }
@@ -791,7 +804,7 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     /* Threat layers: the foe's platform first (its window is seconds and the
      * penalty certain), then arrows. */
     if (!act.done) bot2_platform_threat(&view, &v2, bot, &act, &dbg_dodge);
-    if (!act.done) bot2_dodge(&view, bot, &act, &dbg_eta, &dbg_dodge);
+    if (!act.done) bot2_dodge(&view, &v2, bot, &act, &dbg_eta, &dbg_dodge);
     else if (!view.morphing) dbg_eta=bot_arrow_eta(&view, NULL);
     if (!act.done) switch (bot->kind) {
     case BOPL_BOT_ARCHER_V2: bot2_archer(&view, &v2, bot, forced_release, &act); break;
