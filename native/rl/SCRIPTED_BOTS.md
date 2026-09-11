@@ -125,8 +125,16 @@ shooting / approaching foe model took the head-to-head from 59% to 67%, the
 best-dodge-in-hindsight foe to 72%; platform squish candidates account for
 ~25% of the search bot's wins (it discovered the squish on its own — 20–36
 of its wins in each set are `cause_of_death` 1); the pending own arrow is
-handled by the fork for free (zero shoot→dash self-kills observed); the
-cooldown terms in the heuristic were not separately measurable.
+handled by the fork for free (zero shoot→dash self-kills observed; a fork
+taken after a full charge straight up and stepped through a dash along the
+aim kills the shooter on the same tick as the real game does, with the
+arrow 6–13 u ahead — `Dash.cs` raycasts the Projectile layer over 13 u); the
+cooldown terms in the heuristic were not separately measurable. Later: the
+foe model keeps holding a platform it is already growing (the real morph
+grows up to 4 s; releasing it at once in the fork hid the squish geometry):
+vs trial 001 76→81 of 120, vs mixed-hard 88→89. With neither a shot nor a
+firing spot the heuristic falls back to closing in on the foe; without that
+the bot camped 16 u from an idle foe until the timeout.
 
 ## Game facts the bots use (measured in-sim)
 
@@ -215,8 +223,16 @@ Shared machinery:
 | Full-charge shots under 21 units | no | no | yes |
 | Snipes falling foes | no | yes | yes |
 
-Bots draw from their own RNG stream (`bot_rng` in the env), so a scripted
-run's map/seed/side sequences match an unscripted one exactly.
+Bots draw from their own RNG stream, so a scripted run's map/seed/side
+sequences match an unscripted one exactly. Each bot's seed is a pure
+function of the episode seed and its player (`bopl_bot_seed`: the episode
+seed is `config.seed`, drawn by `bopl_draw_config` and handed to the game by
+`bopl_rl_reset`), derived again at every reset and by `research_bot`, so a
+game is a function of (seed, map, bots) whatever the environment played
+before and whether the bot was selected before or after the reset
+(`check_tick_step.py --scripted search-hard` / `mixed-medium` prove it).
+Hard v1 bots never draw, so their games did not change when this was fixed;
+easy/medium and search games did (same distribution, different games).
 
 ## Strength (2026-09-09, run 007 checkpoints, 18 games each = maps 0–2 × 6, both sides, hard)
 
