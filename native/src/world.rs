@@ -79,6 +79,12 @@ pub struct DashState {
     pub hit_local: Fix,
     pub saved_local: Fix,
     pub local: Fix,
+    /// The Dash body's rotation when Ability.ExitAbility deactivated it:
+    /// the dash direction, or the platform alignment of a landing
+    /// (PlayerPhysics.AttachToGround, PlayerPhysics.cs:508). The frozen
+    /// FixTransform keeps it for DetPhysics' sync of inactive colliders.
+    #[serde(default)]
+    pub exit_rotation: Fix,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]

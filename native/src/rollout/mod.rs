@@ -3109,7 +3109,12 @@ impl RolloutWorld {
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_aim = slot.bow.aim;
-            let position = slot.base.position;
+            // Ability.ExitAbility deactivates the ability body where it
+            // ended (Ability.cs:151-152) and DetPhysics still syncs that
+            // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
+            // the exit pass writes the published exit position.
+            let exit_position = slot.reported_position;
+            let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
             if slot.out {
@@ -3175,18 +3180,26 @@ impl RolloutWorld {
                 // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
                 // before performDash); `sync_collider` already built the
                 // synced box with the dash extents from that rotation.
-                dash_box.x = synced.x.raw();
-                dash_box.y = synced.y.raw();
+                // On the exit pass the slime body has taken over, so the
+                // box is rebuilt at the teleport/landing pose.
+                let (center, angle) = if alive && dashing {
+                    (synced, rotation)
+                } else {
+                    (exit_position, dash_exit_rotation)
+                };
+                let collider =
+                    OrientedBox::from_basis(center, Vec2::angle(angle), data.dash.hurtbox_extents);
+                dash_box.x = center.x.raw();
+                dash_box.y = center.y.raw();
                 // DPhysicsBox is a trigger body; PlayerBody velocity is not
                 // stored on its PhysicsBody observation record.
                 dash_box.vx = 0;
                 dash_box.vy = 0;
-                let collider = &slot.base.collider;
                 dash_box.right_x = collider.right.x.raw();
                 dash_box.right_y = collider.right.y.raw();
                 dash_box.up_x = collider.up.x.raw();
                 dash_box.up_y = collider.up.y.raw();
-                dash_box.rotation = rotation.raw();
+                dash_box.rotation = angle.raw();
             }
             // Bow hurtbox: active while aiming/firing. BowTransform writes
             // `body.up = inputVector` each tick until the shot
@@ -3207,10 +3220,16 @@ impl RolloutWorld {
             }
             if (alive && bowing) || bow_was_active {
                 let extents = data.bow.hurtbox_extents;
-                let rotation = bow_aim.perp_cw().normalized_angle();
-                let hurtbox = OrientedBox::from_basis(synced, Vec2::angle(rotation), extents);
-                bow_box.x = synced.x.raw();
-                bow_box.y = synced.y.raw();
+                // Both exits zero the Bow body's rotation before
+                // ExitAbility (BowTransform.cs:119, 225).
+                let (center, rotation) = if alive && bowing {
+                    (synced, bow_aim.perp_cw().normalized_angle())
+                } else {
+                    (exit_position, Fix::ZERO)
+                };
+                let hurtbox = OrientedBox::from_basis(center, Vec2::angle(rotation), extents);
+                bow_box.x = center.x.raw();
+                bow_box.y = center.y.raw();
                 bow_box.vx = 0;
                 bow_box.vy = 0;
                 bow_box.right_x = hurtbox.right.x.raw();
@@ -3238,12 +3257,18 @@ impl RolloutWorld {
                 };
             }
             if transforming || circle_was_active {
-                circle.x = position.x.raw();
-                circle.y = position.y.raw();
                 // DetPhysics copies the ability body's FixTransform rotation
                 // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
-                // in ExitAbility, PlatformTransform.cs:462).
-                circle.rotation = slot.base.rotation.raw();
+                // in ExitAbility, PlatformTransform.cs:462, at the ejected
+                // position the exit pass published).
+                let (center, rotation) = if transforming {
+                    (slot.base.position, slot.base.rotation)
+                } else {
+                    (exit_position, Fix::ZERO)
+                };
+                circle.x = center.x.raw();
+                circle.y = center.y.raw();
+                circle.rotation = rotation.raw();
             }
         }
         for arrow in &self.arrows {
