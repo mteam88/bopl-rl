@@ -37,6 +37,9 @@ native/rl/sweep/
   driver.py        the sweep loop (this is what you run)
   sweep_config.py  TOML -> PufferLib sweep_config + train.py flag rendering
   scoring.py       scorers: run directory -> (learner_steps, score) curve
+  reference_pool.py  frozen reference pool: build / verify / rate a checkpoint
+  flags.py         behaviour flags from evaluation behaviour totals (labels only)
+  rescore.py       re-score an existing sweep with the reference scorer, read-only
   report.py        results.jsonl, summary.md, launch-best.sh
   configs/         one TOML per sweep
   tests/           unittest suite + fixtures copied from run 007
@@ -133,6 +136,128 @@ steps (bin means, exact final point) and each point is fed to
   native CPU eval library (`research/native_policy.py` + `environment.py`,
   as `elo_ladder.py` does). One observation at final cost; draws/timeouts
   score 0.5. Match results land in `<trial>/match/result.json`.
+- `scorer = "reference"`: Bradley–Terry Elo against a frozen reference pool
+  (next section). `pool = "<path>/pool.json"` (relative to the checkout),
+  `last_k = 3` evaluations aggregated by IQM, `games = 240` per checkpoint,
+  `first_pass_games = 6` per member, `band = [0.15, 0.85]`,
+  `round_games = 48`, `workers = 4`, `seed_base = 70001`. Elo is unbounded,
+  so `metric_distribution = "linear"` is required (`percentile` logit-
+  transforms a 0..1 rate). Ratings are cached in
+  `<trial>/reference/<checkpoint>.json` (rating, 95% CI, per-member
+  records, allocation rounds); scoring plays games, so the driver does not
+  poll it for early stopping (same as `match`).
+
+### Why a reference pool, and why it is frozen
+
+The `anchors` mean over eight hand-picked opponents measured ±3–4 points of
+standard error per evaluation on overnight-3 while trial scores wandered
+0.27–0.51 within one run; `random`/`initial` groups were 100% wins for every
+trial and only diluted the mean; the run007 checkpoints were trained on an
+older sim with an exploitable platform bug and inflated new-sim agents; and
+the top-scoring trial (001) fired zero arrows. The reference scorer follows
+the literature instead:
+
+- OpenAI Five, appendix J: rate agents by TrueSkill/Elo against a *frozen*
+  pool of reference agents whose ratings are held constant, play mostly the
+  references inside the 15–85% expected-win band (lopsided games carry no
+  information), add references as agents outgrow the pool, never mutate one.
+- Balduzzi et al. 2018, *Re-evaluating evaluation*: a mean over a
+  hand-picked pool is biased by redundant and weak entries; a rating over the
+  whole tournament graph is not.
+- *Elo Uncovered*: sequential Elo depends on game order and K; fit batch
+  Bradley–Terry MLE instead (`elo_ladder.bradley_terry`, draws = half wins,
+  one virtual draw per pair, random = 0 Elo).
+- Agarwal et al. 2021, *rliable*: report the interquartile mean with
+  bootstrap CIs rather than a single point (here IQM over the last k
+  evaluations; with k < 4 the trim is empty and IQM equals the mean).
+
+`native/rl/sweep/reference_pool.py` implements it:
+
+```sh
+# build: full round robin (both sides, evaluation maps, fixed seeds,
+# 48 games per pair), BT-MLE fit, pool.json with every checkpoint hash
+BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
+  --out native/artifacts/rl/sweeps/anchors/overnight-3/pool.json \
+  --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,archer-medium,pursuer-medium,evasive-medium,mixed-medium \
+  --checkpoint o3-012-final=native/artifacts/rl/sweeps/anchors/overnight-3/o3-012-final.bin ... \
+  --games-per-pair 48 --workers 6
+# verify: re-hash every checkpoint and the pool itself
+native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py verify .../pool.json
+# rate one checkpoint by hand
+BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py rate \
+  --pool .../pool.json --checkpoint <run>/checkpoints/policy-000266698752.bin --out /tmp/rate
+```
+
+`pool.json` records each member's kind (`random`, `scripted`, `checkpoint`),
+rating, W-L-D, the full match matrix, the sim it was played on (path and
+SHA-256), and for checkpoints the weights and sidecar hashes; `pool_sha256`
+hashes the sorted (name, kind, sha256, rating) rows. Every load re-hashes the
+checkpoints and recomputes `pool_sha256`, so an edited rating or a swapped
+weights file fails loudly.
+
+**Adding a reference**: copy the checkpoint (and its `.bin.json` sidecar)
+next to the pool, e.g. `native/artifacts/rl/sweeps/anchors/<pool>/`, and
+build a *new* pool file (`--out .../pool-2.json`) that lists the old members
+plus the new one; point the next sweep's `[scoring].pool` at it. The pool
+ratings are re-fit from a fresh round robin, so all members stay on one
+consistent scale; older sweeps keep their own pool file and their ratings
+remain interpretable against it. `build` refuses to overwrite an existing
+pool.
+
+**Never remove or mutate a member**: a candidate's rating is the MLE of its
+games against members with *fixed* ratings. Change a member's weights or
+rating and every candidate rated before and after sits on different scales
+without any file saying so — that is exactly what the pool hash guards
+against, and why `verify` runs on every load. If a member turns out to be a
+bad reference (exploitable, redundant), leave it in and let the band
+allocation starve it of games: a member far outside 15–85% only ever gets the
+first-pass games.
+
+**Sim identity**: `pool.json` stores the sim library's SHA-256 and every
+rating file records the sim it ran on plus `game_mismatch`. Ratings played on
+a different sim build than the pool are flagged but not refused (a rebuilt
+`libbopl_sim.so` would otherwise fail every trial of a running sweep); after
+a sim change with gameplay impact, build a new pool.
+
+### Behaviour flags
+
+Every finished trial's evaluations are labelled from their behaviour totals
+(`evaluate.py` `behavior_totals`, pooled over the anchor groups on the
+evaluation maps) with thresholds from the config:
+
+```toml
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+```
+
+Metrics: `arrows_per_game`, `arrow_hits_per_game`, `arrow_hit_rate`,
+`platforms_per_game`, `dashes_per_game`, `bows_per_game`, `kills_per_game`,
+`deaths_per_game`, `timeout_rate`, `win_rate`, `mean_duration_seconds`,
+`games`; operators `< <= > >=`. Flags are written into each evaluation
+`result.json` (`flags`, `flag_metrics`, `flag_rules`), the trial
+`result.json` (`flags_by_evaluation` too), the trial record in `sweep.json`,
+the `flags` column of `summary.md`, and appear as a badge on the dashboard
+run page. They never change the score: a camper keeps its rating and its
+`no-offense` label side by side.
+
+### Re-scoring an old sweep
+
+`rescore.py` rates every scored trial of an existing sweep against a pool
+without writing into the sweep's tree:
+
+```sh
+BOPL_RL_BACKEND=rust systemd-run --user --scope -p CPUQuota=600% --nice=10 -- \
+  native/artifacts/rl/venv/bin/python native/rl/sweep/rescore.py \
+  --sweep native/artifacts/rl/sweeps/overnight-3 \
+  --pool native/artifacts/rl/sweeps/anchors/overnight-3/pool.json \
+  --out native/artifacts/rl/sweeps/overnight-3-rescore --workers 6
+```
+
+Output: `<out>/<trial>/reference/<checkpoint>.json`, `<out>/<trial>/result.json`,
+`<out>/rescore.json` and `<out>/summary.md` (old score, new rating ± CI,
+IQM over the last k, flags, rank moves).
 
 ## Reading results
 

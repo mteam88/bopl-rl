@@ -5,7 +5,8 @@ One TOML file declares one sweep (see configs/). Sections:
   [sweep]    method/goal/downsample/early_stop_quantile/max_suggestion_cost/
              max_runs/use_gpu/cost/seeds/concurrency
   [trial]    per-trial resource limits (MemoryMax, wall cap, poll cadence)
-  [scoring]  which scorer reads a trial's run directory (see scoring.py)
+  [scoring]  which scorer reads a trial's run directory (see scoring.py);
+             [scoring.flags] behaviour flag rules (flags.py), labels only
   [fixed]    every fixed train.py argument, snake_case (steps is the budget)
   [params.<name>]  swept parameters as PufferLib spaces:
              distribution = uniform | int_uniform | uniform_pow2 | log_normal |
@@ -23,6 +24,8 @@ import math
 import re
 import tomllib
 from pathlib import Path
+
+import flags
 
 # Reserved keys PufferLib's _params_from_puffer_sweep skips; parameters may not
 # use these names (they live in their own [params.*] tables, but the flattened
@@ -117,8 +120,23 @@ class SweepSpec:
 
         self.scoring = dict(raw.get('scoring', {}))
         self.scoring.setdefault('scorer', 'anchors')
-        _require(self.scoring['scorer'] in ('anchors', 'behaviour', 'match'),
+        _require(self.scoring['scorer'] in ('anchors', 'behaviour', 'match', 'reference'),
                  f"Unknown scorer {self.scoring['scorer']!r}")
+        if self.scoring['scorer'] == 'reference':
+            _require(isinstance(self.scoring.get('pool'), str), '[scoring].pool (a pool.json path) is required')
+            _require(int(self.scoring.get('last_k', 3)) >= 1, '[scoring].last_k must be positive')
+            band = self.scoring.get('band', (.15, .85))
+            _require(len(band) == 2 and 0 < band[0] < band[1] < 1, '[scoring].band must be [low, high] in (0, 1)')
+            _require(self.metric_distribution == 'linear',
+                     'scorer = "reference" yields Elo, not a rate: set metric_distribution = "linear"')
+        # Behaviour flags (flags.py): labels only, never part of the score.
+        self.flag_rules = dict(self.scoring.get('flags', flags.DEFAULT_RULES))
+        for name, rule in self.flag_rules.items():
+            _require(bool(re.fullmatch(r'[a-z][a-z0-9-]*', name)), f'Flag name {name!r} must be [a-z][a-z0-9-]*')
+            try:
+                flags.parse_rule(rule)
+            except ValueError as error:
+                raise ConfigError(str(error)) from None
 
         self.fixed = dict(raw.get('fixed', {}))
         _require('output' not in self.fixed and 'resume' not in self.fixed,

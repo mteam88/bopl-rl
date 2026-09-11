@@ -231,5 +231,47 @@ class ScriptedCurriculum(unittest.TestCase):
         self.assertNotIn('--scripted-decay', argv)
 
 
+REFERENCE = MINIMAL + '''
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
+last_k = 3
+games = 240
+band = [0.15, 0.85]
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+stalemate = "timeout_rate > 0.5"
+'''
+
+
+class ReferenceScoring(unittest.TestCase):
+    def test_reference_scorer_parses(self):
+        spec = load_text(REFERENCE)
+        self.assertEqual(spec.scoring['scorer'], 'reference')
+        self.assertEqual(spec.scoring['last_k'], 3)
+        self.assertEqual(spec.flag_rules, {'no-offense': 'arrows_per_game < 0.05',
+                                           'stalemate': 'timeout_rate > 0.5'})
+
+    def test_reference_requires_pool_and_linear_metric(self):
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(REFERENCE.replace('pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"\n', ''))
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(REFERENCE.replace('[sweep]\n', '[sweep]\nmetric_distribution = "percentile"\n'))
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(REFERENCE.replace('band = [0.15, 0.85]', 'band = [0.9, 0.1]'))
+
+    def test_default_flags_when_absent(self):
+        spec = load_text(MINIMAL)
+        self.assertEqual(spec.scoring['scorer'], 'anchors')
+        self.assertIn('no-offense', spec.flag_rules)
+
+    def test_bad_flag_rule_rejected(self):
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(REFERENCE.replace('"timeout_rate > 0.5"', '"movement > 0.5"'))
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(REFERENCE.replace('no-offense =', 'No_Offense ='))
+
+
 if __name__ == '__main__':
     unittest.main()
