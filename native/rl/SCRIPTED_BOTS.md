@@ -107,14 +107,14 @@ seed-invariant, so the spread comes from the search bot's random candidates;
 `search-medium` beat `mixed-hard` in all 6 distinct games and `mixed-medium`
 49/59). Against policies via `evaluate.py --games-per-opponent 32` (96
 games each; two builds differing only in the platform horizon and a
-rejected foe model scored 61–65, 70–81 and 51–58 on the three rows, so read
+rejected foe model scored 61–65, 70–81 and 49–58 on the three rows, so read
 ±8 as noise):
 
 | Policy | `mixed-hard` wins | `search-hard` wins |
 | --- | --- | --- |
 | overnight-3 trial 001 final (platform squisher, fires no arrows) | 42/96 (44%) | 62/96 (65%) |
 | overnight-3 trial 012 final | 24/96 (25%) | 70/96 (73%) |
-| run007 final | 41/96 (43%) | 51–58/96 (53–60%) |
+| run007 final | 41/96 (43%) | 49–58/96 (51–60%) |
 
 Where it still loses: 22 of 33 losses in the 120-game `mixed-hard` set died
 *inside an arrow latch*, 19 of them a full charge (hold 16) that the rollout
