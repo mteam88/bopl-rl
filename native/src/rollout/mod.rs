@@ -623,6 +623,10 @@ impl RolloutWorld {
             });
         }
         let water_id = self.next_id();
+        // DPhysicsBox's collider axes are `Vec2.right / inverseExtents.x`
+        // (Box.SetRotation, Box.cs:33) with `inverseExtents = One / extents`,
+        // the same round trip as the platform perimeters.
+        let water_extents = data::surface_extents(def.water_extents);
         self.entities.push(CEntity {
             id: water_id,
             kind: 1,
@@ -632,8 +636,8 @@ impl RolloutWorld {
             hierarchy: 146,
             x: def.water_position.x.raw(),
             y: def.water_position.y.raw(),
-            right_x: def.water_extents.x.raw(),
-            up_y: def.water_extents.y.raw(),
+            right_x: water_extents.x.raw(),
+            up_y: water_extents.y.raw(),
             inverse_mass: -(1 << 32),
             ..CEntity::default()
         });
@@ -679,8 +683,11 @@ impl RolloutWorld {
                 inverse_mass: p.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
-            self.platforms
-                .push(make_platform(self.next_platform_id, &p.surface));
+            self.platforms.push(make_platform(
+                self.next_platform_id,
+                &p.surface,
+                p.collider_extents,
+            ));
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
                 home_position: p.surface.center,
@@ -1152,13 +1159,14 @@ impl RolloutWorld {
             for s in 0..3 {
                 self.players[index].timers[s] += DT;
             }
-        } else {
-            self.players[index].ability_time += DT;
         }
+        // Player.UpdatePlayer (Player.cs:337-353) accumulates
+        // timeSinceEnteredAbility only while isInvisible and zeroes it on every
+        // other tick; without the Invisibility ability it stays zero.
+        self.players[index].ability_time = Fix::ZERO;
 
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
-            self.players[index].ability_time = Fix::ZERO;
             for s in 0..3 {
                 let slot = &self.players[index];
                 let button_down = registered_action.buttons & (2 << s) as u8 != 0;
@@ -1797,12 +1805,15 @@ impl RolloutWorld {
             center: position,
             right: Vec2::RIGHT,
             up: Vec2::UP,
-            extents: pd.spawn_extents,
+            extents: data::surface_extents(pd.spawn_extents),
             radius: pd.spawn_radius,
         };
         let platform_index = self.platforms.len();
-        self.platforms
-            .push(make_platform(self.next_platform_id, &surface));
+        self.platforms.push(make_platform(
+            self.next_platform_id,
+            &surface,
+            pd.spawn_extents,
+        ));
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
             home_position: position,
@@ -1893,13 +1904,11 @@ impl RolloutWorld {
         let old_center = self.platforms[index].surface.center;
         let platform = &mut self.platforms[index];
         platform.surface.center = center;
-        platform.surface.extents = extents;
+        // ResizablePlatform.ResizePlatform ends with StickyRect.UpdateBounds
+        // (ResizablePlatform.cs:105): the perimeter reads `One / (One / e)`.
+        platform.surface.extents = data::surface_extents(extents);
         platform.surface.radius = radius;
-        platform.collider.inner.center = center;
-        platform.collider.inner.right = platform.surface.right * extents.x;
-        platform.collider.inner.up = platform.surface.up * extents.y;
-        platform.collider.inner.inverse_extents =
-            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        platform.collider.inner = OrientedBox::from_basis(center, platform.surface.right, extents);
         platform.collider.radius = radius;
         let dynamics = &mut self.platform_dynamics[index];
         // ResizablePlatform.ResizePlatform recomputes these from geometry on
@@ -2385,9 +2394,11 @@ impl RolloutWorld {
             platform.surface.center += shift;
             platform.surface.right = Vec2::angle(orientation);
             platform.surface.up = platform.surface.right.perp();
-            platform.collider.inner.center = platform.surface.center;
-            platform.collider.inner.right = platform.surface.right * platform.surface.extents.x;
-            platform.collider.inner.up = platform.surface.up * platform.surface.extents.y;
+            // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
+            let inner = &mut platform.collider.inner;
+            inner.center = platform.surface.center;
+            inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
+            inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(platform.surface.right);
         }
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
@@ -2731,8 +2742,9 @@ impl RolloutWorld {
             // moving velocity is exposed by the separate slime record.
             body.vx = 0;
             body.vy = 0;
-            let right = Vec2::new(extents.x, Fix::ZERO).complex_mul(basis);
-            let up = Vec2::new(Fix::ZERO, extents.y).complex_mul(basis);
+            // Box.SetRotation: axis length `One / inverseExtents`, not `extents`.
+            let hurtbox = OrientedBox::from_basis(position, basis, extents);
+            let (right, up) = (hurtbox.right, hurtbox.up);
             body.right_x = right.x.raw();
             body.right_y = right.y.raw();
             body.up_x = up.x.raw();
@@ -2837,8 +2849,9 @@ impl RolloutWorld {
             e.y = s.center.y.raw();
             e.vx = dynamics.body.velocity.x.raw();
             e.vy = dynamics.body.velocity.y.raw();
-            let right = s.right * s.extents.x;
-            let up = s.up * s.extents.y;
+            // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
+            let right = platform.collider.inner.right;
+            let up = platform.collider.inner.up;
             e.right_x = right.x.raw();
             e.right_y = right.y.raw();
             e.up_x = up.x.raw();
@@ -3006,19 +3019,14 @@ impl Default for RolloutWorld {
     }
 }
 
-fn make_platform(id: u32, surface: &Surface) -> Platform {
-    let extents = surface.extents;
-    let inverse = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+/// `collider_extents` are the authored half-extents DetPhysics holds; the
+/// surface's are the perimeter's `One / (One / e)` reading of them.
+fn make_platform(id: u32, surface: &Surface, collider_extents: Vec2) -> Platform {
     Platform {
         id,
         surface: surface.clone(),
         collider: RoundedRect {
-            inner: OrientedBox {
-                center: surface.center,
-                right: surface.right * extents.x,
-                up: surface.up * extents.y,
-                inverse_extents: inverse,
-            },
+            inner: OrientedBox::from_basis(surface.center, surface.right, collider_extents),
             radius: surface.radius,
         },
         ice: false,

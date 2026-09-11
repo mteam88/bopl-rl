@@ -191,6 +191,9 @@ struct RawRollout {
 /// A platform's authored geometry plus the behaviours that move it.
 pub struct PlatformDef {
     pub surface: Surface,
+    /// The collider's authored half-extents (`startExtents * scale`); the
+    /// surface carries the perimeter's `One / (One / e)` reading instead.
+    pub collider_extents: Vec2,
     /// AnimateVelocity home spring (speed * (home - position)) and damping
     /// (-mu * velocity).
     pub speed: Fix,
@@ -346,6 +349,16 @@ fn body(raw: &RawBody, orientation: Fix) -> crate::physics::Body {
     }
 }
 
+/// The perimeter extents `StickyRoundedRectangle.UpdateBounds` derives from a
+/// collider built with these half-extents: `One / (One / extents)` per axis
+/// (`DPhysicsRoundedRect.CalcExtents`, `Box.UpdateExtents`).
+pub fn surface_extents(extents: Vec2) -> Vec2 {
+    Vec2::new(
+        Fix::ONE / (Fix::ONE / extents.x),
+        Fix::ONE / (Fix::ONE / extents.y),
+    )
+}
+
 fn map_def(raw: &RawMap) -> MapDef {
     let platforms = raw
         .platforms
@@ -360,14 +373,22 @@ fn map_def(raw: &RawMap) -> MapDef {
             let right = Vec2::angle(rotation);
             let up = right.perp();
             let scale = Fix::from_raw(p.scale);
+            // StickyRoundedRectangle.UpdateBounds (StickyRoundedRectangle.cs:104,
+            // rerun after the level animates in, GameSessionHandler.cs:769)
+            // reads its perimeter extents back from the collider as
+            // `One / inverseExtents` (DPhysicsRoundedRect.CalcExtents:355-358)
+            // where the collider stored `One / startExtents`; the round trip
+            // moves non-power-of-two extents by a few raw units in Q32.32.
+            let collider_extents = p.extents.get() * scale;
             PlatformDef {
                 surface: Surface {
                     center: p.position.get(),
                     right,
                     up,
-                    extents: p.extents.get() * scale,
+                    extents: surface_extents(collider_extents),
                     radius: Fix::from_raw(p.radius) * scale,
                 },
+                collider_extents,
                 speed: Fix::from_raw(p.animate_velocity.speed),
                 mu: Fix::from_raw(p.animate_velocity.mu),
                 rotation_speed: Fix::from_raw(p.animate_velocity.rotation_speed),

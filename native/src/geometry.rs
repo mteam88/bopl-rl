@@ -20,6 +20,24 @@ pub struct OrientedBox {
     pub inverse_extents: Vec2,
 }
 
+impl OrientedBox {
+    /// A box the way DetPhysics holds one after `Box.SetRotation`
+    /// (Box.cs:31-35, RoundedRect.cs:22-26): `inverseExtents = One / extents`
+    /// and the scaled axes `ComplexMul(Vec2.right / inverseExtents.x, basis)`,
+    /// `ComplexMul(Vec2.up / inverseExtents.y, basis)`. In Q32.32 the axis
+    /// length is `One / (One / e)` rather than `e`, and the `up` products are
+    /// negated after flooring; `basis * e` differs from both by one raw unit.
+    pub fn from_basis(center: Vec2, basis: Vec2, extents: Vec2) -> Self {
+        let inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        Self {
+            center,
+            right: (Vec2::RIGHT / inverse_extents.x).complex_mul(basis),
+            up: (Vec2::UP / inverse_extents.y).complex_mul(basis),
+            inverse_extents,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct RoundedRect {
     pub inner: OrientedBox,
