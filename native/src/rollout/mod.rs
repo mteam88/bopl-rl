@@ -2562,23 +2562,16 @@ impl RolloutWorld {
             }
             let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
             spawn.removal_time += DT;
+            // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
+            // so the curve's overshoot past 1 scales the original size.
             let minimum = Fix::from_f32(0.1);
+            let lerp =
+                |o: Fix| minimum * (Fix::ONE - amount.clamp(Fix::ZERO, Fix::ONE)) + o * amount;
             removal_resizes.push((
                 spawn.platform_index,
-                Vec2::new(
-                    minimum + (spawn.removal_extents.x - minimum) * amount,
-                    minimum + (spawn.removal_extents.y - minimum) * amount,
-                ),
-                minimum + (spawn.removal_radius - minimum) * amount,
+                Vec2::new(lerp(spawn.removal_extents.x), lerp(spawn.removal_extents.y)),
+                lerp(spawn.removal_radius),
             ));
-        }
-        for (index, extents, radius) in removal_resizes {
-            let center = self.platforms[index].surface.center;
-            self.reshape_platform(index, center, extents, radius);
-        }
-        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
-        for index in removal_destroys {
-            self.remove_platform(index);
         }
 
         // Most short episodes never create or disturb a platform. Preserve
@@ -2685,6 +2678,19 @@ impl RolloutWorld {
             dynamics.body.angular_velocity = (dynamics.body.angular_velocity
                 + angle_delta * dynamics.rotation_speed * DT)
                 * (Fix::ONE - dynamics.rotation_mu);
+        }
+
+        // ResizablePlatform follows AnimateVelocity in its prefab
+        // (ResizablePlatform.prefab component order), so the spring impulse
+        // above used the pre-resize mass while DetPhysics integrates it with
+        // the new one.
+        for (index, extents, radius) in removal_resizes {
+            let center = self.platforms[index].surface.center;
+            self.reshape_platform(index, center, extents, radius);
+        }
+        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
+        for index in removal_destroys {
+            self.remove_platform(index);
         }
 
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
