@@ -2835,13 +2835,10 @@ impl RolloutWorld {
         } else {
             slot.telemetry.deaths_other += 1;
         }
-        // SlimeController.DropAbilities reads the slime body, frozen at the
-        // ability entry while an ability object stands in for it.
-        let drop_position = if slot.active == ActiveAbility::None {
-            slot.base.position
-        } else {
-            slot.ability_origin
-        };
+        // SlimeController.DropAbilities reads the slime body. A death inside
+        // an ability first moves that body to the ability object's position
+        // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
+        let drop_position = slot.base.position;
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
