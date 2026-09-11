@@ -12,7 +12,7 @@ workload. A supervisor message asks Fable to redesign toward sustained,
 representative training and log `learner_dps_active` as well as wall throughput.
 Do not celebrate startup-only gains as equivalent to faster long training.
 
-BB terminal `term_tq7tapubt5` attaches to the live Claude session for supervision.
+BB terminal `term_avddk96bb9` attaches to the live Claude session for supervision.
 `bb terminal send --enter` sends LF: a pasted message may need a separate CR
 (`--text $'\r'`) to submit. Verify receipt in the actual conversation, not merely
 the terminal-send acknowledgment. Never interrupt a useful benchmark casually.
@@ -26,8 +26,10 @@ At each check, inspect `claude agents --json`, the session's recent conversation
 and subprocesses, `results.tsv`, and the evidence behind new retained results.
 Distinguish a long benchmark/build from an actual stall. If recovery is needed,
 inspect first and avoid duplicate workers. `claude --bg --resume <session-id>`
-can resume a stopped background conversation; include the model, effort,
-permission and Ralph plugin flags and load the private `.env` as run.sh does.
+can resume a stopped background conversation. For an existing background session,
+DO NOT supply option overrides: Claude Code starts a copy when flags are supplied.
+It restores saved model/effort/permissions/plugin options itself; verify `/proc`
+after resuming. Load the private `.env` as run.sh does.
 Never restart a session Matthew deliberately stopped. Preserve artifacts and
 do not reset or edit Fable's experiments while it works.
 
@@ -45,3 +47,27 @@ Monitor service: `bopl-autoresearch-monitor.service` on 127.0.0.1:8877, routed
 through the existing tailnet-only HTTPS listener on 8876 at `/autoresearch`.
 When asked to stop everything, stop Fable, pause the named BB automation, and
 preserve the results and chart. Stopping research should not remove its history.
+
+On 2026-09-07 at 04:53:35 UTC systemd-oomd killed peace.service and its 62
+processes, including Fable and exp01 after two complete runs. Recovered the same
+session at 05:07:47 UTC in the separate user service bopl-throughput-fable.service
+with MemoryHigh=12G, MemoryMax=16G, MemorySwapMax=2G. Keep research outside
+peace.service. The recovery launcher is in the monitor artifacts as
+resume-fable.sh. Its RemainAfterExit=yes unit holds the background descendants;
+active(exited) is normal, so inspect actual Claude and benchmark PIDs.
+Matthew explicitly corrected the supervisor: do not prescribe short initial
+tests, experiment cadence, repeat counts, or a screening workflow. Fable must
+use its own judgment under the original autoresearch program. Earlier pacing
+guidance was retracted. Supervise availability and report facts; leave research
+design, duration, validation, and workflow to Fable.
+
+Fable raised the research unit limits at runtime for exp03: current MemoryHigh
+15G and MemoryMax 18G (MemorySwapMax remains 2G), verified 2026-09-07 08:46 UTC.
+The original 12G/16G settings above describe recovery history. Preserve Fable’s
+current settings when recovering; check live properties before acting. The
+7331 memory.high events came from the first exp03 attempt, logged invalid;
+there were no additional events in its completed six-run rerun.
+
+Latest live limits, verified 2026-09-07 09:46 UTC: Fable raised MemoryHigh to
+20G and MemoryMax to 24G after exp04 hit the former 15G high limit. Exp05
+records zero memory.high events in all six runs. Preserve the live settings.
