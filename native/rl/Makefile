@@ -7,7 +7,7 @@ all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/
 # Standalone evaluation/extraction binding; does not require rebuilding CUDA.
 research: $(OUT)/libbopl_research.so
 
-$(OUT)/libbopl_research.so: puffer/eval_binding.c puffer/bopl_puffer.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_layout.h bopl_rl.c bopl_rl.h
+$(OUT)/libbopl_research.so: puffer/eval_binding.c puffer/bopl_puffer.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared -I. puffer/eval_binding.c bopl_rl.c -lm -o $@
 

@@ -1,6 +1,6 @@
 #ifndef BOPL_BOTS_V2_PLAY_H
 #define BOPL_BOTS_V2_PLAY_H
-/* v2 scripted bots: archer-v2 / pursuer-v2 / evasive-v2 / mixed-v2 (kinds 5-8).
+/* v2 scripted bots: archer-v2 / pursuer-v2 / evasive-v2 / mixed-v2 (kinds 6-9; 5 is the search bot in bopl_bots_v2.h).
  *
  * Built on the v1 helpers of bopl_bots.h (never edited) plus the layers below,
  * which fix the three measured v1 failure modes (loss taxonomy, 2026-09-11,

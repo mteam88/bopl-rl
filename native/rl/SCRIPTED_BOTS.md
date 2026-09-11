@@ -258,7 +258,7 @@ flip-flops); the idle gate was re-run after those fixes. Full numbers come
 from `evaluate.py --scripted-opponents`. `research/check_scripted_bots.py`
 is the cheap idle sweep (maps 0–2, both sides; ~10 s, no GPU).
 
-## v2 bots (kinds 5–8: `archer-v2`, `pursuer-v2`, `evasive-v2`, `mixed-v2`)
+## v2 bots (kinds 6–9: `archer-v2`, `pursuer-v2`, `evasive-v2`, `mixed-v2`)
 
 `puffer/bopl_bots_v2_play.h`, dispatched from `bopl_bots_v2.h`; the same
 easy/medium/hard knobs. v1 is untouched (kinds 1–4 byte-identical on the
@@ -319,7 +319,7 @@ the header comment; the ones that changed the outcome:
 
 Checkpoints: `t001`/`t012`/`t002` = overnight-3 trials 001/012/002 finals,
 `run007` = `anchors/run007-final.bin`. v1 row = the loss-taxonomy baseline
-(same schedule, commit 2539b60), v2 row = kinds 5–8 at this commit.
+(same schedule, commit 2539b60), v2 row = kinds 6–9 at this commit.
 
 | bot | t001 | t012 | t002 | run007 | all (wins/168, timeouts) | median game |
 |---|---|---|---|---|---|---|
