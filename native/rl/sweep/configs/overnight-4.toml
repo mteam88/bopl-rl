@@ -26,9 +26,13 @@
 # 4 learner passes, entropy 7.4-10e-3, half-life pinned at its 1.5e8 cap,
 # buttons scale 1.1-2.0, reward_kill 0.22-0.30 (pinned near the 0.3 cap),
 # scripted_banks 1, scripted_decay 44-76M. Fixed here: learner_passes 4,
-# head_scale_buttons 1.5, one scripted bank. Swept: lr and entropy narrowed
-# to the basin; half-life and reward_kill extended past their old caps;
-# decay rescaled to the longer run. Trial 000 = the basin centre at 400M.
+# head_scale_buttons 1.5. Swept: lr and entropy narrowed to the basin;
+# half-life and reward_kill extended past their old caps; decay rescaled to
+# the longer run; and the curriculum itself, scripted_banks 1-3 over the
+# ordered candidates mixed-v2, evasive-v2, pursuer-v2 (the ladder rates the
+# v2 bots ~250 Elo above every overnight-3 final, evasive-v2 highest at 700;
+# overnight-3 only ever chose between 0 and 1 mixed bank). Trial 000 = the
+# basin centre with one bank at 400M.
 #
 # Bots: the training bank plays mixed-v2-hard, not mixed-hard. v1 bots lost
 # 66% of their games to platform squishes (SCRIPTED_BOTS.md loss taxonomy),
@@ -47,7 +51,7 @@ metric_distribution = "linear"     # Elo, not a rate
 downsample = 3                     # = [scoring].last_k points per trial
 fixed_cost = true
 max_suggestion_cost = 4.1e8
-max_runs = 15
+max_runs = 15                      # 6 params: 1 default + 6 Sobol + 8 GP
 num_random_samples = 6
 use_gpu = false
 cost = "learner_steps"
@@ -95,7 +99,7 @@ entropy_head_scale = "1,1.5,1"
 entropy_free_rows = 1
 reward_kill = 0.27
 reward_timeout = -1
-scripted_bots = ["mixed-v2"]
+scripted_bots = ["mixed-v2", "evasive-v2", "pursuer-v2"]  # ordered candidates; scripted_banks takes the first N
 scripted_level = "hard"
 scripted_decay = 120000000
 scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
@@ -141,3 +145,10 @@ min = 4e7                          # bot gone after 10% of the run
 max = 3e8                          # still playing a quarter of its bank at the end
 scale = 0.5
 integer = true
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 1
+max = 3                            # 4 banks total; at least one stays self-play
+scale = "auto"
+default = 1
