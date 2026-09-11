@@ -38,6 +38,25 @@ readiness rule (`CharacterSelectHandler.Update`, `num == 1`). Between rounds
 the human presses start/jump as usual; the AI never presses anything in menus.
 Unset `BOPL_AGENT` and the game is stock (every hook is a no-op).
 
+### macOS
+
+Same thing natively on the Mac (arm64, Metal, Mono — `BuildScript.BuildMac`
+forces Mono because the Mac editor has no IL2CPP module):
+
+```
+just sync-mac && just build-mac                       # from the PowerSpec; rsync + batchmode build over ssh
+Tools/play-vs-agent-mac.sh [<checkpoint.bin | scripted-name>] [--seed N]   # on the Mac
+```
+
+The launcher builds `native/artifacts/rl/libbopl_agent.dylib` on demand
+(`make -C native/rl agent-mac`), copies it into
+`BoplBattle.app/Contents/Plugins/` (ad-hoc codesigned) and execs the binary
+directly (`open` only focuses a running copy). `sync-mac` excludes
+`native/artifacts/`, so checkpoints and `human/default-agent` (with the Mac
+path) are copied separately. Results and replays land in the Mac's
+`native/artifacts/rl/human/`; Player.log is
+`~/Library/Logs/Johan Gronvall/BoplBattle/Player.log`.
+
 ## What the AI joins as
 
 `Assets/Scripts/Assembly-CSharp/RlAgent.cs`:

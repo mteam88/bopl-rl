@@ -18,6 +18,28 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+/* macOS (the in-game agent shim is built there too): no copy_file_range,
+ * accept4 or SOCK_CLOEXEC/SOCK_NONBLOCK flags; set the descriptor flags after
+ * the call instead. Byte copies only, which is what non-reflink Linux does. */
+#include <sys/uio.h>
+static ssize_t copy_file_range(int in, void *a, int out, void *b, size_t n, unsigned f) {
+    (void)in; (void)a; (void)out; (void)b; (void)n; (void)f; errno=ENOSYS; return -1;
+}
+static int socket_cloexec_nonblock(int domain, int type) {
+    int fd=socket(domain, type, 0);
+    if (fd>=0 && (fcntl(fd, F_SETFD, FD_CLOEXEC) || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL)|O_NONBLOCK))) { close(fd); return -1; }
+    return fd;
+}
+static int accept_cloexec_nonblock(int listener) {
+    int fd=accept(listener, NULL, NULL);
+    if (fd>=0 && (fcntl(fd, F_SETFD, FD_CLOEXEC) || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL)|O_NONBLOCK))) { close(fd); return -1; }
+    return fd;
+}
+#else
+static int socket_cloexec_nonblock(int domain, int type) { return socket(domain, type|SOCK_CLOEXEC|SOCK_NONBLOCK, 0); }
+static int accept_cloexec_nonblock(int listener) { return accept4(listener, NULL, NULL, SOCK_CLOEXEC|SOCK_NONBLOCK); }
+#endif
 
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "The RL wire format currently requires a little-endian host"
@@ -424,7 +446,7 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
     snprintf(w->directory, sizeof(w->directory), "/tmp/bopl-rl-XXXXXX");
     if (!mkdtemp(w->directory)) { fail(w, "RL socket directory"); goto cleanup; }
     snprintf(w->endpoint, sizeof(w->endpoint), "%s/game.sock", w->directory);
-    w->listener=socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
+    w->listener=socket_cloexec_nonblock(AF_UNIX, SOCK_STREAM);
     if (w->listener<0) { fail(w, "RL listening socket"); goto cleanup; }
     struct sockaddr_un address={.sun_family=AF_UNIX};
     snprintf(address.sun_path, sizeof(address.sun_path), "%s", w->endpoint);
@@ -455,7 +477,7 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
     if (spawned) { errno=spawned; fail(w, "RL game spawn"); goto cleanup; }
     int64_t deadline=now_ms()+timeout_ms;
     if (wait_ready(w->listener, POLLIN, deadline)<0) { fail(w, "RL game startup"); goto cleanup; }
-    w->socket=accept4(w->listener, NULL, NULL, SOCK_CLOEXEC|SOCK_NONBLOCK);
+    w->socket=accept_cloexec_nonblock(w->listener);
     if (w->socket<0) { fail(w, "RL game connection"); goto cleanup; }
     close(w->listener); w->listener=-1;
     uint32_t length=0;

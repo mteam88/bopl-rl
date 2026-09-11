@@ -50,6 +50,9 @@ public static class BuildScript
 
 	public static void BuildMac()
 	{
+		// Mono like the Linux player (the in-game agent shim is a DllImport'ed dylib; the
+		// synced ProjectSettings may carry IL2CPP from BuildLinuxIL2CPP, which the Mac editor lacks).
+		PlayerSettings.SetScriptingBackend(BuildTargetGroup.Standalone, ScriptingImplementation.Mono2x);
 		PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneOSX, new[] { GraphicsDeviceType.Metal });
 #if UNITY_EDITOR_OSX
 		UnityEditor.OSXStandalone.UserBuildSettings.architecture = OSArchitecture.ARM64;
