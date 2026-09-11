@@ -72,6 +72,8 @@ async function viewport(width, height) {
 
 await viewport(1440, 1400);
 await call("browsingContext.navigate", { context, url, wait: "complete" });
+// The startup tab (about:home, a React app) logs its own hydration errors into this context.
+consoleErrors.length = 0;
 for (let i = 0; i < 40; i++) {
   await sleep(250);
   if (await evaluate("!!(typeof data !== 'undefined' && data && data.metrics)")) break;
@@ -195,6 +197,37 @@ await sleep(400);
 const overflow = await evaluate("document.documentElement.scrollWidth > innerWidth");
 if (overflow) throw Error("Mobile horizontal overflow");
 await screenshot(out + "/dashboard-mobile.png");
+
+// Ladder view, when serve.py registered a --ladder directory: one row per participant,
+// sorted by Elo, sortable by name, finals expand to their trial's hyperparameters.
+let ladderView = null;
+if (Object.keys(await (await fetch(new URL("/api/ladders", url))).json()).length) {
+  await viewport(1440, 1400);
+  await call("browsingContext.navigate", { context, url: new URL("/ladder", url).href, wait: "complete" });
+  for (let i = 0; i < 40; i++) {
+    await sleep(250);
+    if (await evaluate("document.querySelectorAll('#ladderRows tr').length > 0")) break;
+  }
+  ladderView = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('#ladderRows tr')], elo = rows.map(r => Number(r.children[2].textContent));
+    return {rows: rows.length, participants: ladders[name].ladder.ratings.length,
+      sorted: elo.every((v, i) => !i || elo[i - 1] >= v), finals: rows.filter(r => r.classList.contains('final')).length,
+      scatter: !document.querySelector('#scatterSection').hidden && document.getElementById('scatter').width > 0,
+      tag: document.querySelector('#ladderTag').textContent, wide: document.documentElement.scrollWidth > innerWidth};
+  })()`);
+  if (ladderView.rows !== ladderView.participants || !ladderView.sorted || ladderView.wide)
+    throw Error("Ladder view did not render: " + JSON.stringify(ladderView));
+  await run("document.querySelector('#ladderHead th').click()");
+  const names = await evaluate("[...document.querySelectorAll('#ladderRows tr')].map(r => r.children[0].textContent)");
+  if (names.join() !== [...names].sort((a, b) => a.localeCompare(b)).join())
+    throw Error("Ladder did not sort by name: " + names.join(", "));
+  if (ladderView.finals) {
+    await run("document.querySelector('#ladderRows tr.final').click()");
+    ladderView.hypers = await evaluate("document.querySelectorAll('#ladderRows tr.hypers dt').length");
+    if (!ladderView.hypers) throw Error("Final did not expand to its hyperparameters");
+  }
+  await screenshot(out + "/dashboard-ladder.png");
+}
 // Only errors from our own page; the browser's startup tab logs its own noise.
 const pageErrors = consoleErrors.filter((e) => e.context === context).map((e) => e.text);
 if (pageErrors.length) throw Error("Browser errors: " + JSON.stringify(pageErrors));
@@ -211,6 +244,7 @@ console.log(
     insights,
     ladder,
     mind,
+    ladder_view: ladderView,
     mobile_overflow: overflow,
     console_errors: pageErrors.length,
   }),

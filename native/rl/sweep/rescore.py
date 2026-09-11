@@ -67,6 +67,7 @@ def rescore(sweep_dir, pool_path, out, last_k=3, games=240, first_pass_games=6, 
         row = dict(id=trial['id'], status=trial['status'], hypers=trial['hypers'],
                    old_score=trial['observations'][-1]['score'], old_steps=trial['observations'][-1]['steps'],
                    rating=final['rating'], interval=final['interval'], games=final['games'],
+                   sha256=final['checkpoint_identity']['sha256'],
                    iqm=curve[-1].score, last_k=[dict(checkpoint=r['checkpoint'], learner_steps=r['learner_steps'],
                                                      rating=r['rating'], interval=r['interval'], games=r['games'])
                                                 for r in ratings],

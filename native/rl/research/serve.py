@@ -48,10 +48,11 @@ def main():
     parser.add_argument('--study-root',action='append',default=[],metavar='NAME=PATH',help='Read a live study from an isolated workspace')
     parser.add_argument('--run-root',action='append',default=[],metavar='NAME=PATH',help='Read a live training run directory from an isolated workspace')
     parser.add_argument('--run-root-glob',action='append',default=[],metavar='NAME=GLOB',help='Register every run directory matching GLOB as NAME-<dirname> (e.g. a sweep tree), re-evaluated per request')
+    parser.add_argument('--ladder',action='append',default=[],metavar='NAME=PATH',help='Directory holding ladder.json (elo_ladder/reference_pool schema) and optionally rescore.json (sweep/rescore.py) for the Ladder view')
     args=parser.parse_args(); root=args.root.resolve()
     library=ReplayLibrary(root)
-    extra={};extra_runs={};run_globs={}
-    for attribute,target in (('study_root',extra),('run_root',extra_runs),('run_root_glob',run_globs)):
+    extra={};extra_runs={};run_globs={};ladders={}
+    for attribute,target in (('study_root',extra),('run_root',extra_runs),('run_root_glob',run_globs),('ladder',ladders)):
         for value in getattr(args,attribute):
             name,separator,path=value.partition('=')
             if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+',name):parser.error(f'{attribute} requires NAME=PATH')
@@ -166,6 +167,9 @@ def main():
                 if name not in studies:return self.send_error(404)
                 return self.json(study_data.payload(name,studies[name],root))
             if path=='/api/runs': return self.json(runs())
+            if path=='/api/ladders':
+                return self.json({name:dict(ladder=read_json(directory/'ladder.json'),rescore=read_json(directory/'rescore.json'))
+                                  for name,directory in ladders.items() if (directory/'ladder.json').is_file()})
             if path=='/api/series':
                 series=[]
                 for file in sorted(root.glob('*/plan.json')):
@@ -245,12 +249,12 @@ def main():
                 # .bin serves native checkpoints; .pt stays readable for historical runs.
                 if not file.is_relative_to(directory) or file.suffix not in ('.json','.jsonl','.rep','.mp4','.bin','.pt','.jpg','.gz'):
                     return self.send_error(403)
-            elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css','/arena.js','/matches.js'):
+            elif path in ('/','/index.html','/app.js','/style.css','/study','/study.html','/study.js','/study.css','/ladder','/ladder.html','/ladder.js','/arena.js','/matches.js'):
                 query=parse_qs(urlparse(self.path).query)
                 # A live training run is the front page; the study catalog is the home only when nothing is running.
                 live=any((r.get('status') or {}).get('status')=='running' for r in runs())
                 study_home=path=='/' and studies and not live and not any(k in query for k in ('run','series','history'))
-                file=HERE/'web'/('study.html' if study_home or path=='/study' else 'index.html' if path=='/' else path[1:])
+                file=HERE/'web'/('study.html' if study_home or path=='/study' else 'ladder.html' if path=='/ladder' else 'index.html' if path=='/' else path[1:])
             else: return self.send_error(404)
             if not file.is_file(): return self.send_error(404)
             size=file.stat().st_size; start=0; end=size-1
