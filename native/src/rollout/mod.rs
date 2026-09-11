@@ -1909,8 +1909,10 @@ impl RolloutWorld {
         let mut a2 = (y + dir.y * DT * pd.size_change_speed).max(pd.min_size);
         let cap = pd.max_area;
         if dir.x >= Fix::ZERO && dir.y >= Fix::ZERO {
-            let gx = dir.x * DT * pd.size_change_speed;
-            let gy = dir.y * DT * pd.size_change_speed;
+            // `vec8.x *= fix * SizeChangeSpeed`: the scalar product first
+            // (PlatformTransform.cs:335-336), unlike `a` above.
+            let gx = dir.x * (DT * pd.size_change_speed);
+            let gy = dir.y * (DT * pd.size_change_speed);
             let grow = gx.min(gy);
             let skew = gx - gy;
             if skew > Fix::ZERO {
@@ -1936,7 +1938,8 @@ impl RolloutWorld {
                 let c1 = (Fix::from_int(8) * radius + Fix::from_int(4) * a2 + Fix::from_int(4) * a)
                     * quarter;
                 let disc = (c1 * c1 * quarter - c0).sqrt().unwrap_or(Fix::ZERO);
-                let root = -(c1 * Fix::from_f64(0.5)) + disc;
+                // `-fix11 * 0.5f`: negate, then scale (PlatformTransform.cs:354).
+                let root = (-c1) * Fix::from_f64(0.5) + disc;
                 a2 += root;
                 a += root;
             } else {
@@ -2100,9 +2103,11 @@ impl RolloutWorld {
         // ResizablePlatform.ResizePlatform recomputes these from geometry on
         // every resize; keeping the prefab's mass makes long/thin platforms
         // react far too strongly to contacts.
+        // ResizePlatform passes (rHeight, rWidth) into PlatformArea's
+        // (rWidth, rHeight) parameters (ResizablePlatform.cs:53).
         let pd = &data::get().platform;
         let mass = Fix::from_int(10)
-            + pd.spawn_mass_per_area * platform_area(extents.x, extents.y, radius);
+            + pd.spawn_mass_per_area * platform_area(extents.y, extents.x, radius);
         let w = extents.x + radius;
         let h = extents.y + radius;
         let longest = w.max(h);
@@ -3463,8 +3468,13 @@ fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
 /// width/height: 4wr + 4hr + 4wh + pi r^2.
+/// DPhysicsRoundedRect.PlatformArea (DPhysicsRoundedRect.cs:621-627), with
+/// its factor grouping: each product rounds differently from `4 * w * r`.
 fn platform_area(w: Fix, h: Fix, r: Fix) -> Fix {
-    Fix::from_int(4) * w * r + Fix::from_int(4) * h * r + Fix::from_int(4) * w * h + Fix::PI * r * r
+    let two = Fix::from_int(2);
+    let ends = two * h * r;
+    let middle = (two * h + two * r) * two * w;
+    ends * two + middle + Fix::PI * r * r
 }
 
 /// PlatformTransform.GetNewSize: clamp one growing axis to the area cap.
