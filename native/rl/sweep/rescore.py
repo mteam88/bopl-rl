@@ -6,8 +6,8 @@ directory is never touched:
 
     BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/rescore.py \
         --sweep native/artifacts/rl/sweeps/overnight-3 \
-        --pool native/artifacts/rl/sweeps/anchors/overnight-3/pool.json \
-        --out native/artifacts/rl/sweeps/overnight-3-rescore
+        --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
+        --out native/artifacts/rl/sweeps/overnight-3-rescore-v5
 
 Per trial: the old score (the sweep's final observation), the reference
 rating of the final evaluation checkpoint with its bootstrap CI, the IQM over

@@ -28,7 +28,7 @@ poll_seconds = 15
 
 [scoring]
 scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"
 last_k = 3
 games = 480
 first_pass_games = 6

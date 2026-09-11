@@ -149,7 +149,7 @@ trial scores wandered 0.27–0.51 within one run; `random`/`initial` groups were
 were trained on an older sim with an exploitable platform bug and inflated
 new-sim agents; the top-scoring trial (001) fired zero arrows; and re-scoring
 25 finals against pool v3 reordered 24 of 25 ranks
-(`sweeps/overnight-3-rescore-v3/summary.md`). Those sweeps' `results.jsonl`
+(`sweeps/overnight-3-rescore-v5/summary.md`). Those sweeps' `results.jsonl`
 keep their anchors scores. The reference scorer follows the literature
 instead:
 
@@ -171,20 +171,15 @@ instead:
 
 ```sh
 # build: full round robin (both sides, evaluation maps, fixed seeds,
-# 48 games per pair), BT-MLE fit, pool.json with every checkpoint hash
+# 48 games per pair), BT-MLE fit, pool.json with every checkpoint hash.
+# Games involving rollout-search bots (bopl_rl_fork) run in their own, wider
+# thread pool and are timed separately (pool.json `timing`). Pool v5 (the
+# current one; v1-v4 are deleted, their sweeps' rescores redone on v5):
 BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
-  --out native/artifacts/rl/sweeps/anchors/overnight-3/pool.json \
-  --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,archer-medium,pursuer-medium,evasive-medium,mixed-medium \
-  --checkpoint o3-012-final=native/artifacts/rl/sweeps/anchors/overnight-3/o3-012-final.bin ... \
-  --games-per-pair 48 --workers 6
-# pool v2 adds the v2 and search bots; games involving rollout-search bots
-# (bopl_rl_fork, ~4 ms per decision) run in their own, wider thread pool and
-# are timed separately (pool.json `timing`)
-BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
-  --out native/artifacts/rl/sweeps/anchors/overnight-3-v2/pool.json \
+  --out native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
   --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
-  --checkpoint o3-019-final=native/artifacts/rl/sweeps/anchors/overnight-3-v2/o3-019-final.bin ... \
-  --games-per-pair 48 --workers 6 --slow-workers 12
+  --checkpoint o3-019-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/o3-019-final.bin ... \
+  --games-per-pair 48 --workers 10 --slow-workers 12
 # verify: re-hash every checkpoint and the pool itself
 native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py verify .../pool.json
 # rate one checkpoint by hand
@@ -255,8 +250,8 @@ without writing into the sweep's tree:
 BOPL_RL_BACKEND=rust systemd-run --user --scope -p CPUQuota=600% --nice=10 -- \
   native/artifacts/rl/venv/bin/python native/rl/sweep/rescore.py \
   --sweep native/artifacts/rl/sweeps/overnight-3 \
-  --pool native/artifacts/rl/sweeps/anchors/overnight-3/pool.json \
-  --out native/artifacts/rl/sweeps/overnight-3-rescore --workers 6
+  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
+  --out native/artifacts/rl/sweeps/overnight-3-rescore-v5 --workers 6
 ```
 
 Output: `<out>/<trial>/reference/<checkpoint>.json`, `<out>/<trial>/result.json`,
@@ -277,9 +272,9 @@ participant; the dashboard's Ladder view reads it together with a
 
 ```sh
 BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py ladder \
-  --pool native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json \
+  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
   --checkpoint o3-020-final=native/artifacts/rl/sweeps/overnight-3/020/checkpoints/policy-266698752.bin ... \
-  --out native/artifacts/rl/sweeps/overnight-3-ladder/ladder.json --workers 12
+  --out native/artifacts/rl/sweeps/overnight-3-ladder-v5/ladder.json --workers 12
 ```
 
 ## Reading results
