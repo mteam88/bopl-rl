@@ -67,8 +67,8 @@ def write_reports(sweep_dir, spec, state, pufferlib_dir=None):
              f'cost {spec.cost}, downsample {spec.downsample}, '
              f'max_runs {spec.max_runs}. '
              f'Updated {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}.', '',
-             '| trial | status | ' + ' | '.join(columns) + ' | cost | score | early stop | pareto |',
-             '|' + '---|' * (len(columns) + 6)]
+             '| trial | status | ' + ' | '.join(columns) + ' | cost | score | flags | early stop | pareto |',
+             '|' + '---|' * (len(columns) + 7)]
     for trial in trials:
         point = final_point(trial)
         hypers = trial.get('hypers', {})
@@ -76,9 +76,12 @@ def write_reports(sweep_dir, spec, state, pufferlib_dir=None):
         row += [_format(hypers.get(name, '')) for name in columns]
         row += [_format(point['cost']) if point else '-',
                 _format(point['score']) if point else '-',
+                ' '.join(trial.get('flags') or ()),
                 trial.get('early_stop') or '',
                 '*' if trial['id'] in front_ids else '']
         lines.append('| ' + ' | '.join(row) + ' |')
+    lines.append('')
+    lines.append('Flags describe behaviour (scoring.flags thresholds); they never change the score.')
     lines += ['', '## Pareto front (cost vs score, final observations)', '']
     if front:
         for trial in front:

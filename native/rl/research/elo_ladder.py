@@ -16,9 +16,11 @@ from pathlib import Path
 import re
 import time
 import numpy as np
-from environment import Environment,configure
 from evaluation_protocol import map_ids,opponents,scripted_names,scripted_opponent
 import layout
+# environment.py loads the research library on import; it is imported where games
+# are played so the Bradley-Terry fits and participants stay importable without it
+# (sweep/reference_pool.py and its tests).
 
 SCHEMA=1
 HEAD_BOUNDS=[sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS+1)]  # logits row offsets per head
@@ -116,7 +118,92 @@ def bradley_terry(names,records,anchor):
     return {name:ratings[i]*ELO_SCALE for name,i in index.items()}
 
 
+def bradley_terry_fixed(records,ratings,virtual_draw=.5):
+    """MLE Elo of one candidate against opponents whose ratings stay fixed.
+
+    records: {opponent: [wins, losses, draws]} from the candidate's side;
+    ratings: {opponent: Elo}. The reference pool is never re-rated by the
+    candidate's games (OpenAI Five's frozen reference rating); a virtual draw
+    per opponent (virtual_draw wins each way) keeps an undefeated candidate
+    finite. The likelihood is concave in one variable, so Newton converges.
+    """
+    pairs=[(ratings[name]/ELO_SCALE,w+d/2+virtual_draw,w+l+d+2*virtual_draw)
+           for name,(w,l,d) in records.items() if w+l+d>0]
+    if not pairs: return 0.0
+    r=sum(p[0] for p in pairs)/len(pairs)
+    for _ in range(100):
+        gradient=0.0; curvature=0.0
+        for opponent,score,games in pairs:
+            expected=1/(1+math.exp(opponent-r))
+            gradient+=score-games*expected
+            curvature-=games*expected*(1-expected)
+        step=gradient/curvature
+        r-=step
+        if abs(step)<1e-12: break
+    return r*ELO_SCALE
+
+
+def pair_tasks(a,b,maps,games_per_map,seed_base):
+    """Side-swapped fixed-seed games between two participants on each map."""
+    if games_per_map%2 or games_per_map<2: raise ValueError('games per map must be even and positive')
+    tasks=[]
+    for map_id in maps:
+        for pair in range(games_per_map//2):
+            seed=seed_base+pair
+            tasks.append(dict(a=a,b=b,map=map_id,seed=seed,side=0))
+            tasks.append(dict(a=a,b=b,map=map_id,seed=seed,side=1))
+    return tasks
+
+
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
+    """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
+
+    Each participant provides start(task, side, rng) -> act(observation, mask)
+    and, for scripted bots, attach(env, side). Returns each task with its
+    ticks and outcome: 'a', 'b', or 'draw' (a timeout, or neither/both won).
+    Deterministic for a given (a, b, map, seed, side) and participant set.
+    """
+    from environment import Environment
+    def play(bucket):
+        results=[]
+        with Environment(seed=seed_base+len(tasks),limit=limit,delay=delay) as env:
+            for task in bucket:
+                env.reset(task['seed'],task['map'])
+                rng=np.random.default_rng((task['seed'],task['map'],task['side'],
+                                           int(hashlib.sha256((task['a']+task['b']).encode()).hexdigest()[:8],16)))
+                env.bot(0,0); env.bot(1,0)  # detach any bot from the previous task
+                for name,side in ((task['a'],task['side']),(task['b'],1-task['side'])):
+                    attach=getattr(by_name[name],'attach',None)
+                    if attach: attach(env,side)
+                actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
+                        1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
+                while not env.ended:
+                    observation=env.obs.copy(); mask=env.mask.copy()
+                    env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
+                final=env.frame()
+                timeout=bool(final['flags']&2)
+                a_won=bool(final['players'][task['side']]['flags']&2) and not timeout
+                b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
+                results.append(dict(task,ticks=final['t'],
+                                    outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b')))
+        return results
+    if not tasks: return []
+    buckets=[tasks[i::workers] for i in range(min(workers,len(tasks)))]
+    with ThreadPoolExecutor(max_workers=len(buckets)) as pool:
+        return [game for bucket in pool.map(play,buckets) for game in bucket]
+
+
+def tally(games):
+    """{(a, b): [wins_a, wins_b, draws]} from play_games results."""
+    records={}
+    for game in games:
+        row=records.setdefault((game['a'],game['b']),[0,0,0])
+        row[{'a':0,'b':1,'draw':2}[game['outcome']]]+=1
+    return records
+
+
 def main():
+    from environment import configure
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run',type=Path,required=True)
     parser.add_argument('--checkpoints',type=int,default=8,help='Pool size sampled evenly across the run')
@@ -147,46 +234,12 @@ def main():
     names=sorted(by_name)
     for i,a in enumerate(names):
         for b in names[i+1:]:
-            for map_id in maps:
-                for pair in range(args.games_per_pair//2):
-                    seed=args.seed_base+pair
-                    tasks.append(dict(a=a,b=b,map=map_id,seed=seed,side=0))
-                    tasks.append(dict(a=a,b=b,map=map_id,seed=seed,side=1))
+            tasks+=pair_tasks(a,b,maps,args.games_per_pair,args.seed_base)
     out=args.run/'ladder'; out.mkdir(parents=True,exist_ok=True)
     configure(out/'workers')
     started=time.monotonic()
-
-    def play(bucket):
-        results=[]
-        with Environment(seed=args.seed_base+len(tasks),limit=limit) as env:
-            for task in bucket:
-                env.reset(task['seed'],task['map'])
-                rng=np.random.default_rng((task['seed'],task['map'],task['side'],
-                                           int(hashlib.sha256((task['a']+task['b']).encode()).hexdigest()[:8],16)))
-                env.bot(0,0); env.bot(1,0)  # detach any bot from the previous task
-                for name,side in ((task['a'],task['side']),(task['b'],1-task['side'])):
-                    attach=getattr(by_name[name],'attach',None)
-                    if attach: attach(env,side)
-                actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
-                        1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
-                while not env.ended:
-                    observation=env.obs.copy(); mask=env.mask.copy()
-                    env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
-                final=env.frame()
-                timeout=bool(final['flags']&2)
-                a_won=bool(final['players'][task['side']]['flags']&2) and not timeout
-                b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
-                results.append(dict(task,ticks=final['t'],
-                                    outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b')))
-        return results
-
-    buckets=[tasks[i::args.workers] for i in range(min(args.workers,len(tasks)))]
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        games=[game for bucket in pool.map(play,buckets) for game in bucket]
-    records={}
-    for game in games:
-        row=records.setdefault((game['a'],game['b']),[0,0,0])
-        row[{'a':0,'b':1,'draw':2}[game['outcome']]]+=1
+    games=play_games(by_name,tasks,limit,args.workers,args.seed_base)
+    records=tally(games)
     ratings=bradley_terry(names,records,'random')
     counts={name:[0,0,0] for name in names}  # wins, losses, draws
     for (a,b),(wa,wb,d) in records.items():

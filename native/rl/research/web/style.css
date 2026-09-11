@@ -149,6 +149,12 @@ select {
   font-size: 16px;
   margin: 0 12px 0 3px;
 }
+.tag.flags {
+  border-color: #c9a35a;
+  color: #7a5a12;
+  background: #fbf3df;
+  text-transform: uppercase;
+}
 .pill {
   margin-left: auto;
   background: #e4e9d8;

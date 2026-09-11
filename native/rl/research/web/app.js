@@ -179,6 +179,14 @@ function update() {
   $("elapsed").textContent =
     duration(s.elapsed ?? m.elapsed ?? 0) + " elapsed · two players per match";
   $("runState").textContent = s.status || "starting";
+  // Behaviour flags of the latest flagged evaluation (sweep driver, flags.py): labels, not score.
+  const flagged = data.evaluations.filter((e) => e.flags).at(-1);
+  $("flags").hidden = !flagged?.flags?.length;
+  if (flagged?.flags?.length) {
+    $("flags").textContent = "Flags · " + flagged.flags.join(" · ");
+    const m = flagged.flag_metrics || {};
+    $("flags").title = `Evaluation ${short(flagged.step)}: ${m.arrows_per_game?.toFixed(2)} arrows, ${m.platforms_per_game?.toFixed(2)} platforms per game; ${percent(m.timeout_rate ?? 0)} timeouts`;
+  }
   $("notice").textContent =
     data.video?.status === "failed"
       ? "Video capture failed; native and physics replays remain available."

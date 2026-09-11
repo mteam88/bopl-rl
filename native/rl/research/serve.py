@@ -36,7 +36,7 @@ def _compact_report(path,inode,modified,size):
     report=json.loads(path.read_text())
     if not report: return None
     # The full provenance and telemetry remain available in result.json.
-    value={key:report[key] for key in ('schema','step','suite','groups','frozen_opponents') if key in report}
+    value={key:report[key] for key in ('schema','step','suite','groups','frozen_opponents','flags','flag_metrics') if key in report}
     value['games']=[{key:game[key] for key in ('name','opponent','map','seed','side','save','win','loss','timeout','kills','deaths','ticks','replay','visual','mind') if key in game} for game in report.get('games',[])]
     return value
 

@@ -39,6 +39,7 @@ PUFFERLIB_DIR = sorted((ROOT / 'native/artifacts/rl/dependencies').glob('PufferL
 sys.path.insert(0, str(PUFFERLIB_DIR))
 
 import sweep_config as sweep_config_module
+import flags
 import scoring
 import report
 
@@ -246,9 +247,10 @@ class Driver:
         if trial['early_stop'] is None and elapsed > self.spec.max_seconds:
             self.stop_trial(trial, 'wall-cap')
             return False
-        # Protein quantile early stop against the partial score curve.
+        # Protein quantile early stop against the partial score curve. The
+        # match and reference scorers play games; they score once, at the end.
         if (trial['early_stop'] is None and self.spec.early_stop and hasattr(self.sweeper, 'should_stop')
-                and self.spec.scoring['scorer'] != 'match'):
+                and self.spec.scoring['scorer'] not in ('match', 'reference')):
             learner_steps = status.get('learner_steps', 0)
             floor = min(self.spec.min_early_stop_fraction * self.budget(trial),
                         EARLY_STOP_ABSOLUTE_MIN)
@@ -297,6 +299,15 @@ class Driver:
                                       cost=self.cost_of(p), elapsed=p.elapsed)
                                  for p in points]
         trial['is_failure'] = not trial['observations']
+        # Behaviour flags: written into every evaluation report and the run's
+        # result.json, carried in sweep.json; labels only, never the score.
+        try:
+            annotated = flags.annotate_run(run_dir, self.spec.flag_rules, write=not self.dry_run)
+        except Exception as error:
+            log(f"flagging failed for {trial['id']}: {error}")
+            annotated = []
+        trial['flags'] = annotated[-1][1]['flags'] if annotated else []
+        trial['flag_metrics'] = annotated[-1][1]['flag_metrics'] if annotated else {}
         self._observe(trial)
         if trial['is_failure']:
             log(f"trial {trial['id']} produced no score (status {trial['status']}); "
@@ -305,7 +316,8 @@ class Driver:
             final = trial['observations'][-1]
             self.successes += 1
             log(f"trial {trial['id']} {trial['status']}: score {final['score']:.4f} "
-                f"at cost {final['cost']:.4g} ({len(trial['observations'])} observations)")
+                f"at cost {final['cost']:.4g} ({len(trial['observations'])} observations)"
+                + (f"; flags {', '.join(trial['flags'])}" if trial['flags'] else ''))
         self.save()
         if not self.dry_run:
             report.write_reports(self.sweep_dir, self.spec, self.state,

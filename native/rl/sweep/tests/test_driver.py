@@ -113,6 +113,28 @@ class Finalize(unittest.TestCase):
             self.assertTrue((d.sweep_dir / 'results.jsonl').exists())
             self.assertTrue((d.sweep_dir / 'summary.md').exists())
             self.assertTrue((d.sweep_dir / 'launch-best.sh').exists())
+            # Behaviour flags land in the trial record, the evaluation reports
+            # and the run's result.json; the score is unchanged by them.
+            self.assertIn('flags', trial)
+            self.assertEqual(set(trial['flag_metrics']) >= {'arrows_per_game', 'timeout_rate'}, True)
+            stored = json.loads((run_dir / 'evaluations/013336576/result.json').read_text())
+            self.assertEqual(stored['flags'], trial['flags'])
+            self.assertEqual(json.loads((run_dir / 'result.json').read_text())['flags'], trial['flags'])
+            self.assertIn('| flags |', (d.sweep_dir / 'summary.md').read_text())
+
+    def test_flag_rules_from_spec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / 'run'
+            shutil.copytree(FIXTURE, run_dir)
+            d = make_driver(tmp)
+            d.spec.flag_rules = {'played': 'games >= 1'}
+            trial = trial_record(0, status='running', run_dir=str(run_dir), launched_at=0)
+            d.state['trials'].append(trial)
+            d._finalize(trial, None)
+            self.assertEqual(trial['flags'], ['played'])
+            self.assertEqual(trial['observations'][-1]['score'],
+                             d.sweeper.observed[-1][1])  # flags do not touch the score
+            self.assertIn('| played |', (d.sweep_dir / 'summary.md').read_text())
 
     def test_finalize_empty_run_is_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
