@@ -4,12 +4,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import driver as driver_module
 import report
-import sweep_config
+import scoring
 from test_sweep_config import MINIMAL, load_text
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures/run'
@@ -33,8 +34,15 @@ class StubSweeper:
 
 
 class TestDriver(driver_module.Driver):
+    """Stub sweeper; the reference scorer plays games, so scoring.curve is stubbed too."""
+    curve = [scoring.Point(5001216, 300.0, 100.0), scoring.Point(10002432, 320.0, 200.0)]
+
     def _make_sweeper(self):
         return StubSweeper()
+
+    def _finalize(self, trial, process):
+        with unittest.mock.patch.object(scoring, 'curve', lambda run_dir, cfg: self.curve):
+            super()._finalize(trial, process)
 
 
 def make_driver(tmp, state=None):
@@ -104,10 +112,11 @@ class Finalize(unittest.TestCase):
             d._finalize(trial, None)
             self.assertEqual(trial['status'], 'complete')
             self.assertFalse(trial['is_failure'])
-            self.assertEqual(len(trial['observations']), 3)  # behaviour curve downsampled to 3
-            self.assertEqual(trial['observations'][-1]['cost'], trial['observations'][-1]['steps'])  # learner_steps cost
+            self.assertEqual(len(trial['observations']), 2)  # two points < downsample 3
+            self.assertEqual(trial['observations'][0]['steps'], 5001216)
+            self.assertEqual(trial['observations'][0]['cost'], 5001216)  # learner_steps cost
             self.assertEqual(d.successes, 1)
-            self.assertEqual(len(d.sweeper.observed), 3)
+            self.assertEqual(len(d.sweeper.observed), 2)
             # Reports regenerate
             self.assertTrue((d.sweep_dir / 'results.jsonl').exists())
             self.assertTrue((d.sweep_dir / 'summary.md').exists())
@@ -140,6 +149,7 @@ class Finalize(unittest.TestCase):
             run_dir = Path(tmp) / 'empty'
             run_dir.mkdir()
             d = make_driver(tmp)
+            d.curve = []
             trial = trial_record(0, status='running', run_dir=str(run_dir), launched_at=0)
             d.state['trials'].append(trial)
             d._finalize(trial, None)
@@ -192,49 +202,18 @@ class FakeProcess:
         return None
 
 
-class EarlyStop(unittest.TestCase):
-    def _polling_driver(self, tmp, curve_points, should_stop):
-        import scoring
-        d = make_driver(tmp)
-        d.sweeper.should_stop = should_stop
-        d._run_status = lambda trial: dict(pid=1, learner_steps=1_900_000)
-        d.stopped = []
-        d.stop_trial = lambda trial, reason: (d.stopped.append(reason),
-                                              trial.__setitem__('early_stop', reason))
-        self._original_curve = scoring.curve
-        scoring.curve = lambda run_dir, cfg: curve_points
-        self.addCleanup(lambda: setattr(scoring, 'curve', self._original_curve))
-        return d
-
+class WallCap(unittest.TestCase):
     def test_wall_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
-            d = self._polling_driver(tmp, [], lambda s, c: False)
+            d = make_driver(tmp)
+            d._run_status = lambda trial: dict(pid=1, learner_steps=1_900_000)
+            d.stopped = []
+            d.stop_trial = lambda trial, reason: (d.stopped.append(reason),
+                                                  trial.__setitem__('early_stop', reason))
             d.spec.max_seconds = 10
             trial = trial_record(0, status='running', run_dir=tmp, launched_at=0)
             self.assertFalse(d.poll(trial, FakeProcess()))
             self.assertEqual(d.stopped, ['wall-cap'])
-
-    def test_quantile_stop_fires_past_floor(self):
-        import scoring
-        point = scoring.Point(1_900_000, 0.1, 100.0)
-        with tempfile.TemporaryDirectory() as tmp:
-            d = self._polling_driver(tmp, [point], lambda score, cost: score < 0.2)
-            trial = trial_record(0, status='running', run_dir=tmp,
-                                 launched_at=__import__('time').time())
-            self.assertFalse(d.poll(trial, FakeProcess()))
-            self.assertEqual(d.stopped, ['quantile'])
-            self.assertEqual(trial['early_stop'], 'quantile')
-
-    def test_no_stop_below_progress_floor(self):
-        import scoring
-        point = scoring.Point(100_000, 0.0, 10.0)
-        with tempfile.TemporaryDirectory() as tmp:
-            d = self._polling_driver(tmp, [point], lambda score, cost: True)
-            d._run_status = lambda trial: dict(pid=1, learner_steps=100_000)  # < 20% of 2M
-            trial = trial_record(0, status='running', run_dir=tmp,
-                                 launched_at=__import__('time').time())
-            self.assertFalse(d.poll(trial, FakeProcess()))
-            self.assertEqual(d.stopped, [])
 
 
 class Lock(unittest.TestCase):

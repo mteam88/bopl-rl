@@ -13,7 +13,6 @@ goal = "maximize"
 metric_distribution = "linear"
 downsample = 3
 fixed_cost = true
-early_stop = false
 max_suggestion_cost = 7e6
 max_runs = 1
 use_gpu = false

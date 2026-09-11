@@ -46,7 +46,6 @@ goal = "maximize"
 metric_distribution = "linear"     # Elo, not a rate
 downsample = 3                     # = [scoring].last_k points per trial
 fixed_cost = true
-early_stop = false
 max_suggestion_cost = 4.1e8
 max_runs = 15
 num_random_samples = 6

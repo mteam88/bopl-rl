@@ -5,7 +5,7 @@ One TOML file declares one sweep (see configs/). Sections:
   [sweep]    method/goal/downsample/early_stop_quantile/max_suggestion_cost/
              max_runs/num_random_samples/use_gpu/cost/seeds/concurrency
   [trial]    per-trial resource limits (MemoryMax, wall cap, poll cadence)
-  [scoring]  which scorer reads a trial's run directory (see scoring.py);
+  [scoring]  the reference-pool scorer's settings (see scoring.py);
              [scoring.flags] behaviour flag rules (flags.py), labels only
   [fixed]    every fixed train.py argument, snake_case (steps is the budget)
   [params.<name>]  swept parameters as PufferLib spaces:
@@ -102,7 +102,6 @@ class SweepSpec:
         # fixed_cost: every trial runs exactly [fixed].steps; Protein still gets
         # a cost axis (the partial curve points) but suggests at the fixed budget.
         self.fixed_cost = bool(sweep.get('fixed_cost', False))
-        self.early_stop = bool(sweep.get('early_stop', True))
         # The training GPU is shared with real runs; the GP is tiny, keep it on CPU.
         self.use_gpu = bool(sweep.get('use_gpu', False))
         self.cost = sweep.get('cost', 'learner_steps')
@@ -118,19 +117,17 @@ class SweepSpec:
         self.nice = int(trial.get('nice', 10))
         self.max_seconds = float(trial.get('max_seconds', 3600))
         self.poll_seconds = float(trial.get('poll_seconds', 30))
-        self.min_early_stop_fraction = float(trial.get('min_early_stop_fraction', 0.2))
         self.unit_prefix = str(trial.get('unit_prefix', 'bopl-sweep'))
 
         self.scoring = dict(raw.get('scoring', {}))
-        _require(self.scoring.get('scorer') in ('behaviour', 'match', 'reference'),
-                 f"[scoring].scorer must be behaviour, match or reference, not {self.scoring.get('scorer')!r}")
-        if self.scoring['scorer'] == 'reference':
-            _require(isinstance(self.scoring.get('pool'), str), '[scoring].pool (a pool.json path) is required')
-            _require(int(self.scoring.get('last_k', 3)) >= 1, '[scoring].last_k must be positive')
-            band = self.scoring.get('band', (.15, .85))
-            _require(len(band) == 2 and 0 < band[0] < band[1] < 1, '[scoring].band must be [low, high] in (0, 1)')
-            _require(self.metric_distribution == 'linear',
-                     'scorer = "reference" yields Elo, not a rate: set metric_distribution = "linear"')
+        _require(self.scoring.get('scorer') == 'reference',
+                 f"[scoring].scorer must be \"reference\", not {self.scoring.get('scorer')!r}")
+        _require(isinstance(self.scoring.get('pool'), str), '[scoring].pool (a pool.json path) is required')
+        _require(int(self.scoring.get('last_k', 3)) >= 1, '[scoring].last_k must be positive')
+        band = self.scoring.get('band', (.15, .85))
+        _require(len(band) == 2 and 0 < band[0] < band[1] < 1, '[scoring].band must be [low, high] in (0, 1)')
+        _require(self.metric_distribution == 'linear',
+                 'scorer = "reference" yields Elo, not a rate: set metric_distribution = "linear"')
         # Behaviour flags (flags.py): labels only, never part of the score.
         self.flag_rules = dict(self.scoring.get('flags', flags.DEFAULT_RULES))
         for name, rule in self.flag_rules.items():

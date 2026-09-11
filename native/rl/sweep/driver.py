@@ -15,9 +15,9 @@ restarted: on start it re-observes the whole history before suggesting again.
 --dry-run prints the trial commands without launching or persisting anything.
 
 The first trial always runs the config defaults (PufferLib's "first experiment
-uses defaults" rule); Protein's early-stop quantile rule SIGTERMs a running
-trial once it falls below the fitted score-at-cost threshold (train.py saves a
-checkpoint and exits cleanly on SIGTERM).
+uses defaults" rule). The reference scorer plays games once a trial has
+finished, so trials are never early-stopped on score; only the wall cap
+SIGTERMs them (train.py saves a checkpoint and exits cleanly on SIGTERM).
 """
 import argparse
 import json
@@ -48,9 +48,6 @@ TRAIN = ROOT / 'native/rl/puffer/train.py'
 # Sweeps run on the Rust sim (native/target/release/libbopl_sim.so): trials
 # through train.py, the reference scorer's games through reference_pool.py.
 os.environ.setdefault('BOPL_RL_BACKEND', 'rust')
-# pufferl.py only early-stops past min(20% of budget, 100M steps); mirror the
-# absolute bound, the fraction comes from [trial].min_early_stop_fraction.
-EARLY_STOP_ABSOLUTE_MIN = 100_000_000
 
 
 def atomic_json(path, payload):
@@ -226,9 +223,6 @@ class Driver:
             except OSError:
                 pass
 
-    def budget(self, trial):
-        return int(trial['hypers'].get('steps', self.spec.fixed['steps']))
-
     def cost_of(self, point):
         return point.learner_steps if self.spec.cost == 'learner_steps' else point.elapsed
 
@@ -242,24 +236,6 @@ class Driver:
         elapsed = time.time() - trial.get('launched_at', time.time())
         if trial['early_stop'] is None and elapsed > self.spec.max_seconds:
             self.stop_trial(trial, 'wall-cap')
-            return False
-        # Protein quantile early stop against the partial score curve. The
-        # match and reference scorers play games; they score once, at the end.
-        if (trial['early_stop'] is None and self.spec.early_stop and hasattr(self.sweeper, 'should_stop')
-                and self.spec.scoring['scorer'] not in ('match', 'reference')):
-            learner_steps = status.get('learner_steps', 0)
-            floor = min(self.spec.min_early_stop_fraction * self.budget(trial),
-                        EARLY_STOP_ABSOLUTE_MIN)
-            if learner_steps > floor:
-                try:
-                    curve = scoring.curve(trial['run_dir'], self.spec.scoring)
-                except Exception as error:
-                    log(f"scoring poll failed for {trial['id']}: {error}")
-                    curve = []
-                if curve:
-                    point = curve[-1]
-                    if self.sweeper.should_stop(point.score, self.cost_of(point)):
-                        self.stop_trial(trial, 'quantile')
         return False
 
     # ---- observation ---------------------------------------------------------

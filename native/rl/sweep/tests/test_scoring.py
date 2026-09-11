@@ -1,4 +1,4 @@
-"""Scorers against the fixture run directory (copied from run 007)."""
+"""Curve helpers against the fixture run directory (copied from run 007)."""
 import sys
 import unittest
 from pathlib import Path
@@ -7,24 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import scoring
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures/run'
-
-
-class BehaviourCurve(unittest.TestCase):
-    def test_kills_per_episode(self):
-        curve = scoring.behaviour_curve(FIXTURE, 'kills_per_episode')
-        self.assertGreater(len(curve), 4)
-        steps = [p.learner_steps for p in curve]
-        self.assertEqual(steps, sorted(steps))
-        for point in curve:
-            self.assertGreaterEqual(point.score, 0)
-
-    def test_arrow_hit_rate_bounded(self):
-        for point in scoring.behaviour_curve(FIXTURE, 'arrow_hit_rate'):
-            self.assertTrue(0 <= point.score <= 1)
-
-    def test_unknown_metric(self):
-        with self.assertRaises(ValueError):
-            scoring.behaviour_curve(FIXTURE, 'nonsense')
 
 
 class Downsample(unittest.TestCase):
@@ -41,9 +23,7 @@ class Downsample(unittest.TestCase):
         steps = [p.learner_steps for p in sampled]
         self.assertEqual(steps, sorted(steps))
 
-    def test_dispatch(self):
-        by_config = scoring.curve(FIXTURE, dict(scorer='behaviour', metric='arrow_hit_rate'))
-        self.assertEqual([p.score for p in by_config], [p.score for p in scoring.behaviour_curve(FIXTURE, 'arrow_hit_rate')])
+    def test_dispatch_rejects_unknown_scorer(self):
         with self.assertRaises(ValueError):
             scoring.curve(FIXTURE, dict(scorer='anchors'))
 

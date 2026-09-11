@@ -13,10 +13,11 @@ name = "unit"
 method = "Random"
 downsample = 3
 max_runs = 5
+metric_distribution = "linear"
 
 [scoring]
-scorer = "behaviour"
-metric = "kills_per_episode"
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
 
 [fixed]
 steps = 3000000
@@ -179,7 +180,8 @@ entropy_floor = 0.004
 no_eval = true
 
 [scoring]
-scorer = "behaviour"
+scorer = "reference"
+pool = "pool.json"
 
 [params.scripted_banks]
 distribution = "int_uniform"
@@ -208,7 +210,6 @@ class ScriptedCurriculum(unittest.TestCase):
         self.assertEqual(spec.defaults(), {'scripted_banks': 2, 'scripted_level_index': 2,
                                            'learning_rate': 3e-4})
         self.assertTrue(spec.fixed_cost)
-        self.assertFalse(spec.early_stop)
 
     def test_fixed_cost_adds_a_steps_space(self):
         config = load_text(CURRICULUM).sweep_config()
@@ -238,9 +239,7 @@ class ScriptedCurriculum(unittest.TestCase):
         self.assertNotIn('--scripted-decay', argv)
 
 
-REFERENCE = MINIMAL.replace('[scoring]\nscorer = "behaviour"\nmetric = "kills_per_episode"\n', '') + '''
-[scoring]
-scorer = "reference"
+REFERENCE = MINIMAL.replace('pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"\n', '''\
 pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
 last_k = 3
 games = 240
@@ -249,7 +248,7 @@ band = [0.15, 0.85]
 [scoring.flags]
 no-offense = "arrows_per_game < 0.05"
 stalemate = "timeout_rate > 0.5"
-'''
+''')
 
 
 class ReferenceScoring(unittest.TestCase):
@@ -264,7 +263,7 @@ class ReferenceScoring(unittest.TestCase):
         with self.assertRaises(sweep_config.ConfigError):
             load_text(REFERENCE.replace('pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"\n', ''))
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(REFERENCE.replace('[sweep]\n', '[sweep]\nmetric_distribution = "percentile"\n'))
+            load_text(REFERENCE.replace('metric_distribution = "linear"', 'metric_distribution = "percentile"'))
         with self.assertRaises(sweep_config.ConfigError):
             load_text(REFERENCE.replace('band = [0.15, 0.85]', 'band = [0.9, 0.1]'))
 
@@ -274,9 +273,9 @@ class ReferenceScoring(unittest.TestCase):
 
     def test_scorer_required(self):
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(MINIMAL.replace('scorer = "behaviour"', 'scorer = "anchors"'))
+            load_text(MINIMAL.replace('scorer = "reference"', 'scorer = "anchors"'))
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(MINIMAL.replace('scorer = "behaviour"\n', ''))
+            load_text(MINIMAL.replace('scorer = "reference"\n', ''))
 
     def test_bad_flag_rule_rejected(self):
         with self.assertRaises(sweep_config.ConfigError):

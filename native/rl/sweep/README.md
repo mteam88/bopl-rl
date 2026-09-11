@@ -22,13 +22,12 @@ scrambled Sobol sequence, then the GP takes over. Because whole curves are
 observed, one lucky seed at a huge budget cannot dominate: the front must be
 consistent across costs.
 
-Trials that lag are killed early: Protein fits a robust quantile regression of
-score against log cost over everything seen so far (`early_stop_quantile`, 0.3
-= the 30th percentile line) and once a running trial is past 20% of its budget
-(and the model has ≥30 observations), a score below that line at the matching
-cost gets a SIGTERM — `train.py` saves a checkpoint and exits cleanly, and the
-partial curve is still observed. `Random` and `ParetoGenetic` are drop-in
-alternative methods (same config) for baselines and pure Pareto expansion.
+Protein can also early-stop lagging trials against a quantile regression of
+score vs log cost (`early_stop_quantile`); the driver does not use it, because
+the reference scorer plays its games after a trial ends, so only the wall cap
+(`[trial].max_seconds`) SIGTERMs a trial — `train.py` saves a checkpoint and
+exits cleanly. `Random` and `ParetoGenetic` are drop-in alternative methods
+(same config) for baselines and pure Pareto expansion.
 
 ## Layout
 
@@ -36,7 +35,7 @@ alternative methods (same config) for baselines and pure Pareto expansion.
 native/rl/sweep/
   driver.py        the sweep loop (this is what you run)
   sweep_config.py  TOML -> PufferLib sweep_config + train.py flag rendering
-  scoring.py       scorers: run directory -> (learner_steps, score) curve
+  scoring.py       run directory -> (learner_steps, score) curve via the reference pool
   reference_pool.py  frozen reference pool: build / verify / rate a checkpoint
   flags.py         behaviour flags from evaluation behaviour totals (labels only)
   rescore.py       re-score an existing sweep with the reference scorer, read-only
@@ -61,17 +60,16 @@ math in the header).
 
 - `[sweep]` — `method` (Protein | Random | ParetoGenetic), `goal`,
   `metric_distribution` (`percentile` logit-transforms win-rate-like scores),
-  `downsample` (points observed per trial curve), `early_stop_quantile`,
-  `max_suggestion_cost` (in cost units), `max_runs` (successful trials),
+  `downsample` (points observed per trial curve), `early_stop_quantile`
+  (passed to Protein, unused by the driver), `max_suggestion_cost` (in cost units), `max_runs` (successful trials),
   `num_random_samples` (Protein: Sobol trials after the defaults trial before
   the GP suggests; PufferLib's default 10 is half of a 16-trial overnight),
   `use_gpu` (Protein's GP; default false), `cost` (`learner_steps` default,
   or `wall_clock` — learner steps are robust to box load), `seeds`
   (`fixed` | `increment`), `concurrency` (default 1; the box is shared).
 - `[trial]` — `memory_max` (systemd MemoryMax per trial), `nice`,
-  `max_seconds` (wall cap, driver SIGTERMs past it), `poll_seconds`,
-  `min_early_stop_fraction`.
-- `[scoring]` — `scorer` (required: `reference` | `behaviour` | `match`), see below.
+  `max_seconds` (wall cap, driver SIGTERMs past it), `poll_seconds`.
+- `[scoring]` — `scorer = "reference"` and its settings, see below.
 - `[fixed]` — every fixed `train.py` argument, snake_case
   (`learning_rate = 3e-4` renders as `--learning-rate 0.0003`). `steps` is
   required: it is the default budget and the seed trial's cost.
@@ -126,31 +124,20 @@ editable install may point at another checkout).
 ## Scoring
 
 The score is an external yardstick, never the training-time self-play win
-rate (self-play sits at ~0.5 by construction). Scorers read the trial's run
-directory; the curve is downsampled to `downsample` points along learner
-steps (bin means, exact final point) and each point is fed to
-`Protein.observe` with the cost at that point — exactly PufferLib's loop.
+rate (self-play sits at ~0.5 by construction). The scorer reads the trial's
+run directory once the trial has finished; the curve is downsampled to
+`downsample` points along learner steps (bin means, exact final point) and
+each point is fed to `Protein.observe` with the cost at that point — exactly
+PufferLib's loop.
 
-- `scorer = "behaviour"`: a rate from `metrics.jsonl` per-update behaviour
-  totals — `metric = "kills_per_episode" | "arrow_hit_rate" |
-  "arrows_per_episode" | "wins_per_episode"`. Note the totals in
-  `metrics.jsonl` are per-update windows (not cumulative); curve points sum
-  windows.
-- `scorer = "match"`: head-to-head of the trial's final checkpoint against a
-  fixed `enemy` checkpoint (`games`, `maps`, `workers`), played with the
-  native CPU eval library (`research/native_policy.py` + `environment.py`,
-  as `elo_ladder.py` does). One observation at final cost; draws/timeouts
-  score 0.5. Match results land in `<trial>/match/result.json`.
-- `scorer = "reference"`: Bradley–Terry Elo against a frozen reference pool
-  (next section). `pool = "<path>/pool.json"` (relative to the checkout),
-  `last_k = 3` evaluations aggregated by IQM, `games = 240` per checkpoint,
-  `first_pass_games = 6` per member, `band = [0.15, 0.85]`,
-  `round_games = 48`, `workers = 4`, `seed_base = 70001`. Elo is unbounded,
-  so `metric_distribution = "linear"` is required (`percentile` logit-
-  transforms a 0..1 rate). Ratings are cached in
-  `<trial>/reference/<checkpoint>.json` (rating, 95% CI, per-member
-  records, allocation rounds); scoring plays games, so the driver does not
-  poll it for early stopping (same as `match`).
+`scorer = "reference"`: Bradley–Terry Elo against a frozen reference pool
+(next section). `pool = "<path>/pool.json"` (relative to the checkout),
+`last_k = 3` evaluations aggregated by IQM, `games = 240` per checkpoint,
+`first_pass_games = 6` per member, `band = [0.15, 0.85]`, `round_games = 48`,
+`workers = 4`, `seed_base = 70001`. Elo is unbounded, so
+`metric_distribution = "linear"` is required (`percentile` logit-transforms a
+0..1 rate). Ratings are cached in `<trial>/reference/<checkpoint>.json`
+(rating, 95% CI, per-member records, allocation rounds).
 
 ### Why a reference pool, and why it is frozen
 
