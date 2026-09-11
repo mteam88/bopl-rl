@@ -60,7 +60,7 @@
 #define BOT2_PLAT_R 3.0
 #define BOT2_PLAT_R_PEAK 3.27
 #define BOT2_PLAT_DISC 4.62            /* farthest point of the spinning fresh platform from its plant point */
-#define BOT2_PLAT_EJECT 3.78           /* ejection height above the plant point (radius + y extent) */
+#define BOT2_PLAT_EJECT 5.78           /* ejection along the platform up: radius + half height + EjectionOffset = 3+0.78+2 (PlatformTransform.cs:418-428, :95) */
 #define BOT2_PLAT_ANTICIPATION 24
 #define BOT2_PLAT_ENTER 28
 #define BOT2_PLAT_EDGE_SPEED 30.0      /* far-edge advance while sizing, u/s */
@@ -160,7 +160,7 @@ static void bot2_view(BotView2 *v, const BotView *view, BoplBot *bot) {
             const BotWall *w=&view->walls[i];
             double px=view->fx-w->cx, py=view->fy-w->cy;
             double along=px*w->ux+py*w->uy, across=px*w->rx+py*w->ry;
-            if (fabs(across)>0.6 || along<-0.6 || along>BOT2_PLAT_EJECT+1.0) continue;
+            if (fabs(across)>0.6 || along<-0.6 || along>BOT2_PLAT_EJECT+1.5) continue;
             if (v->wall_id[i]==bot->v2.my_plat_id) continue;
             double d=fabs(across)+fabs(along);
             if (d<best_d) { best_d=d; best=i; }
@@ -259,10 +259,17 @@ static double bot2_arrow_eta(const BotView *view, double mvx, int horizon, doubl
  * one (both rectangles are walls to the other's rider). */
 static int bot2_platform_press_safe(const BotView *view, const BotView2 *v) {
     double px=view->x+(view->grounded?0:view->vx*BOT_TICK), py=view->y+(view->grounded?0:view->vy*BOT_TICK);
-    double ex=px, ey=py+BOT2_PLAT_EJECT;
+    double ey=py+BOT2_PLAT_EJECT;
     if (v->haz_active && bot_len(px-v->haz_x, py-v->haz_y)<BOT2_PLAT_DISC*2+2.0) return 0;
-    if (bot_sdf(view, ex, ey)<BOT_SLIME_RADIUS+0.8) return 0;
-    if (bot_raycast(view, px, py, 0, 1, 6.0)<6.0) return 0;
+    /* The slime rides the up axis to +5.78 u (flat platform: straight up),
+     * then drops onto its platform's top at +3.78+0.76. Every point on that
+     * path must be clear of any other rect by a slime radius plus margin, and
+     * nothing may hang over the plant point within reach. */
+    for (double k=2.0; k<=BOT2_PLAT_EJECT+0.01; k+=0.9)
+        if (bot_sdf(view, px, ey-BOT2_PLAT_EJECT+k)<BOT_SLIME_RADIUS+0.7) return 0;
+    if (bot_raycast(view, px, py, 0, 1, BOT2_PLAT_EJECT+1.8)<BOT2_PLAT_EJECT+1.8) return 0;
+    if (bot_raycast(view, px-1.2, py, 0, 1, BOT2_PLAT_EJECT+1.0)<BOT2_PLAT_EJECT+1.0) return 0;
+    if (bot_raycast(view, px+1.2, py, 0, 1, BOT2_PLAT_EJECT+1.0)<BOT2_PLAT_EJECT+1.0) return 0;
     if (ey>BOT_BLAST_Y-4) return 0;
     return 1;
 }
@@ -716,6 +723,19 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     double dbg_eta=1e9; int dbg_dodge=0, dbg_veto=0;
     if (view.morphing) {
         if (view.charging) bot_act(&act, bot_charge_aim(&view, bot, 0, hold_run), 0, 0);
+        else if (view.my_slime->ability_flags[BOT_SLOT_PLATFORM]&8) {
+            /* Own platform morph. The aim is the platform's controls: during
+             * Rotation the platform's up slerps toward the aim vector
+             * (PlatformTransform.cs:276-289) and the Exit ejects the slime
+             * along that up by radius+halfHeight+EjectionOffset = 3+0.78+2 u
+             * (:418-428, EjectionOffset :95). v1 aims at the foe here, so its
+             * platform stands on end and throws the slime sideways into the
+             * nearest wall: that is the "own ejection" squish family. A zero
+             * aim vector (byte 0, world.rs:89) is below DEADZONE and leaves
+             * the platform flat: the slime pops straight up onto its own
+             * platform, which cannot squish its rider. */
+            bot_act(&act, 0, 0, 0);
+        }
         else bot_act(&act, bot_aim_byte(view.fx-view.x>=0?1:-1, 0), 0, 0);
     }
     /* Threat layers: the foe's platform first (its window is seconds and the
