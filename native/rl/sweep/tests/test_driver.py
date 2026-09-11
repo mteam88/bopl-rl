@@ -104,11 +104,10 @@ class Finalize(unittest.TestCase):
             d._finalize(trial, None)
             self.assertEqual(trial['status'], 'complete')
             self.assertFalse(trial['is_failure'])
-            self.assertEqual(len(trial['observations']), 2)  # two evals < downsample 3
-            self.assertEqual(trial['observations'][0]['steps'], 5001216)
-            self.assertEqual(trial['observations'][0]['cost'], 5001216)  # learner_steps cost
+            self.assertEqual(len(trial['observations']), 3)  # behaviour curve downsampled to 3
+            self.assertEqual(trial['observations'][-1]['cost'], trial['observations'][-1]['steps'])  # learner_steps cost
             self.assertEqual(d.successes, 1)
-            self.assertEqual(len(d.sweeper.observed), 2)
+            self.assertEqual(len(d.sweeper.observed), 3)
             # Reports regenerate
             self.assertTrue((d.sweep_dir / 'results.jsonl').exists())
             self.assertTrue((d.sweep_dir / 'summary.md').exists())

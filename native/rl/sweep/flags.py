@@ -46,10 +46,10 @@ def _ratio(numerator, denominator):
     return numerator / denominator if denominator else 0.0
 
 
-def evaluation_metrics(report, include_heldout=False):
-    """Behaviour rates pooled over the report's anchor groups (not selfplay)."""
+def evaluation_metrics(report):
+    """Behaviour rates pooled over the report's evaluation-map groups (not selfplay, not held-out maps)."""
     groups = [g for g in report.get('groups', ())
-              if g['opponent'] != 'selfplay' and (include_heldout or g.get('map_role') != 'untrained')]
+              if g['opponent'] != 'selfplay' and g.get('map_role') != 'untrained']
     totals = {}
     for group in groups:
         for key, value in group.get('behavior_totals', {}).items():
@@ -84,14 +84,14 @@ def raised(metrics, rules):
             if compare[op](metrics[metric], value)]
 
 
-def annotate(report, rules=None, include_heldout=False):
+def annotate(report, rules=None):
     """flags/flag_metrics/flag_rules for one evaluation report (not written)."""
-    metrics = evaluation_metrics(report, include_heldout)
+    metrics = evaluation_metrics(report)
     return dict(flags=raised(metrics, rules), flag_metrics=metrics,
                 flag_rules=dict(rules or DEFAULT_RULES))
 
 
-def annotate_run(run_dir, rules=None, include_heldout=False, write=True):
+def annotate_run(run_dir, rules=None, write=True):
     """Flag every evaluations/*/result.json of a run; with write, store the
     flags in each report and in the run's result.json. Returns
     [(evaluation directory name, annotation)] in step order."""
@@ -103,7 +103,7 @@ def annotate_run(run_dir, rules=None, include_heldout=False, write=True):
             report = json.loads(result_file.read_text())
         except ValueError:
             continue
-        annotation = annotate(report, rules, include_heldout)
+        annotation = annotate(report, rules)
         rows.append((result_file.parent.name, annotation))
         if write and any(report.get(key) != value for key, value in annotation.items()):
             report.update(annotation)

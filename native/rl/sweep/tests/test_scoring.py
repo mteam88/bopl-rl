@@ -1,5 +1,4 @@
 """Scorers against the fixture run directory (copied from run 007)."""
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -8,43 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import scoring
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures/run'
-
-
-def expected_anchor_score(result_file, include_heldout=False):
-    report = json.loads(result_file.read_text())
-    groups = [g for g in report['groups'] if g['opponent'] != 'selfplay'
-              and (include_heldout or g.get('map_role') != 'untrained')]
-    return sum(g['win_rate'] for g in groups) / len(groups)
-
-
-class AnchorCurve(unittest.TestCase):
-    def test_curve_matches_fixture(self):
-        curve = scoring.anchor_curve(FIXTURE)
-        self.assertEqual([p.learner_steps for p in curve], [5001216, 10002432])
-        for point, directory in zip(curve, ('006668288', '013336576')):
-            expected = expected_anchor_score(FIXTURE / 'evaluations' / directory / 'result.json')
-            self.assertAlmostEqual(point.score, expected, places=9)
-        self.assertGreater(curve[0].elapsed, 0)
-        self.assertGreater(curve[1].elapsed, curve[0].elapsed)
-
-    def test_heldout_toggle_changes_group_set(self):
-        trained = scoring.anchor_curve(FIXTURE)[0].score
-        with_heldout = scoring.anchor_curve(FIXTURE, include_heldout=True)[0].score
-        expected = expected_anchor_score(
-            FIXTURE / 'evaluations/006668288/result.json', include_heldout=True)
-        self.assertAlmostEqual(with_heldout, expected, places=9)
-        self.assertNotAlmostEqual(trained, with_heldout, places=9)
-
-    def test_opponent_filter(self):
-        only_random = scoring.anchor_curve(FIXTURE, opponents=('random',))
-        report = json.loads((FIXTURE / 'evaluations/006668288/result.json').read_text())
-        groups = [g for g in report['groups']
-                  if g['opponent'] == 'random' and g['map_role'] == 'trained']
-        self.assertAlmostEqual(only_random[0].score,
-                               sum(g['win_rate'] for g in groups) / len(groups), places=9)
-
-    def test_missing_run_is_empty(self):
-        self.assertEqual(scoring.anchor_curve(FIXTURE / 'does-not-exist'), [])
 
 
 class BehaviourCurve(unittest.TestCase):
@@ -80,8 +42,10 @@ class Downsample(unittest.TestCase):
         self.assertEqual(steps, sorted(steps))
 
     def test_dispatch(self):
-        by_config = scoring.curve(FIXTURE, dict(scorer='anchors', opponents=[], include_heldout=False))
-        self.assertEqual(len(by_config), 2)
+        by_config = scoring.curve(FIXTURE, dict(scorer='behaviour', metric='arrow_hit_rate'))
+        self.assertEqual([p.score for p in by_config], [p.score for p in scoring.behaviour_curve(FIXTURE, 'arrow_hit_rate')])
+        with self.assertRaises(ValueError):
+            scoring.curve(FIXTURE, dict(scorer='anchors'))
 
 
 class FinalCheckpoint(unittest.TestCase):

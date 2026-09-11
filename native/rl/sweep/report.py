@@ -39,11 +39,6 @@ def best_trial(trials):
     return max(candidates, key=lambda item: (item[1]['score'], -item[1]['cost']))[0]
 
 
-def _swept_columns(spec, trials):
-    names = list(spec.params)
-    return names
-
-
 def _format(value):
     if isinstance(value, float):
         return f'{value:.4g}'
@@ -61,7 +56,7 @@ def write_reports(sweep_dir, spec, state, pufferlib_dir=None):
     front = pareto_front(trials)
     front_ids = {t['id'] for t in front}
     best = best_trial(trials)
-    columns = _swept_columns(spec, trials)
+    columns = list(spec.params)
     lines = [f'# Sweep {spec.name}', '',
              f"method {spec.method}, scorer {spec.scoring['scorer']}, "
              f'cost {spec.cost}, downsample {spec.downsample}, '

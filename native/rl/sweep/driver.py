@@ -45,7 +45,9 @@ import report
 
 VENV_PYTHON = ROOT / 'native/artifacts/rl/venv/bin/python'
 TRAIN = ROOT / 'native/rl/puffer/train.py'
-DEFAULT_GAME = ROOT / 'sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so'
+# Sweeps run on the Rust sim (native/target/release/libbopl_sim.so): trials
+# through train.py, the reference scorer's games through reference_pool.py.
+os.environ.setdefault('BOPL_RL_BACKEND', 'rust')
 # pufferl.py only early-stops past min(20% of budget, 100M steps); mirror the
 # absolute bound, the fraction comes from [trial].min_early_stop_fraction.
 EARLY_STOP_ABSOLUTE_MIN = 100_000_000
@@ -106,7 +108,7 @@ class Driver:
         method = config.pop('method')
         cls = getattr(pufferlib.sweep, method)
         if method == 'Protein':
-            sweeper = cls(config, cost_param='steps')
+            sweeper = cls(config, cost_param='steps', num_random_samples=self.spec.num_random_samples)
         else:
             sweeper = cls(config)
         return sweeper
@@ -182,12 +184,6 @@ class Driver:
     def environment(self):
         env = dict(os.environ)
         env['PYTHONPATH'] = str(PUFFERLIB_DIR)
-        # Rust picks its own game path and hosts every world in one runtime
-        # (train.py); the .NET defaults below would otherwise leak through
-        # train.py's setdefault and load one library copy per 4 worlds.
-        if env.get('BOPL_RL_BACKEND', '').lower() != 'rust':
-            env.setdefault('BOPL_RL_GAME', str(self.spec.fixed.get('game', DEFAULT_GAME)))
-            env.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
         # train.py defaults OMP_NUM_THREADS to --workers (128 spinning threads
         # on 12 CPUs). Measured 2026-09-10 at 128 workers on the f64 sim, quiet
         # box, two adjacent pairs: 12 passive threads 201-206k learner/s vs

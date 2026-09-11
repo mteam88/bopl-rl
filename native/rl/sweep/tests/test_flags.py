@@ -40,8 +40,6 @@ class Metrics(unittest.TestCase):
         self.assertAlmostEqual(metrics['arrows_per_game'], arrows / games)
         self.assertAlmostEqual(metrics['timeout_rate'], sum(g['timeouts'] for g in groups) / games)
         self.assertTrue(0 <= metrics['win_rate'] <= 1)
-        with_heldout = flags.evaluation_metrics(data, include_heldout=True)
-        self.assertGreater(with_heldout['games'], metrics['games'])
 
     def test_raised_by_threshold(self):
         metrics = flags.evaluation_metrics(report())

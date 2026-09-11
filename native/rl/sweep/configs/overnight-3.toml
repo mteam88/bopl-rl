@@ -1,5 +1,11 @@
 # Overnight sweep 3 (2026-09-10): overnight-1 re-run on the fixed sim.
 #
+# HISTORICAL RECORD. Stopped 2026-09-11 12:49 after 47 complete trials
+# (results.jsonl / sweep.json in the sweep directory stay readable). Its
+# `scorer = "anchors"` was removed from the driver on 2026-09-11 (README "Why
+# a reference pool"), so this file no longer loads; overnight-4.toml is the
+# live successor.
+#
 # Identical to overnight-2.toml. overnight-2 was stopped after trial 000
 # (~133M steps, 5 evals) when placed platforms were seen slowly rotating:
 # the spawned-platform rotation spring (prefab rotationSpeed 40, rotationMu

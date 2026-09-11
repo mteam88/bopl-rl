@@ -169,9 +169,9 @@ success. Qualification and long-run results belong in the experiment evidence.
 `sweep/driver.py` runs many short `train.py` trials under PufferLib's Protein
 (cost-aware Bayesian search over a Pareto front of cost vs score) instead of
 one long run at a time. One TOML per sweep declares fixed flags, swept
-parameters as PufferLib spaces, and a scorer — an external yardstick (anchor
-win rates from the run's own evaluations, a behaviour rate, or a head-to-head
-match), never the self-play win rate. Trials are ordinary run directories
+parameters as PufferLib spaces, and a scorer — an external yardstick (Elo
+against a frozen reference pool, a behaviour rate, or a head-to-head match),
+never the self-play win rate. Trials are ordinary run directories
 under `native/artifacts/rl/sweeps/<name>/`, launched in their own systemd
 scopes with a memory cap and a wall cap; the driver's `sweep.json` makes the
 whole sweep kill-and-resume safe, and `summary.md`/`launch-best.sh` are

@@ -14,6 +14,10 @@ method = "Random"
 downsample = 3
 max_runs = 5
 
+[scoring]
+scorer = "behaviour"
+metric = "kills_per_episode"
+
 [fixed]
 steps = 3000000
 workers = 4
@@ -174,6 +178,9 @@ entropy = 0.01
 entropy_floor = 0.004
 no_eval = true
 
+[scoring]
+scorer = "behaviour"
+
 [params.scripted_banks]
 distribution = "int_uniform"
 min = 0
@@ -231,7 +238,7 @@ class ScriptedCurriculum(unittest.TestCase):
         self.assertNotIn('--scripted-decay', argv)
 
 
-REFERENCE = MINIMAL + '''
+REFERENCE = MINIMAL.replace('[scoring]\nscorer = "behaviour"\nmetric = "kills_per_episode"\n', '') + '''
 [scoring]
 scorer = "reference"
 pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
@@ -263,8 +270,13 @@ class ReferenceScoring(unittest.TestCase):
 
     def test_default_flags_when_absent(self):
         spec = load_text(MINIMAL)
-        self.assertEqual(spec.scoring['scorer'], 'anchors')
         self.assertIn('no-offense', spec.flag_rules)
+
+    def test_scorer_required(self):
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(MINIMAL.replace('scorer = "behaviour"', 'scorer = "anchors"'))
+        with self.assertRaises(sweep_config.ConfigError):
+            load_text(MINIMAL.replace('scorer = "behaviour"\n', ''))
 
     def test_bad_flag_rule_rejected(self):
         with self.assertRaises(sweep_config.ConfigError):

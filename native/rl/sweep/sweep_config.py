@@ -3,7 +3,7 @@
 One TOML file declares one sweep (see configs/). Sections:
 
   [sweep]    method/goal/downsample/early_stop_quantile/max_suggestion_cost/
-             max_runs/use_gpu/cost/seeds/concurrency
+             max_runs/num_random_samples/use_gpu/cost/seeds/concurrency
   [trial]    per-trial resource limits (MemoryMax, wall cap, poll cadence)
   [scoring]  which scorer reads a trial's run directory (see scoring.py);
              [scoring.flags] behaviour flag rules (flags.py), labels only
@@ -96,6 +96,9 @@ class SweepSpec:
         self.early_stop_quantile = float(sweep.get('early_stop_quantile', 0.3))
         self.max_suggestion_cost = float(sweep.get('max_suggestion_cost', 3600))
         self.max_runs = int(sweep.get('max_runs', 20))
+        # Protein: Sobol trials (after the defaults trial) before the GP suggests.
+        self.num_random_samples = int(sweep.get('num_random_samples', 10))
+        _require(self.num_random_samples >= 1, 'num_random_samples must be positive')
         # fixed_cost: every trial runs exactly [fixed].steps; Protein still gets
         # a cost axis (the partial curve points) but suggests at the fixed budget.
         self.fixed_cost = bool(sweep.get('fixed_cost', False))
@@ -119,9 +122,8 @@ class SweepSpec:
         self.unit_prefix = str(trial.get('unit_prefix', 'bopl-sweep'))
 
         self.scoring = dict(raw.get('scoring', {}))
-        self.scoring.setdefault('scorer', 'anchors')
-        _require(self.scoring['scorer'] in ('anchors', 'behaviour', 'match', 'reference'),
-                 f"Unknown scorer {self.scoring['scorer']!r}")
+        _require(self.scoring.get('scorer') in ('behaviour', 'match', 'reference'),
+                 f"[scoring].scorer must be behaviour, match or reference, not {self.scoring.get('scorer')!r}")
         if self.scoring['scorer'] == 'reference':
             _require(isinstance(self.scoring.get('pool'), str), '[scoring].pool (a pool.json path) is required')
             _require(int(self.scoring.get('last_k', 3)) >= 1, '[scoring].last_k must be positive')

@@ -3,12 +3,6 @@
 The score is an external yardstick, never the training-time self-play win rate
 (which is anchored at ~0.5 by construction). Three scorers:
 
-- anchors: mean win rate over the run's own periodic evaluations
-  (evaluations/*/result.json) against fixed opponents. Timeouts already count
-  as losses (evaluate.py: win = flag&2 and not timeout). The opponent list is
-  data-driven from the results: every group whose opponent is not 'selfplay',
-  so frozen checkpoints from an --evaluation-opponents manifest (and future
-  scripted bots) join automatically.
 - behaviour: a windowed behaviour rate from metrics.jsonl cumulative counters
   (kills_per_episode, arrow_hit_rate, ...).
 - match: head-to-head of the trial's final checkpoint against a fixed enemy
@@ -84,35 +78,6 @@ def _checkpoint_learner_steps(run_dir, checkpoint_name):
     if sidecar and 'learner_steps' in sidecar:
         return int(sidecar['learner_steps'])
     return None
-
-
-def anchor_curve(run_dir, opponents=(), include_heldout=False):
-    """Mean win rate per diagnostic evaluation, over anchor opponent groups.
-
-    opponents: restrict to these opponent names; empty means every opponent
-    present except 'selfplay'. include_heldout adds held-out map groups.
-    """
-    run_dir = Path(run_dir)
-    elapsed_at = None
-    points = []
-    for result_file in sorted(run_dir.glob('evaluations/*/result.json')):
-        report = _read_json(result_file)
-        if not report:
-            continue
-        groups = [g for g in report.get('groups', ())
-                  if g['opponent'] != 'selfplay'
-                  and (not opponents or g['opponent'] in opponents)
-                  and (include_heldout or g.get('map_role') != 'untrained')]
-        if not groups:
-            continue
-        score = sum(g['win_rate'] for g in groups) / len(groups)
-        learner_steps = _checkpoint_learner_steps(run_dir, report.get('checkpoint', ''))
-        if learner_steps is None:
-            continue
-        if elapsed_at is None:
-            elapsed_at = _elapsed_lookup(run_dir)
-        points.append(Point(learner_steps, score, elapsed_at(learner_steps)))
-    return sorted(points, key=lambda p: p.learner_steps)
 
 
 BEHAVIOUR_METRICS = ('kills_per_episode', 'arrow_hit_rate', 'arrows_per_episode',
@@ -314,10 +279,7 @@ def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band
 
 def curve(run_dir, scoring):
     """Dispatch on the [scoring] config section."""
-    scorer = scoring.get('scorer', 'anchors')
-    if scorer == 'anchors':
-        return anchor_curve(run_dir, tuple(scoring.get('opponents', ())),
-                            bool(scoring.get('include_heldout', False)))
+    scorer = scoring['scorer']
     if scorer == 'behaviour':
         return behaviour_curve(run_dir, scoring.get('metric', 'kills_per_episode'))
     if scorer == 'match':
