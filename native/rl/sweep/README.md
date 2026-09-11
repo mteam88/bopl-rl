@@ -37,7 +37,7 @@ native/rl/sweep/
   driver.py        the sweep loop (this is what you run)
   sweep_config.py  TOML -> PufferLib sweep_config + train.py flag rendering
   scoring.py       scorers: run directory -> (learner_steps, score) curve
-  reference_pool.py  frozen reference pool: build / verify / rate a checkpoint
+  reference_pool.py  frozen reference pool: build / verify / rate a checkpoint / joint ladder
   flags.py         behaviour flags from evaluation behaviour totals (labels only)
   rescore.py       re-score an existing sweep with the reference scorer, read-only
   report.py        results.jsonl, summary.md, launch-best.sh
@@ -265,7 +265,26 @@ BOPL_RL_BACKEND=rust systemd-run --user --scope -p CPUQuota=600% --nice=10 -- \
 
 Output: `<out>/<trial>/reference/<checkpoint>.json`, `<out>/<trial>/result.json`,
 `<out>/rescore.json` and `<out>/summary.md` (old score, new rating ± CI,
-IQM over the last k, flags, rank moves).
+IQM over the last k, flags, rank moves). Per-checkpoint ratings are cached,
+so re-running the same command extends `<out>` with newly finished trials.
+
+### One joint ladder
+
+`reference_pool.py ladder` re-rates the pool members *together with* new
+checkpoints in one Bradley-Terry fit: the pool's recorded round robin is
+reused, each new checkpoint plays every member and every other new
+checkpoint with the pool's recipe (48 games per pair, same maps and seeds),
+and a checkpoint byte-identical to a member is that member. The output is
+`ladder.json` in the `research/elo_ladder.py` schema plus a 95% interval per
+participant; the dashboard's Ladder view reads it together with a
+`rescore.json` in the same directory (`serve.py --ladder NAME=DIR`):
+
+```sh
+BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py ladder \
+  --pool native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json \
+  --checkpoint o3-020-final=native/artifacts/rl/sweeps/overnight-3/020/checkpoints/policy-266698752.bin ... \
+  --out native/artifacts/rl/sweeps/overnight-3-ladder/ladder.json --workers 12
+```
 
 ## Reading results
 
