@@ -1,0 +1,151 @@
+# Overnight sweep 4 (DRAFT, not launched): overnight-3's space scored by the
+# reference-pool scorer instead of the anchors mean.
+#
+# Why (measured on overnight-3, 13 trials, native/rl/sweep/README.md
+# "Why a reference pool"): the anchors mean over 8 opponent groups had a
+# standard error of 3-4 points per evaluation while scores wandered 0.27-0.51
+# within one trial; random/initial groups were 100% wins for everyone; the
+# run007 anchors came from the old, exploitable sim; and the best-by-score
+# trial (001) fired zero arrows. Here a trial's score is the Bradley-Terry Elo
+# of its checkpoint against a frozen reference pool (pool ratings fixed, games
+# concentrated on the 15-85% band, OpenAI Five App. J), aggregated as the IQM
+# over the last 3 evaluations (rliable). Behaviour flags are labels only.
+#
+# Pool: native/artifacts/rl/sweeps/anchors/overnight-3/pool.json (random, the
+# 8 hard/medium scripted bots, overnight-3 finals 001/002/009/012, the run007
+# anchors rated by play). Its hash is checked on every load; to add a
+# reference, build a new pool file and point `pool` at it (README).
+#
+# Differences from overnight-3.toml, all in [sweep]/[scoring]:
+# - scorer = "reference" with last_k = 3, games = 240 per checkpoint.
+# - metric_distribution = "linear": Elo is not a 0..1 rate.
+# - downsample = 3: the reference curve has last_k points (IQM of the window
+#   so far); Protein sees three (cost, score) points per trial.
+# - early_stop stays false: the scorer plays games and is not polled.
+# - [scoring.flags]: thresholds for the behaviour badges.
+# Training space and [fixed] are identical to overnight-3 so the two sweeps
+# compare hyperparameter conclusions, not scorers.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"     # Elo; percentile would logit-transform it
+downsample = 3                     # = [scoring].last_k reference points per trial
+fixed_cost = true                  # every trial runs [fixed].steps
+early_stop = false
+max_suggestion_cost = 2.1e8
+max_runs = 60
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1                    # two concurrent trainers measured 134k vs 157k learner/s for one (2026-09-10)
+
+[trial]
+memory_max = "14G"
+nice = 10
+max_seconds = 5400                 # 1.5 h hard wall; a healthy trial is ~20-25 min on the f64 sim
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
+last_k = 3                         # evaluations aggregated by IQM (eval_every 20M -> the last 60M steps)
+games = 240                        # per checkpoint: 6 x 16 members first pass, 144 in the band
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 48
+workers = 4
+seed_base = 70001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+steps = 200000000
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 4
+learning_rate = 2e-3
+entropy = 3.5e-3
+entropy_floor = 0.001              # capped to entropy/2 when entropy sweeps lower
+entropy_half_life = 34540010
+entropy_head_scale = "1,1.71,1"
+entropy_free_rows = 1
+reward_kill = 0.0
+reward_timeout = -1
+scripted_bots = ["mixed", "archer"]  # ordered candidates; scripted_banks takes the first N
+scripted_level = "hard"
+scripted_decay = 200000000
+scripted_opponents = "mixed-hard,archer-hard,pursuer-hard,evasive-hard,mixed-medium"
+evaluation_opponents = "native/artifacts/rl/sweeps/anchors/opponents.json"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 10000000
+eval_every = 20000000
+evaluation_games = 8
+heldout_games = 4
+frozen_games = 8
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 5e-4
+max = 4e-3
+scale = 0.5
+
+[params.learner_passes]
+distribution = "int_uniform"
+min = 2
+max = 4
+scale = "auto"
+
+[params.entropy]
+distribution = "log_normal"
+min = 2e-3
+max = 1.5e-2
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 1.5e7
+max = 1.5e8
+scale = 0.5
+integer = true
+
+[params.head_scale_buttons]
+distribution = "log_normal"
+min = 0.25
+max = 4.0
+scale = 0.5
+
+[params.reward_kill]
+distribution = "uniform"
+min = 0.0
+max = 0.3
+scale = "auto"
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 0
+max = 1
+scale = "auto"
+default = 0
+
+[params.scripted_decay]
+distribution = "log_normal"
+min = 2.5e7                        # bots gone after 12.5% of the run
+max = 2e8                          # still playing half their bank's matches at the end
+scale = 0.5
+integer = true
