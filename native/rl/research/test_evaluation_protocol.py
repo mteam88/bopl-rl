@@ -66,14 +66,21 @@ class EvaluationProtocolTests(unittest.TestCase):
     def test_scripted_names_parse_and_reject(self):
         self.assertEqual(scripted_opponent('mixed-hard'),(4,2))
         self.assertEqual(scripted_opponent('archer-easy'),(1,0))
-        for name in ('random','initial','trained-s73','mixed','mixed-extreme','bow-hard'):
+        # v2 kinds: version suffix on the kind, level still last (dashboard label "mixed-v2 (hard)").
+        self.assertEqual(scripted_opponent('mixed-v2-hard'),(9,2))
+        self.assertEqual(scripted_opponent('archer-v2-easy'),(6,0))
+        for name in ('random','initial','trained-s73','mixed','mixed-extreme','bow-hard','mixed-v3-hard'):
             self.assertIsNone(scripted_opponent(name))
         self.assertEqual(scripted_names('mixed-hard,evasive-medium'),['mixed-hard','evasive-medium'])
+        self.assertEqual(scripted_names('mixed-v2-hard,mixed-hard'),['mixed-v2-hard','mixed-hard'])
         self.assertEqual(scripted_names(''),[])
         for value in ('mixed','mixed-hard,mixed-hard','pursuer-hardest'):
             with self.assertRaises(ValueError): scripted_names(value)
         self.assertEqual(len(SCRIPTED_NAMES),3*len(SCRIPTED_KINDS))
         self.assertEqual(scripted_opponent('search-medium'),(5,1))
+        # v1 ids are frozen (scores stay comparable); search then the v2 kinds appended.
+        self.assertEqual([scripted_opponent(f'{k}-hard')[0] for k in ('archer','pursuer','evasive','mixed')],[1,2,3,4])
+        self.assertEqual([scripted_opponent(f'{k}-v2-hard')[0] for k in ('archer','pursuer','evasive','mixed')],[6,7,8,9])
 
     def test_invalid_maps_and_counts_fail(self):
         for value in ('','0,0','-1','31'):
