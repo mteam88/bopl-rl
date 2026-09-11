@@ -628,6 +628,7 @@ static void c_close(BoplPuffer *env) {
     if (env->spare_opening) { pthread_join(env->spare_thread, NULL); env->spare_opening=0; }
     bopl_rl_close(env->world); env->world=NULL;
     bopl_rl_close(env->spare); env->spare=NULL;
+    for (int i=0; i<BOPL_MAX_PLAYERS; i++) { bopl_rl_close(env->bots[i].fork); env->bots[i].fork=NULL; }
     free(env->history); free(env->sample); free(env->scratch);
 }
 #endif

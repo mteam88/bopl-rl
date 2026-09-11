@@ -88,6 +88,13 @@ const BoplRlState *bopl_rl_state(const BoplRl *world);
 /* Lossless BOPLREP2 setup + warmup + actual tick inputs, including all six
  * players. Bytes are borrowed until the next command or close. */
 int bopl_rl_replay(BoplRl *world, const void **bytes, size_t *length);
+/* Lookahead copy: a handle whose game is a private snapshot of world's (same
+ * state and random stream, so the same actions give the same future); step,
+ * state and close work on it like on any handle, replay/reset do not apply.
+ * `reuse` (a previous fork, or NULL) is refilled instead of allocating. NULL
+ * when the backend cannot fork: only in-process libraries exporting
+ * bopl_rl_fork (the Rust sim) can; the socket/.NET game cannot. */
+BoplRl *bopl_rl_fork(const BoplRl *world, BoplRl *reuse);
 const char *bopl_rl_error(const BoplRl *world);
 const char *bopl_rl_source_hash(const BoplRl *world);
 const char *bopl_rl_catalog_hash(const BoplRl *world);

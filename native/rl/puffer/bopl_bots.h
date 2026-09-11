@@ -48,7 +48,8 @@
  * from bopl_bot_decide_v2 (bopl_bots_v2.h). Training banks pack a kind per
  * nibble of scripted_kinds, so ids stay below 16. */
 enum { BOPL_BOT_NONE=0, BOPL_BOT_ARCHER=1, BOPL_BOT_PURSUER=2, BOPL_BOT_EVASIVE=3, BOPL_BOT_MIXED=4, BOPL_BOT_V1_KINDS=4,
-       BOPL_BOT_KINDS=BOPL_BOT_V1_KINDS };
+       BOPL_BOT_SEARCH=5,  /* rollout search on a forked Rust sim (bopl_bots_v2.h) */
+       BOPL_BOT_KINDS=5 };
 enum { BOPL_BOT_EASY=0, BOPL_BOT_MEDIUM=1, BOPL_BOT_HARD=2, BOPL_BOT_LEVELS=3 };
 
 typedef struct BoplBot {
@@ -60,6 +61,9 @@ typedef struct BoplBot {
      * step (the foe model of a rollout starts from it). */
     BoplRl *world;
     BoplRlAction applied[6];
+    /* Lookahead fork owned by a v2 kind (bopl_rl_fork reuse target); survives
+     * bopl_bot_reset, closed by the environment (c_close). */
+    BoplRl *fork;
     int decisions;
     /* Passivity detector: consecutive decisions the enemy moved < .15 u. */
     double foe_prev_x, foe_prev_y; int foe_still;
@@ -80,7 +84,7 @@ typedef struct BoplBot {
 } BoplBot;
 
 /* Indexed by kind; v2 kinds append after "mixed" (bopl_bots_v2.h checks the length). */
-static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed"};
+static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed", "search"};
 /* v2 kinds decide here (bopl_bots_v2.h); the v1 body of bopl_bot_decide is frozen. */
 static void bopl_bot_decide_v2(struct BoplBot *bot, const BoplRlState *state, int player_index,
                                int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]);
@@ -1148,7 +1152,9 @@ static void bot_mixed(const BotView *view, BoplBot *bot, int forced_release, Bot
 
 /* ---- entry points ------------------------------------------------------ */
 static void bopl_bot_reset(BoplBot *bot, int kind, int level, uint32_t seed) {
+    BoplRl *fork=bot->fork;
     memset(bot, 0, sizeof(*bot));
+    bot->fork=fork;
     bot->kind=kind; bot->level=level;
     bot->rng=seed?seed:1;
     bot->last[0]=BOT_AIM_UP;

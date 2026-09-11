@@ -135,6 +135,37 @@ pub unsafe extern "C" fn bopl_rl_reset_finish(world: *mut Handle) -> i32 {
     handle.reset_result
 }
 
+/// Lookahead copy (bopl_rl.h `bopl_rl_fork`): a handle whose world is a
+/// private snapshot of `world`'s — same state, same RNG stream, so the same
+/// inputs give the same future. When `reuse` is non-null that handle is
+/// refilled (its buffers are reused) and returned; otherwise a new handle is
+/// allocated. Null when `world` is null or has no episode. Forks never carry
+/// the replay recording and are closed with `bopl_rl_close`.
+///
+/// # Safety
+/// `world` must be a live handle or null; `reuse` a live handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bopl_rl_fork(world: *const Handle, reuse: *mut Handle) -> *mut Handle {
+    let Some(source) = (unsafe { world.as_ref() }) else {
+        return core::ptr::null_mut();
+    };
+    if !source.world.valid || source.reset_pending || core::ptr::eq(world, reuse) {
+        return core::ptr::null_mut();
+    }
+    let target = match unsafe { reuse.as_mut() } {
+        Some(handle) => handle,
+        None => Box::leak(Box::new(Handle {
+            world: RolloutWorld::new(),
+            reset_pending: false,
+            reset_result: OK,
+        })),
+    };
+    target.world.fork_from(&source.world);
+    target.reset_pending = false;
+    target.reset_result = OK;
+    target
+}
+
 /// # Safety
 /// `world` must be a live handle from `bopl_rl_open` or null.
 #[unsafe(no_mangle)]
