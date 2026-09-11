@@ -270,6 +270,15 @@ pub struct SpawnedPlatform {
 #[derive(Clone, Copy, Default)]
 pub struct PlatformDynamics {
     pub body: Body,
+    /// FixTransform rotation written by a component this tick.
+    /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
+    /// has computed its torque against the stale orientation
+    /// (DetPhysics.cs:2504-2506).
+    pub transform_rotation: Option<Fix>,
+    /// Tick on which Updater adds a body registered mid-tick and calls
+    /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
+    /// position physics had already corrected on the spawn tick.
+    pub init_tick: Option<u32>,
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -692,6 +701,8 @@ impl RolloutWorld {
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
                 home_position: p.surface.center,
+                transform_rotation: None,
+                init_tick: None,
                 home_rotation: p.body.orientation,
                 speed: p.speed,
                 mu: p.mu,
@@ -1285,6 +1296,9 @@ impl RolloutWorld {
                         };
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // PlatformTransform.OnEnterAbility (PlatformTransform.cs:122).
+                        slot.base.rotation = Fix::ZERO;
+                        slot.base.up = Vec2::UP;
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
@@ -1660,12 +1674,14 @@ impl RolloutWorld {
                     up = slerp(up, aim, DT * pd.rotation_speed);
                 }
                 // PlatformTransform writes the aimed `up` into the spawned
-                // platform's FixTransform. DetPhysics then copies that scalar
-                // rotation into the body before integrating it. Resizing only
-                // changes the collider geometry; it must not re-derive or pin
-                // the body's orientation.
+                // platform's FixTransform and the spring's home
+                // (PlatformTransform.cs:281-285). AnimateVelocity then pulls
+                // the body's previous orientation towards it, and only
+                // DetPhysics.Simulate copies the scalar into the body before
+                // integrating (DetPhysics.cs:2504-2506). Resizing only changes
+                // the collider geometry.
                 let rotation = up.perp_cw().normalized_angle();
-                self.platform_dynamics[platform_index].body.orientation = rotation;
+                self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
                 self.platform_dynamics[platform_index].home_rotation = rotation;
                 self.platforms[platform_index].surface.right = up.perp_cw();
                 self.platforms[platform_index].surface.up = up;
@@ -1740,15 +1756,22 @@ impl RolloutWorld {
         };
         let (x, y) = (extents.x, extents.y);
         // PlatformTransform.State.Size uses the transformed player's stable
-        // `body.right`, not the potentially wobbling platform collider axes.
+        // `body.right` (the exact Slerp vector, FixTransform.cs:49-59), not
+        // the potentially wobbling platform collider axes. The cursor is
+        // rotated into that frame with `new Vec2(-body.rotation)`
+        // (PlatformTransform.cs:294): trig of the scalar, not the conjugate.
         let basis = self.players[index].platform.sizing_right;
-        let conj = Vec2::new(basis.x, -basis.y);
+        let conj = Vec2::angle(-self.players[index].base.rotation);
+        // The cursor is measured from the ability's own fixTrans.position
+        // (PlatformTransform.cs:294-300): the platform centre as it was
+        // before the previous DetPhysics pass moved it, not the live one.
+        let body_position = self.players[index].base.position;
         let st = &mut self.players[index].platform;
         st.cursor += aim * CURSOR_SENSITIVITY * DT;
-        let mut local = (st.cursor - center).complex_mul(conj);
+        let mut local = (st.cursor - body_position).complex_mul(conj);
         local.x = local.x.max(-x - radius).min(x + radius);
         local.y = local.y.max(-y - radius).min(y + radius);
-        st.cursor = center + local.complex_mul(basis);
+        st.cursor = body_position + local.complex_mul(basis);
         let reach = pd.min_size + radius * Fix::from_int(2);
         if local.x >= x && x <= pd.min_size {
             st.active_corner.x = Fix::ONE;
@@ -1855,6 +1878,8 @@ impl RolloutWorld {
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
             home_position: position,
+            transform_rotation: None,
+            init_tick: Some(self.tick + 1),
             home_rotation: Fix::ZERO,
             speed: pd.spawn_speed,
             mu: pd.spawn_mu,
@@ -1946,7 +1971,15 @@ impl RolloutWorld {
         // (ResizablePlatform.cs:105): the perimeter reads `One / (One / e)`.
         platform.surface.extents = data::surface_extents(extents);
         platform.surface.radius = radius;
-        platform.collider.inner = OrientedBox::from_basis(center, platform.surface.right, extents);
+        // Box.UpdateExtents (Box.cs:37-44) rescales the existing axes rather
+        // than rebuilding them from the rotation.
+        let inner = &mut platform.collider.inner;
+        inner.center = center;
+        inner.right *= inner.inverse_extents.x;
+        inner.up *= inner.inverse_extents.y;
+        inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        inner.right *= extents.x;
+        inner.up *= extents.y;
         platform.collider.radius = radius;
         let dynamics = &mut self.platform_dynamics[index];
         // ResizablePlatform.ResizePlatform recomputes these from geometry on
@@ -2377,6 +2410,24 @@ impl RolloutWorld {
         // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         for i in 0..self.platforms.len() {
             let position = self.platforms[i].surface.center;
+            if self.platform_dynamics[i].init_tick == Some(self.tick) {
+                // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on
+                // the current position and clears inSuddenDeath, so an
+                // in-progress sudden death is re-activated with a fresh delay
+                // (AnimateVelocity.cs:126-129, 111-118).
+                self.platform_dynamics[i].init_tick = None;
+                self.platform_dynamics[i].home_position = position;
+                if self.sudden_death {
+                    let max_delay = data.platform.sudden_death_max_delay;
+                    if let Some(spawn) = self
+                        .spawned
+                        .iter_mut()
+                        .find(|s| s.active && s.platform_index == i)
+                    {
+                        spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
+                    }
+                }
+            }
             let dynamics = &mut self.platform_dynamics[i];
             let spring = (dynamics.home_position - position) * dynamics.speed
                 - dynamics.body.velocity * dynamics.mu;
@@ -2426,6 +2477,9 @@ impl RolloutWorld {
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
+            if let Some(rotation) = dynamics.transform_rotation.take() {
+                dynamics.body.orientation = rotation;
+            }
             let shift = dynamics.body.integrate(DT, Fix::from_int(-40));
             let orientation = dynamics.body.orientation;
             let platform = &mut self.platforms[i];
@@ -2870,6 +2924,9 @@ impl RolloutWorld {
                 circle.owner = slot.base.id;
                 circle.x = position.x.raw();
                 circle.y = position.y.raw();
+                // DetPhysics copies the ability body's FixTransform rotation
+                // (body.up = Slerp(...), PlatformTransform.cs:281).
+                circle.rotation = slot.base.rotation.raw();
             } else {
                 circle.flags = if slot.platform.hurtbox_disabled {
                     E_TRIGGER
@@ -2878,6 +2935,7 @@ impl RolloutWorld {
                 };
                 circle.x = 0;
                 circle.y = 0;
+                circle.rotation = 0;
             }
         }
         for arrow in &self.arrows {
