@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bopl · Learning Lab · Ladder</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="ladder-page">
+<header>
+  <a class="brand" href="/" aria-label="Bopl Learning Lab home"><svg viewBox="0 0 48 40" aria-hidden="true"><path d="M5 27C2 16 9 4 24 5s23 13 20 23C41 39 8 40 5 27" fill="currentColor"/><circle cx="19" cy="19" r="3" fill="#f6f3e9"/><circle cx="32" cy="19" r="3" fill="#f6f3e9"/></svg><span>Bopl <i>/</i> Learning Lab</span></a>
+  <div class="header-tools"><a href="/?history=1">Training runs ↗</a><a href="/study">Current studies ↗</a><div class="connection"><span></span><span id="connection">Connecting</span></div></div>
+</header>
+<main>
+  <div class="intro">
+    <div><p class="eyebrow">ONE LADDER</p><h1>Everyone plays <em>everyone.</em></h1><p class="lede" id="ladderLede">Bots, frozen anchors and the sweep's best finals in one Bradley-Terry fit, random pinned at 0 Elo.</p></div>
+    <label class="run-picker" id="ladderPickerLabel" hidden>Ladder<select id="ladderPicker" aria-label="Select ladder"></select></label>
+  </div>
+  <p id="notice" role="status"></p>
+  <section class="behavior-section ladder-section">
+    <div class="section-top"><div><p class="eyebrow">JOINT RATINGS</p><h2>Who beats whom.</h2></div><span id="ladderTag" class="tag">Waiting for games</span></div>
+    <p class="caption">Click a column to sort; click a final to see its trial's hyperparameters and fixed-pool ratings. Elo is the joint fit over every game in the ladder; the interval is a 95% parametric bootstrap over games.</p>
+    <div class="evaluation-table-wrap">
+      <table class="evaluation-table ladder-table">
+        <thead><tr id="ladderHead"></tr></thead>
+        <tbody id="ladderRows"></tbody>
+      </table>
+    </div>
+    <p id="ladderNote" class="caption"></p>
+  </section>
+  <section class="behavior-section" id="scatterSection" hidden>
+    <div class="section-top"><div><p class="eyebrow">TWO SCORERS</p><h2>Do the anchors agree with the ladder?</h2></div><span id="scatterTag" class="tag"></span></div>
+    <canvas id="scatter" class="chart scatter" aria-label="Reference Elo of every rescored final against its anchors score"></canvas>
+    <p class="caption">Every rescored final: x is the sweep's anchors score (mean win rate over its own evaluation opponents), y is the final checkpoint's Elo against the frozen reference pool with its 95% interval. Filled points are in the ladder above. A cloud rather than a line is the disagreement between the two scorers.</p>
+  </section>
+  <footer><span>BOPL / LEARNING LAB</span><span id="updated">Waiting for data</span></footer>
+</main>
+<script src="/ladder.js"></script>
+</body>
+</html>

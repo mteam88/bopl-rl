@@ -333,36 +333,14 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
         members.append(dict(name=name, kind='checkpoint', path=os.path.relpath(path, out.parent), **identity))
         by_name[name] = elo_ladder.Model(name, path, 'anchor', library=library)
     names = sorted(by_name)
-    tasks = []
-    for i, a in enumerate(names):
-        for b in names[i + 1:]:
-            tasks += elo_ladder.pair_tasks(a, b, maps, games_per_pair // len(maps), seed_base)
+    pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
     started = time.monotonic()
-    if log:
-        log(f'pool: {len(names)} members, {len(tasks)} games on {game.name}')
-    # Rollout-search bots (bopl_rl_fork, ~4 ms per decision) dominate the wall time;
-    # their games go through a separate, wider thread pool and are timed on their own.
-    from environment import Environment
-    slow = {name for name in scripted if Environment.bot_forks(by_name[name].bot[0])}
-    slow_tasks = [task for task in tasks if task['a'] in slow or task['b'] in slow]
-    fast_tasks = [task for task in tasks if task['a'] not in slow and task['b'] not in slow]
-    timing = {}
-    games = []
-    for label, batch, count in (('fast', fast_tasks, workers), ('slow', slow_tasks, slow_workers or workers)):
-        if not batch:
-            continue
-        phase = time.monotonic()
-        games += elo_ladder.play_games(by_name, batch, episode_ticks, count, seed_base, delay=delay)
-        timing[label] = dict(games=len(batch), workers=count, elapsed=time.monotonic() - phase, members=sorted(slow) if label == 'slow' else None)
-        if log:
-            log(f"pool: {label} phase {len(batch)} games, {count} workers, {timing[label]['elapsed']:.0f} s")
+    games, timing = play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, delay,
+                               workers, slow_workers, log)
     records = elo_ladder.tally(games)
     ratings = elo_ladder.bradley_terry(names, records, 'random')
     intervals = pool_intervals(names, records)
-    counts = {name: [0, 0, 0] for name in names}
-    for (a, b), (wa, wb, d) in records.items():
-        counts[a][0] += wa; counts[a][1] += wb; counts[a][2] += d
-        counts[b][0] += wb; counts[b][1] += wa; counts[b][2] += d
+    counts = tally_counts(names, records)
     for member in members:
         wins, losses, draws = counts[member['name']]
         member.update(rating=round(ratings[member['name']], 3), interval=intervals[member['name']],
@@ -379,9 +357,102 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
     return pool
 
 
-def format_table(pool):
+def play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, delay, workers, slow_workers, log):
+    """Side-swapped fixed-seed games for every (a, b) pair, games_per_pair split
+    evenly over maps and sides. Rollout-search bots (bopl_rl_fork, ~4 ms per
+    decision) dominate the wall time; their games go through a separate, wider
+    thread pool and are timed on their own."""
+    from environment import Environment
+    tasks = []
+    for a, b in pairs:
+        tasks += elo_ladder.pair_tasks(a, b, maps, games_per_pair // len(maps), seed_base)
+    slow = {name for name, member in by_name.items()
+            if isinstance(member, elo_ladder.Scripted) and Environment.bot_forks(member.bot[0])}
+    slow_tasks = [task for task in tasks if task['a'] in slow or task['b'] in slow]
+    fast_tasks = [task for task in tasks if task['a'] not in slow and task['b'] not in slow]
+    if log:
+        log(f'{len(by_name)} participants, {len(tasks)} games')
+    timing = {}
+    games = []
+    for label, batch, count in (('fast', fast_tasks, workers), ('slow', slow_tasks, slow_workers or workers)):
+        if not batch:
+            continue
+        phase = time.monotonic()
+        games += elo_ladder.play_games(by_name, batch, episode_ticks, count, seed_base, delay=delay)
+        timing[label] = dict(games=len(batch), workers=count, elapsed=time.monotonic() - phase, members=sorted(slow) if label == 'slow' else None)
+        if log:
+            log(f"{label} phase {len(batch)} games, {count} workers, {timing[label]['elapsed']:.0f} s")
+    return games, timing
+
+
+def tally_counts(names, records):
+    """{name: [wins, losses, draws]} from a tally."""
+    counts = {name: [0, 0, 0] for name in names}
+    for (a, b), (wa, wb, d) in records.items():
+        counts[a][0] += wa; counts[a][1] += wb; counts[a][2] += d
+        counts[b][0] += wb; counts[b][1] += wa; counts[b][2] += d
+    return counts
+
+
+def joint_ladder(pool, checkpoints, out, workers=4, slow_workers=None, library=None, game=None, log=None):
+    """One Bradley-Terry fit over the pool members and new checkpoints together.
+
+    The pool's recorded round robin is reused as played; every new checkpoint
+    plays every member and every other new checkpoint with the pool's recipe
+    (maps, games per pair, seeds), so all participants end with comparable
+    game counts. Unlike rate_checkpoint the members are re-rated here. A
+    checkpoint byte-identical to a member is that member. Writes ladder.json
+    in the elo_ladder schema (plus a 95% parametric-bootstrap interval).
+    """
+    out = Path(out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    game = game_library(game)
+    configure_games(out.parent, game)
+    by_name = participants(pool, library=library)
+    hashes = {m.get('sha256'): m['name'] for m in pool['members'] if m['kind'] == 'checkpoint'}
+    kinds = {name: 'anchor' for name in by_name}
+    for name, path in checkpoints:
+        identity = checkpoint_identity(path)
+        if identity['sha256'] in hashes:
+            if log:
+                log(f"{name} is pool member {hashes[identity['sha256']]}")
+            continue
+        if name in by_name:
+            raise ValueError(f'Duplicate participant {name}')
+        by_name[name] = elo_ladder.Model(name, path, 'checkpoint', library=library)
+        kinds[name] = 'checkpoint'
+    new = [name for name, kind in kinds.items() if kind == 'checkpoint']
+    names = sorted(by_name)
+    pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if a in new or b in new]
+    started = time.monotonic()
+    games, timing = play_pairs(by_name, pairs, pool['maps'], pool['games_per_pair'], pool['seed_base'],
+                               int(pool['episode_ticks']), int(pool.get('observation_delay_ticks', 9)),
+                               workers, slow_workers, log)
+    records = elo_ladder.tally(games)
+    for match in pool['matches']:
+        records[(match['a'], match['b'])] = [match['wins_a'], match['wins_b'], match['draws']]
+    ratings = elo_ladder.bradley_terry(names, records, 'random')
+    intervals = pool_intervals(names, records)
+    counts = tally_counts(names, records)
+    ladder = dict(
+        schema=elo_ladder.SCHEMA, updated=time.time(), elapsed=time.monotonic() - started,
+        games=sum(sum(row) for row in records.values()), games_per_pair=pool['games_per_pair'], maps=pool['maps'],
+        seed_base=pool['seed_base'], episode_ticks=int(pool['episode_ticks']),
+        pool=pool['path'], pool_sha256=pool['pool_sha256'], pool_games=pool['games'], timing=timing,
+        game=dict(path=str(game), sha256=sha256_file(game)),
+        note='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo; '
+             'pool games reused, members re-rated jointly; 95% parametric bootstrap over games',
+        ratings=[dict(name=name, kind=kinds[name], step=None, sha256=getattr(by_name[name], 'sha256', None),
+                      rating=round(float(ratings[name]), 1), interval=intervals[name], games=sum(counts[name]),
+                      wins=counts[name][0], losses=counts[name][1], draws=counts[name][2]) for name in names],
+        matches=[dict(a=a, b=b, wins_a=wa, wins_b=wb, draws=d) for (a, b), (wa, wb, d) in sorted(records.items())])
+    atomic_json(out, ladder)
+    return ladder
+
+
+def format_table(members):
     lines = [f"{'rating':>8}  {'95% CI':>12}  {'kind':10}  {'W-L-D':>12}  name"]
-    for member in sorted(pool['members'], key=lambda m: -m['rating']):
+    for member in sorted(members, key=lambda m: -m['rating']):
         low, high = member.get('interval', (member['rating'], member['rating']))
         lines.append(f"{member['rating']:8.1f}  [{low:5.0f},{high:5.0f}]  {member['kind']:10}  "
                      f"{member['wins']:>4}-{member['losses']}-{member['draws']:<3}  {member['name']}")
@@ -420,27 +491,44 @@ def main():
     rate.add_argument('--seed-base', type=int, default=70001)
     rate.add_argument('--library', type=Path, default=None)
     rate.add_argument('--game', type=Path, default=None)
+    ladder = commands.add_parser('ladder', help='Joint round robin of the pool plus checkpoints -> ladder.json')
+    ladder.add_argument('--pool', type=Path, required=True)
+    ladder.add_argument('--checkpoint', action='append', default=[], metavar='NAME=PATH')
+    ladder.add_argument('--out', type=Path, required=True, help='ladder.json path')
+    ladder.add_argument('--workers', type=int, default=4)
+    ladder.add_argument('--slow-workers', type=int, default=None)
+    ladder.add_argument('--library', type=Path, default=None)
+    ladder.add_argument('--game', type=Path, default=None)
     args = parser.parse_args()
     log = lambda message: print(f'[reference {time.strftime("%H:%M:%S")}] {message}', flush=True)
-    if args.command == 'build':
+
+    def named_checkpoints():
         checkpoints = []
         for item in args.checkpoint:
             name, separator, path = item.partition('=')
             if not separator:
                 parser.error('--checkpoint needs NAME=PATH')
             checkpoints.append((name, path))
+        return checkpoints
+    if args.command == 'build':
+        checkpoints = named_checkpoints()
         for item in opponents(args.manifest) if args.manifest else []:
             checkpoints.append((item['name'], item['path']))
         pool = build_pool(args.out, scripted=args.scripted, checkpoints=checkpoints,
                           maps=[int(m) for m in args.maps.split(',')], games_per_pair=args.games_per_pair,
                           seed_base=args.seed_base, episode_ticks=args.episode_ticks, workers=args.workers,
                           slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log)
-        print(format_table(pool))
+        print(format_table(pool['members']))
         print(f"pool {pool['pool_sha256'][:16]}  {pool['games']} games in {pool['elapsed']:.0f}s -> {pool['path']}")
     elif args.command == 'verify':
         pool = load_pool(args.pool)
-        print(format_table(pool))
+        print(format_table(pool['members']))
         print(f"verified pool {pool['pool_sha256']}")
+    elif args.command == 'ladder':
+        result = joint_ladder(load_pool(args.pool), named_checkpoints(), args.out, workers=args.workers,
+                              slow_workers=args.slow_workers, library=args.library, game=args.game, log=log)
+        print(format_table(result['ratings']))
+        print(f"{result['games']} games ({result['pool_games']} reused) in {result['elapsed']:.0f}s -> {args.out}")
     else:
         pool = load_pool(args.pool)
         lo, hi = (float(v) for v in args.band.split(','))

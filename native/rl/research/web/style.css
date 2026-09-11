@@ -10,6 +10,9 @@
 * {
   box-sizing: border-box;
 }
+[hidden] {
+  display: none !important;
+}
 body {
   margin: 0;
   background: var(--paper);
@@ -53,6 +56,12 @@ header {
   font-weight: normal;
   color: #aaa;
   margin: 0 6px;
+}
+.header-tools {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  font-size: 12px;
 }
 .connection {
   display: flex;
@@ -283,9 +292,6 @@ video {
   height: 100%;
   object-fit: contain;
 }
-video[hidden] {
-  display: none;
-}
 #emptyReplay {
   position: absolute;
   inset: 0;
@@ -465,15 +471,25 @@ input[type="range"] {
 .evaluation-table th, .evaluation-table td { padding: 12px 14px 12px 0; border-bottom: 1px solid var(--line); text-align: left; }
 .evaluation-table td:nth-child(n+3) { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .evaluation-table .untrained-map { color: var(--blue); }
+.ladder-section { border-top: 1px solid var(--line); margin-top: 24px; }
+.ladder-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.ladder-table th.sort-active { color: var(--ink); }
+.ladder-table tr.final { cursor: pointer; }
+.ladder-table tr.final:hover td, .ladder-table tr.open td { background: #eeeee3; }
+.ladder-table .kind-final { color: var(--blue); }
+.ladder-table .kind-bot { color: var(--muted); }
+.ladder-table tr.hypers td { padding: 12px 14px 18px; background: #fffdf6; white-space: normal; }
+.ladder-table tr.hypers p { margin: 0 0 12px; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.ladder-table tr.hypers dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 20px; margin: 0; font-size: 11px; }
+.ladder-table dt { color: var(--muted); }
+.ladder-table dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; }
+.chart.scatter { height: 340px; }
 .chart-title label { display: flex; align-items: center; gap: 8px; }
 .chart-title select { width: auto; margin: 0; padding: 3px 22px 3px 0; }
 .series-section {
   border: 1px solid var(--line);
   padding: 24px 28px;
   margin-top: 24px;
-}
-.series-section[hidden] {
-  display: none;
 }
 .series-runs {
   display: grid;
@@ -803,8 +819,4 @@ a:focus-visible {
 .follow input {
   accent-color: var(--blue);
   vertical-align: middle;
-}
-
-.players[hidden] {
-  display: none;
 }
