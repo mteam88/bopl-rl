@@ -2424,7 +2424,11 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                pairs.push(if a < b { [a, b] } else { [b, a] });
+                // IdPair(active, current): the body that entered the sweep
+                // first is collider A (DetPhysics.cs:2169-2236). Fix
+                // multiplication floors, so swapping A and B changes the
+                // impulse and correction by an LSB.
+                pairs.push([a, b]);
             }
             window.push(b);
         }
@@ -2656,9 +2660,13 @@ impl RolloutWorld {
         for (a, b, contact) in contacts {
             let pos_a = self.platforms[a].surface.center;
             let pos_b = self.platforms[b].surface.center;
-            let (left, right) = self.platform_dynamics.split_at_mut(b);
-            let body_a = &mut left[a].body;
-            let body_b = &mut right[0].body;
+            let (body_a, body_b) = if a < b {
+                let (left, right) = self.platform_dynamics.split_at_mut(b);
+                (&mut left[a].body, &mut right[0].body)
+            } else {
+                let (left, right) = self.platform_dynamics.split_at_mut(a);
+                (&mut right[0].body, &mut left[b].body)
+            };
             resolve(contact, body_a, body_b, pos_a, pos_b);
             let correction =
                 positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
