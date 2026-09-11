@@ -185,3 +185,27 @@ class ReferenceCurve(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RescoreComparison(unittest.TestCase):
+    def test_ranks_over_shared_trials(self):
+        import rescore
+        row = lambda i, iqm: dict(id=i, iqm=iqm, old_score=0.5, rating=iqm, interval=[iqm - 10, iqm + 10], flags=[], last_k=[])
+        previous = dict(pool='p1', pool_sha256='a' * 64, trials=[row('000', 300), row('001', 350), row('002', 320)])
+        report = dict(sweep='/s', pool='p2', pool_sha256='b' * 64, games=1, first_pass_games=1, band=[.15, .85],
+                      last_k=3, flag_rules={}, trials=[row('000', 340), row('001', 330), row('003', 900)])
+        lines = rescore.comparison(report, previous)
+        table = [l for l in lines if l.startswith('| 0')]
+        self.assertEqual([l.split(' | ')[0][2:] for l in table], ['000', '001'])  # 003 not shared
+        self.assertIn('| 000 | 300 | 2 | 340 | 1 | +1 | +40 |', lines)
+        self.assertIn('| 001 | 350 | 1 | 330 | 2 | -1 | -20 |', lines)
+        self.assertTrue(lines[-1].endswith('000, 001.'))
+
+
+class PoolIntervals(unittest.TestCase):
+    def test_bootstrap_covers_anchor_and_orders_members(self):
+        names = ['random', 'strong', 'weak']
+        records = {('random', 'strong'): [8, 40, 0], ('random', 'weak'): [20, 28, 0], ('strong', 'weak'): [36, 10, 2]}
+        intervals = rp.pool_intervals(names, records, samples=50)
+        self.assertEqual(intervals['random'], [0.0, 0.0])
+        self.assertLess(intervals['weak'][1], intervals['strong'][0])
