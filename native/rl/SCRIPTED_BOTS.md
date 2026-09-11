@@ -26,6 +26,28 @@ rewards. The policy player's rows are untouched; a bot-controlled player's
 GPU/action floats are simply ignored (`c_step` asks `bopl_bot_decide`
 instead).
 
+## Versioning
+
+Reference opponents are never mutated, only added (the OpenAI Five rule):
+every trial, ladder and sweep score ever recorded against `mixed-hard` must
+stay comparable with the ones recorded tomorrow. The kind table in
+`bopl_bots.h` (`BOPL_BOT_*` ids, `BOPL_BOT_NAMES`) and its Python mirror
+`evaluation_protocol.SCRIPTED_KINDS` are therefore append-only: kinds 1–4
+(`archer`, `pursuer`, `evasive`, `mixed`) are the frozen **v1** set, and the
+code they run — everything in `bopl_bots.h` — does not change again. An
+improved or new bot is a *new kind*: append an id (< 16, one nibble per
+training bank) and a name of the form `<family>[-vN]` (`mixed-v2`, `search`),
+mirror it in `SCRIPTED_KINDS`, and dispatch it from `bopl_bots_v2.h`, which
+may call the v1 helpers but never edits them. The public name stays
+`kind-level` with the level last (`mixed-v2-hard`, `search-medium`), so
+`evaluate.py --scripted-opponents`, `elo_ladder.py --scripted-anchors`,
+`train.py --scripted-bots`, the sweep configs and the dashboard label
+("Scripted mixed-v2 (hard)") need no per-bot code; the level suffix is
+reserved for scripted names (a frozen-opponent manifest may not use it).
+The v1 freeze is checked by fixed-seed fingerprints: `check_scripted_bots.py`
+plus 20 idle-opponent games per `kind-level` must reproduce the same replay
+bytes before and after any change to the bot headers.
+
 ## Game facts the bots use (measured in-sim)
 
 | Fact | Value |

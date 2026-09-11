@@ -38,12 +38,28 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-enum { BOPL_BOT_NONE=0, BOPL_BOT_ARCHER=1, BOPL_BOT_PURSUER=2, BOPL_BOT_EVASIVE=3, BOPL_BOT_MIXED=4, BOPL_BOT_KINDS=4 };
+/* Kind table (SCRIPTED_BOTS.md "Versioning"). Ids, names and behaviour are
+ * append-only: kinds 1..BOPL_BOT_V1_KINDS are the frozen v1 personalities
+ * whose code paths (everything up to bopl_bot_decide's v1 body) never change
+ * again, so scores against them stay comparable across time. An improved or
+ * new bot is a NEW kind appended here and to evaluation_protocol.SCRIPTED_KINDS
+ * with the same id, named `<family>[-vN]` (the level stays the last token of
+ * the public `kind-level` name: mixed-v2-hard, search-hard), and dispatched
+ * from bopl_bot_decide_v2 (bopl_bots_v2.h). Training banks pack a kind per
+ * nibble of scripted_kinds, so ids stay below 16. */
+enum { BOPL_BOT_NONE=0, BOPL_BOT_ARCHER=1, BOPL_BOT_PURSUER=2, BOPL_BOT_EVASIVE=3, BOPL_BOT_MIXED=4, BOPL_BOT_V1_KINDS=4,
+       BOPL_BOT_KINDS=BOPL_BOT_V1_KINDS };
 enum { BOPL_BOT_EASY=0, BOPL_BOT_MEDIUM=1, BOPL_BOT_HARD=2, BOPL_BOT_LEVELS=3 };
 
 typedef struct BoplBot {
     int kind, level;
     uint32_t rng;
+    /* v2-only inputs, written by c_step before each decision; v1 kinds never
+     * read them. world: the live game this bot plays in (bopl_rl_fork clones
+     * it for rollouts). applied: every player's input as sent on the previous
+     * step (the foe model of a rollout starts from it). */
+    BoplRl *world;
+    BoplRlAction applied[6];
     int decisions;
     /* Passivity detector: consecutive decisions the enemy moved < .15 u. */
     double foe_prev_x, foe_prev_y; int foe_still;
@@ -63,7 +79,11 @@ typedef struct BoplBot {
     uint8_t last[3];
 } BoplBot;
 
+/* Indexed by kind; v2 kinds append after "mixed" (bopl_bots_v2.h checks the length). */
 static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed"};
+/* v2 kinds decide here (bopl_bots_v2.h); the v1 body of bopl_bot_decide is frozen. */
+static void bopl_bot_decide_v2(struct BoplBot *bot, const BoplRlState *state, int player_index,
+                               int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]);
 
 /* ---- constants -------------------------------------------------------- */
 #define BOT_TICK (1.0/60.0)
@@ -1141,6 +1161,8 @@ static void bopl_bot_decide(BoplBot *bot, const BoplRlState *state, int player_i
                             int hold_left, uint16_t held, const int hold_run[4],
                             uint8_t out[3]) {
     out[0]=BOT_AIM_UP; out[1]=0; out[2]=0;
+    if (bot->kind>BOPL_BOT_V1_KINDS) { bopl_bot_decide_v2(bot, state, player_index, hold_left, held, hold_run, out); return; }
+    /* ---- v1 (kinds 1-4): frozen; see the kind table above. ---- */
     BotView view;
     int live=bot_view(&view, state, player_index);
     bot->decisions++;
@@ -1285,4 +1307,5 @@ static void bopl_bot_decide(BoplBot *bot, const BoplRlState *state, int player_i
     memcpy(bot->last, out, 3);
 }
 
+#include "bopl_bots_v2.h"
 #endif

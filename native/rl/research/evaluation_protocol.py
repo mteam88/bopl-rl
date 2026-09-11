@@ -15,9 +15,16 @@ def map_ids(value):
 # Scripted opponents (native/rl/puffer/bopl_bots.h): hand-coded bots that read
 # the true game state through the same C environment. Names are `kind-level`;
 # the numeric IDs match BOPL_BOT_* in the header.
+#
+# Kind table — append-only (SCRIPTED_BOTS.md "Versioning"): a bot's behaviour
+# is never changed under an existing name, so scores stay comparable across
+# time; an improved bot is a new kind with a version suffix (`mixed-v2`) or a
+# new family (`search`). The level is always the last token of the public
+# name (`mixed-v2-hard`). Ids stay below 16 (train.py packs one per nibble).
 SCRIPTED_KINDS={'archer':1,'pursuer':2,'evasive':3,'mixed':4}
 SCRIPTED_LEVELS={'easy':0,'medium':1,'hard':2}
 SCRIPTED_NAMES=tuple(f'{kind}-{level}' for kind in SCRIPTED_KINDS for level in SCRIPTED_LEVELS)
+assert len(set(SCRIPTED_KINDS.values()))==len(SCRIPTED_KINDS) and max(SCRIPTED_KINDS.values())<16
 
 
 def scripted_opponent(name):
@@ -61,8 +68,11 @@ def opponents(path):
     result=[]; names={'initial','random','selfplay',*SCRIPTED_NAMES}
     for item in manifest['opponents']:
         name=item['name']
-        if not re.fullmatch(r'[a-z][a-z0-9-]{0,47}',name) or name in names:
-            raise ValueError('Frozen opponents need distinct safe names')
+        # A level suffix is reserved for scripted bots, present and future
+        # (the dashboard labels any `<kind>-<level>` name "Scripted ...").
+        if (not re.fullmatch(r'[a-z][a-z0-9-]{0,47}',name) or name in names
+                or name.rpartition('-')[2] in SCRIPTED_LEVELS):
+            raise ValueError('Frozen opponents need distinct safe names (no scripted-bot level suffix)')
         names.add(name)
         checkpoint=(path.parent/item['path']).resolve()
         identity = checkpoint_identity(checkpoint)

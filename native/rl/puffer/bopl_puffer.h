@@ -516,6 +516,7 @@ static void c_step(BoplPuffer *env) {
             /* Scripted player: decide from the true current state through the
              * same latch/mask constraints; the routed slot's action is unread. */
             uint8_t decided[3];
+            env->bots[i].world=env->world;  /* v2 kinds fork this for rollouts (bopl_bots_v2.h) */
             bopl_bot_decide(&env->bots[i], before, i, env->hold_left[i], env->held[i], env->hold_run[i], decided);
             angle=decided[0]; buttons=decided[1]; hold=decided[2];
         } else {
@@ -530,6 +531,8 @@ static void c_step(BoplPuffer *env) {
         actions[i].angle=(uint8_t)angle;
         actions[i].buttons=bopl_latch(env, i, (uint16_t)buttons, holds[i], &fresh[i]);
     }
+    /* The inputs as sent this step, for the next decision's foe model (v2 kinds only). */
+    for (int i=0; i<env->players; i++) if (env->bot_select[i]) memcpy(env->bots[i].applied, actions, sizeof(actions));
     uint32_t ticks=before->header.episode_ticks;
     // Sample at phase 3 of each four-tick decision. At t=12 return the
     // observation from t=3, giving an exact nine-tick delay thereafter.
