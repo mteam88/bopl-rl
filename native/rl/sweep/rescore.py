@@ -35,7 +35,7 @@ def log(message):
 
 
 def rescore(sweep_dir, pool_path, out, last_k=3, games=240, first_pass_games=6, band=(.15, .85),
-            round_games=48, workers=4, seed_base=70001, rules=None, trials=None):
+            round_games=48, workers=4, seed_base=70001, rules=None, trials=None, compare=None):
     sweep_dir = Path(sweep_dir).resolve()
     out = Path(out).resolve()
     if out == sweep_dir or out.is_relative_to(sweep_dir):
@@ -81,10 +81,36 @@ def rescore(sweep_dir, pool_path, out, last_k=3, games=240, first_pass_games=6, 
             + (f"; flags {', '.join(row['flags'])}" if row['flags'] else ''))
     report = dict(schema=1, sweep=str(sweep_dir), pool=pool['path'], pool_sha256=pool['pool_sha256'],
                   created=time.time(), last_k=last_k, games=games, first_pass_games=first_pass_games,
-                  band=list(band), round_games=round_games, seed_base=seed_base, flag_rules=rules, trials=rows)
+                  band=list(band), round_games=round_games, seed_base=seed_base, flag_rules=rules, trials=rows,
+                  compare=str(Path(compare).resolve()) if compare else None)
     reference_pool.atomic_json(out / 'rescore.json', report)
     (out / 'summary.md').write_text(summary(report))
     return report
+
+
+def comparison(report, previous):
+    """Markdown table of this re-score against an earlier rescore.json (another pool
+    or budget): ranks are over the trials present in both."""
+    before = {r['id']: r for r in previous['trials']}
+    shared = [r for r in report['trials'] if r['id'] in before]
+    if not shared:
+        return ['', f"No trials shared with `{previous.get('pool')}`."]
+    rank_before = {r['id']: i + 1 for i, r in enumerate(sorted(shared, key=lambda r: -before[r['id']]['iqm']))}
+    rank_after = {r['id']: i + 1 for i, r in enumerate(sorted(shared, key=lambda r: -r['iqm']))}
+    k = report['last_k']
+    lines = ['', f"## Against the previous re-score", '',
+             f"Previous: pool `{previous.get('pool')}` ({str(previous.get('pool_sha256', ''))[:16]}), "
+             f"{len(shared)} trials in common; ranks below are within those trials.", '',
+             f"| trial | previous IQM{k} | previous rank | IQM{k} | rank | move | rating shift |",
+             '|---|---|---|---|---|---|---|']
+    for row in sorted(shared, key=lambda r: rank_after[r['id']]):
+        old = before[row['id']]
+        move = rank_before[row['id']] - rank_after[row['id']]
+        lines.append(f"| {row['id']} | {old['iqm']:.0f} | {rank_before[row['id']]} | {row['iqm']:.0f} | {rank_after[row['id']]} | "
+                     f"{'+' if move > 0 else ''}{move if move else '='} | {row['iqm'] - old['iqm']:+.0f} |")
+    changed = [r['id'] for r in shared if rank_before[r['id']] != rank_after[r['id']]]
+    lines += ['', f"Rank changes against the previous re-score: {', '.join(sorted(changed)) if changed else 'none'}."]
+    return lines
 
 
 def summary(report):
@@ -113,6 +139,8 @@ def summary(report):
         parts = ', '.join(f"{r['checkpoint']}: {r['rating']:.0f} [{r['interval'][0]:.0f}, {r['interval'][1]:.0f}]"
                           for r in row['last_k'])
         lines.append(f"- {row['id']}: {parts}")
+    if report.get('compare'):
+        lines += comparison(report, json.loads(Path(report['compare']).read_text()))
     return '\n'.join(lines) + '\n'
 
 
@@ -129,12 +157,13 @@ def main():
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--seed-base', type=int, default=70001)
     parser.add_argument('--trials', help='Comma-separated trial ids (default: every scored trial)')
+    parser.add_argument('--compare', type=Path, help='Earlier rescore.json to rank against (another pool)')
     args = parser.parse_args()
     low, high = (float(v) for v in args.band.split(','))
     report = rescore(args.sweep, args.pool, args.out, last_k=args.last_k, games=args.games,
                      first_pass_games=args.first_pass_games, band=(low, high), round_games=args.round_games,
                      workers=args.workers, seed_base=args.seed_base,
-                     trials=set(args.trials.split(',')) if args.trials else None)
+                     trials=set(args.trials.split(',')) if args.trials else None, compare=args.compare)
     print(summary(report))
 
 

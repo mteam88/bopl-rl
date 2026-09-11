@@ -181,6 +181,14 @@ BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/referen
   --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,archer-medium,pursuer-medium,evasive-medium,mixed-medium \
   --checkpoint o3-012-final=native/artifacts/rl/sweeps/anchors/overnight-3/o3-012-final.bin ... \
   --games-per-pair 48 --workers 6
+# pool v2 adds the v2 and search bots; games involving rollout-search bots
+# (bopl_rl_fork, ~4 ms per decision) run in their own, wider thread pool and
+# are timed separately (pool.json `timing`)
+BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
+  --out native/artifacts/rl/sweeps/anchors/overnight-3-v2/pool.json \
+  --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
+  --checkpoint o3-019-final=native/artifacts/rl/sweeps/anchors/overnight-3-v2/o3-019-final.bin ... \
+  --games-per-pair 48 --workers 6 --slow-workers 12
 # verify: re-hash every checkpoint and the pool itself
 native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py verify .../pool.json
 # rate one checkpoint by hand
