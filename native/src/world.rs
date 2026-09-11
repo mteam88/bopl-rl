@@ -218,10 +218,10 @@ pub(crate) fn closest(
     result
 }
 impl Player {
-    fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
+    pub(crate) fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
         platforms.iter().find(|p| Some(p.id) == self.ground)
     }
-    fn align(&mut self, platform: &Platform) {
+    pub(crate) fn align(&mut self, platform: &Platform) {
         self.up = platform.surface.normal(self.position);
         self.rotation = self.up.perp_cw().normalized_angle();
     }

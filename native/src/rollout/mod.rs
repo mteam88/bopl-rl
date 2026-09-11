@@ -1280,6 +1280,10 @@ impl RolloutWorld {
                         if !slot.base.grounded {
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
+                            // The Bow's own PlayerPhysics starts with no
+                            // attached ground (PlayerPhysics.cs:548), so a
+                            // later UnGround has nothing to push off from.
+                            slot.base.ground = None;
                         }
                         // BowTransform follows Ability in the prefab updater
                         // list, so a newly enabled Bow updates later in this
@@ -1586,9 +1590,37 @@ impl RolloutWorld {
         }
         if exit {
             slot.active = ActiveAbility::None;
-            // ExitAbility ungrounds the body, so the state machine resumes
-            // from fall (and lands again next tick if still grounded).
             slot.obs_state = STATE_FALL;
+            if slot.base.grounded {
+                // Landing exit (BowTransform.cs:225-239): the slime's
+                // SyncPhysicsTo(AbilityExitInfo) (PlayerPhysics.cs:556-570)
+                // re-derives its surface local from the exit position;
+                // LocalPlayerPosFromPos does not invert
+                // PositionFromLocalPlayerPos exactly, so the rider shifts.
+                let platform = slot.base.platform(platforms).expect("grounded bow has a platform");
+                let radius = slot.base.radius;
+                let position = platform.surface.position(slot.base.local, radius);
+                slot.base.local = platform
+                    .surface
+                    .local_position(position, radius)
+                    .expect("exit position lies on the platform");
+                slot.base.position = position;
+                slot.base.velocity = Vec2::ZERO;
+                slot.base.align(platform);
+                // Ability.ExitAbility publishes the collider position
+                // (Ability.cs:151) before the slime's LateUpdateSim slides.
+                slot.reported_position = position;
+            } else {
+                // Animation-end exit (BowTransform.cs:116-130): UnGround
+                // nudges the body off any retained ground and zeroes the
+                // rotation; the slime then enters fall and immediately
+                // raycasts for a landing (SlimeController.cs:251-259), its
+                // own attached ground cleared first (PlayerPhysics.cs:577).
+                slot.base.force_unground(platforms);
+                slot.reported_position = slot.base.position; // Ability.cs:151
+                slot.base.ground = None;
+                slot.base.collision_rays(platforms);
+            }
         }
     }
 
