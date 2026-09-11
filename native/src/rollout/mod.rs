@@ -367,6 +367,9 @@ pub struct PlayerSlot {
     /// Countdown for the land/stop/turn animation states.
     pub state_ticks: u32,
     pub facing_right: bool,
+    /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
+    /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
+    pub unspawned: u32,
     /// Respawn countdown while holding a consumed stock (StockRespawn).
     pub respawn_ticks: u32,
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
@@ -731,8 +734,10 @@ impl RolloutWorld {
                     _ => Fix::from_int(4),
                 };
             }
-            let elapsed_since_awake = self.warmup.saturating_sub(SLIME_AWAKE_TICK);
-            let timer0 = TIMER_START + DT * Fix::from_int(i64::from(elapsed_since_awake));
+            // -1.5 s on the wake tick, one DT per tick since (every phase
+            // below, including the pre-instantiation ticks, advances it).
+            let since_awake = i64::from(self.warmup) - i64::from(SLIME_AWAKE_TICK);
+            let timer0 = TIMER_START + DT * Fix::from_int(since_awake);
             self.players.push(PlayerSlot {
                 base: Player {
                     alive: true,
@@ -786,6 +791,7 @@ impl RolloutWorld {
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
+                unspawned: 0,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
@@ -836,10 +842,18 @@ impl RolloutWorld {
         }
         // A warmup that ends inside the spawn animation hands the rest of it
         // to the episode (respawn_tick counts it down and launches the same
-        // way); one that ends before the slimes exist leaves them parked.
+        // way); one that ends before SpawnPlayers ran leaves the slimes
+        // uninstantiated (no slime or hurtbox rows, Player.Position zero)
+        // until that tick.
         if spawn_anim > 0 {
             for slot in &mut self.players {
                 slot.respawn_spawn_ticks = spawn_anim;
+            }
+        }
+        if self.warmup <= SLIME_AWAKE_TICK {
+            for slot in &mut self.players {
+                slot.unspawned = SLIME_AWAKE_TICK + 1 - self.warmup;
+                slot.base.position = Vec2::ZERO;
             }
         }
         // Replays drive every simulated tick from boot, warmup included.
@@ -1127,7 +1141,10 @@ impl RolloutWorld {
 
     fn playable(&self, index: usize) -> bool {
         let slot = &self.players[index];
-        slot.base.alive && slot.respawn_ticks == 0 && slot.respawn_spawn_ticks == 0
+        slot.base.alive
+            && slot.unspawned == 0
+            && slot.respawn_ticks == 0
+            && slot.respawn_spawn_ticks == 0
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -2542,6 +2559,23 @@ impl RolloutWorld {
             return;
         }
 
+        if slot.unspawned > 0 {
+            // GameSessionHandler.SpawnPlayers instantiates the slime at its
+            // team spawn on SLIME_AWAKE_TICK+1 and BeforeSpawnInit starts the
+            // spawn animation with physics off (SlimeController.cs:516-533).
+            for timer in &mut slot.timers {
+                *timer += DT;
+            }
+            slot.unspawned -= 1;
+            if slot.unspawned == 0 {
+                let spawns = &data.maps[self.map].team_spawns;
+                slot.base.position = spawns[slot.team as usize % spawns.len()];
+                slot.reported_position = slot.base.position;
+                slot.respawn_spawn_ticks = data.player.spawn_anim_ticks;
+            }
+            return;
+        }
+
         if slot.respawn_ticks > 0 {
             // StockRespawnChooser.UpdateSim: choose a point from the full
             // directional input, then decrement and allow a jump edge to
@@ -2718,7 +2752,7 @@ impl RolloutWorld {
                 (s.body_entity, s.dash_entity, s.circle_entity)
             };
             let slot = &self.players[index];
-            let alive = slot.base.alive;
+            let alive = slot.base.alive && slot.unspawned == 0;
             let choosing_respawn = slot.respawn_ticks > 0;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
@@ -2877,8 +2911,8 @@ impl RolloutWorld {
     fn fill_slimes(&self, slimes: &mut Vec<CSlime>) {
         slimes.clear();
         for slot in &self.players {
-            if !slot.base.alive {
-                continue; // destroyed with the player, like the .NET sim
+            if !slot.base.alive || slot.unspawned > 0 {
+                continue; // not instantiated yet, or destroyed with the player
             }
             let in_ability = slot.active != ActiveAbility::None;
             let respawning = slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0;
