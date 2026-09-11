@@ -1274,6 +1274,14 @@ impl RolloutWorld {
                 let ability = slot.abilities[s];
                 {
                     let slot = &mut self.players[index];
+                    // A landing in this pass's PlayerPhysics.UpdateSim already
+                    // set State.land through attachToGround
+                    // (SlimeController.cs:1126-1128) before EnterAbility
+                    // freezes the state machine.
+                    if slot.base.grounded && slot.obs_state == STATE_FALL {
+                        slot.obs_state = STATE_LAND;
+                        slot.state_ticks += LAND_TICKS;
+                    }
                     // The PlayerInfo package carries the post-gravity state;
                     // PlayerBody has not integrated the position yet. The
                     // deactivated slime still gets this pass's Move
@@ -1740,25 +1748,29 @@ impl RolloutWorld {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up)
                 };
+                // With the stick past the deadzone, PlatformTransform writes
+                // the aimed `up` into its own and the spawned platform's
+                // FixTransform and the spring's home
+                // (PlatformTransform.cs:276-285); otherwise both rotations
+                // keep their previous scalar (0 from EnterAbility,
+                // PlatformTransform.cs:122). AnimateVelocity pulls the body's
+                // orientation towards the home, and only DetPhysics.Simulate
+                // copies the FixTransform scalar into the body before
+                // integrating (DetPhysics.cs:2504-2506). Resizing only
+                // changes the collider geometry.
                 if aim != Vec2::ZERO {
                     up = slerp(up, aim, DT * pd.rotation_speed);
+                    let rotation = up.perp_cw().normalized_angle();
+                    self.platform_dynamics[platform_index].home_rotation = rotation;
+                    self.platforms[platform_index].surface.right = up.perp_cw();
+                    self.platforms[platform_index].surface.up = up;
+                    self.players[index].base.rotation = rotation;
                 }
-                // PlatformTransform writes the aimed `up` into the spawned
-                // platform's FixTransform and the spring's home
-                // (PlatformTransform.cs:281-285). AnimateVelocity then pulls
-                // the body's previous orientation towards it, and only
-                // DetPhysics.Simulate copies the scalar into the body before
-                // integrating (DetPhysics.cs:2504-2506). Resizing only changes
-                // the collider geometry.
-                let rotation = up.perp_cw().normalized_angle();
-                self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
-                self.platform_dynamics[platform_index].home_rotation = rotation;
-                self.platforms[platform_index].surface.right = up.perp_cw();
-                self.platforms[platform_index].surface.up = up;
+                self.platform_dynamics[platform_index].transform_rotation =
+                    Some(self.players[index].base.rotation);
                 self.reshape_platform(platform_index, center, pd.spawn_extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
-                slot.base.rotation = rotation;
                 slot.platform.sizing_right = up.perp_cw();
                 // SpriteAnimator invokes EnterSize after PlatformTransform's
                 // UpdateSim pass. The newly selected Size state therefore
@@ -3302,7 +3314,10 @@ fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
     if denominator == Fix::ZERO {
         denominator = Fix::from_f32(0.00001);
     }
-    (from * ((Fix::ONE - t) * angle).sin() + to * (t * angle).sin()) / denominator
+    // Vec2.Slerp (Vec2.cs:168-175): each term is scaled by the reciprocal
+    // separately, after its own sine product.
+    let inverse = Fix::ONE / denominator;
+    from * ((Fix::ONE - t) * angle).sin() * inverse + to * (t * angle).sin() * inverse
 }
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
