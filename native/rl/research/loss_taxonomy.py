@@ -28,7 +28,8 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-BOTS = {'archer': 1, 'pursuer': 2, 'evasive': 3, 'mixed': 4}
+sys.path.insert(0, str(HERE))
+from evaluation_protocol import SCRIPTED_KINDS as BOTS  # noqa: E402  kind name -> id (v1 and v2 kinds)
 HARD = 2
 # Death geometry, Assets/Scripts/Assembly-CSharp/SceneBounds.cs + DestroyIfOutsideSceneBounds.UpdateSim
 WATER_Y = -11.3

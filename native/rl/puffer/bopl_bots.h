@@ -49,8 +49,23 @@
  * nibble of scripted_kinds, so ids stay below 16. */
 enum { BOPL_BOT_NONE=0, BOPL_BOT_ARCHER=1, BOPL_BOT_PURSUER=2, BOPL_BOT_EVASIVE=3, BOPL_BOT_MIXED=4, BOPL_BOT_V1_KINDS=4,
        BOPL_BOT_SEARCH=5,  /* rollout search on a forked Rust sim (bopl_bots_v2.h) */
-       BOPL_BOT_KINDS=5 };
+       BOPL_BOT_ARCHER_V2=6, BOPL_BOT_PURSUER_V2=7, BOPL_BOT_EVASIVE_V2=8, BOPL_BOT_MIXED_V2=9,  /* bopl_bots_v2_play.h */
+       BOPL_BOT_KINDS=9 };
 enum { BOPL_BOT_EASY=0, BOPL_BOT_MEDIUM=1, BOPL_BOT_HARD=2, BOPL_BOT_LEVELS=3 };
+
+/* Per-bot memory of the v2 kinds (bopl_bots_v2_play.h); v1 kinds never read it. */
+typedef struct BotV2Mem {
+    uint32_t foe_plat_id, my_plat_id;  /* entity ids of the platforms each side spawned last (0 none) */
+    double foe_plat_x, foe_plat_y;     /* where the foe froze for its current/last platform morph */
+    double haz_prev_dist;              /* my distance to the foe's platform hazard last decision */
+    int foe_plat_decisions;            /* consecutive decisions the foe has been in platform morph */
+    int foe_bow_idle;                  /* consecutive decisions the foe's bow has been ready unused */
+    int foe_charge_decisions;          /* consecutive decisions the foe has been in bow morph */
+    int in_hazard;                     /* last decision was spent escaping a platform hazard */
+    int combo;                         /* decisions left to complete a dash->arrow attack */
+    int hold_off;                      /* pursuer back-off hysteresis (decisions) */
+    int since_dash, since_platform;
+} BotV2Mem;
 
 typedef struct BoplBot {
     int kind, level;
@@ -81,10 +96,12 @@ typedef struct BoplBot {
      * jump-spam or idle until sudden death. */
     int since_shot, since_jump;
     uint8_t last[3];
+    BotV2Mem v2;
 } BoplBot;
 
 /* Indexed by kind; v2 kinds append after "mixed" (bopl_bots_v2.h checks the length). */
-static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed", "search"};
+static const char *BOPL_BOT_NAMES[]={"none", "archer", "pursuer", "evasive", "mixed", "search",
+                                     "archer-v2", "pursuer-v2", "evasive-v2", "mixed-v2"};
 /* v2 kinds decide here (bopl_bots_v2.h); the v1 body of bopl_bot_decide is frozen. */
 static void bopl_bot_decide_v2(struct BoplBot *bot, const BoplRlState *state, int player_index,
                                int hold_left, uint16_t held, const int hold_run[4], uint8_t out[3]);
