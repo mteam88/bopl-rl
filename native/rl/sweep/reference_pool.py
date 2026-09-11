@@ -229,7 +229,8 @@ def rate_checkpoint(checkpoint, pool, out, games=240, first_pass_games=6, band=(
         previous = json.loads(cache.read_text())
         if (previous.get('schema') == SCHEMA and previous.get('checkpoint_identity') == identity
                 and previous.get('pool_sha256') == pool['pool_sha256']
-                and previous.get('budget') == games and previous.get('maps') == maps):
+                and previous.get('budget') == games and previous.get('maps') == maps
+                and previous.get('band') == list(band) and previous.get('seed_base') == seed_base):
             return previous
     game = game_library(game)
     game_sha256 = sha256_file(game)
