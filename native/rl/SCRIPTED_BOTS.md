@@ -50,10 +50,14 @@ bytes before and after any change to the bot headers.
 
 ## search (kind 5, v2): rollout search on a forked sim
 
-`search-hard` / `search-medium` (`bopl_bots_v2.h`) are model-predictive
-control: every decision the bot forks the live game (`bopl_rl_fork`, a
-private copy with the same random stream), plays a set of candidate action
-sequences on the fork for a horizon and emits the first decision of the best.
+`search-hard` / `search-medium` / `search-easy` (`bopl_bots_v2.h`) are
+model-predictive control: every decision the bot forks the live game
+(`bopl_rl_fork`, a private copy with the same random stream), plays a set of
+candidate action sequences on the fork for a horizon and emits the first
+decision of the best. The levels differ only in the horizon: hard 64 ticks,
+medium 48, easy 32 (see *Levels*, below). The bot is deterministic — it
+draws no random numbers — so a game against a seed-invariant opponent is
+one distinct game per map and side.
 Because the rollouts run the real sim, everything v1 approximates is exact
 for free — the 13 u dash raycast through projectiles, own-arrow immunity
 ending after 5 u, a fire-delayed arrow that does not exist yet as an entity,
@@ -69,20 +73,21 @@ checked by driving a fork and the real world with identical random inputs to
 the end of the game on maps 0–2: zero state mismatches. `data::get()` is a
 read-only `OnceLock`, so forks are thread-safe per environment.
 
-**Candidates** (hard ≈ 35, medium ≈ 15): stand, walk ±, jump ±, dash in 8
-directions plus toward the foe, dash-then-shoot (the v1 solver fires once the
-dash tail ends), shots for each charge (v1 solver aims terrain-checked and
-flat, ±3-step perturbations, random aims; horizon = charge + fire delay +
-flight), platform (horizon covers the ~72-tick morph and ejection), and six
-random sequences (hard). While latched only the aim varies (an arrow charge
-searches around `bot_charge_aim`).
+**Candidates** (≤ 22): stand, walk ±, jump ±, jump up, dash in 4 directions
+plus two toward the foe, dash-then-shoot toward the foe (the v1 solver fires
+once the dash tail ends), shots for each charge (the v1 solver's aims,
+terrain-checked and flat; horizon = charge + fire delay + flight, at least
+64), platform (horizon H + 96 covers the ~72-tick morph and ejection). While
+latched only the aim varies (an arrow charge searches ±2 steps around
+`bot_charge_aim` and the previous aim).
 
 **Scoring**: own death −1 (+0.25·t/H), foe death +1 (−0.25·t/H), both −1;
 otherwise a heuristic on the end state: a certified shot from here +0.2 or
-distance to a v1 firing spot, standing in the foe's certified shot −0.2,
-arrow ETA, dry landing, own resources ready, foe dash/platform on cooldown,
-height, distance band. A latch of L decisions costs 0.004·(L−1) (commitment
-margin).
+distance to a v1 firing spot, standing in the foe's certified shot −0.2
+(dropped when the foe is *passive*: neither moved nor morphed for 20
+decisions, the v2 bots' `foe_still`), arrow ETA, dry landing, own resources
+ready, foe dash/platform on cooldown, height, distance band. A latch of L
+decisions costs 0.004·(L−1) (commitment margin).
 
 **Foe model** (the weak point, every loss mode below traces to it): keeps
 its last movement, buttons up (a pending charge fires at once); a charging
@@ -92,20 +97,21 @@ coarse line-of-sight shot exists (charge by range, flat arc tracking me);
 with no shot it closes in, and for long charges (8+ decisions) a second
 pessimistic model dashes in first; a ready platform within 9 u is planted;
 airborne it steers to a landing or spends `bot_recover`; against my arrow it
-gets its best dodge in hindsight (min over v1 dodge / dash-away / platform
-freeze / none for shot candidates), so a shot only counts as a kill when the
-foe cannot escape it — down, mid-air without a dash, on cooldown.
+gets its best dodge in hindsight (min over v1 dodge / dash-away for shot
+candidates), so a shot only counts as a kill when the foe cannot escape it —
+down, mid-air without a dash, on cooldown.
 
-**Cost**: ~4 ms per decision for `search-hard` (≈0.4 s wall per 350-tick game
-vs `mixed-hard`; ≈7 s for a full 7200-tick game), ~1 ms for `search-medium`.
-A diagnostic `evaluate.py` suite with `search-hard,mixed-hard` (≈400 games)
-took 100–160 s wall with two workers.
+**Cost** (2026-09-11, one core, above a `mixed-v2-hard` vs `mixed-v2-hard`
+baseline of 0.23 ms): 0.65 ms per decision for `search-hard`, 0.57 ms medium,
+0.53 ms easy (the pre-2026-09-11 `search-hard` cost 3.7 ms). Rating a level
+against pool v3 (480 games) takes ~4.5 min with two workers.
 
-**Strength (2026-09-11, Rust sim, maps 0–2 both sides).** Bot-vs-bot: 120
-games `search-hard` vs `mixed-hard` 87 W / 33 L (72%; `mixed-hard` is
-seed-invariant, so the spread comes from the search bot's random candidates;
-`search-medium` beat `mixed-hard` in all 6 distinct games and `mixed-medium`
-49/59). Against policies via `evaluate.py --games-per-opponent 32` (96
+**Strength of the first build (2026-09-11 morning, Rust sim, maps 0–2 both
+sides; this is the `search-hard` / `search-medium` frozen in pool v3, before
+the *Levels* changes below).** Bot-vs-bot: 120 games `search-hard` vs
+`mixed-hard` 87 W / 33 L (72%; `mixed-hard` is seed-invariant, so the spread
+came from the search bot's then-random candidates; `search-medium` beat
+`mixed-hard` in all 6 distinct games and `mixed-medium` 49/59). Against policies via `evaluate.py --games-per-opponent 32` (96
 games each; two builds differing only in the platform horizon and a
 rejected foe model scored 61–65, 70–81 and 49–58 on the three rows, so read
 ±8 as noise):
@@ -135,6 +141,80 @@ grows up to 4 s; releasing it at once in the fork hid the squish geometry):
 vs trial 001 76→81 of 120, vs mixed-hard 88→89. With neither a shot nor a
 firing spot the heuristic falls back to closing in on the foe; without that
 the bot camped 16 u from an idle foe until the timeout.
+
+### Levels (2026-09-11): why `search-medium` beat `search-hard`, and the fix
+
+Pool v3 rated the first build's `search-medium` above `search-hard` (667 vs
+574; joint ladder 699 vs 593; head-to-head 25-22-1). Cause, established by
+tracing the class of the winning candidate at every decision and the last
+free decision before each death (336 games per variant: maps 0–2, both
+sides, seeds 90001–90008, vs `mixed-v2-hard`, `evasive-v2-hard`,
+`archer-v2-hard`, `archer-hard`, `random`, run007-final, o3-032-final; sim
+`libbopl_sim.so` sha `84568c7b…`):
+
+1. **The six random sequences (hard only) were a defect.** A random
+   sequence with an arrow ran to H + charge + 60 ticks (188/220) while every
+   other candidate stopped at H = 96, and the end-state heuristic is not
+   stationary in the horizon (the foe model shoots once, then its arrow is
+   gone and its dash spent), so merely looking further ahead scored higher:
+   a random-aim full charge won 12.3% of hard's free decisions (highest mean
+   score of any class, +0.445), 69% of those on the heuristic at the long
+   horizon, and was the fatal commitment in 58 of 109 losses (61 of the 67
+   deaths inside an arrow latch; medium died in a latch 6 times in 55
+   losses). Scoring the random sequences at H instead still lost 44 of 87
+   games inside them while they were chosen 3.4% of the time: random
+   candidates also win the argmax by luck and fail live.
+2. **Random aims cost both levels ~100 Elo** (medium 772 → 875, hard 745 →
+   795 on pool v3) for the same reason, on a smaller scale.
+3. **Hard's extra breadth did not help**: the four extra dash directions (up,
+   down-diagonals, straight down) plus the two sideways dash-then-shoot
+   candidates cost ~130 Elo (843 → 710; `dashshoot_h` was chosen in 0.04% of
+   decisions and preceded 8 of 68 losses); four foe-dodge models instead of
+   two ~35 Elo for twice the rollouts; aim perturbations and seven latched
+   offsets were neutral.
+4. **The horizon has an optimum at 64 ticks** with this foe model (medium's
+   candidate set, deterministic, pool v3, two seed bases where run): H=32
+   624/613, H=48 828/725, H=64 875/873, H=96 843/814, H=128 632. Hypothesis
+   (a) — a longer horizon is a noisier heuristic end state — holds beyond 64.
+5. **Determinism exposed camping**: without random candidates the greedy
+   search has fixed points (walking into a wall scored 0.184 vs 0.182 for
+   the jump for 7000 ticks; 26 of 336 games ran past 4000 ticks, 3 of 6
+   idle-gate games timed out). Random exploration candidates (walk / jump /
+   dash in a random direction, at H) break them but cost 50–200 Elo (843 →
+   790 at H=96; 948–1010 → 725–749 at H=64): chosen 35% of the time, the bot
+   wanders. What fixed it is the passivity rule in the heuristic (a foe
+   still for 20 decisions is not about to shoot, so no cover penalty):
+   idle gate 6/6, and +100 Elo against pool v3, whose opponents camp too.
+
+Nothing time-based is on the decision path (hypothesis d); dash candidates
+into arrows were < 0.5% of choices (c).
+
+Resulting build (`bopl_bots_v2.h`, 459 lines, was 462): no random candidates,
+no random aims, 4 dash directions, 2 dodge models, 3 latched offsets, the
+passivity rule; the levels are the horizon (hard 64, medium 48, easy 32).
+Ratings against pool v3 with the `search-*` members excluded (they no longer
+describe this code; 480 games each, seed bases 70001 / 80001, cluster-bootstrap
+95% CI, sim `84568c7b…` — pool v3 was built on sim `0d4057e7…`, so the
+absolute scale differs from `pool.json`):
+
+| build | `search-hard` | `search-medium` | `search-easy` |
+| --- | --- | --- | --- |
+| pool-v3 build (random sequences, random aims, H 96/64) | 525 [492, 559] | 772 [733, 817] | = medium |
+| without the random sequences | 727 [692, 764] | — | — |
+| final | **948 [897, 1000] / 1010 [955, 1073]** | 824 [788, 866] / 705 [664, 749] | 655 [618, 694] / 623 [586, 664] |
+
+Same 336-game set, `search-hard`: pool-v3 build 226 W / 109 L / 1 D (mean
+694 ticks), final 297 / 37 / 2 (mean 1015 ticks; 48-0 against each of
+`archer-hard`, `archer-v2-hard`, `evasive-v2-hard`, 40-8 `mixed-v2-hard`,
+31-16 o3-032-final, 37-10 run007-final, 45-3 `random`); the remaining deaths
+are 20 squishes and 16 arrows, mostly from the two policies. Deterministic
+bots make the CI optimistic (identical games repeat across seeds against
+seed-invariant opponents): the two seed bases differ by up to 100 Elo for
+medium. Idle gate (`check_scripted_bots.py`): `search-hard` 6/6 (three by
+sudden death); medium and easy still stall against an idle foe in 2–3 of 6
+games — a deterministic greedy search with a 32–48-tick horizon cannot see
+a route off a low ledge. Pool v3's two `search-*` members are stale: a v4
+should re-rate them from this code.
 
 ## Game facts the bots use (measured in-sim)
 
@@ -393,9 +473,10 @@ v1 bots are seed-invariant, so `W-L-T` counts of the row bot over 6 games):
 | mixed-v2 | 6-0-0 | 6-0-0 | 5-1-0 | 6-0-0 | **23/1/0** |
 | all v2 | 22/1/1 | 21/3/0 | 20/3/1 | 20/4/0 | **83/13/2** |
 
-Against `search-hard` (kind 5; it draws random candidates, so with the
-reset-derived bot seeds every pair is a distinct game; maps 0–2 × 6 seed
-pairs × both sides = 36 games per row):
+Against the first build of `search-hard` (kind 5, the pool-v3 build; it
+drew random candidates, so with the reset-derived bot seeds every pair was a
+distinct game; maps 0–2 × 6 seed pairs × both sides = 36 games per row; the
+2026-09-11 *Levels* build sweeps all four v2 kinds 48-0 or 40-8, see above):
 
 | v2 (hard) vs search-hard | W | L | T |
 |---|---|---|---|
