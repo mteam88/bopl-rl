@@ -86,8 +86,13 @@ static double search_heuristic(const BoplRlState *s, int me, const SearchContext
     double h=0;
     /* A certified shot from here is the next decision's kill; otherwise
      * progress toward a spot that has one. */
+    double d=bot_len(v.fx-v.x, v.fy-v.y);
     if (!v.morphing && search_shot_exists(&v)) h+=0.2;
     else if (ctx->have_spot) h-=0.008*bot_len(ctx->sx-v.x, ctx->sy-v.y);
+    /* No known firing spot either: close in (the v1 pursuer's fallback).
+     * Without a gradient the bot camps wherever it stands, e.g. on map 0's
+     * middle platform 16 u from an idle foe, until the round times out. */
+    else h-=0.008*d;
     /* Standing where the foe's bow (ready or charging) has a certified shot
      * at me is the opposite: seek cover. */
     if (v.foe_slime && v.foe) {
@@ -111,7 +116,6 @@ static double search_heuristic(const BoplRlState *s, int me, const SearchContext
         h+=0.06*!foe_dash+0.03*!foe_platform;
     }
     h+=0.015*search_clamp(v.y-v.fy, -6, 6);
-    double d=bot_len(v.fx-v.x, v.fy-v.y);
     h-=0.012*fmax(0, 7-d)+0.006*fmax(0, d-20);
     return h;
 }
