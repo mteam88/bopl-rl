@@ -395,6 +395,19 @@ pub struct PlayerSlot {
     pub bow_entity: usize,
 }
 
+impl PlayerSlot {
+    /// SlimeController.ExitAbility enters Fall and raycasts at once
+    /// (SlimeController.cs:249, 263-272). A landing on this pass begins the
+    /// land animation after the slime's SpriteAnimator (hierarchy 100000007,
+    /// before every ability component) has already run, so it ends one tick
+    /// later than a landing in PlayerPhysics.UpdateSim; `update_obs_state`
+    /// adds this marker to LAND_TICKS.
+    fn exit_to_fall(&mut self) {
+        self.obs_state = STATE_FALL;
+        self.state_ticks = 1;
+    }
+}
+
 pub struct RolloutWorld {
     pub valid: bool,
     pub failed: bool,
@@ -521,7 +534,8 @@ impl RolloutWorld {
         self.spawned.clone_from(&src.spawned);
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
-        self.sudden_death_delays.clone_from(&src.sudden_death_delays);
+        self.sudden_death_delays
+            .clone_from(&src.sudden_death_delays);
         self.orbits.clone_from(&src.orbits);
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
@@ -538,13 +552,41 @@ impl RolloutWorld {
         // Exhaustive: a new field must be added to the copy above (or listed
         // here as deliberately skipped) before this compiles again.
         let RolloutWorld {
-            valid: _, failed: _, started: _, terminal: _, map: _, stocks: _, warmup: _, limit: _,
-            tick: _, episode_ticks: _, rng: _, players: _, platforms: _, platform_dynamics: _,
-            platform_defs: _, platform_entities: _, arrows: _, spawned: _, sudden_death: _,
-            sudden_death_tick: _, sudden_death_delays: _, orbits: _, next_platform_id: _,
-            next_entity_id: _, entities: _, slimes: _, state: _, sample_entities: _,
-            sample_slimes: _, sample: _, sample_valid: _, recording: _, replay_config: _,
-            replay_buffer: _, error: _,
+            valid: _,
+            failed: _,
+            started: _,
+            terminal: _,
+            map: _,
+            stocks: _,
+            warmup: _,
+            limit: _,
+            tick: _,
+            episode_ticks: _,
+            rng: _,
+            players: _,
+            platforms: _,
+            platform_dynamics: _,
+            platform_defs: _,
+            platform_entities: _,
+            arrows: _,
+            spawned: _,
+            sudden_death: _,
+            sudden_death_tick: _,
+            sudden_death_delays: _,
+            orbits: _,
+            next_platform_id: _,
+            next_entity_id: _,
+            entities: _,
+            slimes: _,
+            state: _,
+            sample_entities: _,
+            sample_slimes: _,
+            sample: _,
+            sample_valid: _,
+            recording: _,
+            replay_config: _,
+            replay_buffer: _,
+            error: _,
         } = src;
     }
 
@@ -920,6 +962,7 @@ impl RolloutWorld {
         }
         if !slot.base.grounded {
             slot.obs_state = STATE_FALL;
+            slot.state_ticks = 0;
             return;
         }
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
@@ -935,9 +978,10 @@ impl RolloutWorld {
         let input_right = align >= Fix::ZERO;
         match slot.obs_state {
             STATE_FALL => {
-                // attachToGround: land animation, then idle.
+                // attachToGround: land animation, then idle (one tick longer
+                // after an ability exit, see `PlayerSlot::exit_to_fall`).
                 slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS;
+                slot.state_ticks += LAND_TICKS;
             }
             STATE_LAND => {
                 slot.state_ticks = slot.state_ticks.saturating_sub(1);
@@ -1010,7 +1054,7 @@ impl RolloutWorld {
             // Live SlimeController/PlayerBody state therefore consumes the
             // current input immediately. Only Player.Position is stale; that
             // publication phase is represented explicitly in PlayerSlot.
-            self.game_tick(actions, actions);
+            self.game_tick(actions);
             if self.terminal {
                 break;
             }
@@ -1036,7 +1080,7 @@ impl RolloutWorld {
                 let mut frame = [CAction::default(); MAX_PLAYERS];
                 frame[..actions.len()].copy_from_slice(actions);
                 self.recording.push(frame);
-                self.game_tick(actions, actions);
+                self.game_tick(actions);
                 if self.terminal {
                     break;
                 }
@@ -1050,7 +1094,7 @@ impl RolloutWorld {
     /// deaths, session bookkeeping. Mirrors Updater.TickSimulation order
     /// loosely: inputs -> slime updates (abilities + movement) -> physics ->
     /// session end checks.
-    fn game_tick(&mut self, actions: &[CAction], registered_actions: &[CAction]) {
+    fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
@@ -1065,19 +1109,15 @@ impl RolloutWorld {
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
-            let registered_action = registered_actions[index].aim_action();
             let movement_input = actions[index].input_direction(self.players[index].keyboard);
-            let jump_down = registered_action.buttons & 1 != 0;
+            let jump_down = action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
+            // SlimeController.Jump reads that same edge
+            // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
+            // movement slice's copy must not go stale while an ability runs.
+            self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
-            self.player_tick(
-                index,
-                action,
-                registered_action,
-                movement_input,
-                jump_pressed,
-                data,
-            );
+            self.player_tick(index, action, movement_input, jump_pressed, data);
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
             // the match-level death exactly once; otherwise the later
@@ -1164,7 +1204,6 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         action: Action,
-        registered_action: Action,
         movement_input: Vec2,
         jump_pressed: bool,
         data: &data::RolloutData,
@@ -1217,7 +1256,7 @@ impl RolloutWorld {
         if !in_ability {
             for s in 0..3 {
                 let slot = &self.players[index];
-                let button_down = registered_action.buttons & (2 << s) as u8 != 0;
+                let button_down = action.buttons & (2 << s) as u8 != 0;
                 if !button_down || slot.timers[s] < slot.cooldowns[s] {
                     continue;
                 }
@@ -1244,11 +1283,11 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
                         self.players[index].active_slot = s;
-                        self.players[index].ability_entry_action = registered_action;
+                        self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let masked = Action {
-                            angle: registered_action.angle,
-                            buttons: (registered_action.buttons & 1) | 2,
+                            angle: action.angle,
+                            buttons: (action.buttons & 1) | 2,
                         };
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
@@ -1261,7 +1300,7 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
                         self.players[index].active_slot = s;
-                        self.players[index].ability_entry_action = registered_action;
+                        self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
                         // BowTransform.OnEnterAbility: aim starts at
@@ -1289,14 +1328,14 @@ impl RolloutWorld {
                         // list, so a newly enabled Bow updates later in this
                         // same pass (like Dash, unlike a newly instantiated
                         // projectile which is deferred).
-                        self.bow_tick(index, registered_action, data);
+                        self.bow_tick(index, action, data);
                         return;
                     }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
                         self.players[index].active_slot = s;
-                        self.players[index].ability_entry_action = registered_action;
+                        self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let slot = &mut self.players[index];
                         // PlatformTransform.OnEnterAbility: the body freezes at
@@ -1322,11 +1361,11 @@ impl RolloutWorld {
         }
 
         if self.players[index].active == ActiveAbility::Bow {
-            self.bow_tick(index, registered_action, data);
+            self.bow_tick(index, action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
-            self.platform_ability_tick(index, registered_action, data);
+            self.platform_ability_tick(index, action, data);
             // PlatformTransform updates before its own
             // DestroyIfOutsideSceneBounds component. Unlike the ordinary
             // slime, this ability body's position is final for this updater
@@ -1341,7 +1380,7 @@ impl RolloutWorld {
             let source = if starting {
                 self.players[index].ability_entry_action
             } else {
-                registered_action
+                action
             };
             let masked = Action {
                 angle: source.angle,
@@ -1382,7 +1421,7 @@ impl RolloutWorld {
                 // runs VelocityBasedRaycasts (SlimeController.cs:249, 263-272)
                 // with the leave velocity: the slime can land on the ejection
                 // tick, after the ejected position was published.
-                slot.obs_state = STATE_FALL;
+                slot.exit_to_fall();
                 slot.base.collision_rays(&self.platforms);
             }
         }
@@ -1467,6 +1506,18 @@ impl RolloutWorld {
     /// physics, post-fire recoil flight, and the exit conditions.
     fn bow_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let bow = &data.bow;
+        // SpriteAnimator (hierarchy 100000016) updates before BowTransform
+        // (100000021). The fireGround/fireAir callback runs on the update
+        // after the animation's last frame tick (SpriteAnimator.cs:190-231)
+        // and exits the ability before this pass's aim and movement.
+        let b = &mut self.players[index].bow;
+        if b.has_fired {
+            if b.fire_ticks_left == 0 {
+                bow_exit(&mut self.players[index], &self.platforms);
+                return;
+            }
+            b.fire_ticks_left -= 1;
+        }
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let dir = action.direction();
@@ -1585,48 +1636,11 @@ impl RolloutWorld {
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
         }
-        if slot.bow.has_fired && slot.bow.fire_ticks_left > 0 {
-            slot.bow.fire_ticks_left -= 1;
-            if slot.bow.fire_ticks_left == 0 {
-                exit = true;
-            }
-        }
         if boundary_death {
             slot.base.alive = false; // game_tick attributes it after this updater
         }
         if exit {
-            slot.active = ActiveAbility::None;
-            slot.obs_state = STATE_FALL;
-            if slot.base.grounded {
-                // Landing exit (BowTransform.cs:225-239): the slime's
-                // SyncPhysicsTo(AbilityExitInfo) (PlayerPhysics.cs:556-570)
-                // re-derives its surface local from the exit position;
-                // LocalPlayerPosFromPos does not invert
-                // PositionFromLocalPlayerPos exactly, so the rider shifts.
-                let platform = slot.base.platform(platforms).expect("grounded bow has a platform");
-                let radius = slot.base.radius;
-                let position = platform.surface.position(slot.base.local, radius);
-                slot.base.local = platform
-                    .surface
-                    .local_position(position, radius)
-                    .expect("exit position lies on the platform");
-                slot.base.position = position;
-                slot.base.velocity = Vec2::ZERO;
-                slot.base.align(platform);
-                // Ability.ExitAbility publishes the collider position
-                // (Ability.cs:151) before the slime's LateUpdateSim slides.
-                slot.reported_position = position;
-            } else {
-                // Animation-end exit (BowTransform.cs:116-130): UnGround
-                // nudges the body off any retained ground and zeroes the
-                // rotation; the slime then enters fall and immediately
-                // raycasts for a landing (SlimeController.cs:251-259), its
-                // own attached ground cleared first (PlayerPhysics.cs:577).
-                slot.base.force_unground(platforms);
-                slot.reported_position = slot.base.position; // Ability.cs:151
-                slot.base.ground = None;
-                slot.base.collision_rays(platforms);
-            }
+            bow_exit(slot, platforms);
         }
     }
 
@@ -1774,7 +1788,7 @@ impl RolloutWorld {
                     slot.base.ground = None;
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.active = ActiveAbility::None;
-                    slot.obs_state = STATE_FALL;
+                    slot.exit_to_fall();
                     // Ability.ExitAbility republishes potentialCollider.position
                     // after PlatformTransform has applied the final ejection.
                     // SlimeController's synchronous onExitAbility callback then
@@ -2541,7 +2555,8 @@ impl RolloutWorld {
             // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
             let inner = &mut platform.collider.inner;
             inner.center = platform.surface.center;
-            inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
+            inner.right =
+                (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
             inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(platform.surface.right);
         }
         // CollisionInformation stores the shape as it was during narrow phase;
@@ -3355,6 +3370,46 @@ impl RolloutWorld {
         let digest = sha256(out);
         self.replay_buffer.extend_from_slice(&digest);
         Ok(())
+    }
+}
+
+/// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
+/// fire animation's end (BowTransform.cs:116-130).
+fn bow_exit(slot: &mut PlayerSlot, platforms: &[Platform]) {
+    slot.active = ActiveAbility::None;
+    slot.exit_to_fall();
+    if slot.base.grounded {
+        // Landing exit (BowTransform.cs:225-239): the slime's
+        // SyncPhysicsTo(AbilityExitInfo) (PlayerPhysics.cs:556-570)
+        // re-derives its surface local from the exit position;
+        // LocalPlayerPosFromPos does not invert
+        // PositionFromLocalPlayerPos exactly, so the rider shifts.
+        let platform = slot
+            .base
+            .platform(platforms)
+            .expect("grounded bow has a platform");
+        let radius = slot.base.radius;
+        let position = platform.surface.position(slot.base.local, radius);
+        slot.base.local = platform
+            .surface
+            .local_position(position, radius)
+            .expect("exit position lies on the platform");
+        slot.base.position = position;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.align(platform);
+        // Ability.ExitAbility publishes the collider position
+        // (Ability.cs:151) before the slime's LateUpdateSim slides.
+        slot.reported_position = position;
+    } else {
+        // Animation-end exit (BowTransform.cs:116-130): UnGround
+        // nudges the body off any retained ground and zeroes the
+        // rotation; the slime then enters fall and immediately
+        // raycasts for a landing (SlimeController.cs:251-259), its
+        // own attached ground cleared first (PlayerPhysics.cs:577).
+        slot.base.force_unground(platforms);
+        slot.reported_position = slot.base.position; // Ability.cs:151
+        slot.base.ground = None;
+        slot.base.collision_rays(platforms);
     }
 }
 
