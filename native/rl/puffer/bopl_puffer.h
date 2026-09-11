@@ -443,6 +443,19 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
     if (env->random_loadouts) for (int i=0; i<env->players; i++) for (uint32_t j=0; j<config->slots; j++)
         config->player[i].abilities[j]=1+bopl_random(env)%(BOPL_ABILITY_COUNT-1); // Exclude the source's NullAbility placeholder.
 }
+/* The decision-loop half of c_reset, from the episode's first state: first
+ * observation, the delay history primed with it, latches cleared, the neutral
+ * own-action tail and the masks. Shared with the agent shim (bopl_agent.c),
+ * which is fed states from a running game instead of a world it steps. */
+static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
+    compute_observations_from(env, state);
+    size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
+    for (int i=0; i<2; i++) memcpy(env->history+i*env->players*BOPL_OBS_SIZE, env->scratch, bytes);
+    env->delay_cursor=0;
+    memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
+    for (int i=0; i<env->players; i++) { env->scratch[(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES]=1; bopl_write_mask(env, i); }
+    bopl_publish(env);
+}
 static void c_reset(BoplPuffer *env) {
     bopl_world_ready(env);
     bopl_spare_ready(env);
@@ -505,13 +518,7 @@ static void c_reset(BoplPuffer *env) {
     for (int i=0; i<env->players; i++) if (env->bot_select[i])
         bopl_bot_reset(&env->bots[i], env->bot_select[i], env->bot_select_level[i], bopl_bot_seed(env, i));
     env->boundary_reached=1; env->matches++;
-    compute_observations(env);
-    size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
-    for (int i=0; i<2; i++) memcpy(env->history+i*env->players*BOPL_OBS_SIZE, env->scratch, bytes);
-    env->delay_cursor=0;
-    memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
-    for (int i=0; i<env->players; i++) { env->scratch[(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES]=1; bopl_write_mask(env, i); }
-    bopl_publish(env);
+    bopl_reset_observations(env, state);
 }
 /* c_step in three phases, so the research binding can advance the world one
  * tick at a time (research_step_tick, for callers that need per-tick state)
@@ -521,13 +528,15 @@ static void c_reset(BoplPuffer *env) {
  * at phase 3 when delayed); finish credits rewards, telemetry, terminals, the
  * delayed observation and the masks. c_step = begin, advance, finish. */
 typedef struct { BoplRlAction actions[6]; int fresh[6], holds[6]; uint32_t ticks; } BoplStepPhase;
-static void bopl_step_begin(BoplPuffer *env, BoplStepPhase *phase) {
+/* The _from variants take the world state explicitly (the state before the
+ * decision for begin, the state after its ticks for finish) so the agent shim
+ * (bopl_agent.c) can run this exact bookkeeping on states a running game
+ * hands it; the plain variants read it from env->world. */
+static void bopl_step_begin_from(BoplPuffer *env, BoplStepPhase *phase, const BoplRlState *before) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
     memset(telemetry, 0, (size_t)env->players*BOPL_TELEMETRY_SIZE*sizeof(float));
     for (int s=0; s<env->num_agents; s++) { *env->reward_ptr[s]=0; *env->terminal_ptr[s]=0; }
     env->stepped++;
-    const BoplRlState *before=bopl_rl_state(env->world);
-    if (!before) bopl_failed(env, "state");
     memset(phase, 0, sizeof(*phase));
     BoplRlAction *actions=phase->actions;
     int *fresh=phase->fresh, *holds=phase->holds;
@@ -556,6 +565,11 @@ static void bopl_step_begin(BoplPuffer *env, BoplStepPhase *phase) {
     for (int i=0; i<env->players; i++) if (env->bot_select[i]) memcpy(env->bots[i].applied, phase->actions, sizeof(phase->actions));
     phase->ticks=before->header.episode_ticks;
 }
+static void bopl_step_begin(BoplPuffer *env, BoplStepPhase *phase) {
+    const BoplRlState *before=bopl_rl_state(env->world);
+    if (!before) bopl_failed(env, "state");
+    bopl_step_begin_from(env, phase, before);
+}
 /* The delayed observation's source: the world state at phase 3 of the decision
  * (or the final state when the episode ended earlier). */
 static void bopl_step_sample(BoplPuffer *env, const BoplRlState *state) {
@@ -573,12 +587,11 @@ static void bopl_step_advance(BoplPuffer *env, const BoplStepPhase *phase) {
         bopl_step_sample(env, bopl_rl_sample(env->world));
     } else if (bopl_rl_step(env->world, actions, env->players, (uint32_t)env->repeat)) bopl_failed(env, "step");
 }
-static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
+static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, const BoplRlState *state) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
     const BoplRlAction *actions=phase->actions;
     const int *fresh=phase->fresh, *holds=phase->holds;
     uint32_t ticks=phase->ticks;
-    const BoplRlState *state=bopl_rl_state(env->world);
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
     for (int i=0; i<env->players; i++) {
@@ -645,7 +658,7 @@ static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
         float *old=env->history+(size_t)env->delay_cursor*env->players*BOPL_OBS_SIZE;
         memcpy(env->scratch, old, bytes); memcpy(old, env->sample, bytes);
         env->delay_cursor=(env->delay_cursor+1)%2;
-    } else compute_observations(env);
+    } else compute_observations_from(env, state);
     if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
         float *previous=env->scratch+(size_t)(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES;
@@ -653,6 +666,9 @@ static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
         bopl_write_mask(env, i);
     }
     bopl_publish(env);
+}
+static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
+    bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
 }
 static void c_step(BoplPuffer *env) {
     BoplStepPhase phase;

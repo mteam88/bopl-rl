@@ -11,6 +11,20 @@ $(OUT)/libbopl_research.so: puffer/eval_binding.c puffer/bopl_puffer.h puffer/bo
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared -I. puffer/eval_binding.c bopl_rl.c -lm -o $@
 
+# In-game agent shim (puffer/bopl_agent.h): the training decision loop fed by
+# a running game, plus the CPU policy evaluator. Loaded by the Unity build
+# (Assets/Scripts/Assembly-CSharp/RlAgent.cs) and research/agent_shim.py.
+PUFFERLIB ?= $(OUT)/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/src
+agent: $(OUT)/libbopl_agent.so
+
+$(OUT)/libbopl_agent.so: puffer/bopl_agent.c puffer/bopl_agent.h puffer/policy_eval.c puffer/bopl_set_encoder.h puffer/bopl_puffer.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c -I. -Ipuffer puffer/bopl_agent.c -o $(OUT)/bopl_agent.o
+	$(CC) $(CFLAGS) -fPIC -c bopl_rl.c -o $(OUT)/bopl_agent_rl.o
+	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer puffer/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) -shared $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -o $@
+	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
+
 $(OUT)/libbopl_rl.so: bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -fPIC -shared bopl_rl.c -o $@
@@ -36,4 +50,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research
+.PHONY: all research agent
