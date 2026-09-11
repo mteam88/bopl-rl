@@ -1,10 +1,11 @@
 # Overnight sweep 4 (2026-09-11): overnight-3's basin at twice the budget,
 # a v2 training bot, scored by the frozen reference pool.
-# Score: Bradley-Terry Elo vs pool v3 (random, 4 v1 hard bots + mixed-medium,
+# Score: Bradley-Terry Elo vs pool v4 (random, 4 v1 hard bots + mixed-medium,
 # 4 v2 hard bots, search-hard/medium, 6 overnight-3 finals, run007-final),
 # IQM over the last 3 evaluations, 480 games per checkpoint (240 gave a 95% CI
 # of +-45 Elo on the overnight-3 re-score; trial effects there were ~30-50).
-# The pool was played on libbopl_sim.so 0d4057e7; ratings on another build are
+# The pool was played on libbopl_sim.so d0a170e5 (v3 on 0d4057e7 rated the same
+# members within CI, tier order unchanged); ratings on another build are
 # flagged game_mismatch, not refused. After a sim rebuild with gameplay fixes,
 # build pool v4 (same 19 members, ~17 min at 6+12 workers) and point `pool` at it:
 #   systemd-run --user --scope -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
@@ -68,7 +69,7 @@ poll_seconds = 60
 
 [scoring]
 scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json"
+pool = "native/artifacts/rl/sweeps/anchors/overnight-4/pool.json"   # v4: same 19 members on the bit-identical sim
 last_k = 3                         # eval_every 20M -> the last 60M steps
 games = 480
 first_pass_games = 6
