@@ -42,7 +42,14 @@ public static class RlBridge
         QualitySettings.vSyncCount = 0;
         RlProfile.Install();
         SceneManager.sceneLoaded += (_, mode) => {
-            if (loading && mode == LoadSceneMode.Single) loadedFrame = Time.frameCount;
+            if (loading && mode == LoadSceneMode.Single) {
+                loadedFrame = Time.frameCount;
+                // As the .NET host (sim/Host/RlMode.cs) and RlAgent: fixed loadouts, no
+                // pickup bodies the training sims never simulate (AbilitySpawner spawns
+                // after 40 s and would otherwise consume gameplay RNG), unless opted in.
+                if (Environment.GetEnvironmentVariable("BOPL_RL_ABILITY_SPAWNS") != "1")
+                    foreach (var spawner in UnityEngine.Object.FindObjectsOfType<AbilitySpawner>(true)) spawner.enabled = false;
+            }
         };
         response.SetLength(0);
         payload.Write(Version);

@@ -135,9 +135,10 @@ def check_replay(args):
         agent_id = agent.id
         # The research world runs the warmup inside its reset (config.warmup_ticks), so its
         # episode tick 0 is the recording's frame `warmup`; frame f holds the inputs applied
-        # to the tick that takes S_f to S_{f+1}.
-        world = ReplayWorld(meta, Path('/tmp/play-unity/fidelity-logs/replay.log'), limit=agent.max_episode_ticks,
-                            game=args.game, warmup_ticks=warmup)
+        # to the tick that takes S_f to S_{f+1}. The game never truncates (RlAgent plays past
+        # max_episode_ticks), so the world's limit is the recording's length.
+        log = Path(os.environ.get('BOPL_FIDELITY_LOG', '/tmp/bopl-agent-fidelity-replay.log'))
+        world = ReplayWorld(meta, log, limit=meta['ticks'] + 1, game=args.game, warmup_ticks=warmup)
         compared = matched = 0; first_mismatch = None; ended = False; mismatches = []
         try:
             for f in range(warmup, meta['ticks']):

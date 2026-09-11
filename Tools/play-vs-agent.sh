@@ -109,6 +109,6 @@ else
 fi
 wait "$GPID"
 STATUS=$?
-[ -n "$HEADLESS" ] && kill "${XVFB:-0}" 2>/dev/null
+[ -n "$HEADLESS" ] && { kill "${XVFB:-0}" 2>/dev/null; pkill -f "Xvfb $HEADLESS" 2>/dev/null; }
 "$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" --agent "$AGENT" --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG"
 exit $STATUS
