@@ -632,10 +632,12 @@ static void bot2_pursuer(const BotView *view, const BotView2 *v, BoplBot *bot, i
     if (range<5.5 && window && bot2_try_shot(view, v, bot, forced_release, BOT_HOLD_QUICK, act)) return;
     if (bot2_try_shot(view, v, bot, forced_release, max_hold, act)) return;
     if (view->foe_platforming) {
-        /* Frozen and unhittable: hold range with a ready bow for the ejection. */
-        if (range<BOT2_PLAT_DISC*2+3) { bot_act(act, bot_aim_byte(dx>=0?0.2:-0.2, 1), 0, 0); return; }
+        /* Frozen and unhittable: hold range with a ready bow for the ejection.
+         * Never close on a plant point: its rect can reach ~19 u along one
+         * axis, and bot_nav_foe would dash right onto it. */
+        if (range<BOT_DASH_LENGTH+BOT2_PLAT_DISC+4) { bot_act(act, bot_aim_byte(dx>=0?0.2:-0.2, 1), 0, 0); return; }
         uint8_t aim=0; uint16_t buttons=0;
-        bot_nav_foe(view, bot, &aim, &buttons); bot_act(act, aim, buttons, 0); return;
+        bot_nav_foe(view, bot, &aim, &buttons); bot_act(act, aim, buttons&(uint16_t)~BOT_DASH, 0); return;
     }
     if (!window) {
         /* Ready bow: never inside 8.5 u; hold 9-14 u and wait for it to fire. */
@@ -822,6 +824,21 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
             bot_act(&act, aim, buttons, 0);
         } else if (view.platform_ready && bot2_platform_press_safe(&view, &v2))
             bot_act(&act, BOT_AIM_UP, BOT_PLATFORM, 0);
+    }
+    /* Hazard approach veto: nothing moves toward a live plant point. A dash
+     * toward it (13 u + slide) would land inside the disc's reach; a walk is
+     * replaced by standing (aim along the ground normal = no movement input). */
+    if (v2.haz_active && !v2.haz_mine && !view.morphing && !(act.buttons&BOT_ARROW)) {
+        double ang=((int)act.aim-1)/255.0*2*M_PI, ax=cos(ang), ay=sin(ang);
+        double hx=v2.haz_x-view.x, hy=v2.haz_y-view.y, hd=bot_len(hx, hy);
+        double toward=hd>1e-6?(ax*hx+ay*hy)/hd:0;
+        if (act.aim && toward>0.5) {
+            if ((act.buttons&BOT_DASH) && hd<BOT_DASH_LENGTH+BOT2_PLAT_DISC+5) { act.buttons&=(uint16_t)~BOT_DASH; dbg_veto=1; }
+            if (!(act.buttons&(BOT_DASH|BOT_PLATFORM|BOT_JUMP)) && view.grounded && v2.haz_dist<BOT2_PLAT_DISC*2+4) {
+                double tx, ty; bot2_ground_tangent(&view, &v2, &tx, &ty);
+                act.aim=bot_aim_byte(-ty, tx); dbg_veto=1;
+            }
+        }
     }
     /* Survival veto (v1): airborne steering must land dry and clear of arrows. */
     if (!view.morphing && !view.grounded && !(act.buttons&(BOT_DASH|BOT_PLATFORM|BOT_ARROW))) {
