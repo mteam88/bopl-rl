@@ -305,15 +305,33 @@ the header comment; the ones that changed the outcome:
 - **Cooldown/charge-aware engagement.** Foe bow/dash readiness from
   `timers > cooldowns`, its bow aim from the bow hurtbox up vector
   (`mod.rs:2680-2695`). No charge and no closing inside 8.5 u while the foe's
-  bow is ready or its bow morph is aimed at me (cos > 0.72 within 15 u); mid
-  holds only inside 16 u of a ready bow; full holds when the foe is passive
-  (bow idle ≥ 45 decisions or still ≥ 20) or has its bow down (budget =
-  remaining cooldown). Free-hit rule only for platform morphs from range.
+  bow is ready or its bow morph is aimed at me (cos > 0.72 within 15 u); a
+  ready bow answers a hold in 12 ticks + range/75 s, so only quick holds
+  inside 12 u of one and mid holds inside 20 u; full holds when the foe is
+  passive (bow idle ≥ 45 decisions or still ≥ 20) or has its bow down, where
+  the hold's charge + fire delay (12/40/72 ticks) + 8 must fit inside the
+  foe's remaining cooldown + its quick charge + arrow flight. No duel with a
+  foe that is *charging* inside 16 u (a policy re-aims every decision) nor
+  with one that released < 0.25 s ago (`foe_bow_fresh`: the bow timer sits at
+  0 through the charge and counts from release; its arrow spawns velocity-less
+  and fires 8–12 ticks later, invisible to the ETA until then — this was the
+  mechanism behind most "killed while morphing bow" deaths). Before any
+  charge the arrow ETA is re-run for a *stationary* body (the morph hovers
+  where it starts; the dodge layer's ETA assumed the jump/run carried on) and
+  the hold is shortened until it fires before that arrow arrives. An airborne
+  charge with dash and platform down must also land dry from 6 u lower (the
+  morph sinks over a full hold and the exit leaves ~20 ticks without
+  abilities). Free-hit rule only for platform morphs from range.
   pursuer-v2/mixed-v2 dash in when the window is open (foe bow down, passive,
-  or charging elsewhere) and its dash is down, then shoot from the slide
-  (`combo`); the bow may be entered at any airborne speed
+  or charging elsewhere) and its dash is down, whenever the 13 u dash ends
+  inside mid-hold range (7 < range < 22, |dy| ≤ 7), then shoot from the slide
+  (`combo`, 5 decisions); the bow may be entered at any airborne speed
   (`BowTransform.cs:93-97`), the arrow inherits only the residual
   self-imposed velocity.
+- **Doomed falls press platform anyway.** The ejection-path safety check is
+  skipped when no airborne steer lands (`bot_landing_steer` ×3): a cramped
+  ejection risks a squish, the water is certain. evasive-v2 also certifies a
+  dry landing (`bot_launch_lands` for the nav steer) before every perch hop.
 
 ### Measured (2026-09-11, `research/loss_taxonomy.py`, hard, maps 0–2 × 7 seed pairs × both sides = 42 games per cell)
 
@@ -324,57 +342,80 @@ Checkpoints: `t001`/`t012`/`t002` = overnight-3 trials 001/012/002 finals,
 | bot | t001 | t012 | t002 | run007 | all (wins/168, timeouts) | median game |
 |---|---|---|---|---|---|---|
 | archer | 0.62 | 0.40 | 0.48 | 0.36 | 0.46 (78, 1 t/o) | 8.0 s |
-| **archer-v2** | 0.81 | 0.71 | 0.86 | 0.71 | **0.77** (130, 4 t/o) | 12.3 s |
+| **archer-v2** | 0.83 | 0.74 | 0.88 | 0.81 | **0.82** (137, 5 t/o) | 12.4 s |
 | pursuer | 0.57 | 0.33 | 0.67 | 0.40 | 0.49 (83, 1 t/o) | 4.5 s |
-| **pursuer-v2** | 0.95 | 0.81 | 0.88 | 0.64 | **0.82** (138, 2 t/o) | 10.6 s |
+| **pursuer-v2** | 0.95 | 0.74 | 0.90 | 0.74 | **0.83** (140, 1 t/o) | 11.3 s |
 | evasive | 0.74 | 0.52 | 0.71 | 0.50 | 0.62 (104, 5 t/o) | 12.6 s |
-| **evasive-v2** | 0.90 | 0.76 | 0.81 | 0.83 | **0.83** (139, 9 t/o) | 14.6 s |
+| **evasive-v2** | 0.93 | 0.76 | 0.83 | 0.79 | **0.83** (139, 9 t/o) | 13.8 s |
 | mixed | 0.50 | 0.40 | 0.45 | 0.33 | 0.42 (71, 1 t/o) | 7.0 s |
-| **mixed-v2** | 0.81 | 0.81 | 0.90 | 0.60 | **0.78** (131, 4 t/o) | 11.1 s |
+| **mixed-v2** | 0.86 | 0.76 | 0.79 | 0.69 | **0.77** (130, 2 t/o) | 12.2 s |
 
 Terminal cause of every bot non-win vs the policies (v1 → v2):
 
 | bot | squished | hit-by-arrow | own-arrow | fell-water | fell-blast-y | timeout | non-wins |
 |---|---|---|---|---|---|---|---|
-| archer | 63 → **7** | 17 → **18** | 8 → **2** | 1 → **5** | 0 → **2** | 1 → **4** | 90 → **38** |
-| pursuer | 43 → **8** | 20 → **15** | 17 → **3** | 2 → **1** | 2 → **1** | 1 → **2** | 85 → **30** |
-| evasive | 44 → **2** | 9 → **6** | 3 → **1** | 3 → **11** | 0 → **0** | 5 → **9** | 64 → **29** |
-| mixed | 71 → **14** | 16 → **11** | 6 → **2** | 2 → **4** | 1 → **2** | 1 → **4** | 97 → **37** |
-| **all** | 221 → **31** (−86%) | 62 → **50** (−19%) | 34 → **8** (−76%) | 8 → **21** | 3 → **5** | 8 → **19** | 336 → **134** |
+| archer | 63 → **7** | 17 → **14** | 8 → **0** | 1 → **4** | 0 → **1** | 1 → **5** | 90 → **31** |
+| pursuer | 43 → **7** | 20 → **15** | 17 → **1** | 2 → **4** | 2 → **0** | 1 → **1** | 85 → **28** |
+| evasive | 44 → **3** | 9 → **7** | 3 → **2** | 3 → **8** | 0 → **0** | 5 → **9** | 64 → **29** |
+| mixed | 71 → **12** | 16 → **13** | 6 → **4** | 2 → **6** | 1 → **1** | 1 → **2** | 97 → **38** |
+| **all** | 221 → **29** (−87%) | 62 → **49** (−21%) | 34 → **7** (−79%) | 8 → **22** | 3 → **2** | 8 → **17** | 336 → **126** |
 
-Sub-buckets that moved: `squished/map-platform` 92 → 8, `foe-platform-growing`
-55 → 10, `own-platform-settled` 37 → 5, `own-platform-spawn` 20 → 1 (squished
-while in own platform morph 127 → 2); `own-arrow/dash-into-own-arrow` 22 → 0,
-`own-mortar-returning` 11 → 3; `hit-by-arrow/dodge-too-slow-jump` 15 → 0,
-`point-blank` 14 → 7. Regressions to work on next: `killed-while-morphing-bow`
-18 → 27 (in 19 of the 27 the foe's bow was *down* at the charge decision and
-15 were mid holds: the 2.5 s cooldown re-arms during a 40-tick hold plus
-fire delay — the budget check needs the hold length added), `fell-water/jump`
-4 → 17 (13 of 17 are plain personality jumps, no dodge/hazard involved,
-11 of them evasive-v2 on maps 0 and 2: the evasive perch hopping needs
-`bot_launch_lands` before every jump, not only when dash and platform are
-down), `timeout/both-active` 3 → 13 (evasive-v2 holding range against a
-camping policy). Median bot death moved from 7.5 s to 11.1 s; bot
-wins are still mostly arrows on a grounded policy (367/538). The dash→arrow
-combo fires rarely (6 dash→arrow of 1647 dashes): the window conditions
-(foe dash down, range 8–21, ready bow, dash certifies) seldom coincide.
+Sub-buckets that moved: `squished/map-platform` 92 → 11, `foe-platform-growing`
+55 → 7, `own-platform-settled` 37 → 6, `own-platform-spawn` 20 → 0 (squished
+while in own platform morph 127 → 3); `own-arrow/dash-into-own-arrow` 22 → 0,
+`own-mortar-returning` 11 → 1; `hit-by-arrow/dodge-too-slow-jump` 15 → 0,
+`killed-while-morphing-bow` 18 → 7 (it was 27–33 before the fresh-release /
+stationary-ETA rules above; 24 of those 33 charged into a foe that had just
+released or was mid-charge), `point-blank-no-dodge-possible` 14 → 15 and
+`dodge-too-slow-steer` 8 → 14 (the bot now stands its ground where it used to
+lose the duel — the same short-range encounters, later deaths). Remaining
+regressions, left documented: `fell-water/jump` 4 → 18 — from the bot logs
+of all 18: 6 are platform-hazard escape jumps from map-2 ledges within 1.5 u
+of the water (the airborne platform freeze then spawns too low), 5 are
+airborne full holds vs `t002` whose morph sank ~5.6 u and whose exit then
+slid off a ledge edge that v1's fall model (`bot_landing_steer`, straight
+0.7 u/s² air control, penetration test at the edge) still reported as a
+landing, 7 are the same model disagreeing with the real air control near
+ledge edges; `timeout/both-active` 3 → 11 (evasive-v2 holding range against
+a camping policy, 7 of 11). Median bot death moved from 7.5 s to 11.8 s; bot
+wins are still mostly arrows on a grounded policy (380/546). The dash→arrow
+combo still fires rarely (8–10 dash→arrow per ~1600 dashes with the loosened
+window; the foe-dash-down and open-window conditions seldom coincide).
 
-Head-to-head, hard vs hard, maps 0–2, both sides (bot-vs-bot games are
-seed-invariant, so 6 distinct games per cell; wins of the row bot):
+Head-to-head, hard vs hard, maps 0–2, both sides, 6 seed pairs per cell (the
+v1 bots are seed-invariant, so `W-L-T` counts of the row bot over 6 games):
 
-| v2 | vs archer | vs pursuer | vs evasive | vs mixed | total |
+| v2 | vs archer | vs pursuer | vs evasive | vs mixed | total W/L/T |
 |---|---|---|---|---|---|
-| archer-v2 | 6/6 | 4/6 | 5/6 | 4/6 | **19/24** |
-| pursuer-v2 | 6/6 | 3/6 | 5/6 | 6/6 | **20/24** |
-| evasive-v2 | 5/6 | 6/6 | 4/6 | 5/6 | **20/24** |
-| mixed-v2 | 6/6 | 4/6 | 6/6 | 5/6 | **21/24** |
-| all v2 | 23/24 | 17/24 | 20/24 | 20/24 | **80/96** (no timeouts) |
+| archer-v2 | 6-0-0 | 4-2-0 | 5-1-0 | 4-2-0 | **19/5/0** |
+| pursuer-v2 | 5-1-0 | 5-1-0 | 5-1-0 | 5-1-0 | **20/4/0** |
+| evasive-v2 | 5-0-1 | 6-0-0 | 5-0-1 | 5-1-0 | **21/1/2** |
+| mixed-v2 | 6-0-0 | 6-0-0 | 5-1-0 | 6-0-0 | **23/1/0** |
+| all v2 | 22/1/1 | 21/3/0 | 20/3/1 | 20/4/0 | **83/13/2** |
 
-Idle gate: all eight kinds 6/6 (`check_scripted_bots.py`). Decision cost
-(wall time per `env.step` with two bots minus the no-bot baseline, loaded
-machine): v1 archer+mixed ≈ 380 µs/decision, v2 ≈ 300; v1 pursuer+evasive
-≈ 18–28 µs, v2 ≈ 26–32 — the archer's firing-spot search dominates both
-generations; v2's extra layers are within noise.
+Against `search-hard` (kind 5; it draws random candidates, so with the
+reset-derived bot seeds every pair is a distinct game; maps 0–2 × 6 seed
+pairs × both sides = 36 games per row):
+
+| v2 (hard) vs search-hard | W | L | T |
+|---|---|---|---|
+| archer-v2 | 16 | 20 | 0 |
+| pursuer-v2 | 20 | 16 | 0 |
+| evasive-v2 | 14 | 22 | 0 |
+| mixed-v2 | 20 | 16 | 0 |
+| **all** | **70** | **74** | **0** |
+
+(Before the fresh-release/stationary-ETA rules the same protocol gave
+62/82/0.) `search-hard` costs ~4 ms per decision against ~30–400 µs here.
+
+Idle gate: all v2 kinds 6/6 on the Unity and Rust backends
+(`check_scripted_bots.py`); `check_tick_step.py --scripted mixed-v2-hard`
+prints `TICK_STEP_OK`. Decision cost (wall time per `env.step` with two bots
+minus the no-bot baseline, loaded machine): v1 archer+mixed ≈ 420
+µs/decision, v2 ≈ 415; v1 pursuer+evasive ≈ 21–28 µs, v2 ≈ 34–42 — the
+archer's firing-spot search dominates both generations; v2's extra layers
+(three `bot_landing_steer` runs per platform press, one arrow ETA per charge)
+cost ~10 µs.
 
 ## Usage
 

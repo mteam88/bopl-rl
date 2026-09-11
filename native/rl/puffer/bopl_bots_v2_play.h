@@ -75,6 +75,7 @@
 typedef struct {
     int foe_bow_ready, foe_dash_ready, foe_platform_ready;
     double foe_bow_left, foe_dash_left;      /* seconds until ready (0 if ready) */
+    int foe_bow_fresh;                        /* released <0.25 s ago: its arrow is still leaving the bow */
     int foe_loading;                         /* bow loadingFrame while the foe charges */
     int have_foe_aim; double foe_aim_x, foe_aim_y;
     double foe_aim_cos;                      /* cos(angle between the foe's bow aim and the direction to me) */
@@ -133,6 +134,10 @@ static void bot2_view(BotView2 *v, const BotView *view, BoplBot *bot) {
         double l=bot_fix(foe->cooldowns[BOT_SLOT_BOW])-bot_fix(foe->timers[BOT_SLOT_BOW]); v->foe_bow_left=l>0?l:0;
         l=bot_fix(foe->cooldowns[BOT_SLOT_DASH])-bot_fix(foe->timers[BOT_SLOT_DASH]); v->foe_dash_left=l>0?l:0;
         if (view->foe_morphing) v->foe_bow_ready=v->foe_dash_ready=v->foe_platform_ready=0;
+        /* The bow timer sits at 0 through the charge and counts from release;
+         * the arrow spawns velocity-less and fires 8-12 ticks later, invisible
+         * to the ETA until then. */
+        v->foe_bow_fresh=!view->foe_charging && bot_fix(foe->timers[BOT_SLOT_BOW])<0.25 && !v->foe_bow_ready;
         if (view->foe_charging) {
             v->foe_loading=(int)((foe->ability_flags[BOT_SLOT_BOW]>>4)&7);
             const BoplRlEntity *bow=bot2_owner_entity(state, view->foe->id, 22);
@@ -474,17 +479,25 @@ static void bot2_dodge(const BotView *view, const BotView2 *v, BoplBot *bot, Bot
 static int bot2_max_hold(const BotView *view, const BotView2 *v, double range) {
     if (view->foe_platforming) return -1;                      /* hurtbox gone after 24 ticks; the arrow hits the platform */
     if (v->foe_aiming_me && !v->passive) return -1;             /* the duel goes to whoever charged first: not us */
-    if (view->foe_charging) return BOT_HOLD_MID;                /* aimed elsewhere: free hit, but it exits soon */
+    if (view->foe_charging) return range<16?-1:BOT_HOLD_MID;    /* aimed elsewhere now, but a policy re-aims every decision */
+    if (v->foe_bow_fresh && range<20) return -1;                /* its arrow is about to fly; a morph cannot dodge it */
     if (v->passive) return BOT_HOLD_FULL;
     if (v->foe_bow_ready) {
+        /* A ready bow answers a hold in 12 ticks + range/75 s: only a quick
+         * charge fires first inside 12 u, a mid one inside 20 u. */
         if (range<BOT2_READY_BOW_RANGE) return -1;
-        if (range<16) return BOT_HOLD_MID;
+        if (range<12) return BOT_HOLD_QUICK;
+        if (range<20) return BOT_HOLD_MID;
         return BOT_HOLD_FULL;
     }
-    /* Bow down: allowed if the charge fires before the foe can answer. */
-    double budget=v->foe_bow_left*60+30;
-    if (BOT_FIRE_DELAY[BOT_HOLD_FULL]<=budget || range>18) return BOT_HOLD_FULL;
-    if (BOT_FIRE_DELAY[BOT_HOLD_MID]<=budget || range>=BOT2_READY_BOW_RANGE) return BOT_HOLD_MID;
+    /* Bow down: the hold must fire (BOT_FIRE_DELAY = charge + fire delay, in
+     * ticks) before the foe's bow re-arms, quick-charges and its arrow crosses
+     * the range at 75 u/s - the morph hovers and cannot dodge meanwhile.
+     * (The old +30 tick slack let mid holds finish after the re-arm: 19 of 27
+     * v2 "killed while morphing bow" deaths had the foe's bow down at the press.) */
+    double budget=v->foe_bow_left*60+BOT_FIRE_DELAY[BOT_HOLD_QUICK]+range/75.0*60;
+    if (BOT_FIRE_DELAY[BOT_HOLD_FULL]+8<=budget) return BOT_HOLD_FULL;
+    if (BOT_FIRE_DELAY[BOT_HOLD_MID]+8<=budget || range>18) return BOT_HOLD_MID;  /* far: quick cannot reach */
     return BOT_HOLD_QUICK;
 }
 
@@ -500,6 +513,21 @@ static int bot2_try_shot(const BotView *view, const BotView2 *v, BoplBot *bot, i
     if (!view->grounded && bot_len(view->svx, view->svy)>14) {
         tmp=*view; tmp.x+=view->vx*BOT_TICK; tmp.y+=view->vy*BOT_TICK; tmp.svx=tmp.svy=0; use=&tmp;
         if (bot_sdf(use, tmp.x, tmp.y)<BOT_SLIME_RADIUS) return 0;
+    }
+    /* An airborne morph sinks ~4 u over a full hold and the exit leaves ~20
+     * ticks without abilities: the fall from 6 u lower must still land dry
+     * unless a dash or platform is left to recover with. */
+    if (!view->grounded && !view->dash_ready && !view->platform_ready) {
+        BotView low=*use; low.y-=6; low.vx=low.vy=0; double lx, ly;
+        if (!bot_landing_steer(&low, 0, &lx, &ly)) return 0;
+    }
+    /* The morph hovers where it starts: an arrow that reaches that point
+     * before the shot leaves kills a target that cannot dodge (the ETA the
+     * dodge layer saw assumed my jump/run carried on). */
+    if (use->arrow_count) {
+        double still=bot2_arrow_eta(use, 0, 0, 90, NULL);
+        while (max_hold>=0 && BOT_FIRE_DELAY[max_hold]+6>still) max_hold=max_hold==BOT_HOLD_FULL?BOT_HOLD_MID:max_hold==BOT_HOLD_MID?BOT_HOLD_QUICK:-1;
+        if (max_hold<0) return 0;
     }
     double range=bot_len(use->fx-use->x, use->fy-use->y);
     int hold=bot_pick_hold(bot, use, range);
@@ -629,7 +657,8 @@ static void bot2_pursuer(const BotView *view, const BotView2 *v, BoplBot *bot, i
     if (view->foe_platforming) window=0;
     /* Completing a dash->arrow: the slide is airborne and fast; shoot anyway. */
     if (bot->v2.combo>0 && bot2_try_shot(view, v, bot, forced_release, max_hold>=0?max_hold:BOT_HOLD_MID, act)) { bot->v2.combo=0; return; }
-    if (range<5.5 && window && bot2_try_shot(view, v, bot, forced_release, BOT_HOLD_QUICK, act)) return;
+    if (range<5.5 && window && !view->foe_charging && !v->foe_bow_fresh
+            && bot2_try_shot(view, v, bot, forced_release, BOT_HOLD_QUICK, act)) return;
     if (bot2_try_shot(view, v, bot, forced_release, max_hold, act)) return;
     if (view->foe_platforming) {
         /* Frozen and unhittable: hold range with a ready bow for the ejection.
@@ -652,16 +681,18 @@ static void bot2_pursuer(const BotView *view, const BotView2 *v, BoplBot *bot, i
     }
     /* Window open: close in. Dash-in when it ends near the foe and it cannot
      * dash away (its dash down), then shoot from the slide. */
+    /* Dash-in: the 13 u dash ends inside mid-hold range (<= 9 u) of the foe,
+     * the shot leaves from the slide (combo covers the ~5 slide decisions). */
+    if (view->dash_ready && !view->morphing && range>7 && range<BOT_DASH_LENGTH+9 && fabs(dy)<=7 && view->bow_ready
+            && (!v->foe_dash_ready || v->passive || range>13)
+            && bot2_dash_safe(view, dx, dy)) {
+        bot->v2.combo=5;
+        bot_act(act, bot_aim_byte(dx, dy), BOT_DASH, 0); return;
+    }
     if (fabs(dy)>4.0) {
         uint8_t aim=0; uint16_t buttons=0;
         bot_nav_foe(view, bot, &aim, &buttons);
         bot_act(act, aim, buttons, 0); return;
-    }
-    if (view->dash_ready && !view->morphing && range>8 && range<21 && view->bow_ready
-            && (!v->foe_dash_ready || v->passive || range>13)
-            && bot_dash_reaches(view, view->fx, view->fy) && bot2_dash_safe(view, dx, dy)) {
-        bot->v2.combo=3;
-        bot_act(act, bot_aim_byte(dx, dy), BOT_DASH, 0); return;
     }
     if (range<8.5 && view->bow_ready) {
         uint8_t aim=0; uint16_t buttons=0;
@@ -721,6 +752,12 @@ static void bot2_evasive(const BotView *view, const BotView2 *v, BoplBot *bot, i
     }
     uint8_t aim=0; uint16_t buttons=0;
     bot_nav(view, bot, best_x, best_y, &aim, &buttons);
+    /* Every perch hop must certify a dry landing for its steer; v1 only checks
+     * once dash and platform are down (13 of 17 v2 water deaths were these). */
+    if ((buttons&BOT_JUMP) && view->grounded) {
+        double ang=((int)aim-1)/255.0*2*M_PI, ax=cos(ang);
+        if (!bot_launch_lands(view, ax>0.33?19:ax<-0.33?-19:0)) buttons&=(uint16_t)~BOT_JUMP;
+    }
     bot_act(act, aim, buttons, 0);
 }
 
@@ -875,9 +912,14 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
             }
         } else bot->v2.since_dash=0;
     }
-    /* Platform press safety: ejection point clear, no growing foe platform near. */
+    /* Platform press safety: ejection point clear, no growing foe platform near.
+     * Not applied to a doomed fall (no steer lands): a cramped ejection risks a
+     * squish, the water is certain. */
     if (act.buttons&BOT_PLATFORM) {
-        if (!bot2_platform_press_safe(&view, &v2)) { act.buttons&=(uint16_t)~BOT_PLATFORM; dbg_veto=1; }
+        double lx, ly;
+        int doomed=!view.grounded && !view.morphing && !bot_landing_steer(&view, -1, &lx, &ly)
+                   && !bot_landing_steer(&view, 0, &lx, &ly) && !bot_landing_steer(&view, 1, &lx, &ly);
+        if (!doomed && !bot2_platform_press_safe(&view, &v2)) { act.buttons&=(uint16_t)~BOT_PLATFORM; dbg_veto=1; }
         else bot->v2.since_platform=0;
     }
     /* Launch veto (v1): a grounded jump/ejection must not fly into an arrow. */
