@@ -75,6 +75,7 @@ int research_rewards(BoplPuffer *env, float kill, float timeout) {
 void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
     env->rng=seed; env->config.map=map; c_reset(env);
     memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
+    ((ResearchEnv*)env)->open=0;  /* a reset discards an unfinished tick-split decision */
 }
 /* Scripted opponents (bopl_bots.h): pin a bot on one player. It decides inside
  * research_step from the true game state; the caller's action floats for that

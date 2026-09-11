@@ -2,8 +2,9 @@
 //   firefox --headless --remote-debugging-port 9225 --profile <fresh> --no-remote
 //   node check_play.mjs <url> <output-dir>
 // Loads the lobby, starts a match against mixed-hard, mashes keys for a few
-// seconds, waits for the match to end, and checks: frames arrive at the
-// decision rate (15/s), the record and replay were written, no console errors.
+// seconds, waits for the match to end, and checks: frames arrive every tick
+// (60/s), the record and replay were written, no console errors. A second
+// match in mouse mode uses the 15/s decision frames with a display delay.
 import fs from "node:fs/promises";
 const url = process.argv[2] || "http://127.0.0.1:8891/";
 const out = process.argv[3] || "native/artifacts/rl";
@@ -67,7 +68,7 @@ const gamesBefore = (await (await fetch(new URL("/api/games", url))).json()).len
 await screenshot(out + "/play-lobby.png");
 
 // Start against mixed-hard as P1 in keys mode, then mash movement/jump/bow like a novice.
-await run("document.querySelector('#opponent').value = 'mixed-hard'; document.querySelector('#map').value = '0'; document.querySelector('#side').value = '0'; document.querySelector('#mode').value = 'keys'; document.querySelector('#start').click();");
+await run("document.querySelector('#opponent').value = 'mixed-hard'; document.querySelector('#map').value = '0'; document.querySelector('#side').value = '0'; document.querySelector('#mode').value = 'keys'; document.querySelector('#frames').value = 'tick'; document.querySelector('#displayDelay').value = '0'; document.querySelector('#start').click();");
 for (let i = 0; i < 40; i++) { await sleep(250); if (await evaluate("!!window.boplMatch && !document.querySelector('#game').hidden")) break; }
 if (!(await evaluate("!!window.boplMatch"))) throw Error("Match did not start");
 const key = (code, type) => `window.dispatchEvent(new KeyboardEvent('${type}', {code: '${code}', bubbles: true}))`;
@@ -85,23 +86,26 @@ const stats = await evaluate("window.boplLastStats");
 await screenshot(out + "/play-result.png");
 const record = stats.record;
 if (!(stats.frames > 10)) throw Error("Too few frames: " + JSON.stringify(stats));
-// One frame per 4-tick decision at 60 Hz: 66.7 ms; allow scheduling jitter on a loaded box.
-if (!(stats.interval_p50_ms > 60 && stats.interval_p50_ms < 74)) throw Error("Frame interval off the decision rate: " + JSON.stringify(stats));
-if (record.ticks !== stats.frames * 4 && Math.abs(record.ticks - stats.frames * 4) > 4) throw Error("Frames do not cover the episode ticks: " + JSON.stringify({ ticks: record.ticks, frames: stats.frames }));
+// One frame per game tick at 60 Hz: 16.7 ms; allow scheduling jitter on a loaded box.
+if (!(stats.interval_p50_ms > 14 && stats.interval_p50_ms < 20)) throw Error("Frame interval off the tick rate: " + JSON.stringify(stats));
+if (record.ticks !== stats.frames) throw Error("Frames do not cover the episode ticks: " + JSON.stringify({ ticks: record.ticks, frames: stats.frames }));
+if (record.display.frames !== "tick" || record.display.display_delay_decisions !== 0) throw Error("Display settings not recorded: " + JSON.stringify(record.display));
 const games = await (await fetch(new URL("/api/games", url))).json();
 if (games.length !== gamesBefore + 1 || games.at(-1).replay !== record.replay) throw Error("games.jsonl did not gain the record");
 const replay = await fetch(new URL("/human/" + record.replay, url));
 const replayBytes = (await replay.arrayBuffer()).byteLength;
 if (!replay.ok || replayBytes < 100) throw Error("Replay missing: " + record.replay);
 const visual = await (await fetch(new URL("/human/" + record.visual, url))).json();
-if (visual.frames.length !== stats.frames + 1) throw Error("Visual frame count differs from streamed frames: " + JSON.stringify({ visual: visual.frames.length, streamed: stats.frames }));
+// The physics-view JSON keeps one frame per decision (the dashboard's shape), whatever the streamed cadence.
+if (visual.frames.length !== Math.ceil(record.ticks / 4) + 1) throw Error("Visual frame count differs from the decisions: " + JSON.stringify({ visual: visual.frames.length, ticks: record.ticks }));
 // Viewer renders the recorded game.
 await run("document.querySelector('#watchLast').click(); await new Promise(r => setTimeout(r, 1500));");
 const viewer = await evaluate("({hidden: document.querySelector('#viewer').hidden, max: Number(document.querySelector('#viewerScrub').max), painted: document.getElementById('viewerCanvas').width > 0})");
 if (viewer.hidden || viewer.max < 10 || !viewer.painted) throw Error("Viewer did not render: " + JSON.stringify(viewer));
 
-// Second match in mouse mode as P2: aim with the mouse and press the right button (bow).
-await run("document.querySelector('#viewerBack').click(); document.querySelector('#toLobby').click(); await new Promise(r => setTimeout(r, 800)); document.querySelector('#side').value = '1'; document.querySelector('#mode').value = 'mouse'; document.querySelector('#start').click();");
+// Second match in mouse mode as P2 with decision frames (15/s, extrapolated) shown one decision late:
+// aim with the mouse and press the right button (bow).
+await run("document.querySelector('#viewerBack').click(); document.querySelector('#toLobby').click(); await new Promise(r => setTimeout(r, 800)); document.querySelector('#side').value = '1'; document.querySelector('#mode').value = 'mouse'; document.querySelector('#frames').value = 'decision'; document.querySelector('#displayDelay').value = '1'; document.querySelector('#start').click();");
 for (let i = 0; i < 40; i++) { await sleep(250); if (await evaluate("!!window.boplMatch && window.boplMatch.mode === 'mouse'")) break; }
 if (!(await evaluate("!!window.boplMatch && window.boplMatch.mode === 'mouse'"))) throw Error("Mouse-mode match did not start");
 const mouse = (type, x, y, button) => `(() => { const c = document.getElementById('arena'), r = c.getBoundingClientRect(); c.dispatchEvent(new MouseEvent('${type}', {clientX: r.left + r.width * ${x}, clientY: r.top + r.height * ${y}, button: ${button}, bubbles: true})); })()`;
@@ -117,6 +121,9 @@ if (!mouseEnded) throw Error("Mouse-mode match did not end");
 const mouseStats = await evaluate("window.boplLastStats");
 if (!aimSeen || !(mouseStats.record.human.aim_source_decisions.mouse > 0)) throw Error("Mouse aim never reached the action: " + JSON.stringify({ aimSeen, sources: mouseStats.record.human.aim_source_decisions }));
 if (mouseStats.record.side !== 1) throw Error("Side selection ignored");
+if (!(mouseStats.interval_p50_ms > 60 && mouseStats.interval_p50_ms < 74) || mouseStats.frame_ticks !== 4 || mouseStats.delay_ticks !== 4)
+  throw Error("Decision-frame mode off: " + JSON.stringify({ interval: mouseStats.interval_p50_ms, frame_ticks: mouseStats.frame_ticks, delay_ticks: mouseStats.delay_ticks }));
+if (mouseStats.record.display.frames !== "decision" || mouseStats.record.display.display_delay_decisions !== 1) throw Error("Display settings not recorded: " + JSON.stringify(mouseStats.record.display));
 // Only our page's errors: the tab's Firefox start page logs its own React
 // hydration noise into the same browsing context before we navigate away.
 const pageErrors = consoleErrors.filter((e) => e.context === context && !/^Hydration completed/.test(e.text)).map((e) => e.text);
@@ -125,10 +132,11 @@ console.log(JSON.stringify({
   status: "PLAY_OK", lobby, mid_match: midStats,
   frames: stats.frames, interval_p50_ms: stats.interval_p50_ms, interval_p95_ms: stats.interval_p95_ms, interval_max_ms: stats.interval_max_ms,
   input_to_frame_p50_ms: stats.latency_p50_ms, input_to_frame_p95_ms: stats.latency_p95_ms, rtt_p50_ms: stats.rtt_p50_ms,
-  bytes_per_s: stats.bytes_per_s, inputs_sent: stats.inputs_sent,
+  bytes_per_s: stats.bytes_per_s_mean, inputs_sent: stats.inputs_sent, display: record.display,
   result: record.result, ticks: record.ticks, replay: record.replay, replay_bytes: replayBytes, timing: record.timing,
   mouse_mode: { result: mouseStats.record.result, ticks: mouseStats.record.ticks, aim_sources: mouseStats.record.human.aim_source_decisions,
-    arrows_fired: mouseStats.record.human.arrows_fired, input_to_frame_p50_ms: mouseStats.latency_p50_ms, frames: mouseStats.frames },
+    arrows_fired: mouseStats.record.human.arrows_fired, input_to_frame_p50_ms: mouseStats.latency_p50_ms, frames: mouseStats.frames,
+    interval_p50_ms: mouseStats.interval_p50_ms, bytes_per_s: mouseStats.bytes_per_s_mean, display: mouseStats.record.display, timing: mouseStats.record.timing },
   console_errors: pageErrors.length,
 }));
 ws.close();
