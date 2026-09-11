@@ -232,18 +232,57 @@ static int bot2_dash_safe(const BotView *view, double dx, double dy) {
  * (grounded: my walk; airborne: steering added to the fall). Unlike
  * bot_arrow_eta this sees my own intended walk (a v1 bot walked under its own
  * returning mortar: eta=inf, then 5) and looks 90 ticks out for lobs. */
-static double bot2_arrow_eta(const BotView *view, double mvx, int horizon, double *dir_x) {
+/* Ground tangent under me (rightward), from the sdf gradient of the wall I
+ * stand on; world axes when airborne/unknown. */
+static void bot2_ground_tangent(const BotView *view, const BotView2 *v, double *tx, double *ty) {
+    *tx=1; *ty=0;
+    if (!view->grounded || v->ground_wall<0) return;
+    const BotWall *w=&view->walls[v->ground_wall];
+    double nx=bot_wall_sdf(w, view->x+0.15, view->y)-bot_wall_sdf(w, view->x-0.15, view->y);
+    double ny=bot_wall_sdf(w, view->x, view->y+0.15)-bot_wall_sdf(w, view->x, view->y-0.15);
+    double n=bot_len(nx, ny);
+    if (n<1e-6 || ny<=0) return;
+    nx/=n; ny/=n;
+    *tx=ny; *ty=-nx;
+}
+
+/* Grounded walk velocity a move input produces (mod.rs:804-812, SlimeController
+ * flag5): the stick must align with the ground tangent by >= 0.2, then the
+ * slime runs along the tangent at BOT_WALK. On a steep slab that is mostly
+ * vertical motion: the ETA below must see it, or a lobbed shot fired uphill is
+ * walked into (the "own-arrow-fresh" family). */
+static void bot2_walk_velocity(const BotView *view, const BotView2 *v, uint8_t aim, double *wvx, double *wvy) {
+    *wvx=0; *wvy=0;
+    if (!aim) return;
+    double ang=((int)aim-1)/255.0*2*M_PI, dx=cos(ang), dy=sin(ang), tx, ty;
+    bot2_ground_tangent(view, v, &tx, &ty);
+    double align=dx*tx+dy*ty;
+    if (fabs(align)<0.2) return;
+    double s=align>=0?BOT_WALK:-BOT_WALK;
+    *wvx=tx*s; *wvy=ty*s;
+}
+
+/* Ticks until an arrow reaches me given the motion I am about to make:
+ * grounded (mvx,mvy) is my walk along the ground (bot2_walk_velocity),
+ * airborne mvx is the steer target. Own arrows count (immunity ends 5 u out,
+ * BowTransform.cs:183). 1e9 when none within horizon. */
+static double bot2_arrow_eta(const BotView *view, double mvx, double mvy, int horizon, double *dir_x) {
     double best=1e9;
     for (int i=0; i<view->arrow_count; i++) {
         if (view->arrows[i].leaving) continue;
         double x=view->arrows[i].x, y=view->arrows[i].y, vx=view->arrows[i].vx, vy=view->arrows[i].vy;
-        double mx=view->x, my=view->y, mvy=view->grounded?0:view->vy, cvx=view->grounded?mvx:view->vx;
-        int grounded=view->grounded;
+        double mx=view->x, my=view->y, cvy=view->grounded?mvy:view->vy, cvx=view->grounded?mvx:view->vx;
+        int grounded=view->grounded, stopped=0;
         for (int t=1; t<=horizon; t++) {
             vy-=BOT_ARROW_G*BOT_TICK; x+=vx*BOT_TICK; y+=vy*BOT_TICK;
-            if (!grounded) { bot_fall_tick(&mvy); cvx+=mvx*0.05; if (cvx>19) cvx=19; if (cvx<-19) cvx=-19; }
-            mx+=cvx*BOT_TICK; my+=mvy*BOT_TICK;
-            if (!grounded && mvy<0 && bot_sdf(view, mx, my)<BOT_SLIME_RADIUS) { grounded=1; cvx=mvx; mvy=0; }
+            if (!grounded) { bot_fall_tick(&cvy); cvx+=mvx*0.05; if (cvx>19) cvx=19; if (cvx<-19) cvx=-19; }
+            if (!stopped) {
+                double nx=mx+cvx*BOT_TICK, ny=my+cvy*BOT_TICK;
+                /* A walker stops at a wall and does not leave its slab upward. */
+                if (grounded && (bot_sdf(view, nx, ny)<BOT_SLIME_RADIUS-0.25 || bot_sdf(view, nx, ny)>BOT_SLIME_RADIUS+0.9)) stopped=1;
+                else { mx=nx; my=ny; }
+            }
+            if (!grounded && cvy<0 && bot_sdf(view, mx, my)<BOT_SLIME_RADIUS) { grounded=1; cvx=mvx; cvy=0; stopped=1; }
             if (bot_sdf(view, x, y)<BOT_ARROW_RADIUS*0.5) break;
             if (bot_len(x-mx, y-my)<1.9) { if (t<best) { best=t; if (dir_x) *dir_x=vx>=0?1:-1; } break; }
         }
@@ -393,7 +432,7 @@ static void bot2_dodge(const BotView *view, BoplBot *bot, BotAction *act, double
         if (!bot_launch_hits_arrow(view, -22) && !bot_launch_hits_arrow(view, 0) && !bot_launch_hits_arrow(view, 22))
             { bot_act(act, bot_aim_byte(away, 0.2), BOT_JUMP, 0); *dbg=2; return; }
         double other=-away;
-        double e_a=bot2_arrow_eta(view, away*19, 40, NULL), e_b=bot2_arrow_eta(view, other*19, 40, NULL);
+        double e_a=bot2_arrow_eta(view, away*19, 0, 40, NULL), e_b=bot2_arrow_eta(view, other*19, 0, 40, NULL);
         bot_act(act, bot_aim_byte(e_a>=e_b?away:other, 0.2), 0, 0); *dbg=4; return;
     }
     if (view->dash_ready && eta<12 && bot2_dash_safe(view, away, -0.2))
@@ -810,19 +849,22 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
         if (!bot_launch_lands(&view, -22) || !bot_launch_lands(&view, 0) || !bot_launch_lands(&view, 22))
             { act.buttons&=(uint16_t)~BOT_JUMP; dbg_veto=1; }
     }
-    /* Walk veto: a grounded walk must not step under an arrow (own mortars included). */
+    /* Walk veto: a grounded walk must not step under an arrow (own mortars and
+     * fresh uphill lobs included): try the other way along the ground, then
+     * standing still. */
     if (view.grounded && !(act.buttons&(BOT_DASH|BOT_PLATFORM|BOT_ARROW|BOT_JUMP)) && view.arrow_count) {
-        double ang=((int)act.aim-1)/255.0*2*M_PI, ax=cos(ang);
-        int steer=ax>0.33?1:ax<-0.33?-1:0;
-        if (bot2_arrow_eta(&view, steer*19.0, 45, NULL)<=45) {
-            static const int opts[3]={0, 1, -1};
-            double best=-1; int pick=steer;
+        double wvx, wvy;
+        bot2_walk_velocity(&view, &v2, act.aim, &wvx, &wvy);
+        if (bot2_arrow_eta(&view, wvx, wvy, 45, NULL)<=45) {
+            double tx, ty; bot2_ground_tangent(&view, &v2, &tx, &ty);
+            uint8_t opts[3]={bot_aim_byte(tx, ty), bot_aim_byte(-tx, -ty), bot_aim_byte(-ty, tx)};  /* right, left, still (along the normal) */
+            double best=-1; uint8_t pick=act.aim;
             for (int i=0; i<3; i++) {
-                if (opts[i]==steer) continue;
-                double e=bot2_arrow_eta(&view, opts[i]*19.0, 45, NULL);
+                bot2_walk_velocity(&view, &v2, opts[i], &wvx, &wvy);
+                double e=bot2_arrow_eta(&view, wvx, wvy, 45, NULL);
                 if (e>best) { best=e; pick=opts[i]; }
             }
-            act.aim=pick?bot_aim_byte(pick, 0.15):BOT_AIM_UP; dbg_veto=1;
+            act.aim=pick; dbg_veto=1;
         }
     }
     /* Never charge inside the foe platform's reach. */
