@@ -2161,7 +2161,7 @@ impl RolloutWorld {
     fn arrows_integrate(&mut self, data: &data::RolloutData) {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
-        let gravity = Fix::from_f64(-40.0) * data.arrow.gravity_scale;
+        let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active || !self.arrows[i].registered {
                 continue;
@@ -2221,12 +2221,49 @@ impl RolloutWorld {
                 radius,
             };
 
-            // Circle/RR callbacks precede all player shape groups. If an arrow
-            // overlaps terrain and a player in the same physics pass, the wall
-            // callback destroys its components before PlayerCollision runs.
-            if self.platforms.iter().any(|platform| {
-                crate::physics::contact::circle_rounded(circle, platform.collider).is_some()
-            }) {
+            // Circle/RR: DetPhysics tests every pair first, then applies the
+            // collision impulse and positional correction to the arrow and
+            // the platform bodies (DetPhysics.cs:3012-3048); Arrow.OnCollide
+            // only runs from the callback queue afterwards
+            // (DetPhysics.cs:3195-3199), so a landing arrow kicks its
+            // platform before the wall callback destroys it. That callback
+            // precedes all player shape groups: an arrow overlapping terrain
+            // and a player in the same pass never reaches PlayerCollision.
+            let contacts: Vec<_> = self
+                .platforms
+                .iter()
+                .enumerate()
+                .filter_map(|(p, platform)| {
+                    crate::physics::contact::circle_rounded(circle, platform.collider)
+                        .map(|contact| (p, contact))
+                })
+                .collect();
+            if !contacts.is_empty() {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    ..data.arrow.body
+                };
+                let mut center = circle.center;
+                for (p, contact) in contacts {
+                    let platform_body = &mut self.platform_dynamics[p].body;
+                    resolve(
+                        contact,
+                        &mut arrow_body,
+                        platform_body,
+                        center,
+                        self.platforms[p].surface.center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        arrow_body.inverse_mass,
+                        platform_body.inverse_mass,
+                        false,
+                    );
+                    center += correction[0];
+                    self.platforms[p].surface.center += correction[1];
+                    self.platforms[p].collider.inner.center += correction[1];
+                }
                 self.destroy_arrow(i);
                 continue;
             }

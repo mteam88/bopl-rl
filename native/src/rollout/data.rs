@@ -128,8 +128,19 @@ struct RawBowAnims {
 }
 #[derive(Deserialize)]
 struct RawArrowBody {
+    mass: i64,
+    bounciness: i64,
+    friction: i64,
+    #[serde(rename = "dynamicFriction")]
+    dynamic_friction: i64,
+    #[serde(rename = "momentOfInertia")]
+    moment_of_inertia: i64,
     #[serde(rename = "gravityScale")]
     gravity_scale: i64,
+    #[serde(rename = "airFriction01")]
+    air_drag: i64,
+    #[serde(rename = "rotationalDrag01")]
+    rotational_drag: i64,
 }
 #[derive(Deserialize)]
 struct RawArrow {
@@ -251,7 +262,8 @@ pub struct BowData {
 }
 pub struct ArrowData {
     pub radius: Fix,
-    pub gravity_scale: Fix,
+    /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
+    pub body: crate::physics::Body,
 }
 pub struct PlatformAbilityData {
     pub cooldown: Fix,
@@ -486,7 +498,22 @@ pub fn get() -> &'static RolloutData {
             },
             arrow: ArrowData {
                 radius: Fix::from_raw(raw.prefabs.arrow.radius),
-                gravity_scale: Fix::from_raw(raw.prefabs.arrow.body.gravity_scale),
+                body: {
+                    let b = &raw.prefabs.arrow.body;
+                    body(
+                        &RawBody {
+                            mass: b.mass,
+                            bounciness: b.bounciness,
+                            static_friction: b.friction,
+                            dynamic_friction: b.dynamic_friction,
+                            moment_of_inertia: b.moment_of_inertia,
+                            gravity_scale: b.gravity_scale,
+                            air_drag: b.air_drag,
+                            rotational_drag: b.rotational_drag,
+                        },
+                        Fix::ZERO,
+                    )
+                },
             },
             platform: PlatformAbilityData {
                 cooldown: Fix::from_raw(plat.cooldown),
