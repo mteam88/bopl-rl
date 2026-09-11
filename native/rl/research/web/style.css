@@ -10,6 +10,9 @@
 * {
   box-sizing: border-box;
 }
+[hidden] {
+  display: none !important;
+}
 body {
   margin: 0;
   background: var(--paper);
@@ -289,9 +292,6 @@ video {
   height: 100%;
   object-fit: contain;
 }
-video[hidden] {
-  display: none;
-}
 #emptyReplay {
   position: absolute;
   inset: 0;
@@ -490,9 +490,6 @@ input[type="range"] {
   border: 1px solid var(--line);
   padding: 24px 28px;
   margin-top: 24px;
-}
-.series-section[hidden] {
-  display: none;
 }
 .series-runs {
   display: grid;
@@ -822,8 +819,4 @@ a:focus-visible {
 .follow input {
   accent-color: var(--blue);
   vertical-align: middle;
-}
-
-.players[hidden] {
-  display: none;
 }
