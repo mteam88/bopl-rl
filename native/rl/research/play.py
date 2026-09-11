@@ -178,13 +178,15 @@ class Checkpoint:
 
     def describe(self):
         config = self.meta.get('config', {})
-        return dict(kind='checkpoint', name=self.id, path=str(self.path), step=self.step,
+        return dict(kind='checkpoint', name=self.id, label=self.label(), path=str(self.path), step=self.step,
                     learner_steps=self.meta.get('learner_steps'), **self.identity,
                     episode_ticks=config.get('episode_ticks', 7200),
                     observation_delay=config.get('observation_delay_ticks', 9))
 
 
-def list_checkpoints(patterns, latest_per_dir):
+def list_checkpoints(patterns, latest_per_dir, known=None):
+    """Checkpoint objects for the globs; `known` (path -> Checkpoint) is reused so a rescan
+    while a sweep is still writing checkpoints only hashes the new files."""
     found = {}
     for pattern in patterns:
         for match in sorted(glob.glob(pattern)):
@@ -204,7 +206,9 @@ def list_checkpoints(patterns, latest_per_dir):
                 best[key] = (int(m.group(1)), path)
         found = {**keep, **{str(p.resolve()): p for _, p in best.values()}}
     checkpoints = []
-    for path in found.values():
+    for key, path in found.items():
+        if known and key in known:
+            checkpoints.append(known[key]); continue
         try:
             checkpoints.append(Checkpoint(path))
         except Exception as error:  # a half-written sweep checkpoint is skipped, not fatal
@@ -250,8 +254,9 @@ class Server:
         self.out = args.out.resolve()
         self.out.mkdir(parents=True, exist_ok=True)
         self.games_path = self.out / 'games.jsonl'
-        self.checkpoints = list_checkpoints(args.checkpoints, args.latest_per_dir)
-        self.by_id = {c.id: c for c in self.checkpoints}
+        self.checkpoints = []
+        self.by_id = {}
+        self.refresh()
         self.game = Path(args.game).resolve() if args.game else RUST_SIM
         if not self.game.exists():
             raise SystemExit(f'{self.game} is missing; run cargo build --release in native/')
@@ -263,6 +268,13 @@ class Server:
         self.match = None
         self.games_played = 0
         self.loop = None
+
+    def refresh(self):
+        """Rescan the checkpoint globs (a running sweep keeps adding files); ids already offered stay valid."""
+        known = {str(c.path): c for c in self.checkpoints}
+        self.checkpoints = list_checkpoints(self.args.checkpoints, self.args.latest_per_dir, known)
+        for c in self.checkpoints:
+            self.by_id.setdefault(c.id, c)
 
     # ---- environment -------------------------------------------------------
     def environment(self, limit, delay):
@@ -290,12 +302,13 @@ class Server:
         """Human record per opponent name: wins, losses, draws (timeouts) in Bradley-Terry form."""
         result = {}
         for g in games if games is not None else self.games():
-            row = result.setdefault(g['b'], dict(wins=0, losses=0, draws=0, games=0))
+            row = result.setdefault(g['b'], dict(wins=0, losses=0, draws=0, games=0, label=g.get('opponent', {}).get('label', g['b'])))
             row['games'] += 1
             row['wins' if g['outcome'] == 'a' else 'losses' if g['outcome'] == 'b' else 'draws'] += 1
         return result
 
     def lobby(self):
+        self.refresh()
         games = self.games()
         return dict(
             checkpoints=[dict(id=c.id, label=c.label(), path=str(c.path), step=c.step, sha256=c.identity['sha256'])

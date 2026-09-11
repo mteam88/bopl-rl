@@ -62,7 +62,7 @@ async function loadLobby() {
   const rows = $("recent").querySelector("tbody"); rows.innerHTML = "";
   for (const g of [...lobby.games].reverse().slice(0, 20)) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${g.timestamp.replace("T", " ")}</td><td>${g.b}</td><td>${g.map}</td><td>P${g.side + 1}</td>` +
+    tr.innerHTML = `<td>${g.timestamp.replace("T", " ")}</td><td>${g.opponent.label || g.b}</td><td>${g.map}</td><td>P${g.side + 1}</td>` +
       `<td class="${g.result}">${g.result}</td><td>${g.seconds.toFixed(1)}</td><td></td>`;
     const watch = document.createElement("button"); watch.textContent = "watch"; watch.className = "secondary";
     watch.addEventListener("click", () => openViewer(g));
@@ -81,7 +81,7 @@ function fillTally(table, tally) {
   for (const [name, t] of Object.entries(tally).sort()) {
     const tr = document.createElement("tr");
     const decided = t.wins + t.losses;
-    tr.innerHTML = `<td>${name}</td><td>${t.games}</td><td>${t.wins}</td><td>${t.losses}</td><td>${t.draws}</td><td>${decided ? (100 * t.wins / decided).toFixed(0) + "%" : "–"}</td>`;
+    tr.innerHTML = `<td>${t.label && t.label !== name ? `${t.label} <span class=fine>${name}</span>` : name}</td><td>${t.games}</td><td>${t.wins}</td><td>${t.losses}</td><td>${t.draws}</td><td>${decided ? (100 * t.wins / decided).toFixed(0) + "%" : "–"}</td>`;
     body.append(tr);
   }
   if (!body.children.length) body.innerHTML = "<tr><td colspan=6 class=fine>no games yet</td></tr>";
@@ -254,7 +254,7 @@ function endMatch(message) {
   match.stop();
   const r = message.record; lastRecord = r;
   $("resultTitle").textContent = r.result === "win" ? "You won" : r.result === "loss" ? "You lost" : "Timeout";
-  $("resultDetail").textContent = `vs ${r.b} on map ${r.map}, seed ${r.seed}, you were P${r.side + 1}; ${r.seconds.toFixed(1)} s. ` +
+  $("resultDetail").textContent = `vs ${r.opponent.label || r.b} on map ${r.map}, seed ${r.seed}, you were P${r.side + 1}; ${r.seconds.toFixed(1)} s. ` +
     `Arrows: you ${r.human.arrows_fired} fired / ${r.human.arrow_hits} hit, opponent ${r.opponent.arrows_fired} / ${r.opponent.arrow_hits}. ` +
     `Replay ${r.replay}.`;
   fillTally($("resultTally"), message.tally);

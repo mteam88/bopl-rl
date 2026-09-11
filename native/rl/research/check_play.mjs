@@ -99,6 +99,24 @@ if (visual.frames.length !== stats.frames + 1) throw Error("Visual frame count d
 await run("document.querySelector('#watchLast').click(); await new Promise(r => setTimeout(r, 1500));");
 const viewer = await evaluate("({hidden: document.querySelector('#viewer').hidden, max: Number(document.querySelector('#viewerScrub').max), painted: document.getElementById('viewerCanvas').width > 0})");
 if (viewer.hidden || viewer.max < 10 || !viewer.painted) throw Error("Viewer did not render: " + JSON.stringify(viewer));
+
+// Second match in mouse mode as P2: aim with the mouse and press the right button (bow).
+await run("document.querySelector('#viewerBack').click(); document.querySelector('#toLobby').click(); await new Promise(r => setTimeout(r, 800)); document.querySelector('#side').value = '1'; document.querySelector('#mode').value = 'mouse'; document.querySelector('#start').click();");
+for (let i = 0; i < 40; i++) { await sleep(250); if (await evaluate("!!window.boplMatch && window.boplMatch.mode === 'mouse'")) break; }
+if (!(await evaluate("!!window.boplMatch && window.boplMatch.mode === 'mouse'"))) throw Error("Mouse-mode match did not start");
+const mouse = (type, x, y, button) => `(() => { const c = document.getElementById('arena'), r = c.getBoundingClientRect(); c.dispatchEvent(new MouseEvent('${type}', {clientX: r.left + r.width * ${x}, clientY: r.top + r.height * ${y}, button: ${button}, bubbles: true})); })()`;
+let mouseEnded = false, aimSeen = false;
+for (let round = 0; round < 240 && !mouseEnded; round++) {
+  const x = 0.3 + 0.4 * ((round % 7) / 6), y = 0.2 + 0.5 * ((round % 5) / 4);
+  await run(`${mouse("mousemove", x, y, 0)}; await new Promise(r => setTimeout(r, 40)); ${round % 6 === 0 ? mouse("mousedown", x, y, 2) : key("KeyA", "keydown")}; await new Promise(r => setTimeout(r, 120)); ${round % 6 === 0 ? mouse("mouseup", x, y, 2) : key("KeyA", "keyup")};`);
+  await sleep(90);
+  aimSeen ||= await evaluate("window.boplMatch ? window.boplMatch.aim !== null : false");
+  mouseEnded = await evaluate("!!window.boplLastStats && window.boplLastStats.record.human.input_mode === 'mouse'");
+}
+if (!mouseEnded) throw Error("Mouse-mode match did not end");
+const mouseStats = await evaluate("window.boplLastStats");
+if (!aimSeen || !(mouseStats.record.human.aim_source_decisions.mouse > 0)) throw Error("Mouse aim never reached the action: " + JSON.stringify({ aimSeen, sources: mouseStats.record.human.aim_source_decisions }));
+if (mouseStats.record.side !== 1) throw Error("Side selection ignored");
 // Only our page's errors: the tab's Firefox start page logs its own React
 // hydration noise into the same browsing context before we navigate away.
 const pageErrors = consoleErrors.filter((e) => e.context === context && !/^Hydration completed/.test(e.text)).map((e) => e.text);
@@ -109,6 +127,8 @@ console.log(JSON.stringify({
   input_to_frame_p50_ms: stats.latency_p50_ms, input_to_frame_p95_ms: stats.latency_p95_ms, rtt_p50_ms: stats.rtt_p50_ms,
   bytes_per_s: stats.bytes_per_s, inputs_sent: stats.inputs_sent,
   result: record.result, ticks: record.ticks, replay: record.replay, replay_bytes: replayBytes, timing: record.timing,
+  mouse_mode: { result: mouseStats.record.result, ticks: mouseStats.record.ticks, aim_sources: mouseStats.record.human.aim_source_decisions,
+    arrows_fired: mouseStats.record.human.arrows_fired, input_to_frame_p50_ms: mouseStats.latency_p50_ms, frames: mouseStats.frames },
   console_errors: pageErrors.length,
 }));
 ws.close();
