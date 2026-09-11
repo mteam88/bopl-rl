@@ -1120,14 +1120,14 @@ impl RolloutWorld {
         // component or DetPhysics is therefore visible to the match result
         // check on the following tick, not later in the tick that killed it.
         self.session_result_tick();
-        for index in 0..self.players.len() {
+        for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
-            let action = actions[index].aim_action();
+            let action = packet.aim_action();
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
-            let movement_input = actions[index].input_direction(self.players[index].keyboard);
+            let movement_input = packet.input_direction(self.players[index].keyboard);
             let jump_down = action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
             // SlimeController.Jump reads that same edge
@@ -3837,14 +3837,7 @@ mod tests {
         assert_eq!(world.players[0].base.ground, Some(platform_id));
         assert_eq!(world.players[0].removed_ground_normal, Some(normal));
 
-        world.player_tick(
-            0,
-            Action::default(),
-            Action::default(),
-            Vec2::ZERO,
-            false,
-            data::get(),
-        );
+        world.player_tick(0, Action::default(), Vec2::ZERO, false, data::get());
         assert!(!world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, None);
         assert_eq!(world.players[0].base.rotation, Fix::ZERO);
