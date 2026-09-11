@@ -763,6 +763,7 @@ impl RolloutWorld {
                         up: Vec2::UP,
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
+                    collider_rotation: Fix::ZERO,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
@@ -2761,8 +2762,6 @@ impl RolloutWorld {
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_aim = slot.bow.aim;
             let position = slot.base.position;
-            let rotation = slot.base.rotation;
-            let basis = Vec2::angle(rotation);
             let data = data::get();
 
             let body = &mut self.entities[body_e];
@@ -2775,9 +2774,14 @@ impl RolloutWorld {
             } else {
                 body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
             }
+            // The observation reads the PhysicsBody DetPhysics synced, not
+            // the live body (RlObservation.Collider; PlayerPhysics.cs:138-146
+            // moves a grounded body after the sync).
             let extents = data.player.hurtbox_extents;
-            body.x = position.x.raw();
-            body.y = position.y.raw();
+            let synced = slot.base.collider.center;
+            let rotation = slot.base.collider_rotation;
+            body.x = synced.x.raw();
+            body.y = synced.y.raw();
             // The hurtbox has PlayerBody movement on the same GameObject but
             // no BoplBody. DPhysicsBox therefore registers an infinite-mass
             // trigger PhysicsBody whose observed velocity remains zero; the
@@ -2785,7 +2789,7 @@ impl RolloutWorld {
             body.vx = 0;
             body.vy = 0;
             // Box.SetRotation: axis length `One / inverseExtents`, not `extents`.
-            let hurtbox = OrientedBox::from_basis(position, basis, extents);
+            let hurtbox = OrientedBox::from_basis(synced, Vec2::angle(rotation), extents);
             let (right, up) = (hurtbox.right, hurtbox.up);
             body.right_x = right.x.raw();
             body.right_y = right.y.raw();
