@@ -33,7 +33,11 @@ internal static class RlObservation
         return value;
     }
 
-    internal static void Write(BinaryWriter output, uint version, int episodeTicks, uint flags, int warmup)
+    // simulationTime: header.simulation_time raw value; RlBridge passes the game's
+    // SimTimePassed (zeroed per reset), RlAgent passes ticks-since-level-load x
+    // FixedTimeStep, which is the same quantity in the stock local game except
+    // that its Update loop also advances SimTimePassed on hitstop frames.
+    internal static void Write(BinaryWriter output, uint version, int episodeTicks, uint flags, int warmup, long? simulationTime = null)
     {
         var players = PlayerHandler.Get().PlayerList();
         var physics = DetPhysics.Get();
@@ -47,7 +51,7 @@ internal static class RlObservation
             if (rope.enabled) entities += Math.Max(0, rope.segmentCount - 1);
         output.Write(version); output.Write(Updater.SimulationTicks); output.Write(episodeTicks); output.Write(flags);
         output.Write(players.Count); output.Write(entities); output.Write(warmup); output.Write(slimes.Count);
-        output.Write(Updater.SimTimePassed.m_rawValue); output.Write(GameTime.PlayerTimeScale.m_rawValue);
+        output.Write(simulationTime ?? Updater.SimTimePassed.m_rawValue); output.Write(GameTime.PlayerTimeScale.m_rawValue);
         foreach (var player in players) {
             output.Write(player.Id); output.Write(player.Team);
             output.Write((player.IsAlive ? 1u : 0u) | (player.WonThisRound ? 2u : 0u) | (player.isInvisible ? 4u : 0u)
