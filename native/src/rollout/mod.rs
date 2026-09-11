@@ -794,14 +794,49 @@ impl RolloutWorld {
             });
         }
 
-        // Warmup: the .NET sim animates the level in and plays the spawn
-        // animation; players start falling once spawned and are grounded well
-        // before a 240-tick warmup ends. Here platforms start at their homes
-        // and players simply fall from the spawn points with no input.
-        let settle = self.warmup.min(300);
+        // Warmup, as GameSessionHandler runs it. The level animates in
+        // (StartAnimateInLevelRoutine; here platforms start at their homes,
+        // where the .NET sim's have settled by tick ~155). SpawnPlayers runs
+        // after `timeBeforeTwo` (1 s): the slimes are instantiated at the
+        // spawn points on tick SLIME_AWAKE_TICK+1 and play the 105-tick
+        // "spawn" animation with physics disabled (BeforeSpawnInit). Its end
+        // callback SlimeController.Spawn (SlimeController.cs:567) enables the
+        // body and launches it at `jumpStrength * 0.25` (11.25 u/s) straight
+        // up; the slime then falls onto its platform with no input, and its
+        // landing slide (PlayerPhysics.AttachToGround keeps the impact
+        // velocity's tangential part as groundedSpeed, PlayerPhysics.cs:501)
+        // depends on that impact velocity. A free fall from rest at tick 0
+        // (the previous approximation) landed 0.95 u/s slower on map 1 and
+        // came to rest 2.5e-3 u away from the game's spawn position.
         let no_input = vec![Action::default(); players];
-        for _ in 0..settle {
+        let mut spawn_anim = 0u32;
+        for i in 0..self.warmup {
+            if i < SLIME_AWAKE_TICK {
+                continue;
+            }
+            if i == SLIME_AWAKE_TICK {
+                spawn_anim = data.player.spawn_anim_ticks;
+                continue;
+            }
+            if spawn_anim > 0 {
+                spawn_anim -= 1;
+                if spawn_anim == 0 {
+                    for slot in &mut self.players {
+                        slot.base.velocity =
+                            Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
+                    }
+                }
+                continue;
+            }
             self.movement_tick(&no_input);
+        }
+        // A warmup that ends inside the spawn animation hands the rest of it
+        // to the episode (respawn_tick counts it down and launches the same
+        // way); one that ends before the slimes exist leaves them parked.
+        if spawn_anim > 0 {
+            for slot in &mut self.players {
+                slot.respawn_spawn_ticks = spawn_anim;
+            }
         }
         // Replays drive every simulated tick from boot, warmup included.
         for _ in 0..self.warmup {

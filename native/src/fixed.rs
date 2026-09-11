@@ -202,9 +202,25 @@ impl Fix {
         };
         Self(if vertical { -value } else { value })
     }
-    /// The reference's un-interpolated table lookup; here the same as `sin`.
+    /// Fix.cs `FastSin`: the un-interpolated lookup `SinLut[angle >> 15]`
+    /// (mirrored from the far end in the second quadrant). Reproduced
+    /// exactly rather than approximated by `sin`: the table's entry `i` is
+    /// `floor(sin(i * (PI/2) / 205886) * 2^32)` (all 205887 entries of
+    /// `data/sinlut.bin` match this formula), so the lookup carries both the
+    /// index truncation (up to 7.6e-6 rad) and the table's 1.0000185 angle
+    /// scale. `Vec2(angle)` (Vec2.cs:31) builds every FixTransform basis
+    /// with it: map platform bases (FixTransform.cs:45) and slime colliders
+    /// sit at the table's angle, not the exact one, and a body standing on a
+    /// tilted platform settles where that basis puts it.
     pub fn fast_sin(self) -> Self {
-        self.sin()
+        const LUT_LAST: f64 = 205886.0;
+        let (angle, horizontal, vertical) = self.sin_quadrant();
+        // `angle` is in units; raw >> 15 is floor(angle * 2^17).
+        let index = (angle * 131_072.0).floor().min(LUT_LAST);
+        let index = if horizontal { LUT_LAST - index } else { index };
+        let value = (index * (std::f64::consts::FRAC_PI_2 / LUT_LAST)).sin();
+        let value = (value * 4_294_967_296.0).floor() / 4_294_967_296.0;
+        Self(if vertical { -value } else { value })
     }
     pub fn cos(self) -> Self {
         Self(
@@ -218,7 +234,15 @@ impl Fix {
         .sin()
     }
     pub fn fast_cos(self) -> Self {
-        self.cos()
+        Self(
+            self.0
+                + if self.0 > 0.0 {
+                    Self::COS_SHIFT_POSITIVE.0
+                } else {
+                    Self::HALF_PI.0
+                },
+        )
+        .fast_sin()
     }
     pub fn tan(self) -> Self {
         // Fix.cs `Tan`: reduce by PI, fold the second quadrant, then look up.

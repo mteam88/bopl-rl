@@ -352,7 +352,12 @@ fn map_def(raw: &RawMap) -> MapDef {
         .iter()
         .map(|p| {
             let rotation = Fix::from_raw(p.rotation);
-            let right = Vec2::new(rotation.cos(), rotation.sin());
+            // FixTransform's `rotation` setter derives the basis with
+            // `new Vec2(angle)` (FixTransform.cs:45), i.e. Fix.FastCos /
+            // Fix.FastSin (Vec2.cs:31-35): the un-interpolated table, whose
+            // truncation offsets every tilted map platform by up to 7.6e-6
+            // rad. The interpolated `Sin`/`Cos` gave the exact angle instead.
+            let right = Vec2::angle(rotation);
             let up = right.perp();
             let scale = Fix::from_raw(p.scale);
             PlatformDef {
