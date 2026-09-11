@@ -13,11 +13,10 @@
  * inputs give the same future), play a set of candidate action sequences on
  * the fork for a horizon, score each one, and emit the first decision of the
  * best. Candidates are macros: stand, walk, jump, dash in a direction, dash
- * then shoot, shoot (aim from the v1 ballistic solver plus perturbations and
- * random aims, one per charge), platform, and a few random sequences. The
- * rollout runs the real sim, so everything the v1 bots approximate (own
- * fire-delayed arrows, morph timing, terrain, squish) is exact: a shoot-then-
- * dash into the own arrow simply scores -1.
+ * then shoot, shoot (the v1 ballistic solver's aims, one set per charge) and
+ * platform. The rollout runs the real sim, so everything the v1 bots
+ * approximate (own fire-delayed arrows, morph timing, terrain, squish) is
+ * exact: a shoot-then-dash into the own arrow simply scores -1.
  *
  * Foe model in the rollout: the foe keeps the movement direction of its last
  * applied input with every button released (a pending bow charge therefore
@@ -29,10 +28,16 @@
  * Score: own death -1 (+0.25 * t/H, later is better), foe death +1
  * (-0.25 * t/H, sooner is better), both -1; otherwise a heuristic on the end
  * state (arrow threat ETA, dry-landing survivability, own resources ready,
- * foe dash/platform on cooldown, height, distance band). Deterministic given
- * the bot's RNG stream. Levels: hard = full candidate set, horizon 96 ticks;
- * medium = no random sequences, fewer directions, horizon 64. Requires a
- * backend with bopl_rl_fork (the Rust sim); anything else aborts. */
+ * foe dash/platform on cooldown, height, distance band). Every candidate is
+ * scored at the level's horizon H unless its own action outlasts it (charge
+ * + flight, the platform morph): the heuristic is not stationary in H (the
+ * foe model shoots once, then its arrow is gone and its dash spent), so a
+ * candidate that merely looks further ahead scores higher - six random
+ * sequences whose arrows ran to H + charge + 60 caused half of search-hard's
+ * losses that way (SCRIPTED_BOTS.md, Levels). Deterministic: no RNG drawn.
+ * Levels are the horizon: hard 64 ticks (the measured optimum), medium 48,
+ * easy 32. Requires a backend with bopl_rl_fork (the Rust sim); anything
+ * else aborts. */
 #include "bopl_layout.h"
 #include "bopl_bots_v2_play.h"
 
@@ -77,7 +82,7 @@ static int search_shot_exists(const BotView *v) {
  * Without it the search camps: within a 1.5 s horizon nothing beats standing
  * on a perch with every resource ready, even with the foe idle below a deck
  * (measured: search-hard vs idle on map 1 stood 7000 ticks). */
-typedef struct { int have_spot; double sx, sy; } SearchContext;
+typedef struct { int have_spot, foe_passive; double sx, sy; } SearchContext;
 /* Heuristic value of a non-terminal end state for player `me`. */
 static double search_heuristic(const BoplRlState *s, int me, const SearchContext *ctx) {
     BotView v;
@@ -95,8 +100,8 @@ static double search_heuristic(const BoplRlState *s, int me, const SearchContext
      * middle platform 16 u from an idle foe, until the round times out. */
     else h-=0.008*d;
     /* Standing where the foe's bow (ready or charging) has a certified shot
-     * at me is the opposite: seek cover. */
-    if (v.foe_slime && v.foe) {
+     * at me is the opposite: seek cover - unless the foe is passive. */
+    if (v.foe_slime && v.foe && !ctx->foe_passive) {
         const BoplRlSlime *f=v.foe_slime;
         int foe_bow=(f->flags&1)?f->timers[BOT_SLOT_BOW]>f->cooldowns[BOT_SLOT_BOW]:(f->ability_flags[BOT_SLOT_BOW]&BOPL_ABILITY_ACTIVE)!=0;
         BotView fv;
@@ -132,7 +137,8 @@ static int search_coarse_shot(const BoplRlState *s, int foe, double fx, double f
 }
 /* Foe model state for one rollout. */
 /* dodge: 0 v1 hard bot_dodge; 1 dash away at first sight (jump if the dash
- * is down); 2 platform freeze (stand if down); 3 no reaction (down/asleep). */
+ * is down). Two more (platform freeze, no reaction) were hard-only and cost
+ * ~35 Elo for twice the rollouts per shot. */
 typedef struct { int hold_left, fired, dashed, dodge; double speed; } SearchFoe;
 /* The foe's input for one rollout decision (see the header comment). A foe
  * already charging either releases now (mode 0) or keeps charging with aim
@@ -203,19 +209,10 @@ static void search_foe_action(const BoplRlState *s, int foe, int me, uint8_t bas
     BotAction act; memset(&act, 0, sizeof(act));
     if (arrows) {
         double dir=1, eta=bot_arrow_eta(&fv, &dir);
-        switch (fm->dodge) {
-        case 0: bot_dodge(&fv, &scratch, &act); break;
-        case 1:
-            if (eta<=26) {
-                if (fv.dash_ready) bot_act(&act, bot_aim_byte(-dir, 0.3), BOT_DASH, 0);
-                else if (fv.grounded) bot_act(&act, bot_aim_byte(-dir, 0.2), BOT_JUMP, 0);
-            }
-            break;
-        case 2:
-            if (eta<=26 && fv.platform_ready) bot_act(&act, BOT_AIM_UP, BOT_PLATFORM, 0);
-            else if (eta<=26) bot_act(&act, BOT_AIM_UP, 0, 0);
-            break;
-        default: break;
+        if (fm->dodge==0) bot_dodge(&fv, &scratch, &act);
+        else if (eta<=26) {
+            if (fv.dash_ready) bot_act(&act, bot_aim_byte(-dir, 0.3), BOT_DASH, 0);
+            else if (fv.grounded) bot_act(&act, bot_aim_byte(-dir, 0.2), BOT_JUMP, 0);
         }
     }
     /* Airborne: steer to a landing like v1, or spend a resource to recover.
@@ -303,19 +300,19 @@ static void search_add(SearchCandidate *cands, int *n, uint8_t aim, uint16_t but
     c->first.aim=aim; c->first.buttons=buttons; c->first.hold=hold;
     c->after_aim=after_aim; c->macro=macro; c->horizon=horizon; c->score=0;
 }
-/* Shot candidates for one charge: solver aims (terrain-checked, then flat
- * regardless of terrain), perturbations and random aims; the horizon covers
- * charge + fire delay + flight so the hit or miss is inside the rollout. */
-static void search_add_shots(SearchCandidate *cands, int *n, BoplBot *bot, const BotView *view, int hold, int hard) {
+/* Shot candidates for one charge: the solver's aims (terrain-checked, then
+ * flat regardless of terrain); the horizon covers charge + fire delay +
+ * flight so the hit or miss is inside the rollout. Random aims (one or two
+ * per charge) were tried and cost both levels ~100 Elo: a full charge at an
+ * aim the solver rejected wins the argmax now and then on the end-state
+ * heuristic, and the bot dies inside it. */
+static void search_add_shots(SearchCandidate *cands, int *n, const BotView *view, int hold) {
     double s=BOT_ARROW_SPEED[hold], range=bot_len(view->fx-view->x, view->fy-view->y);
     if (s*s/BOT_ARROW_G<=range*0.7) return;
-    uint8_t aims[8]; int count=0; double flight=range/s;
+    uint8_t aims[2]; int count=0; double flight=range/s;
     uint8_t aim;
     if (bot_solve_shot(view, hold, BOT_FIRE_DELAY[hold], 1, 0, &aim, &flight)) aims[count++]=aim;
     if (bot_solve_shot(view, hold, BOT_FIRE_DELAY[hold], 0, 1, &aim, &flight) && (!count || aim!=aims[0])) aims[count++]=aim;
-    int base=count;
-    if (hard) for (int i=0; i<base && count<6; i++) { aims[count++]=search_aim_offset(aims[i], 3); aims[count++]=search_aim_offset(aims[i], -3); }
-    for (int i=0; i<(hard?2:1) && count<8; i++) aims[count++]=(uint8_t)(1+bot_rand(bot)%255);
     int horizon=4*BOPL_HOLD_LENGTHS[hold]+16+(int)(flight*60)+12;
     horizon=(int)search_clamp(horizon, 64, 300);
     for (int i=0; i<count; i++) search_add(cands, n, aims[i], BOT_ARROW, (uint8_t)hold, 0, SEARCH_HOLD, horizon);
@@ -325,8 +322,7 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
     BotView view;
     int live=bot_view(&view, state, me);
     if (!bot->world || !view.alive || !view.my_slime || view.dead_phase || !live) return;  /* stand */
-    int hard=bot->level>=BOPL_BOT_HARD;
-    int H=hard?96:64;
+    int H=bot->level>=BOPL_BOT_HARD?64:bot->level==BOPL_BOT_MEDIUM?48:32;  /* the level is the horizon */
     double dx=view.fx-view.x, dy=view.fy-view.y;
     SearchCandidate cands[SEARCH_MAX_CANDIDATES]; int n=0;
     if (hold_left>0) {
@@ -336,8 +332,8 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
             uint8_t live_aim=bot_charge_aim(&view, bot, hold_left, hold_run);
             int charge=(hold_run[BOPL_BUTTON_ARROW]+hold_left)*4;
             int horizon=hold_left*4+16+(int)search_clamp(bot_len(dx, dy)/(charge>=56?75:charge>=28?30:15)*60, 10, 120)+12;
-            static const int offsets[7]={0, 2, -2, 5, -5, 10, -10};
-            for (int i=0; i<(hard?7:3); i++) search_add(cands, &n, search_aim_offset(live_aim, offsets[i]), held, 0, 0, SEARCH_HOLD, horizon);
+            static const int offsets[3]={0, 2, -2};
+            for (int i=0; i<3; i++) search_add(cands, &n, search_aim_offset(live_aim, offsets[i]), held, 0, 0, SEARCH_HOLD, horizon);
             search_add(cands, &n, bot->last[0], held, 0, 0, SEARCH_HOLD, horizon);
         } else {
             search_add(cands, &n, bot_aim_byte(dx>=0?1:-1, 0), held, 0, bot_aim_byte(dx>=0?1:-1, 0), SEARCH_HOLD, H);
@@ -354,24 +350,22 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
         }
         search_add(cands, &n, bot_aim_byte(dx>=0?0.3:-0.3, 1), BOT_JUMP, 0, BOT_AIM_UP, SEARCH_HOLD, H);
         if (view.dash_ready && !view.morphing) {
-            static const double dirs[8][2]={{1,0},{-1,0},{1,1},{-1,1},{0,1},{1,-0.5},{-1,-0.5},{0,-1}};
-            for (int i=0; i<(hard?8:4); i++) search_add(cands, &n, bot_aim_byte(dirs[i][0], dirs[i][1]), BOT_DASH, 0, BOT_AIM_UP, SEARCH_HOLD, H);
+            /* Up, down-diagonal and straight-down dashes plus sideways
+             * dash-then-shoot candidates cost 130 Elo (SCRIPTED_BOTS.md). */
+            static const double dirs[4][2]={{1,0},{-1,0},{1,1},{-1,1}};
+            for (int i=0; i<4; i++) search_add(cands, &n, bot_aim_byte(dirs[i][0], dirs[i][1]), BOT_DASH, 0, BOT_AIM_UP, SEARCH_HOLD, H);
             search_add(cands, &n, bot_aim_byte(dx, dy), BOT_DASH, 0, BOT_AIM_UP, SEARCH_HOLD, H);
             search_add(cands, &n, bot_aim_byte(dx, dy+4), BOT_DASH, 0, BOT_AIM_UP, SEARCH_HOLD, H);
             if (view.bow_ready) {
                 int horizon=H+4*BOPL_HOLD_LENGTHS[BOT_HOLD_MID]+60;
                 search_add(cands, &n, bot_aim_byte(dx, dy), BOT_DASH, 0, BOT_AIM_UP, SEARCH_DASH_SHOOT, horizon);
                 search_add(cands, &n, bot_aim_byte(dx, dy+4), BOT_DASH, 0, BOT_AIM_UP, SEARCH_DASH_SHOOT, horizon);
-                if (hard) {
-                    search_add(cands, &n, bot_aim_byte(dx>=0?1:-1, 0.3), BOT_DASH, 0, BOT_AIM_UP, SEARCH_DASH_SHOOT, horizon);
-                    search_add(cands, &n, bot_aim_byte(dx>=0?-1:1, 0.3), BOT_DASH, 0, BOT_AIM_UP, SEARCH_DASH_SHOOT, horizon);
-                }
             }
         }
         if (view.bow_ready && !view.morphing && !forced_release) {
-            search_add_shots(cands, &n, bot, &view, BOT_HOLD_FULL, hard);
-            search_add_shots(cands, &n, bot, &view, BOT_HOLD_MID, hard);
-            search_add_shots(cands, &n, bot, &view, BOT_HOLD_QUICK, hard);
+            search_add_shots(cands, &n, &view, BOT_HOLD_FULL);
+            search_add_shots(cands, &n, &view, BOT_HOLD_MID);
+            search_add_shots(cands, &n, &view, BOT_HOLD_QUICK);
         }
         if (view.platform_ready && !view.morphing) {
             /* The morph lasts ~72 ticks and the ejection is where v1 bots
@@ -379,17 +373,20 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
             search_add(cands, &n, BOT_AIM_UP, BOT_PLATFORM, 0, BOT_AIM_UP, SEARCH_HOLD, H+96);
             search_add(cands, &n, bot_aim_byte(dx, dy), BOT_PLATFORM, 0, bot_aim_byte(dx, dy), SEARCH_HOLD, H+96);
         }
-        if (hard) for (int i=0; i<6; i++) {
-            static const uint16_t buttons[5]={0, BOT_JUMP, BOT_DASH, BOT_ARROW, BOT_PLATFORM};
-            uint16_t b=buttons[bot_rand(bot)%5];
-            if ((b&BOT_ARROW) && forced_release) b=0;
-            uint8_t a=(uint8_t)(1+bot_rand(bot)%255);
-            uint8_t hold=(b&BOT_ARROW)?(uint8_t)(bot_rand(bot)%BOPL_ACT_HOLD):0;
-            search_add(cands, &n, a, b, hold, a, SEARCH_HOLD, (b&BOT_ARROW)?H+4*BOPL_HOLD_LENGTHS[hold]+60:H);
-        }
     }
     SearchContext ctx; memset(&ctx, 0, sizeof(ctx));
     if (!view.morphing && !search_shot_exists(&view)) ctx.have_spot=bot_firing_spot(&view, &ctx.sx, &ctx.sy);
+    /* Passivity (the v2 bots' foe_still): a foe that has neither moved nor
+     * morphed for 20 decisions is not about to shoot, so the cover penalty
+     * against its ready bow is dropped. With it the deterministic search
+     * camped out of an idle foe's line of sight until sudden death (3 of 6
+     * idle-gate games); pool-v3 opponents camp too (+100 Elo). Modelling the
+     * passive foe as not shooting/dodging in the rollout as well changed
+     * nothing against the pool and stalled more idle-gate games. */
+    double moved=bot_len(view.fx-bot->foe_prev_x, view.fy-bot->foe_prev_y);
+    bot->foe_still=(moved<0.15 && !view.foe_morphing && bot->decisions>1)?bot->foe_still+1:0;
+    bot->foe_prev_x=view.fx; bot->foe_prev_y=view.fy;
+    ctx.foe_passive=bot->foe_still>=20;
     /* A charging foe is scored under both release timings (now / at full
      * charge) and the candidate keeps the worse: the release-now model alone
      * had the bot start a 64-tick full charge at 3.6 u from a foe whose real
@@ -404,7 +401,7 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
          * the foe cannot escape it - down, mid-air without a dash, or on
          * cooldown. That is the window humans attack in. */
         int shot=(cands[i].first.buttons&BOT_ARROW) || cands[i].macro==SEARCH_DASH_SHOOT || (held&BOT_ARROW);
-        int dodges=shot?(hard?4:2):1;
+        int dodges=shot?2:1;
         for (int mode=0; mode<modes; mode++)
             for (int dodge=0; dodge<dodges; dodge++) {
                 double r=search_rollout(bot, state, me, &cands[i], hold_left, held, hold_run, &ctx, mode, dodge);
