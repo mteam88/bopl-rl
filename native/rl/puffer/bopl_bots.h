@@ -65,6 +65,7 @@ typedef struct BotV2Mem {
     int combo;                         /* decisions left to complete a dash->arrow attack */
     int hold_off;                      /* pursuer back-off hysteresis (decisions) */
     int since_dash, since_platform;
+    int self_still;                    /* search: consecutive decisions I moved < .15 u */
 } BotV2Mem;
 
 typedef struct BoplBot {
