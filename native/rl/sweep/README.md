@@ -41,7 +41,8 @@ native/rl/sweep/
   flags.py         behaviour flags from evaluation behaviour totals (labels only)
   rescore.py       re-score an existing sweep with the reference scorer, read-only
   report.py        results.jsonl, summary.md, launch-best.sh
-  configs/         one TOML per sweep
+  configs/         one TOML per sweep (smoke.toml = the pipeline at a tiny budget;
+                   overnight-3.toml is a historical record and no longer loads)
   tests/           unittest suite + fixtures copied from run 007
 native/artifacts/rl/sweeps/<name>/
   sweep.json       every suggestion + observation (the resumable state)
@@ -54,20 +55,23 @@ native/artifacts/rl/sweeps/<name>/
 
 ## Config format
 
-One TOML per sweep, see `configs/smoke.toml` (tiny validation sweep) and
-`configs/arrows-and-rewards.toml` (first real sweep, with its budget math).
+One TOML per sweep, see `configs/smoke.toml` (the live pipeline at a tiny
+budget) and `configs/overnight-4.toml` (the current sweep, with its budget
+math in the header).
 
 - `[sweep]` — `method` (Protein | Random | ParetoGenetic), `goal`,
   `metric_distribution` (`percentile` logit-transforms win-rate-like scores),
   `downsample` (points observed per trial curve), `early_stop_quantile`,
   `max_suggestion_cost` (in cost units), `max_runs` (successful trials),
+  `num_random_samples` (Protein: Sobol trials after the defaults trial before
+  the GP suggests; PufferLib's default 10 is half of a 16-trial overnight),
   `use_gpu` (Protein's GP; default false), `cost` (`learner_steps` default,
   or `wall_clock` — learner steps are robust to box load), `seeds`
   (`fixed` | `increment`), `concurrency` (default 1; the box is shared).
 - `[trial]` — `memory_max` (systemd MemoryMax per trial), `nice`,
   `max_seconds` (wall cap, driver SIGTERMs past it), `poll_seconds`,
   `min_early_stop_fraction`.
-- `[scoring]` — see below.
+- `[scoring]` — `scorer` (required: `reference` | `behaviour` | `match`), see below.
 - `[fixed]` — every fixed `train.py` argument, snake_case
   (`learning_rate = 3e-4` renders as `--learning-rate 0.0003`). `steps` is
   required: it is the default budget and the seed trial's cost.
@@ -90,10 +94,19 @@ One TOML per sweep, see `configs/smoke.toml` (tiny validation sweep) and
 native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \
   --config native/rl/sweep/configs/smoke.toml --dry-run 3
 
-# run (survives kill -TERM; re-run the same command to resume)
+# plumbing check (one ~3 min trial, reference scorer, flags), outside the artifacts tree
 native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \
-  --config native/rl/sweep/configs/smoke.toml
+  --config native/rl/sweep/configs/smoke.toml --root /tmp/sweeps
+
+# the real thing, as a user unit (survives kill -TERM; re-run to resume)
+systemd-run --user --unit bopl-sweep-overnight-4 -p MemoryMax=4G -p CPUQuota=900% --nice=10 \
+  --working-directory="$PWD" bash -c "native/artifacts/rl/venv/bin/python \
+  native/rl/sweep/driver.py --config native/rl/sweep/configs/overnight-4.toml"
 ```
+
+The driver runs on the Rust sim (`BOPL_RL_BACKEND=rust` is its default): the
+trials through `train.py`, the reference scorer's games through
+`reference_pool.py`.
 
 Each trial runs in its own systemd scope
 (`systemd-run --user --scope -p MemoryMax=... --unit bopl-sweep-<sweep>-<id>`)
@@ -118,14 +131,6 @@ directory; the curve is downsampled to `downsample` points along learner
 steps (bin means, exact final point) and each point is fed to
 `Protein.observe` with the cost at that point — exactly PufferLib's loop.
 
-- `scorer = "anchors"` (default): mean win rate over the run's own periodic
-  evaluations (`evaluations/*/result.json`) against fixed opponents —
-  `random`, `initial`, plus whatever frozen checkpoints the run's
-  `--evaluation-opponents` manifest contributes. The group list is
-  data-driven from the results (anything but `selfplay`), so new anchors
-  (e.g. scripted bots) join without code changes. Timeouts already count as
-  losses. `opponents = [...]` restricts the list; `include_heldout = true`
-  adds held-out-map groups.
 - `scorer = "behaviour"`: a rate from `metrics.jsonl` per-update behaviour
   totals — `metric = "kills_per_episode" | "arrow_hit_rate" |
   "arrows_per_episode" | "wins_per_episode"`. Note the totals in
@@ -149,13 +154,17 @@ steps (bin means, exact final point) and each point is fed to
 
 ### Why a reference pool, and why it is frozen
 
-The `anchors` mean over eight hand-picked opponents measured ±3–4 points of
-standard error per evaluation on overnight-3 while trial scores wandered
-0.27–0.51 within one run; `random`/`initial` groups were 100% wins for every
-trial and only diluted the mean; the run007 checkpoints were trained on an
-older sim with an exploitable platform bug and inflated new-sim agents; and
-the top-scoring trial (001) fired zero arrows. The reference scorer follows
-the literature instead:
+overnight-1..3 were scored by an `anchors` scorer (removed 2026-09-11): the
+mean win rate of each periodic evaluation over eight hand-picked opponents.
+It measured ±3–4 points of standard error per evaluation on overnight-3 while
+trial scores wandered 0.27–0.51 within one run; `random`/`initial` groups were
+100% wins for every trial and only diluted the mean; the run007 checkpoints
+were trained on an older sim with an exploitable platform bug and inflated
+new-sim agents; the top-scoring trial (001) fired zero arrows; and re-scoring
+25 finals against pool v3 reordered 24 of 25 ranks
+(`sweeps/overnight-3-rescore-v3/summary.md`). Those sweeps' `results.jsonl`
+keep their anchors scores. The reference scorer follows the literature
+instead:
 
 - OpenAI Five, appendix J: rate agents by TrueSkill/Elo against a *frozen*
   pool of reference agents whose ratings are held constant, play mostly the
@@ -230,7 +239,7 @@ a sim change with gameplay impact, build a new pool.
 ### Behaviour flags
 
 Every finished trial's evaluations are labelled from their behaviour totals
-(`evaluate.py` `behavior_totals`, pooled over the anchor groups on the
+(`evaluate.py` `behavior_totals`, pooled over the non-selfplay groups on the
 evaluation maps) with thresholds from the config:
 
 ```toml

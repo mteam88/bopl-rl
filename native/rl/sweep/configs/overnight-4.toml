@@ -1,62 +1,75 @@
-# Overnight sweep 4 (DRAFT, not launched): overnight-3's space scored by the
-# reference-pool scorer instead of the anchors mean.
+# Overnight sweep 4 (2026-09-11): overnight-3's basin at twice the budget,
+# a v2 training bot, scored by the frozen reference pool.
+# Score: Bradley-Terry Elo vs pool v3 (random, 4 v1 hard bots + mixed-medium,
+# 4 v2 hard bots, search-hard/medium, 6 overnight-3 finals, run007-final),
+# IQM over the last 3 evaluations, 480 games per checkpoint (240 gave a 95% CI
+# of +-45 Elo on the overnight-3 re-score; trial effects there were ~30-50).
+# The pool was played on libbopl_sim.so 0d4057e7; ratings on another build are
+# flagged game_mismatch, not refused. After a sim rebuild with gameplay fixes,
+# build pool v4 (same 19 members, ~17 min at 6+12 workers) and point `pool` at it:
+#   systemd-run --user --scope -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
+#     native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
+#     --out native/artifacts/rl/sweeps/anchors/overnight-4/pool.json --games-per-pair 48 --workers 6 --slow-workers 12 \
+#     --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
+#     $(for n in o3-001 o3-002 o3-009 o3-012 o3-017 o3-019 run007; do echo --checkpoint $n-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/$n-final.bin; done)
 #
-# Why (measured on overnight-3, 13 trials, native/rl/sweep/README.md
-# "Why a reference pool"): the anchors mean over 8 opponent groups had a
-# standard error of 3-4 points per evaluation while scores wandered 0.27-0.51
-# within one trial; random/initial groups were 100% wins for everyone; the
-# run007 anchors came from the old, exploitable sim; and the best-by-score
-# trial (001) fired zero arrows. Here a trial's score is the Bradley-Terry Elo
-# of its checkpoint against a frozen reference pool (pool ratings fixed, games
-# concentrated on the 15-85% band, OpenAI Five App. J), aggregated as the IQM
-# over the last 3 evaluations (rliable). Behaviour flags are labels only.
+# Budget (measured): overnight-3 ran 200M-step trials in 22.6 min of wall each
+# (48 trials, 18.1 h; 150k learner/s including background evals); rating a
+# checkpoint took 60 s at 240 games / 4 workers. A 400M trial is ~48 min +
+# ~4 min of scoring, so 15 trials fill 20:00-09:00. Traded: 500M x 12 would
+# leave Protein 5 GP suggestions over 5 parameters; 350M x 17 does not reach
+# the entropy floor for most half-lives. The last three overnight-3 ratings of
+# every basin trial were still rising (020: 344/365/394), so the budget goes
+# to length. num_random_samples 6: 1 defaults + 6 Sobol + 8 GP trials.
 #
-# Pool: native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json (random,
-# the 4 v1 hard bots + mixed-medium, the 4 v2 hard bots, search-hard and
-# search-medium, overnight-3 finals 001/002/009/012/017/019, run007-final rated
-# by play). Its hash is checked on every load; to add a reference, build a new
-# pool file and point `pool` at it (README).
+# Space: overnight-3 (47 trials) converged from trial 017 on to lr 1.1-1.4e-3,
+# 4 learner passes, entropy 7.4-10e-3, half-life pinned at its 1.5e8 cap,
+# buttons scale 1.1-2.0, reward_kill 0.22-0.30 (pinned near the 0.3 cap),
+# scripted_banks 1, scripted_decay 44-76M. Fixed here: learner_passes 4,
+# head_scale_buttons 1.5, one scripted bank. Swept: lr and entropy narrowed
+# to the basin; half-life and reward_kill extended past their old caps;
+# decay rescaled to the longer run. Trial 000 = the basin centre at 400M.
 #
-# Differences from overnight-3.toml, all in [sweep]/[scoring]:
-# - scorer = "reference" with last_k = 3, games = 240 per checkpoint.
-# - metric_distribution = "linear": Elo is not a 0..1 rate.
-# - downsample = 3: the reference curve has last_k points (IQM of the window
-#   so far); Protein sees three (cost, score) points per trial.
-# - early_stop stays false: the scorer plays games and is not polled.
-# - [scoring.flags]: thresholds for the behaviour badges.
-# Training space and [fixed] are identical to overnight-3 so the two sweeps
-# compare hyperparameter conclusions, not scorers.
+# Bots: the training bank plays mixed-v2-hard, not mixed-hard. v1 bots lost
+# 66% of their games to platform squishes (SCRIPTED_BOTS.md loss taxonomy),
+# the exploit the no-offense trials learned; v2 cut squishes 221->29 and rates
+# 592 Elo vs 342 at equal cost (125k vs 128k learner/s median, 128 workers,
+# 12M-step smoke 2026-09-11 under CPUQuota 800%; a search-medium bank: 31k).
+# Evaluations play mixed-hard (overnight-3 continuity) and the four v2 hard
+# bots; the run007 manifest is dropped (run007-final is a pool member): 216
+# games per evaluation vs 288, 16 s in the smoke vs 40-89 s in overnight-3.
 
 [sweep]
 method = "Protein"
 metric = "score"
 goal = "maximize"
-metric_distribution = "linear"     # Elo; percentile would logit-transform it
-downsample = 3                     # = [scoring].last_k reference points per trial
-fixed_cost = true                  # every trial runs [fixed].steps
+metric_distribution = "linear"     # Elo, not a rate
+downsample = 3                     # = [scoring].last_k points per trial
+fixed_cost = true
 early_stop = false
-max_suggestion_cost = 2.1e8
-max_runs = 60
+max_suggestion_cost = 4.1e8
+max_runs = 15
+num_random_samples = 6
 use_gpu = false
 cost = "learner_steps"
 seeds = "fixed"
-concurrency = 1                    # two concurrent trainers measured 134k vs 157k learner/s for one (2026-09-10)
+concurrency = 1
 
 [trial]
-memory_max = "14G"
+memory_max = "6G"                  # train.py peaked at 1.5 GB RSS, its evaluate.py child at 0.7 GB
 nice = 10
-max_seconds = 5400                 # 1.5 h hard wall; a healthy trial is ~20-25 min on the f64 sim
+max_seconds = 7200                 # a healthy trial is ~50 min
 poll_seconds = 60
 
 [scoring]
 scorer = "reference"
 pool = "native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json"
-last_k = 3                         # evaluations aggregated by IQM (eval_every 20M -> the last 60M steps)
-games = 240                        # per checkpoint: 6 x 16 members first pass, 144 in the band
+last_k = 3                         # eval_every 20M -> the last 60M steps
+games = 480
 first_pass_games = 6
 band = [0.15, 0.85]
-round_games = 48
-workers = 4
+round_games = 96
+workers = 8                        # the box is idle between trials
 seed_base = 70001
 
 [scoring.flags]
@@ -65,7 +78,7 @@ platform-spam = "platforms_per_game > 8"
 stalemate = "timeout_rate > 0.5"
 
 [fixed]
-steps = 200000000
+steps = 400000000
 workers = 128
 buffers = 4
 banks = 4
@@ -75,19 +88,18 @@ hidden = 128
 layers = 1
 horizon = 128
 learner_passes = 4
-learning_rate = 2e-3
-entropy = 3.5e-3
-entropy_floor = 0.001              # capped to entropy/2 when entropy sweeps lower
-entropy_half_life = 34540010
-entropy_head_scale = "1,1.71,1"
+learning_rate = 1.25e-3
+entropy = 8e-3
+entropy_floor = 0.001
+entropy_half_life = 200000000
+entropy_head_scale = "1,1.5,1"
 entropy_free_rows = 1
-reward_kill = 0.0
+reward_kill = 0.27
 reward_timeout = -1
-scripted_bots = ["mixed", "archer"]  # ordered candidates; scripted_banks takes the first N
+scripted_bots = ["mixed-v2"]
 scripted_level = "hard"
-scripted_decay = 200000000
-scripted_opponents = "mixed-hard,archer-hard,pursuer-hard,evasive-hard,mixed-medium"
-evaluation_opponents = "native/artifacts/rl/sweeps/anchors/opponents.json"
+scripted_decay = 120000000
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
 training_maps = [0, 1, 2]
 evaluation_maps = [0, 1, 2]
 heldout_maps = [3, 4]
@@ -96,57 +108,37 @@ checkpoint_every = 10000000
 eval_every = 20000000
 evaluation_games = 8
 heldout_games = 4
-frozen_games = 8
 evaluation_workers = 4
 cudagraphs = 1
 
 [params.learning_rate]
 distribution = "log_normal"
-min = 5e-4
-max = 4e-3
+min = 8e-4
+max = 2e-3
 scale = 0.5
-
-[params.learner_passes]
-distribution = "int_uniform"
-min = 2
-max = 4
-scale = "auto"
 
 [params.entropy]
 distribution = "log_normal"
-min = 2e-3
-max = 1.5e-2
+min = 5e-3
+max = 1.4e-2
 scale = 0.5
 
 [params.entropy_half_life]
 distribution = "log_normal"
-min = 1.5e7
-max = 1.5e8
+min = 1e8                          # floor 1e-3 reached at ~300M
+max = 4e8                          # one halving over the run
 scale = 0.5
 integer = true
 
-[params.head_scale_buttons]
-distribution = "log_normal"
-min = 0.25
-max = 4.0
-scale = 0.5
-
 [params.reward_kill]
 distribution = "uniform"
-min = 0.0
-max = 0.3
+min = 0.1                          # <= 0.05 gave no-offense trials in overnight-3
+max = 0.5
 scale = "auto"
-
-[params.scripted_banks]
-distribution = "int_uniform"
-min = 0
-max = 1
-scale = "auto"
-default = 0
 
 [params.scripted_decay]
 distribution = "log_normal"
-min = 2.5e7                        # bots gone after 12.5% of the run
-max = 2e8                          # still playing half their bank's matches at the end
+min = 4e7                          # bot gone after 10% of the run
+max = 3e8                          # still playing a quarter of its bank at the end
 scale = 0.5
 integer = true
