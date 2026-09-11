@@ -48,6 +48,82 @@ The v1 freeze is checked by fixed-seed fingerprints: `check_scripted_bots.py`
 plus 20 idle-opponent games per `kind-level` must reproduce the same replay
 bytes before and after any change to the bot headers.
 
+## search (kind 5, v2): rollout search on a forked sim
+
+`search-hard` / `search-medium` (`bopl_bots_v2.h`) are model-predictive
+control: every decision the bot forks the live game (`bopl_rl_fork`, a
+private copy with the same random stream), plays a set of candidate action
+sequences on the fork for a horizon and emits the first decision of the best.
+Because the rollouts run the real sim, everything v1 approximates is exact
+for free — the 13 u dash raycast through projectiles, own-arrow immunity
+ending after 5 u, a fire-delayed arrow that does not exist yet as an entity,
+the growing platform of a squish, the platform morph's ejection. The bot
+needs the Rust sim backend (`BOPL_RL_GAME=.../libbopl_sim.so`); the .NET
+game cannot fork and the bot aborts with a message.
+
+**Fork FFI** (`src/rollout/abi.rs::bopl_rl_fork`, `RolloutWorld::fork_from`,
+C `bopl_rl_fork(world, reuse)`): refilling a reused fork costs ~1 µs (fresh
+allocation ~21 µs), a tick on the fork 0.5–0.6 µs at the 4-tick decision
+cadence; a 120-tick rollout including the fork is ~55–70 µs. Determinism was
+checked by driving a fork and the real world with identical random inputs to
+the end of the game on maps 0–2: zero state mismatches. `data::get()` is a
+read-only `OnceLock`, so forks are thread-safe per environment.
+
+**Candidates** (hard ≈ 35, medium ≈ 15): stand, walk ±, jump ±, dash in 8
+directions plus toward the foe, dash-then-shoot (the v1 solver fires once the
+dash tail ends), shots for each charge (v1 solver aims terrain-checked and
+flat, ±3-step perturbations, random aims; horizon = charge + fire delay +
+flight), platform (horizon covers the ~72-tick morph and ejection), and six
+random sequences (hard). While latched only the aim varies (an arrow charge
+searches around `bot_charge_aim`).
+
+**Scoring**: own death −1 (+0.25·t/H), foe death +1 (−0.25·t/H), both −1;
+otherwise a heuristic on the end state: a certified shot from here +0.2 or
+distance to a v1 firing spot, standing in the foe's certified shot −0.2,
+arrow ETA, dry landing, own resources ready, foe dash/platform on cooldown,
+height, distance band. A latch of L decisions costs 0.004·(L−1) (commitment
+margin).
+
+**Foe model** (the weak point, every loss mode below traces to it): keeps
+its last movement, buttons up (a pending charge fires at once); a charging
+foe is scored under both release timings (now / hold to full with tracking
+aim) and the candidate keeps the worse; a ready bow shoots once when a
+coarse line-of-sight shot exists (charge by range, flat arc tracking me);
+with no shot it closes in, and for long charges (8+ decisions) a second
+pessimistic model dashes in first; a ready platform within 9 u is planted;
+airborne it steers to a landing or spends `bot_recover`; against my arrow it
+gets its best dodge in hindsight (min over v1 dodge / dash-away / platform
+freeze / none for shot candidates), so a shot only counts as a kill when the
+foe cannot escape it — down, mid-air without a dash, on cooldown.
+
+**Cost**: ~4 ms per decision for `search-hard` (≈0.4 s wall per 350-tick game
+vs `mixed-hard`; ≈7 s for a full 7200-tick game), ~1 ms for `search-medium`.
+A diagnostic `evaluate.py` suite with `search-hard,mixed-hard` (≈400 games)
+took 100–160 s wall with two workers.
+
+**Strength (2026-09-11, Rust sim, maps 0–2 both sides).** Bot-vs-bot: 120
+games `search-hard` vs `mixed-hard` 86 W / 34 L (72%; `mixed-hard` is
+seed-invariant, so the spread comes from the search bot's random candidates).
+Against policies via `evaluate.py --games-per-opponent 32` (96 games each):
+
+| Policy | `mixed-hard` wins | `search-hard` wins |
+| --- | --- | --- |
+| overnight-3 trial 001 final (platform squisher, fires no arrows) | 42/96 (44%) | 61/96 (64%) |
+| overnight-3 trial 012 final | 24/96 (25%) | 81/96 (84%) |
+| run007 final | 41/96 (43%) | 58/96 (60%) |
+
+Where it still loses: 30 of 40 losses in a 120-game `mixed-hard` set died
+*inside an arrow latch*, 22 of them a full charge (hold 16) that the rollout
+had scored as a kill — the foe model said the foe would fall or stand, the
+real foe recovered or shot first. Against trial 001 the remaining losses are
+squishes. Which of Matthew's points mattered (measured): the shooting /
+approaching foe model took the head-to-head from 59% to 67%, the
+best-dodge-in-hindsight foe to 72%; platform squish candidates account for
+~25% of the search bot's wins (it discovered the squish on its own — 22–36
+of its wins in each set are `cause_of_death` 1); the pending own arrow is
+handled by the fork for free (zero shoot→dash self-kills observed); the
+cooldown terms in the heuristic were not separately measurable.
+
 ## Game facts the bots use (measured in-sim)
 
 | Fact | Value |
