@@ -54,9 +54,9 @@ bytes before and after any change to the bot headers.
 model-predictive control: every decision the bot forks the live game
 (`bopl_rl_fork`, a private copy with the same random stream), plays a set of
 candidate action sequences on the fork for a horizon and emits the first
-decision of the best. The levels differ only in the horizon: hard 64 ticks,
-medium 48, easy 32 (see *Levels*, below). The bot is deterministic — it
-draws no random numbers — so a game against a seed-invariant opponent is
+decision of the best. The levels differ only in the horizon: hard 128
+ticks, medium 64, easy 32 (see *Levels*, below). The bot is deterministic —
+it draws no random numbers — so a game against a seed-invariant opponent is
 one distinct game per map and side.
 Because the rollouts run the real sim, everything v1 approximates is exact
 for free — the 13 u dash raycast through projectiles, own-arrow immunity
@@ -83,14 +83,17 @@ latched only the aim varies (an arrow charge searches ±2 steps around
 
 **Scoring**: own death −1 (+0.25·t/H), foe death +1 (−0.25·t/H), both −1;
 otherwise a heuristic on the end state: a certified shot from here +0.2 or
-distance to a v1 firing spot, standing in the foe's certified shot −0.2
-(dropped when the foe is *passive*: neither moved nor morphed for 20
-decisions, the v2 bots' `foe_still`), arrow ETA, dry landing, own resources
-ready, foe dash/platform on cooldown, height, distance band. A latch of L
-decisions costs 0.004·(L−1) (commitment margin).
+distance to a v1 firing spot (the bonus is withheld while the bot is
+*stalled*: 20 decisions within 0.15 u, which also doubles the horizon for
+the decision), standing in the foe's certified shot −0.2 (dropped when the
+foe is *passive*: neither moved nor morphed for 20 decisions, the v2 bots'
+`foe_still`), arrow ETA, dry landing, own resources ready, foe dash/platform
+on cooldown, height, distance band. A latch of L decisions costs 0.004·(L−1)
+(commitment margin).
 
 **Foe model** (the weak point, every loss mode below traces to it): keeps
-its last movement, buttons up (a pending charge fires at once); a charging
+its last movement, buttons up (a pending charge fires at once); a *passive*
+foe stands and does nothing (one rollout per candidate); a charging
 foe is scored under both release timings (now / hold to full with tracking
 aim) and the candidate keeps the worse; a ready bow shoots once when a
 coarse line-of-sight shot exists (charge by range, flat arc tracking me);
@@ -102,9 +105,9 @@ candidates), so a shot only counts as a kill when the foe cannot escape it —
 down, mid-air without a dash, on cooldown.
 
 **Cost** (2026-09-11, one core, above a `mixed-v2-hard` vs `mixed-v2-hard`
-baseline of 0.23 ms): 0.65 ms per decision for `search-hard`, 0.57 ms medium,
-0.53 ms easy (the pre-2026-09-11 `search-hard` cost 3.7 ms). Rating a level
-against pool v3 (480 games) takes ~4.5 min with two workers.
+baseline of 0.2 ms): 1.2 ms per decision for `search-hard`, ~0.4 ms medium
+and easy (the pre-2026-09-11 `search-hard` cost 3.7 ms). Rating a level
+against pool v3 (480 games) takes ~2.5 min with two workers.
 
 **Strength of the first build (2026-09-11 morning, Rust sim, maps 0–2 both
 sides; this is the `search-hard` / `search-medium` frozen in pool v3, before
@@ -172,49 +175,66 @@ sides, seeds 90001–90008, vs `mixed-v2-hard`, `evasive-v2-hard`,
    decisions and preceded 8 of 68 losses); four foe-dodge models instead of
    two ~35 Elo for twice the rollouts; aim perturbations and seven latched
    offsets were neutral.
-4. **The horizon has an optimum at 64 ticks** with this foe model (medium's
-   candidate set, deterministic, pool v3, two seed bases where run): H=32
-   624/613, H=48 828/725, H=64 875/873, H=96 843/814, H=128 632. Hypothesis
-   (a) — a longer horizon is a noisier heuristic end state — holds beyond 64.
+4. **A longer horizon is stronger against policies, and the levels are
+   the horizon.** Against the pool's stochastic members only (the seven
+   checkpoints and `random`, 480 games, seed bases 70001 / 80001): H=32 583
+   / 577, H=64 599 / 607, H=96 626, H=128 702 / 680, H=160 621, H=192 596,
+   H=256 685 (25 draws: the bot camps). Ratings against the whole pool are
+   coarse for this bot: a deterministic bot against a seed-invariant
+   scripted member plays six distinct games however many seeds are run, so
+   one flipped game moves the rating by tens of Elo, and the same build
+   swung 948 → 610 between sim `84568c7b…` and the bit-identical sim
+   `d0a170e5…` without a code change. Hypothesis (a) — a longer horizon is a
+   noisier heuristic end state — does not hold once the candidates share the
+   horizon.
 5. **Determinism exposed camping**: without random candidates the greedy
-   search has fixed points (walking into a wall scored 0.184 vs 0.182 for
-   the jump for 7000 ticks; 26 of 336 games ran past 4000 ticks, 3 of 6
-   idle-gate games timed out). Random exploration candidates (walk / jump /
-   dash in a random direction, at H) break them but cost 50–200 Elo (843 →
-   790 at H=96; 948–1010 → 725–749 at H=64): chosen 35% of the time, the bot
-   wanders. What fixed it is the passivity rule in the heuristic (a foe
-   still for 20 decisions is not about to shoot, so no cover penalty):
-   idle gate 6/6, and +100 Elo against pool v3, whose opponents camp too.
+   search has fixed points — walking into a wall scored 0.184 vs 0.182 for
+   the jump for 7000 ticks; 26 of 336 games ran past 4000 ticks; the idle
+   gate timed out in 2–3 of 6 games at every level. Random exploration
+   candidates (walk / jump / dash in a random direction, at H) break them
+   but cost 50–200 Elo (chosen 35% of the time, the bot wanders). Three
+   rules fixed it instead, each traced to a game: (i) *passivity* — a foe
+   that has neither moved nor morphed for 20 decisions (the v2 bots'
+   `foe_still`) is modelled as it behaves, standing with no shot and no
+   dodge, and the cover penalty against its ready bow is dropped (the bot
+   camped out of an idle foe's line of sight, and shot at where the modelled
+   foe would have walked to); (ii) each *shot candidate's own flight time*
+   sets its horizon (a high lob shared the flat arc's horizon, ended
+   mid-flight on the heuristic and never scored as a kill, so the bot sat on
+   a "certified" shot in a map corner); (iii) *stalled* — 20 decisions
+   within 0.15 u double the horizon for the decision and withhold the
+   certified-shot bonus (the v1 solver certifies lobs the exact rollout
+   never confirms). Idle gate 18/18 at the three levels, 17 of them by
+   arrow (map 1 side 0 at 32–64 ticks bobs above a foe under a deck until
+   sudden death; 128 ticks finds the way down).
 
 Nothing time-based is on the decision path (hypothesis d); dash candidates
 into arrows were < 0.5% of choices (c).
 
-Resulting build (`bopl_bots_v2.h`, 459 lines, was 462): no random candidates,
+Resulting build (`bopl_bots_v2.h`, 470 lines, was 462): no random candidates,
 no random aims, 4 dash directions, 2 dodge models, 3 latched offsets, the
-passivity rule; the levels are the horizon (hard 64, medium 48, easy 32).
-Ratings against pool v3 with the `search-*` members excluded (they no longer
-describe this code; 480 games each, seed bases 70001 / 80001, cluster-bootstrap
-95% CI, sim `84568c7b…` — pool v3 was built on sim `0d4057e7…`, so the
-absolute scale differs from `pool.json`):
+passivity, per-aim horizon and stall rules; the levels are the horizon
+(hard 128, medium 64, easy 32). Ratings on sim `d0a170e5…` (`libbopl_sim.so`
+of main `20da237`), 480 games each, seed bases 70001 / 80001,
+cluster-bootstrap 95% CI, against pool v3 with the `search-*` members
+excluded (they no longer describe this code) — first against every other
+member, then against the stochastic members only; pool v3 was built on sim
+`0d4057e7…`, so the scale differs from `pool.json`:
 
-| build | `search-hard` | `search-medium` | `search-easy` |
+| build | `search-hard` (128) | `search-medium` (64) | `search-easy` (32) |
 | --- | --- | --- | --- |
-| pool-v3 build (random sequences, random aims, H 96/64) | 525 [492, 559] | 772 [733, 817] | = medium |
-| without the random sequences | 727 [692, 764] | — | — |
-| final | **948 [897, 1000] / 1010 [955, 1073]** | 824 [788, 866] / 705 [664, 749] | 655 [618, 694] / 623 [586, 664] |
+| pool-v3 build (random sequences, random aims, H 96/64), whole pool | 533 [501, 567] | 628 [589, 668] | = medium |
+| final, whole pool | 739 [700, 778] / 784 [749, 822] | 617 [576, 659] / 639 [600, 680] | 811 [768, 856] / 780 [733, 829] |
+| final, stochastic members only | **702 [664, 746] / 680 [638, 727]** | 599 [559, 638] / 607 [569, 648] | 583 [544, 622] / 577 [539, 614] |
 
-Same 336-game set, `search-hard`: pool-v3 build 226 W / 109 L / 1 D (mean
-694 ticks), final 297 / 37 / 2 (mean 1015 ticks; 48-0 against each of
-`archer-hard`, `archer-v2-hard`, `evasive-v2-hard`, 40-8 `mixed-v2-hard`,
-31-16 o3-032-final, 37-10 run007-final, 45-3 `random`); the remaining deaths
-are 20 squishes and 16 arrows, mostly from the two policies. Deterministic
-bots make the CI optimistic (identical games repeat across seeds against
-seed-invariant opponents): the two seed bases differ by up to 100 Elo for
-medium. Idle gate (`check_scripted_bots.py`): `search-hard` 6/6 (three by
-sudden death); medium and easy still stall against an idle foe in 2–3 of 6
-games — a deterministic greedy search with a 32–48-tick horizon cannot see
-a route off a low ledge. Pool v3's two `search-*` members are stale: a v4
-should re-rate them from this code.
+`search-easy` outrates `search-hard` against the whole pool because the
+32-tick bot wins more of the six distinct games against each scripted
+member; against policies the order is hard > medium > easy at every seed.
+Same 336-game set (maps 0–2, both sides, seeds 90001–90008, seven
+opponents), `search-hard`: 262 W / 73 L / 1 D — 4 or 5 of 6 distinct games
+against each v1/v2 bot, 33-14 o3-032-final, 37-11 run007-final, 48-0
+`random`. Pool v3's two `search-*` members are stale: the next pool should
+re-rate them from this code.
 
 ## Game facts the bots use (measured in-sim)
 
