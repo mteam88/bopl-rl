@@ -829,6 +829,7 @@ impl RolloutWorld {
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
                     collider_rotation: Fix::ZERO,
+                    collider_basis: Vec2::ZERO,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
@@ -3163,7 +3164,6 @@ impl RolloutWorld {
             // The observation reads the PhysicsBody DetPhysics synced, not
             // the live body (RlObservation.Collider; PlayerPhysics.cs:138-146
             // moves a grounded body after the sync).
-            let extents = data.player.hurtbox_extents;
             let synced = slot.base.collider.center;
             let rotation = slot.base.collider_rotation;
             let body_active = body.flags & E_ACTIVE != 0;
@@ -3185,8 +3185,14 @@ impl RolloutWorld {
                 // separate slime record.
                 body.vx = 0;
                 body.vy = 0;
-                // Box.SetRotation: axis length `One / inverseExtents`, not `extents`.
-                let hurtbox = OrientedBox::from_basis(center, Vec2::angle(angle), extents);
+                // Box.SetRotation: axis length `One / inverseExtents`, not
+                // `extents`. An active row is the synced Player-layer box
+                // itself (the slime is never dashing while its row is active).
+                let hurtbox = if body_active {
+                    slot.base.collider
+                } else {
+                    OrientedBox::from_basis(center, Vec2::angle(angle), data.player.hurtbox_extents)
+                };
                 body.right_x = hurtbox.right.x.raw();
                 body.right_y = hurtbox.right.y.raw();
                 body.up_x = hurtbox.up.x.raw();

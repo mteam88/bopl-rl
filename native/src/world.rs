@@ -67,6 +67,10 @@ pub struct Player {
     pub collider: OrientedBox,
     #[serde(default)]
     pub collider_rotation: Fix,
+    /// `Vec2::angle(collider_rotation)`, kept so an unchanged rotation does
+    /// not pay for the sine table again (zero until the first sync).
+    #[serde(default)]
+    pub collider_basis: Vec2,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DashState {
@@ -447,8 +451,11 @@ impl Player {
             Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
         };
         let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
-        let basis = Vec2::angle(self.rotation);
-        self.collider_rotation = self.rotation;
+        if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
+            self.collider_basis = Vec2::angle(self.rotation);
+            self.collider_rotation = self.rotation;
+        }
+        let basis = self.collider_basis;
         self.collider = OrientedBox {
             center: self.position,
             right: (Vec2::RIGHT / inv.x).complex_mul(basis),
