@@ -54,6 +54,10 @@ pub struct Player {
     /// later for the ordinary slime.
     #[serde(default)]
     pub(crate) skip_next_gravity: bool,
+    /// PlayerPhysics.jumpedThisFrame: set by Jump, cleared once the tick's
+    /// state machine has seen it.
+    #[serde(default)]
+    pub(crate) jumped_this_frame: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -284,6 +288,7 @@ impl Player {
         self.velocity = normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum
             + up * self.constants.jump_strength;
         self.position += self.velocity * self.constants.jump_teleport;
+        self.jumped_this_frame = true;
         let mut motion = self.ground_state();
         motion.unground(Some(&platform.surface), true);
         self.apply_ground_state(motion);

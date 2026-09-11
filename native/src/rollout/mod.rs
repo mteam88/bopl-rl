@@ -818,6 +818,7 @@ impl RolloutWorld {
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
                     skip_next_gravity: false,
+                    jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
                     dash: DashState::default(),
@@ -971,9 +972,15 @@ impl RolloutWorld {
         {
             return;
         }
-        if !slot.base.grounded {
+        // PlayerPhysics.Jump ungrounds the body and OnNoLongerGrounded sets
+        // State.fall (SlimeController.cs:956-958) before Move's air raycasts
+        // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
+        // then lands it again through attachToGround.
+        if std::mem::take(&mut slot.base.jumped_this_frame) || !slot.base.grounded {
             slot.obs_state = STATE_FALL;
             slot.state_ticks = 0;
+        }
+        if !slot.base.grounded {
             return;
         }
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
