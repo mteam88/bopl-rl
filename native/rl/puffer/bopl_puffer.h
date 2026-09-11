@@ -156,6 +156,17 @@ static double bopl_fix(int64_t value) { return value/4294967296.0; }
 static uint32_t bopl_random(BoplPuffer *env) {
     uint32_t x=env->rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->rng=x;
 }
+/* The seed a scripted bot on `player` starts the current episode with: a pure
+ * function of the episode seed (env->config.seed, drawn by bopl_draw_config
+ * from the environment stream and handed to the game by bopl_rl_reset) and
+ * the player, so a game is a function of (seed, map, bots) however many
+ * episodes the environment played before and whether the bot was selected
+ * before or after the reset (research_bot re-arms with the same value). */
+static uint32_t bopl_bot_seed(const BoplPuffer *env, int player) {
+    uint32_t x=(env->config.seed^0x9E3779B9u)*2654435761u+(uint32_t)(player+1)*0x85EBCA6Bu;
+    x^=x>>16; x*=0x7FEB352Du; x^=x>>15; x*=0x846CA68Bu; x^=x>>16;
+    return x;
+}
 static int bopl_ally(const BoplRlState *state, uint32_t owner, const BoplRlPlayer *self) {
     for (uint32_t i=0; i<state->header.player_count; i++)
         if (state->players[i].id==owner) return state->players[i].team==self->team;
@@ -394,7 +405,6 @@ static void init(BoplPuffer *env) {
         if (kind>BOPL_BOT_KINDS) { fprintf(stderr, "Bopl RL: unknown scripted bot kind %u\n", kind); abort(); }
     }
     if (env->scripted_level<0 || env->scripted_level>=BOPL_BOT_LEVELS) { fprintf(stderr, "Bopl RL: scripted bot level\n"); abort(); }
-    env->bot_rng=env->rng*2654435761u ^ 0x9E3779B9u;
     if (!isfinite(env->reward_kill) || !isfinite(env->reward_timeout) || env->reward_timeout>0) { fprintf(stderr, "Bopl RL reward config\n"); abort(); }
     if (env->observation_delay!=0 && (env->observation_delay!=9 || env->repeat!=4)) abort();
     /* The spare is a second runtime (~240 MB) for an in-process game, the
@@ -456,6 +466,10 @@ static void c_reset(BoplPuffer *env) {
     memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
     for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
+    /* The scripted-bot stream (the share draw below) restarts from this
+     * episode's seed, like the bot seeds (bopl_bot_seed): nothing a bot does
+     * depends on the episodes played before. */
+    env->bot_rng=env->config.seed*2654435761u^0x9E3779B9u;
     if (env->banks) {
         /* Every bank row goes idle (blank observation; the finished match's
          * opponent state was reset by the terminal flag) and the new match
@@ -488,10 +502,8 @@ static void c_reset(BoplPuffer *env) {
             env->bot_select_level[1-env->side]=(uint8_t)env->scripted_level;
         }
     }
-    for (int i=0; i<env->players; i++) if (env->bot_select[i]) {
-        env->bot_rng=env->bot_rng*747796405u+2891336453u;
-        bopl_bot_reset(&env->bots[i], env->bot_select[i], env->bot_select_level[i], env->bot_rng);
-    }
+    for (int i=0; i<env->players; i++) if (env->bot_select[i])
+        bopl_bot_reset(&env->bots[i], env->bot_select[i], env->bot_select_level[i], bopl_bot_seed(env, i));
     env->boundary_reached=1; env->matches++;
     compute_observations(env);
     size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
