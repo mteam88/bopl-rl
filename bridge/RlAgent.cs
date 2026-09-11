@@ -60,7 +60,7 @@ public static class RlAgent
 
     // Round state.
     private static Updater updater;          // the level scene's Updater; a new one is a new round
-    private static int round = -1, tick, episodeTicks;
+    private static int round = -1, tick, episodeTicks, roundLevel;
     private static uint baseSeed, roundSeed;
     private static bool started, terminal, failed, humansFrozen, resultWritten;
     private static int agentIndex = -1;
@@ -139,7 +139,7 @@ public static class RlAgent
 
     private static void BeginRound(List<Player> players)
     {
-        round++; tick = 0; episodeTicks = 0;
+        round++; tick = 0; episodeTicks = 0; roundLevel = GameSession.CurrentLevel();
         started = terminal = failed = resultWritten = false;
         roundSeed = unchecked(baseSeed + (uint)round);
         bopl_agent_reset(handle, roundSeed);
@@ -149,7 +149,7 @@ public static class RlAgent
         if (Environment.GetEnvironmentVariable("BOPL_RL_ABILITY_SPAWNS") != "1")
             foreach (var spawner in UnityEngine.Object.FindObjectsOfType<AbilitySpawner>(true)) spawner.enabled = false;
         humansFrozen = true;
-        Debug.Log("BOPL_AGENT: round " + round + " level " + GameSession.CurrentLevel() + " seed " + roundSeed);
+        Debug.Log("BOPL_AGENT: round " + round + " level " + roundLevel + " seed " + roundSeed);
     }
 
     // Updater.Update, immediately before TickSimulation.
@@ -241,7 +241,7 @@ public static class RlAgent
                     ["games_won"] = player.GamesWon, ["cause_of_death"] = (int)player.CauseOfDeath });
             }
             var line = new JObject {
-                ["kind"] = "round", ["round"] = round, ["level"] = (int)GameSession.CurrentLevel(), ["seed"] = roundSeed,
+                ["kind"] = "round", ["round"] = round, ["level"] = roundLevel, ["seed"] = roundSeed,
                 ["agent"] = Spec, ["agent_id"] = id, ["agent_player"] = players[agentIndex].Id, ["agent_index"] = agentIndex,
                 ["players"] = roster, ["winner"] = winner == null ? null : (JToken)winner.Id, ["draw"] = winner == null,
                 ["agent_won"] = winner != null && winner.IsAgent,
