@@ -114,8 +114,16 @@ static void bot2_view(BotView2 *v, const BotView *view, BoplBot *bot) {
         if (e->kind==2 && (e->layer==11 || e->layer==16 || e->layer==21)) { v->wall_id[n]=e->id; v->wall_hier[n]=e->hierarchy; n++; }
     }
     if (view->grounded) {
-        int w=bot_support_wall(view, view->x, view->y);
-        if (w>=0 && bot_wall_sdf(&view->walls[w], view->x, view->y)<BOT_SLIME_RADIUS+0.35) v->ground_wall=w;
+        /* The wall I touch whose surface normal points up (v1's
+         * bot_support_wall skips steep slabs whose top is far above me). */
+        double best=BOT_SLIME_RADIUS+0.35;
+        for (int i=0; i<view->wall_count; i++) {
+            const BotWall *w=&view->walls[i];
+            double sd=bot_wall_sdf(w, view->x, view->y);
+            if (sd>=best) continue;
+            if (bot_wall_sdf(w, view->x, view->y+0.15)-bot_wall_sdf(w, view->x, view->y-0.15)<=0) continue;
+            best=sd; v->ground_wall=i;
+        }
     }
     const BoplRlSlime *foe=view->foe_slime;
     if (foe) {
@@ -269,12 +277,15 @@ static void bot2_walk_velocity(const BotView *view, const BotView2 *v, uint8_t a
 static double bot2_arrow_eta(const BotView *view, double mvx, double mvy, int horizon, double *dir_x) {
     double best=1e9;
     for (int i=0; i<view->arrow_count; i++) {
-        if (view->arrows[i].leaving) continue;
         double x=view->arrows[i].x, y=view->arrows[i].y, vx=view->arrows[i].vx, vy=view->arrows[i].vy;
+        /* A shot just leaving my bow is harmless until it has flown 5 u
+         * (BowTransform.cs:183); it left from about where I stand, so the
+         * remaining immune path is 5 u minus its current offset. */
+        double immune=view->arrows[i].leaving?BOT2_ARROW_OWNER_SAFE-bot_len(x-view->x, y-view->y):0, path=0;
         double mx=view->x, my=view->y, cvy=view->grounded?mvy:view->vy, cvx=view->grounded?mvx:view->vx;
         int grounded=view->grounded, stopped=0;
         for (int t=1; t<=horizon; t++) {
-            vy-=BOT_ARROW_G*BOT_TICK; x+=vx*BOT_TICK; y+=vy*BOT_TICK;
+            vy-=BOT_ARROW_G*BOT_TICK; x+=vx*BOT_TICK; y+=vy*BOT_TICK; path+=bot_len(vx, vy)*BOT_TICK;
             if (!grounded) { bot_fall_tick(&cvy); cvx+=mvx*0.05; if (cvx>19) cvx=19; if (cvx<-19) cvx=-19; }
             if (!stopped) {
                 double nx=mx+cvx*BOT_TICK, ny=my+cvy*BOT_TICK;
@@ -284,7 +295,7 @@ static double bot2_arrow_eta(const BotView *view, double mvx, double mvy, int ho
             }
             if (!grounded && cvy<0 && bot_sdf(view, mx, my)<BOT_SLIME_RADIUS) { grounded=1; cvx=mvx; cvy=0; stopped=1; }
             if (bot_sdf(view, x, y)<BOT_ARROW_RADIUS*0.5) break;
-            if (bot_len(x-mx, y-my)<1.9) { if (t<best) { best=t; if (dir_x) *dir_x=vx>=0?1:-1; } break; }
+            if (path>=immune && bot_len(x-mx, y-my)<1.9) { if (t<best) { best=t; if (dir_x) *dir_x=vx>=0?1:-1; } break; }
         }
     }
     return best;
@@ -883,15 +894,17 @@ static void bot2_decide(BoplBot *bot, const BoplRlState *state, int player_index
     bot->since_shot=(act.buttons&BOT_ARROW)?0:bot->since_shot+1;
     bot->since_jump=(act.buttons&BOT_JUMP)?0:bot->since_jump+1;
     if (bot_debug) {
+        double dbg_wvx, dbg_wvy; bot2_walk_velocity(&view, &v2, act.aim, &dbg_wvx, &dbg_wvy);
+        double dbg_weta=view.grounded?bot2_arrow_eta(&view, dbg_wvx, dbg_wvy, 45, NULL):1e9;
         double sx=0, sy=0; int spot=bot_firing_spot(&view, &sx, &sy);
         double lx, ly;
         int lminus=bot_landing_steer(&view, -1, &lx, &ly), lzero=bot_landing_steer(&view, 0, &lx, &ly), lplus=bot_landing_steer(&view, 1, &lx, &ly);
-        fprintf(stderr, "[bot %d] d%03d t%u me(%.1f,%.1f) v(%.1f,%.1f) g%d m%d foe(%.1f,%.1f) mode%d bow%d dash%d plat%d aim%3d btn%x hold%d spot%d(%.1f,%.1f) land[%d%d%d] arr%d eta%.0f dodge%d veto%d still%d haz%.1f fbow%d faim%d\n",
+        fprintf(stderr, "[bot %d] d%03d t%u me(%.1f,%.1f) v(%.1f,%.1f) g%d m%d foe(%.1f,%.1f) mode%d bow%d dash%d plat%d aim%3d btn%x hold%d spot%d(%.1f,%.1f) land[%d%d%d] arr%d eta%.0f dodge%d veto%d still%d haz%.1f fbow%d faim%d gw%d wv(%.1f,%.1f) weta%.0f\n",
                 player_index, bot->decisions, state->header.episode_ticks, view.x, view.y, view.vx, view.vy, view.grounded, view.morphing,
                 view.fx, view.fy, bot->mode, view.bow_ready, view.dash_ready, view.platform_ready,
                 act.aim, act.buttons, act.hold, spot, sx, sy, lminus, lzero, lplus,
                 view.arrow_count, dbg_eta, dbg_dodge, dbg_veto, bot->foe_still,
-                v2.haz_active?v2.haz_dist:99.0, v2.foe_bow_ready, v2.foe_aiming_me);
+                v2.haz_active?v2.haz_dist:99.0, v2.foe_bow_ready, v2.foe_aiming_me, v2.ground_wall, dbg_wvx, dbg_wvy, dbg_weta);
     }
     if (!(act.buttons&BOT_ARROW)) act.hold=0;
     out[0]=act.aim; out[1]=(uint8_t)(act.buttons&15u); out[2]=act.hold;
