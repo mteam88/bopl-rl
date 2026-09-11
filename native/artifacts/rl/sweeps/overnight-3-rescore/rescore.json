@@ -1,0 +1,1357 @@
+{
+ "schema": 1,
+ "sweep": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/overnight-sweep/native/artifacts/rl/sweeps/overnight-3",
+ "pool": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/ref-scorer/native/artifacts/rl/sweeps/anchors/overnight-3/pool.json",
+ "pool_sha256": "57d70df96257ed56b1f4a200db9d376ad8dc46a53167f75beea5aea04910b6f2",
+ "created": 1789101627.8587635,
+ "last_k": 3,
+ "games": 240,
+ "first_pass_games": 6,
+ "band": [
+  0.15,
+  0.85
+ ],
+ "round_games": 48,
+ "seed_base": 70001,
+ "flag_rules": {
+  "no-offense": "arrows_per_game < 0.05",
+  "platform-spam": "platforms_per_game > 8",
+  "stalemate": "timeout_rate > 0.5"
+ },
+ "trials": [
+  {
+   "id": "000",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.002,
+    "learner_passes": 4,
+    "entropy": 0.0035,
+    "entropy_half_life": 34540010,
+    "head_scale_buttons": 1.71,
+    "reward_kill": 0.0,
+    "scripted_banks": 0,
+    "scripted_decay": 200000000
+   },
+   "old_score": 0.40625,
+   "old_steps": 200024064,
+   "rating": 309.96453164788363,
+   "interval": [
+    271.6032956138865,
+    348.6458347016258
+   ],
+   "games": 240,
+   "iqm": 288.12277402388304,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 293.94457633346065,
+     "interval": [
+      250.46992644882644,
+      331.13925499435044
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 260.4592140903048,
+     "interval": [
+      218.89595271952993,
+      301.94880102279245
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 309.96453164788363,
+     "interval": [
+      271.6032956138865,
+      348.6458347016258
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.0,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 3.4291666666666667,
+    "dashes_per_game": 0.0,
+    "bows_per_game": 0.0,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.3375,
+    "timeout_rate": 0.1375,
+    "win_rate": 0.525,
+    "mean_duration_seconds": 36.74513888888888
+   },
+   "flags_by_evaluation": {
+    "026673152": [
+     "no-offense"
+    ],
+    "053346304": [
+     "no-offense"
+    ],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "001",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0017692805009394631,
+    "learner_passes": 3,
+    "entropy": 0.003988965826925077,
+    "entropy_half_life": 34876740,
+    "head_scale_buttons": 0.7514850347552361,
+    "reward_kill": 0.05087610650807619,
+    "scripted_banks": 0,
+    "scripted_decay": 96230323
+   },
+   "old_score": 0.453125,
+   "old_steps": 200024064,
+   "rating": 327.1083572275113,
+   "interval": [
+    289.01682670656356,
+    365.24022754013924
+   ],
+   "games": 240,
+   "iqm": 319.95774242222876,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 322.83484572284027,
+     "interval": [
+      285.91893720263346,
+      358.6342769065805
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 309.9300243163347,
+     "interval": [
+      269.07937957795315,
+      348.91406171544463
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 327.1083572275113,
+     "interval": [
+      289.01682670656356,
+      365.24022754013924
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.008333333333333333,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 2.754166666666667,
+    "dashes_per_game": 0.029166666666666667,
+    "bows_per_game": 0.008333333333333333,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.37916666666666665,
+    "timeout_rate": 0.075,
+    "win_rate": 0.5541666666666667,
+    "mean_duration_seconds": 29.345694444444444
+   },
+   "flags_by_evaluation": {
+    "026673152": [
+     "no-offense"
+    ],
+    "053346304": [
+     "no-offense"
+    ],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "002",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0012467713985619233,
+    "learner_passes": 4,
+    "entropy": 0.010807718463986647,
+    "entropy_half_life": 135141662,
+    "head_scale_buttons": 1.480051639321768,
+    "reward_kill": 0.22965808818116784,
+    "scripted_banks": 1,
+    "scripted_decay": 55922488
+   },
+   "old_score": 0.421875,
+   "old_steps": 200024064,
+   "rating": 369.3857201361739,
+   "interval": [
+    331.33775305215147,
+    408.3581067839083
+   ],
+   "games": 240,
+   "iqm": 350.644323670834,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 339.8621717285667,
+     "interval": [
+      294.26952928052305,
+      382.23287965134193
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 342.6850791477615,
+     "interval": [
+      302.79436924502454,
+      380.0567396901595
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 369.3857201361739,
+     "interval": [
+      331.33775305215147,
+      408.3581067839083
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 4.795833333333333,
+    "arrow_hits_per_game": 0.16666666666666666,
+    "arrow_hit_rate": 0.03475238922675934,
+    "platforms_per_game": 1.3416666666666666,
+    "dashes_per_game": 0.4166666666666667,
+    "bows_per_game": 4.9,
+    "kills_per_game": 0.16666666666666666,
+    "deaths_per_game": 0.44166666666666665,
+    "timeout_rate": 0.0375,
+    "win_rate": 0.5208333333333334,
+    "mean_duration_seconds": 22.598750000000003
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [],
+    "133365760": [],
+    "160006144": [],
+    "186679296": [],
+    "213352448": [],
+    "240025600": [],
+    "266698752": []
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "003",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0005018968120287881,
+    "learner_passes": 2,
+    "entropy": 0.0021479533037019475,
+    "entropy_half_life": 18862614,
+    "head_scale_buttons": 3.0042264748178598,
+    "reward_kill": 0.20870326431468128,
+    "scripted_banks": 0,
+    "scripted_decay": 27684040
+   },
+   "old_score": 0.3958333333333333,
+   "old_steps": 200024064,
+   "rating": 292.45404654300614,
+   "interval": [
+    251.41673830523126,
+    330.6942237204852
+   ],
+   "games": 240,
+   "iqm": 312.21125937268624,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 331.3699287721822,
+     "interval": [
+      295.3256889677515,
+      367.01341277944886
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 312.8098028028704,
+     "interval": [
+      276.0919614282123,
+      350.91328094039824
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 292.45404654300614,
+     "interval": [
+      251.41673830523126,
+      330.6942237204852
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.004166666666666667,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 2.716666666666667,
+    "dashes_per_game": 0.0,
+    "bows_per_game": 0.004166666666666667,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.3875,
+    "timeout_rate": 0.09583333333333334,
+    "win_rate": 0.5166666666666667,
+    "mean_duration_seconds": 29.08819444444445
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "004",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.003389091288816766,
+    "learner_passes": 3,
+    "entropy": 0.0058785779354751004,
+    "entropy_half_life": 73585435,
+    "head_scale_buttons": 0.3701461400056592,
+    "reward_kill": 0.10607502367347478,
+    "scripted_banks": 1,
+    "scripted_decay": 129496066
+   },
+   "old_score": 0.2708333333333333,
+   "old_steps": 200024064,
+   "rating": 278.89943083755946,
+   "interval": [
+    233.91368813877745,
+    319.8981240805016
+   ],
+   "games": 240,
+   "iqm": 276.61817166209454,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 298.32565655854415,
+     "interval": [
+      257.6258655850317,
+      338.4259635818492
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 252.62942759018011,
+     "interval": [
+      212.65437475454746,
+      292.20192504033895
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 278.89943083755946,
+     "interval": [
+      233.91368813877745,
+      319.8981240805016
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.0125,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 2.720833333333333,
+    "dashes_per_game": 0.020833333333333332,
+    "bows_per_game": 0.0125,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.55,
+    "timeout_rate": 0.0375,
+    "win_rate": 0.4125,
+    "mean_duration_seconds": 28.97319444444445
+   },
+   "flags_by_evaluation": {
+    "026673152": [
+     "no-offense"
+    ],
+    "053346304": [
+     "no-offense"
+    ],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "005",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.00238701209590241,
+    "learner_passes": 2,
+    "entropy": 0.014512952819656453,
+    "entropy_half_life": 50113533,
+    "head_scale_buttons": 0.2717974892950299,
+    "reward_kill": 0.03119607400149107,
+    "scripted_banks": 0,
+    "scripted_decay": 39367122
+   },
+   "old_score": 0.3020833333333333,
+   "old_steps": 200024064,
+   "rating": 328.53014641077556,
+   "interval": [
+    291.8287013099855,
+    365.6199636429714
+   ],
+   "games": 240,
+   "iqm": 323.760897064777,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 309.96453164788363,
+     "interval": [
+      270.67022064552066,
+      351.63762431220397
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 332.7880131356718,
+     "interval": [
+      293.60708667897376,
+      376.06258996385344
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 328.53014641077556,
+     "interval": [
+      291.8287013099855,
+      365.6199636429714
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.0,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 2.975,
+    "dashes_per_game": 0.0,
+    "bows_per_game": 0.0,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.45416666666666666,
+    "timeout_rate": 0.12083333333333333,
+    "win_rate": 0.425,
+    "mean_duration_seconds": 31.464444444444453
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [
+     "no-offense"
+    ],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "006",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0007125947972738822,
+    "learner_passes": 3,
+    "entropy": 0.005230208746395374,
+    "entropy_half_life": 23037027,
+    "head_scale_buttons": 2.13668637803879,
+    "reward_kill": 0.28365554558113215,
+    "scripted_banks": 1,
+    "scripted_decay": 177175196
+   },
+   "old_score": 0.375,
+   "old_steps": 200024064,
+   "rating": 383.41807226246067,
+   "interval": [
+    347.76697408861105,
+    421.62796559449976
+   ],
+   "games": 240,
+   "iqm": 349.57820132375747,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 355.35200006092816,
+     "interval": [
+      321.24105863331266,
+      389.788149441921
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 309.96453164788363,
+     "interval": [
+      280.4861070311355,
+      340.5931535626908
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 383.41807226246067,
+     "interval": [
+      347.76697408861105,
+      421.62796559449976
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.025,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 1.5166666666666666,
+    "dashes_per_game": 0.0125,
+    "bows_per_game": 0.025,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.32083333333333336,
+    "timeout_rate": 0.17916666666666667,
+    "win_rate": 0.5,
+    "mean_duration_seconds": 36.31513888888889
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "007",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0010520825892588843,
+    "learner_passes": 3,
+    "entropy": 0.007352330505460132,
+    "entropy_half_life": 86406594,
+    "head_scale_buttons": 1.0872133732395965,
+    "reward_kill": 0.15455475831404328,
+    "scripted_banks": 0,
+    "scripted_decay": 90612064
+   },
+   "old_score": 0.4114583333333333,
+   "old_steps": 200024064,
+   "rating": 352.54132859779395,
+   "interval": [
+    312.83820611293726,
+    390.78467887914627
+   ],
+   "games": 240,
+   "iqm": 322.7006005868182,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 302.70580484311915,
+     "interval": [
+      261.0951924579862,
+      343.09409289967084
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 312.8546683195415,
+     "interval": [
+      279.4469241561074,
+      345.99331149905896
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 352.54132859779395,
+     "interval": [
+      312.83820611293726,
+      390.78467887914627
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 1.4791666666666667,
+    "arrow_hits_per_game": 0.06666666666666667,
+    "arrow_hit_rate": 0.04507042253521127,
+    "platforms_per_game": 2.175,
+    "dashes_per_game": 0.03333333333333333,
+    "bows_per_game": 1.4833333333333334,
+    "kills_per_game": 0.06666666666666667,
+    "deaths_per_game": 0.3958333333333333,
+    "timeout_rate": 0.10416666666666667,
+    "win_rate": 0.5083333333333333,
+    "mean_duration_seconds": 32.49333333333333
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [],
+    "133365760": [],
+    "160006144": [],
+    "186679296": [],
+    "213352448": [],
+    "240025600": [],
+    "266698752": []
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "008",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0020966894616545584,
+    "learner_passes": 4,
+    "entropy": 0.002666047700391348,
+    "entropy_half_life": 39277499,
+    "head_scale_buttons": 0.5340477938165462,
+    "reward_kill": 0.12590614054352045,
+    "scripted_banks": 1,
+    "scripted_decay": 51285360
+   },
+   "old_score": 0.3489583333333333,
+   "old_steps": 200024064,
+   "rating": 301.24793394054365,
+   "interval": [
+    261.3204209088912,
+    336.03611713982946
+   ],
+   "games": 240,
+   "iqm": 288.29363905198903,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 262.01413478061346,
+     "interval": [
+      220.8161402465601,
+      302.2301154064473
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 301.6188484348101,
+     "interval": [
+      264.47273590539805,
+      341.51073173457274
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 301.24793394054365,
+     "interval": [
+      261.3204209088912,
+      336.03611713982946
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.0,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 2.620833333333333,
+    "dashes_per_game": 0.008333333333333333,
+    "bows_per_game": 0.0,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.475,
+    "timeout_rate": 0.05416666666666667,
+    "win_rate": 0.4708333333333333,
+    "mean_duration_seconds": 27.98166666666667
+   },
+   "flags_by_evaluation": {
+    "026673152": [
+     "no-offense"
+    ],
+    "053346304": [
+     "no-offense"
+    ],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "009",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0018360657158526048,
+    "learner_passes": 2,
+    "entropy": 0.008118699598821584,
+    "entropy_half_life": 24381537,
+    "head_scale_buttons": 1.7651989130759738,
+    "reward_kill": 0.08945659752935171,
+    "scripted_banks": 0,
+    "scripted_decay": 34608089
+   },
+   "old_score": 0.5,
+   "old_steps": 200024064,
+   "rating": 344.09526221333283,
+   "interval": [
+    305.43443428853834,
+    381.85084685428814
+   ],
+   "games": 240,
+   "iqm": 358.61699906224004,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 359.5648026273679,
+     "interval": [
+      316.1988095921288,
+      401.2664057919144
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 372.19093234601957,
+     "interval": [
+      332.8942299743265,
+      412.0477333419034
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 344.09526221333283,
+     "interval": [
+      305.43443428853834,
+      381.85084685428814
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 1.8583333333333334,
+    "arrow_hits_per_game": 0.09166666666666666,
+    "arrow_hit_rate": 0.04932735426008968,
+    "platforms_per_game": 1.3125,
+    "dashes_per_game": 0.6,
+    "bows_per_game": 1.875,
+    "kills_per_game": 0.09166666666666666,
+    "deaths_per_game": 0.3625,
+    "timeout_rate": 0.05,
+    "win_rate": 0.5875,
+    "mean_duration_seconds": 29.34951388888889
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [],
+    "133365760": [],
+    "160006144": [],
+    "186679296": [],
+    "213352448": [],
+    "240025600": [],
+    "266698752": []
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "010",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0009254829313222839,
+    "learner_passes": 3,
+    "entropy": 0.003009648240098188,
+    "entropy_half_life": 63064400,
+    "head_scale_buttons": 0.8957334916015811,
+    "reward_kill": 0.19309177519753576,
+    "scripted_banks": 1,
+    "scripted_decay": 174180021
+   },
+   "old_score": 0.3072916666666667,
+   "old_steps": 200024064,
+   "rating": 328.53014641077556,
+   "interval": [
+    291.0593285602544,
+    371.03278826509444
+   ],
+   "games": 240,
+   "iqm": 335.0262256007323,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 365.17769199327256,
+     "interval": [
+      326.118425270581,
+      400.65718767127345
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 311.37083839814863,
+     "interval": [
+      270.6557920920194,
+      350.6189801305002
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 328.53014641077556,
+     "interval": [
+      291.0593285602544,
+      371.03278826509444
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [
+    "no-offense"
+   ],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.0,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 3.25,
+    "dashes_per_game": 0.0,
+    "bows_per_game": 0.0,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.4583333333333333,
+    "timeout_rate": 0.1125,
+    "win_rate": 0.42916666666666664,
+    "mean_duration_seconds": 35.00076388888888
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [
+     "no-offense"
+    ],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": [
+     "no-offense"
+    ]
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "011",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0019305520629839814,
+    "learner_passes": 2,
+    "entropy": 0.007552172117366651,
+    "entropy_half_life": 31028268,
+    "head_scale_buttons": 1.414705311263403,
+    "reward_kill": 0.09368084224780628,
+    "scripted_banks": 0,
+    "scripted_decay": 33123370
+   },
+   "old_score": 0.4114583333333333,
+   "old_steps": 200024064,
+   "rating": 335.620794588311,
+   "interval": [
+    297.96182234336044,
+    371.90296855627463
+   ],
+   "games": 240,
+   "iqm": 339.32369433705054,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 319.9785865336482,
+     "interval": [
+      279.330311531507,
+      367.1727295562084
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 362.37170188919254,
+     "interval": [
+      325.4843868434723,
+      401.8098572388076
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 335.620794588311,
+     "interval": [
+      297.96182234336044,
+      371.90296855627463
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 1.8125,
+    "arrow_hits_per_game": 0.058333333333333334,
+    "arrow_hit_rate": 0.03218390804597701,
+    "platforms_per_game": 3.075,
+    "dashes_per_game": 0.025,
+    "bows_per_game": 1.8166666666666667,
+    "kills_per_game": 0.058333333333333334,
+    "deaths_per_game": 0.3333333333333333,
+    "timeout_rate": 0.1375,
+    "win_rate": 0.5291666666666667,
+    "mean_duration_seconds": 33.29159722222222
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [],
+    "133365760": [],
+    "160006144": [],
+    "186679296": [],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [],
+    "266698752": []
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "012",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0017647779854636965,
+    "learner_passes": 2,
+    "entropy": 0.009340447716823531,
+    "entropy_half_life": 21101479,
+    "head_scale_buttons": 2.0009447692774054,
+    "reward_kill": 0.05881805506765041,
+    "scripted_banks": 0,
+    "scripted_decay": 32156503
+   },
+   "old_score": 0.5364583333333334,
+   "old_steps": 200024064,
+   "rating": 413.0736416196671,
+   "interval": [
+    372.5445914343651,
+    453.02962335348485
+   ],
+   "games": 240,
+   "iqm": 371.38110355235494,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 352.7484139211712,
+     "interval": [
+      310.9938964319492,
+      393.83946858939055
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 348.3212551162264,
+     "interval": [
+      309.26168346316047,
+      384.16870024469563
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 413.0736416196671,
+     "interval": [
+      372.5445914343651,
+      453.02962335348485
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 1.7083333333333333,
+    "arrow_hits_per_game": 0.08333333333333333,
+    "arrow_hit_rate": 0.04878048780487805,
+    "platforms_per_game": 0.9958333333333333,
+    "dashes_per_game": 0.7166666666666667,
+    "bows_per_game": 1.7291666666666667,
+    "kills_per_game": 0.08333333333333333,
+    "deaths_per_game": 0.30833333333333335,
+    "timeout_rate": 0.07916666666666666,
+    "win_rate": 0.6125,
+    "mean_duration_seconds": 35.333194444444445
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [],
+    "106692608": [],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [],
+    "186679296": [],
+    "213352448": [],
+    "240025600": [],
+    "266698752": []
+   },
+   "game_mismatch": false
+  },
+  {
+   "id": "013",
+   "status": "complete",
+   "hypers": {
+    "learning_rate": 0.0018539227529554673,
+    "learner_passes": 2,
+    "entropy": 0.008981755774206833,
+    "entropy_half_life": 24412097,
+    "head_scale_buttons": 1.6216426296523925,
+    "reward_kill": 0.07940862233894137,
+    "scripted_banks": 0,
+    "scripted_decay": 34968883
+   },
+   "old_score": 0.296875,
+   "old_steps": 200024064,
+   "rating": 299.78790183254085,
+   "interval": [
+    262.33107340528613,
+    338.9214284018274
+   ],
+   "games": 240,
+   "iqm": 313.72108945340614,
+   "last_k": [
+    {
+     "checkpoint": "policy-213352448.bin",
+     "learner_steps": 160014336,
+     "rating": 307.04264896596163,
+     "interval": [
+      271.87436997701565,
+      343.62340240959725
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-240025600.bin",
+     "learner_steps": 180019200,
+     "rating": 334.3327175617159,
+     "interval": [
+      298.4356727323161,
+      373.6826658685933
+     ],
+     "games": 240
+    },
+    {
+     "checkpoint": "policy-266698752.bin",
+     "learner_steps": 200024064,
+     "rating": 299.78790183254085,
+     "interval": [
+      262.33107340528613,
+      338.9214284018274
+     ],
+     "games": 240
+    }
+   ],
+   "flags": [],
+   "flag_metrics": {
+    "games": 240,
+    "arrows_per_game": 0.06666666666666667,
+    "arrow_hits_per_game": 0.0,
+    "arrow_hit_rate": 0.0,
+    "platforms_per_game": 2.9208333333333334,
+    "dashes_per_game": 0.05416666666666667,
+    "bows_per_game": 0.06666666666666667,
+    "kills_per_game": 0.0,
+    "deaths_per_game": 0.4583333333333333,
+    "timeout_rate": 0.12083333333333333,
+    "win_rate": 0.425,
+    "mean_duration_seconds": 31.685486111111114
+   },
+   "flags_by_evaluation": {
+    "026673152": [],
+    "053346304": [],
+    "080019456": [
+     "no-offense"
+    ],
+    "106692608": [
+     "no-offense"
+    ],
+    "133365760": [
+     "no-offense"
+    ],
+    "160006144": [
+     "no-offense"
+    ],
+    "186679296": [
+     "no-offense"
+    ],
+    "213352448": [
+     "no-offense"
+    ],
+    "240025600": [
+     "no-offense"
+    ],
+    "266698752": []
+   },
+   "game_mismatch": false
+  }
+ ]
+}

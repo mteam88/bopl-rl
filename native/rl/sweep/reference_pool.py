@@ -168,6 +168,24 @@ def bootstrap_interval(games, candidate, ratings, samples=1000, seed=0, level=0.
     return [float(np.quantile(estimates, tail)), float(np.quantile(estimates, 1 - tail))]
 
 
+def pool_intervals(names, records, anchor='random', samples=200, seed=0, level=0.95):
+    """Percentile CIs of round-robin ratings: each pair's W-L-D counts are
+    resampled as a multinomial with the observed proportions (parametric
+    bootstrap over games), then refit with elo_ladder.bradley_terry."""
+    rng = np.random.default_rng(seed)
+    estimates = {name: [] for name in names}
+    for _ in range(samples):
+        resampled = {}
+        for pair, counts in records.items():
+            total = sum(counts)
+            resampled[pair] = list(rng.multinomial(total, np.asarray(counts) / total)) if total else [0, 0, 0]
+        for name, value in elo_ladder.bradley_terry(names, resampled, anchor).items():
+            estimates[name].append(value)
+    tail = (1 - level) / 2
+    return {name: [float(np.quantile(values, tail)), float(np.quantile(values, 1 - tail))]
+            for name, values in estimates.items()}
+
+
 def iqm(values):
     """Interquartile mean as rliable computes it (scipy trim_mean with 0.25):
     int(0.25 * n) values are cut from each end, so for n < 4 it is the mean."""
@@ -325,14 +343,15 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
     games = elo_ladder.play_games(by_name, tasks, episode_ticks, workers, seed_base, delay=delay)
     records = elo_ladder.tally(games)
     ratings = elo_ladder.bradley_terry(names, records, 'random')
+    intervals = pool_intervals(names, records)
     counts = {name: [0, 0, 0] for name in names}
     for (a, b), (wa, wb, d) in records.items():
         counts[a][0] += wa; counts[a][1] += wb; counts[a][2] += d
         counts[b][0] += wb; counts[b][1] += wa; counts[b][2] += d
     for member in members:
         wins, losses, draws = counts[member['name']]
-        member.update(rating=round(ratings[member['name']], 3), games=wins + losses + draws,
-                      wins=wins, losses=losses, draws=draws)
+        member.update(rating=round(ratings[member['name']], 3), interval=intervals[member['name']],
+                      games=wins + losses + draws, wins=wins, losses=losses, draws=draws)
     pool = dict(schema=SCHEMA, created=time.time(), note=note, game=dict(path=str(game), sha256=sha256_file(game)),
                 maps=maps, games_per_pair=games_per_pair, seed_base=seed_base, episode_ticks=episode_ticks,
                 observation_delay_ticks=delay, games=len(games), elapsed=time.monotonic() - started,
@@ -346,9 +365,10 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
 
 
 def format_table(pool):
-    lines = [f"{'rating':>8}  {'kind':10}  {'W-L-D':>12}  name"]
+    lines = [f"{'rating':>8}  {'95% CI':>12}  {'kind':10}  {'W-L-D':>12}  name"]
     for member in sorted(pool['members'], key=lambda m: -m['rating']):
-        lines.append(f"{member['rating']:8.1f}  {member['kind']:10}  "
+        low, high = member.get('interval', (member['rating'], member['rating']))
+        lines.append(f"{member['rating']:8.1f}  [{low:5.0f},{high:5.0f}]  {member['kind']:10}  "
                      f"{member['wins']:>4}-{member['losses']}-{member['draws']:<3}  {member['name']}")
     return '\n'.join(lines)
 
