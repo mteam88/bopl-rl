@@ -1214,10 +1214,15 @@ impl RolloutWorld {
                 {
                     let slot = &mut self.players[index];
                     // The PlayerInfo package carries the post-gravity state;
-                    // PlayerBody has not integrated the position yet.
-                    slot.ability_origin = slot.base.position;
-                    slot.ability_origin_velocity = slot.base.velocity + slot.base.external_velocity;
-                    slot.ability_origin_rotation = slot.base.rotation;
+                    // PlayerBody has not integrated the position yet. The
+                    // deactivated slime still gets this pass's Move
+                    // (SlimeController.cs:1084), which is what its record
+                    // shows for the rest of the ability.
+                    let mut frozen = slot.base.clone();
+                    frozen.move_only(movement_input, &self.platforms);
+                    slot.ability_origin = frozen.position;
+                    slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
+                    slot.ability_origin_rotation = frozen.rotation;
                     slot.ability_origin_state = slot.obs_state;
                 }
                 match ability {

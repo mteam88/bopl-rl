@@ -384,6 +384,20 @@ impl Player {
             self.jump(platforms);
         }
         self.previous_jump = jump;
+        self.move_only(input, platforms);
+        if self.outside_bounds() {
+            self.alive = false;
+            return;
+        }
+        self.position += (self.velocity + self.external_velocity) * DT;
+        self.external_velocity *= Fix::from_f64(0.95);
+    }
+    /// PlayerPhysics.Move (PlayerPhysics.cs:230-260) without PlayerBody's
+    /// integration. SlimeController.UpdateSim still calls it on the tick
+    /// OldUpdate entered an ability (SlimeController.cs:1067-1084), on the
+    /// slime body the ability has already copied; that body is deactivated,
+    /// so only its observed velocity (and a landing) change.
+    pub(crate) fn move_only(&mut self, input: Vec2, platforms: &[Platform]) {
         if self.grounded {
             self.move_grounded(input, platforms);
         } else {
@@ -396,12 +410,6 @@ impl Player {
             .expect("valid movement air constants");
             self.collision_rays(platforms);
         }
-        if self.outside_bounds() {
-            self.alive = false;
-            return;
-        }
-        self.position += (self.velocity + self.external_velocity) * DT;
-        self.external_velocity *= Fix::from_f64(0.95);
     }
     pub(crate) fn outside_bounds(&self) -> bool {
         self.position.y < Fix::from_f32(-11.3)
