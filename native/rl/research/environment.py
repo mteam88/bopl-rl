@@ -51,6 +51,8 @@ LIB.research_state.argtypes = [C.c_void_p]; LIB.research_state.restype = C.POINT
 LIB.research_replay.argtypes = [C.c_void_p,C.c_char_p]
 LIB.research_close.argtypes = [C.c_void_p]
 LIB.research_bot.argtypes = [C.c_void_p,C.c_int,C.c_int,C.c_int]; LIB.research_bot.restype = C.c_int
+LIB.research_bot_forks.argtypes = [C.c_int]; LIB.research_bot_forks.restype = C.c_int
+LIB.research_forks.argtypes = [C.c_void_p]; LIB.research_forks.restype = C.c_int
 LIB.research_mask.argtypes = [C.c_void_p]; LIB.research_mask.restype = C.POINTER(C.c_ubyte)
 LIB.research_mask_size.restype = C.c_int
 if LIB.research_mask_size()!=layout.LOGITS: raise RuntimeError('Research library action mask width differs from layout.LOGITS')
@@ -129,6 +131,14 @@ class Environment:
     def bot(self,player,kind,level=2):
         """Pin a scripted bot (bopl_bots.h) on a player; kind 0 detaches. Call after reset."""
         if LIB.research_bot(self.handle,player,kind,level): raise ValueError('Bad scripted bot selection')
+    def forks(self):
+        """Whether this environment's game backend can fork the world (bopl_rl_fork: the
+        in-process Rust sim). Kinds with bot_forks(kind) abort on a backend that cannot."""
+        return bool(LIB.research_forks(self.handle))
+    @staticmethod
+    def bot_forks(kind):
+        """Whether a scripted kind decides by rollouts on a forked game (the search bot)."""
+        return bool(LIB.research_bot_forks(kind))
     def step(self,actions):
         """actions: 2 players x NUM_ATNS floats (aim angle, button bits, hold length index)."""
         actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,NUM_ATNS)

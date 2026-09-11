@@ -2,7 +2,9 @@
 
 Runs the bots (bopl_bots.h) through the research binding against a do-nothing
 opponent, both hard checks (wins, no timeouts) and telemetry (arrows fired
-and hit). No GPU, no torch; ~10 s. Optionally pits bots against a checkpoint:
+and hit). No GPU, no torch; ~10 s. Kinds that need a forkable game (the
+search bot) are skipped, with a note, when BOPL_RL_GAME is not the Rust sim.
+Optionally pits bots against a checkpoint:
 
     check_scripted_bots.py                 # idle sanity gate (asserts)
     check_scripted_bots.py <checkpoint>    # report win rates vs a policy
@@ -13,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from environment import Environment, configure
+from environment import Environment, configure, selected_game
 from evaluation_protocol import SCRIPTED_KINDS
 from telemetry import FIELDS
 import layout
@@ -57,7 +59,12 @@ def main():
     configure(Path('/tmp/check-scripted-bots-logs'))
     failures = []
     with Environment(seed=90001, limit=7200, delay=9) as env:
+        forks = env.forks()
         for kind_name, kind in SCRIPTED_KINDS.items():
+            if Environment.bot_forks(kind) and not forks:
+                print(f'{kind_name:8s} (hard): skipped, the game backend {selected_game()} has no bopl_rl_fork '
+                      f'(run with BOPL_RL_GAME=<libbopl_sim.so>)', flush=True)
+                continue
             import torch
             generator = torch.Generator().manual_seed(SEED_BASE) if policy else None
             wins = timeouts = n = 0

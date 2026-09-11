@@ -80,21 +80,32 @@ void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
 /* Scripted opponents (bopl_bots.h): pin a bot on one player. It decides inside
  * research_step from the true game state; the caller's action floats for that
  * player are ignored. kind 0 detaches. Persists across research_reset (each
- * match re-seeds the bot from the environment's dedicated stream); this call
- * also re-arms the bot for the already-reset current episode. */
+ * match re-seeds the bot from the episode seed, bopl_bot_seed); this call
+ * also re-arms the bot for the already-reset current episode with that same
+ * seed, so the game does not depend on whether the bot was selected before or
+ * after the reset. */
 int research_bot(BoplPuffer *env, int player, int kind, int level) {
     if (player<0 || player>=env->players || kind<0 || kind>BOPL_BOT_KINDS
         || level<0 || level>=BOPL_BOT_LEVELS) return -1;
     env->bot_select[player]=(uint8_t)kind;
     env->bot_select_level[player]=(uint8_t)level;
-    if (kind) {
-        env->bot_rng=env->bot_rng*747796405u+2891336453u;
-        bopl_bot_reset(&env->bots[player], kind, level, env->bot_rng);
-    }
+    if (kind) bopl_bot_reset(&env->bots[player], kind, level, bopl_bot_seed(env, player));
     return 0;
 }
 const char *research_bot_name(int kind) {
     return kind>=0 && kind<=BOPL_BOT_KINDS?BOPL_BOT_NAMES[kind]:NULL;
+}
+/* Whether a kind runs rollouts on a forked game (bopl_rl_fork), which only the
+ * in-process Rust sim provides; research_forks says whether this environment's
+ * game does. Callers skip such kinds on other backends instead of aborting. */
+int research_bot_forks(int kind) {
+    return kind==BOPL_BOT_SEARCH;
+}
+int research_forks(BoplPuffer *env) {
+    BoplRl *fork=bopl_rl_fork(env->world, NULL);
+    if (!fork) return 0;
+    bopl_rl_close(fork);
+    return 1;
 }
 void research_step(BoplPuffer *env, const float *actions) {
     if (((ResearchEnv*)env)->open) { fprintf(stderr, "research_step during a tick-split decision\n"); abort(); }
