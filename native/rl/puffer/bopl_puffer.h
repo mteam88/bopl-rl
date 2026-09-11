@@ -501,15 +501,24 @@ static void c_reset(BoplPuffer *env) {
     for (int i=0; i<env->players; i++) { env->scratch[(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES]=1; bopl_write_mask(env, i); }
     bopl_publish(env);
 }
-static void c_step(BoplPuffer *env) {
+/* c_step in three phases, so the research binding can advance the world one
+ * tick at a time (research_step_tick, for real-time human play at 60 frames/s)
+ * with exactly the training bookkeeping: begin resets the per-decision
+ * telemetry/rewards and turns the routed or scripted actions into latched
+ * game actions; advance runs the decision's ticks (sampling the observation
+ * at phase 3 when delayed); finish credits rewards, telemetry, terminals, the
+ * delayed observation and the masks. c_step = begin, advance, finish. */
+typedef struct { BoplRlAction actions[6]; int fresh[6], holds[6]; uint32_t ticks; } BoplStepPhase;
+static void bopl_step_begin(BoplPuffer *env, BoplStepPhase *phase) {
     float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
     memset(telemetry, 0, (size_t)env->players*BOPL_TELEMETRY_SIZE*sizeof(float));
     for (int s=0; s<env->num_agents; s++) { *env->reward_ptr[s]=0; *env->terminal_ptr[s]=0; }
     env->stepped++;
     const BoplRlState *before=bopl_rl_state(env->world);
     if (!before) bopl_failed(env, "state");
-    BoplRlAction actions[6]={{0}};
-    int fresh[6]={0}, holds[6]={0};
+    memset(phase, 0, sizeof(*phase));
+    BoplRlAction *actions=phase->actions;
+    int *fresh=phase->fresh, *holds=phase->holds;
     for (int i=0; i<env->players; i++) {
         float angle, buttons, hold;
         if (env->bot_select[i]) {
@@ -530,16 +539,30 @@ static void c_step(BoplPuffer *env) {
         actions[i].angle=(uint8_t)angle;
         actions[i].buttons=bopl_latch(env, i, (uint16_t)buttons, holds[i], &fresh[i]);
     }
-    uint32_t ticks=before->header.episode_ticks;
+    phase->ticks=before->header.episode_ticks;
+}
+/* The delayed observation's source: the world state at phase 3 of the decision
+ * (or the final state when the episode ended earlier). */
+static void bopl_step_sample(BoplPuffer *env, const BoplRlState *state) {
+    compute_observations_from(env, state);
+    memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
+}
+static void bopl_step_advance(BoplPuffer *env, const BoplStepPhase *phase) {
+    const BoplRlAction *actions=phase->actions;
     // Sample at phase 3 of each four-tick decision. At t=12 return the
     // observation from t=3, giving an exact nine-tick delay thereafter.
     if (env->observation_delay) {
         // Both phases in one game roundtrip: the phase-3 state is returned
         // alongside the final state (identical when the episode ends in phase 1).
         if (bopl_rl_step_sampled(env->world, actions, env->players, 3, 1)) bopl_failed(env, "sampled step");
-        compute_observations_from(env, bopl_rl_sample(env->world));
-        memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
+        bopl_step_sample(env, bopl_rl_sample(env->world));
     } else if (bopl_rl_step(env->world, actions, env->players, (uint32_t)env->repeat)) bopl_failed(env, "step");
+}
+static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
+    float *telemetry=env->telemetry?env->telemetry:env->last_telemetry;
+    const BoplRlAction *actions=phase->actions;
+    const int *fresh=phase->fresh, *holds=phase->holds;
+    uint32_t ticks=phase->ticks;
     const BoplRlState *state=bopl_rl_state(env->world);
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
@@ -615,6 +638,12 @@ static void c_step(BoplPuffer *env) {
         bopl_write_mask(env, i);
     }
     bopl_publish(env);
+}
+static void c_step(BoplPuffer *env) {
+    BoplStepPhase phase;
+    bopl_step_begin(env, &phase);
+    bopl_step_advance(env, &phase);
+    bopl_step_finish(env, &phase);
 }
 static void c_render(BoplPuffer *env) {
     (void)env;

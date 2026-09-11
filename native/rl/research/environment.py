@@ -42,6 +42,9 @@ LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
 LIB.research_reset.argtypes = [C.c_void_p,C.c_uint32,C.c_uint32]
 LIB.research_step.argtypes = [C.c_void_p,C.POINTER(C.c_float)]
+LIB.research_step_begin.argtypes = [C.c_void_p,C.POINTER(C.c_float)]; LIB.research_step_begin.restype = C.c_int
+LIB.research_step_tick.argtypes = [C.c_void_p]; LIB.research_step_tick.restype = C.c_int
+LIB.research_step_finish.argtypes = [C.c_void_p]; LIB.research_step_finish.restype = C.c_int
 LIB.research_obs.argtypes = [C.c_void_p]; LIB.research_obs.restype = C.POINTER(C.c_float)
 LIB.research_telemetry.argtypes = [C.c_void_p]; LIB.research_telemetry.restype = C.POINTER(C.c_float)
 LIB.research_state.argtypes = [C.c_void_p]; LIB.research_state.restype = C.POINTER(State)
@@ -131,6 +134,23 @@ class Environment:
         actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,NUM_ATNS)
         LIB.research_step(self.handle,actions.ctypes.data_as(C.POINTER(C.c_float)))
         self.check()
+    def step_ticks(self,actions):
+        """step() split into its game ticks: a generator that yields after every
+        tick (read self.state / frame() there) and completes the decision when
+        exhausted. Same decision, same observations, masks, telemetry and replay
+        as step(); play.py uses it to show all 60 ticks/s. Must be run to the end."""
+        actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,NUM_ATNS)
+        if LIB.research_step_begin(self.handle,actions.ctypes.data_as(C.POINTER(C.c_float))): raise RuntimeError('A decision is already in progress')
+        try:
+            while True:
+                left=LIB.research_step_tick(self.handle)
+                if left<0: raise RuntimeError('No decision in progress')
+                self.check()
+                yield left
+                if left==0: break
+        finally:
+            if LIB.research_step_finish(self.handle): raise RuntimeError('Decision finished before its ticks were run')
+            self.check()
     def replay(self,path):
         if LIB.research_replay(self.handle,os.fsencode(path)): raise RuntimeError('Replay export failed')
     def frame(self):
