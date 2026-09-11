@@ -1525,8 +1525,9 @@ impl RolloutWorld {
                 slot.base.step(Action::default(), platforms);
             }
         } else if !slot.bow.has_fired {
-            // Airborne aiming: near-frozen fall (gravity_modifier 0.03),
-            // speed clamped to maxSlowMoSpeed.
+            // Airborne aiming: near-frozen fall (gravity_modifier 0.03), the
+            // landing raycast on the unclamped velocity (BowTransform.cs:222),
+            // then Vec2.Normalized(v) * maxSlowMoSpeed (BowTransform.cs:249).
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
@@ -1535,11 +1536,14 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            let speed = slot.base.velocity.length();
-            if speed > bow.max_slow_mo_speed {
-                slot.base.velocity *= bow.max_slow_mo_speed / speed;
-            }
             slot.base.collision_rays(platforms);
+            if slot.base.grounded {
+                // Landed while aiming: physics.Move(zero) in the same pass
+                // (BowTransform.cs:240-243); the shot later exits on landing.
+                slot.base.move_only(Vec2::ZERO, platforms);
+            } else if slot.base.velocity.length() > bow.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * bow.max_slow_mo_speed;
+            }
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
@@ -1569,11 +1573,13 @@ impl RolloutWorld {
                     bow.constants.max_speed,
                 )
                 .expect("valid bow air constants");
-                slot.base.velocity =
-                    before + (slot.base.velocity - before) * bow.aireal_control_blend;
-                let speed = slot.base.velocity.length();
-                if speed > bow.constants.max_speed {
-                    slot.base.velocity *= bow.constants.max_speed / speed;
+                // Vec2.Lerp = a*(1-t) + b*t per component (Fix.cs:41608),
+                // then Vec2.Normalized(v) * Speed (BowTransform.cs:262).
+                let after = slot.base.velocity;
+                let blend = bow.aireal_control_blend;
+                slot.base.velocity = before * (Fix::ONE - blend) + after * blend;
+                if slot.base.velocity.length() > bow.constants.max_speed {
+                    slot.base.velocity = slot.base.velocity.normalized() * bow.constants.max_speed;
                 }
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
