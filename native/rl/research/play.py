@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import subprocess
 import sys
 import time
 import traceback
@@ -265,6 +266,7 @@ class Server:
         self.game_sha256 = sha256_file(self.game)
         self.env = None
         self.env_params = None
+        self.env_seed = None
         self.match = None
         self.games_played = 0
         self.loop = None
@@ -281,7 +283,8 @@ class Server:
         if self.env is None or self.env_params != (limit, delay):
             if self.env is not None:
                 self.env.close()
-            self.env = Environment(seed=90001 + self.games_played, map_id=0, limit=limit, delay=delay)
+            self.env_seed = 90001 + self.games_played
+            self.env = Environment(seed=self.env_seed, map_id=0, limit=limit, delay=delay)
             self.env_params = (limit, delay)
         return self.env
 
@@ -629,7 +632,7 @@ class Client:
             opponent=dict(description, kills=foe['kills'], deaths=foe['deaths'], arrows_fired=telemetry[other]['arrows_fired'],
                           arrow_hits=telemetry[other]['arrow_hits'], activations={k: telemetry[other][k + '_activations'] for k in ('dash', 'bow', 'platform')}),
             final_players=final['players'], replay=replay.name, replay_sha256=sha256_file(replay), visual=visual.name,
-            game=dict(path=str(server.game), sha256=server.game_sha256), env_seed=90001 + server.games_played,
+            game=dict(path=str(server.game), sha256=server.game_sha256), env_seed=server.env_seed,
             timing=dict(wall_seconds=elapsed, realtime_ratio=(final['t'] / TICK_RATE) / max(1e-9, elapsed),
                         step_ms_mean=float(np.mean(step_ms)) if step_ms else None, step_ms_max=float(np.max(step_ms)) if step_ms else None,
                         reanchored=late, dropped_frames=self.dropped),
@@ -660,11 +663,16 @@ def main():
     server = Server(args)
     print(f'{len(server.checkpoints)} checkpoints, {len(SCRIPTED_NAMES)} scripted bots; sim {server.game} ({server.game_sha256[:12]})', flush=True)
 
+    try:  # this host's Tailscale address, for the printed URL only
+        tailnet = subprocess.run(['tailscale', 'ip', '-4'], capture_output=True, text=True, timeout=5).stdout.split()[0]
+    except Exception:
+        tailnet = None
+
     async def serve():
         service = await asyncio.start_server(server.handle, args.host, args.port, limit=1 << 20)
         for sock in service.sockets:
             host, port = sock.getsockname()[:2]
-            print(f'Bopl play: http://{host}:{port}/  (tailnet: http://100.89.48.52:{port}/)', flush=True)
+            print(f'Bopl play: http://{host}:{port}/' + (f'  (tailnet: http://{tailnet}:{port}/)' if tailnet else ''), flush=True)
         async with service:
             await service.serve_forever()
     asyncio.run(serve())

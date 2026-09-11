@@ -15,7 +15,8 @@ BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/research/play
   --checkpoints 'native/artifacts/rl/sweeps/anchors/*.bin' \
   --checkpoints '<sweep-root>/overnight-3/0*/checkpoints/policy-*.bin' --latest-per-dir \
   --out native/artifacts/rl/human
-# -> http://0.0.0.0:8891/  (tailnet: http://100.89.48.52:8891/)
+# -> http://0.0.0.0:8891/  (tailnet: http://<tailscale ip>:8891/, printed at start;
+#    PowerSpec: http://100.100.57.32:8891/ = http://powerspec-g728.tailb55536.ts.net:8891/)
 ```
 
 `--checkpoints` is a repeatable glob; `--latest-per-dir` keeps only the newest
