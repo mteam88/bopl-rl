@@ -33,8 +33,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   extracted `BoplBody`, an `AnimateVelocity` home spring, and dynamic RR-RR
   collision impulse/positional correction. Map 2's AntiLockPlatform uses the
   same body path and matches the reference waypoint trajectory exactly.
-- **Episode lifecycle**: 240-tick warmup simulated for real (players fall
-  from spawn and land), deaths (environment/arrow/self), stocks with
+- **Episode lifecycle**: 240-tick warmup simulated for real on Unity's
+  spawn timeline (`GameSessionHandler.SpawnPlayers` after `timeBeforeTwo`:
+  slimes exist from tick 63, play the 105-tick spawn animation with physics
+  off, and `SlimeController.Spawn` launches them at `jumpStrength * 0.25`
+  before they fall and land — the impact velocity sets the
+  `AttachToGround` landing slide, so a free fall from tick 0 settled
+  2.5e-3 units off on map 1), deaths (environment/arrow/self), stocks with
   respawn holds, first-death terminal at stocks=0, the 7200-tick timeout,
   and sudden-death platform sinking on the extracted curve. Blast-boundary
   deaths are always routed through match bookkeeping, including while an
@@ -134,6 +139,64 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
 | cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | not changed; the episode cannot advance and reset reseeds RNG |
 
+## Warmup and static-geometry audit (2026-09-11)
+
+Trigger: v1 `evasive-hard` (kind 3, level 2) lost to an idle opponent on
+map 1, side 0, seed 140001 on the Rust sim (t=3246) while winning on .NET.
+The first state difference was at t=0: player x differed by 2.46e-3 units
+after the warmup, and platform bases by ~4e-6 rad. The bot's decisions were
+identical through d065; d066 flipped `bot_landing_steer(-1)` after the
+positions had drifted 0.2 units through a jump/landing loop.
+
+| Gap | Unity source | Fix |
+|---|---|---|
+| Warmup let slimes free-fall from tick 0; Unity instantiates them at tick 63, plays the 105-tick spawn animation with physics off and launches at `jumpStrength * 0.25`; the landing speed (-19.92 vs -19.0 u/s) sets `AttachToGround`'s `groundedSpeed` slide on a tilted platform | `GameSessionHandler.StartSpawnPlayersRoutine`/`SpawnPlayers`, `SlimeController.BeforeSpawnInit`/`Spawn` (SlimeController.cs:567), `PlayerPhysics.AttachToGround` (PlayerPhysics.cs:495-509) | reset runs that timeline; a warmup ending mid-animation hands the rest to `respawn_spawn_ticks` |
+| Map platform bases used exact sin/cos; `FixTransform.rotation` uses `new Vec2(angle)` = `FastCos`/`FastSin` | FixTransform.cs:36-47, Vec2.cs:31-35, Fix.cs `FastSin` | `Vec2::angle` for map bases; the f64 `fast_sin` reproduces the LUT exactly (see "Number type") |
+| Sticky perimeter extents were `e`; Unity reads `One / (One / e)` back from the collider | `StickyRoundedRectangle.UpdateBounds` (:104), `DPhysicsRoundedRect.CalcExtents` (:351-359), refreshed after animate-in at GameSessionHandler.cs:769 | `data::surface_extents` on map and spawned platforms |
+| Collider axes were `basis * e`; Unity builds `ComplexMul(Vec2.right / inverseExtents, basis)` (one raw unit apart on negated products and non-power-of-two extents) | `Box.SetRotation` (Box.cs:31-35), `RoundedRect.SetRotation` (RoundedRect.cs:22-26) | `OrientedBox::from_basis`; platform and hurtbox rows expose those axes |
+| `ability_time` counted every ability tick; Unity accumulates `timeSinceEnteredAbility` only while invisible | Player.cs:337-353 | stays zero |
+
+Evidence (300 gate episodes, seeds 1000-1299, `repr_ab` at tolerance 0):
+the Q32 build's post-warmup state is bit-identical to .NET in 300/300
+episodes (previously 4-47 fields differed in every episode; player x by up to
+2.5e-3 units); 32.7% of all compared ticks are identical to .NET (0% before).
+Fidelity-gate divergence at decision 16 fell from 0.0018 to 0.0004 units with
+the outcome table unchanged (62.4 decisions, 297/300 winner agreement, both
+number modes identical column for column). `move_ab` is now textually
+identical to .NET (was 1e-4 off), `stock_respawn_ab`'s respawn position is
+within 6e-9 (was 8e-7), `platform_ab`'s landed player within 1.2e-9 (was
+1.8e-4). f64 and Q32 agree on 300/300 winners and lengths. The seed-140001
+game is won on both Rust builds (f64 t=4394, Q32 t=5346; .NET t=2020 — the
+game remains chaotic after the first discrete difference, below). Sim-only
+throughput is unchanged within noise (1.31-1.44M vs 1.18-1.47M stepping
+ticks/s); including resets it rose from 0.33-0.64M to 0.68-0.89M because the
+warmup now simulates 72 movement ticks instead of 240.
+
+Open, found by the same comparison (not changed here):
+
+- Grounded hurtbox phase: `PlayerPhysics.LateUpdateSim` (PlayerPhysics.cs:
+  138-146) re-positions a grounded body from `LocalPlatformPos` *after*
+  `DetPhysics.Simulate` synced the colliders (Updater.cs:303-323), so
+  Unity's Player-layer box of a grounded slime sits at the pre-late position
+  (in the seed-140001 trace: current-tick position in 1500/1500 airborne
+  ticks, previous or mid-tick position in 280/283 grounded ticks). Rust runs
+  `late_step` before `sync_collider` for riders (`rollout/mod.rs`, the
+  "StickyRoundedRectangle riders" loop), so its grounded hurtbox is current.
+  Arrow contacts against a walking slime therefore see positions up to one
+  tick apart. Proposed fix: sync before the late step, then re-run
+  `ability_hitbox_ab`/`hit_ab` and the gate.
+- Dash exit tick: on the ejection tick .NET's live slime also runs the
+  ordinary movement step and can land (seed 140001, t=165: live x -66.79 vs
+  Rust -68.49 with the dash velocity retained; the published positions
+  agree). `dash_phase_ab` shows the same signature at tick 281 (0.004/0.038
+  units), which then persists. This is the first discrete state difference
+  in the seed-140001 game.
+- Landing-tick publication: on ticks where the slime lands (state 4) .NET
+  publishes a `Player.Position` that is neither the previous nor the current
+  live position (seed 140001, t=71/110/158); Rust publishes the previous
+  one. The `entity_velocity_ab` and `state_ab` traces do not cover a landing
+  tick.
+
 ## Number type: f64 behind the Q32.32 API
 
 Unity's `BoplFixedMath/Fix.cs` is Q32.32 fixed point (i64 raw, i128
@@ -187,11 +250,14 @@ Decisions, each checked against `Fix.cs`:
   unit bases as in the table lookup. `Cos(HALF_PI)` is -2^-32 (the game's
   `TAU` is one raw unit above 2·PI, and the reference's interpolated `Sin`
   rounds that same value down to 0). `fast_sin`/`fast_cos` (Unity's
-  un-interpolated lookup, index = angle >> 15, i.e. the angle truncated to
-  7.6e-6 rad) are hardware sin/cos: the game does not depend on the
-  truncation error (it only biases `Vec2(angle)` bases by < 7.6e-6 rad; no
-  comparison reads those bases against an exact constant, and orientation is
-  integrated separately from the vector so nothing drifts).
+  un-interpolated lookup, index = angle >> 15) reproduce the table exactly:
+  entry `i` of `data/sinlut.bin` is `floor(sin(i * (pi/2) / 205886) * 2^32)`
+  for all 205887 entries, so the f64 build evaluates that formula at the
+  truncated, mirrored index. The game does depend on it: `Vec2(angle)`
+  builds every FixTransform basis (FixTransform.cs:45), so tilted map
+  platforms sit at the table's angle (up to 7.6e-6 rad from the exact one)
+  and a slime resting on one settles where that basis puts it. Both number
+  modes now use the table for map platform bases as well.
   `atan`/`acos`/`tan` are libm; `acos` accepts inputs within one raw unit of
   ±1 (a normalized double's component cannot exceed 1, and the Q32.32
   normalization has the same one-unit slack) and rejects the rest as Domain
@@ -213,11 +279,13 @@ action repeat 1 and compares every observation field per tick):
 - With warmup 0 and tolerance 0, the first divergence is at tick 1:
   `player0.y` differs by exactly one raw unit (2^-32), the truncation of
   `velocity.y * DT` in `Player::step` versus the correctly rounded product.
-  With the 240-tick warmup, the reset state differs on platform and body
+  With the 240-tick warmup, the reset state differed on platform and body
   basis vectors by 5-12335 raw units (1e-9 to 2.9e-6 units): the `Vec2::angle`
   table truncation on maps with tilted platforms (3, 4), and one-unit
   products elsewhere. No discrete field (state, flags, ability flags,
   timers, telemetry, entity presence) differs at the first divergence.
+  Since the f64 `fast_sin` reproduces the table (above), the f64/Q32 reset
+  states differ only by one-unit products (player x by 1-21 raw units).
 - Over 300 episodes (seeds 1000-1299, maps 0-4) the two builds produce the
   same winner in 300/300 and the same episode length in 298/300; the two
   remaining episodes end one tick apart after the position gap grew from
