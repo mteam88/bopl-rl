@@ -128,7 +128,7 @@ static int search_coarse_shot(const BoplRlState *s, int foe, double fx, double f
 /* Foe model state for one rollout. */
 /* dodge: 0 v1 hard bot_dodge; 1 dash away at first sight (jump if the dash
  * is down); 2 platform freeze (stand if down); 3 no reaction (down/asleep). */
-typedef struct { int hold_left, fired, dashed, dodge; double speed; } SearchFoe;
+typedef struct { int hold_left, fired, dashed, planted, dodge; double speed; } SearchFoe;
 /* The foe's input for one rollout decision (see the header comment). A foe
  * already charging either releases now (mode 0) or keeps charging with aim
  * tracking me and releases at full charge (mode 1). A foe whose bow is (or
@@ -165,6 +165,15 @@ static void search_foe_action(const BoplRlState *s, int foe, int me, uint8_t bas
         fm->fired=1; fm->hold_left=BOPL_HOLD_LENGTHS[hold]-1; fm->speed=BOT_ARROW_SPEED[hold];
         a->buttons=BOT_ARROW;
         a->angle=bot_ballistic_arc(fx, fy, fm->speed, mx, my, 0, &ux, &uy, &t)?bot_aim_byte(ux, uy):bot_aim_byte(mx-fx, my-fy);
+        return;
+    }
+    /* Squish: a foe within platform reach with its platform ready plants
+     * one (the loss taxonomy of 2026-09-10: 66% of v1 bot deaths against
+     * policies were platform squishes, trial 001's whole game). The fork
+     * then grows the platform exactly, so the rollout sees the pinch. */
+    if (!fm->planted && (fs->flags&1) && (fs->flags&2) && fs->timers[BOT_SLOT_PLATFORM]>fs->cooldowns[BOT_SLOT_PLATFORM]
+            && bot_len(mx-fx, my-fy)<9) {
+        fm->planted=1; a->buttons=BOT_PLATFORM; a->angle=bot_aim_byte(mx-fx, my-fy);
         return;
     }
     /* No shot and a ready bow: the foe closes in (v1 pursuit / firing-spot
@@ -357,8 +366,10 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
             search_add_shots(cands, &n, bot, &view, BOT_HOLD_QUICK, hard);
         }
         if (view.platform_ready && !view.morphing) {
-            search_add(cands, &n, BOT_AIM_UP, BOT_PLATFORM, 0, BOT_AIM_UP, SEARCH_HOLD, H+24);
-            search_add(cands, &n, bot_aim_byte(dx, dy), BOT_PLATFORM, 0, bot_aim_byte(dx, dy), SEARCH_HOLD, H+24);
+            /* The morph lasts ~72 ticks and the ejection is where v1 bots
+             * got squished: the horizon must reach past it. */
+            search_add(cands, &n, BOT_AIM_UP, BOT_PLATFORM, 0, BOT_AIM_UP, SEARCH_HOLD, H+96);
+            search_add(cands, &n, bot_aim_byte(dx, dy), BOT_PLATFORM, 0, bot_aim_byte(dx, dy), SEARCH_HOLD, H+96);
         }
         if (hard) for (int i=0; i<6; i++) {
             static const uint16_t buttons[5]={0, BOT_JUMP, BOT_DASH, BOT_ARROW, BOT_PLATFORM};
