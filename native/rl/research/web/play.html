@@ -38,6 +38,19 @@
               <option value="keys">movement keys (pure gamepad)</option>
             </select>
           </label>
+          <label>Frames
+            <select id="frames">
+              <option value="tick">every tick (60/s)</option>
+              <option value="decision">every decision (15/s, extrapolated)</option>
+            </select>
+          </label>
+          <label>Display delay
+            <select id="displayDelay">
+              <option value="0">none</option>
+              <option value="1">1 decision (4 ticks)</option>
+              <option value="2">2 decisions (8 ticks)</option>
+            </select>
+          </label>
           <label>Seed <input id="seed" type="number" placeholder="random" /></label>
           <button id="start" type="submit">Start</button>
         </form>
@@ -69,7 +82,7 @@
           <div class="hud bottom">
             <span id="hudCharge"></span>
             <span class="keys">WASD move · Space jump · LMB/J dash · RMB/K bow · MMB/L platform · 1–5/wheel charge · Esc abort</span>
-            <label class="smooth"><input id="smooth" type="checkbox" checked /> extrapolate between decisions</label>
+            <label class="smooth"><input id="smooth" type="checkbox" checked /> extrapolate between frames</label>
           </div>
         </div>
       </section>

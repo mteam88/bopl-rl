@@ -37,9 +37,18 @@ int research_layout(int *out, int capacity) {
 }
 int research_num_atns(void) { return BOPL_NUM_ATNS; }
 int research_check(BoplPuffer *env) { return env->log.game_errors; } /* observation overflow is a logged, non-fatal truncation */
+/* The research environment carries the state of a decision split into ticks
+ * (research_step_begin/tick/finish). BoplPuffer is the first member, so every
+ * BoplPuffer* handed out by research_open is also a ResearchEnv*. */
+typedef struct {
+    BoplPuffer env;
+    BoplStepPhase phase;
+    int open, tick, sampled;
+} ResearchEnv;
 BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay) {
-    BoplPuffer *env=calloc(1, sizeof(*env));
-    if (!env) return NULL;
+    ResearchEnv *research=calloc(1, sizeof(*research));
+    if (!research) return NULL;
+    BoplPuffer *env=&research->env;
     env->players=2; env->num_agents=2; env->repeat=4; env->observation_delay=delay;
     env->no_autoreset=1; env->rng=seed;
     env->reward_kill=0.1f; env->reward_timeout=0;  /* evaluation reports the phase-1 reward telemetry */
@@ -66,6 +75,7 @@ int research_rewards(BoplPuffer *env, float kill, float timeout) {
 void research_reset(BoplPuffer *env, uint32_t seed, uint32_t map) {
     env->rng=seed; env->config.map=map; c_reset(env);
     memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
+    ((ResearchEnv*)env)->open=0;  /* a reset discards an unfinished tick-split decision */
 }
 /* Scripted opponents (bopl_bots.h): pin a bot on one player. It decides inside
  * research_step from the true game state; the caller's action floats for that
@@ -86,7 +96,52 @@ int research_bot(BoplPuffer *env, int player, int kind, int level) {
 const char *research_bot_name(int kind) {
     return kind>=0 && kind<=BOPL_BOT_KINDS?BOPL_BOT_NAMES[kind]:NULL;
 }
-void research_step(BoplPuffer *env, const float *actions) { memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float)); c_step(env); }
+void research_step(BoplPuffer *env, const float *actions) {
+    if (((ResearchEnv*)env)->open) { fprintf(stderr, "research_step during a tick-split decision\n"); abort(); }
+    memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float)); c_step(env);
+}
+/* One decision split into its ticks, for real-time play that shows every
+ * tick: begin fixes the decision (scripted bots, latch) exactly as
+ * research_step does; each tick advances the world one game tick with the
+ * latched actions and returns the ticks still to run (0 when the four are
+ * done or the episode ended); finish completes the decision's bookkeeping.
+ * The observation sample is taken after phase 3 (or at the end of the episode
+ * within the first three ticks), as bopl_rl_step_sampled(3, 1) returns it, so
+ * observations, masks, telemetry, rewards and the replay are identical to
+ * research_step's; check_tick_step.py proves it on fixed seeds. Returns -1 on
+ * misuse (ticks left, no decision open, or a decision already open). */
+int research_step_begin(BoplPuffer *env, const float *actions) {
+    ResearchEnv *research=(ResearchEnv*)env;
+    if (research->open) return -1;
+    memcpy(env->actions, actions, 2*BOPL_NUM_ATNS*sizeof(float));
+    bopl_step_begin(env, &research->phase);
+    research->open=1; research->tick=0; research->sampled=0;
+    return 0;
+}
+int research_step_tick(BoplPuffer *env) {
+    ResearchEnv *research=(ResearchEnv*)env;
+    if (!research->open) return -1;
+    const BoplRlState *state=bopl_rl_state(env->world);
+    if (research->tick>=env->repeat || (state->header.flags&BOPL_RL_TERMINAL)) return 0;
+    if (bopl_rl_step(env->world, research->phase.actions, env->players, 1)) bopl_failed(env, "tick");
+    research->tick++;
+    state=bopl_rl_state(env->world);
+    int ended=(state->header.flags&BOPL_RL_TERMINAL)!=0;
+    if (env->observation_delay && !research->sampled && (research->tick==env->repeat-1 || ended)) {
+        bopl_step_sample(env, state); research->sampled=1;
+    }
+    return ended?0:env->repeat-research->tick;
+}
+int research_step_finish(BoplPuffer *env) {
+    ResearchEnv *research=(ResearchEnv*)env;
+    if (!research->open) return -1;
+    const BoplRlState *state=bopl_rl_state(env->world);
+    if (research->tick<env->repeat && !(state->header.flags&BOPL_RL_TERMINAL)) return -1;
+    if (env->observation_delay && !research->sampled) { fprintf(stderr, "tick-split decision without a sample\n"); abort(); }
+    bopl_step_finish(env, &research->phase);
+    research->open=0;
+    return 0;
+}
 const float *research_obs(BoplPuffer *env) { return env->observations; }
 const float *research_telemetry(BoplPuffer *env) { return env->last_telemetry; }
 const BoplRlState *research_state(BoplPuffer *env) { return bopl_rl_state(env->world); }

@@ -17,6 +17,7 @@ const MOUSE = { 0: KEY.dash, 2: KEY.arrow, 1: KEY.platform, 3: KEY.platform, 4: 
 const ABILITY_NAMES = { 2: "Dash", 4: "Bow", 14: "Platform" };
 const COLORS = ["#f4d93f", "#b99be8"];
 const DECISION_S = 4 / 60;
+const TICK_S = 1 / 60;
 
 let ws = null, lobby = null, match = null, lastRecord = null, holdLengths = [1, 2, 4, 8, 16];
 const status = $("status");
@@ -31,7 +32,7 @@ function connect() {
     setTimeout(connect, 2000);
   });
   ws.addEventListener("message", (event) => {
-    if (match) match.bytes += event.data.length;
+    if (match) { match.bytes += event.data.length; match.totalBytes += event.data.length; }
     const message = JSON.parse(event.data);
     switch (message.T) {
       case "start": startMatch(message); break;
@@ -90,12 +91,14 @@ function show(id) { for (const p of ["lobby", "game", "result", "viewer"]) $(p).
 function showLobby() { match = null; show("lobby"); loadLobby(); }
 $("setup").addEventListener("submit", (event) => {
   event.preventDefault();
-  send({ T: "start", opponent: $("opponent").value, map: Number($("map").value), side: $("side").value, mode: $("mode").value, seed: $("seed").value });
+  send({ T: "start", opponent: $("opponent").value, map: Number($("map").value), side: $("side").value, mode: $("mode").value, seed: $("seed").value,
+    frames: $("frames").value, display_delay: Number($("displayDelay").value) });
 });
 $("again").addEventListener("click", () => {
   const side = $("side").value === "alternate" ? "alternate" : String(1 - Number($("side").value));
   $("side").value = side;
-  send({ T: "start", opponent: $("opponent").value, map: Number($("map").value), side, mode: $("mode").value, seed: "" });
+  send({ T: "start", opponent: $("opponent").value, map: Number($("map").value), side, mode: $("mode").value, seed: "",
+    frames: $("frames").value, display_delay: Number($("displayDelay").value) });
 });
 $("toLobby").addEventListener("click", showLobby);
 $("watchLast").addEventListener("click", () => lastRecord && openViewer(lastRecord));
@@ -119,9 +122,14 @@ class Match {
   constructor(message) {
     this.side = message.side; this.map = message.map; this.seed = message.seed; this.opponent = message.opponent;
     this.mode = message.mode; this.limit = message.limit; this.live = true;
+    // Frame cadence (play.py --frames): one per tick or one per decision; optional display delay in ticks.
+    this.frameTicks = message.display.frame_ticks; this.period = this.frameTicks * TICK_S;
+    this.delayTicks = message.display.display_delay_decisions * 4;
     this.initial = expand(message.frame); this.last = this.initial; this.lastAt = performance.now(); this.hud = { s: 0, l: 0, b: 0, a: 0, c: 4, m: this.mode };
+    this.queue = []; this.shown = this.initial; this.shownAt = this.lastAt;
     this.down = 0; this.pressed = 0; this.charge = 4; this.seq = 0; this.sent = new Map(); this.aim = null; this.lastAimSent = 0;
     this.latency = []; this.intervals = []; this.rtt = []; this.bytes = 0; this.bytesAt = performance.now(); this.rate = 0; this.frames = 0;
+    this.totalBytes = 0; this.startedAt = performance.now();
     this.mouse = null;
     this.canvas = $("arena");
     this.pingTimer = setInterval(() => send({ T: "ping", c: performance.now() }), 1000);
@@ -133,6 +141,7 @@ class Match {
     if (this.frames) this.intervals.push(now - this.lastAt);
     this.frames++;
     this.last = expand(m); this.lastAt = now; this.hud = m.h;
+    if (this.delayTicks) { this.queue.push(this.last); if (this.queue.length > 64) this.queue.shift(); }
     // Input->visible latency: the frame acknowledges the newest input sequence applied to it.
     for (const [seq, at] of this.sent) if (seq <= m.h.s) { if (seq === m.h.s) this.latency.push(now - at); this.sent.delete(seq); }
     if (this.latency.length > 200) this.latency.splice(0, this.latency.length - 200);
@@ -172,18 +181,28 @@ class Match {
     }
     if (byte !== this.aim) { this.aim = byte; const now = performance.now(); if (now - this.lastAimSent > 15) { this.lastAimSent = now; this.push(); } }
   }
-  // Frame to show now: the last decision's state, optionally moved along each
-  // body's velocity for the time since it arrived (at most one decision), so 15
-  // decisions/s look continuous without adding display delay.
+  // The frame due now: the newest one, or with a display delay the newest one
+  // at least delayTicks older than the newest (the lobby's 0/1/2 decisions).
+  current() {
+    if (!this.delayTicks) return this.last;
+    let due = this.initial;
+    for (const f of this.queue) if (f.t <= this.last.t - this.delayTicks) due = f;
+    return due;
+  }
+  // Frame to show now: the due frame, optionally moved along each body's
+  // velocity for the time since it became due (at most one frame period), so
+  // 15 frames/s look continuous; at 60 frames/s this only bridges jitter.
   display() {
-    if (!$("smooth").checked || !this.live) return this.last;
-    const dt = Math.min(DECISION_S, (performance.now() - this.lastAt) / 1000);
-    const entities = this.last.entities.map((e) => ({ ...e, x: e.x + e.vx * dt, y: e.y + e.vy * dt }));
-    const players = this.last.players.map((p) => {
-      const body = this.last.entities.find((e) => e.kind === 0 && e.owner === p.id && Math.hypot(e.x - p.x, e.y - p.y) < 2);
+    const due = this.current();
+    if (due !== this.shown) { this.shown = due; this.shownAt = performance.now(); }
+    if (!$("smooth").checked || !this.live) return due;
+    const dt = Math.min(this.period, (performance.now() - this.shownAt) / 1000);
+    const entities = due.entities.map((e) => ({ ...e, x: e.x + e.vx * dt, y: e.y + e.vy * dt }));
+    const players = due.players.map((p) => {
+      const body = due.entities.find((e) => e.kind === 0 && e.owner === p.id && Math.hypot(e.x - p.x, e.y - p.y) < 2);
       return body ? { ...p, x: p.x + body.vx * dt, y: p.y + body.vy * dt } : p;
     });
-    return { ...this.last, entities, players };
+    return { ...due, entities, players };
   }
   draw() {
     if (!match || match !== this) return;
@@ -231,13 +250,14 @@ class Match {
     $("hudCharge").textContent = `bow charge: hold ${hold} decision${hold > 1 ? "s" : ""} (${(hold * DECISION_S).toFixed(2)} s, ${hold >= 16 ? "full" : hold >= 8 ? "medium" : "quick"}) · aim: ${this.mode}`;
     $("hudLatency").textContent = `input→frame p50 ${percentile(this.latency, 0.5).toFixed(0)} ms  p95 ${percentile(this.latency, 0.95).toFixed(0)} ms\n` +
       `frame interval ${percentile(this.intervals, 0.5).toFixed(1)} ms (p95 ${percentile(this.intervals, 0.95).toFixed(1)})\n` +
-      `rtt ${percentile(this.rtt.slice(-10), 0.5).toFixed(1)} ms · ${(this.rate / 1024).toFixed(1)} KiB/s · ${this.frames} frames`;
+      `rtt ${percentile(this.rtt.slice(-10), 0.5).toFixed(1)} ms · ${(this.rate / 1024).toFixed(1)} KiB/s · ${this.frames} frames (${60 / this.frameTicks}/s${this.delayTicks ? `, shown ${this.delayTicks} ticks late` : ""})`;
     $("netline").textContent = "";
   }
   stats() {
     return { frames: this.frames, latency_p50_ms: percentile(this.latency, 0.5), latency_p95_ms: percentile(this.latency, 0.95),
       interval_p50_ms: percentile(this.intervals, 0.5), interval_p95_ms: percentile(this.intervals, 0.95), interval_max_ms: Math.max(...this.intervals),
-      rtt_p50_ms: percentile(this.rtt, 0.5), bytes_per_s: this.rate, inputs_sent: this.seq };
+      rtt_p50_ms: percentile(this.rtt, 0.5), bytes_per_s: this.rate, bytes_per_s_mean: this.totalBytes * 1000 / (performance.now() - this.startedAt),
+      inputs_sent: this.seq, frame_ticks: this.frameTicks, delay_ticks: this.delayTicks };
   }
   stop() { clearInterval(this.pingTimer); cancelAnimationFrame(this.raf); this.live = false; }
 }
@@ -260,7 +280,8 @@ function endMatch(message) {
   fillTally($("resultTally"), message.tally);
   $("resultTiming").textContent = `Sim ran at ${r.timing.realtime_ratio.toFixed(3)}x real time, step ${r.timing.step_ms_mean.toFixed(2)} ms mean / ${r.timing.step_ms_max.toFixed(1)} ms max, ` +
     `${r.timing.reanchored} re-anchors, ${r.timing.dropped_frames} dropped frames. Client: input→frame p50 ${stats.latency_p50_ms.toFixed(0)} ms, p95 ${stats.latency_p95_ms.toFixed(0)} ms; ` +
-    `frame interval p50 ${stats.interval_p50_ms.toFixed(1)} ms; rtt ${stats.rtt_p50_ms.toFixed(1)} ms; ${(stats.bytes_per_s / 1024).toFixed(1)} KiB/s.`;
+    `frame interval p50 ${stats.interval_p50_ms.toFixed(1)} ms (${60 / stats.frame_ticks} frames/s${stats.delay_ticks ? `, displayed ${stats.delay_ticks} ticks late` : ""}); rtt ${stats.rtt_p50_ms.toFixed(1)} ms; ` +
+    `${(stats.bytes_per_s_mean / 1024).toFixed(1)} KiB/s (${r.timing.frame_bytes_per_frame.toFixed(0)} B/frame).`;
   window.boplLastStats = { ...stats, record: r };
   match = null;
   show("result");

@@ -47,6 +47,9 @@ RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
 TICK_RATE = 60
 DECISION_TICKS = 4
 DECISION_PERIOD = DECISION_TICKS / TICK_RATE
+TICK_PERIOD = 1 / TICK_RATE
+FRAME_MODES = ('tick', 'decision')  # a frame every game tick (60/s) or every decision (15/s, client extrapolates)
+DISPLAY_DELAYS = (0, 1, 2)  # optional display delay in decisions (client side), for parity tests with the policy's 9-tick delay
 STATIC = {'/': 'play.html', '/play.html': 'play.html', '/play.js': 'play.js', '/arena.js': 'arena.js',
           '/play.css': 'play.css'}
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -442,6 +445,9 @@ class Client:
         self.aborted = False
         self.closed = False
         self.dropped = 0
+        self.bytes_sent = 0
+        self.frames_sent = 0
+        self.display = dict(frames='tick', frame_ticks=1, display_delay_decisions=0)
 
     def send(self, message):
         if self.closed:
@@ -453,7 +459,10 @@ class Client:
         if transport.get_write_buffer_size() > 256 * 1024 and message.get('T') == 'f':
             self.dropped += 1
             return False
-        self.writer.write(ws_frame(json.dumps(message, separators=(',', ':'))))
+        payload = json.dumps(message, separators=(',', ':'))
+        if message.get('T') == 'f':
+            self.bytes_sent += len(payload); self.frames_sent += 1
+        self.writer.write(ws_frame(payload))
         return True
 
     async def run(self):
@@ -507,6 +516,11 @@ class Client:
         side = server.games_played % 2 if side in (None, 'alternate') else int(side) & 1
         seed = int(spec['seed']) if spec.get('seed') not in (None, '') else secrets.randbits(31)
         self.input = HumanInput(mode='keys' if spec.get('mode') == 'keys' else 'mouse')
+        frames = spec.get('frames', 'tick')
+        display_delay = int(spec.get('display_delay', 0) or 0)
+        if frames not in FRAME_MODES or display_delay not in DISPLAY_DELAYS:
+            self.send(dict(T='error', message='bad frames/display_delay setting')); return
+        self.display = dict(frames=frames, frame_ticks=1 if frames == 'tick' else DECISION_TICKS, display_delay_decisions=display_delay)
         self.aborted = False
         self.match_task = asyncio.get_running_loop().create_task(self.play(opponent, map_id, side, seed))
 
@@ -547,8 +561,11 @@ class Client:
         frames = [env.frame()]
         initial = frames[0]
         human_id = initial['players'][side]['id']
-        self.send(dict(T='start', side=side, map=map_id, seed=seed, opponent=description, mode=self.input.mode,
+        self.bytes_sent = 0; self.frames_sent = 0
+        self.send(dict(T='start', side=side, map=map_id, seed=seed, opponent=description, mode=self.input.mode, display=self.display,
                        limit=limit, frame=compact_frame(initial, slime_rows(env)), hold_lengths=layout.HOLD_LENGTHS))
+        per_tick = self.display['frames'] == 'tick'
+        period = TICK_PERIOD if per_tick else DECISION_PERIOD
         latch_left = 0
         held = 0
         decisions = 0
@@ -556,8 +573,23 @@ class Client:
         hold_counts = np.zeros(layout.ACT_HOLD, dtype=np.int64)
         aim_sources = dict(mouse=0, keys=0)
         late = 0
-        step_ms = []
+        step_ms = []  # server work per decision (policy, input, sim ticks, frame encoding), sleeps excluded
         next_time = loop.time()
+
+        async def pace():
+            # Real time at Unity's fixed step (TimeManager.asset 1/60 s): one tick or one decision per period.
+            nonlocal next_time, late
+            next_time += period
+            wait = next_time - loop.time()
+            if wait < -2 * DECISION_PERIOD:
+                # Fell behind by more than two decisions (scheduling hiccup): re-anchor instead of a speed burst.
+                late += 1
+                next_time = loop.time()
+            elif wait > 0:
+                await asyncio.sleep(wait)
+            else:
+                await asyncio.sleep(0)
+
         while not env.ended and not self.aborted:
             t0 = time.perf_counter()
             observation = torch.from_numpy(env.obs.copy())
@@ -582,23 +614,30 @@ class Client:
             for bit in range(4):
                 human_buttons[bit] += bool(held & (1 << bit))
             frames[-1]['actions'] = actions.tolist()
-            env.step(actions.numpy())
             decisions += 1
-            frame = env.frame()
-            frames.append(frame)
-            step_ms.append((time.perf_counter() - t0) * 1e3)
-            self.send(dict(T='f', d=decisions, **compact_frame(frame, slime_rows(env)),
-                           h=dict(s=self.input.seq, l=latch_left, b=held, a=aim, c=self.input.charge, m=self.input.mode)))
-            next_time += DECISION_PERIOD
-            delay = next_time - loop.time()
-            if delay < -2 * DECISION_PERIOD:
-                # Fell behind by more than two decisions (scheduling hiccup): re-anchor instead of a speed burst.
-                late += 1
-                next_time = loop.time()
-            elif delay > 0:
-                await asyncio.sleep(delay)
+            hud = dict(s=self.input.seq, l=latch_left, b=held, a=aim, c=self.input.charge, m=self.input.mode)
+            work = time.perf_counter() - t0
+            if per_tick:
+                # The decision's ticks one at a time (Environment.step_ticks: the same game as env.step, see
+                # check_tick_step.py), each shown as soon as it is computed; the human's keys are still read once
+                # per decision above and the policy keeps its 4-tick cadence and 9-tick delay.
+                k = 0
+                for left in env.step_ticks(actions.numpy()):
+                    t1 = time.perf_counter()
+                    k += 1
+                    frame = env.frame()
+                    self.send(dict(T='f', d=decisions, k=k, **compact_frame(frame, slime_rows(env)), h=hud))
+                    work += time.perf_counter() - t1
+                    if left:
+                        await pace()
             else:
-                await asyncio.sleep(0)
+                env.step(actions.numpy())
+                frame = env.frame()
+                self.send(dict(T='f', d=decisions, k=DECISION_TICKS, **compact_frame(frame, slime_rows(env)), h=hud))
+                work = time.perf_counter() - t0
+            frames.append(frame)
+            step_ms.append(work * 1e3)
+            await pace()
         elapsed = time.time() - started
         if self.aborted or not env.ended:
             print(json.dumps(dict(aborted=True, opponent=description['name'], map=map_id, seed=seed, side=side,
@@ -633,9 +672,12 @@ class Client:
                           arrow_hits=telemetry[other]['arrow_hits'], activations={k: telemetry[other][k + '_activations'] for k in ('dash', 'bow', 'platform')}),
             final_players=final['players'], replay=replay.name, replay_sha256=sha256_file(replay), visual=visual.name,
             game=dict(path=str(server.game), sha256=server.game_sha256), env_seed=server.env_seed,
+            display=self.display,
             timing=dict(wall_seconds=elapsed, realtime_ratio=(final['t'] / TICK_RATE) / max(1e-9, elapsed),
                         step_ms_mean=float(np.mean(step_ms)) if step_ms else None, step_ms_max=float(np.max(step_ms)) if step_ms else None,
-                        reanchored=late, dropped_frames=self.dropped),
+                        work_fraction=float(np.sum(step_ms)) / 1e3 / max(1e-9, elapsed),
+                        reanchored=late, dropped_frames=self.dropped, frames_sent=self.frames_sent, frame_bytes=self.bytes_sent,
+                        frame_bytes_per_frame=self.bytes_sent / max(1, self.frames_sent), frame_bytes_per_s=self.bytes_sent / max(1e-9, elapsed)),
             tick_rate=TICK_RATE, decision_ticks=DECISION_TICKS, observation_delay=delay if policy is not None else 9)
         # The dashboard's physics-view shape (evaluate.py): frames carry the actions applied after them.
         visual.write_text(json.dumps(dict(schema=1, step=description.get('step'), task=dict(opponent=description['name'], map=map_id,
