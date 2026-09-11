@@ -307,7 +307,7 @@ def rate_checkpoint(checkpoint, pool, out, games=240, first_pass_games=6, band=(
 # ---- pool construction ---------------------------------------------------------
 
 def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=48, seed_base=50001,
-               episode_ticks=7200, delay=9, workers=4, library=None, game=None, note='', log=None):
+               episode_ticks=7200, delay=9, workers=4, slow_workers=None, library=None, game=None, note='', log=None):
     """Full round robin over random + scripted + checkpoint members; writes pool.json.
 
     checkpoints: [(name, path)]; paths are recorded relative to the pool file.
@@ -340,7 +340,22 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
     started = time.monotonic()
     if log:
         log(f'pool: {len(names)} members, {len(tasks)} games on {game.name}')
-    games = elo_ladder.play_games(by_name, tasks, episode_ticks, workers, seed_base, delay=delay)
+    # Rollout-search bots (bopl_rl_fork, ~4 ms per decision) dominate the wall time;
+    # their games go through a separate, wider thread pool and are timed on their own.
+    from environment import Environment
+    slow = {name for name in scripted if Environment.bot_forks(by_name[name].bot[0])}
+    slow_tasks = [task for task in tasks if task['a'] in slow or task['b'] in slow]
+    fast_tasks = [task for task in tasks if task['a'] not in slow and task['b'] not in slow]
+    timing = {}
+    games = []
+    for label, batch, count in (('fast', fast_tasks, workers), ('slow', slow_tasks, slow_workers or workers)):
+        if not batch:
+            continue
+        phase = time.monotonic()
+        games += elo_ladder.play_games(by_name, batch, episode_ticks, count, seed_base, delay=delay)
+        timing[label] = dict(games=len(batch), workers=count, elapsed=time.monotonic() - phase, members=sorted(slow) if label == 'slow' else None)
+        if log:
+            log(f"pool: {label} phase {len(batch)} games, {count} workers, {timing[label]['elapsed']:.0f} s")
     records = elo_ladder.tally(games)
     ratings = elo_ladder.bradley_terry(names, records, 'random')
     intervals = pool_intervals(names, records)
@@ -354,7 +369,7 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
                       games=wins + losses + draws, wins=wins, losses=losses, draws=draws)
     pool = dict(schema=SCHEMA, created=time.time(), note=note, game=dict(path=str(game), sha256=sha256_file(game)),
                 maps=maps, games_per_pair=games_per_pair, seed_base=seed_base, episode_ticks=episode_ticks,
-                observation_delay_ticks=delay, games=len(games), elapsed=time.monotonic() - started,
+                observation_delay_ticks=delay, games=len(games), elapsed=time.monotonic() - started, timing=timing,
                 fit='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo',
                 members=members,
                 matches=[dict(a=a, b=b, wins_a=wa, wins_b=wb, draws=d) for (a, b), (wa, wb, d) in sorted(records.items())])
@@ -387,6 +402,8 @@ def main():
     build.add_argument('--seed-base', type=int, default=50001)
     build.add_argument('--episode-ticks', type=int, default=7200)
     build.add_argument('--workers', type=int, default=4)
+    build.add_argument('--slow-workers', type=int, default=None,
+                       help='Threads for games involving rollout-search bots (default: --workers)')
     build.add_argument('--library', type=Path, default=None, help='CPU policy library (native_policy.load)')
     build.add_argument('--game', type=Path, default=None)
     build.add_argument('--note', default='')
@@ -417,7 +434,7 @@ def main():
         pool = build_pool(args.out, scripted=args.scripted, checkpoints=checkpoints,
                           maps=[int(m) for m in args.maps.split(',')], games_per_pair=args.games_per_pair,
                           seed_base=args.seed_base, episode_ticks=args.episode_ticks, workers=args.workers,
-                          library=args.library, game=args.game, note=args.note, log=log)
+                          slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log)
         print(format_table(pool))
         print(f"pool {pool['pool_sha256'][:16]}  {pool['games']} games in {pool['elapsed']:.0f}s -> {pool['path']}")
     elif args.command == 'verify':
