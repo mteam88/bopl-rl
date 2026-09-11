@@ -106,13 +106,20 @@ def bradley_terry(names,records,anchor):
     index={name:i for i,name in enumerate(names)}
     ratings=np.zeros(len(names))
     pairs=[(index[a],index[b],wa+d/2+.5,wb+d/2+.5) for (a,b),(wa,wb,d) in records.items()]
-    for _ in range(500):
+    # Gradient ascent on the log-likelihood. Its curvature per participant is at most
+    # games/4, so a step of 2/max_games converges from any start (a step scaled by the
+    # pair count diverged for pools of a few members with many games per pair).
+    games=np.zeros(len(names))
+    for a,b,score_a,score_b in pairs:
+        games[a]+=score_a+score_b; games[b]+=score_a+score_b
+    step=2/max(1,games.max())
+    for _ in range(5000):
         gradient=np.zeros_like(ratings)
         for a,b,score_a,score_b in pairs:
             expected=1/(1+math.exp(ratings[b]-ratings[a]))
             gradient[a]+=score_a-(score_a+score_b)*expected
             gradient[b]+=score_b-(score_b+score_a)*(1-expected)
-        ratings+=gradient*(.5/max(1,len(pairs)))
+        ratings+=gradient*step
         ratings-=ratings[index[anchor]]
         if np.abs(gradient).max()<1e-9: break
     return {name:ratings[i]*ELO_SCALE for name,i in index.items()}
