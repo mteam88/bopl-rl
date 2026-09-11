@@ -1350,7 +1350,21 @@ impl RolloutWorld {
                             },
                             ..BowState::default()
                         };
-                        if !slot.base.grounded {
+                        if slot.base.grounded {
+                            // SyncPhysicsTo(PlayerInfo) re-derives the body
+                            // from the surface local with no self-imposed
+                            // velocity (PlayerPhysics.cs:526-535), and
+                            // OnEnterAbility clears the external one
+                            // (BowTransform.cs:91): this pass's PlayerBody
+                            // integration does not move the Bow.
+                            let platforms: &[Platform] = &self.platforms;
+                            if let Some(platform) = slot.base.platform(platforms) {
+                                slot.base.position =
+                                    platform.surface.position(slot.base.local, slot.base.radius);
+                            }
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        } else {
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             // The Bow's own PlayerPhysics starts with no
