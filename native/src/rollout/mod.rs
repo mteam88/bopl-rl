@@ -1149,7 +1149,17 @@ impl RolloutWorld {
                     && slot.base.outside_bounds()
             };
             if boundary_death {
-                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT, false);
+                // The ordinary slime's boundary component kills with
+                // Accident (DestroyIfOutsideSceneBounds.cs:148); an ability
+                // body's exits through Ability.ExitAbility with a default
+                // AbilityExitInfo, whose causeOfDeath is Other
+                // (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:219).
+                let cause = if self.players[index].active == ActiveAbility::None {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
+                self.kill(index, ENVIRONMENT, cause, false);
             }
         }
         // Slime-vs-slime shove (World::step parity).
@@ -1426,7 +1436,7 @@ impl RolloutWorld {
             // slime, this ability body's position is final for this updater
             // pass (the separate platform moves later in DetPhysics).
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.kill(index, ENVIRONMENT, CAUSE_ACCIDENT, false);
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false);
             }
             return;
         }
@@ -1619,9 +1629,18 @@ impl RolloutWorld {
         let slot = &mut this.players[index];
         let platforms: &[Platform] = &this.platforms;
         // Bow's boundary component runs after BowTransform but before
-        // PlayerBody performs this pass's position integration. Retain the
-        // pre-integration boundary result instead of testing the new position.
-        let boundary_death = slot.base.outside_bounds();
+        // PlayerBody performs this pass's position integration; its
+        // ExitAbility deactivates the Bow, so the body is never integrated.
+        // BowTransform.ExitAbility ungrounds the body first
+        // (BowTransform.cs:120), so a grounded Bow dies 0.05 off its
+        // surface, and that is the position the slime takes over
+        // (BowTransform.cs:124, SlimeController.cs:217).
+        if slot.base.outside_bounds() {
+            slot.base.alive = false; // game_tick attributes it after this updater
+            slot.base.force_unground(platforms);
+            slot.reported_position = slot.base.position;
+            return;
+        }
         if slot.base.grounded {
             if slot.bow.has_fired {
                 // Landed after firing: exit with the landing (justlanded).
@@ -1690,9 +1709,6 @@ impl RolloutWorld {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
-        }
-        if boundary_death {
-            slot.base.alive = false; // game_tick attributes it after this updater
         }
         if exit {
             bow_exit(slot, platforms);
