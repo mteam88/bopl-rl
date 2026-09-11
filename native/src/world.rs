@@ -353,13 +353,21 @@ impl Player {
     /// uses the same vector for both; keyboard players use W/A/S/D for motion
     /// and the joystick byte independently for ability aim.
     pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, platforms: &[Platform]) {
+        if !self.dash.active {
+            self.gravity_step(platforms);
+        }
+        self.move_step(action, input, platforms);
+    }
+    /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied
+    /// gravity: dash entry/continuation, jump, ground or air movement, then
+    /// PlayerBody's integration.
+    pub(crate) fn move_step(&mut self, action: Action, input: Vec2, platforms: &[Platform]) {
         let jump = action.buttons & 1 != 0;
         if self.dash.active {
             self.previous_jump = jump;
             self.dash_step(action, platforms);
             return;
         }
-        self.gravity_step(platforms);
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
             self.enter_dash(action, input, platforms);
