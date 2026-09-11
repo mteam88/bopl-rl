@@ -1,16 +1,17 @@
 # Overnight sweep 4 (2026-09-11): overnight-3's basin at twice the budget,
 # a v2 training bot, scored by the frozen reference pool.
-# Score: Bradley-Terry Elo vs pool v4 (random, 4 v1 hard bots + mixed-medium,
+# Score: Bradley-Terry Elo vs pool v5 (random, 4 v1 hard bots + mixed-medium,
 # 4 v2 hard bots, search-hard/medium, 6 overnight-3 finals, run007-final),
 # IQM over the last 3 evaluations, 480 games per checkpoint (240 gave a 95% CI
 # of +-45 Elo on the overnight-3 re-score; trial effects there were ~30-50).
-# The pool was played on libbopl_sim.so d0a170e5 (v3 on 0d4057e7 rated the same
-# members within CI, tier order unchanged); ratings on another build are
-# flagged game_mismatch, not refused. After a sim rebuild with gameplay fixes,
-# build pool v4 (same 19 members, ~17 min at 6+12 workers) and point `pool` at it:
-#   systemd-run --user --scope -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
+# Pool v5 was played on libbopl_sim.so d0a170e5 (the bit-identical sim) with
+# the deterministic search bot (main 63cdb6e: level = horizon 128/64/32; the
+# v3/v4 search members were the old random-candidate bot). Ratings on another
+# build are flagged game_mismatch, not refused. After a sim or bot change with
+# gameplay impact, build the next pool (same members, ~15 min) and point `pool` at it:
+#   systemd-run --user --unit bopl-pool-vN -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
 #     native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
-#     --out native/artifacts/rl/sweeps/anchors/overnight-4/pool.json --games-per-pair 48 --workers 6 --slow-workers 12 \
+#     --out native/artifacts/rl/sweeps/anchors/pool-vN/pool.json --games-per-pair 48 --workers 10 --slow-workers 12 \
 #     --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
 #     $(for n in o3-001 o3-002 o3-009 o3-012 o3-017 o3-019 run007; do echo --checkpoint $n-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/$n-final.bin; done)
 #
@@ -69,7 +70,7 @@ poll_seconds = 60
 
 [scoring]
 scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/overnight-4/pool.json"   # v4: same 19 members on the bit-identical sim
+pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"   # v5: 19 members, bit-identical sim, deterministic search bot
 last_k = 3                         # eval_every 20M -> the last 60M steps
 games = 480
 first_pass_games = 6
