@@ -203,17 +203,29 @@ the result row, and compares the shim's packet with the agent packet the game
 recorded, tick for tick, while feeding the recorded packets to the world (so the
 world follows the recorded game whatever the shim says).
 
-Idle-human sanity run (real build under Xvfb, `BOPL_AGENT=mixed-v2-hard
-BOPL_AGENT_SEED=4242`, human joined with keyboard and never moved):
+Idle-human runs on the real build under Xvfb (human joined with keyboard and
+never moved; replays and rows are in `native/artifacts/rl/human/`):
 
-| round | level | seed | outcome | episode ticks | frames | packets compared | matched |
-|---|---|---|---|---|---|---|---|
-| 0 | 0 | 4242 | agent won (human killed at tick 273) | 273 | 513 | 273 | **273** |
-| 1 | 25 | 4243 | agent won | 301 | 541 | 301 | **301** |
+| agent | round | level | seed | outcome | episode ticks | frames | packets compared | matched |
+|---|---|---|---|---|---|---|---|---|
+| `mixed-v2-hard` (4242) | 0 | 0 | 4242 | agent won (human killed at tick 273) | 273 | 513 | 273 | **273** |
+| `mixed-v2-hard` | 1 | 25 | 4243 | agent won | 301 | 541 | 301 | **301** |
+| `anchors/run007-final.bin` (777, via `Tools/play-vs-agent.sh --headless`) | 0 | 0 | 777 | agent won (sudden death took the idle human at episode tick 7365) | 7365 | 7605 | 7365 | **7365** |
 
-Round 1 is a local "next level" round (its first `TickSimulation` is the
-`LoadedALevelThisUpdate` tick), so both level-load paths are covered. Both
-worlds ended at the same tick the game did (`ended: true`).
+The bot's round 1 is a local "next level" round (its first `TickSimulation`
+is the `LoadedALevelThisUpdate` tick), so both level-load paths are covered;
+the policy round runs past `max_episode_ticks` (7200) and past the 40 s ability
+pickup time. All three worlds ended at the same tick the game did
+(`ended: true`); the game ran at 60 sim ticks/s throughout (`[PERF] simTicks=300`
+per 5 s in `Player.log`) with the policy evaluated in-process.
+
+Found by this check: the Unity RL host (`RlBridge`) let `AbilitySpawner`
+spawn pickups after 40 s while the .NET host (`sim/Host/RlMode.cs`) and the
+Rust sim have none — the replay check diverged exactly at the first decision
+that saw the pickup (episode tick 2172, level tick 2412 = 2400 + 3 + 9).
+`RlBridge` now disables the spawners on scene load like the .NET host
+(`BOPL_RL_ABILITY_SPAWNS=1` opts back in), which is also what `RlAgent` does
+in the real game.
 
 ```
 BOPL_RL_GAME=$PWD/Builds/Linux/BoplBattle.x86_64 native/artifacts/rl/venv/bin/python \
