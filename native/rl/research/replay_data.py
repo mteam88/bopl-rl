@@ -98,13 +98,16 @@ def previous(observations, actions, hold_run=None):
                           None if runs is None else runs.ctypes.data_as(C.POINTER(C.c_int)), len(actions))
 
 class ReplayWorld:
-    def __init__(self, meta, log, limit=None, game=None):
+    def __init__(self, meta, log, limit=None, game=None, warmup_ticks=0):
+        """warmup_ticks: neutral ticks the reset runs before episode tick 0 (the
+        RL training warmup, 240); 0 replays a human recording from level tick 0."""
         self.game = resolve_game(game)
         self.meta = meta
         self.config = config = Config()
         config.seed, config.map, config.players = meta['seed'], meta['level'], len(meta['players'])
         config.slots = len(meta['players'][0]['abilities'])
         config.stocks, config.mode = meta['stocks'], meta['mode']
+        config.warmup_ticks = warmup_ticks
         config.max_episode_ticks = limit or meta['ticks']
         for i, player in enumerate(meta['players']):
             if len(player['abilities']) != config.slots:

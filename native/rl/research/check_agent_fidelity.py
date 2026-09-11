@@ -21,7 +21,7 @@ Two checks (native/rl/PLAY_UNITY.md "Fidelity proof"):
 
 Usage:
   check_agent_fidelity.py sim <checkpoint.bin | bot-name> [--seed N] [--maps 0,3,7] [--game LIB]
-  check_agent_fidelity.py replay <match.rep> <checkpoint.bin | bot-name> --seed N --agent-player P [--game BUILD]
+  check_agent_fidelity.py replay <match.rep> <checkpoint.bin | bot-name> --seed N --agent-index I [--game BUILD]
 """
 import argparse
 import json
@@ -118,40 +118,49 @@ def bot_kind(name):
 def check_replay(args):
     from replay_data import decode, ReplayWorld
     from agent_shim import Agent
-    import environment
     rep = Path(args.replay)
-    meta, log = decode(rep)
+    meta, inputs = decode(rep)
     players = meta['players']
-    agent_player = args.agent_player
+    agent_index = args.agent_index
     spec = str(args.agent)
-    frames = log['frames'] if 'frames' in log else log
-    warmup = None
-    with Agent(spec, players=len(players), player=agent_player) as agent:
+    with Agent(spec, players=len(players), player=agent_index) as agent:
         warmup = agent.warmup_ticks
+        if players[agent_index]['abilities'] != agent.abilities:
+            raise SystemExit(f"replay player {agent_index} carries abilities {players[agent_index]['abilities']}, the agent trained with {agent.abilities}")
+        # The recording's first `warmup` frames must be the frozen warmup (RlAgent feeds zeros to everyone).
+        frozen = inputs[:warmup]
+        if np.any(frozen['angle']) or np.any(frozen['buttons']):
+            raise SystemExit('replay does not start with the neutral training warmup; was it recorded with BOPL_AGENT?')
         agent.reset(args.seed)
-        world = ReplayWorld(meta, log, limit=agent.max_episode_ticks, game=args.game, warmup_ticks=warmup,
-                            abilities={agent_player: agent.abilities} if args.override_abilities else None)
-        compared = matched = 0; first_mismatch = None; ended = False
+        agent_id = agent.id
+        # The research world runs the warmup inside its reset (config.warmup_ticks), so its
+        # episode tick 0 is the recording's frame `warmup`; frame f holds the inputs applied
+        # to the tick that takes S_f to S_{f+1}.
+        world = ReplayWorld(meta, Path('/tmp/play-unity/fidelity-logs/replay.log'), limit=agent.max_episode_ticks,
+                            game=args.game, warmup_ticks=warmup)
+        compared = matched = 0; first_mismatch = None; ended = False; mismatches = []
         try:
-            # frame index f is the input applied to level tick f+1; episode tick e = tick - warmup.
-            for f, recorded in enumerate(world.inputs()):
-                tick = f  # ticks run so far (state S_tick)
-                if tick < warmup:
-                    world.step({p: (0, 0) for p in range(len(players))})
-                    continue
-                status, packet = agent.tick(world.state_bytes())
+            for f in range(warmup, meta['ticks']):
+                recorded = inputs[f]
+                status, packet = agent.tick(world.state)
                 if status == 1: ended = True; break
                 compared += 1
-                rec = recorded[agent_player]
+                rec = (int(recorded['angle'][agent_index]), int(recorded['buttons'][agent_index]))
                 if rec == packet: matched += 1
-                elif first_mismatch is None: first_mismatch = {'tick': tick, 'episode_tick': tick - warmup, 'recorded': rec, 'shim': packet}
-                inputs = dict(enumerate(recorded)); inputs[agent_player] = packet
-                world.step(inputs)
+                else:
+                    if first_mismatch is None: first_mismatch = {'frame': f, 'episode_tick': f - warmup, 'recorded': rec, 'shim': packet}
+                    if len(mismatches) < 10: mismatches.append((f, rec, packet))
+                actions = [(int(recorded['angle'][p]), int(recorded['buttons'][p])) for p in range(len(players))]
+                actions[agent_index] = packet if args.play_shim else rec
+                world.step(actions)
+                if world.ended:
+                    status, _ = agent.tick(world.state); ended = status == 1; break
         finally:
             world.close()
-    report = {'check': 'replay', 'replay': str(rep), 'agent': spec, 'seed': args.seed, 'agent_player': agent_player,
-              'compared': compared, 'matched': matched, 'first_mismatch': first_mismatch, 'ended': ended,
-              'ok': compared > 0 and compared == matched}
+    report = {'check': 'replay', 'replay': str(rep), 'replay_sha256': meta['sha256'], 'agent': spec, 'agent_id': agent_id,
+              'seed': args.seed, 'agent_index': agent_index, 'level': meta['level'], 'frames': meta['ticks'], 'warmup': warmup,
+              'compared': compared, 'matched': matched, 'first_mismatch': first_mismatch, 'mismatches': [str(m) for m in mismatches],
+              'ended': ended, 'ok': compared > 0 and compared == matched}
     print(json.dumps(report, indent=1))
     return 0 if report['ok'] else 1
 
@@ -162,8 +171,10 @@ def main():
     sim.add_argument('--maps', default='0,1,3'); sim.add_argument('--game', type=Path)
     sim.set_defaults(run=check_sim)
     rp = sub.add_parser('replay'); rp.add_argument('replay', type=Path); rp.add_argument('agent')
-    rp.add_argument('--seed', type=int, required=True); rp.add_argument('--agent-player', type=int, required=True)
-    rp.add_argument('--game', type=Path); rp.add_argument('--override-abilities', action='store_true')
+    rp.add_argument('--seed', type=int, required=True, help='round seed from the result JSON line')
+    rp.add_argument('--agent-index', type=int, required=True, help='0-based index of the agent in the replay roster')
+    rp.add_argument('--game', type=Path, help='Unity player the replay was recorded with (default BOPL_RL_GAME)')
+    rp.add_argument('--play-shim', action='store_true', help='drive the world with the shim output instead of the recorded agent input')
     rp.set_defaults(run=check_replay)
     args = parser.parse_args()
     return args.run(args)
