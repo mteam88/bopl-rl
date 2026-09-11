@@ -160,6 +160,7 @@ pub struct CTelemetry {
     pub deaths_other: u32,
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct CState {
     pub header: CHeader,
     pub players: [CPlayer; 6],
@@ -324,6 +325,7 @@ pub enum ActiveAbility {
 }
 
 /// One player's match state beyond the movement body.
+#[derive(Clone)]
 pub struct PlayerSlot {
     pub base: Player,
     pub team: u32,
@@ -480,6 +482,60 @@ impl RolloutWorld {
             replay_buffer: Vec::new(),
             error: [0; 512],
         }
+    }
+
+    /// Refill this world as a private snapshot of `src` for lookahead
+    /// (bopl_rl_fork): identical state, including the RNG stream and the
+    /// pending-arrow/ability bookkeeping, so the same inputs produce the
+    /// same future. Buffers are reused across forks. The replay recording
+    /// and export buffer are not copied: a fork is never exported, and the
+    /// ~170 KB recording of a long episode would dominate the copy.
+    pub fn fork_from(&mut self, src: &RolloutWorld) {
+        self.valid = src.valid;
+        self.failed = src.failed;
+        self.started = src.started;
+        self.terminal = src.terminal;
+        self.map = src.map;
+        self.stocks = src.stocks;
+        self.warmup = src.warmup;
+        self.limit = src.limit;
+        self.tick = src.tick;
+        self.episode_ticks = src.episode_ticks;
+        self.rng = src.rng;
+        self.players.clone_from(&src.players);
+        self.platforms.clone_from(&src.platforms);
+        self.platform_dynamics.clone_from(&src.platform_dynamics);
+        self.platform_defs.clone_from(&src.platform_defs);
+        self.platform_entities.clone_from(&src.platform_entities);
+        self.arrows.clone_from(&src.arrows);
+        self.spawned.clone_from(&src.spawned);
+        self.sudden_death = src.sudden_death;
+        self.sudden_death_tick = src.sudden_death_tick;
+        self.sudden_death_delays.clone_from(&src.sudden_death_delays);
+        self.orbits.clone_from(&src.orbits);
+        self.next_platform_id = src.next_platform_id;
+        self.next_entity_id = src.next_entity_id;
+        self.entities.clone_from(&src.entities);
+        self.slimes.clone_from(&src.slimes);
+        *self.state = *src.state;
+        self.state.entities = self.entities.as_ptr();
+        self.state.slimes = self.slimes.as_ptr();
+        self.sample_valid = false;
+        self.recording.clear();
+        self.replay_config = src.replay_config;
+        self.replay_buffer.clear();
+        self.error = src.error;
+        // Exhaustive: a new field must be added to the copy above (or listed
+        // here as deliberately skipped) before this compiles again.
+        let RolloutWorld {
+            valid: _, failed: _, started: _, terminal: _, map: _, stocks: _, warmup: _, limit: _,
+            tick: _, episode_ticks: _, rng: _, players: _, platforms: _, platform_dynamics: _,
+            platform_defs: _, platform_entities: _, arrows: _, spawned: _, sudden_death: _,
+            sudden_death_tick: _, sudden_death_delays: _, orbits: _, next_platform_id: _,
+            next_entity_id: _, entities: _, slimes: _, state: _, sample_entities: _,
+            sample_slimes: _, sample: _, sample_valid: _, recording: _, replay_config: _,
+            replay_buffer: _, error: _,
+        } = src;
     }
 
     pub fn set_error(&mut self, message: &str) {

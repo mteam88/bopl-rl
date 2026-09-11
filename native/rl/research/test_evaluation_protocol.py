@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from evaluation_protocol import (SCRIPTED_NAMES,checkpoint_identity,map_ids,opponents,schedule,
+from evaluation_protocol import (SCRIPTED_KINDS,SCRIPTED_NAMES,checkpoint_identity,map_ids,opponents,schedule,
                                  scripted_names,scripted_opponent)
 
 
@@ -72,7 +72,8 @@ class EvaluationProtocolTests(unittest.TestCase):
         self.assertEqual(scripted_names(''),[])
         for value in ('mixed','mixed-hard,mixed-hard','pursuer-hardest'):
             with self.assertRaises(ValueError): scripted_names(value)
-        self.assertEqual(len(SCRIPTED_NAMES),12)
+        self.assertEqual(len(SCRIPTED_NAMES),3*len(SCRIPTED_KINDS))
+        self.assertEqual(scripted_opponent('search-medium'),(5,1))
 
     def test_invalid_maps_and_counts_fail(self):
         for value in ('','0,0','-1','31'):
@@ -101,6 +102,10 @@ class EvaluationProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'metadata changed'):
                 opponents(manifest)
             sidecar.write_text(json.dumps(metadata))
+            for reserved in ('search-hard', 'mixed-v2-easy'):  # level suffix reserved for scripted kinds
+                manifest.write_text(json.dumps(dict(schema=2, opponents=[dict(item, name=reserved)])))
+                with self.assertRaisesRegex(ValueError, 'level suffix'):
+                    opponents(manifest)
             manifest.write_text(json.dumps(dict(schema=2, opponents=[item, item])))
             with self.assertRaisesRegex(ValueError, 'distinct'):
                 opponents(manifest)

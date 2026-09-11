@@ -68,6 +68,8 @@ typedef struct InprocLib {
     uint32_t (*map_count)(const BoplRl *);
     uint32_t (*ability_count)(const BoplRl *);
     void (*close)(BoplRl *);
+    /* Optional (NULL when the library has no lookahead forks). */
+    BoplRl *(*fork)(const BoplRl *, BoplRl *);
 } InprocLib;
 typedef struct {
     InprocLib *lib;
@@ -335,6 +337,7 @@ static InprocLib *load_inproc_lib(BoplRl *w, const char *library, bool first,
     if (lib->abi_version()!=2) { snprintf(w->error, sizeof(w->error), "RL library ABI version %u", lib->abi_version()); free(lib); return NULL; }
     /* Optional: builds before many-worlds host one world per runtime. */
     lib->world_capacity=(uint32_t (*)(void))dlsym(handle, "bopl_rl_world_capacity");
+    lib->fork=(BoplRl *(*)(const BoplRl *, BoplRl *))dlsym(handle, "bopl_rl_fork");
     lib->capacity=lib->world_capacity?lib->world_capacity():1;
     if (lib->capacity<1) lib->capacity=1;
     const char *limit=getenv("BOPL_RL_WORLDS_PER_RUNTIME");
@@ -561,6 +564,21 @@ int bopl_rl_replay(BoplRl *w, const void **bytes, size_t *length) {
     if (result) return result;
     *bytes=w->buffer; *length=received; w->error[0]=0;
     return BOPL_RL_OK;
+}
+BoplRl *bopl_rl_fork(const BoplRl *w, BoplRl *reuse) {
+    if (!w || !w->inproc || !w->inproc->lib->fork || w->inproc->reset_pending_flag) return NULL;
+    if (reuse && (!reuse->inproc || reuse->inproc->lib!=w->inproc->lib || reuse==w)) return NULL;
+    BoplRl *f=reuse;
+    if (!f) {
+        f=calloc(1, sizeof(*f));
+        Inproc *p=f?calloc(1, sizeof(*p)):NULL;
+        if (!p) { free(f); return NULL; }
+        f->socket=f->listener=-1; f->timeout_ms=w->timeout_ms; f->inproc=p; p->lib=w->inproc->lib;
+    }
+    BoplRl *inner=w->inproc->lib->fork(w->inproc->inner, f->inproc->inner);
+    if (!inner) { if (!reuse) { free(f->inproc); free(f); } return NULL; }
+    f->inproc->inner=inner;
+    return f;
 }
 const char *bopl_rl_error(const BoplRl *w) {
     if (!w) return "NULL RL handle";
