@@ -14,7 +14,7 @@ from common import atomic_json
 import decision_dump
 import layout
 from telemetry import FIELDS,summarize
-from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule
+from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent
 
 def masked(logits,mask):
     """Apply the environment's action mask (1 = allowed) the way the trainer samples: disallowed logits -> -inf."""
@@ -47,6 +47,8 @@ def main():
     parser.add_argument('--heldout-maps',type=map_ids,default=[1,2])
     parser.add_argument('--opponents',type=Path,help='Manifest of frozen trained opponents and SHA256 identities')
     parser.add_argument('--frozen-games',type=int,default=16)
+    parser.add_argument('--scripted-opponents',type=scripted_names,default='mixed-hard',
+                        help='Comma-separated scripted bot names (kind-level, e.g. mixed-hard,archer-medium); empty disables')
     parser.add_argument('--seed-base',type=int,default=10001)
     parser.add_argument('--heldout-seed-base',type=int,default=20001)
     parser.add_argument('--selfplay-seed',type=int,default=30001)
@@ -74,7 +76,8 @@ def main():
     if set(args.heldout_maps)&set(config['training_maps']):
         raise ValueError('A held-out map was used for training')
     tasks,group_keys=schedule(args.evaluation_maps,args.heldout_maps,frozen,args.games_per_opponent,
-                              args.heldout_games,args.frozen_games,args.seed_base,args.heldout_seed_base,args.selfplay_seed)
+                              args.heldout_games,args.frozen_games,args.seed_base,args.heldout_seed_base,args.selfplay_seed,
+                              scripted=args.scripted_opponents)
     out=args.run/('evaluations' if args.suite=='diagnostic' else 'final-evaluations')/f'{step:09d}'
     if (out/'result.json').exists():
         previous=json.loads((out/'result.json').read_text())
@@ -101,6 +104,11 @@ def main():
                 state=policy.initial(2,'cpu')
                 opponent=models.get(task['opponent'])
                 other_state=opponent.initial(2,'cpu') if opponent is not None else None
+                # Scripted bots decide inside the C environment from the true
+                # game state; the caller's action floats for them are ignored.
+                scripted=scripted_opponent(task['opponent'])
+                env.bot(0,0); env.bot(1,0)
+                if scripted is not None: env.bot(1-task['side'],*scripted)
                 generator=torch.Generator().manual_seed(task['seed']*7+task['side'])
                 rng=np.random.default_rng(task['seed']*11+task['side'])
                 frames=[env.frame()] if task['save'] else []
@@ -174,7 +182,8 @@ def main():
         raise ValueError('Checkpoint or frozen opponents changed during evaluation')
     report=dict(schema=2,decision_dump_schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
                 checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
-                frozen_opponents=frozen,evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
+                frozen_opponents=frozen,scripted_opponents=args.scripted_opponents,
+                evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
                 training_maps=config['training_maps'],
                 seed_base=args.seed_base,heldout_seed_base=args.heldout_seed_base,selfplay_seed=args.selfplay_seed,
                 interval_note='Descriptive Wilson interval; does not adjust for correlation within seed pairs',

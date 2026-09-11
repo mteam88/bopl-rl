@@ -12,6 +12,29 @@ def map_ids(value):
     return maps
 
 
+# Scripted opponents (native/rl/puffer/bopl_bots.h): hand-coded bots that read
+# the true game state through the same C environment. Names are `kind-level`;
+# the numeric IDs match BOPL_BOT_* in the header.
+SCRIPTED_KINDS={'archer':1,'pursuer':2,'evasive':3,'mixed':4}
+SCRIPTED_LEVELS={'easy':0,'medium':1,'hard':2}
+SCRIPTED_NAMES=tuple(f'{kind}-{level}' for kind in SCRIPTED_KINDS for level in SCRIPTED_LEVELS)
+
+
+def scripted_opponent(name):
+    """(kind_id, level_id) for a scripted bot name like 'mixed-hard'; None otherwise."""
+    kind,_,level=name.rpartition('-')
+    if kind in SCRIPTED_KINDS and level in SCRIPTED_LEVELS:
+        return SCRIPTED_KINDS[kind],SCRIPTED_LEVELS[level]
+    return None
+
+
+def scripted_names(value):
+    names=[item for item in value.split(',') if item]
+    if len(set(names))!=len(names) or any(scripted_opponent(name) is None for name in names):
+        raise ValueError(f'Scripted opponents must be distinct names from {SCRIPTED_NAMES}')
+    return names
+
+
 def checkpoint_identity(path):
     """Freeze both halves of a native checkpoint, without loading a model."""
     path = Path(path)
@@ -35,7 +58,7 @@ def opponents(path):
     manifest=json.loads(path.read_text())
     if manifest.get('schema')!=2 or not manifest.get('opponents'):
         raise ValueError('Expected schema 2 and a nonempty native frozen opponent list')
-    result=[]; names={'initial','random','selfplay'}
+    result=[]; names={'initial','random','selfplay',*SCRIPTED_NAMES}
     for item in manifest['opponents']:
         name=item['name']
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,47}',name) or name in names:
@@ -50,24 +73,26 @@ def opponents(path):
 
 
 def schedule(evaluation_maps,heldout_maps,frozen,games,heldout_games,frozen_games,
-             seed_base,heldout_seed_base,selfplay_seed):
+             seed_base,heldout_seed_base,selfplay_seed,scripted=()):
     if set(evaluation_maps)&set(heldout_maps):
         raise ValueError('Evaluation and held-out map lists overlap')
     if any(n<2 or n%2 for n in (games,heldout_games,frozen_games)):
         raise ValueError('Evaluation requires positive side-swapped seed pairs')
     tasks=[]; groups=[]
     for map_id in evaluation_maps:
-        for opponent in ['random','initial',*[item['name'] for item in frozen]]:
-            count=games if opponent in ('random','initial') else frozen_games
+        for opponent in ['random','initial',*scripted,*[item['name'] for item in frozen]]:
+            count=frozen_games if any(opponent==item['name'] for item in frozen) else games
             groups.append((opponent,map_id))
             for game in range(count):
                 name=f'{opponent}-{game}' if map_id==0 else f'{opponent}-map-{map_id}-{game}'
                 tasks.append(dict(opponent=opponent,map=map_id,seed=seed_base+100000*map_id+game//2,
                                   side=game%2,save=game==0,name=name))
     for map_id in heldout_maps:
-        groups.append(('random',map_id))
-        for game in range(heldout_games):
-            tasks.append(dict(opponent='random',map=map_id,seed=heldout_seed_base+game//2,
-                              side=game%2,save=game==0,name=f'map-{map_id}-{game}'))
+        for opponent in ['random',*scripted]:
+            groups.append((opponent,map_id))
+            prefix='' if opponent=='random' else f'{opponent}-'
+            for game in range(heldout_games):
+                tasks.append(dict(opponent=opponent,map=map_id,seed=heldout_seed_base+game//2,
+                                  side=game%2,save=game==0,name=f'{prefix}map-{map_id}-{game}'))
     tasks.append(dict(opponent='selfplay',map=evaluation_maps[0],seed=selfplay_seed,side=0,save=True,name='selfplay'))
     return tasks,groups

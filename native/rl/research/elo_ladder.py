@@ -17,7 +17,7 @@ import re
 import time
 import numpy as np
 from environment import Environment,configure
-from evaluation_protocol import map_ids,opponents
+from evaluation_protocol import map_ids,opponents,scripted_names,scripted_opponent
 import layout
 
 SCHEMA=1
@@ -69,6 +69,21 @@ class Random:
         return lambda observation,mask: np.asarray([rng.integers(layout.ACT_AIM),rng.integers(layout.ACT_BUTTONS),0],dtype=np.int64)
 
 
+class Scripted:
+    """A hand-coded bot anchor (bopl_bots.h) deciding inside the C environment."""
+    kind='anchor'; step=None; sha256=None
+
+    def __init__(self,name):
+        self.name=name; self.bot=scripted_opponent(name)
+
+    def attach(self,env,side):
+        env.bot(side,*self.bot)
+
+    def start(self,task,side,rng):
+        # The environment ignores this player's action floats while the bot is pinned.
+        return lambda observation,mask: np.zeros(layout.NUM_ATNS,dtype=np.int64)
+
+
 def select_checkpoints(run,count):
     """Evenly spaced playable checkpoints, always keeping first and last."""
     rows=[]
@@ -108,6 +123,8 @@ def main():
     parser.add_argument('--games-per-pair',type=int,default=8,help='Per map; even, half per side')
     parser.add_argument('--maps',type=map_ids,default=None,help='Defaults to the run config training maps')
     parser.add_argument('--anchors',type=Path,help='Manifest of frozen native reference checkpoints (evaluation opponents format)')
+    parser.add_argument('--scripted-anchors',type=scripted_names,default='mixed-hard',
+                        help='Comma-separated scripted bot anchors (kind-level); empty disables')
     parser.add_argument('--seed-base',type=int,default=50001)
     parser.add_argument('--episode-ticks',type=int,default=None,help='Defaults to the run config value')
     parser.add_argument('--library',type=Path,default=None,help='CPU evaluation library for native_policy.load')
@@ -118,7 +135,7 @@ def main():
     config=json.loads((args.run/'config.json').read_text())
     maps=args.maps if args.maps is not None else config['training_maps']
     limit=args.episode_ticks or config['episode_ticks']
-    participants=[Random()]
+    participants=[Random(),*map(Scripted,args.scripted_anchors)]
     for item in opponents(args.anchors) if args.anchors else []:
         participants.append(Model(item['name'],item['path'],'anchor',library=args.library))
     for step,path in select_checkpoints(args.run,args.checkpoints):
@@ -146,6 +163,10 @@ def main():
                 env.reset(task['seed'],task['map'])
                 rng=np.random.default_rng((task['seed'],task['map'],task['side'],
                                            int(hashlib.sha256((task['a']+task['b']).encode()).hexdigest()[:8],16)))
+                env.bot(0,0); env.bot(1,0)  # detach any bot from the previous task
+                for name,side in ((task['a'],task['side']),(task['b'],1-task['side'])):
+                    attach=getattr(by_name[name],'attach',None)
+                    if attach: attach(env,side)
                 actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
                         1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
                 while not env.ended:

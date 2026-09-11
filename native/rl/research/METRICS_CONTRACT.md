@@ -83,6 +83,10 @@ Required (all currently written by `train.py`):
   current opponent only. `<run>/pool.jsonl` holds the corresponding events
   (`snapshot`, `evicted` with lifetime stats, `armed`, `loaded` with the
   retired opponent's stats), each with `learner_steps` and the learner `elo`.
+  With `--scripted-bots`, `pool.banks` covers only the policy banks; the
+  scripted banks report per update under `scripted`
+  (`{"<kind>-<level>": {bank, games, winrate}}`, learner's win rate against
+  the bot over this update's finished games; `native/rl/SCRIPTED_BOTS.md`).
 
 New — the dashboard renders these once present (per update):
 
@@ -127,7 +131,9 @@ evaluator; adds immutable checkpoint/opponent hashes and per-game explicit
 `kills`, `deaths`, `mind`). Readers must support both.
 
 Written today by `evaluate.py`; keep this shape: top level `schema`, `step`,
-`suite`, `frozen_opponents`, `training_maps`, `groups` (per opponent×map:
+`suite`, `frozen_opponents`, `scripted_opponents` (list of scripted bot names
+like `mixed-hard`, scheduled on evaluation and held-out maps alongside
+`random`; see `native/rl/SCRIPTED_BOTS.md`), `training_maps`, `groups` (per opponent×map:
 `opponent, map, games, wins, win_rate, interval` (Wilson), `timeouts`,
 `behavior_totals`, `mean_duration`), and `games` — per game:
 `opponent, map, seed, side, save, name, win, timeout, kills, deaths, ticks,
@@ -195,11 +201,10 @@ one simply don't show the panel (no torch backfill).
 `.pt` checkpoints appear in listings but never as ladder participants, and the
 "best old checkpoint" anchor is dropped: the old torch GRU (standard recurrent
 matrices/biases, Tanh encoder) has no faithful export to the native
-MinGRU/bias-free layout. Anchors are random, the initial native checkpoint and
-frozen native references. Scripted-bot anchors do not exist yet: the old
-scripted_opponents module is deleted in the native cutover and the native
-evaluator has no scripted implementation. When a native one lands, the ladder
-grows a scripted-anchor option after launch. Ladder
+MinGRU/bias-free layout. Anchors are random, the initial native checkpoint,
+frozen native references, and scripted bots (`--scripted-anchors`, default
+`mixed-hard`; names are `kind-level` from `native/rl/SCRIPTED_BOTS.md`, rated
+as `kind:"anchor"` with `step:null, sha256:null`). Ladder
 output lives in `<run>/ladder/ladder.json` (dashboard-read-only):
 
 ```json

@@ -47,6 +47,7 @@ LIB.research_telemetry.argtypes = [C.c_void_p]; LIB.research_telemetry.restype =
 LIB.research_state.argtypes = [C.c_void_p]; LIB.research_state.restype = C.POINTER(State)
 LIB.research_replay.argtypes = [C.c_void_p,C.c_char_p]
 LIB.research_close.argtypes = [C.c_void_p]
+LIB.research_bot.argtypes = [C.c_void_p,C.c_int,C.c_int,C.c_int]; LIB.research_bot.restype = C.c_int
 LIB.research_mask.argtypes = [C.c_void_p]; LIB.research_mask.restype = C.POINTER(C.c_ubyte)
 LIB.research_mask_size.restype = C.c_int
 if LIB.research_mask_size()!=layout.LOGITS: raise RuntimeError('Research library action mask width differs from layout.LOGITS')
@@ -122,6 +123,9 @@ class Environment:
     def ended(self): return bool(self.state.header.flags&1)
     def reset(self,seed,map_id=0):
         LIB.research_reset(self.handle,seed,map_id);self.check()
+    def bot(self,player,kind,level=2):
+        """Pin a scripted bot (bopl_bots.h) on a player; kind 0 detaches. Call after reset."""
+        if LIB.research_bot(self.handle,player,kind,level): raise ValueError('Bad scripted bot selection')
     def step(self,actions):
         """actions: 2 players x NUM_ATNS floats (aim angle, button bits, hold length index)."""
         actions=np.ascontiguousarray(actions,dtype=np.float32).reshape(2,NUM_ATNS)

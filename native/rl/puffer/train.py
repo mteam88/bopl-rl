@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 from common import atomic_json
-from evaluation_protocol import checkpoint_identity, opponents
+from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
@@ -30,6 +30,14 @@ def maps(value):
     if not result or len(set(result)) != len(result) or any(x < 0 or x > 30 for x in result):
         raise argparse.ArgumentTypeError('Expected distinct map IDs in 0..30')
     return result
+
+
+def scripted_bots(value):
+    """Comma-separated bot kinds (bopl_bots.h) that take over the last banks."""
+    names = [x for x in value.split(',') if x]
+    if any(name not in SCRIPTED_KINDS for name in names):
+        raise argparse.ArgumentTypeError(f'Expected bot kinds from {sorted(SCRIPTED_KINDS)}')
+    return names
 
 
 def entropy_coefficient(learner_steps, initial, floor, half_life):
@@ -50,7 +58,8 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'learner_passes', 'learning_rate', 'anneal_lr', 'entropy', 'entropy_floor',
                  'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
-                 'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows')
+                 'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
+                 'scripted_bots', 'scripted_level')
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -84,7 +93,8 @@ def recorded_hypers(config):
                 min_games=pool['min_games'], snapshot_interval=pool['snapshot_interval'],
                 opponent_timeout=pool['opponent_timeout'], elo_init=pool['elo_init'], elo_k=pool['elo_k'],
                 pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
-                entropy_free_rows=config.get('entropy_free_rows', 0))
+                entropy_free_rows=config.get('entropy_free_rows', 0),
+                scripted_bots=config.get('scripted_bots', []), scripted_level=config.get('scripted_level', 'hard'))
 
 
 def offset_counters(counts, base):
@@ -162,6 +172,11 @@ def arguments():
     p.add_argument('--elo-init', type=float, default=0.)
     p.add_argument('--elo-k', type=float, default=16.)
     p.add_argument('--pool-seed', type=int, help='Opponent sampling seed (defaults to --seed)')
+    p.add_argument('--scripted-bots', type=scripted_bots, default='',
+                   help='Comma-separated bot kinds (archer,pursuer,evasive,mixed) that permanently take over the '
+                        'last banks: those banks play the scripted bot instead of frozen snapshots, so the fraction '
+                        'of the learner\'s historical games against bots is len(list)/banks')
+    p.add_argument('--scripted-level', choices=sorted(SCRIPTED_LEVELS, key=SCRIPTED_LEVELS.get), default='hard')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
     p.add_argument('--no-eval', action='store_true', help='Disable diagnostic evaluation for isolated throughput measurements')
     p.add_argument('--eval-every', type=int, default=1_000_000, help='Learner decisions between diagnostic evaluations')
@@ -187,6 +202,8 @@ def arguments():
         p.error('workers must be divisible by twice the buffer count')
     if (a.workers // 2) % a.banks:
         p.error('half the workers must divide evenly among the banks')
+    if len(a.scripted_bots) >= a.banks:
+        p.error('scripted-bots must leave at least one policy bank for the self-play pool')
     if a.hidden < 8 or a.hidden % 8:
         p.error('hidden must be a positive multiple of eight')
     if a.cudagraphs != -1 and a.cudagraphs < 1:
@@ -281,16 +298,23 @@ def main():
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
+    # Scripted banks are the LAST ones so the self-play pool, which only
+    # manages banks 0..policy_banks-1, never swaps weights into them.
+    policy_banks = a.banks - len(a.scripted_bots)
+    scripted_kinds = 0
+    for i, name in enumerate(a.scripted_bots):
+        scripted_kinds |= SCRIPTED_KINDS[name] << 4 * (policy_banks + i)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
-                       max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000))
+                       max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
+                       scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level])
     pufferl.validate_config(args)
     target_physical = math.ceil(a.steps * 4 / 3)
     # PufferLib's pool counts native agent steps (padded rows included);
     # the knobs above count learner decisions.
     native_per_learner = native_batch / learner_batch
-    pool_config = dict(backend='pufferlib.selfplay', banks=a.banks, historical_games_per_bank=vector.historical_per_bank,
+    pool_config = dict(backend='pufferlib.selfplay', banks=policy_banks, historical_games_per_bank=vector.historical_per_bank,
                     max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
                     snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
                     elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed, step_unit='learner_decisions',
@@ -298,6 +322,7 @@ def main():
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
+                  scripted_bots=a.scripted_bots, scripted_level=a.scripted_level,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
@@ -367,8 +392,15 @@ def main():
             _C.load_weights(trainer, resume['checkpoint'])
             trainer.global_step = resume['global_step']
             pool, ledger = load_pool_state(resume)
+            if len(pool['banks']) != policy_banks:
+                raise SystemExit(f"--resume: the pool manages {len(pool['banks'])} banks but "
+                                 f'--banks/--scripted-bots now leave {policy_banks} policy banks')
             for bank, state in enumerate(pool['banks']):
                 _C.load_frozen_bank(trainer, bank, state['cur_opp_path'])
+            # Scripted banks never swap: their GPU rows run the initial policy
+            # (actions unread; the C environment drives those players).
+            for bank in range(policy_banks, a.banks):
+                _C.load_frozen_bank(trainer, bank, str(initial))
             update_index = resume['update_index']
             elapsed_before = resume['elapsed']
         else:
@@ -378,7 +410,7 @@ def main():
             for bank in range(a.banks):
                 _C.load_frozen_bank(trainer, bank, str(initial))
             (output/'pool').mkdir()
-            pool = native_selfplay.state(output/'pool', str(initial), a.banks, vector.historical_per_bank, trainer.global_step,
+            pool = native_selfplay.state(output/'pool', str(initial), policy_banks, vector.historical_per_bank, trainer.global_step,
                                          max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
                                          snapshot_interval=round(a.snapshot_interval*native_per_learner),
                                          opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
@@ -460,6 +492,18 @@ def main():
                                 pool_steps=sorted(bank['opponent_step'] for bank in after_pool['banks']),
                                 rollout_seconds=rolled-before, train_seconds=trained-rolled)
                 record['pool'] = after_pool
+                if a.scripted_bots:
+                    # Scripted banks sit after the pool's policy banks; their
+                    # hist_*_bank fields are n-averaged like every env metric.
+                    n = float(flat.get('env/n', 0.0))
+                    scripted = {}
+                    for i, name in enumerate(a.scripted_bots):
+                        bank = policy_banks + i
+                        games = round(float(flat.get(f'env/hist_n_bank_{bank}', 0.0)) * n)
+                        wins = round(float(flat.get(f'env/hist_score_bank_{bank}', 0.0)) * n)
+                        scripted[f'{name}-{a.scripted_level}'] = dict(
+                            bank=bank, games=games, winrate=wins/games if games else None)
+                    record['scripted'] = scripted
                 record['free_fraction'] = free
                 record['entropy_head_scale_applied'] = applied_scale
                 # The native trainer's own per-update timers (seconds, averaged
@@ -470,9 +514,13 @@ def main():
                 for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
                     events.write(json.dumps(event, allow_nan=False)+'\n')
                 events.flush()
-                print(json.dumps(dict(step=record['step'], learner_steps=record['learner_steps'],
-                                      learner_sps=record['learner_sps'], matches=record['matches'],
-                                      elo=round(after_pool['elo'], 1), pool=after_pool['size'])), flush=True)
+                console = dict(step=record['step'], learner_steps=record['learner_steps'],
+                               learner_sps=record['learner_sps'], matches=record['matches'],
+                               elo=round(after_pool['elo'], 1), pool=after_pool['size'])
+                if a.scripted_bots:
+                    console['scripted'] = {name: (None if row['winrate'] is None else round(row['winrate'], 3))
+                                           for name, row in record['scripted'].items()}
+                print(json.dumps(console), flush=True)
                 previous, previous_elapsed = counts, elapsed
                 if counts['learner_steps'] >= next_checkpoint:
                     save()
