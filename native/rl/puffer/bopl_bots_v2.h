@@ -150,6 +150,14 @@ static void search_foe_action(const BoplRlState *s, int foe, int me, uint8_t bas
     double fy=body?bot_fix(body->y):(fs->flags&1)?bot_fix(fs->y):bot_fix(s->players[foe].y);
     double mx=bot_fix(s->players[me].x), my=bot_fix(s->players[me].y), ux, uy, t;
     int charging=!(fs->flags&1) && (fs->ability_flags[BOT_SLOT_BOW]&BOPL_ABILITY_ACTIVE);
+    /* A foe already growing a platform keeps holding it (up to the 4 s
+     * max_size_time), so the fork's platform grows as the real one would
+     * rather than ejecting at once: squish geometry inside the horizon is
+     * then exact (PlatformTransform.cs; rollout/mod.rs PLATFORM_SIZE). */
+    if (!(fs->flags&1) && (fs->ability_flags[BOT_SLOT_PLATFORM]&BOPL_ABILITY_ACTIVE)) {
+        a->buttons=BOT_PLATFORM;
+        return;
+    }
     if (charging && mode==1 && !fm->fired
             && ((fs->ability_flags[BOT_SLOT_BOW]>>BOPL_ABILITY_CHARGE_SHIFT)&BOPL_ABILITY_CHARGE_MASK)<4) {
         a->buttons=BOT_ARROW;
