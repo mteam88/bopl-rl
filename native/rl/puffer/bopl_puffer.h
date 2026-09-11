@@ -514,7 +514,7 @@ static void c_reset(BoplPuffer *env) {
     bopl_publish(env);
 }
 /* c_step in three phases, so the research binding can advance the world one
- * tick at a time (research_step_tick, for real-time human play at 60 frames/s)
+ * tick at a time (research_step_tick, for callers that need per-tick state)
  * with exactly the training bookkeeping: begin resets the per-decision
  * telemetry/rewards and turns the routed or scripted actions into latched
  * game actions; advance runs the decision's ticks (sampling the observation
