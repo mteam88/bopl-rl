@@ -11,7 +11,7 @@
 # concentrated on the 15-85% band, OpenAI Five App. J), aggregated as the IQM
 # over the last 3 evaluations (rliable). Behaviour flags are labels only.
 #
-# Pool: native/artifacts/rl/sweeps/anchors/overnight-3-v2/pool.json (random,
+# Pool: native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json (random,
 # the 4 v1 hard bots + mixed-medium, the 4 v2 hard bots, search-hard and
 # search-medium, overnight-3 finals 001/002/009/012/017/019, run007-final rated
 # by play). Its hash is checked on every load; to add a reference, build a new
@@ -50,7 +50,7 @@ poll_seconds = 60
 
 [scoring]
 scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/overnight-3-v2/pool.json"
+pool = "native/artifacts/rl/sweeps/anchors/overnight-3-v3/pool.json"
 last_k = 3                         # evaluations aggregated by IQM (eval_every 20M -> the last 60M steps)
 games = 240                        # per checkpoint: 6 x 16 members first pass, 144 in the band
 first_pass_games = 6
