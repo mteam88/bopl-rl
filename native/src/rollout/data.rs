@@ -185,11 +185,19 @@ struct RawResizable {
     body: RawBody,
 }
 #[derive(Deserialize)]
+struct RawPickup {
+    layer: u32,
+    radius: i64,
+    mass: i64,
+    offset: RawVec2,
+}
+#[derive(Deserialize)]
 struct RawPrefabs {
     player: RawPlayer,
     dash: RawDash,
     bow: RawBow,
     arrow: RawArrow,
+    ability_pickup: RawPickup,
     platform_ability: RawPlatformAbility,
     resizable_platform: RawResizable,
 }
@@ -265,6 +273,15 @@ pub struct ArrowData {
     /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
     pub body: crate::physics::Body,
 }
+/// AbilityPickup_Dynamic prefab: the circle a final death drops
+/// (SlimeController.DropAbilities).
+pub struct PickupData {
+    pub layer: u32,
+    pub radius: Fix,
+    pub inverse_mass: Fix,
+    /// DPhysicsCircle centre offset from the FixTransform (DetPhysics.cs:2513).
+    pub offset: Vec2,
+}
 pub struct PlatformAbilityData {
     pub cooldown: Fix,
     pub hurtbox_radius: Fix,
@@ -308,6 +325,7 @@ pub struct RolloutData {
     pub dash: DashData,
     pub bow: BowData,
     pub arrow: ArrowData,
+    pub pickup: PickupData,
     pub platform: PlatformAbilityData,
 }
 
@@ -514,6 +532,15 @@ pub fn get() -> &'static RolloutData {
                         Fix::ZERO,
                     )
                 },
+            },
+            pickup: {
+                let p = &raw.prefabs.ability_pickup;
+                PickupData {
+                    layer: p.layer,
+                    radius: Fix::from_raw(p.radius),
+                    inverse_mass: Fix::ONE / Fix::from_raw(p.mass),
+                    offset: p.offset.get(),
+                }
             },
             platform: PlatformAbilityData {
                 cooldown: Fix::from_raw(plat.cooldown),

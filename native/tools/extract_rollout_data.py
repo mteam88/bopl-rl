@@ -308,6 +308,18 @@ def main():
                  if k.endswith("m_rawValue")},
     }
 
+    # ---- Dropped-ability pickup (SlimeController.DropAbilities) ----
+    pickup = ASSETS[guid_of(slime_ctl.get("abilityPickupPrefab"))]
+    pickup_body = component(pickup, "BoplBody")
+    pickup_circle = component(pickup, "DPhysicsCircle")
+    pickup_tf = component(pickup, "FixTransform")
+    out["prefabs"]["ability_pickup"] = {
+        "layer": pickup["data"].get("layer"),
+        "radius": fix(pickup_circle, "startRadius"),
+        "mass": fix(pickup_body, "mass"),
+        "offset": vec2(pickup_tf, "offset"),
+    }
+
     # ---- Platform ability ----
     _, plat = find_prefab("Assets/GameObject/Platform.prefab")
     plat_ability = component(plat, "Ability")

@@ -2791,6 +2791,13 @@ impl RolloutWorld {
         } else {
             slot.telemetry.deaths_other += 1;
         }
+        // SlimeController.DropAbilities reads the slime body, frozen at the
+        // ability entry while an ability object stands in for it.
+        let drop_position = if slot.active == ActiveAbility::None {
+            slot.base.position
+        } else {
+            slot.ability_origin
+        };
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
@@ -2838,6 +2845,30 @@ impl RolloutWorld {
                     row.flags = E_REMOVED;
                 }
             }
+            // A final death drops the last ability as a DynamicAbilityPickup
+            // at the slime body (SlimeController.cs:274-310). Its circle is
+            // registered at once with the collider disabled for
+            // `disabledSeconds` (DynamicAbilityPickup.cs:147-155), so
+            // DetPhysics neither integrates the launch impulse nor moves it
+            // while this match still runs. The pickup's later flight, swaps
+            // and the RandomFix launch draw are not simulated: with two
+            // players the drop ends the match.
+            let pickup = &data::get().pickup;
+            let id = self.next_id();
+            let position = drop_position + pickup.offset;
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: pickup.layer,
+                owner: 0,
+                flags: E_ACTIVE,
+                hierarchy: 300_000_000 + id,
+                x: position.x.raw(),
+                y: position.y.raw(),
+                radius: pickup.radius.raw(),
+                inverse_mass: pickup.inverse_mass.raw(),
+                ..CEntity::default()
+            });
         }
     }
 
