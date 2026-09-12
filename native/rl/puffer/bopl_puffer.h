@@ -154,6 +154,13 @@ typedef struct {
      * 13 KB observation per player, and encoding at publish time, replaces
      * the old encode -> sample -> history -> publish copy chain. */
     BoplStateCopy delayed[2], sample_copy;
+    /* How many player, entity and slime rows the last encode into each
+     * observation row left non-zero (bopl_encode); the unused slots behind
+     * them were zeroed then and stay zero, so the next encode zeroes only the
+     * slots it uncovers. bopl_written_forget drops the record when the row
+     * memory may have been written by anything else (a routing change). */
+    struct { float *row; int players, entities, slimes; } written[BOPL_MAX_SLOTS];
+    int written_count;
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
     float *telemetry;
@@ -273,13 +280,29 @@ static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
         bopl_note_overflow(env, active_count, active_count<BOPL_OBS_ENTITIES?active_count:BOPL_OBS_ENTITIES, visible_slimes);
     }
 }
+/* The row counts the last encode left in observation row `row`, or NULL when
+ * the row's memory is not known to hold a previous encode (then every unused
+ * slot is zeroed and the row is recorded). */
+static void bopl_written_forget(BoplPuffer *env) { env->written_count=0; }
+static void bopl_written_forget_row(BoplPuffer *env, const float *row) {
+    for (int i=0; i<env->written_count; i++) if (env->written[i].row==row) { env->written[i]=env->written[--env->written_count]; return; }
+}
+/* Zero slots [count, previous) of a block of `features`-float slots: with a
+ * record, the slots from the previous encode's count on are already zero. */
+static void bopl_zero_tail(float *block, int features, int count, int previous, int capacity) {
+    int end=previous<0?capacity:previous;
+    if (count<end) memset(block+(size_t)count*features, 0, (size_t)(end-count)*features*sizeof(float));
+}
 /* Encode `state` into every player's row (bopl_obs_row), writing each row
  * exactly once: every feature is stored, the unused entity/slime slots and
  * the own-action tail are zeroed. A NULL state encodes as all zeros. */
 static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
     for (int a=0; a<env->players; a++) {
         float *obs=bopl_obs_row(env, a);
-        if (!state) { memset(obs, 0, BOPL_OBS_SIZE*sizeof(float)); continue; }
+        if (!state) { memset(obs, 0, BOPL_OBS_SIZE*sizeof(float)); bopl_written_forget_row(env, obs); continue; }
+        int w=-1;
+        for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) { w=i; break; }
+        int prev_players=w<0?-1:env->written[w].players, prev_entities=w<0?-1:env->written[w].entities, prev_slimes=w<0?-1:env->written[w].slimes;
         const BoplRlPlayer *self=&state->players[a];
         double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
         uint32_t nearest[BOPL_OBS_ENTITIES]; double distances[BOPL_OBS_ENTITIES];
@@ -341,7 +364,7 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
                 out[16+slot*BOPL_ABILITY_FEATURES+(id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT)]=1;
             }
         }
-        memset(obs+10+player_count*BOPL_PLAYER_FEATURES, 0, (6-player_count)*BOPL_PLAYER_FEATURES*sizeof(float));
+        bopl_zero_tail(obs+10, BOPL_PLAYER_FEATURES, (int)player_count, prev_players, 6);
         for (int i=0; i<count; i++) {
             const BoplRlEntity *entity=&state->entities[nearest[i]];
             float row[BOPL_ENTITY_FEATURES]={0};
@@ -355,7 +378,7 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
             row[18]=(entity->flags&8)!=0; row[19]=(entity->flags&16)!=0; row[20]=entity->layer/32.0f;
             memcpy(obs+BOPL_OBS_ENTITY_OFFSET+(size_t)i*BOPL_ENTITY_FEATURES, row, sizeof(row));
         }
-        memset(obs+BOPL_OBS_ENTITY_OFFSET+(size_t)count*BOPL_ENTITY_FEATURES, 0, (size_t)(BOPL_OBS_ENTITIES-count)*BOPL_ENTITY_FEATURES*sizeof(float));
+        bopl_zero_tail(obs+BOPL_OBS_ENTITY_OFFSET, BOPL_ENTITY_FEATURES, count, prev_entities, BOPL_OBS_ENTITIES);
         uint32_t nearby_slimes[BOPL_OBS_SLIMES]; double slime_distances[BOPL_OBS_SLIMES]; int slime_count=0;
         for (uint32_t i=0; i<state->header.slime_count; i++) {
             const BoplRlSlime *slime=&state->slimes[i];
@@ -376,8 +399,14 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
             row[24]=cosf((float)bopl_fix(slime->rotation));
             memcpy(obs+BOPL_OBS_SLIME_OFFSET+(size_t)i*BOPL_SLIME_FEATURES, row, sizeof(row));
         }
-        memset(obs+BOPL_OBS_SLIME_OFFSET+(size_t)slime_count*BOPL_SLIME_FEATURES, 0, (size_t)(BOPL_OBS_SLIMES-slime_count)*BOPL_SLIME_FEATURES*sizeof(float));
+        bopl_zero_tail(obs+BOPL_OBS_SLIME_OFFSET, BOPL_SLIME_FEATURES, slime_count, prev_slimes, BOPL_OBS_SLIMES);
         memset(obs+BOPL_OBS_PREVIOUS_OFFSET, 0, BOPL_PREVIOUS_FEATURES*sizeof(float));
+        if (w<0) {
+            if (env->written_count==BOPL_MAX_SLOTS) env->written[0]=env->written[--env->written_count];
+            w=env->written_count++;
+            env->written[w].row=obs;
+        }
+        env->written[w].players=(int)player_count; env->written[w].entities=count; env->written[w].slimes=slime_count;
     }
 }
 /* The undelayed encoder: the state as observed now, overflow counted. */
@@ -572,7 +601,7 @@ static void c_reset(BoplPuffer *env) {
          * trainer's agent permutation was installed (create_pufferl resets
          * under identity routing). */
         for (int bank=0; bank<env->banks; bank++) {
-            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float));
+            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float)); bopl_written_forget_row(env, env->obs_ptr[1+bank]);
             if (env->mask_ptr[1+bank]) memset(env->mask_ptr[1+bank], 1, BOPL_LOGITS);
         }
         env->side=(int)(bopl_side_random(env)&1u);

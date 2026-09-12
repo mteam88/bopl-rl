@@ -87,6 +87,7 @@ void my_init(Env *env, Dict *kwargs) {
 /* Called by the vector at creation and after every set_agent_perm: slot s of
  * this environment is physical agent agent_perm[slot_base+s]. */
 void my_setup_perm(StaticVec *vec, Env *env, int slot_base) {
+    bopl_written_forget(env);  /* the rows this environment wrote may now belong to another */
     for (int s=0; s<env->num_agents; s++) {
         int phys=vec->agent_perm?vec->agent_perm[slot_base+s]:slot_base+s;
         if (phys<0 || phys>=vec->total_agents) { fprintf(stderr, "Bopl RL: agent permutation out of range\n"); abort(); }
