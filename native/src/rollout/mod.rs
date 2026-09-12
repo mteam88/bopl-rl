@@ -3123,17 +3123,16 @@ impl RolloutWorld {
     /// tick's deaths. The rest of the current updater pass still runs after it
     /// marks the game ended; RlBridge observes terminal only after the pass.
     fn session_result_tick(&mut self) {
-        let alive_teams: Vec<u32> = {
-            let mut teams: Vec<u32> = self
-                .players
-                .iter()
-                .filter(|p| !p.out)
-                .map(|p| p.team)
-                .collect();
-            teams.sort_unstable();
-            teams.dedup();
-            teams
-        };
+        // Distinct teams still in, on the stack: this runs every tick.
+        let mut alive_teams = [0u32; MAX_PLAYERS];
+        let mut alive_count = 0;
+        for p in self.players.iter().filter(|p| !p.out) {
+            if !alive_teams[..alive_count].contains(&p.team) {
+                alive_teams[alive_count] = p.team;
+                alive_count += 1;
+            }
+        }
+        let alive_teams = &alive_teams[..alive_count];
         if self.players.len() > 1 && alive_teams.len() <= 1 {
             self.terminal = true;
             if alive_teams.len() == 1 {
