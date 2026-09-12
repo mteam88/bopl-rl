@@ -20,7 +20,6 @@ int sampling_reset(BoplRl *world, const BoplRlConfig *config) {
 int main(int argc, char **argv) {
     BoplPuffer env={0};env.num_agents=2;env.config.max_episode_ticks=3600;
     env.observations=calloc(2*BOPL_OBS_SIZE,sizeof(float));
-    env.history=calloc(4*BOPL_OBS_SIZE,sizeof(float));
     if (argc==2 && strcmp(argv[1],"overflow")==0) {
         BoplRlEntity entities[BOPL_OBS_ENTITIES+1]={{0}};
         state.header.player_count=2;state.header.entity_count=BOPL_OBS_ENTITIES+1;
@@ -48,6 +47,6 @@ int main(int argc, char **argv) {
     env.training_map_mask=7;env.rng=902;memset(counts,0,sizeof(counts));
     for (int i=0;i<200;i++) { c_reset(&env);assert(last.map<3);counts[last.map]++; }
     for (int i=0;i<3;i++) assert(counts[i]>0);
-    free(env.observations);free(env.history);
+    free(env.observations);
     puts("EXPLICIT_MAP_SELECTION_AND_DEFAULT_RNG_OK");
 }

@@ -171,6 +171,8 @@ impl Terrain<'_> {
 }
 
 /// The three-ray limit from maxMovementAllowed. Every query runs before return.
+/// The distance `movement_limit` reports when no ray hits anything.
+pub const MOVEMENT_UNBLOCKED: Fix = Fix::from_int(10_000_000_000);
 pub fn movement_limit<T>(
     position: Vec2,
     radius: Fix,
@@ -178,10 +180,16 @@ pub fn movement_limit<T>(
     dt: Fix,
     query: &mut impl FnMut(Vec2, Vec2, Fix) -> Option<(T, Fix)>,
 ) -> (Fix, Option<T>) {
-    let direction = velocity.normalized_safe();
-    let distance = velocity.length() * dt;
+    // `normalized_safe` and `length` share the one square root.
+    let length = velocity.length();
+    let direction = if length == Fix::ZERO {
+        velocity
+    } else {
+        velocity / length
+    };
+    let distance = length * dt;
     let front = direction * radius;
-    let mut near = Fix::from_int(10_000_000_000);
+    let mut near = MOVEMENT_UNBLOCKED;
     let mut blocking = None;
     for (ray, origin) in [
         position + front,

@@ -18,6 +18,13 @@ def comparable(state):
     for p in state['players']:
         p.pop('previous_jump') # Checked via subsequent jump behavior; not in Unity projection.
         p['dash'].pop('saved_local') # Saved only at entry in Rust, original body persists in Unity.
+        # Rust-side bookkeeping the Unity projection has no field for (listed
+        # explicitly so a new field still has to be classified here). The
+        # collider the first two cache is compared through 'collider' itself;
+        # the jump/gravity flags through the resulting movement; the dash exit
+        # rotation only feeds the RL entity table.
+        for key in ('collider_rotation','collider_basis','jumped_this_frame','skip_next_gravity'):p.pop(key,None)
+        p['dash'].pop('exit_rotation',None)
     return state
 
 def actions(value):

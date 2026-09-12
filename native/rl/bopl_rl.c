@@ -527,6 +527,18 @@ int bopl_rl_reset_finish(BoplRl *w) {
 }
 int bopl_rl_reset_pending(const BoplRl *w) { return w && (w->inproc ? w->inproc->reset_pending_flag : w->reset_pending); }
 int bopl_rl_reset(BoplRl *w, const BoplRlConfig *config) {
+    if (w && w->inproc) {
+        /* Synchronous: run the library's reset on this thread. The begin/finish
+         * pair spawns a thread so a caller can overlap a slow (.NET, ~8 ms)
+         * reset with other work; spawning and joining one just to wait for it
+         * costs ~50 us, more than the Rust backend's whole reset (~25 us). */
+        Inproc *p=w->inproc;
+        if (!config) return BOPL_RL_ARGUMENT;
+        if (p->reset_pending_flag) { errno=EBUSY; return fail(w, "RL reset already in progress"); }
+        w->error[0]=0;
+        int result=p->lib->reset_begin(p->inner, config);
+        return result?result:p->lib->reset_finish(p->inner);
+    }
     int result=bopl_rl_reset_begin(w, config);
     return result?result:bopl_rl_reset_finish(w);
 }

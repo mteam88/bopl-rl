@@ -40,7 +40,15 @@ const SCALE: f64 = 4_294_967_296.0;
 /// a double with a fractional part has |v| < 2^52, where the integer part
 /// converts back exactly; a double at or beyond 2^52 is already an integer.
 #[inline]
-const fn round_i64(v: f64) -> i64 {
+fn round_i64(v: f64) -> i64 {
+    // The common case: `round` lowers to a truncate of `v + copysign(0.5 -
+    // ulp, v)` and the conversion of an in-range integral double needs no
+    // saturation or NaN handling. Every observation field goes through here,
+    // so the checked path only handles what the fast one excludes.
+    if v.abs() < 4_611_686_018_427_387_904.0 {
+        // SAFETY: |v| < 2^62, so the rounded value is finite and within i64.
+        return unsafe { v.round().to_int_unchecked::<i64>() };
+    }
     let t = v as i64;
     let fraction = v - t as f64;
     // Saturating like the `as` conversion for |v| >= 2^63 (fraction is then
@@ -54,6 +62,48 @@ const fn round_i64(v: f64) -> i64 {
 const fn floor_i64(v: f64) -> i64 {
     let t = v as i64;
     t.saturating_sub((t as f64 > v) as i64)
+}
+
+/// `sin(x)` for `0 <= x <= HALF_PI` (already quadrant-reduced) without the
+/// libm call: fdlibm's `__kernel_sin`/`__kernel_cos` polynomials, which are
+/// accurate to under one ulp on `|x| <= pi/4`, with the upper half of the
+/// interval folded through `cos(pi/2 - x)`. libm's `sin` spends most of its
+/// time on the general range reduction this caller has already done. The
+/// result differs from libm by at most one ulp (~1e-16), which the
+/// `fast_sin` table floor to the 2^-32 grid absorbs except when the exact
+/// value lies within 1e-16 of a grid boundary.
+#[inline]
+// The coefficients are fdlibm's literals (k_sin.c, k_cos.c) as published, so
+// they can be checked against the source; they round to the same doubles.
+#[allow(clippy::excessive_precision)]
+fn sin_reduced(x: f64) -> f64 {
+    const S1: f64 = -1.666_666_666_666_663_243_48e-01;
+    const S2: f64 = 8.333_333_333_322_489_461_24e-03;
+    const S3: f64 = -1.984_126_982_985_794_931_34e-04;
+    const S4: f64 = 2.755_731_370_707_006_767_89e-06;
+    const S5: f64 = -2.505_076_025_340_686_341_95e-08;
+    const S6: f64 = 1.589_690_995_211_550_102_21e-10;
+    const C1: f64 = 4.166_666_666_666_660_190_37e-02;
+    const C2: f64 = -1.388_888_888_887_410_957_49e-03;
+    const C3: f64 = 2.480_158_728_947_672_941_78e-05;
+    const C4: f64 = -2.755_731_435_139_066_330_35e-07;
+    const C5: f64 = 2.087_572_321_298_174_827_90e-09;
+    const C6: f64 = -1.135_964_755_778_819_482_65e-11;
+    if x <= std::f64::consts::FRAC_PI_4 {
+        let z = x * x;
+        let w = z * z;
+        let r = S2 + z * (S3 + z * S4) + z * w * (S5 + z * S6);
+        x + z * x * (S1 + z * r)
+    } else {
+        // Exact by Sterbenz: x and pi/2 are within a factor of two.
+        let y = std::f64::consts::FRAC_PI_2 - x;
+        let z = y * y;
+        let w = z * z;
+        let r = z * (C1 + z * (C2 + z * C3)) + w * w * (C4 + z * (C5 + z * C6));
+        let hz = 0.5 * z;
+        let w = 1.0 - hz;
+        w + ((1.0 - w) - hz + z * r)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -86,7 +136,7 @@ impl Fix {
         Self(raw as f64 / SCALE)
     }
     /// The nearest raw Q32.32 integer (the ABI and extracted-data encoding).
-    pub const fn raw(self) -> i64 {
+    pub fn raw(self) -> i64 {
         round_i64(self.0 * SCALE)
     }
     pub const fn from_int(value: i64) -> Self {
@@ -176,9 +226,20 @@ impl Fix {
         let half_pi = Self::HALF_PI.0;
         let mut angle = self.0;
         if !(0.0..tau).contains(&angle) {
-            angle %= tau;
-            if angle < 0.0 {
+            // One period off (a stored rotation plus `cos`'s shift, or just
+            // past TAU) is the only case that occurs; `fmod` is the identity
+            // on (-tau, 0) and exactly `angle - tau` on [tau, 2 tau)
+            // (Sterbenz), so these branches give the same double as the
+            // general remainder without its cost.
+            if (-tau..0.0).contains(&angle) {
                 angle += tau;
+            } else if (tau..2.0 * tau).contains(&angle) {
+                angle -= tau;
+            } else {
+                angle %= tau;
+                if angle < 0.0 {
+                    angle += tau;
+                }
             }
         }
         let vertical = angle >= pi;
@@ -196,9 +257,9 @@ impl Fix {
         // The mirrored quadrant reads the table from its far end,
         // `SinLut[LUT_SIZE - 1 - i]`, i.e. sin(HALF_PI - angle).
         let value = if horizontal {
-            (Self::HALF_PI.0 - angle).sin()
+            sin_reduced(Self::HALF_PI.0 - angle)
         } else {
-            angle.sin()
+            sin_reduced(angle)
         };
         Self(if vertical { -value } else { value })
     }
@@ -218,7 +279,7 @@ impl Fix {
         // `angle` is in units; raw >> 15 is floor(angle * 2^17).
         let index = (angle * 131_072.0).floor().min(LUT_LAST);
         let index = if horizontal { LUT_LAST - index } else { index };
-        let value = (index * (std::f64::consts::FRAC_PI_2 / LUT_LAST)).sin();
+        let value = sin_reduced(index * (std::f64::consts::FRAC_PI_2 / LUT_LAST));
         let value = (value * 4_294_967_296.0).floor() / 4_294_967_296.0;
         Self(if vertical { -value } else { value })
     }
@@ -471,6 +532,117 @@ mod tests {
         assert_eq!(Fix::TAU.cos(), Fix::ONE);
         assert_eq!((-Fix::HALF_PI).sin(), -Fix::ONE);
         assert_eq!((Fix::PI + Fix::HALF_PI).cos(), Fix::ZERO);
+    }
+
+    #[test]
+    fn round_i64_is_round_half_away_from_zero() {
+        let reference = |v: f64| -> i64 {
+            let t = v as i64;
+            let fraction = v - t as f64;
+            t.saturating_add((fraction >= 0.5) as i64)
+                .saturating_sub((fraction <= -0.5) as i64)
+        };
+        let mut samples = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            2.5,
+            0.499_999_999_999_999_94,
+            -0.499_999_999_999_999_94,
+            4_503_599_627_370_495.5,
+            -4_503_599_627_370_495.5,
+            4_503_599_627_370_496.0,
+            4_611_686_018_427_387_904.0,
+            -4_611_686_018_427_387_904.0,
+            9.3e18,
+            -9.3e18,
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let magnitude = 2f64.powi((state % 70) as i32 - 5);
+            let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+            samples.push((unit - 0.5) * magnitude);
+            samples.push(((state >> 20) as f64 - (1u64 << 43) as f64) * 0.5);
+        }
+        for v in samples {
+            assert_eq!(round_i64(v), reference(v), "{v:e}");
+        }
+    }
+
+    #[test]
+    fn sin_kernel_matches_libm() {
+        // Every table index of `fast_sin` (the values the game's bases are
+        // built from) floors to the same 2^-32 grid value as libm did, and
+        // the kernel is within one ulp of libm across the reduced range.
+        const LUT_LAST: f64 = 205886.0;
+        let mut floor_mismatches = 0;
+        for i in 0..=205886u32 {
+            let x = f64::from(i) * (std::f64::consts::FRAC_PI_2 / LUT_LAST);
+            let libm = (x.sin() * SCALE).floor();
+            let kernel = (sin_reduced(x) * SCALE).floor();
+            floor_mismatches += u32::from(libm != kernel);
+        }
+        assert_eq!(floor_mismatches, 0);
+        let mut worst_ulps = 0.0f64;
+        for i in 0..1_000_000u32 {
+            let x = f64::from(i) / 1_000_000.0 * Fix::HALF_PI.0;
+            let libm = x.sin();
+            let kernel = sin_reduced(x);
+            let ulp = (libm.abs().max(f64::MIN_POSITIVE)).log2().floor().exp2() * f64::EPSILON;
+            worst_ulps = worst_ulps.max((libm - kernel).abs() / ulp);
+        }
+        assert!(worst_ulps <= 1.0, "kernel off by {worst_ulps} ulps");
+        // The reduction branches agree with the general remainder.
+        for raw in [
+            -26_986_075_409i64,
+            -20_239_556_556,
+            -13_493_037_704,
+            -1,
+            1,
+            26_986_075_408,
+            26_986_075_409,
+            26_986_075_410,
+            40_000_000_000,
+            53_972_150_817,
+            53_972_150_818,
+            80_000_000_000,
+            -80_000_000_000,
+        ] {
+            let angle = Fix::from_raw(raw).0;
+            let tau = Fix::TAU.0;
+            // The previous implementation: the general remainder every time.
+            let mut reference = angle;
+            if !(0.0..tau).contains(&reference) {
+                reference %= tau;
+                if reference < 0.0 {
+                    reference += tau;
+                }
+            }
+            let vertical = reference >= Fix::PI.0;
+            if vertical {
+                reference -= Fix::PI.0;
+            }
+            let horizontal = reference >= Fix::HALF_PI.0;
+            if horizontal {
+                reference -= Fix::HALF_PI.0;
+            }
+            assert_eq!(
+                Fix::from_raw(raw).sin_quadrant(),
+                (reference, horizontal, vertical),
+                "raw {raw}"
+            );
+        }
     }
 
     #[test]
