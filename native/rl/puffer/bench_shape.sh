@@ -61,10 +61,14 @@ rows = [r for r in rows if 'native_perf' in r][20:]
 H = int(horizon)
 per = {k: round(st.median(r['native_perf'][k] for r in rows) * 1000 / H, 4)
        for k in rows[0]['native_perf'] if k in ('rollout', 'eval_gpu', 'eval_env')}
+# With BOPL_ASYNC (default) rollout_s and train_s overlap; wall_s is the update's
+# wall time (sps = physical decisions / wall_s), so rollout_s + train_s != wall_s.
 out = dict(label=label, workers=int(workers), buffers=int(buffers), passes=int(passes), updates=len(rows),
            sps=round(st.median(r['sps'] for r in rows)), learner_sps=round(st.median(r['learner_sps'] for r in rows)),
            rollout_s=round(st.median(r['rollout_seconds'] for r in rows), 4),
            train_s=round(st.median(r['train_seconds'] for r in rows), 4),
+           wall_s=round(st.median(r.get('wall_seconds', r['rollout_seconds'] + r['train_seconds']) for r in rows), 4),
+           overlap=rows[-1].get('overlap'),
            ms_per_step=per, cuda_mb=rows[-1].get('cuda_memory_mb'), load1=round(os.getloadavg()[0], 1))
 for k in ('explained_variance', 'entropy', 'kl', 'gradient_norm'):
     if k in rows[-1]:

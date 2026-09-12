@@ -66,6 +66,9 @@ if args.device == "cuda":
     subprocess.run(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cuda.o"),
                     str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), *links,
                     *["-Wl,-rpath," + str(path) for path in libraries], "-l:libnvidia-ml.so.1",
+                    # Driver API: the trainer partitions the GPU between rollout and
+                    # training streams with green contexts (pufferlib.cu bopl_gpu_split_init).
+                    "-l:libcuda.so.1",
                     "-lm", "-lpthread", "-o", str(target)], check=True)
 else:
     subprocess.run(["c++", "-O3", "-std=c++17", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-DENV_NAME=bopl",
