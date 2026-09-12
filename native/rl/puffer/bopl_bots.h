@@ -561,12 +561,18 @@ static int bot_shot_clear(const BotView *view, double px, double py, double vx0,
         vy-=BOT_ARROW_G*BOT_TICK;
         x+=vx*BOT_TICK; y+=vy*BOT_TICK;
         if (y>BOT_BLAST_Y-0.5 || y<BOT_WATER || fabs(x)>BOT_BLAST_X) return 0;
-        double to_target=bot_len(tx-x, ty-y);
-        if (to_target<1.1) return 1;
-        double from_start=bot_len(x-px, y-py);
-        double margin=(to_target<2.5 || from_start<3.0)?BOT_ARROW_RADIUS*0.7:BOT_ARROW_RADIUS+0.2;
+        /* to_target<1.1 (bot_len(tx-x, ty-y)<1.1): the square root is only
+         * taken where the squared distance leaves the verdict open. */
+        double qx=tx-x, qy=ty-y, q=qx*qx+qy*qy;
+        if (q<1.3 && bot_len(qx, qy)<1.1) return 1;
         if (bot_skip(&skip, vx*BOT_TICK, vy*BOT_TICK, BOT_ARROW_RADIUS+0.2)) continue;
-        if (bot_sdf_known(&skip, view, x, y)<margin) {
+        double d=bot_sdf_known(&skip, view, x, y);
+        /* Both margins are at most BOT_ARROW_RADIUS+0.2, so d below that is
+         * the only case where which margin applies can matter. */
+        if (d>=BOT_ARROW_RADIUS+0.2) continue;
+        double to_target=bot_len(tx-x, ty-y), from_start=bot_len(x-px, y-py);
+        double margin=(to_target<2.5 || from_start<3.0)?BOT_ARROW_RADIUS*0.7:BOT_ARROW_RADIUS+0.2;
+        if (d<margin) {
             /* The deck underfoot overlaps the slime center, so the first
              * ticks of a shot along it would otherwise collide at t≈0. Ignore
              * the home wall only while the arrow is still on/above that deck;
