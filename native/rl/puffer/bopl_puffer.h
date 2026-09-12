@@ -52,6 +52,37 @@ _Static_assert(sizeof(BoplCounters)==BOPL_COUNTER_SIZE*sizeof(double), "BoplCoun
  * through ctypes (`bopl_scripted_share` in the trainer module), which is why
  * it is a plain global read once per c_reset rather than a kwarg. */
 float bopl_scripted_share=1.0f;
+/* A world state that outlives the game's own state buffer: header, players and
+ * telemetry by value, entity and slime rows in owned buffers. */
+typedef struct {
+    BoplRlState state;
+    BoplRlEntity *entities; BoplRlSlime *slimes;
+    uint32_t entity_capacity, slime_capacity;
+    int valid;
+} BoplStateCopy;
+static void bopl_state_copy(BoplStateCopy *copy, const BoplRlState *state) {
+    if (!state) { copy->valid=0; return; }
+    uint32_t entities=state->header.entity_count, slimes=state->header.slime_count;
+    if (entities>copy->entity_capacity) {
+        uint32_t capacity=entities<64?64:entities*2;
+        BoplRlEntity *grown=realloc(copy->entities, (size_t)capacity*sizeof(*grown));
+        if (!grown) abort();
+        copy->entities=grown; copy->entity_capacity=capacity;
+    }
+    if (slimes>copy->slime_capacity) {
+        uint32_t capacity=slimes<12?12:slimes*2;
+        BoplRlSlime *grown=realloc(copy->slimes, (size_t)capacity*sizeof(*grown));
+        if (!grown) abort();
+        copy->slimes=grown; copy->slime_capacity=capacity;
+    }
+    copy->state=*state;
+    if (entities) memcpy(copy->entities, state->entities, (size_t)entities*sizeof(*copy->entities));
+    if (slimes) memcpy(copy->slimes, state->slimes, (size_t)slimes*sizeof(*copy->slimes));
+    copy->state.entities=copy->entities; copy->state.slimes=copy->slimes;
+    copy->valid=1;
+}
+static const BoplRlState *bopl_state_copy_get(const BoplStateCopy *copy) { return copy->valid?&copy->state:NULL; }
+static void bopl_state_copy_free(BoplStateCopy *copy) { free(copy->entities); free(copy->slimes); memset(copy, 0, sizeof(*copy)); }
 typedef struct {
     Log log;
     /* Base pointers assigned by PufferLib's vector (slot 0 of this environment).
@@ -87,7 +118,9 @@ typedef struct {
     int side, active_bank;
     unsigned int side_rng;
     unsigned long matches, stepped;
-    /* Player-ordered observation block; rows are published to the slots. */
+    /* Player-ordered output block for standalone encoders (research_pack,
+     * research/check_observations.c). NULL in an environment: its rows are
+     * encoded straight into the routed slots (bopl_obs_row), once. */
     float *scratch;
     unsigned int rng;
     BoplRl *world;
@@ -115,7 +148,12 @@ typedef struct {
     int repeat, random_maps, random_loadouts, failed;
     uint32_t training_map_mask;
     int observation_delay, delay_cursor, no_autoreset;
-    float *history, *sample;
+    /* Observation delay (nine ticks = two decisions at repeat 4): the world
+     * states sampled at phase 3 of the last two decisions, encoded into the
+     * slots two decisions later. Keeping ~3 KB of state per slot instead of a
+     * 13 KB observation per player, and encoding at publish time, replaces
+     * the old encode -> sample -> history -> publish copy chain. */
+    BoplStateCopy delayed[2], sample_copy;
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
     float *telemetry;
@@ -151,7 +189,13 @@ typedef struct {
     char error[512];
 } BoplPuffer;
 
-static float bopl_clip(double value) { return (float)fmax(-1.0, fmin(1.0, value)); }
+/* fmax(-1, fmin(1, value)) without the libm calls (gcc will not inline them
+ * for their NaN rules): the same result for every input, NaN included (1). */
+static inline float bopl_clip(double value) {
+    if (!(value<=1.0)) value=1.0;
+    if (value<-1.0) value=-1.0;
+    return (float)value;
+}
 static double bopl_fix(int64_t value) { return value/4294967296.0; }
 static uint32_t bopl_random(BoplPuffer *env) {
     uint32_t x=env->rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->rng=x;
@@ -189,12 +233,54 @@ static int bopl_hidden(const BoplRlState *state, uint32_t owner, uint32_t self) 
         if (state->players[i].id==owner) return (state->players[i].flags&4)!=0;
     return 0;
 }
-static void compute_observations_from(BoplPuffer *env, const BoplRlState *state) {
-    memset(env->scratch, 0, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
+/* The vector slot player p is routed through this match. */
+static int bopl_slot(const BoplPuffer *env, int player) {
+    if (!env->banks) return player;
+    return player==env->side?0:1+env->active_bank;
+}
+/* Where player p's observation row is encoded. */
+static float *bopl_obs_row(BoplPuffer *env, int player) {
+    return env->scratch?env->scratch+(size_t)player*BOPL_OBS_SIZE:env->obs_ptr[bopl_slot(env, player)];
+}
+/* The policy sees the nearest BOPL_OBS_ENTITIES entities plus the overflow
+ * fraction (obs[5]/obs[7]); the count is logged per episode. Crowded Platform
+ * rounds (>96 live bodies) are a real, rare game state, not an error: the
+ * 2026-09-08 500M run died on one at 55M learner steps. Report once per env,
+ * keep training. Counted when a state is sampled (bopl_step_sample) or
+ * encoded undelayed, once per state, as before the delayed states were
+ * encoded at publish time. */
+static void bopl_note_overflow(BoplPuffer *env, int active_count, int count, int visible_slimes) {
+    if (active_count>count || visible_slimes>BOPL_OBS_SLIMES) {
+        if (env->log.observation_overflow==0)
+            fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes (truncated to nearest)\n", active_count, visible_slimes);
+        env->log.observation_overflow++;
+    }
+}
+/* Every visible-entity and visible-slime count of `state` per observer, for
+ * the overflow telemetry of a state that is encoded later. */
+static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
     if (!state) return;
     for (int a=0; a<env->players; a++) {
         const BoplRlPlayer *self=&state->players[a];
-        float *obs=env->scratch+(size_t)a*BOPL_OBS_SIZE;
+        int active_count=0, visible_slimes=0;
+        for (uint32_t i=0; i<state->header.entity_count; i++) {
+            const BoplRlEntity *entity=&state->entities[i];
+            if (!(entity->flags&1) || (entity->flags&4) || bopl_hidden(state, entity->owner, self->id)) continue;
+            active_count++;
+        }
+        for (uint32_t i=0; i<state->header.slime_count; i++)
+            if (!bopl_hidden(state, state->slimes[i].owner, self->id)) visible_slimes++;
+        bopl_note_overflow(env, active_count, active_count<BOPL_OBS_ENTITIES?active_count:BOPL_OBS_ENTITIES, visible_slimes);
+    }
+}
+/* Encode `state` into every player's row (bopl_obs_row), writing each row
+ * exactly once: every feature is stored, the unused entity/slime slots and
+ * the own-action tail are zeroed. A NULL state encodes as all zeros. */
+static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
+    for (int a=0; a<env->players; a++) {
+        float *obs=bopl_obs_row(env, a);
+        if (!state) { memset(obs, 0, BOPL_OBS_SIZE*sizeof(float)); continue; }
+        const BoplRlPlayer *self=&state->players[a];
         double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
         uint32_t nearest[BOPL_OBS_ENTITIES]; double distances[BOPL_OBS_ENTITIES];
         int count=0, active_count=0;
@@ -216,21 +302,14 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
             if (!bopl_hidden(state, state->slimes[i].owner, self->id)) visible_slimes++;
         obs[6]=bopl_clip((double)visible_slimes/BOPL_OBS_SLIMES);
         obs[7]=bopl_clip((double)(visible_slimes>BOPL_OBS_SLIMES?visible_slimes-BOPL_OBS_SLIMES:0)/BOPL_OBS_SLIMES);
-        if (active_count>count || visible_slimes>BOPL_OBS_SLIMES) {
-            /* The policy sees the nearest BOPL_OBS_ENTITIES entities plus the
-             * overflow fraction (obs[5]/obs[7]); the count is logged per
-             * episode. Crowded Platform rounds (>96 live bodies) are a real,
-             * rare game state, not an error: the 2026-09-08 500M run died on
-             * one at 55M learner steps. Report once per env, keep training. */
-            if (env->log.observation_overflow==0)
-                fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes (truncated to nearest)\n", active_count, visible_slimes);
-            env->log.observation_overflow++;
-        }
+        if (count_overflow) bopl_note_overflow(env, active_count, count, visible_slimes);
         obs[8]=bopl_clip(self_x/64.0); obs[9]=bopl_clip(self_y/64.0);
-        for (uint32_t i=0; i<state->header.player_count; i++) {
+        uint32_t player_count=state->header.player_count<6?state->header.player_count:6;
+        for (uint32_t i=0; i<player_count; i++) {
             uint32_t index=i==0?(uint32_t)a:(i<=(uint32_t)a?i-1:i);
             const BoplRlPlayer *player=&state->players[index];
             float *out=obs+10+i*BOPL_PLAYER_FEATURES;
+            memset(out, 0, BOPL_PLAYER_FEATURES*sizeof(float));
             out[0]=1; out[1]=player->id==self->id; out[2]=player->team==self->team;
             out[3]=(player->flags&1)!=0; out[4]=(player->flags&2)!=0;
             out[5]=bopl_clip(player->alive_bodies/6.0); out[6]=bopl_clip(player->stocks/10.0);
@@ -262,18 +341,21 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
                 out[16+slot*BOPL_ABILITY_FEATURES+(id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT)]=1;
             }
         }
+        memset(obs+10+player_count*BOPL_PLAYER_FEATURES, 0, (6-player_count)*BOPL_PLAYER_FEATURES*sizeof(float));
         for (int i=0; i<count; i++) {
             const BoplRlEntity *entity=&state->entities[nearest[i]];
-            float *out=obs+10+6*BOPL_PLAYER_FEATURES+i*BOPL_ENTITY_FEATURES;
-            out[0]=1; if (entity->kind<5) out[1+entity->kind]=1;
-            out[6]=entity->owner==self->id; out[7]=bopl_ally(state, entity->owner, self);
-            out[8]=bopl_clip((bopl_fix(entity->x)-self_x)/64.0); out[9]=bopl_clip((bopl_fix(entity->y)-self_y)/64.0);
-            out[10]=bopl_clip(bopl_fix(entity->vx)/256.0); out[11]=bopl_clip(bopl_fix(entity->vy)/256.0);
-            out[12]=bopl_clip(bopl_fix(entity->right_x)/64.0); out[13]=bopl_clip(bopl_fix(entity->right_y)/64.0);
-            out[14]=bopl_clip(bopl_fix(entity->up_x)/64.0); out[15]=bopl_clip(bopl_fix(entity->up_y)/64.0);
-            out[16]=bopl_clip(bopl_fix(entity->radius)/16.0); out[17]=(entity->flags&2)!=0;
-            out[18]=(entity->flags&8)!=0; out[19]=(entity->flags&16)!=0; out[20]=entity->layer/32.0f;
+            float row[BOPL_ENTITY_FEATURES]={0};
+            row[0]=1; if (entity->kind<5) row[1+entity->kind]=1;
+            row[6]=entity->owner==self->id; row[7]=bopl_ally(state, entity->owner, self);
+            row[8]=bopl_clip((bopl_fix(entity->x)-self_x)/64.0); row[9]=bopl_clip((bopl_fix(entity->y)-self_y)/64.0);
+            row[10]=bopl_clip(bopl_fix(entity->vx)/256.0); row[11]=bopl_clip(bopl_fix(entity->vy)/256.0);
+            row[12]=bopl_clip(bopl_fix(entity->right_x)/64.0); row[13]=bopl_clip(bopl_fix(entity->right_y)/64.0);
+            row[14]=bopl_clip(bopl_fix(entity->up_x)/64.0); row[15]=bopl_clip(bopl_fix(entity->up_y)/64.0);
+            row[16]=bopl_clip(bopl_fix(entity->radius)/16.0); row[17]=(entity->flags&2)!=0;
+            row[18]=(entity->flags&8)!=0; row[19]=(entity->flags&16)!=0; row[20]=entity->layer/32.0f;
+            memcpy(obs+BOPL_OBS_ENTITY_OFFSET+(size_t)i*BOPL_ENTITY_FEATURES, row, sizeof(row));
         }
+        memset(obs+BOPL_OBS_ENTITY_OFFSET+(size_t)count*BOPL_ENTITY_FEATURES, 0, (size_t)(BOPL_OBS_ENTITIES-count)*BOPL_ENTITY_FEATURES*sizeof(float));
         uint32_t nearby_slimes[BOPL_OBS_SLIMES]; double slime_distances[BOPL_OBS_SLIMES]; int slime_count=0;
         for (uint32_t i=0; i<state->header.slime_count; i++) {
             const BoplRlSlime *slime=&state->slimes[i];
@@ -283,26 +365,40 @@ static void compute_observations_from(BoplPuffer *env, const BoplRlState *state)
         }
         for (int i=0; i<slime_count; i++) {
             const BoplRlSlime *slime=&state->slimes[nearby_slimes[i]];
-            float *out=obs+10+6*BOPL_PLAYER_FEATURES+BOPL_OBS_ENTITIES*BOPL_ENTITY_FEATURES+i*BOPL_SLIME_FEATURES;
-            out[0]=1; out[1]=slime->owner==self->id; out[2]=bopl_ally(state, slime->owner, self);
-            out[3]=(slime->flags&1)!=0; out[4]=(slime->flags&2)!=0; out[5]=(slime->flags&4)!=0; out[6]=(slime->flags&8)!=0;
-            out[7]=bopl_clip((bopl_fix(slime->x)-self_x)/64.0); out[8]=bopl_clip((bopl_fix(slime->y)-self_y)/64.0);
-            out[9]=bopl_clip(bopl_fix(slime->vx)/256.0); out[10]=bopl_clip(bopl_fix(slime->vy)/256.0);
-            out[11]=bopl_clip(bopl_fix(slime->scale)/3.0);
-            if (slime->state<11) out[12+slime->state]=1;
-            out[23]=sinf((float)bopl_fix(slime->rotation));
-            out[24]=cosf((float)bopl_fix(slime->rotation));
+            float row[BOPL_SLIME_FEATURES]={0};
+            row[0]=1; row[1]=slime->owner==self->id; row[2]=bopl_ally(state, slime->owner, self);
+            row[3]=(slime->flags&1)!=0; row[4]=(slime->flags&2)!=0; row[5]=(slime->flags&4)!=0; row[6]=(slime->flags&8)!=0;
+            row[7]=bopl_clip((bopl_fix(slime->x)-self_x)/64.0); row[8]=bopl_clip((bopl_fix(slime->y)-self_y)/64.0);
+            row[9]=bopl_clip(bopl_fix(slime->vx)/256.0); row[10]=bopl_clip(bopl_fix(slime->vy)/256.0);
+            row[11]=bopl_clip(bopl_fix(slime->scale)/3.0);
+            if (slime->state<11) row[12+slime->state]=1;
+            row[23]=sinf((float)bopl_fix(slime->rotation));
+            row[24]=cosf((float)bopl_fix(slime->rotation));
+            memcpy(obs+BOPL_OBS_SLIME_OFFSET+(size_t)i*BOPL_SLIME_FEATURES, row, sizeof(row));
         }
+        memset(obs+BOPL_OBS_SLIME_OFFSET+(size_t)slime_count*BOPL_SLIME_FEATURES, 0, (size_t)(BOPL_OBS_SLIMES-slime_count)*BOPL_SLIME_FEATURES*sizeof(float));
+        memset(obs+BOPL_OBS_PREVIOUS_OFFSET, 0, BOPL_PREVIOUS_FEATURES*sizeof(float));
     }
 }
+/* The undelayed encoder: the state as observed now, overflow counted. */
+static void compute_observations_from(BoplPuffer *env, const BoplRlState *state) { bopl_encode(env, state, 1); }
 static void compute_observations(BoplPuffer *env) { compute_observations_from(env, bopl_rl_state(env->world)); }
 /* Own-action tail (BOPL_PREVIOUS_FEATURES): the decision as applied to the game
  * (latched buttons, live aim), the latch remaining after it, and how long each
  * button has been held. hold_left/hold_run may be NULL (no latch state). */
+static float bopl_aim_table[256][2];
+static pthread_once_t bopl_aim_table_once=PTHREAD_ONCE_INIT;
+static void bopl_aim_table_init(void) {
+    for (int angle=1; angle<256; angle++) {
+        double radians=(angle-1)*6.283185307179586/255.0;
+        bopl_aim_table[angle][0]=cos(radians); bopl_aim_table[angle][1]=sin(radians);
+    }
+}
 static void bopl_previous_action(float *previous, BoplRlAction action, int hold_left, const int *hold_run) {
-    double angle=(action.angle-1)*6.283185307179586/255.0;
+    /* The 255 aim directions are fixed: the same cos/sin, evaluated once. */
+    pthread_once(&bopl_aim_table_once, bopl_aim_table_init);
     previous[0]=action.angle==0;
-    previous[1]=action.angle?cos(angle):0; previous[2]=action.angle?sin(angle):0;
+    previous[1]=bopl_aim_table[action.angle][0]; previous[2]=bopl_aim_table[action.angle][1];
     for (int bit=0; bit<4; bit++) previous[3+bit]=(action.buttons&(1<<bit))!=0;
     previous[7]=bopl_clip((double)hold_left/BOPL_HOLD_MAX);
     for (int bit=0; bit<4; bit++) previous[8+bit]=bopl_clip((hold_run?hold_run[bit]:0)/(double)BOPL_HOLD_MAX);
@@ -316,11 +412,6 @@ static uint16_t bopl_latch(BoplPuffer *env, int player, uint16_t buttons, int ho
     uint16_t applied=env->held[player];
     for (int bit=0; bit<4; bit++) env->hold_run[player][bit]=(applied&(1<<bit))?env->hold_run[player][bit]+1:0;
     return applied;
-}
-/* The vector slot player p is routed through this match. */
-static int bopl_slot(const BoplPuffer *env, int player) {
-    if (!env->banks) return player;
-    return player==env->side?0:1+env->active_bank;
 }
 /* Publish the action mask for player i's next decision from its latch state. */
 static void bopl_write_mask(BoplPuffer *env, int player) {
@@ -342,11 +433,6 @@ static void bopl_write_mask(BoplPuffer *env, int player) {
 }
 static uint32_t bopl_side_random(BoplPuffer *env) {
     uint32_t x=env->side_rng; x^=x<<13; x^=x>>17; x^=x<<5; return env->side_rng=x;
-}
-/* Copy the player-ordered observations into the routed vector slots. */
-static void bopl_publish(BoplPuffer *env) {
-    for (int p=0; p<env->players; p++)
-        memcpy(env->obs_ptr[bopl_slot(env, p)], env->scratch+(size_t)p*BOPL_OBS_SIZE, BOPL_OBS_SIZE*sizeof(float));
 }
 static void bopl_failed_world(BoplPuffer *env, const BoplRl *world, const char *operation) {
     env->failed=1; env->log.game_errors++;
@@ -395,10 +481,6 @@ static void init(BoplPuffer *env) {
         || (env->banks && env->players!=2) || env->num_agents!=(env->banks?1+env->banks:env->players)) {
         fprintf(stderr, "Bopl RL slot layout: players %d, banks %d, slots %d\n", env->players, env->banks, env->num_agents); abort();
     }
-    env->history=calloc((size_t)2*env->players*BOPL_OBS_SIZE, sizeof(float));
-    env->sample=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
-    env->scratch=calloc((size_t)env->players*BOPL_OBS_SIZE, sizeof(float));
-    if (!env->history || !env->sample || !env->scratch) abort();
     if (env->banks && (env->active_bank<0 || env->active_bank>=env->banks)) { fprintf(stderr, "Bopl RL: historical environment without a bank\n"); abort(); }
     for (int bank=0; bank<BOPL_MAX_BANKS; bank++) {
         uint32_t kind=(env->scripted_kinds>>(4*bank))&15u;
@@ -449,12 +531,11 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
  * which is fed states from a running game instead of a world it steps. */
 static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
     compute_observations_from(env, state);
-    size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
-    for (int i=0; i<2; i++) memcpy(env->history+i*env->players*BOPL_OBS_SIZE, env->scratch, bytes);
+    /* The first two delayed decisions observe this same first state. */
+    for (int i=0; i<2; i++) bopl_state_copy(&env->delayed[i], state);
     env->delay_cursor=0;
     memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
-    for (int i=0; i<env->players; i++) { env->scratch[(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES]=1; bopl_write_mask(env, i); }
-    bopl_publish(env);
+    for (int i=0; i<env->players; i++) { bopl_obs_row(env, i)[BOPL_OBS_PREVIOUS_OFFSET]=1; bopl_write_mask(env, i); }
 }
 static void c_reset(BoplPuffer *env) {
     bopl_world_ready(env);
@@ -573,8 +654,8 @@ static void bopl_step_begin(BoplPuffer *env, BoplStepPhase *phase) {
 /* The delayed observation's source: the world state at phase 3 of the decision
  * (or the final state when the episode ended earlier). */
 static void bopl_step_sample(BoplPuffer *env, const BoplRlState *state) {
-    compute_observations_from(env, state);
-    memcpy(env->sample, env->scratch, (size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
+    bopl_state_copy(&env->sample_copy, state);
+    bopl_count_overflow(env, state);
 }
 static void bopl_step_advance(BoplPuffer *env, const BoplStepPhase *phase) {
     const BoplRlAction *actions=phase->actions;
@@ -654,18 +735,19 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     if (terminal) { env->counters.matches++; if (env->config.map<BOPL_COUNTER_MAPS) env->counters.map_matches[env->config.map]++; }
     if (terminal && !env->no_autoreset) { c_reset(env); return; }
     if (env->observation_delay) {
-        size_t bytes=(size_t)env->players*BOPL_OBS_SIZE*sizeof(float);
-        float *old=env->history+(size_t)env->delay_cursor*env->players*BOPL_OBS_SIZE;
-        memcpy(env->scratch, old, bytes); memcpy(old, env->sample, bytes);
+        /* Publish the state sampled two decisions ago (already counted for
+         * overflow when sampled), then keep this decision's sample in its
+         * place: the buffers swap, nothing is copied. */
+        BoplStateCopy *old=&env->delayed[env->delay_cursor];
+        bopl_encode(env, bopl_state_copy_get(old), 0);
+        BoplStateCopy published=*old; *old=env->sample_copy; env->sample_copy=published;
         env->delay_cursor=(env->delay_cursor+1)%2;
     } else compute_observations_from(env, state);
     if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
-        float *previous=env->scratch+(size_t)(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES;
-        bopl_previous_action(previous, actions[i], env->hold_left[i], env->hold_run[i]);
+        bopl_previous_action(bopl_obs_row(env, i)+BOPL_OBS_PREVIOUS_OFFSET, actions[i], env->hold_left[i], env->hold_run[i]);
         bopl_write_mask(env, i);
     }
-    bopl_publish(env);
 }
 static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
     bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
@@ -686,6 +768,7 @@ static void c_close(BoplPuffer *env) {
     bopl_rl_close(env->world); env->world=NULL;
     bopl_rl_close(env->spare); env->spare=NULL;
     for (int i=0; i<BOPL_MAX_PLAYERS; i++) { bopl_rl_close(env->bots[i].fork); env->bots[i].fork=NULL; }
-    free(env->history); free(env->sample); free(env->scratch);
+    for (int i=0; i<2; i++) bopl_state_copy_free(&env->delayed[i]);
+    bopl_state_copy_free(&env->sample_copy);
 }
 #endif

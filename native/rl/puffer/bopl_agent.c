@@ -150,11 +150,7 @@ static int bopl_agent_env_alloc(BoplAgent *a) {
     env->actions=calloc((size_t)n*BOPL_NUM_ATNS, sizeof(float));
     env->rewards=calloc((size_t)n, sizeof(float)); env->terminals=calloc((size_t)n, sizeof(float));
     env->action_mask=calloc((size_t)n*BOPL_LOGITS, 1);
-    env->history=calloc((size_t)2*n*BOPL_OBS_SIZE, sizeof(float));
-    env->sample=calloc((size_t)n*BOPL_OBS_SIZE, sizeof(float));
-    env->scratch=calloc((size_t)n*BOPL_OBS_SIZE, sizeof(float));
-    if (!env->observations || !env->actions || !env->rewards || !env->terminals || !env->action_mask
-        || !env->history || !env->sample || !env->scratch) return -1;
+    if (!env->observations || !env->actions || !env->rewards || !env->terminals || !env->action_mask) return -1;
     for (int s=0; s<n; s++) {
         env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_SIZE; env->action_ptr[s]=env->actions+BOPL_NUM_ATNS*s;
         env->reward_ptr[s]=env->rewards+s; env->terminal_ptr[s]=env->terminals+s;
@@ -252,7 +248,8 @@ void bopl_agent_close(BoplAgent *a) {
     free(a->rstate); free(a->rnext); free(a->decoder);
     BoplPuffer *env=&a->env;
     free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env->action_mask);
-    free(env->history); free(env->sample); free(env->scratch);
+    for (int i=0; i<2; i++) bopl_state_copy_free(&env->delayed[i]);
+    bopl_state_copy_free(&env->sample_copy);
     free(a->entities); free(a->slimes);
     free(a);
 }
