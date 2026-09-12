@@ -392,6 +392,151 @@ full-state write per decision (phase-3 sample + final) to one memcpy.
   update. Puffer's defaults are 1-2. Halving passes halves train at a
   sample-efficiency cost that the sweep should decide, not us.
 
+**Done 2026-09-12, part 1 (branch `e-train`, commit `cbb0b69`).** Set
+encoder forward projects only the valid slots (ballot-compacted, packed-row
+fast path reads 16 of 96 slots), backward gathers only the winning slots,
+flat GEMM in TF32 with the flat block padded to 948 columns, grouped Muon
+Newton-Schulz (one launch per step instead of per matrix), PPO reads the
+action mask in place and writes the decoder gradient directly. w128 b4
+train_s 0.0388 -> 0.0283.
+
+**Done 2026-09-12, part 2 (branch `e-train`, commits `4603c6a`..`00b9a61`;
+`bopl_set_encoder.cu`, `check_set_encoder.{py,cu}`, kernels.cu / muon.cu /
+pufferlib.cu overlay in `pufferlib-bopl.patch`, build.py, train.py).**
+Training path only; the rollout step code is untouched. `bench_shape.sh`,
+seed 73, 300 updates, medians of updates 20-300, 32/16 SM split (the box
+was shared with CPU sim work: load1 2-8, so +-3% between runs):
+
+| shape | build | sps | learner sps | rollout s | train s | wall s | load1 |
+|---|---|---|---|---|---|---|---|
+| w128 b4 | before (`4aed572`) | 803-819k | 603-615k | 0.0393-0.0402 | 0.0388 | 0.0400-0.0408 | 8.3 |
+| w128 b4 | after | 860k | 645k | 0.0376 | 0.0217 | 0.0381 | 2.4 |
+| w256 b4 | before | 875k | 656k | 0.0638 | 0.0742 | 0.0749 | 7.8 |
+| w256 b4 | after | 1168k | 876k | 0.0555 | 0.0413 | 0.0561 | 3.8 |
+| w256 b2 | before | 941k | 706k | 0.0662 | 0.0689 | 0.0697 | 6.9 |
+| w256 b2 | after | 1126k | 844k | 0.0576 | 0.0406 | 0.0582 | 5.6 |
+| w128 b4, `BOPL_TF32=0` | before | 690k | 518k | 0.0427 | 0.0468 | 0.0475 | 6.3 |
+| w128 b4, `BOPL_TF32=0` | after | 796k | 597k | 0.0406 | 0.0328 | 0.0412 | 6.4 |
+
+w128 is rollout-bound either way (train 0.0217 < rollout 0.0376, wall =
+rollout); w256 was train-bound and is now rollout-bound too, +33% sps.
+The goal was <= 0.020 / <= 0.035; what is left is listed under "headroom".
+
+Learning behaviour, medians of updates 200-300 (seed 73):
+
+| run | explained var | entropy | grad norm | policy loss | value loss |
+|---|---|---|---|---|---|
+| w128 b4 before | 0.586 | 5.782 | 0.347 | -0.0075 | 0.0211 |
+| w128 b4 after | 0.582 | 5.804 | 0.332 | -0.0054 | 0.0213 |
+| w128 b4 before, `BOPL_TF32=0` | 0.562 | 5.749 | 0.310 | -0.0080 | 0.0212 |
+| w128 b4 after, `BOPL_TF32=0` | 0.564 | 5.770 | 0.379 | -0.0078 | 0.0212 |
+| w256 b4 before / after | 0.537 / 0.550 | 5.751 / 5.769 | 0.448 / 0.430 | -0.0063 / -0.0058 | 0.0198 / 0.0207 |
+| w256 b2 before / after | 0.531 / 0.527 | 5.742 / 5.710 | 0.445 / 0.453 | -0.0064 / -0.0052 | 0.0196 / 0.0199 |
+
+Exactness: with every numerics knob at its old value (`BOPL_TF32=0
+BOPL_GEMM_TUNE=0 BOPL_MUON_SPLITK=0 BOPL_MUON_FUSED=0`) the trainer's
+metrics are bit-identical to `4aed572` over 40 updates in `BOPL_ASYNC=0`
+(and async) mode, so the packed forward, the padded GEMM shapes, the PPO
+shared-memory staging, the fused-gradient / mask-gather paths and the
+harness changes are exact. `BOPL_MUON_FUSED=1` (part 1) is the only
+default that reorders fp32 sums in exact mode.
+
+CUPTI (`cupti_profile.cpp`, w128 b4, 50 updates, train stream, per
+update; injected runs are ~10% slower than the bench):
+
+| | launches | sum us | top kernels (us per update) |
+|---|---|---|---|
+| before | 943 | 40024 | bs_fused_forward 8126, flat fwd GEMM (magma fp32 SIMT) 4687, wgrad align1 3371, wgrads align4 2555, bs_fused_backward 2542, flat wgrad align1 1732, mingru_scan_backward 1649, ppo_loss 1564, muon nn GEMMs (130 launches) 1448, fusion/decoder tn 1276 + 1259, assemble_decoder_grad 939 |
+| after | 325 | 23153 | bs_fused_forward_mma 3134, wgrad nt 1755, dgrad nn 1674, mingru_scan_backward 1663, flat fwd bf16 1275, mingru-in tn 1245, muon_grouped_gemm (63) 1234, flat wgrad bf16 1225, ppo_loss (smem) 1209, decoder tn 1143, dgrad nn 825, bs_fused_backward 792 |
+
+Per 24576-row minibatch on the 16-SM partition, before -> after:
+set-encoder forward 1935 -> 746 us, flat forward GEMM 1116 -> 298, flat
+weight gradient 414 -> 286, set-encoder backward 605 -> 189, PPO loss 372
+-> 288, Muon per optimizer step 480 -> 340, ReLU / assemble kernels
+gone (-2 launches, -300 us).
+
+What is in it:
+
+- Tensor-core set-encoder forward (`bs_fused_forward_mma`, `BOPL_SET_MMA`,
+  default follows `BOPL_TF32`): entity and slime projections as
+  `mma.sync m16n8k8` TF32 with the weights as the A operand (16 channels x
+  21/28 features per tile) and 16 slots as two n-tiles, max-pool over the
+  slots as a 4-slot local pool plus two shuffles. Head-chunked slot staging
+  (`Xs[4][16 x 21]`, chunk loop for crowded rows), slime weights
+  transposed in shared memory, flat block staged with `cp.async` so no
+  prefetched value can be spilled, per-row 3-warp round robin over 8
+  channel tiles. On 16 SMs the forward's compute is fully exposed and
+  additive to its memory time (same SM-us on 48 SMs), so this is what
+  moved it: fp32 kernel 1173 -> 746 us with 10 slimes, zero-row floor 532.
+- Measured GEMM kernel choice (`bopl_gemm` in kernels.cu, `BOPL_GEMM_TUNE`,
+  default 1; `BOPL_GEMM_TUNE_LOG=1` prints the table): the first call of
+  each (op, shape, type, epilogue) on the registered training stream times
+  every cublasLt heuristic candidate (workspace split-K reductions allowed
+  - fixed order, deterministic; atomics excluded; `BOPL_GEMM_SPLITK=0`
+  forbids reductions) and caches the fastest; the captured graph replays
+  it. Rollout streams are never touched. Worth 1.9 ms/update together
+  with the fused epilogues. cuBLAS's own heuristic assumes 48 SMs: the
+  k=24576 weight-gradient shapes are 10 tiles, so without split-K they ran
+  2x slower than the best candidate. The training GEMMs are TF32
+  compute-bound on the partition: 10.5 TF/s achieved of ~11.9 peak, which
+  is why the tuner alone gains little and bf16 gains a lot.
+- bf16 flat block (`BOPL_SET_FLAT_BF16`, default follows `BOPL_TF32`): the
+  forward stores the 946 flat obs columns as bf16 (padded to 952 for
+  16-byte rows, in the fp32-sized allocation), the flat weights are padded
+  to bf16 per forward, `grad_flat` is written as bf16 by `bs_flat_grad`,
+  and both 24576 x 952 x 128 GEMMs run bf16 x bf16 -> fp32 at twice the
+  TF32 rate: 549 + 574 -> 298 + 286 us. Worth 2.4 ms/update.
+  `check_set_encoder` has `flat_bf16` cases: float64 oracle fed the same
+  bf16-rounded rows / weights / incoming gradient (forward 5e-7, gradient
+  7e-5 at 1030 rows), packed == every-slot bit for bit, graph replay, both
+  forward kernels, and the fp32 oracle must be further away.
+- ReLU fused into the tuned GEMM epilogues (flat projection and fusion
+  GEMM, `CUBLASLT_EPILOGUE_RELU`); the kernels still run when the plain
+  path is taken (harness, `BOPL_GEMM_TUNE=0`).
+- PPO loss: the row's masked logits are read into shared memory once
+  instead of once per pass (with 64 resident warps the 2.2 KB row did not
+  stay in L1, so the four passes were L2 traffic): 372 -> 288 us, bit
+  identical. Rows wider than `PPO_SMEM_LOGITS` = 288 fall back.
+- Muon gram products split-K (`BOPL_MUON_SPLITK`, default auto = K/64 in
+  [1, 8]): the flat gram (M=128, K=946) was 4 blocks over 60 k steps;
+  slices write partial tiles, `muon_grouped_reduce` sums them in slice
+  order. 1922 -> 1362 us/update. First version reduced unsplit problems
+  too (overwrote the entity / slime grams with stale partials): every
+  kernel check passed and only the update-200-300 metric medians caught
+  it (explained variance 0.28 vs 0.58). Bisect by knob before trusting a
+  numerics change.
+- `train.py --minibatch-div N` (default 1, unchanged): N optimizer steps
+  per learner pass on 1/N of the rows. Measured at w128 b4: div 2 train_s
+  0.0239, div 4 0.030 vs 0.0217 - the partition is latency-bound per
+  launch, smaller minibatches lose.
+- Harness: `BOPL_CHECK_SMS=<n>` runs `check_set_encoder --time` on a green
+  context of n SMs (the number that matters), `BOPL_GPU_SPLIT=<n>`
+  partitions even with one slot (`BOPL_ASYNC=0`) for train-only timing.
+
+What did not help: a "lane = channel pair, weights in 42 registers" fp32
+tiling (spilled the prefetched row, +275 us even on empty rows); pooling
+across mma fragments with shuffles per slot (+433 us, the pool dominated
+the mma itself); smaller minibatches (above); the tuner without split-K
+(candidates within 5% of cuBLAS's choice); generic bf16 conversion of the
+128-wide activations (conversion traffic >= the TF32 -> bf16 GEMM saving
+unless the producer writes bf16). Profiling lessons: warm-up launches read
+one segment (prioritized sampling on zero priorities -> duplicate indices
+-> L2 hits), so first-launch timings are meaningless; the 16-SM per-block
+critical path is LDS / SHFL latency chains (~2000 clocks per row
+iteration even with zero valid slots), and any spill of a prefetched value
+serialises the load latency.
+
+Headroom (per 24576-row minibatch on 16 SMs, from the after trace):
+set-encoder forward 746 us (floor ~530 memory, compute exposed);
+`mingru_scan_backward` 396 + forward 177 (latency-bound over T=128 -
+option 5); fusion / mingru-in / decoder TF32 GEMMs 200-300 each (bf16
+activations from their producers would halve them, a models.cu change);
+PPO 288 (probably ~150 with several rows per warp); elementwise
+`bs_relu_grad` 112, `add_kernel` 93, `puff_advantage` / `ppo_var_mean` per
+minibatch (GAE once per update, option 6, was not trivial with the
+per-slot graphs and is worth ~0.15 ms/update); Muon 340 per step. Reaching
+0.020 at w128 needs roughly three of these.
+
 ### F. Sim micro-work (~10% of a phase that is not binding, low priority)
 
 No per-tick `Vec` allocation (`from_iter`/`retain`/malloc ~3%), cache

@@ -1,6 +1,6 @@
 diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu	2026-09-12 06:19:30.952578737 -0400
-+++ b/bindings.cu	2026-09-12 06:19:30.986253875 -0400
+--- a/bindings.cu	2026-09-12 06:23:19.656381268 -0400
++++ b/bindings.cu	2026-09-12 06:23:19.662638411 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -193,8 +193,8 @@ diff -ruN a/bindings.cu b/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu	2026-09-12 06:19:30.952578737 -0400
-+++ b/kernels.cu	2026-09-12 06:19:30.986253875 -0400
+--- a/kernels.cu	2026-09-12 06:23:19.656381268 -0400
++++ b/kernels.cu	2026-09-12 06:23:19.662638411 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -415,8 +415,8 @@ diff -ruN a/kernels.cu b/kernels.cu
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
 diff -ruN a/models.cu b/models.cu
---- a/models.cu	2026-09-12 06:19:30.952578737 -0400
-+++ b/models.cu	2026-09-12 06:19:30.986253875 -0400
+--- a/models.cu	2026-09-12 06:23:19.656381268 -0400
++++ b/models.cu	2026-09-12 06:23:19.662638411 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -748,8 +748,8 @@ diff -ruN a/models.cu b/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN a/muon.cu b/muon.cu
---- a/muon.cu	2026-09-12 06:19:30.952578737 -0400
-+++ b/muon.cu	2026-09-12 06:19:30.986253875 -0400
+--- a/muon.cu	2026-09-12 06:23:19.656381268 -0400
++++ b/muon.cu	2026-09-12 06:23:19.662638411 -0400
 @@ -83,6 +83,68 @@
      {2.8366, -3.0525, 1.2012},
  };
@@ -1090,8 +1090,8 @@ diff -ruN a/muon.cu b/muon.cu
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
 diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu	2026-09-12 06:19:30.952578737 -0400
-+++ b/ocean.cu	2026-09-12 06:19:30.986253875 -0400
+--- a/ocean.cu	2026-09-12 06:23:19.656381268 -0400
++++ b/ocean.cu	2026-09-12 06:23:19.662638411 -0400
 @@ -3,6 +3,8 @@
  
  #include "cudnn_conv2d.cu"
@@ -1119,8 +1119,8 @@ diff -ruN a/ocean.cu b/ocean.cu
  }
  
 diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu	2026-09-12 06:19:30.984069902 -0400
-+++ b/pufferlib.cu	2026-09-12 06:19:30.986253875 -0400
+--- a/pufferlib.cu	2026-09-12 06:23:19.660496050 -0400
++++ b/pufferlib.cu	2026-09-12 06:23:19.662638411 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -2861,8 +2861,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      static_vec_close(pufferl.vec);
 diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h	2026-09-12 06:19:30.952578737 -0400
-+++ b/vecenv.h	2026-09-12 06:19:30.986253875 -0400
+--- a/vecenv.h	2026-09-12 06:23:19.656496008 -0400
++++ b/vecenv.h	2026-09-12 06:23:19.662638411 -0400
 @@ -119,6 +119,12 @@
  void create_static_threads(StaticVec* vec, int num_threads, int horizon,
      void* ctx, net_callback_fn net_callback, thread_init_fn thread_init);
