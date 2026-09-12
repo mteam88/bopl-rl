@@ -36,9 +36,8 @@ native/rl/sweep/
   driver.py        the sweep loop (this is what you run)
   sweep_config.py  TOML -> PufferLib sweep_config + train.py flag rendering
   scoring.py       run directory -> (learner_steps, score) curve via the reference pool
-  reference_pool.py  frozen reference pool: build / verify / rate a checkpoint / joint ladder
+  reference_pool.py  frozen pool: build / verify / rate / rate-runs / human
   flags.py         behaviour flags from evaluation behaviour totals (labels only)
-  rescore.py       re-score an existing sweep with the reference scorer, read-only
   report.py        results.jsonl, summary.md, launch-best.sh
   configs/         one TOML per sweep (smoke.toml = the pipeline at a tiny budget;
                    overnight-3.toml is a historical record and no longer loads)
@@ -174,7 +173,7 @@ instead:
 # 48 games per pair), BT-MLE fit, pool.json with every checkpoint hash.
 # Games involving rollout-search bots (bopl_rl_fork) run in their own, wider
 # thread pool and are timed separately (pool.json `timing`). Pool v5 (the
-# current one; v1-v4 are deleted, their sweeps' rescores redone on v5):
+# current one; v1-v4 are deleted):
 BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
   --out native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
   --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
@@ -182,9 +181,10 @@ BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/referen
   --games-per-pair 48 --workers 10 --slow-workers 12
 # verify: re-hash every checkpoint and the pool itself
 native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py verify .../pool.json
-# rate one checkpoint by hand
+# rate one checkpoint (writes <run>/reference/<pool_sha8>/<stem>.json when the
+# file lives under checkpoints/; otherwise pass --out)
 BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py rate \
-  --pool .../pool.json --checkpoint <run>/checkpoints/policy-000266698752.bin --out /tmp/rate
+  --pool .../pool.json --checkpoint <run>/checkpoints/policy-000266698752.bin
 ```
 
 `pool.json` records each member's kind (`random`, `scripted`, `checkpoint`),
@@ -241,40 +241,57 @@ the `flags` column of `summary.md`, and appear as a badge on the dashboard
 run page. They never change the score: a camper keeps its rating and its
 `no-offense` label side by side.
 
-### Re-scoring an old sweep
+### Rating files
 
-`rescore.py` rates every scored trial of an existing sweep against a pool
-without writing into the sweep's tree:
+Rating files are derived data on the run, not a second source of truth:
 
-```sh
-BOPL_RL_BACKEND=rust systemd-run --user --scope -p CPUQuota=600% --nice=10 -- \
-  native/artifacts/rl/venv/bin/python native/rl/sweep/rescore.py \
-  --sweep native/artifacts/rl/sweeps/overnight-3 \
-  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
-  --out native/artifacts/rl/sweeps/overnight-3-rescore-v5 --workers 6
+```
+<run>/reference/<pool_sha8>/<checkpoint>.json
 ```
 
-Output: `<out>/<trial>/reference/<checkpoint>.json`, `<out>/<trial>/result.json`,
-`<out>/rescore.json` and `<out>/summary.md` (old score, new rating ± CI,
-IQM over the last k, flags, rank moves). Per-checkpoint ratings are cached,
-so re-running the same command extends `<out>` with newly finished trials.
+`pool_sha8` is the first eight hex of `pool_sha256` (v5 is `ec5bd5ae`). A rating
+on another pool lives in another directory; the dashboard shows the current
+pool's scale and lists runs lacking it as unrated. Cache key is (pool sha,
+checkpoint sha, games). A fuller band rating is reused for a cheaper request;
+an `evaluate.py` fit (`source: evaluation`) is not.
 
-### One joint ladder
+`evaluate.py` writes the cheap fit from its games against pool members on
+pool maps (no extra play). The sweep driver and `rate-runs` write the full
+band-allocated rater of the last k evaluation checkpoints. The driver's
+score is the IQM of those k ratings.
 
-`reference_pool.py ladder` re-rates the pool members *together with* new
-checkpoints in one Bradley-Terry fit: the pool's recorded round robin is
-reused, each new checkpoint plays every member and every other new
-checkpoint with the pool's recipe (48 games per pair, same maps and seeds),
-and a checkpoint byte-identical to a member is that member. The output is
-`ladder.json` in the `research/elo_ladder.py` schema plus a 95% interval per
-participant; the dashboard's Ladder view reads it together with a
-`rescore.json` in the same directory (`serve.py --ladder NAME=DIR`):
+The overnight-4 driver from `1a4cd3a` still writes
+`<run>/reference/<checkpoint>.json` (flat). Both locations are read; new
+files only go in the sha8 directory. Optional migration:
 
 ```sh
-BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py ladder \
+mkdir -p "$RUN/reference/ec5bd5ae"
+mv "$RUN"/reference/policy-*.json "$RUN/reference/ec5bd5ae/"
+```
+
+### Human Elo
+
+Same fixed-member BT, from `native/artifacts/rl/human/mac/games.jsonl` minus
+`excluded.json`. `agent_won` means the bot won. Maps rotate 0–123 while the
+pool plays 0–2; n is small. Shown as the human row on the dashboard.
+
+```sh
+native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py human \
+  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json
+```
+
+### Rating old runs
+
+`rate-runs` fills the same `<run>/reference/<pool_sha8>/` directory for any
+run or sweep (overnight-1/2, long runs, overnight-3). Older sims set
+`game_mismatch`. There is no separate rescore tree.
+
+```sh
+BOPL_RL_BACKEND=rust systemd-run --user --scope -p CPUQuota=300% -p MemoryMax=6G --nice=15 -- \
+  native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py rate-runs \
   --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
-  --checkpoint o3-020-final=native/artifacts/rl/sweeps/overnight-3/020/checkpoints/policy-266698752.bin ... \
-  --out native/artifacts/rl/sweeps/overnight-3-ladder-v5/ladder.json --workers 12
+  --sweep native/artifacts/rl/sweeps/overnight-3 \
+  --last-k 3 --games 240 --workers 3
 ```
 
 ## Reading results
@@ -285,16 +302,24 @@ configuration; `launch-best.sh` is a ready-to-run launch script for it
 (`STEPS=... OUT=... bash launch-best.sh`, long-run conventions). Raw
 per-trial records live in `results.jsonl` and `sweep.json`.
 
-Trials are ordinary run directories, so the dashboard renders them; register
-a sweep with the glob option:
+Trials are ordinary run directories, so the dashboard renders them. Register
+roots with `--root`, isolated live runs with `--run-root NAME=PATH`, and a
+sweep's trials with `--run-root-glob`. `--pool` is the scale (default
+pool-v5). `--ladder` and `--study-root` are gone.
 
 ```sh
-native/artifacts/rl/venv/bin/python native/rl/research/serve.py --port 8876 \
-  --run-root-glob 'smoke=native/artifacts/rl/sweeps/smoke/[0-9]*'
+native/artifacts/rl/venv/bin/python native/rl/research/serve.py \
+  --host 127.0.0.1 --port 8876 \
+  --root native/artifacts/rl \
+  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
+  --run-root-glob 'overnight-3=native/artifacts/rl/sweeps/overnight-3/[0-9]*' \
+  --run-root-glob 'overnight-4=native/artifacts/rl/sweeps/overnight-4/[0-9]*'
 ```
 
-New trials appear as `smoke-000`, `smoke-001`, ... without restarting the
-server (the glob is re-evaluated per request).
+`/` is the ladder (IQM3 ± CI on pool-v5, pool members frozen, human row).
+`/run/<name>` is Elo over steps plus win rates, behaviour, checkpoints, replay.
+`/sweep/<name>` is the trial table and Pareto front. New glob matches appear
+without restarting.
 
 ## Cautions
 

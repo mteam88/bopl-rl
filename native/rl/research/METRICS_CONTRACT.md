@@ -1,6 +1,6 @@
 # Dashboard metrics contract
 
-What the research dashboard (`serve.py`, `study_data.py`, `web/`) reads from a
+What the research dashboard (`serve.py`, `web/`) reads from a
 training run directory. The native trainer must keep writing everything marked
 **required**; fields marked **new** are additions the dashboard renders as soon
 as they appear. Owned by the dashboard side; change it here first, then in the
@@ -21,6 +21,8 @@ trainer.
 <run>/evaluations/%09d/<game>.mind.json.gz  per-decision policy dump (see below)
 <run>/evaluations/%09d/<game>.mp4/.jpg  rendered video + poster (optional)
 <run>/final-evaluations/%09d/result.json, validation/evaluations/%09d/result.json (optional)
+<run>/reference/<pool_sha8>/<checkpoint>.json   derived Elo vs the current pool (evaluate.py + rate-runs)
+<run>/reference/<checkpoint>.json               legacy overnight-4 location, still read
 <run>/video-status.json     optional {status, step, rendered}
 ```
 
@@ -195,30 +197,16 @@ synchronized to playback. Implemented natively (native-evaluation rift commit
 Mind dumps are produced only by the native evaluator; historical games without
 one simply don't show the panel (no torch backfill).
 
-## Checkpoints and the ELO ladder
+## Checkpoints and the quality number
 
-`research/elo_ladder.py` plays round-robin pools among evenly spaced native
-`.bin` checkpoints (via `native_policy.load()`) plus fixed anchors. Historical
-`.pt` checkpoints appear in listings but never as ladder participants, and the
-"best old checkpoint" anchor is dropped: the old torch GRU (standard recurrent
-matrices/biases, Tanh encoder) has no faithful export to the native
-MinGRU/bias-free layout. Anchors are random, the initial native checkpoint,
-frozen native references, and scripted bots (`--scripted-anchors`, default
-`mixed-hard`; names are `kind-level` from `native/rl/SCRIPTED_BOTS.md`, rated
-as `kind:"anchor"` with `step:null, sha256:null`). Ladder
-output lives in `<run>/ladder/ladder.json` (dashboard-read-only):
-
-```json
-{"schema": 1, "updated": 0.0, "games": 980, "games_per_pair": 8, "maps": [0],
- "seed_base": 50001, "episode_ticks": 7200, "note": "…",
- "ratings": [{"name": "checkpoint-000000000", "kind": "checkpoint|anchor",
-              "step": 0, "sha256": "…", "rating": 0.0,
-              "games": 0, "wins": 0, "losses": 0, "draws": 0}],
- "matches": [{"a": "…", "b": "…", "wins_a": 0, "wins_b": 0, "draws": 0}]}
-```
-
-Ratings are a Bradley-Terry MLE with timeouts as draws and the random anchor
-pinned at 0 Elo.
+Quality is one number: fixed-pool Bradley-Terry Elo vs pool-v5 (members held
+fixed, random = 0), summarised as the IQM of the last three rated evaluation
+checkpoints with a 95% interval. `evaluate.py` fits it from the evaluation
+games against pool members on pool maps and writes
+`<run>/reference/<pool_sha8>/<stem>.json`. The band rater (`rate-runs`, the
+sweep scorer) writes the same path with more games. The dashboard ladder is
+`GET /api/ladder`; a run is `GET /api/run/<name>` (`ratings`, `iqm`). There
+is no joint ladder and no `<run>/ladder/ladder.json`.
 
 ## Asks that are trainer configuration (not dashboard code)
 
@@ -235,9 +223,7 @@ The source JSONL remains complete. The server reads new complete lines once and
 retains at most 2,400 chart samples per run (eight recently viewed runs). It keeps
 the latest 120 updates unchanged and progressively doubles the sampling stride
 for older history. `metrics_total` counts all source records; top-level
-`map_matches` takes the latest cumulative counters without summing updates. Study readers retain
-180 samples per file and accumulate counters before sampling, so continuation
-curves preserve exact totals across both source and resumed runs.
+`map_matches` takes the latest cumulative counters without summing updates.
 
 A partial final line waits for the next append. A malformed complete line fails
 the request; file replacement or truncation resets the reader. Initial visits
@@ -246,10 +232,8 @@ scan a run once with bounded memory. Later polls read only appended data.
 Evaluation listings carry chart groups and replay metadata; full telemetry and
 provenance remain in each evaluation's `result.json`. Four encoded run responses
 are cached, invalidated by changes to metrics, status, configuration, evaluation
-reports/directories, video status, or the ladder. Run responses support ETags;
-the browser skips unchanged responses, overlapping polls, and hidden-tab polls.
-Replay-derived insights backfill on one background worker. Large JSON downloads
-compress through a temporary file rather than retaining the whole file in RAM.
+reports/directories, or the run's rating directory. Run responses support ETags;
+the browser skips unchanged responses. Large JSON payloads gzip over the wire.
 
 Reader regression check: `python3 native/rl/research/check_metrics_store.py`.
 HTTP cache check: `python3 native/rl/research/check_dashboard_api.py`.

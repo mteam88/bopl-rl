@@ -1,561 +1,167 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Bopl · Learning Lab</title>
-    <link rel="stylesheet" href="/style.css" />
-  </head>
-  <body>
-    <header>
-      <a class="brand" href="/" aria-label="Bopl Learning Lab home"
-        ><svg viewBox="0 0 48 40" aria-hidden="true">
-          <path
-            d="M5 27C2 16 9 4 24 5s23 13 20 23C41 39 8 40 5 27"
-            fill="currentColor"
-          />
-          <circle cx="19" cy="19" r="3" fill="#f6f3e9" />
-          <circle cx="32" cy="19" r="3" fill="#f6f3e9" /></svg
-        ><span>Bopl <i>/</i> Learning Lab</span></a
-      >
-      <div class="header-tools"><a class="text-button" href="/study">Current studies ↗</a><a class="text-button" href="/ladder">Ladder ↗</a></div>
-      <div class="connection">
-        <span id="connectionDot"></span><span id="connection">Connecting</span>
-      </div>
-    </header>
-    <main>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bopl · Quality</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <a class="brand" href="/" aria-label="Bopl quality home">
+      <svg viewBox="0 0 48 40" aria-hidden="true">
+        <path d="M5 27C2 16 9 4 24 5s23 13 20 23C41 39 8 40 5 27" fill="currentColor"/>
+        <circle cx="19" cy="19" r="3" fill="#07080b"/>
+        <circle cx="32" cy="19" r="3" fill="#07080b"/>
+      </svg>
+      <span>Bopl <i>/</i> Quality</span>
+    </a>
+    <nav>
+      <a href="/" data-nav="ladder">Ladder</a>
+      <a href="/sweep/" data-nav="sweep" id="sweepNav" hidden>Sweep</a>
+    </nav>
+    <div class="connection" id="connectionBox"><span></span><span id="connection">Connecting</span></div>
+  </header>
+  <main>
+    <p id="notice" role="status"></p>
+
+    <section id="ladderView">
       <div class="intro">
         <div>
-          <p class="eyebrow">EXPERIMENT NOTEBOOK</p>
-          <h1>Learning to <em>hold its own.</em></h1>
-          <p class="lede">
-            Dash out of trouble. Find the arrow. Build a way back.
-          </p>
+          <p class="eyebrow">POOL V5 · RANDOM = 0</p>
+          <h1>One number.</h1>
+          <p class="lede" id="ladderLede">Fixed-pool Bradley-Terry Elo. Members stay put. IQM of the last three rated checkpoints.</p>
         </div>
-        <label class="run-picker"
-          >Experiment<select id="run">
-            <option>Waiting for a run</option>
-          </select></label
-        >
+        <div class="identity" id="poolIdentity"></div>
       </div>
-      <div class="protocol">
-        <span><b>02</b> players</span><span><b>15 Hz</b> decisions</span
-        ><span><b>150 ms</b> delayed view</span
-        ><span>Dash <i>↗</i> Arrow <i>→</i> Platform <i>▰</i></span
-        ><span id="runState" class="pill">Preparing</span
-        ><span id="flags" class="tag flags" hidden></span>
+      <div class="toolbar">
+        <label>Sort
+          <select id="sort">
+            <option value="rating">Elo</option>
+            <option value="name">Name</option>
+            <option value="kind">Kind</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="hidePool" /> Hide pool members</label>
+        <span id="ladderTag" class="tag">Loading</span>
       </div>
-      <div id="notice" role="status"></div>
-      <section id="seriesSection" class="series-section" hidden>
-        <div class="section-top">
-          <div>
-            <p class="eyebrow">REPEAT THE EXPERIMENT</p>
-            <h2 id="seriesTitle">Fresh seeds. One protocol.</h2>
-          </div>
-          <span id="seriesState" class="pill">Prepared</span>
+      <div class="table-wrap">
+        <table class="ladder board" aria-label="Quality ladder">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Kind</th>
+              <th class="num">Elo</th>
+              <th class="num">95% CI</th>
+              <th>Spark</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody id="ladderRows"></tbody>
+        </table>
+      </div>
+      <p class="caption" id="ladderNote"></p>
+    </section>
+
+    <section id="runView" hidden>
+      <div class="intro">
+        <div>
+          <p class="eyebrow" id="runEyebrow">RUN</p>
+          <h1 id="runTitle">—</h1>
+          <p class="lede" id="runLede"></p>
         </div>
-        <div id="seriesRuns" class="series-runs"></div>
-        <div class="chart-title">
-          <b>Against the starting policy · map 0</b
-          ><span>Diagnostic seed pairs</span>
+        <div class="hero-elo">
+          <strong id="runElo">—</strong>
+          <small id="runInterval">IQM3</small>
+          <span id="runFlags" class="flags"></span>
         </div>
-        <canvas
-          id="seriesChart"
-          class="chart"
-          aria-label="Win rate comparison across independent training seeds"
-        ></canvas>
-        <p class="caption">
-          Each line starts from a fresh policy. Final results use separate seeds
-          and appear on the cards. Opening the series follows the active run;
-          choosing an individual run keeps it selected.
-        </p>
-      </section>
-      <section class="stats" aria-label="Training progress">
-        <article>
-          <p>Agent decisions</p>
-          <strong id="steps">—</strong>
-          <div class="progress"><span id="progress"></span></div>
-          <small id="target">Waiting for training</small>
-        </article>
-        <article>
-          <p>Collection + training</p>
-          <strong id="sps">—</strong><small>agent decisions / second</small>
-        </article>
-        <article>
-          <p>Completed matches</p>
-          <strong id="matches">—</strong><small id="elapsed">—</small>
-        </article>
-        <article class="accent">
-          <p id="baselineLabel">Against the initial policy</p>
-          <strong id="win">—</strong
-          ><small id="winDetail">Fixed evaluation · both player sides</small>
-        </article>
-        <article>
-          <p>Matches cut by the clock</p>
-          <strong id="truncations">—</strong
-          ><small id="truncationDetail">Timeouts per episode · rolling 20 updates</small>
-        </article>
+      </div>
+      <div class="stats" id="runStats"></div>
+      <section class="panel">
+        <div class="section-top"><p class="eyebrow">ELO</p><h2>Vs the pool, over steps.</h2></div>
+        <canvas id="eloChart" class="chart" aria-label="Elo over learner steps"></canvas>
+        <p class="caption" id="eloCaption"></p>
+        <p class="cmd" id="rateCommand" hidden></p>
+        <div class="table-wrap">
+          <table class="ladder" aria-label="Rated checkpoints">
+            <thead>
+              <tr>
+                <th>Checkpoint</th>
+                <th class="num">Steps</th>
+                <th class="num">Elo</th>
+                <th class="num">95% CI</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody id="ratingRows"></tbody>
+          </table>
+        </div>
       </section>
       <div class="workspace">
-        <section class="watch">
+        <section class="panel watch">
           <div class="section-top">
-            <div>
-              <p class="eyebrow">WATCH THE POLICY</p>
-              <h2>A match tells the story.</h2>
-            </div>
-            <div>
-              <span id="replayTag" class="tag">Awaiting evaluation</span
-              ><label class="follow"
-                ><input id="followLatest" type="checkbox" checked /> Follow
-                latest</label
-              >
-            </div>
+            <div><p class="eyebrow">REPLAY</p><h2>A match.</h2></div>
+            <span id="replayTag" class="tag">Awaiting evaluation</span>
           </div>
           <div class="replay-select">
-            <label
-              >Checkpoint<select id="checkpoint">
-                <option>No checkpoints yet</option>
-              </select></label
-            ><label
-              >Match<select id="match">
-                <option>No replays yet</option>
-              </select></label
-            >
+            <label>Checkpoint<select id="checkpoint"></select></label>
+            <label>Match<select id="match"></select></label>
           </div>
-          <div class="stage physics">
-            <canvas
-              id="arena"
-              width="1440"
-              height="480"
-              aria-label="Animated physics replay of the selected match"
-            ></canvas
-            ><video id="video" controls playsinline hidden></video>
-            <div id="emptyReplay">
-              Saved evaluation matches will appear here.<br /><span
-                >Training continues while the evaluator plays.</span
-              >
-            </div>
-            <div id="arenaLabel">PHYSICS REPLAY</div>
+          <div class="stage">
+            <canvas id="arena" width="1440" height="480" aria-label="Physics replay"></canvas>
+            <div id="emptyReplay">No saved match yet.</div>
           </div>
           <div class="replay-controls">
-            <button id="play" disabled aria-label="Play replay">▶</button
-            ><input
-              id="scrub"
-              type="range"
-              min="0"
-              max="0"
-              value="0"
-              aria-label="Replay position"
-            /><span id="replayTime">0:00 / 0:00</span
-            ><select id="speed" aria-label="Playback speed">
-              <option value="0.5">½×</option>
+            <button id="play" disabled aria-label="Play replay">▶</button>
+            <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Replay position" />
+            <span id="replayTime">0:00 / 0:00</span>
+            <select id="speed" aria-label="Playback speed">
+              <option value="0.5">0.5×</option>
               <option value="1" selected>1×</option>
               <option value="2">2×</option>
               <option value="4">4×</option>
             </select>
+            <a id="download" hidden>Replay</a>
           </div>
-          <div class="replay-footer">
-            <div>
-              <button id="viewPhysics" class="text-button active">
-                Physics view</button
-              ><button id="viewVideo" class="text-button" disabled>
-                Game video
-              </button>
-            </div>
-            <a id="download" hidden>Download .rep ↗</a>
-          </div>
-          <div id="mindPanel" hidden>
-            <div class="chart-title">
-              <b>The policy's mind</b><span id="mindReadout">V(s) and the action distribution</span>
-            </div>
-            <canvas id="mindValue" class="chart" aria-label="Value estimate across the match"></canvas>
-            <div class="mind-row">
-              <div>
-                <canvas id="mindButtons" class="mind-small" aria-label="Button combination probabilities at the current moment"></canvas>
-                <p class="caption">Button combos · J·D·A·P</p>
-              </div>
-              <div>
-                <canvas id="mindAim" class="mind-small" aria-label="Aim angle distribution at the current moment"></canvas>
-                <p class="caption">Aim direction probability · gray ∅ bin = stick released, then 0–360°</p>
-              </div>
-            </div>
-            <p class="caption">
-              Recorded from the policy during this evaluation game. The cursor
-              follows the physics replay; scrub to inspect any decision.
-            </p>
-          </div>
-          <div id="players" class="players"></div>
-          <p class="caption">
-            The physics view shows recorded positions and collisions. Game
-            videos use the actual Unity build. Both come from the same saved
-            inputs.
-          </p>
+          <div id="players"></div>
         </section>
-        <section class="learning">
-          <div class="section-top">
-            <div>
-              <p class="eyebrow">MEASURE THE CHANGE</p>
-              <h2>Is it getting better?</h2>
-            </div>
+        <section class="panel">
+          <div class="section-top"><p class="eyebrow">OPPONENTS</p><h2>Win rates.</h2></div>
+          <label>Map <select id="winMap"></select></label>
+          <div class="table-wrap">
+            <table class="ladder">
+              <thead><tr><th>Opponent</th><th class="num">Win</th><th class="num">Games</th></tr></thead>
+              <tbody id="winRows"></tbody>
+            </table>
           </div>
-          <div class="chart-title">
-            <b>Win rate against fixed opponents</b
-            ><label>Map<select id="winMap" aria-label="Map for win rate chart"><option value="0">Map 0</option></select></label>
-          </div>
-          <canvas
-            id="winsChart"
-            class="chart tall"
-            aria-label="Win rate chart"
-          ></canvas>
-          <div class="legend">
-            <span style="--series: #2846d4">Random buttons</span
-            ><span style="--series: #e87350">Initial policy</span
-            ><span id="thirdWinLegend" style="--series: #71816a">Unseen maps</span>
-          </div>
-          <p id="evalNote" class="caption">
-            Same seeds and swapped sides at every checkpoint. Bands show 95%
-            Wilson intervals; small samples remain uncertain.
-          </p>
-          <div class="chart-title">
-            <b>Throughput</b><span>Decisions / second</span>
-          </div>
-          <canvas
-            id="speedChart"
-            class="chart"
-            aria-label="Training throughput chart"
-          ></canvas>
-          <div class="chart-title">
-            <b>Action variety</b><span>Entropy by head · nats</span>
-          </div>
-          <canvas
-            id="entropyChart"
-            class="chart"
-            aria-label="Policy entropy by action head"
-          ></canvas>
-          <div class="legend">
-            <span style="--series: #2846d4">Aim · max 5.55</span
-            ><span style="--series: #e87350">Buttons · max 2.77</span
-            ><span style="--series: #71816a">Joint · max 8.32</span>
-          </div>
-          <p id="entropyNote" class="caption">
-            Dotted lines are uniform-policy maxima. A head parked at its line is
-            not learning; falling entropy alone does not prove better play.
-          </p>
+          <div class="section-top" style="margin-top:24px"><p class="eyebrow">BEHAVIOUR</p><h2>How it plays.</h2></div>
+          <dl class="metrics" id="behavior"></dl>
         </section>
       </div>
-      <section id="healthSection" class="behavior-section">
-        <div class="section-top">
-          <div>
-            <p class="eyebrow">OPTIMIZATION</p>
-            <h2>Is the gradient real?</h2>
-          </div>
-          <div class="health">
-            <span>Policy change <b id="kl">—</b></span
-            ><span>Clipped updates <b id="clip">—</b></span
-            ><span>GPU memory <b id="memory">—</b></span>
-          </div>
+    </section>
+
+    <section id="sweepView" hidden>
+      <div class="intro">
+        <div>
+          <p class="eyebrow">SWEEP</p>
+          <h1 id="sweepTitle">—</h1>
+          <p class="lede" id="sweepLede"></p>
         </div>
-        <div class="behavior-grid">
-          <article>
-            <div class="chart-title">
-              <b>Schedules</b><span>Log scale</span>
-            </div>
-            <canvas
-              id="scheduleChart"
-              class="chart"
-              aria-label="Entropy coefficient and learning rate schedules"
-            ></canvas>
-            <div class="legend">
-              <span style="--series: #2846d4">Entropy coefficient</span
-              ><span style="--series: #e87350">Learning rate</span>
-            </div>
-            <p class="caption">
-              The values actually applied each update. Flat lines mean no decay
-              is configured.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>Advantage spread</b><span>Std before normalization</span>
-            </div>
-            <canvas
-              id="advantageChart"
-              class="chart"
-              aria-label="Advantage standard deviation before normalization"
-            ></canvas>
-            <p class="caption">
-              Near zero means the reward carries no signal; per-minibatch
-              normalization would still make such gradients look full-size.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>Value loss</b><span>Critic fit</span>
-            </div>
-            <canvas
-              id="lossChart"
-              class="chart"
-              aria-label="Value loss chart"
-            ></canvas>
-            <p class="caption">
-              Explained variance: <b id="explained">—</b>
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>Episode length</b><span>Seconds · mean per update</span>
-            </div>
-            <canvas
-              id="episodeLengthChart"
-              class="chart"
-              aria-label="Mean episode length in seconds"
-            ></canvas>
-            <p class="caption">
-              The dotted line is the episode cap; matches touching it were cut
-              off, not finished.
-            </p>
-          </article>
-        </div>
+      </div>
+      <section class="panel">
+        <div class="section-top"><p class="eyebrow">COST VS SCORE</p><h2>Pareto front.</h2></div>
+        <canvas id="paretoChart" class="chart" aria-label="Score versus cost"></canvas>
       </section>
-      <section id="evaluationMatrix" class="evaluation-matrix" hidden>
-        <div class="section-top">
-          <div><p class="eyebrow">EVERY OPPONENT. EVERY MAP.</p><h2>Where does it hold up?</h2></div>
-          <span id="matrixSuite" class="tag">Checkpoint evaluation</span>
-        </div>
-        <p id="mapCoverage" class="caption"></p>
-        <div class="evaluation-table-wrap">
-          <table class="evaluation-table">
-            <thead><tr><th scope="col">Opponent</th><th scope="col">Map</th><th scope="col">Wins</th><th scope="col">95% interval</th><th scope="col">Timeouts</th></tr></thead>
-            <tbody id="evaluationRows"></tbody>
-          </table>
-        </div>
-        <p class="caption">Each result uses both player sides. Timeouts count as non-wins. These Wilson intervals describe individual groups and do not adjust for dependence within a seed pair. Previous trained policies stay frozen and are used only for evaluation.</p>
-      </section>
-      <section id="behaviorSection" class="behavior-section">
-        <div class="section-top">
-          <div>
-            <p class="eyebrow">FROM INPUT TO OUTCOME</p>
-            <h2>What is the policy learning?</h2>
-          </div>
-          <span class="tag">Learning players only · rolling 20 updates</span>
-        </div>
-        <p id="behaviorNotice" class="caption">
-          Gameplay counters will appear after the first rollout.
-        </p>
-        <div class="behavior-grid">
-          <article>
-            <div class="chart-title">
-              <b>Ability activations</b><span>Per player-minute</span>
-            </div>
-            <canvas
-              id="abilitiesChart"
-              class="chart"
-              aria-label="Confirmed dash bow and platform activations over training"
-            ></canvas>
-            <div class="legend">
-              <span style="--series: #2846d4">Dash</span
-              ><span style="--series: #e87350">Bow</span
-              ><span style="--series: #71816a">Platform</span>
-            </div>
-            <p class="caption">
-              Counts entry into each ability. Bow entry and arrow release are
-              separate events.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>Arrows that connect</b><span>Per player-minute</span>
-            </div>
-            <canvas
-              id="arrowsChart"
-              class="chart"
-              aria-label="Arrows released and damaging arrow hits over training"
-            ></canvas>
-            <div class="legend">
-              <span style="--series: #2846d4">Released</span
-              ><span style="--series: #e87350">Damaging hits on opponents</span>
-            </div>
-            <p class="caption">
-              Hits are accepted damaging collisions, not every contact or a
-              unique-projectile accuracy score.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>Where lives are lost</b><span>Per player-minute</span>
-            </div>
-            <canvas
-              id="deathsChart"
-              class="chart"
-              aria-label="Deaths credited to environment opponents self or other causes"
-            ></canvas>
-            <div class="legend">
-              <span style="--series: #2846d4">Environment</span
-              ><span style="--series: #e87350">Opponent</span
-              ><span style="--series: #71816a">Self</span
-              ><span style="--series: #ab8a5a">Other</span>
-            </div>
-            <p class="caption">
-              Uses the game's credited killer. Environment includes falling and
-              hazards; an uncredited shove can still appear here.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>What earns reward</b><span>Per 1,000 decisions</span>
-            </div>
-            <canvas
-              id="rewardsChart"
-              class="chart"
-              aria-label="Win loss kill and death reward components over training"
-            ></canvas>
-            <div class="legend">
-              <span style="--series: #2846d4">Round outcome</span
-              ><span style="--series: #71816a">Game kill credit</span
-              ><span style="--series: #e87350">Deaths</span>
-            </div>
-            <p class="caption">
-              The existing game kill counter includes self-kills, whose small
-              kill and death terms cancel. Win/loss reward still applies.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>How matches end</b><span>Per episode</span>
-            </div>
-            <canvas
-              id="endingsChart"
-              class="chart"
-              aria-label="Timeouts environment deaths and kills per episode"
-            ></canvas>
-            <div class="legend">
-              <span style="--series: #2846d4">Timeouts</span
-              ><span style="--series: #e87350">Environment deaths</span
-              ><span style="--series: #71816a">Credited kills</span>
-            </div>
-            <p class="caption">
-              Timeouts are matches the clock ended. Kills use the reward credit
-              when a kill bonus exists, or the game counter when recorded.
-            </p>
-          </article>
-          <article>
-            <div class="chart-title">
-              <b>Shot quality</b><span>Hits / arrows fired</span>
-            </div>
-            <canvas
-              id="accuracyChart"
-              class="chart"
-              aria-label="Fraction of fired arrows that hit"
-            ></canvas>
-            <p class="caption">
-              Damaging hits over released arrows in the rolling window.
-            </p>
-          </article>
-        </div>
-      </section>
-      <section id="ladderSection" class="behavior-section" hidden>
-        <div class="section-top">
-          <div>
-            <p class="eyebrow">STRENGTH OVER TIME</p>
-            <h2>The ladder doesn't flatter.</h2>
-          </div>
-          <span id="ladderTag" class="tag">Checkpoint league</span>
-        </div>
-        <canvas
-          id="ladderChart"
-          class="chart tall"
-          aria-label="Elo ratings of checkpoints against fixed anchors"
-        ></canvas>
-        <div id="ladderLegend" class="legend"></div>
-        <p id="ladderNote" class="caption">
-          Round-robin games among recent checkpoints and fixed anchors, rated by
-          maximum likelihood with the random policy pinned at 0 Elo. Dotted lines
-          are the anchors. Bounded game counts; ratings move as games accumulate.
-        </p>
-      </section>
-      <section id="heatmapSection" class="behavior-section" hidden>
-        <div class="section-top">
-          <div>
-            <p class="eyebrow">WHERE IT LIVES AND DIES</p>
-            <h2>Ground truth on the map.</h2>
-          </div>
-          <div class="replay-select">
-            <label
-              >Checkpoint<select id="heatmapEval"></select></label
-            ><label
-              >Map<select id="heatmapMap"></select></label
-            >
-          </div>
-        </div>
-        <div class="heatmap-stage">
-          <canvas
-            id="heatmap"
-            width="960"
-            height="540"
-            aria-label="Position occupancy and death locations for the selected checkpoint and map"
-          ></canvas>
-        </div>
-        <p id="heatmapNote" class="caption">
-          Occupancy from every saved evaluation game on this map (policy player
-          only); crosses are where it died. Platforms drawn for reference.
-        </p>
-      </section>
-      <section class="details">
-        <article>
-          <p class="eyebrow">BEHAVIOR</p>
-          <h3>Which buttons get pressed?</h3>
-          <div id="actionBars"></div>
-          <p id="actionNote" class="caption">
-            Recent decisions from learning players only. Button presses are
-            attempts, not confirmed activations.
-          </p>
-        </article>
-        <article>
-          <p class="eyebrow">HUMAN COMPARISON</p>
-          <h3>Does it play like a person?</h3>
-          <div class="chart-title">
-            <b>Completed bow hold</b><span>Median seconds · human 0.84</span>
-          </div>
-          <canvas
-            id="bowHoldChart"
-            class="chart"
-            aria-label="Median completed bow hold duration across checkpoints against the human reference"
-          ></canvas>
-          <div class="chart-title">
-            <b>Aim change per decision</b><span>Median degrees · human 2.8</span>
-          </div>
-          <canvas
-            id="aimChangeChart"
-            class="chart"
-            aria-label="Median aim direction change per decision against the human reference"
-          ></canvas>
-          <p id="gaugeNote" class="caption">
-            Measured from saved evaluation replays. Human references come from
-            the 47-recording demonstration batch (see IMITATION.md).
-          </p>
-        </article>
-        <article>
-          <p class="eyebrow">RESEARCH DESIGN</p>
-          <h3>One clear first question.</h3>
-          <p>
-            Can a recurrent policy learn to survive and win using dash, arrow,
-            and platform with a delayed view?
-          </p>
-          <ul>
-            <li>Train on one map; evaluate on two additional maps.</li>
-            <li>Half the games face earlier checkpoints.</li>
-            <li>Win/loss is the main reward, with a small kill/death bonus.</li>
-            <li>Loadouts and cooldowns are public for every player.</li>
-          </ul>
-          <a id="configLink">View exact configuration ↗</a>
-        </article>
-      </section>
-      <footer>
-        <span>BOPL / LEARNING LAB</span
-        ><span id="updated">Local experiment · waiting for data</span>
-      </footer>
-    </main>
-    <script src="/arena.js"></script>
-<script src="/app.js"></script>
-  </body>
+      <div class="table-wrap">
+        <table class="ladder" aria-label="Sweep trials">
+          <thead><tr id="sweepHead"></tr></thead>
+          <tbody id="sweepRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <footer><span>BOPL / QUALITY</span><span id="updated"></span></footer>
+  <script src="/arena.js"></script>
+  <script src="/app.js"></script>
+</body>
 </html>
