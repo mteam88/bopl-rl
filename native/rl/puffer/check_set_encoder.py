@@ -6,6 +6,7 @@ backend. The production encoder uses PufferLib's native Encoder interface.
 import argparse
 import ctypes
 import json
+import os
 from pathlib import Path
 import subprocess
 import sysconfig
@@ -25,9 +26,14 @@ def build(output, source, compiler):
     nvidia=Path(sysconfig.get_path('purelib'))/'nvidia'
     cuda=nvidia/'cu13'
     obj=output.with_suffix('.o')
+    # The encoder uses the overlay's per-stream cuBLAS handles (pufferlib-bopl.patch),
+    # so compile against the patched overlay build.py generates, like production.
+    overlay=ROOT/'native/artifacts/rl/puffer-overlay'
+    if not (overlay/'kernels.cu').exists():
+        raise SystemExit(f'{overlay} missing: run build.py --device cuda first')
     subprocess.run([str(cuda/'bin/nvcc'),'-O3','-std=c++17','-arch=sm_120',
                     '-ccbin',compiler,'-Xcompiler=-fPIC','-DPRECISION_FLOAT',
-                    '-I'+str(source/'src'),'-I'+str(cuda/'include'),
+                    '-I'+str(overlay),'-I'+str(source/'src'),'-I'+str(cuda/'include'),
                     '-c',str(HERE/'check_set_encoder.cu'),'-o',str(obj)],check=True)
     subprocess.run([compiler,'-shared','-Wl,--no-undefined',str(obj),
                     str(cuda/'lib/libcudart.so.13'),str(cuda/'lib/libcublas.so.13'),
@@ -72,8 +78,77 @@ class Check:
             raise RuntimeError(self.lib.bopl_set_check_error().decode())
         assert np.isfinite(output).all() and np.isfinite(gradients).all()
         return output,gradients
+    def gather(self,T,B_total,idx):
+        idx=np.ascontiguousarray(idx,dtype=np.int32)
+        if self.lib.bopl_set_check_gather(self.context,T,B_total,idx):
+            raise RuntimeError(self.lib.bopl_set_check_error().decode())
+    def time(self,iterations,forward_only=False):
+        return self.lib.bopl_set_check_time(self.context,iterations,int(forward_only))
     def close(self):
         if self.context:self.lib.bopl_set_check_close(self.context);self.context=None
+
+
+def random_obs(rng,batch):
+    obs=rng.normal(size=(batch,OBS)).astype(np.float32)
+    for start,stop,count,width in [(PREFIX,SLIME_OFF,N_ENT,W_ENT),(SLIME_OFF,PREV_OFF,N_SLIME,W_SLIME)]:
+        rows=obs[:,start:stop].reshape(batch,count,width)
+        rows[:,:,0]=rng.choice([0.,1.],size=(batch,count),p=[.7,.3])
+    return obs
+
+
+def gather_cases(lib,rng):
+    """Training path: rows read from a (T, B_total, obs) rollout buffer through
+    segment indices must equal the contiguous path bit for bit (same kernels,
+    same arithmetic order) and match the oracle; repeated segments are legal."""
+    results=[]
+    for T,B_total,segments,hidden in [(16,6,4,128),(8,3,7,16)]:
+        batch=T*segments
+        obs_tb=random_obs(rng,T*B_total).reshape(T,B_total,OBS)
+        idx=rng.choice(B_total,size=segments,replace=True)
+        idx[1]=idx[0]  # duplicate segment
+        contiguous=np.ascontiguousarray(obs_tb[:,idx].transpose(1,0,2).reshape(batch,OBS))
+        count=hidden*FLAT+64*(W_ENT+W_SLIME)+hidden*(hidden+128)
+        weights=(rng.normal(size=count)*.03).astype(np.float32)
+        incoming=rng.normal(size=(batch,hidden)).astype(np.float32)
+        check=Check(lib,batch,hidden)
+        try:
+            direct,direct_grad=check.run(weights,contiguous,incoming)
+            check.gather(T,B_total,idx)
+            gathered,gathered_grad=check.run(weights,obs_tb,incoming,True)
+            np.testing.assert_array_equal(gathered,direct);np.testing.assert_array_equal(gathered_grad,direct_grad)
+            expected,expected_grad=oracle(contiguous,weights,hidden,incoming)
+            np.testing.assert_allclose(gathered,expected,rtol=2e-4,atol=1e-5)
+            np.testing.assert_allclose(gathered_grad,expected_grad,rtol=3e-4,atol=5e-5)
+            # New indices into the same captured graph (idx is read by the kernels).
+            idx2=rng.permutation(B_total)[:segments] if segments<=B_total else rng.choice(B_total,size=segments)
+            check.gather(T,B_total,idx2)
+            contiguous2=np.ascontiguousarray(obs_tb[:,idx2].transpose(1,0,2).reshape(batch,OBS))
+            gathered2,gathered2_grad=check.run(weights,obs_tb,incoming,True)
+            want,want_grad=oracle(contiguous2,weights,hidden,incoming)
+            np.testing.assert_allclose(gathered2,want,rtol=2e-4,atol=1e-5)
+            np.testing.assert_allclose(gathered2_grad,want_grad,rtol=3e-4,atol=5e-5)
+            results.append(dict(T=T,B_total=B_total,segments=segments,hidden=hidden,bit_identical=True,
+                                forward_max_abs=float(np.abs(gathered-expected).max()),
+                                gradient_max_abs=float(np.abs(gathered_grad-expected_grad).max())))
+        finally:check.close()
+    return results
+
+
+def timing(lib,batch=24576,hidden=128,T=128,B_total=448):
+    """GPU ms per encoder forward / forward+backward at the training shape (gather mode)."""
+    rng=np.random.default_rng(5)
+    segments=batch//T
+    check=Check(lib,batch,hidden)
+    try:
+        count=hidden*FLAT+64*(W_ENT+W_SLIME)+hidden*(hidden+128)
+        weights=(rng.normal(size=count)*.03).astype(np.float32)
+        obs_tb=random_obs(rng,T*B_total).reshape(T,B_total,OBS)
+        idx=rng.choice(B_total,size=segments,replace=False)
+        incoming=rng.normal(size=(batch,hidden)).astype(np.float32)
+        check.gather(T,B_total,idx)
+        check.run(weights,obs_tb,incoming)
+        return dict(batch=batch,hidden=hidden,forward_ms=check.time(20,True),forward_backward_ms=check.time(20))
+    finally:check.close()
 
 
 def finite_differences(lib):
@@ -129,11 +204,14 @@ def main():
     parser.add_argument('--build',action='store_true')
     parser.add_argument('--build-only',action='store_true',help='Compile the harness without loading CUDA or running checks')
     parser.add_argument('--cuda-host-compiler',default='g++-15')
+    parser.add_argument('--time',action='store_true',help='Also time the encoder at the training shape (24576 x 128)')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     library=args.output/'check_set_encoder.so'
     if args.build or args.build_only:build(library,args.puffer,args.cuda_host_compiler)
     if args.build_only:
         print(library);return
+    # The overlay's cuBLAS wrapper defaults to TF32; the oracle comparison is fp32.
+    os.environ.setdefault('BOPL_TF32','0')
     lib=ctypes.CDLL(str(library))
     array=np.ctypeslib.ndpointer(dtype=np.float32,flags='C_CONTIGUOUS')
     lib.bopl_set_check_create.argtypes=[ctypes.c_int,ctypes.c_int];lib.bopl_set_check_create.restype=ctypes.c_void_p
@@ -141,13 +219,16 @@ def main():
     lib.bopl_set_check_weight_count.argtypes=[ctypes.c_void_p];lib.bopl_set_check_weight_count.restype=ctypes.c_long
     lib.bopl_set_check_run.argtypes=[ctypes.c_void_p,*([array]*5),ctypes.c_int];lib.bopl_set_check_run.restype=ctypes.c_int
     lib.bopl_set_check_close.argtypes=[ctypes.c_void_p]
+    lib.bopl_set_check_gather.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,np.ctypeslib.ndpointer(dtype=np.int32,flags='C_CONTIGUOUS')]
+    lib.bopl_set_check_gather.restype=ctypes.c_int
+    lib.bopl_set_check_time.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int];lib.bopl_set_check_time.restype=ctypes.c_double
     torch.set_num_threads(1)
     rng=np.random.default_rng(73);results=[]
-    for batch,hidden in [(1,8),(3,16),(7,128)]:
-        obs=rng.normal(size=(batch,OBS)).astype(np.float32)
-        for start,stop,count,width in [(PREFIX,SLIME_OFF,N_ENT,W_ENT),(SLIME_OFF,PREV_OFF,N_SLIME,W_SLIME)]:
-            rows=obs[:,start:stop].reshape(batch,count,width)
-            rows[:,:,0]=rng.choice([0.,1.],size=(batch,count),p=[.7,.3])
+    # 1 / 3 / 7 rows exercise partial blocks; 1030 rows (> 4 x 192 backward
+    # blocks, not a multiple of the rows per block) exercises the grid-stride
+    # loops and the multi-block gradient reduction.
+    for batch,hidden in [(1,8),(3,16),(7,128),(1030,32)]:
+        obs=random_obs(rng,batch)
         count=hidden*FLAT+64*(W_ENT+W_SLIME)+hidden*(hidden+128)
         weights=(rng.normal(size=count)*.03).astype(np.float32)
         incoming=rng.normal(size=(batch,hidden)).astype(np.float32)
@@ -187,7 +268,8 @@ def main():
                                 gradient_max_abs=float(np.abs(grad-expected_grad).max()),
                                 graph_replay=True,permutation=True,masked_poison=True,empty_after_populated=True))
         finally:check.close()
-    report=dict(schema=1,pass_all=True,cases=results,finite_differences=finite_differences(lib))
+    report=dict(schema=2,pass_all=True,cases=results,gather=gather_cases(lib,rng),finite_differences=finite_differences(lib))
+    if args.time:report['timing']=timing(lib)
     (args.output/'result.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report))
 
