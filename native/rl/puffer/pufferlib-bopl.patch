@@ -1,6 +1,6 @@
 diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/bindings.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/bindings.cu	2026-09-12 04:03:05.047598205 -0400
++++ b/bindings.cu	2026-09-12 04:03:05.049164079 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -193,8 +193,8 @@ diff -ruN a/bindings.cu b/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/kernels.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/kernels.cu	2026-09-12 04:03:05.047598205 -0400
++++ b/kernels.cu	2026-09-12 04:03:05.049164079 -0400
 @@ -159,6 +159,14 @@
      int src_row, int dst_row, int row_bytes) {
      const char* s = src + (int64_t)src_row * row_bytes;
@@ -274,8 +274,8 @@ diff -ruN a/kernels.cu b/kernels.cu
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
 diff -ruN a/models.cu b/models.cu
---- a/models.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/models.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/models.cu	2026-09-12 04:03:05.047598205 -0400
++++ b/models.cu	2026-09-12 04:03:05.049164079 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -482,8 +482,8 @@ diff -ruN a/models.cu b/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/ocean.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/ocean.cu	2026-09-12 04:03:05.047623080 -0400
++++ b/ocean.cu	2026-09-12 04:03:05.049164079 -0400
 @@ -3,6 +3,8 @@
  
  #include "cudnn_conv2d.cu"
@@ -511,8 +511,8 @@ diff -ruN a/ocean.cu b/ocean.cu
  }
  
 diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/pufferlib.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/pufferlib.cu	2026-09-12 04:03:05.047623080 -0400
++++ b/pufferlib.cu	2026-09-12 04:03:05.049164079 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -2101,8 +2101,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      static_vec_close(pufferl.vec);
 diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h	2026-09-12 03:12:37.374011073 -0400
-+++ b/vecenv.h	2026-09-12 03:12:37.375720247 -0400
+--- a/vecenv.h	2026-09-12 04:03:05.047623080 -0400
++++ b/vecenv.h	2026-09-12 04:03:05.049164079 -0400
 @@ -119,6 +119,12 @@
  void create_static_threads(StaticVec* vec, int num_threads, int horizon,
      void* ctx, net_callback_fn net_callback, thread_init_fn thread_init);
@@ -2116,7 +2116,19 @@ diff -ruN a/vecenv.h b/vecenv.h
  void static_vec_seq_step(StaticVec* vec);
  void static_vec_render(StaticVec* vec, int env_id);
  void static_vec_read_profile(StaticVec* vec, float out[NUM_EVAL_PROF]);
-@@ -217,13 +223,152 @@
+@@ -201,6 +207,11 @@
+ extern cudaError_t cudaStreamCreateWithFlags(cudaStream_t*, unsigned int);
+ extern cudaError_t cudaStreamQuery(cudaStream_t);
+ extern const char* cudaGetErrorString(cudaError_t);
++// Bopl: BOPL_GPU_PROF=1 stream-side timing of the rollout step (cudaEvents).
++typedef struct CUevent_st* cudaEvent_t;
++extern cudaError_t cudaEventCreateWithFlags(cudaEvent_t*, unsigned int);
++extern cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t);
++extern cudaError_t cudaEventElapsedTime(float*, cudaEvent_t, cudaEvent_t);
+ 
+ #define OMP_WAITING 5
+ #define OMP_RUNNING 6
+@@ -217,13 +228,156 @@
  #endif
  
  
@@ -2256,6 +2268,10 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    atomic_llong stat_polls;
 +    atomic_llong stat_straggler_ns;
 +    atomic_llong stat_launch_ns;   // net_callback + D2H issue (CPU side of eval_gpu)
++    // BOPL_GPU_PROF=1: stream-side split of eval_gpu from cudaEvents recorded
++    // around the H2D uploads, the forward (graph launch) and the D2H (ms).
++    int gpu_prof;
++    atomic_llong stat_gpu_h2d_ns, stat_gpu_fwd_ns, stat_gpu_d2h_ns, stat_gpu_steps;
 +    // BOPL_ENV_PROF=2: c_step phase attribution per env kind (0 self-play,
 +    // 1 historical vs frozen bank, 2 scripted bot): count, begin (actions,
 +    // bot decide), sim (bopl_rl_step[_sampled]), sample (obs encode + copy),
@@ -2270,7 +2286,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +380,188 @@
+@@ -235,7 +389,188 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -2460,7 +2476,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,34 +572,39 @@
+@@ -246,55 +581,96 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -2484,6 +2500,9 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    int prof = threading->prof;
  
      Env* envs = (Env*)vec->envs;
++    int gpu_prof = threading->gpu_prof;
++    cudaEvent_t ev[4] = {0, 0, 0, 0};  // before H2D, after H2D, after forward, after D2H
++    if (gpu_prof) for (int i = 0; i < 4; i++) cudaEventCreateWithFlags(&ev[i], 0);
  
 -    printf("Num workers: %d\n", num_workers);
      while (true) {
@@ -2508,16 +2527,19 @@ diff -ruN a/vecenv.h b/vecenv.h
          for (int t = 0; t < horizon; t++) {
 -            clock_gettime(CLOCK_MONOTONIC, &t0);
 +            int64_t t0 = bopl_now_ns();
++            if (gpu_prof) cudaEventRecord(ev[1], stream);
              net_callback(ctx, buf, t);
++            if (gpu_prof) cudaEventRecord(ev[2], stream);
  
              cudaMemcpyAsync(
-@@ -281,19 +612,38 @@
+                 &vec->actions[agent_start * NUM_ATNS],
                  &vec->gpu_actions[agent_start * NUM_ATNS],
                  agents_per_buffer * NUM_ATNS * sizeof(float),
                  cudaMemcpyDeviceToHost, stream);
 -            cudaStreamSynchronize(stream);
 -            clock_gettime(CLOCK_MONOTONIC, &t1);
 -            my_accum[EVAL_GPU] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
++            if (gpu_prof) cudaEventRecord(ev[3], stream);
 +            int64_t t_issued = bopl_now_ns();
 +            if (prof) atomic_fetch_add_explicit(&threading->stat_launch_ns, t_issued - t0, memory_order_relaxed);
 +            if (gpu_wait == 0) {
@@ -2537,6 +2559,16 @@ diff -ruN a/vecenv.h b/vecenv.h
 +            int64_t t1 = bopl_now_ns();
 +            gpu_ema = gpu_ema ? (gpu_ema * 7 + (t1 - t_issued)) / 8 : (t1 - t_issued);
 +            my_accum[EVAL_GPU] += (float)(t1 - t0) / 1e6f;
++            if (gpu_prof && t > 0) {
++                float ms_h2d = 0, ms_fwd = 0, ms_d2h = 0;
++                cudaEventElapsedTime(&ms_h2d, ev[0], ev[1]);
++                cudaEventElapsedTime(&ms_fwd, ev[1], ev[2]);
++                cudaEventElapsedTime(&ms_d2h, ev[2], ev[3]);
++                atomic_fetch_add_explicit(&threading->stat_gpu_h2d_ns, (long long)(ms_h2d * 1e6f), memory_order_relaxed);
++                atomic_fetch_add_explicit(&threading->stat_gpu_fwd_ns, (long long)(ms_fwd * 1e6f), memory_order_relaxed);
++                atomic_fetch_add_explicit(&threading->stat_gpu_d2h_ns, (long long)(ms_d2h * 1e6f), memory_order_relaxed);
++                atomic_fetch_add_explicit(&threading->stat_gpu_steps, 1, memory_order_relaxed);
++            }
  
              memset(&vec->rewards[agent_start], 0, agents_per_buffer * sizeof(float));
              memset(&vec->terminals[agent_start], 0, agents_per_buffer * sizeof(float));
@@ -2557,9 +2589,11 @@ diff -ruN a/vecenv.h b/vecenv.h
 +            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
 +            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
  
++            if (gpu_prof) cudaEventRecord(ev[0], stream);
              cudaMemcpyAsync(
                  (char*)vec->gpu_observations + agent_start * OBS_SIZE * obs_element_size(),
-@@ -319,25 +669,190 @@
+                 (char*)vec->observations + agent_start * OBS_SIZE * obs_element_size(),
+@@ -319,25 +695,190 @@
  #endif
          }
          cudaStreamSynchronize(stream);
@@ -2719,9 +2753,9 @@ diff -ruN a/vecenv.h b/vecenv.h
      for (int buf = 0; buf < vec->buffers; buf++) {
 -        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
 +        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
-+    }
-+}
-+
+     }
+ }
+ 
 +double static_vec_omp_wait(StaticVec* vec) {
 +    StaticThreading* threading = vec->threading;
 +    double last = 0.0;
@@ -2732,15 +2766,15 @@ diff -ruN a/vecenv.h b/vecenv.h
 +            bopl_futex_wait(&threading->buffer_states[buf], s);
 +        }
 +        if (threading->done_at[buf] > last) last = threading->done_at[buf];
-     }
++    }
 +    return last;
 +}
 +
 +void static_vec_omp_step(StaticVec* vec) {
 +    static_vec_omp_start(vec);
 +    static_vec_omp_wait(vec);
- }
- 
++}
++
  void static_vec_seq_step(StaticVec* vec) {
      StaticThreading* threading = vec->threading;
      for (int buf = 0; buf < vec->buffers; buf++) {
@@ -2756,7 +2790,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      }
  }
  
-@@ -591,6 +1106,82 @@
+@@ -591,6 +1132,84 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -2790,6 +2824,8 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    th->poll_pause = bopl_env_int("BOPL_GPU_POLL_PAUSE", 40);
 +    th->steal_margin_ns = (int64_t)bopl_env_int("BOPL_GPU_STEAL_MARGIN_US", -1) * 1000;
 +    th->prof = bopl_env_int("BOPL_ENV_PROF", 0);
++    th->gpu_prof = bopl_env_int("BOPL_GPU_PROF", 0);
++    if (th->gpu_prof && !th->prof) th->prof = 1;  // printed with the pool statistics
 +    th->lpt = bopl_env_int("BOPL_ENV_LPT", 1);
 +    th->affinity = bopl_env_int("BOPL_ENV_AFFINITY", 0);
 +    if (th->affinity) th->lpt = 0;  // the claim order is the home slice, not the LPT sort
@@ -2839,7 +2875,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1194,11 @@
+@@ -603,7 +1222,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -2852,7 +2888,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      }
  }
  
-@@ -611,10 +1206,21 @@
+@@ -611,10 +1234,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -2876,7 +2912,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1234,7 @@
+@@ -628,6 +1262,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -2884,7 +2920,7 @@ diff -ruN a/vecenv.h b/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1330,38 @@
+@@ -723,6 +1358,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
@@ -2905,6 +2941,16 @@ diff -ruN a/vecenv.h b/vecenv.h
 +            envs > 0 ? ns / 1e3 / envs : 0.0, ns / 1e6 / buffer_steps,
 +            100.0 * owner / (envs ? envs : 1), 100.0 * worker / (envs ? envs : 1), 100.0 * stolen / (envs ? envs : 1),
 +            sleeps / buffer_steps, polls / buffer_steps, strag / 1e3 / buffer_steps, launch / 1e3 / buffer_steps);
++        if (threading->gpu_prof) {
++            long long steps = atomic_exchange(&threading->stat_gpu_steps, 0);
++            long long h2d = atomic_exchange(&threading->stat_gpu_h2d_ns, 0);
++            long long fwd = atomic_exchange(&threading->stat_gpu_fwd_ns, 0);
++            long long d2h = atomic_exchange(&threading->stat_gpu_d2h_ns, 0);
++            if (steps > 0)
++                fprintf(stderr, "bopl gpu step (stream events, us): h2d %.1f + forward %.1f + d2h %.1f = %.1f of eval_gpu %.1f\n",
++                    h2d / 1e3 / steps, fwd / 1e3 / steps, d2h / 1e3 / steps, (h2d + fwd + d2h) / 1e3 / steps,
++                    out[EVAL_GPU] * 1e3 / (buffer_steps / 50.0 / threading->num_buffers));
++        }
 +        if (threading->prof >= 2) {
 +            static const char* names[3] = {"self-play", "historical", "scripted"};
 +            for (int k = 0; k < 3; k++) {

@@ -22,8 +22,27 @@
 #include <vector>
 #include <algorithm>
 
+// BOPL_CUPTI_TRACE=<path> additionally keeps the last BOPL_CUPTI_TRACE_N
+// (default 400000) records and writes them at exit as
+// "start_ns end_ns stream kind name" lines (kind K kernel, H HtoD, D DtoH,
+// C DtoD, S memset), for a per-step timeline (native/rl/puffer/cupti_timeline.py).
 namespace {
 struct Agg { uint64_t count = 0, total = 0, mn = ~0ull, mx = 0; };
+struct Rec { uint64_t start, end; uint32_t stream; char kind; const char* name; };
+std::vector<Rec> g_trace;
+size_t g_trace_cap = 0, g_trace_next = 0;
+bool g_trace_wrapped = false;
+std::map<std::string, const char*> g_names;  // interned kernel names
+
+void trace(uint32_t stream, char kind, const char* name, uint64_t start, uint64_t end) {
+    if (g_trace_cap == 0) return;
+    auto it = g_names.find(name);
+    if (it == g_names.end()) it = g_names.emplace(name, strdup(name)).first;
+    Rec r{start, end, stream, kind, it->second};
+    if (g_trace.size() < g_trace_cap) { g_trace.push_back(r); return; }
+    g_trace[g_trace_next] = r;
+    if (++g_trace_next == g_trace_cap) { g_trace_next = 0; g_trace_wrapped = true; }
+}
 struct StreamAgg {
     std::map<std::string, Agg> kernels;
     uint64_t busy = 0, last_end = 0, first_start = ~0ull, last = 0, records = 0;
@@ -70,16 +89,24 @@ void CUPTIAPI buffer_completed(CUcontext, uint32_t, uint8_t* buffer, size_t, siz
             case CUPTI_ACTIVITY_KIND_KERNEL: {
                 auto* k = (CUpti_ActivityKernel10*)record;
                 add(k->streamId, k->name, k->start, k->end);
+                trace(k->streamId, 'K', k->name, k->start, k->end);
                 break;
             }
             case CUPTI_ACTIVITY_KIND_MEMCPY: {
                 auto* m = (CUpti_ActivityMemcpy6*)record;
                 add(m->streamId, memcpy_kind(m->copyKind), m->start, m->end);
+                char kind = m->copyKind == CUPTI_ACTIVITY_MEMCPY_KIND_HTOD ? 'H'
+                          : m->copyKind == CUPTI_ACTIVITY_MEMCPY_KIND_DTOH ? 'D'
+                          : m->copyKind == CUPTI_ACTIVITY_MEMCPY_KIND_DTOD ? 'C' : 'M';
+                char buf[64];
+                snprintf(buf, sizeof buf, "memcpy_%llu", (unsigned long long)m->bytes);
+                trace(m->streamId, kind, buf, m->start, m->end);
                 break;
             }
             case CUPTI_ACTIVITY_KIND_MEMSET: {
                 auto* m = (CUpti_ActivityMemset4*)record;
                 add(m->streamId, "memset", m->start, m->end);
+                trace(m->streamId, 'S', "memset", m->start, m->end);
                 break;
             }
             default: break;
@@ -119,10 +146,27 @@ void flush() {
         }
     }
     if (out != stderr) fclose(out);
+    if (const char* tpath = getenv("BOPL_CUPTI_TRACE")) {
+        FILE* t = fopen(tpath, "w");
+        if (t) {
+            size_t n = g_trace.size();
+            for (size_t i = 0; i < n; i++) {
+                const Rec& r = g_trace[g_trace_wrapped ? (g_trace_next + i) % n : i];
+                fprintf(t, "%llu %llu %u %c %s\n", (unsigned long long)r.start, (unsigned long long)r.end,
+                        r.stream, r.kind, r.name);
+            }
+            fclose(t);
+        }
+    }
 }
 }  // namespace
 
 extern "C" int InitializeInjection(void) {
+    if (getenv("BOPL_CUPTI_TRACE")) {
+        const char* n = getenv("BOPL_CUPTI_TRACE_N");
+        g_trace_cap = n ? strtoull(n, nullptr, 10) : 400000;
+        g_trace.reserve(g_trace_cap);
+    }
     cuptiActivityRegisterCallbacks(buffer_requested, buffer_completed);
     cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
