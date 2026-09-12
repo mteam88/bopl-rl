@@ -73,6 +73,9 @@ const fn floor_i64(v: f64) -> i64 {
 /// `fast_sin` table floor to the 2^-32 grid absorbs except when the exact
 /// value lies within 1e-16 of a grid boundary.
 #[inline]
+// The coefficients are fdlibm's literals (k_sin.c, k_cos.c) as published, so
+// they can be checked against the source; they round to the same doubles.
+#[allow(clippy::excessive_precision)]
 fn sin_reduced(x: f64) -> f64 {
     const S1: f64 = -1.666_666_666_666_663_243_48e-01;
     const S2: f64 = 8.333_333_333_322_489_461_24e-03;
