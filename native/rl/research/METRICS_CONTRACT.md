@@ -219,21 +219,29 @@ is no joint ladder and no `<run>/ladder/ladder.json`.
 
 ## Dashboard reader limits
 
-The source JSONL remains complete. The server reads new complete lines once and
-retains at most 2,400 chart samples per run (eight recently viewed runs). It keeps
-the latest 120 updates unchanged and progressively doubles the sampling stride
-for older history. `metrics_total` counts all source records; top-level
-`map_matches` takes the latest cumulative counters without summing updates.
+Ladder and sweep payloads are assembled from rating files
+(`reference/<pool_sha8>/*.json` and legacy `reference/*.json`), `status.json`,
+`result.json` flags, and `sweep.json`. They do not parse `metrics.jsonl` or
+evaluation `result.json` bodies. Bootstrap intervals already stored in a rating
+file are reused; they are not refit. A background thread keeps the last good
+ladder and sweep JSON warm; responses are ETag'd.
 
-A partial final line waits for the next append. A malformed complete line fails
-the request; file replacement or truncation resets the reader. Initial visits
-scan a run once with bounded memory. Later polls read only appended data.
+`GET /api/run/<name>` is the first-paint run payload: status, config, the
+slim rating curve, IQM, flags, an evaluation directory list, and the **latest**
+evaluation report (groups + replay metadata). Older evaluation reports load
+from `GET /api/run/<name>/evaluation/<dir>`. Training charts load from
+`GET /api/run/<name>/metrics` (not the first paint): at most 360 points with
+the scalar keys the charts draw. The source JSONL remains complete.
 
-Evaluation listings carry chart groups and replay metadata; full telemetry and
-provenance remain in each evaluation's `result.json`. Four encoded run responses
-are cached, invalidated by changes to metrics, status, configuration, evaluation
-reports/directories, or the run's rating directory. Run responses support ETags;
-the browser skips unchanged responses. Large JSON payloads gzip over the wire.
+The metrics reader (`metrics_store.py`) still retains at most 2,400 samples
+per run (eight recently viewed runs), keeping the latest 120 updates unchanged
+and doubling the sampling stride for older history. `metrics_total` counts all
+source records; `map_matches` is the latest cumulative counters. A partial
+final line waits for the next append. A malformed complete line fails the
+metrics request; file replacement or truncation resets the reader.
+
+Large JSON payloads gzip over the wire. The browser keeps a stale-while-revalidate
+cache of view JSON and sends `If-None-Match`.
 
 Reader regression check: `python3 native/rl/research/check_metrics_store.py`.
 HTTP cache check: `python3 native/rl/research/check_dashboard_api.py`.
