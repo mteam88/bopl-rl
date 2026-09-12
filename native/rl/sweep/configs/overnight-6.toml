@@ -1,0 +1,149 @@
+# Overnight sweep 6 (2026-09-12): 1B-step trials around the overnight-5 basin.
+# Score: Bradley-Terry Elo vs pool v5 (unchanged; every rating carries
+# game_mismatch=true because the trainer sim is 50fc427b vs the pool's
+# d0a170e5 — informational, see overnight-5.toml), IQM over the last 3
+# evaluations, 480 games per checkpoint.
+#
+# Why 1B: overnight-5 (33 trials x 400M, w128 b4, stopped 2026-09-12 17:10)
+# found its optimum on the edge of the box: corr(log entropy, Elo) = +0.86
+# with Protein pinned at the 1.4e-2 entropy cap (best 021 = 506: entropy
+# 0.014, aim 0.19, 1 bank, lr 1.16e-3, reward_kill 0.24), and 240-game rating
+# curves every 20M showed the high-entropy trials still climbing at the end
+# (013: 363 -> 523 over 220-400M, 005: 365 -> 486) while the mid-entropy
+# trial 000 (0.008) was flat at 430-460. More steps and more entropy are the
+# two directions the 400M box could not explore.
+#
+# Budget: 815k learner steps/s with evaluations alongside (w128 b4, main
+# 15b5339) -> ~21 min of training per 1B trial + ~4 min of scoring; 36 trials
+# ~ 15 h. Same shape as overnight-5 (128 workers, 4 buffers) so the lr basin
+# carries over; eval_every 40M keeps the number of in-run evaluations (25) at
+# the overnight-5 level rather than doubling the evaluation overhead, and the
+# last_k 3 window is the last 120M steps.
+#
+# Space (6 params, 1 default + 8 Sobol + 27 GP), from overnight-5's 33 trials:
+#   entropy       corr +0.86, pinned at the cap -> 8e-3..3e-2 (cap lifted 2x).
+#   head_scale_aim corr +0.41; Protein converged on 0.15-0.23, the 0.66-0.71
+#                 trials (016/003) also scored 480+ -> 0.08..0.8, default 0.19.
+#   learning_rate corr -0.28, top trials 1.07-1.44e-3 -> 5e-4..2e-3 (a 2.5x
+#                 longer run may want the low end).
+#   reward_kill   corr +0.20, top trials 0.24-0.50 -> 0.15..0.6.
+#   entropy_half_life  no signal at 400M (corr -0.05); rescaled to the run:
+#                 2.5e8 (floor reached ~950M) .. 1.5e9 (barely decays).
+#   scripted_decay no signal (corr +0.06); rescaled 1e8..7.5e8.
+#   scripted_banks corr -0.29 and the two best trials used one bank -> fixed
+#                 at 1 (evasive-v2 only), dropping a parameter for a sweep with
+#                 half the trials.
+# Trial 000 = overnight-5's 021 with the time constants scaled x2.5.
+#
+# Overnight-5 finals (033 trials in sweeps/overnight-5/) are the reference
+# for whether 1B beats 400M at equal hypers: 000 here vs 021 there.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"     # Elo, not a rate
+downsample = 3                     # = [scoring].last_k points per trial
+fixed_cost = true
+max_suggestion_cost = 1.01e9
+max_runs = 36                      # 6 params: 1 default + 8 Sobol + 27 GP, ~15 h
+num_random_samples = 8
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "6G"                  # train.py peaked at 1.5 GB RSS, its evaluate.py child at 0.7 GB
+nice = 10
+max_seconds = 4800                 # a healthy trial is ~25 min
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"   # v5: 19 members, deterministic search bot
+last_k = 3                         # eval_every 40M -> the last 120M steps
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8                        # the box is idle between trials
+seed_base = 70001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+steps = 1000000000
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 4
+learning_rate = 1.16e-3
+entropy = 1.4e-2
+entropy_floor = 0.001
+entropy_half_life = 425000000
+entropy_head_scale = "0.19,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.24
+reward_timeout = -1
+scripted_bots = ["evasive-v2"]     # one bank; the other three stay self-play
+scripted_level = "hard"
+scripted_decay = 250000000
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 40000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 5e-4
+max = 2e-3
+scale = 0.5
+
+[params.entropy]
+distribution = "log_normal"
+min = 8e-3                         # everything below ~7e-3 sat at 420-460 in overnight-5
+max = 3e-2                         # overnight-5 pinned at its 1.4e-2 cap
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 2.5e8                        # floor 1e-3 reached at ~950M from 1.4e-2
+max = 1.5e9                        # under one halving over the run
+scale = 0.5
+integer = true
+
+[params.reward_kill]
+distribution = "uniform"
+min = 0.15
+max = 0.6
+scale = "auto"
+
+[params.scripted_decay]
+distribution = "log_normal"
+min = 1e8                          # bot gone after 10% of the run
+max = 7.5e8                        # still playing a quarter of its bank at the end
+scale = 0.5
+integer = true
+
+[params.head_scale_aim]
+distribution = "log_normal"
+min = 0.08
+max = 0.8
+scale = 0.5
+default = 0.19
