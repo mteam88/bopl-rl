@@ -188,6 +188,11 @@ class Driver:
         # better than 128 active (the spin policy is what costs).
         env.setdefault('BOPL_OMP_THREADS', str(os.cpu_count() or 12))
         env.setdefault('OMP_WAIT_POLICY', 'passive')
+        # Since 2026-09-12 the rollout steps games on its own env pool
+        # (THROUGHPUT.md 3.D); OpenMP only governs the single-buffer path. 8
+        # stepping threads on the 12-thread box tie 9-10 at 128 workers and
+        # leave the trainer's main thread and the eval workers a core.
+        env.setdefault('BOPL_ENV_THREADS', str(max(2, (os.cpu_count() or 12) - 4)))
         return env
 
     def launch(self, trial):

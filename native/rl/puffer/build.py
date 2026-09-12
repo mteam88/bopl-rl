@@ -33,9 +33,10 @@ subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=
 # sampling, no reward clamp, per-head entropy / gradient-norm / advantage
 # statistics, the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
 # = linear|set selects bopl_set_encoder.cu, found via the -I below), per-bank
-# rollout graph branches with per-stream cuBLAS handles, and sleep-polling
-# rollout barriers in vecenv.h (which binding.c compiles, so it too builds
-# against the overlay). See pufferlib-bopl.patch (generated with
+# rollout graph branches with per-stream cuBLAS handles, and the rollout env
+# pool in vecenv.h (persistent work-stealing workers and futex handshakes in
+# place of the per-step OpenMP fork/join and the spinning stream sync;
+# binding.c compiles vecenv.h, so it too builds against the overlay). See pufferlib-bopl.patch (generated with
 # diff -ruN against the pristine overlay: cd artifacts/rl && diff -ruN
 # pristine-src puffer-overlay).
 subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
@@ -57,7 +58,7 @@ if args.device == "cuda":
                         "-c", str(overlay / "bindings.cu"), "-o", str(out / "puffer_cuda.o")], check=True)
 
     libraries = [cuda / "lib", nvidia / "cudnn/lib", nvidia / "nccl/lib"]
-    names = ["libcudart.so.13", "libcublas.so.13", "libcusolver.so.12", "libcurand.so.10",
+    names = ["libcudart.so.13", "libcublas.so.13", "libcublasLt.so.13", "libcusolver.so.12", "libcurand.so.10",
              "libcudnn.so.9", "libnccl.so.2"]
     links = []
     for name in names:
@@ -65,6 +66,9 @@ if args.device == "cuda":
     subprocess.run(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cuda.o"),
                     str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), *links,
                     *["-Wl,-rpath," + str(path) for path in libraries], "-l:libnvidia-ml.so.1",
+                    # Driver API: the trainer partitions the GPU between rollout and
+                    # training streams with green contexts (pufferlib.cu bopl_gpu_split_init).
+                    "-l:libcuda.so.1",
                     "-lm", "-lpthread", "-o", str(target)], check=True)
 else:
     subprocess.run(["c++", "-O3", "-std=c++17", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-DENV_NAME=bopl",

@@ -118,7 +118,12 @@ extern "C" int bopl_recurrent_check_run(void* context, const float* weights, con
         mingru_set_train_reset(nullptr);
         checked(cudaGetLastError());
         checked(cudaStreamSynchronize(c->stream));
-        checked(cudaMemcpy(out, c->dec_out.data, numel(c->dec_out.shape) * sizeof(float), cudaMemcpyDeviceToHost));
+        // The training decoder pads its output rows to a multiple of 4 columns
+        // (models.cu decoder_padded_width); the host buffer is (B, T, logits + 1).
+        const int od1 = c->logits + 1, stride = c->dec_out.shape[2];  // (B, T, cols)
+        if (stride < od1) throw std::runtime_error("decoder output narrower than logits + 1");
+        checked(cudaMemcpy2D(out, od1 * sizeof(float), c->dec_out.data, stride * sizeof(float),
+            od1 * sizeof(float), (size_t)c->B * c->T, cudaMemcpyDeviceToHost));
         checked(cudaMemcpy(weight_grads, c->gradients.mem, c->gradients.total_bytes, cudaMemcpyDeviceToHost));
         auto* a = (MinGRUActivations*)c->acts.network;
         long per_layer = (long)c->B * c->hidden;

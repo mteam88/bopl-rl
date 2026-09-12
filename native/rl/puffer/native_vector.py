@@ -18,6 +18,19 @@ class NativeVector:
         self.total_agents = self.agents_per_buffer * buffers
         self.learner_rows = workers * 3 // 2
         self.historical_per_bank = workers // 2 // banks
+        # Compact row layout (THROUGHPUT.md 3.C): a historical environment's
+        # opponent plays on one of its `banks` slots for the environment's whole
+        # life, so 3 of 4 opponent rows never hold a decision. When every
+        # buffer deals its historical games evenly to the banks, each buffer's
+        # rows are packed [learner rows | bank 0 live rows | ... | bank n-1
+        # live rows | idle rows]; the trainer's bank_layout covers the live
+        # prefix and the idle tail is never uploaded, run through the policy or
+        # sampled. Otherwise (pairs % banks != 0) the legacy layout puts every
+        # opponent row of bank b in bank b's slice.
+        self.compact = self.pairs % banks == 0
+        self.primary_rows = 3 * self.pairs
+        self.live_per_bank = self.pairs // banks if self.compact else self.pairs
+        self.live_rows = self.primary_rows + banks * self.live_per_bank
         self.lib = counters.bind(C.CDLL(backend.__file__))
         for name, types in {
             'bopl_vec_handles': [C.POINTER(C.c_void_p), C.c_int],
@@ -52,13 +65,16 @@ class NativeVector:
         perm = np.full(self.total_agents, -1, dtype=np.int32)
         slot = 0
         for buffer in range(self.buffers):
-            primary, frozen = [], [[] for _ in range(self.banks)]
-            for _ in range(self.pairs):
+            primary, frozen, idle = [], [[] for _ in range(self.banks)], []
+            for pair in range(self.pairs):
                 primary.extend((slot, slot + 1, slot + 2))
+                active = int(before[2 * (buffer * self.pairs + pair) + 1, 5])
                 for bank in range(self.banks):
-                    frozen[bank].append(slot + 3 + bank)
+                    (frozen[bank] if not self.compact or bank == active else idle).append(slot + 3 + bank)
                 slot += 3 + self.banks
-            order = primary + [row for group in frozen for row in group]
+            if self.compact and any(len(rows) != self.live_per_bank for rows in frozen):
+                raise RuntimeError('Historical games are not dealt evenly to the banks within a buffer')
+            order = primary + [row for group in frozen for row in group] + idle
             perm[order] = np.arange(self.agents_per_buffer) + buffer * self.agents_per_buffer
         if sorted(perm.tolist()) != list(range(self.total_agents)):
             raise RuntimeError('Invalid native agent permutation')

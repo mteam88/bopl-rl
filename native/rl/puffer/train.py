@@ -146,7 +146,7 @@ def arguments():
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
     p.add_argument('--buffers', type=int, choices=(1, 2, 4, 8),
-                   help='Rollout buffers (independent OMP teams + CUDA streams). 4 measured +11%% learner/s over 2 '
+                   help='Rollout buffers (independent buffer threads + CUDA streams over one env pool). 4 measured +11%% learner/s over 2 '
                         'at 128 workers on the f64 sim (2026-09-10): GPU sync of one buffer overlaps env stepping of the others')
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
@@ -155,6 +155,9 @@ def arguments():
     p.add_argument('--layers', type=int, default=1)
     p.add_argument('--horizon', type=int, default=128)
     p.add_argument('--learner-passes', type=int, default=1, help='Native minibatches per rollout; each has one learner batch of samples')
+    p.add_argument('--minibatch-div', type=int, default=1,
+                   help='Split each learner batch into this many minibatches (optimizer steps); must divide the learner rows. '
+                        'Throughput knob: smaller minibatches give the 16-SM training partition less work per GEMM but more launches; default 1')
     p.add_argument('--learning-rate', type=float, default=.0003)
     p.add_argument('--anneal-lr', type=int, choices=(0, 1), default=0,
                    help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
@@ -296,6 +299,34 @@ def main():
     # per runtime measured within 5-15% of one runtime per world at a
     # fraction of the memory. Honour an explicit setting.
     os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
+    # The rollout steps games on vecenv.h's own env pool (THROUGHPUT.md 3.D), not
+    # OpenMP: BOPL_ENV_THREADS stepping threads in total (buffer threads
+    # included; default CPUs - 3, i.e. 9 on the 12-thread box: 8-10 tie at
+    # 128 workers, 10 is +3% at 256, 12+ oversubscribes and stalls on preempted
+    # workers), BOPL_ENV_LPT=1 slowest-first claim order, BOPL_ENV_STEAL=1
+    # buffer threads step other buffers' games while their own forward runs,
+    # BOPL_ENV_SPIN_US=100 idle spin before a futex park, BOPL_GPU_WAIT=poll|sync,
+    # BOPL_ENV_PIN=1 to pin threads, BOPL_ENV_PROF=1|2 pool statistics and the
+    # c_step phase attribution on stderr.
+    # BOPL_ASYNC=1 (default) overlaps each rollout with the previous batch's
+    # training (see the update loop); 0 is the serial trainer. With overlap
+    # BOPL_GPU_SPLIT=<SMs for inference>|auto|0 partitions the GPU between the
+    # rollout and train streams (green contexts; auto = one half, 24/24 on
+    # the 48-SM 5070; 0 shares the SMs on stream priority alone) and
+    # BOPL_TRAIN_WAIT=block|spin picks how the trainer waits for its stream.
+    # Rollout forward (THROUGHPUT.md 3.C, bopl_rollout.cu): BOPL_BATCHED_FWD=1
+    # (default) runs one grouped chain per buffer over the live rows with
+    # per-bank weights (0 = the per-bank cuBLAS chain); BOPL_TF32=1 also picks
+    # its tensor-core GEMM (0 = fp32 FMAs, bit-identical across runs);
+    # BOPL_ZERO_COPY=0|1|2 how env buffers reach the kernels (0 = memcpys, the
+    # fastest; 1/2 read mapped host memory), BOPL_ZERO_COPY_ACTIONS=1 writes
+    # actions straight to host memory, BOPL_GRAPH_COPIES=1 (default) captures
+    # the H2D/D2H memcpys into the buffer's CUDA graph, BOPL_OBS_SPARSE=1
+    # (default) stages only the populated obs slots. BOPL_GPU_PROF=1 prints the
+    # h2d/forward/d2h split of eval_gpu; BOPL_CUPTI_TRACE=<file> with
+    # CUDA_INJECTION64_PATH=<cupti_profile.so> dumps a kernel timeline for
+    # cupti_timeline.py.
+    # OMP_NUM_THREADS below only governs the single-buffer synchronous step.
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
                            BOPL_RL_LOG_DIR=output/'game-logs',
                            OMP_NUM_THREADS=os.environ.get('BOPL_OMP_THREADS', a.workers)).items():
@@ -316,18 +347,25 @@ def main():
     args = pufferl.load_config('bopl')
     vector = NativeVector(_C, a.workers, a.buffers, a.banks)
     learner_batch = vector.learner_rows * a.horizon
+    if a.minibatch_div < 1 or vector.learner_rows % a.minibatch_div:
+        raise SystemExit(f'--minibatch-div {a.minibatch_div} must divide the {vector.learner_rows} learner rows')
+    minibatch = learner_batch // a.minibatch_div
     native_batch = vector.total_agents * a.horizon
     updates = math.ceil(a.steps / learner_batch)
     # Native replay_ratio multiplies padded rows. Correct for those rows, and
     # round up one float32 ULP because C truncates the resulting update count.
     ratio = float(np.nextafter(np.float32(a.learner_passes * learner_batch / native_batch), np.float32(np.inf)))
     args.update(seed=a.seed, reset_state=False, cudagraphs=a.cudagraphs)
+    # Compact layout (NativeVector.compact): each bank's slice holds only its
+    # live opponent rows and primary_rows fixes the learner slice, so the
+    # trainer's bank_layout ends before the idle tail (THROUGHPUT.md 3.C).
     args['vec'].update(total_agents=vector.total_agents, num_buffers=a.buffers,
                        num_threads=a.workers, num_frozen_banks=a.banks,
-                       frozen_bank_pct=(vector.pairs + .000001) / vector.agents_per_buffer)
+                       frozen_bank_pct=(vector.live_per_bank + .000001) / vector.agents_per_buffer,
+                       primary_rows=vector.primary_rows)
     args['policy'].update(hidden_size=a.hidden, num_layers=a.layers)
     args['train'].update(total_timesteps=updates*native_batch, seed=a.seed,
-                         horizon=a.horizon, minibatch_size=learner_batch, replay_ratio=ratio,
+                         horizon=a.horizon, minibatch_size=minibatch, replay_ratio=ratio,
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
@@ -501,15 +539,42 @@ def main():
         share = scripted_share(counts['learner_steps'], a.scripted_decay)
         if a.scripted_bots:
             set_scripted_share(_C, share)
+        # Overlap (THROUGHPUT.md 3.A, BOPL_ASYNC=1 default; 0 restores the
+        # serial trainer bit for bit): the native trainer keeps two rollout
+        # slots, so each update collects the next batch on the buffer threads
+        # while the GPU trains the previous one, and the update's wall time is
+        # max(rollout, train) instead of their sum. The actor plays a snapshot
+        # of the weights taken when its rollout starts (one update of policy
+        # lag; the stored logprobs/values are that actor's, so the PPO ratios
+        # are exact). Everything that reads what a rollout writes (env logs and
+        # counters in _C.log/vector.snapshot, bank swaps in selfplay.step,
+        # load_weights) runs after rollouts_finish. `counts` are the decisions
+        # trained so far; `ready` those collected into the slot that trains
+        # next, so a rollout that is collected but never trained (SIGTERM) is
+        # not counted, and every update still accounts for exactly one batch.
+        overlap = _C.num_rollout_slots(trainer) > 1
+        more, ready, rollout_seconds = False, None, None
+        if overlap:
+            rollout_seconds = _C.rollouts(trainer)  # bootstrap: the first slot before the loop
+            ready = offset_counters(vector.snapshot(), base_counts)
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
             while counts['learner_steps'] < a.steps and not stop:
                 before = time.monotonic()
-                _C.rollouts(trainer)
-                if a.scripted_decay:
-                    # Matches starting during the next rollout draw against this share.
-                    share = scripted_share(counts['learner_steps'], a.scripted_decay)
-                    set_scripted_share(_C, share)
+                if overlap:
+                    # Another update follows this one: collect its batch now.
+                    more = ready['learner_steps'] < a.steps
+                    if a.scripted_decay:
+                        # Matches starting during the next rollout draw against this share.
+                        share = scripted_share(counts['learner_steps'], a.scripted_decay)
+                        set_scripted_share(_C, share)
+                    if more:
+                        _C.rollouts_start(trainer)
+                else:
+                    rollout_seconds = _C.rollouts(trainer)
+                    if a.scripted_decay:
+                        share = scripted_share(counts['learner_steps'], a.scripted_decay)
+                        set_scripted_share(_C, share)
                 rolled = time.monotonic()
                 # Configure the native loss before training. Native train_impl
                 # copies this scalar into a device buffer each update, so CUDA
@@ -529,9 +594,16 @@ def main():
                     _C.set_ent_head_scale(trainer, [min(100.0, s) for s in applied_scale])
                 _C.train(trainer)
                 trained = time.monotonic()
+                if overlap and more:
+                    rollout_seconds = _C.rollouts_finish(trainer)
                 native = _C.log(trainer)
                 free = free_fraction(native['env']) if a.entropy_free_rows else None
-                counts = offset_counters(vector.snapshot(), base_counts)
+                if overlap:
+                    counts = ready
+                    if more:
+                        ready = offset_counters(vector.snapshot(), base_counts)
+                else:
+                    counts = offset_counters(vector.snapshot(), base_counts)
                 if (counts['learner_steps']-previous['learner_steps'] != learner_batch
                         or counts['game_steps']-previous['game_steps'] != a.workers*2*a.horizon):
                     raise RuntimeError('Native rollout physical/learner decision accounting mismatch')
@@ -548,7 +620,13 @@ def main():
                                 entropy_coefficient=native['loss']['entropy_coefficient'],
                                 learning_rate=native['loss']['learning_rate'],
                                 pool_steps=sorted(bank['opponent_step'] for bank in after_pool['banks']),
-                                rollout_seconds=rolled-before, train_seconds=trained-rolled)
+                                rollout_seconds=rollout_seconds, train_seconds=trained-rolled)
+                # With overlap the rollout (timed on the buffer threads) and the
+                # train phase run concurrently, so they no longer sum to the
+                # update's wall time; wall_seconds is that time (previous
+                # record to this one), which is what sps/learner_sps divide by.
+                record['wall_seconds'] = elapsed-previous_elapsed
+                record['overlap'] = overlap
                 record['pool'] = after_pool
                 if a.scripted_bots:
                     # Scripted banks sit after the pool's policy banks; their

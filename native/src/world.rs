@@ -71,6 +71,16 @@ pub struct Player {
     /// not pay for the sine table again (zero until the first sync).
     #[serde(default)]
     pub collider_basis: Vec2,
+    /// `(up, rotation)` as `align` last derived them: a step along a flat
+    /// stretch of surface keeps the same normal, so the arc-cosine is not
+    /// paid again for the same input (the value is identical either way).
+    #[serde(skip)]
+    pub(crate) aligned: Option<(Vec2, Fix)>,
+    /// `(input, input.normalized_safe())` from the last grounded step: a
+    /// decision holds its stick for several ticks, so the square root and
+    /// divisions are usually already known (identical value either way).
+    #[serde(skip)]
+    pub(crate) input_normalized: Option<(Vec2, Vec2)>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DashState {
@@ -117,6 +127,9 @@ pub struct World {
     pub tick: u64,
     pub platforms: Vec<Platform>,
     pub players: Vec<Player>,
+    /// Raycast broad phase over `platforms`, rebuilt at every step.
+    #[serde(skip)]
+    pub bounds: PlatformBounds,
 }
 
 impl World {
@@ -149,13 +162,21 @@ impl World {
         if actions.iter().any(|a| a.buttons & !3 != 0) {
             return Err("this slice supports jump and dash only".into());
         }
+        // The platforms of this slice never move; the cache only has to exist.
+        if self.bounds.len() != self.platforms.len() {
+            self.bounds.rebuild(&self.platforms);
+        }
+        let terrain = Terrain {
+            platforms: &self.platforms,
+            bounds: &self.bounds,
+        };
         for (index, action) in actions.iter().enumerate() {
-            self.players[index].step(*action, &self.platforms);
+            self.players[index].step(*action, terrain);
             let caster = &self.players[index];
             if caster.dash.active && caster.dash.time == DT {
                 let origin = caster.position;
                 let direction = caster.dash.input;
-                let wall = closest(&self.platforms, origin, direction, Fix::from_int(13), None)
+                let wall = closest(terrain, origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
                 let targets: Vec<_> = self
                     .players
@@ -201,24 +222,199 @@ impl World {
     }
 }
 
+/// The raycast broad phase: every platform's axis-aligned bounds
+/// (`RoundedRect::bounds`, already widened by `Bounds::may_reach`'s 1e-6
+/// margin) in lanes of eight, so a query is a few vector compares instead of
+/// re-deriving the bounds from each 150-byte `Platform`. Platforms move only
+/// in the physics stage, so the owner rebuilds this once per change
+/// (`RolloutWorld::rebuild_bounds`).
+#[derive(Clone, Debug, Default)]
+pub struct PlatformBounds {
+    chunks: Vec<BoundsChunk>,
+    len: usize,
+}
+
+const BOUNDS_LANES: usize = 8;
+
+/// Eight platforms' bounds, one axis per array. Unused lanes hold an empty
+/// box (`max < min`) that no query meets.
+#[derive(Clone, Copy, Debug)]
+struct BoundsChunk {
+    max_x: [f64; BOUNDS_LANES],
+    min_x: [f64; BOUNDS_LANES],
+    max_y: [f64; BOUNDS_LANES],
+    min_y: [f64; BOUNDS_LANES],
+}
+
+impl BoundsChunk {
+    const EMPTY: Self = Self {
+        max_x: [f64::NEG_INFINITY; BOUNDS_LANES],
+        min_x: [f64::INFINITY; BOUNDS_LANES],
+        max_y: [f64::NEG_INFINITY; BOUNDS_LANES],
+        min_y: [f64::INFINITY; BOUNDS_LANES],
+    };
+    /// Lane bits of the boxes meeting `[lo, hi]`, as one 8-bit mask: four
+    /// ordered vector compares (a NaN lane never hits, like the scalar `<=`).
+    #[inline]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    fn candidates(&self, lo_x: f64, hi_x: f64, lo_y: f64, hi_y: f64) -> u64 {
+        use std::arch::x86_64::{
+            _CMP_GE_OQ, _CMP_LE_OQ, _mm512_cmp_pd_mask, _mm512_loadu_pd, _mm512_set1_pd,
+        };
+        // SAFETY: avx512f is a compile-time target feature here, and each
+        // array is exactly eight f64 (unaligned loads).
+        unsafe {
+            let mask = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(
+                _mm512_set1_pd(lo_x),
+                _mm512_loadu_pd(self.max_x.as_ptr()),
+            ) & _mm512_cmp_pd_mask::<_CMP_GE_OQ>(
+                _mm512_set1_pd(hi_x),
+                _mm512_loadu_pd(self.min_x.as_ptr()),
+            ) & _mm512_cmp_pd_mask::<_CMP_LE_OQ>(
+                _mm512_set1_pd(lo_y),
+                _mm512_loadu_pd(self.max_y.as_ptr()),
+            ) & _mm512_cmp_pd_mask::<_CMP_GE_OQ>(
+                _mm512_set1_pd(hi_y),
+                _mm512_loadu_pd(self.min_y.as_ptr()),
+            );
+            u64::from(mask)
+        }
+    }
+    /// Lane bits of the boxes meeting `[lo, hi]`, as one 8-bit mask.
+    #[inline]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+    fn candidates(&self, lo_x: f64, hi_x: f64, lo_y: f64, hi_y: f64) -> u64 {
+        let mut mask = 0u64;
+        for lane in 0..BOUNDS_LANES {
+            let hit = lo_x <= self.max_x[lane]
+                && hi_x >= self.min_x[lane]
+                && lo_y <= self.max_y[lane]
+                && hi_y >= self.min_y[lane];
+            mask |= u64::from(hit) << lane;
+        }
+        mask
+    }
+}
+
+impl PlatformBounds {
+    pub fn rebuild(&mut self, platforms: &[Platform]) {
+        assert!(
+            platforms.len() <= 64,
+            "platform count exceeds the candidate mask"
+        );
+        let margin = Fix::from_f64(1e-6);
+        self.len = platforms.len();
+        self.chunks.clear();
+        self.chunks
+            .resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
+        for (index, platform) in platforms.iter().enumerate() {
+            let bounds = platform.collider.bounds();
+            let chunk = &mut self.chunks[index / BOUNDS_LANES];
+            let lane = index % BOUNDS_LANES;
+            chunk.max_x[lane] = (bounds.max.x + margin).to_f64();
+            chunk.min_x[lane] = (bounds.min.x - margin).to_f64();
+            chunk.max_y[lane] = (bounds.max.y + margin).to_f64();
+            chunk.min_y[lane] = (bounds.min.y - margin).to_f64();
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    /// Bit `i` set when platform `i`'s bounds meet the axis-aligned box
+    /// `[lo, hi]` (`Bounds::may_reach` for a segment with those extents).
+    pub fn candidates(&self, lo: Vec2, hi: Vec2) -> u64 {
+        let (lo_x, hi_x, lo_y, hi_y) = (lo.x.to_f64(), hi.x.to_f64(), lo.y.to_f64(), hi.y.to_f64());
+        let mut mask = 0u64;
+        for (index, chunk) in self.chunks.iter().enumerate() {
+            mask |= chunk.candidates(lo_x, hi_x, lo_y, hi_y) << (index * BOUNDS_LANES);
+        }
+        mask
+    }
+}
+
+/// The axis-aligned box covering a set of ray segments.
+#[derive(Clone, Copy)]
+pub(crate) struct SegmentBox {
+    lo: Vec2,
+    hi: Vec2,
+}
+impl SegmentBox {
+    pub(crate) fn empty() -> Self {
+        Self {
+            lo: Vec2::new(Fix::MAX, Fix::MAX),
+            hi: Vec2::new(Fix::MIN, Fix::MIN),
+        }
+    }
+    pub(crate) fn add(&mut self, point: Vec2) {
+        self.lo = Vec2::new(self.lo.x.min(point.x), self.lo.y.min(point.y));
+        self.hi = Vec2::new(self.hi.x.max(point.x), self.hi.y.max(point.y));
+    }
+    pub(crate) fn add_segment(&mut self, origin: Vec2, end: Vec2) {
+        self.add(origin);
+        self.add(end);
+    }
+    pub(crate) fn candidates(self, bounds: &PlatformBounds) -> u64 {
+        bounds.candidates(self.lo, self.hi)
+    }
+}
+
+/// The platforms and their broad-phase bounds, as every raycasting step
+/// needs them together.
+#[derive(Clone, Copy)]
+pub struct Terrain<'a> {
+    pub platforms: &'a [Platform],
+    pub bounds: &'a PlatformBounds,
+}
+
 pub(crate) fn closest(
-    platforms: &[Platform],
+    terrain: Terrain,
     origin: Vec2,
     direction: Vec2,
     distance: Fix,
     exclude: Option<u32>,
 ) -> Option<(usize, Fix, Vec2)> {
+    let end = origin + direction * distance;
+    let mut segment = SegmentBox::empty();
+    segment.add_segment(origin, end);
+    closest_among(
+        terrain,
+        segment.candidates(terrain.bounds),
+        origin,
+        direction,
+        distance,
+        exclude,
+    )
+}
+
+/// `closest` restricted to the platforms in `candidates`, a mask from
+/// `PlatformBounds::candidates` over a box that covers this segment (and
+/// possibly others: the broad phase is conservative, so testing a platform
+/// the segment's own box would have skipped cannot add a hit, and the
+/// ascending index order keeps the tie-break on equal distances).
+pub(crate) fn closest_among(
+    terrain: Terrain,
+    mut candidates: u64,
+    origin: Vec2,
+    direction: Vec2,
+    distance: Fix,
+    exclude: Option<u32>,
+) -> Option<(usize, Fix, Vec2)> {
+    let platforms = terrain.platforms;
+    assert_eq!(
+        terrain.bounds.len(),
+        platforms.len(),
+        "stale platform bounds"
+    );
     let mut nearest = Fix::MAX;
     let mut result = None;
-    // Broad phase: the segment's endpoints once, then each platform's bounds
-    // (RoundedRect::raycast_within) before its raycast; the platforms move, so
-    // the bounds are recomputed per query rather than cached.
-    let end = origin + direction * distance;
-    for (index, platform) in platforms.iter().enumerate() {
+    while candidates != 0 {
+        let index = candidates.trailing_zeros() as usize;
+        candidates &= candidates - 1;
+        let platform = &platforms[index];
         if exclude == Some(platform.id) {
-            continue;
-        }
-        if !platform.collider.bounds().may_reach(origin, end) {
             continue;
         }
         if let Some(hit) = platform.collider.raycast(origin, direction)
@@ -231,13 +427,67 @@ pub(crate) fn closest(
     }
     result
 }
+/// Candidate platforms for the three collision rays `collision_cast` and
+/// `movement_limit` issue from `position` along `velocity`: every ray origin
+/// lies within `radius * sqrt(2)` of the centre (the front ray at `radius`,
+/// `movement_limit`'s corner rays at the diagonal), and every ray runs
+/// `|velocity| * dt`, so the box around the centre segment grown by
+/// `1.5 * radius` covers them all. Conservative like the per-ray test, so
+/// the hits are the same.
+fn ray_group_candidates(
+    terrain: Terrain,
+    position: Vec2,
+    velocity: Vec2,
+    radius: Fix,
+    dt: Fix,
+) -> u64 {
+    let travel = velocity * dt;
+    let end = position + travel;
+    let spread = radius * Fix::from_f64(1.5);
+    let grow = Vec2::new(spread, spread);
+    let mut segment = SegmentBox::empty();
+    segment.add(position - grow);
+    segment.add(position + grow);
+    segment.add(end - grow);
+    segment.add(end + grow);
+    segment.candidates(terrain.bounds)
+}
+
 impl Player {
     pub(crate) fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
-        platforms.iter().find(|p| Some(p.id) == self.ground)
+        self.platform_indexed(platforms)
+            .map(|(_, platform)| platform)
+    }
+    fn platform_indexed<'a>(&self, platforms: &'a [Platform]) -> Option<(usize, &'a Platform)> {
+        platforms
+            .iter()
+            .enumerate()
+            .find(|(_, p)| Some(p.id) == self.ground)
+    }
+    /// `input.normalized_safe()`, memoized on the exact input vector.
+    fn normalized_input(&mut self, input: Vec2) -> Vec2 {
+        match self.input_normalized {
+            Some((cached, normalized)) if cached == input => normalized,
+            _ => {
+                let normalized = input.normalized_safe();
+                self.input_normalized = Some((input, normalized));
+                normalized
+            }
+        }
     }
     pub(crate) fn align(&mut self, platform: &Platform) {
-        self.up = platform.surface.normal(self.position);
-        self.rotation = self.up.perp_cw().normalized_angle();
+        self.align_to(platform.surface.normal(self.position));
+    }
+    /// `align` with the surface normal already evaluated.
+    fn align_to(&mut self, up: Vec2) {
+        self.up = up;
+        match self.aligned {
+            Some((cached_up, rotation)) if cached_up == up => self.rotation = rotation,
+            _ => {
+                self.rotation = up.perp_cw().normalized_angle();
+                self.aligned = Some((up, self.rotation));
+            }
+        }
     }
     fn ground_state(&self) -> crate::player_ground::State {
         crate::player_ground::State {
@@ -272,19 +522,29 @@ impl Player {
             .expect("valid attachment");
         self.apply_ground_state(motion);
     }
-    pub(crate) fn collision_rays(&mut self, platforms: &[Platform]) {
+    pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
         let velocity = self.velocity + self.external_velocity;
+        // One broad phase over the box covering all three rays, then only
+        // the candidates are raycast per ray. When the mask is empty the rays are still issued
+        // so `collision_cast` keeps its exact control flow, but cost nothing.
+        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT);
+        // No platform near any of the rays: every query would return None and
+        // `collision_cast` would only have spent a square root and divisions
+        // building rays that hit nothing.
+        if candidates == 0 {
+            return;
+        }
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
             velocity,
             self.radius,
             DT,
             &mut |origin, direction, distance| {
-                closest(platforms, origin, direction, distance, None)
+                closest_among(terrain, candidates, origin, direction, distance, None)
                     .map(|(index, _, point)| (index, point))
             },
         ) {
-            self.attach(&platforms[index], position);
+            self.attach(&terrain.platforms[index], position);
         }
     }
 
@@ -303,11 +563,11 @@ impl Player {
         motion.unground(Some(&platform.surface), true);
         self.apply_ground_state(motion);
     }
-    fn move_grounded(&mut self, input: Vec2, platforms: &[Platform]) {
-        let platform = self.platform(platforms).unwrap();
+    fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {
+        let (platform_index, platform) = self.platform_indexed(terrain.platforms).unwrap();
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
-        let alignment = input.normalized_safe().dot(forward);
+        let alignment = self.normalized_input(input).dot(forward);
         let into_ground = normal.dot(input);
         let sign = if alignment.abs() >= Fix::from_f32(0.2)
             || (into_ground <= Fix::ZERO && alignment.abs() >= Fix::from_f32(0.01))
@@ -330,25 +590,43 @@ impl Player {
                 DT,
             );
         }
-        self.align(platform);
+        // The position has not moved since `normal` was evaluated above.
+        self.align_to(normal);
         let speed = self.grounded_speed + self.external_velocity.dot(forward);
         let velocity = forward * speed;
-        let (allowed, _) = crate::platform_motion::movement_limit(
-            self.position,
-            self.radius,
-            velocity,
-            DT,
-            &mut |origin, direction, distance| {
-                closest(platforms, origin, direction, distance, Some(platform.id))
+        // The own platform is excluded from the blocking test; with no other
+        // platform near the rays `movement_limit` would return its unblocked
+        // sentinel without any query, so skip building the rays.
+        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT)
+            & !(1u64 << platform_index);
+        let allowed = if candidates == 0 {
+            crate::platform_motion::MOVEMENT_UNBLOCKED
+        } else {
+            crate::platform_motion::movement_limit(
+                self.position,
+                self.radius,
+                velocity,
+                DT,
+                &mut |origin, direction, distance| {
+                    closest_among(
+                        terrain,
+                        candidates,
+                        origin,
+                        direction,
+                        distance,
+                        Some(platform.id),
+                    )
                     .map(|(_, near, _)| ((), near))
-            },
-        );
+                },
+            )
+            .0
+        };
         let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
         self.local = platform
             .surface
             .move_unblocked(self.local, self.radius, allowed, DT);
     }
-    pub(crate) fn gravity_step(&mut self, platforms: &[Platform]) {
+    pub(crate) fn gravity_step(&mut self, terrain: Terrain) {
         if std::mem::take(&mut self.skip_next_gravity) {
             return;
         }
@@ -361,45 +639,45 @@ impl Player {
                 false,
             )
             .expect("valid movement gravity constants");
-            self.collision_rays(platforms);
+            self.collision_rays(terrain);
         }
     }
-    pub(crate) fn step(&mut self, action: Action, platforms: &[Platform]) {
-        self.step_with_input(action, action.direction(), platforms);
+    pub(crate) fn step(&mut self, action: Action, terrain: Terrain) {
+        self.step_with_input(action, action.direction(), terrain);
     }
 
     /// Run the ordinary slime movement with `input` while keeping `action`'s
     /// joystick direction available to abilities such as Dash. Gamepad input
     /// uses the same vector for both; keyboard players use W/A/S/D for motion
     /// and the joystick byte independently for ability aim.
-    pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, platforms: &[Platform]) {
+    pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, terrain: Terrain) {
         if !self.dash.active {
-            self.gravity_step(platforms);
+            self.gravity_step(terrain);
         }
-        self.move_step(action, input, platforms);
+        self.move_step(action, input, terrain);
     }
     /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied
     /// gravity: dash entry/continuation, jump, ground or air movement, then
     /// PlayerBody's integration.
-    pub(crate) fn move_step(&mut self, action: Action, input: Vec2, platforms: &[Platform]) {
+    pub(crate) fn move_step(&mut self, action: Action, input: Vec2, terrain: Terrain) {
         let jump = action.buttons & 1 != 0;
         if self.dash.active {
             self.previous_jump = jump;
-            self.dash_step(action, platforms);
+            self.dash_step(action, terrain);
             return;
         }
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
-            self.enter_dash(action, input, platforms);
+            self.enter_dash(action, input, terrain);
             self.previous_jump = jump;
-            self.dash_step(action, platforms);
+            self.dash_step(action, terrain);
             return;
         }
         if jump && !self.previous_jump && self.grounded {
-            self.jump(platforms);
+            self.jump(terrain.platforms);
         }
         self.previous_jump = jump;
-        self.move_only(input, platforms);
+        self.move_only(input, terrain);
         if self.outside_bounds() {
             self.alive = false;
             return;
@@ -412,9 +690,9 @@ impl Player {
     /// OldUpdate entered an ability (SlimeController.cs:1067-1084), on the
     /// slime body the ability has already copied; that body is deactivated,
     /// so only its observed velocity (and a landing) change.
-    pub(crate) fn move_only(&mut self, input: Vec2, platforms: &[Platform]) {
+    pub(crate) fn move_only(&mut self, input: Vec2, terrain: Terrain) {
         if self.grounded {
-            self.move_grounded(input, platforms);
+            self.move_grounded(input, terrain);
         } else {
             crate::player_physics::air_movement(
                 &mut self.velocity,
@@ -423,7 +701,7 @@ impl Player {
                 self.constants.max_speed,
             )
             .expect("valid movement air constants");
-            self.collision_rays(platforms);
+            self.collision_rays(terrain);
         }
     }
     pub(crate) fn outside_bounds(&self) -> bool {

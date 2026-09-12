@@ -9,12 +9,23 @@
 use crate::{
     fixed::Fix,
     geometry::{Circle, OrientedBox, RoundedRect},
-    physics::{Body, positional_correction, resolve},
+    physics::{Body, Contact, positional_correction, resolve},
     random::Random,
     surface::Surface,
     vector::Vec2,
-    world::{Action, DT, DashState, Platform, Player},
+    world::{Action, DT, DashState, Platform, PlatformBounds, Player, Terrain},
 };
+
+/// `Terrain` over this world's platforms, as a field-level borrow so a
+/// player can be stepped (`&mut self.players[i]`) against it.
+macro_rules! terrain {
+    ($world:expr) => {
+        Terrain {
+            platforms: &$world.platforms,
+            bounds: &$world.bounds,
+        }
+    };
+}
 
 pub mod abi;
 pub mod data;
@@ -291,6 +302,10 @@ pub struct PlatformDynamics {
     pub mu: Fix,
     pub rotation_speed: Fix,
     pub rotation_mu: Fix,
+    /// `(orientation, Vec2::angle(orientation))` from the last integration:
+    /// a platform that translates without rotating (sudden death, a spring
+    /// settling) keeps its basis instead of consulting the sine table twice.
+    pub basis: Option<(Fix, Vec2)>,
 }
 
 /// PlatformTransform.State.
@@ -414,6 +429,20 @@ impl PlayerSlot {
     }
 }
 
+/// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
+/// are meaningless between ticks; never copied by `fork_from`).
+#[derive(Default)]
+struct PlatformScratch {
+    others: Vec<Vec2>,
+    bounds: Vec<[Vec2; 2]>,
+    active: Vec<usize>,
+    window: Vec<usize>,
+    pairs: Vec<[usize; 2]>,
+    callback_colliders: Vec<RoundedRect>,
+    contacts: Vec<(usize, usize, Contact)>,
+    squished: Vec<usize>,
+}
+
 pub struct RolloutWorld {
     pub valid: bool,
     pub failed: bool,
@@ -428,6 +457,23 @@ pub struct RolloutWorld {
     pub rng: Random,
     pub players: Vec<PlayerSlot>,
     pub platforms: Vec<Platform>,
+    /// Raycast broad phase over `platforms` (`rebuild_bounds`).
+    pub bounds: PlatformBounds,
+    /// Incremented by every mutation of `platforms`/`platform_dynamics`
+    /// (`platforms_changed`). The derived data below is refreshed only when
+    /// its recorded epoch differs, so an undisturbed level costs nothing per
+    /// tick.
+    platform_epoch: u64,
+    /// `platform_epoch` the broad phase was built for.
+    bounds_epoch: u64,
+    /// `platform_epoch` the platform entity rows were written for.
+    platform_rows_epoch: u64,
+    /// `platform_epoch` at which `platforms_tick` last found every body at
+    /// rest at its home, so the check need not be repeated until a change.
+    quiet_epoch: u64,
+    /// Buffers of the platform physics stage, kept between ticks so a level
+    /// with moving platforms does not allocate on every tick.
+    scratch: PlatformScratch,
     /// Parallel to `platforms`: rigid body and home spring state.
     pub platform_dynamics: Vec<PlatformDynamics>,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
@@ -490,6 +536,12 @@ impl RolloutWorld {
             rng: Random::new(1),
             players: Vec::with_capacity(MAX_PLAYERS),
             platforms: Vec::with_capacity(64),
+            bounds: PlatformBounds::default(),
+            platform_epoch: 1,
+            bounds_epoch: 0,
+            platform_rows_epoch: 0,
+            quiet_epoch: 0,
+            scratch: PlatformScratch::default(),
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
@@ -536,6 +588,11 @@ impl RolloutWorld {
         self.rng = src.rng;
         self.players.clone_from(&src.players);
         self.platforms.clone_from(&src.platforms);
+        self.bounds.clone_from(&src.bounds);
+        self.platform_epoch = src.platform_epoch;
+        self.bounds_epoch = src.bounds_epoch;
+        self.platform_rows_epoch = src.platform_rows_epoch;
+        self.quiet_epoch = src.quiet_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
@@ -575,6 +632,12 @@ impl RolloutWorld {
             rng: _,
             players: _,
             platforms: _,
+            bounds: _,
+            platform_epoch: _,
+            bounds_epoch: _,
+            platform_rows_epoch: _,
+            quiet_epoch: _,
+            scratch: _,
             platform_dynamics: _,
             platform_defs: _,
             platform_entities: _,
@@ -657,6 +720,7 @@ impl RolloutWorld {
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
+        self.platforms_changed();
         self.platform_defs.clear();
         self.platform_entities.clear();
         self.entities.clear();
@@ -761,7 +825,9 @@ impl RolloutWorld {
                 mu: p.mu,
                 rotation_speed: p.rotation_speed,
                 rotation_mu: p.rotation_mu,
+                basis: None,
             });
+            self.platforms_changed();
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
@@ -830,6 +896,8 @@ impl RolloutWorld {
                     },
                     collider_rotation: Fix::ZERO,
                     collider_basis: Vec2::ZERO,
+                    aligned: None,
+                    input_normalized: None,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
@@ -941,11 +1009,12 @@ impl RolloutWorld {
 
     /// One movement-only tick (used for warmup settling).
     fn movement_tick(&mut self, actions: &[Action]) {
+        self.rebuild_bounds();
         for (index, action) in actions.iter().enumerate() {
             if !self.players[index].base.alive {
                 continue;
             }
-            self.players[index].base.step(*action, &self.platforms);
+            self.players[index].base.step(*action, terrain!(self));
         }
         for slot in &mut self.players {
             if slot.base.alive {
@@ -1116,6 +1185,8 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        // Platforms moved in the previous tick's physics stage.
+        self.rebuild_bounds();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
         // player/ability prefab (100,000,000+). A death produced by a player
         // component or DetPhysics is therefore visible to the match result
@@ -1284,7 +1355,7 @@ impl RolloutWorld {
             // (SlimeController.cs:712): on a landing tick that is the
             // AttachToGround position, before Move slides along the surface.
             if !slot.base.grounded {
-                slot.base.gravity_step(&self.platforms);
+                slot.base.gravity_step(terrain!(self));
             }
             slot.reported_position = slot.base.position;
             for s in 0..3 {
@@ -1321,7 +1392,7 @@ impl RolloutWorld {
                     // (SlimeController.cs:1084), which is what its record
                     // shows for the rest of the ability.
                     let mut frozen = slot.base.clone();
-                    frozen.move_only(movement_input, &self.platforms);
+                    frozen.move_only(movement_input, terrain!(self));
                     slot.ability_origin = frozen.position;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
@@ -1470,14 +1541,14 @@ impl RolloutWorld {
         };
         self.players[index]
             .base
-            .move_step(masked, movement_input, &self.platforms);
+            .move_step(masked, movement_input, terrain!(self));
     }
 
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
         self.players[index]
             .base
-            .move_step(action, movement_input, &self.platforms);
+            .move_step(action, movement_input, terrain!(self));
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
@@ -1492,7 +1563,7 @@ impl RolloutWorld {
                 // with the leave velocity: the slime can land on the ejection
                 // tick, after the ejected position was published.
                 slot.exit_to_fall();
-                slot.base.collision_rays(&self.platforms);
+                slot.base.collision_rays(terrain!(self));
             }
         }
         let dash_cast = {
@@ -1505,7 +1576,7 @@ impl RolloutWorld {
         };
         if let Some((origin, direction, caster_id)) = dash_cast {
             let wall =
-                crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
+                crate::world::closest(terrain!(self), origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
 
             // Dash.performDash raycasts the Projectile layer too. It first
@@ -1589,7 +1660,7 @@ impl RolloutWorld {
         let b = &mut self.players[index].bow;
         if b.has_fired {
             if b.fire_ticks_left == 0 {
-                bow_exit(&mut self.players[index], &self.platforms);
+                bow_exit(&mut self.players[index], terrain!(self));
                 return;
             }
             b.fire_ticks_left -= 1;
@@ -1638,7 +1709,11 @@ impl RolloutWorld {
         let mut exit = false;
         let this = &mut *self;
         let slot = &mut this.players[index];
-        let platforms: &[Platform] = &this.platforms;
+        let terrain = Terrain {
+            platforms: &this.platforms,
+            bounds: &this.bounds,
+        };
+        let platforms: &[Platform] = terrain.platforms;
         // Bow's boundary component runs after BowTransform but before
         // PlayerBody performs this pass's position integration; its
         // ExitAbility deactivates the Bow, so the body is never integrated.
@@ -1658,7 +1733,7 @@ impl RolloutWorld {
                 exit = true;
             } else {
                 // Grounded aiming: physics.Move(zero) = friction, stay attached.
-                slot.base.step(Action::default(), platforms);
+                slot.base.step(Action::default(), terrain);
             }
         } else if !slot.bow.has_fired {
             // Airborne aiming: near-frozen fall (gravity_modifier 0.03), the
@@ -1672,11 +1747,11 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            slot.base.collision_rays(platforms);
+            slot.base.collision_rays(terrain);
             if slot.base.grounded {
                 // Landed while aiming: physics.Move(zero) in the same pass
                 // (BowTransform.cs:240-243); the shot later exits on landing.
-                slot.base.move_only(Vec2::ZERO, platforms);
+                slot.base.move_only(Vec2::ZERO, terrain);
             } else if slot.base.velocity.length() > bow.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * bow.max_slow_mo_speed;
             }
@@ -1695,7 +1770,7 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            slot.base.collision_rays(platforms);
+            slot.base.collision_rays(terrain);
             if slot.base.grounded {
                 exit = true;
             } else {
@@ -1722,7 +1797,7 @@ impl RolloutWorld {
             }
         }
         if exit {
-            bow_exit(slot, platforms);
+            bow_exit(slot, terrain);
         }
     }
 
@@ -1831,6 +1906,7 @@ impl RolloutWorld {
                     self.platform_dynamics[platform_index].home_rotation = rotation;
                     self.platforms[platform_index].surface.right = up.perp_cw();
                     self.platforms[platform_index].surface.up = up;
+                    self.platforms_changed();
                     self.players[index].base.rotation = rotation;
                     // FixTransform.up stores the exact Slerp axes
                     // (FixTransform.cs:49-59); State.Size sizes along them.
@@ -1888,7 +1964,7 @@ impl RolloutWorld {
                     // body may already have reattached for the next tick.
                     slot.reported_position = slot.base.position;
                     slot.reported_tick = self.tick;
-                    slot.base.collision_rays(&self.platforms);
+                    slot.base.collision_rays(terrain!(self));
                 }
             }
         }
@@ -2037,6 +2113,7 @@ impl RolloutWorld {
             mu: pd.spawn_mu,
             rotation_speed: pd.spawn_rotation_speed,
             rotation_mu: pd.spawn_rotation_mu,
+            basis: None,
         });
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
@@ -2097,6 +2174,7 @@ impl RolloutWorld {
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
         self.platform_entities.remove(index);
+        self.platforms_changed();
         self.orbits.retain(|orbit| orbit.0 != index);
         for orbit in &mut self.orbits {
             if orbit.0 > index {
@@ -2112,6 +2190,23 @@ impl RolloutWorld {
             if p.active == ActiveAbility::Platform && p.platform.platform_index > index {
                 p.platform.platform_index -= 1;
             }
+        }
+        self.rebuild_bounds();
+    }
+
+    /// Record a mutation of `platforms`/`platform_dynamics` (positions,
+    /// shapes, bodies, membership) so the derived caches refresh.
+    fn platforms_changed(&mut self) {
+        self.platform_epoch += 1;
+    }
+
+    /// Refresh the raycast broad phase after platforms moved, changed shape
+    /// or were added/removed (`world::PlatformBounds`); a no-op while the
+    /// platforms are unchanged since the last build.
+    fn rebuild_bounds(&mut self) {
+        if self.bounds_epoch != self.platform_epoch {
+            self.bounds.rebuild(&self.platforms);
+            self.bounds_epoch = self.platform_epoch;
         }
     }
 
@@ -2149,6 +2244,8 @@ impl RolloutWorld {
         dynamics.body.inverse_mass = Fix::ONE / mass;
         dynamics.body.inverse_inertia = Fix::ONE / inertia;
         dynamics.home_position += center - old_center;
+        self.platforms_changed();
+        self.rebuild_bounds();
     }
 
     fn spawn_arrow(
@@ -2361,6 +2458,7 @@ impl RolloutWorld {
                     self.platforms[p].surface.center += correction[1];
                     self.platforms[p].collider.inner.center += correction[1];
                 }
+                self.platforms_changed();
                 // Arrow.OnCollide destroys the components from the callback
                 // queue: this pass still observes the corrected collider and
                 // resolved body, flagged destroyed and ownerless
@@ -2450,32 +2548,35 @@ impl RolloutWorld {
 
     /// Stable rounded-rectangle broad phase, matching the RR subset of the
     /// generic DetPhysics sweep (strict touching-edge rejection included).
-    fn platform_pairs(&self) -> Vec<[usize; 2]> {
+    fn platform_pairs(&self, scratch: &mut PlatformScratch) {
+        scratch.pairs.clear();
         if self.platforms.len() < 2 {
-            return Vec::new();
+            return;
         }
         // DetPhysics picks the sweep axis from every registered collider:
         // the mean over the active ones, the spread over all of them,
         // including frozen inactive hurtboxes (DetPhysics.cs:2827-2894).
         // Rounded rectangles have just integrated; the other rows were
         // synced by `refresh_actor_entities`.
-        let others: Vec<Vec2> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
-            .map(|e| {
-                (
-                    Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
-                    e.flags & 3 == 3,
-                )
-            })
-            .filter_map(|(p, active)| active.then_some(p))
-            .collect();
+        let others = &mut scratch.others;
+        others.clear();
+        others.extend(
+            self.entities
+                .iter()
+                .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
+                .map(|e| {
+                    (
+                        Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
+                        e.flags & 3 == 3,
+                    )
+                })
+                .filter_map(|(p, active)| active.then_some(p)),
+        );
         let mut mean = Vec2::ZERO;
         for platform in &self.platforms {
             mean += platform.surface.center;
         }
-        for p in &others {
+        for p in others.iter() {
             mean += *p;
         }
         mean = mean / Fix::from_int((self.platforms.len() + others.len()) as i64);
@@ -2495,30 +2596,32 @@ impl RolloutWorld {
         let sweep_x = variance.x > variance.y;
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
-        let bounds: Vec<_> = self
-            .platforms
-            .iter()
-            .map(|platform| {
-                let r = platform.collider;
-                let extent = Vec2::new(
-                    r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
-                    r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
-                );
-                [r.inner.center - extent, r.inner.center + extent]
-            })
-            .collect();
-        let mut active: Vec<_> = (0..self.platforms.len()).collect();
+        let bounds = &mut scratch.bounds;
+        bounds.clear();
+        bounds.extend(self.platforms.iter().map(|platform| {
+            let r = platform.collider;
+            let extent = Vec2::new(
+                r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
+                r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
+            );
+            [r.inner.center - extent, r.inner.center + extent]
+        }));
+        let bounds = &*bounds;
+        let active = &mut scratch.active;
+        active.clear();
+        active.extend(0..self.platforms.len());
         active.sort_by(|&a, &b| {
             (axis(bounds[a][0]) - axis(bounds[b][0]))
                 .sign()
                 .cmp(&0)
                 .then(a.cmp(&b))
         });
-        let mut pairs = Vec::new();
-        let mut window = Vec::new();
-        for b in active {
+        let pairs = &mut scratch.pairs;
+        let window = &mut scratch.window;
+        window.clear();
+        for &b in active.iter() {
             window.retain(|&a: &usize| axis(bounds[a][1]) > axis(bounds[b][0]));
-            for &a in &window {
+            for &a in window.iter() {
                 if other(bounds[a][1]) <= other(bounds[b][0])
                     || other(bounds[a][0]) >= other(bounds[b][1])
                 {
@@ -2532,7 +2635,6 @@ impl RolloutWorld {
             }
             window.push(b);
         }
-        pairs
     }
 
     /// Rounded-platform rigid-body stage. The order matches DetPhysics:
@@ -2586,16 +2688,21 @@ impl RolloutWorld {
                     .as_ref()
                     .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
             });
+        // Bodies and homes only change through paths that bump
+        // `platform_epoch`, so a level found quiet stays quiet until then.
         let disturbed =
-            self.platforms
-                .iter()
-                .zip(&self.platform_dynamics)
-                .any(|(platform, dynamics)| {
-                    platform.surface.center != dynamics.home_position
-                        || dynamics.body.velocity != Vec2::ZERO
-                        || dynamics.body.angular_velocity != Fix::ZERO
-                        || dynamics.body.orientation != dynamics.home_rotation
-                });
+            self.quiet_epoch != self.platform_epoch
+                && self.platforms.iter().zip(&self.platform_dynamics).any(
+                    |(platform, dynamics)| {
+                        platform.surface.center != dynamics.home_position
+                            || dynamics.body.velocity != Vec2::ZERO
+                            || dynamics.body.angular_velocity != Fix::ZERO
+                            || dynamics.body.orientation != dynamics.home_rotation
+                    },
+                );
+        if !disturbed {
+            self.quiet_epoch = self.platform_epoch;
+        }
         if !self.sudden_death
             && !orbit_running
             && !disturbed
@@ -2603,6 +2710,8 @@ impl RolloutWorld {
         {
             return;
         }
+        // Everything below may move a body or its home.
+        self.platforms_changed();
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
@@ -2734,9 +2843,17 @@ impl RolloutWorld {
             }
             let shift = dynamics.body.integrate(DT, Fix::from_int(-40));
             let orientation = dynamics.body.orientation;
+            let basis = match dynamics.basis {
+                Some((rotation, basis)) if rotation == orientation => basis,
+                _ => {
+                    let basis = Vec2::angle(orientation);
+                    dynamics.basis = Some((orientation, basis));
+                    basis
+                }
+            };
             let platform = &mut self.platforms[i];
             platform.surface.center += shift;
-            platform.surface.right = Vec2::angle(orientation);
+            platform.surface.right = basis;
             platform.surface.up = platform.surface.right.perp();
             // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
             let inner = &mut platform.collider.inner;
@@ -2748,22 +2865,25 @@ impl RolloutWorld {
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
-        let callback_colliders: Vec<_> = self.platforms.iter().map(|p| p.collider).collect();
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.callback_colliders.clear();
+        scratch
+            .callback_colliders
+            .extend(self.platforms.iter().map(|p| p.collider));
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.
-        let contacts: Vec<_> = self
-            .platform_pairs()
-            .into_iter()
-            .filter_map(|[a, b]| {
-                crate::physics::contact::rounded_rounded(
-                    self.platforms[a].collider,
-                    self.platforms[b].collider,
-                )
-                .map(|contact| (a, b, contact))
-            })
-            .collect();
-        for (a, b, contact) in contacts {
+        self.platform_pairs(&mut scratch);
+        scratch.contacts.clear();
+        for &[a, b] in &scratch.pairs {
+            if let Some(contact) = crate::physics::contact::rounded_rounded(
+                self.platforms[a].collider,
+                self.platforms[b].collider,
+            ) {
+                scratch.contacts.push((a, b, contact));
+            }
+        }
+        for &(a, b, contact) in &scratch.contacts {
             let pos_a = self.platforms[a].surface.center;
             let pos_b = self.platforms[b].surface.center;
             let (body_a, body_b) = if a < b {
@@ -2786,22 +2906,25 @@ impl RolloutWorld {
         // rounded rectangle contains its squish point (the stock player
         // prefab uses the body centre). Player boxes are triggers, so this is
         // a callback effect rather than a rigid-body response.
-        let squished: Vec<_> = self
-            .players
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
-            .filter(|(_, slot)| {
-                callback_colliders.iter().enumerate().any(|(i, &collider)| {
-                    Some(self.platforms[i].id) != slot.base.ground
-                        && collider.overlaps(slot.base.position)
+        let callback_colliders = &scratch.callback_colliders;
+        scratch.squished.clear();
+        scratch.squished.extend(
+            self.players
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
+                .filter(|(_, slot)| {
+                    callback_colliders.iter().enumerate().any(|(i, &collider)| {
+                        Some(self.platforms[i].id) != slot.base.ground
+                            && collider.overlaps(slot.base.position)
+                    })
                 })
-            })
-            .map(|(index, _)| index)
-            .collect();
-        for index in squished {
+                .map(|(index, _)| index),
+        );
+        for &index in &scratch.squished {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true);
         }
+        self.scratch = scratch;
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is
         // intentionally not synchronized: its UpdateSim copied the platform's
@@ -3000,17 +3123,16 @@ impl RolloutWorld {
     /// tick's deaths. The rest of the current updater pass still runs after it
     /// marks the game ended; RlBridge observes terminal only after the pass.
     fn session_result_tick(&mut self) {
-        let alive_teams: Vec<u32> = {
-            let mut teams: Vec<u32> = self
-                .players
-                .iter()
-                .filter(|p| !p.out)
-                .map(|p| p.team)
-                .collect();
-            teams.sort_unstable();
-            teams.dedup();
-            teams
-        };
+        // Distinct teams still in, on the stack: this runs every tick.
+        let mut alive_teams = [0u32; MAX_PLAYERS];
+        let mut alive_count = 0;
+        for p in self.players.iter().filter(|p| !p.out) {
+            if !alive_teams[..alive_count].contains(&p.team) {
+                alive_teams[alive_count] = p.team;
+                alive_count += 1;
+            }
+        }
+        let alive_teams = &alive_teams[..alive_count];
         if self.players.len() > 1 && alive_teams.len() <= 1 {
             self.terminal = true;
             if alive_teams.len() == 1 {
@@ -3056,9 +3178,7 @@ impl RolloutWorld {
 
     fn observe_main(&mut self) {
         self.refresh_entities();
-        self.state_entities.clear();
-        self.state_entities
-            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
+        Self::publish_entities(&mut self.state_entities, &self.entities);
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
         self.slimes = slimes;
@@ -3079,9 +3199,7 @@ impl RolloutWorld {
 
     fn observe_sample(&mut self) {
         self.refresh_entities();
-        self.sample_entities.clear();
-        self.sample_entities
-            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
+        Self::publish_entities(&mut self.sample_entities, &self.entities);
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
         self.sample_slimes = slimes;
@@ -3098,6 +3216,19 @@ impl RolloutWorld {
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
+    }
+
+    /// The live rows minus the removed ones. A plain slice copy when nothing
+    /// was removed (the common case): the element-wise filtered copy goes
+    /// through a stack temporary whose 64-byte vector reload stalls on store
+    /// forwarding and dominated this function.
+    fn publish_entities(out: &mut Vec<CEntity>, entities: &[CEntity]) {
+        out.clear();
+        if entities.iter().any(|e| e.flags & E_REMOVED != 0) {
+            out.extend(entities.iter().filter(|e| e.flags & E_REMOVED == 0));
+        } else {
+            out.extend_from_slice(entities);
+        }
     }
 
     fn flags(&self) -> u32 {
@@ -3188,10 +3319,18 @@ impl RolloutWorld {
                 // Box.SetRotation: axis length `One / inverseExtents`, not
                 // `extents`. An active row is the synced Player-layer box
                 // itself (the slime is never dashing while its row is active).
-                let hurtbox = if body_active {
-                    slot.base.collider
+                // By reference: a by-value copy of the 64-byte box followed
+                // by a vector reload of its axes stalls on store forwarding.
+                let rebuilt;
+                let hurtbox: &OrientedBox = if body_active {
+                    &slot.base.collider
                 } else {
-                    OrientedBox::from_basis(center, Vec2::angle(angle), data.player.hurtbox_extents)
+                    rebuilt = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(angle),
+                        data.player.hurtbox_extents,
+                    );
+                    &rebuilt
                 };
                 body.right_x = hurtbox.right.x.raw();
                 body.right_y = hurtbox.right.y.raw();
@@ -3320,6 +3459,13 @@ impl RolloutWorld {
     }
 
     fn refresh_platform_entities(&mut self) {
+        // The rows below are pure functions of platform state, which only
+        // changes through `platforms_changed`; `remove_platform` marks a
+        // removed row itself.
+        if self.platform_rows_epoch == self.platform_epoch {
+            return;
+        }
+        self.platform_rows_epoch = self.platform_epoch;
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
             let s = &platform.surface;
@@ -3684,7 +3830,8 @@ impl RolloutWorld {
 
 /// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
 /// fire animation's end (BowTransform.cs:116-130).
-fn bow_exit(slot: &mut PlayerSlot, platforms: &[Platform]) {
+fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
+    let platforms = terrain.platforms;
     slot.active = ActiveAbility::None;
     slot.exit_to_fall();
     if slot.base.grounded {
@@ -3718,7 +3865,7 @@ fn bow_exit(slot: &mut PlayerSlot, platforms: &[Platform]) {
         slot.base.force_unground(platforms);
         slot.reported_position = slot.base.position; // Ability.cs:151
         slot.base.ground = None;
-        slot.base.collision_rays(platforms);
+        slot.base.collision_rays(terrain);
     }
 }
 

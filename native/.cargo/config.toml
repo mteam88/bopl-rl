@@ -1,0 +1,4 @@
+# Trainer builds run on the box that compiled them: use its full ISA (Zen 4,
+# AVX-512). The .so is not portable to other CPUs (native/rl/RUST_ROLLOUTS.md).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]

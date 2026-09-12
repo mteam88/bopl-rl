@@ -14,6 +14,7 @@ resets somewhere in the sequence).
 import argparse
 import ctypes
 import json
+import os
 from pathlib import Path
 import subprocess
 import sysconfig
@@ -35,7 +36,7 @@ def build(output, overlay, source, compiler):
                     "-I" + str(overlay), "-I" + str(source / "src"), "-I" + str(cuda / "include"),
                     "-c", str(HERE / "check_recurrent.cu"), "-o", str(obj)], check=True)
     subprocess.run([compiler, "-shared", "-Wl,--no-undefined", str(obj),
-                    str(cuda / "lib/libcudart.so.13"), str(cuda / "lib/libcublas.so.13"),
+                    str(cuda / "lib/libcudart.so.13"), str(cuda / "lib/libcublas.so.13"), str(cuda / "lib/libcublasLt.so.13"),
                     str(cuda / "lib/libcurand.so.10"),
                     "-Wl,--disable-new-dtags,-rpath," + str(cuda / "lib"),
                     "-o", str(output)], check=True)
@@ -108,6 +109,8 @@ def main():
     lib_path = args.output / "libcheck_recurrent.so"
     if args.build or not lib_path.exists():
         build(lib_path, args.overlay, args.puffer, args.cuda_host_compiler)
+    # The overlay's cuBLAS wrapper defaults to TF32; the fixture comparison is fp32.
+    os.environ.setdefault("BOPL_TF32", "0")
     lib = ctypes.CDLL(str(lib_path))
     lib.bopl_recurrent_check_error.restype = ctypes.c_char_p
     lib.bopl_recurrent_check_create.restype = ctypes.c_void_p

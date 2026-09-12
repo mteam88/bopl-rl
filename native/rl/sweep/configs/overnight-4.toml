@@ -38,6 +38,15 @@
 # so evasive-v2 comes first). Trial 000 = the
 # basin centre with one bank at 400M.
 #
+# Aim: trial 000 of the first launch (aim scale 1) kept the 256-way aim head
+# at 4.5-5.5 nats of entropy for all 400M steps (uniform = 5.55; buttons and
+# hold collapse to ~0.2 within 50M): arrows fly in ~90 equally likely
+# directions, hit rate 1-7% flat, all 28 kills in the final eval were the 28
+# hits, and 56 of 84 wins came from platform squishes/ledge-offs instead. The
+# aim head has ~2x the max entropy of the others, so at scale 1 it collects most
+# of the entropy bonus. head_scale_aim is swept log-uniform 0.03-1 with default
+# 0.15, so the new trial 000 is the direct A/B against the 469-Elo baseline.
+#
 # Bots: the training bank plays mixed-v2-hard, not mixed-hard. v1 bots lost
 # 66% of their games to platform squishes (SCRIPTED_BOTS.md loss taxonomy),
 # the exploit the no-offense trials learned; v2 cut squishes 221->29 and rates
@@ -55,8 +64,8 @@ metric_distribution = "linear"     # Elo, not a rate
 downsample = 3                     # = [scoring].last_k points per trial
 fixed_cost = true
 max_suggestion_cost = 4.1e8
-max_runs = 15                      # 6 params: 1 default + 6 Sobol + 8 GP
-num_random_samples = 6
+max_runs = 15                      # 7 params: 1 default + 7 Sobol + 7 GP
+num_random_samples = 7
 use_gpu = false
 cost = "learner_steps"
 seeds = "fixed"
@@ -156,3 +165,10 @@ min = 1
 max = 3                            # 4 banks total; at least one stays self-play
 scale = "auto"
 default = 1
+
+[params.head_scale_aim]
+distribution = "log_normal"
+min = 0.03
+max = 1.0                          # 1 = the old behaviour (aim head near-uniform for the whole run)
+scale = 0.5
+default = 0.15

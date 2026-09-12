@@ -30,12 +30,35 @@
  */
 #include "bopl_rl.h"
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
+#endif
+/* The terrain SDF (bot_sdf and the two wall pickers below it) is where the
+ * bots spend their time: every raycast, drop probe, foe prediction and shot
+ * simulation evaluates the rounded-rect distance of every wall, thousands of
+ * times per decision. On x86-64 with AVX-512 those evaluate eight walls per
+ * instruction from a SoA mirror of BotView.walls (bot_sdf_avx512); the lane
+ * arithmetic is the scalar code's operations in the scalar code's order
+ * (sub, mul, add, abs, max, sqrt, no fused multiply-add: fp-contract is off
+ * for the kernels), so the vector and scalar paths return the same bits and
+ * the frozen v1 fingerprints (SCRIPTED_BOTS.md, Versioning) are unchanged.
+ * Other targets, and CPUs without AVX-512, run the scalar loops
+ * (-DBOT_SDF_AVX512=0 forces them, to check the two agree). */
+#ifndef BOT_SDF_AVX512
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#define BOT_SDF_AVX512 1
+#else
+#define BOT_SDF_AVX512 0
+#endif
+#endif
+#if BOT_SDF_AVX512
+#include <immintrin.h>
+static int bot_cpu_avx512=-1;
 #endif
 
 /* Kind table (SCRIPTED_BOTS.md "Versioning"). Ids, names and behaviour are
@@ -170,6 +193,9 @@ typedef struct {
     double svx, svy;              /* own velocity estimate (see BoplBot) */
     BotWall walls[48]; int wall_count;
     BotArrow arrows[12]; int arrow_count;
+    /* SoA mirror of walls[] (the fields bot_wall_sdf reads) for the vector
+     * SDF kernels; filled alongside walls[] in bot_view. */
+    struct { double cx[48], cy[48], rx[48], ry[48], ux[48], uy[48], ex[48], ey[48], radius[48], top[48]; } soa;
 } BotView;
 
 static const BoplRlSlime *bot_slime(const BoplRlState *state, uint32_t id) {
@@ -188,7 +214,13 @@ static const BoplRlEntity *bot_morph_entity(const BoplRlState *state, uint32_t i
 static int bot_state_grounded(uint32_t s) { return s!=2 && s!=5 && s!=8 && s!=10; }
 
 static int bot_view(BotView *view, const BoplRlState *state, int index) {
-    memset(view, 0, sizeof(*view));
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512<0) bot_cpu_avx512=__builtin_cpu_supports("avx512f")?1:0;
+#endif
+    /* Only the scalar fields are cleared: walls, arrows and the SoA mirror are
+     * read up to their counts, which start at zero. */
+    memset(view, 0, offsetof(BotView, walls));
+    view->wall_count=0; view->arrow_count=0;
     view->state=state;
     if (!state || (uint32_t)index>=state->header.player_count || state->header.player_count<2) return 0;
     view->me=&state->players[index];
@@ -261,6 +293,10 @@ static int bot_view(BotView *view, const BoplRlState *state, int index) {
              * long slopes still walk poorly, so cap the usable span. */
             w->standable=e->layer!=16 && w->top>BOT_WATER+1.5;
             if (fabs(w->ry)>0.5) w->spanx=fmin(w->spanx, 1.0);
+            int k=view->wall_count-1;
+            view->soa.cx[k]=w->cx; view->soa.cy[k]=w->cy; view->soa.rx[k]=w->rx; view->soa.ry[k]=w->ry;
+            view->soa.ux[k]=w->ux; view->soa.uy[k]=w->uy; view->soa.ex[k]=w->ex; view->soa.ey[k]=w->ey;
+            view->soa.radius[k]=w->radius; view->soa.top[k]=w->top;
         }
         /* Live arrows still in flight. Own arrows count too - bots have flown
          * into their own rising mortars. One still adjacent and moving away is
@@ -282,22 +318,94 @@ static int bot_view(BotView *view, const BoplRlState *state, int index) {
     return view->foe_alive;
 }
 
-/* Signed distance from a point to a wall's rounded-rect surface. */
+/* Signed distance from a point to a wall's rounded-rect surface. The
+ * scalar and eight-lane versions below perform the same IEEE operations in
+ * the same order (see the note at the top of the file); no fused multiply-add
+ * may be introduced into either. */
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
 static double bot_wall_sdf(const BotWall *w, double x, double y) {
     double px=x-w->cx, py=y-w->cy;
     double lx=px*w->rx+py*w->ry, ly=px*w->ux+py*w->uy;
     double qx=fabs(lx)-w->ex, qy=fabs(ly)-w->ey;
     double ox=qx>0?qx:0, oy=qy>0?qy:0;
-    double outside=sqrt(ox*ox+oy*oy), inside=fmin(fmax(qx, qy), 0);
+    /* fmin(fmax(qx, qy), 0) without the libm calls: qx and qy are finite,
+     * and where the tie rules could differ (a +-0 pair) the sum below is
+     * +0 either way, so the result bits are the same. */
+    double m=qx>=qy?qx:qy;
+    double outside=sqrt(ox*ox+oy*oy), inside=m<=0?m:0;
     return outside+inside-w->radius;
 }
-static double bot_sdf(const BotView *view, double x, double y) {
+static double bot_sdf_scalar(const BotView *view, double x, double y) {
     double best=1e9;
     for (int i=0; i<view->wall_count; i++) {
         double d=bot_wall_sdf(&view->walls[i], x, y);
         if (d<best) best=d;
     }
     return best;
+}
+#if BOT_SDF_AVX512
+/* Lanes k..k+7 of the SoA walls (mask m selects the ones that exist). */
+__attribute__((target("avx512f"))) static inline __m512d bot_sdf_lanes(const BotView *view, int k, __mmask8 m, __m512d x, __m512d y) {
+    __m512d px=_mm512_sub_pd(x, _mm512_maskz_loadu_pd(m, view->soa.cx+k));
+    __m512d py=_mm512_sub_pd(y, _mm512_maskz_loadu_pd(m, view->soa.cy+k));
+    __m512d lx=_mm512_add_pd(_mm512_mul_pd(px, _mm512_maskz_loadu_pd(m, view->soa.rx+k)),
+                             _mm512_mul_pd(py, _mm512_maskz_loadu_pd(m, view->soa.ry+k)));
+    __m512d ly=_mm512_add_pd(_mm512_mul_pd(px, _mm512_maskz_loadu_pd(m, view->soa.ux+k)),
+                             _mm512_mul_pd(py, _mm512_maskz_loadu_pd(m, view->soa.uy+k)));
+    __m512d qx=_mm512_sub_pd(_mm512_abs_pd(lx), _mm512_maskz_loadu_pd(m, view->soa.ex+k));
+    __m512d qy=_mm512_sub_pd(_mm512_abs_pd(ly), _mm512_maskz_loadu_pd(m, view->soa.ey+k));
+    __m512d zero=_mm512_setzero_pd();
+    /* max/min return the second operand on a tie, which only differs from
+     * the scalar ?: in the sign of a zero, and outside+inside is +0 then. */
+    __m512d ox=_mm512_max_pd(qx, zero), oy=_mm512_max_pd(qy, zero);
+    __m512d outside=_mm512_sqrt_pd(_mm512_add_pd(_mm512_mul_pd(ox, ox), _mm512_mul_pd(oy, oy)));
+    __m512d inside=_mm512_min_pd(_mm512_max_pd(qx, qy), zero);
+    return _mm512_sub_pd(_mm512_add_pd(outside, inside), _mm512_maskz_loadu_pd(m, view->soa.radius+k));
+}
+__attribute__((target("avx512f"))) static double bot_sdf_avx512(const BotView *view, double x, double y) {
+    __m512d best=_mm512_set1_pd(1e9), vx=_mm512_set1_pd(x), vy=_mm512_set1_pd(y);
+    for (int k=0; k<view->wall_count; k+=8) {
+        int n=view->wall_count-k;
+        __mmask8 m=n>=8?(__mmask8)0xFF:(__mmask8)((1u<<n)-1u);
+        best=_mm512_mask_min_pd(best, m, best, bot_sdf_lanes(view, k, m, vx, vy));
+    }
+    return _mm512_reduce_min_pd(best);
+}
+/* Index of the first wall with the smallest SDF among the lanes `admit`
+ * selects (a bit per wall), or -1 when none; *out_d gets its distance. The
+ * order rule matches the scalar `if (sd<d)` scan: the first index reaching
+ * the minimum wins. */
+__attribute__((target("avx512f"))) static int bot_min_wall_avx512(const BotView *view, double x, double y, uint64_t admit, double *out_d) {
+    __m512d vx=_mm512_set1_pd(x), vy=_mm512_set1_pd(y);
+    double best=1e9; int index=-1;
+    for (int k=0; k<view->wall_count; k+=8) {
+        int n=view->wall_count-k;
+        __mmask8 m=(__mmask8)((n>=8?0xFFu:((1u<<n)-1u))&(unsigned)(admit>>k));
+        if (!m) continue;
+        __m512d d=bot_sdf_lanes(view, k, m, vx, vy);
+        __mmask8 lower=_mm512_mask_cmp_pd_mask(m, d, _mm512_set1_pd(best), _CMP_LT_OQ);
+        if (!lower) continue;
+        best=_mm512_mask_reduce_min_pd(lower, d);
+        __mmask8 hit=_mm512_mask_cmp_pd_mask(lower, d, _mm512_set1_pd(best), _CMP_EQ_OQ);
+        index=k+__builtin_ctz((unsigned)hit);
+    }
+    *out_d=best;
+    return index;
+}
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+static double bot_sdf(const BotView *view, double x, double y) {
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0) return bot_sdf_avx512(view, x, y);
+#endif
+    return bot_sdf_scalar(view, x, y);
 }
 /* Sphere-march a ray; returns distance to the first surface (or max). */
 static double bot_raycast(const BotView *view, double x, double y, double dx, double dy, double max) {
@@ -308,6 +416,25 @@ static double bot_raycast(const BotView *view, double x, double y, double dx, do
         t+=d;
     }
     return max;
+}
+/* Sphere-tracing skip for the tick simulations below, which test
+ * `bot_sdf(p) < limit` at every tick of a path. The SDF is 1-Lipschitz, so
+ * after an evaluation `known` at some point, every point within
+ * `known - limit` of it has an SDF of at least `limit`, and the test is
+ * false without evaluating it. `travel` bounds the path length flown since
+ * that evaluation (the sum of |dx|+|dy| per tick is at least the distance);
+ * the slack covers the rounding in the SDF and in the bound (both ~1e-12 at
+ * arena coordinates). The outcome of every test, and so of every caller,
+ * is the one the per-tick evaluation gives. */
+typedef struct { double known, travel; } BotSkip;
+#define BOT_SKIP_INIT {-1, 0}
+static int bot_skip(BotSkip *s, double dx, double dy, double limit) {
+    s->travel+=fabs(dx)+fabs(dy);
+    return s->known>=0 && s->travel+1e-6<s->known-limit;
+}
+static double bot_sdf_known(BotSkip *s, const BotView *view, double x, double y) {
+    s->known=bot_sdf(view, x, y); s->travel=0;
+    return s->known;
 }
 /* Vertical drop to the nearest surface below (cap 80). */
 static double bot_drop(const BotView *view, double x, double y) {
@@ -340,10 +467,17 @@ static void bot_predict_foe(const BotView *view, double ticks, double *out_x, do
     double x=view->fx, y=view->fy, vx=view->fvx, vy=view->foe_grounded?0:view->fvy;
     if (view->foe_morphing) { *out_x=x; *out_y=y; return; }  /* morphs stay put */
     int grounded=view->foe_grounded;
+    BotSkip skip=BOT_SKIP_INIT;
     for (int t=0; t<(int)ticks; t++) {
         if (!grounded) bot_fall_tick(&vy);
         x+=vx*BOT_TICK; y+=vy*BOT_TICK;
-        if (!grounded && vy<0 && bot_sdf(view, x, y)<BOT_SLIME_RADIUS) { grounded=1; vx=0; vy=0; }
+        int far=bot_skip(&skip, vx*BOT_TICK, vy*BOT_TICK, BOT_SLIME_RADIUS);
+        if (!grounded && vy<0 && !far && bot_sdf_known(&skip, view, x, y)<BOT_SLIME_RADIUS) {
+            grounded=1; vx=0; vy=0;
+            /* Landed: the remaining ticks add +0 to x and y, which changes
+             * neither unless one is -0 (then it would become +0). */
+            if (x!=0 && y!=0) break;
+        }
     }
     *out_x=x; *out_y=y;
 }
@@ -401,6 +535,9 @@ static int bot_ballistic_moving(double px, double py, double svx, double svy, do
  * final approach. */
 static int bot_closest_wall(const BotView *view, double x, double y) {
     int best=-1; double d=1e9;
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0) return bot_min_wall_avx512(view, x, y, ~0ull, &d);
+#endif
     for (int i=0; i<view->wall_count; i++) {
         double sd=bot_wall_sdf(&view->walls[i], x, y);
         if (sd<d) { d=sd; best=i; }
@@ -409,6 +546,15 @@ static int bot_closest_wall(const BotView *view, double x, double y) {
 }
 static int bot_support_wall(const BotView *view, double x, double y) {
     int best=-1; double d=1e9;
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0) {
+        uint64_t admit=0;
+        /* Overhead slabs are cover, not a floor. */
+        for (int i=0; i<view->wall_count; i++) if (!(view->soa.top[i]>y+1.2)) admit|=1ull<<i;
+        best=bot_min_wall_avx512(view, x, y, admit, &d);
+        return (best>=0 && d<2.5)?best:-1;
+    }
+#endif
     for (int i=0; i<view->wall_count; i++) {
         const BotWall *w=&view->walls[i];
         /* Overhead slabs are cover, not a floor. */
@@ -424,15 +570,23 @@ static int bot_shot_clear(const BotView *view, double px, double py, double vx0,
     int ticks=(int)(seconds*60)+2;
     int home=bot_support_wall(view, px, py);
     const BotWall *hw=home>=0?&view->walls[home]:NULL;
+    BotSkip skip=BOT_SKIP_INIT;
     for (int t=0; t<ticks; t++) {
         vy-=BOT_ARROW_G*BOT_TICK;
         x+=vx*BOT_TICK; y+=vy*BOT_TICK;
         if (y>BOT_BLAST_Y-0.5 || y<BOT_WATER || fabs(x)>BOT_BLAST_X) return 0;
-        double to_target=bot_len(tx-x, ty-y);
-        if (to_target<1.1) return 1;
-        double from_start=bot_len(x-px, y-py);
+        /* to_target<1.1 (bot_len(tx-x, ty-y)<1.1): the square root is only
+         * taken where the squared distance leaves the verdict open. */
+        double qx=tx-x, qy=ty-y, q=qx*qx+qy*qy;
+        if (q<1.3 && bot_len(qx, qy)<1.1) return 1;
+        if (bot_skip(&skip, vx*BOT_TICK, vy*BOT_TICK, BOT_ARROW_RADIUS+0.2)) continue;
+        double d=bot_sdf_known(&skip, view, x, y);
+        /* Both margins are at most BOT_ARROW_RADIUS+0.2, so d below that is
+         * the only case where which margin applies can matter. */
+        if (d>=BOT_ARROW_RADIUS+0.2) continue;
+        double to_target=bot_len(tx-x, ty-y), from_start=bot_len(x-px, y-py);
         double margin=(to_target<2.5 || from_start<3.0)?BOT_ARROW_RADIUS*0.7:BOT_ARROW_RADIUS+0.2;
-        if (bot_sdf(view, x, y)<margin) {
+        if (d<margin) {
             /* The deck underfoot overlaps the slime center, so the first
              * ticks of a shot along it would otherwise collide at t≈0. Ignore
              * the home wall only while the arrow is still on/above that deck;
@@ -502,32 +656,70 @@ static int bot_solve_shot(const BotView *view, int hold, double lead_ticks, int 
  * the foe, and slightly higher ground. */
 static int bot_dash_reaches(const BotView *view, double tx, double ty);
 static int bot_nearest_perch(const BotView *view, double x, double y, double *px, double *py);
+/* A drop compared against a threshold below `cap` needs no march past the
+ * cap: the march up to it is the same, and everything the 80-unit probe
+ * could still return is on the same side of the threshold as the cap. */
+static double bot_drop_capped(const BotView *view, double x, double y, double cap) {
+    return bot_raycast(view, x, y, 0, -1, cap);
+}
 static int bot_deck_walkable(const BotView *view, double tx, double ty) {
     if (fabs(ty-view->y)>3.2) return 0;
     double step=tx>=view->x?2.0:-2.0;
     for (double x=view->x; (step>0)?(x<tx):(x>tx); x+=step)
-        if (bot_drop(view, x, view->y+0.6)>5.0) return 0;
-    return bot_drop(view, tx, view->y+0.6)<5.0;
+        if (bot_drop_capped(view, x, view->y+0.6, 6.0)>5.0) return 0;
+    return bot_drop_capped(view, tx, view->y+0.6, 6.0)<5.0;
 }
-static int bot_dash_hits_perch(const BotView *view, double tx, double ty) {
-    double dx=tx-view->x, dy=ty-view->y, dist=bot_len(dx, dy);
-    if (dist<1e-6) return 1;
-    dx/=dist; dy/=dist;
-    double hit=bot_raycast(view, view->x, view->y, dx, dy, BOT_DASH_LENGTH);
+/* The dash ray from (ox,oy) toward a target, as bot_dash_reaches_from and
+ * bot_dash_hits_perch both cast it: the unit direction and distance, and the
+ * raycast along it computed at most once between the two. Targets farther
+ * than the dash length plus a verdict's tolerance get that verdict without
+ * the cast: the dash ends within BOT_DASH_LENGTH of its origin (the ray
+ * direction is a unit vector to rounding, hence the 0.1 slack), so its end
+ * point cannot come within the tolerance of the target. */
+typedef struct { double ox, oy, dx, dy, dist, hit; int cast; } BotDashRay;
+static void bot_dash_ray(double ox, double oy, double tx, double ty, BotDashRay *r) {
+    r->ox=ox; r->oy=oy; r->dx=tx-ox; r->dy=ty-oy; r->dist=bot_len(r->dx, r->dy); r->cast=0; r->hit=0;
+    if (r->dist<1e-6) return;
+    r->dx/=r->dist; r->dy/=r->dist;
+}
+static double bot_dash_ray_hit(const BotView *view, BotDashRay *r) {
+    if (!r->cast) { r->hit=bot_raycast(view, r->ox, r->oy, r->dx, r->dy, BOT_DASH_LENGTH); r->cast=1; }
+    return r->hit;
+}
+static int bot_dash_reaches_ray(const BotView *view, double tx, double ty, BotDashRay *r) {
+    if (r->dist<1e-6) return 1;
+    if (r->dist>BOT_DASH_LENGTH+3.5+0.1) return 0;
+    double hit=bot_dash_ray_hit(view, r);
+    double end=fmin(hit, BOT_DASH_LENGTH);
+    return bot_len(tx-(r->ox+r->dx*end), ty-(r->oy+r->dy*end))<3.5;
+}
+static int bot_dash_hits_perch_ray(const BotView *view, double tx, double ty, BotDashRay *r) {
+    if (r->dist<1e-6) return 1;
+    if (r->dist>BOT_DASH_LENGTH+8.0+0.1) return 0;
+    double hit=bot_dash_ray_hit(view, r);
     if (hit>=BOT_DASH_LENGTH) return 0;
-    double hx=view->x+dx*hit, hy=view->y+dy*hit;
+    double hx=r->ox+r->dx*hit, hy=r->oy+r->dy*hit;
     /* Hitting the underside of the target pancake is how pursuers clung
      * under map-1's top slab for two minutes. */
     if (hy<ty-3.5) return 0;
     return bot_len(tx-hx, ty-hy)<8.0;
 }
+static int bot_dash_hits_perch(const BotView *view, double tx, double ty) {
+    BotDashRay r; bot_dash_ray(view->x, view->y, tx, ty, &r);
+    return bot_dash_hits_perch_ray(view, tx, ty, &r);
+}
+/* bot_dash_reaches(view, tx, ty) || bot_dash_hits_perch(view, tx, ty), one cast. */
+static int bot_dash_reaches_or_hits_perch(const BotView *view, double tx, double ty) {
+    BotDashRay r; bot_dash_ray(view->x, view->y, tx, ty, &r);
+    return bot_dash_reaches_ray(view, tx, ty, &r) || bot_dash_hits_perch_ray(view, tx, ty, &r);
+}
 static int bot_can_reach(const BotView *view, double px, double py) {
     double dx=px-view->x, dy=py-view->y;
     if (bot_len(dx, dy)<2.2) return 1;
     if (bot_deck_walkable(view, px, py)) return 1;
-    if (bot_dash_reaches(view, px, py) || bot_dash_hits_perch(view, px, py)) return 1;
+    if (bot_dash_reaches_or_hits_perch(view, px, py)) return 1;
     /* A jump reaches ~7 u up and ~7-10 u across. */
-    if (dy>1.5 && dy<8.0 && fabs(dx)<12.0 && bot_drop(view, px, py+0.6)<6.0) return 1;
+    if (dy>1.5 && dy<8.0 && fabs(dx)<12.0 && bot_drop_capped(view, px, py+0.6, 6.0)<6.0) return 1;
     return 0;
 }
 static int bot_firing_spot(const BotView *view, double *sx, double *sy) {
@@ -685,18 +877,15 @@ static int bot_dash_safe(const BotView *view, double dx, double dy) {
     }
     double ex=view->x+dx*(BOT_DASH_LENGTH+5), ey=view->y+dy*(BOT_DASH_LENGTH+5);
     if (ey<BOT_WATER+1.5 || fabs(ex)>BOT_BLAST_X-10) return 0;
-    return ey-bot_drop(view, ex, ey)>BOT_WATER || bot_drop(view, ex, ey)<12;
+    double drop=bot_drop(view, ex, ey);
+    return ey-drop>BOT_WATER || drop<12;
 }
 /* Does a dash from (ox,oy) actually end near (tx,ty)? A dash that attaches to
  * a wall far short of the target (e.g. the underside of the foe's platform)
  * is a wasted cooldown. */
 static int bot_dash_reaches_from(const BotView *view, double ox, double oy, double tx, double ty) {
-    double dx=tx-ox, dy=ty-oy, dist=bot_len(dx, dy);
-    if (dist<1e-6) return 1;
-    dx/=dist; dy/=dist;
-    double hit=bot_raycast(view, ox, oy, dx, dy, BOT_DASH_LENGTH);
-    double end=fmin(hit, BOT_DASH_LENGTH);
-    return bot_len(tx-(ox+dx*end), ty-(oy+dy*end))<3.5;
+    BotDashRay r; bot_dash_ray(ox, oy, tx, ty, &r);
+    return bot_dash_reaches_ray(view, tx, ty, &r);
 }
 static int bot_dash_reaches(const BotView *view, double tx, double ty) {
     return bot_dash_reaches_from(view, view->x, view->y, tx, ty);
@@ -719,8 +908,7 @@ static int bot_waypoint(const BotView *view, double tx, double ty, double *wx, d
                         || (py>ty-6.0 && fabs(px-tx)<7);
             if (!enables) continue;
             /* Plausibly reachable from here without further routing. */
-            int reachable=py-view->y<8.0 || bot_dash_reaches(view, px, py)
-                         || bot_dash_hits_perch(view, px, py);
+            int reachable=py-view->y<8.0 || bot_dash_reaches_or_hits_perch(view, px, py);
             if (!reachable) continue;
             double score=bot_len(px-view->x, py-view->y)+0.5*bot_len(px-tx, py-ty);
             if (score<best) { best=score; *wx=px; *wy=py; found=1; }
@@ -830,7 +1018,7 @@ static void bot_nav(const BotView *view, BoplBot *bot, double tx, double ty,
      * Do not require the target to be nearly overhead: map-1's high pancake
      * is ~20 u across and 10 u up, and the old |dx|<dy+9 gate walked under. */
     for (int depth=0; depth<2 && dy>4.5; depth++) {
-        if (bot_dash_reaches(view, tx, ty) || bot_dash_hits_perch(view, tx, ty)) {
+        if (bot_dash_reaches_or_hits_perch(view, tx, ty)) {
             if (view->dash_ready && bot_dash_safe(view, dx, dy))
                 { *buttons|=BOT_DASH; *aim=bot_aim_byte(dx, dy); return; }
         }
