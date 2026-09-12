@@ -49,17 +49,21 @@ def main():
     by_stream = collections.defaultdict(list)
     for r in recs:
         by_stream[r[2]].append(r)
-    d2h = {st: sum(1 for r in rs if r[3] == 'D') for st, rs in by_stream.items()}
+    # A step ends at the D2H of the actions (per-bank chain) or at the sampler
+    # kernel of the batched chain (BOPL_BATCHED_FWD with zero-copy: no memcpys).
+    def is_end(r):
+        return r[3] == 'D' or (r[3] == 'K' and 'br_sample' in r[4])
+    d2h = {st: sum(1 for r in rs if is_end(r)) for st, rs in by_stream.items()}
     buffer_streams = sorted([st for st, n in d2h.items() if n > 10], key=lambda s: -d2h[s])
     print('streams:', {st: (len(rs), d2h[st]) for st, rs in sorted(by_stream.items())})
-    print('buffer streams (D2H count):', [(st, d2h[st]) for st in buffer_streams])
+    print('buffer streams (step-end count):', [(st, d2h[st]) for st in buffer_streams])
     stream = a.stream if a.stream is not None else buffer_streams[0]
     rs = by_stream[stream]
-    # Steps: end at each D2H end; start at the first record after the previous D2H.
+    # Steps: end at each step-end record; start at the first record after the previous one.
     steps = []
     start_i = 0
     for i, r in enumerate(rs):
-        if r[3] == 'D':
+        if is_end(r):
             seg = rs[start_i:i + 1]
             steps.append(seg)
             start_i = i + 1
@@ -75,13 +79,13 @@ def main():
                 b += e - fr
             last = max(last, e)
         busy.append(b / 1e3)
-    print(f'\nstream {stream}: {len(steps)} steps; GPU window (first H2D start -> D2H end) '
+    print(f'\nstream {stream}: {len(steps)} steps; GPU window (first record start -> step end) '
           f'median {statistics.median(windows):.1f} us, p10 {sorted(windows)[len(windows)//10]:.1f}, '
           f'p90 {sorted(windows)[len(windows)*9//10]:.1f}; stream busy median {statistics.median(busy):.1f} us; '
           f'records/step {statistics.median(len(s) for s in steps):.0f}')
     # Interval from one step's D2H end to the next step's first H2D start = host side (env step + launch).
     host = [(steps[i + 1][0][0] - steps[i][-1][1]) / 1e3 for i in range(len(steps) - 1)]
-    print(f'host gap between steps (D2H end -> next H2D start) median {statistics.median(host):.1f} us')
+    print(f'host gap between steps (step end -> next first record) median {statistics.median(host):.1f} us')
     # Representative step: the one with the median window.
     order = sorted(range(len(steps)), key=lambda i: windows[i])
     seg = steps[order[len(order) // 2]]

@@ -196,6 +196,7 @@ int bopl_vec_reset(const void *gpu_observations) {
     for (int i=0; i<vec->total_agents; i++) vec->terminals[i]=1;
     if (vec->gpu) {
         if (cudaMemcpy(vec->gpu_terminals, vec->terminals, (size_t)vec->total_agents*sizeof(float), cudaMemcpyHostToDevice)!=cudaSuccess) return -2;
+        bopl_pack_sync(vec, 1);  /* the batched forward's packed copy: rewards 0, terminals 1, mask */
         cudaDeviceSynchronize();
     }
     return 0;

@@ -338,9 +338,13 @@ def main():
     # round up one float32 ULP because C truncates the resulting update count.
     ratio = float(np.nextafter(np.float32(a.learner_passes * learner_batch / native_batch), np.float32(np.inf)))
     args.update(seed=a.seed, reset_state=False, cudagraphs=a.cudagraphs)
+    # Compact layout (NativeVector.compact): each bank's slice holds only its
+    # live opponent rows and primary_rows fixes the learner slice, so the
+    # trainer's bank_layout ends before the idle tail (THROUGHPUT.md 3.C).
     args['vec'].update(total_agents=vector.total_agents, num_buffers=a.buffers,
                        num_threads=a.workers, num_frozen_banks=a.banks,
-                       frozen_bank_pct=(vector.pairs + .000001) / vector.agents_per_buffer)
+                       frozen_bank_pct=(vector.live_per_bank + .000001) / vector.agents_per_buffer,
+                       primary_rows=vector.primary_rows)
     args['policy'].update(hidden_size=a.hidden, num_layers=a.layers)
     args['train'].update(total_timesteps=updates*native_batch, seed=a.seed,
                          horizon=a.horizon, minibatch_size=learner_batch, replay_ratio=ratio,
