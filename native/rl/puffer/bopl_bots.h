@@ -37,6 +37,23 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+/* The terrain SDF (bot_sdf and the two wall pickers below it) is where the
+ * bots spend their time: every raycast, drop probe, foe prediction and shot
+ * simulation evaluates the rounded-rect distance of every wall, thousands of
+ * times per decision. On x86-64 with AVX-512 those evaluate eight walls per
+ * instruction from a SoA mirror of BotView.walls (bot_sdf_avx512); the lane
+ * arithmetic is the scalar code's operations in the scalar code's order
+ * (sub, mul, add, abs, max, sqrt, no fused multiply-add: fp-contract is off
+ * for the kernels), so the vector and scalar paths return the same bits and
+ * the frozen v1 fingerprints (SCRIPTED_BOTS.md, Versioning) are unchanged.
+ * Other targets, and CPUs without AVX-512, run the scalar loops. */
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#define BOT_SDF_AVX512 1
+static int bot_cpu_avx512=-1;
+#else
+#define BOT_SDF_AVX512 0
+#endif
 
 /* Kind table (SCRIPTED_BOTS.md "Versioning"). Ids, names and behaviour are
  * append-only: kinds 1..BOPL_BOT_V1_KINDS are the frozen v1 personalities
@@ -170,6 +187,9 @@ typedef struct {
     double svx, svy;              /* own velocity estimate (see BoplBot) */
     BotWall walls[48]; int wall_count;
     BotArrow arrows[12]; int arrow_count;
+    /* SoA mirror of walls[] (the fields bot_wall_sdf reads) for the vector
+     * SDF kernels; filled alongside walls[] in bot_view. */
+    struct { double cx[48], cy[48], rx[48], ry[48], ux[48], uy[48], ex[48], ey[48], radius[48], top[48]; } soa;
 } BotView;
 
 static const BoplRlSlime *bot_slime(const BoplRlState *state, uint32_t id) {
@@ -188,6 +208,9 @@ static const BoplRlEntity *bot_morph_entity(const BoplRlState *state, uint32_t i
 static int bot_state_grounded(uint32_t s) { return s!=2 && s!=5 && s!=8 && s!=10; }
 
 static int bot_view(BotView *view, const BoplRlState *state, int index) {
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512<0) bot_cpu_avx512=__builtin_cpu_supports("avx512f")?1:0;
+#endif
     memset(view, 0, sizeof(*view));
     view->state=state;
     if (!state || (uint32_t)index>=state->header.player_count || state->header.player_count<2) return 0;
@@ -261,6 +284,10 @@ static int bot_view(BotView *view, const BoplRlState *state, int index) {
              * long slopes still walk poorly, so cap the usable span. */
             w->standable=e->layer!=16 && w->top>BOT_WATER+1.5;
             if (fabs(w->ry)>0.5) w->spanx=fmin(w->spanx, 1.0);
+            int k=view->wall_count-1;
+            view->soa.cx[k]=w->cx; view->soa.cy[k]=w->cy; view->soa.rx[k]=w->rx; view->soa.ry[k]=w->ry;
+            view->soa.ux[k]=w->ux; view->soa.uy[k]=w->uy; view->soa.ex[k]=w->ex; view->soa.ey[k]=w->ey;
+            view->soa.radius[k]=w->radius; view->soa.top[k]=w->top;
         }
         /* Live arrows still in flight. Own arrows count too - bots have flown
          * into their own rising mortars. One still adjacent and moving away is
@@ -282,22 +309,94 @@ static int bot_view(BotView *view, const BoplRlState *state, int index) {
     return view->foe_alive;
 }
 
-/* Signed distance from a point to a wall's rounded-rect surface. */
+/* Signed distance from a point to a wall's rounded-rect surface. The
+ * scalar and eight-lane versions below perform the same IEEE operations in
+ * the same order (see the note at the top of the file); no fused multiply-add
+ * may be introduced into either. */
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
 static double bot_wall_sdf(const BotWall *w, double x, double y) {
     double px=x-w->cx, py=y-w->cy;
     double lx=px*w->rx+py*w->ry, ly=px*w->ux+py*w->uy;
     double qx=fabs(lx)-w->ex, qy=fabs(ly)-w->ey;
     double ox=qx>0?qx:0, oy=qy>0?qy:0;
-    double outside=sqrt(ox*ox+oy*oy), inside=fmin(fmax(qx, qy), 0);
+    /* fmin(fmax(qx, qy), 0) without the libm calls: qx and qy are finite,
+     * and where the tie rules could differ (a +-0 pair) the sum below is
+     * +0 either way, so the result bits are the same. */
+    double m=qx>=qy?qx:qy;
+    double outside=sqrt(ox*ox+oy*oy), inside=m<=0?m:0;
     return outside+inside-w->radius;
 }
-static double bot_sdf(const BotView *view, double x, double y) {
+static double bot_sdf_scalar(const BotView *view, double x, double y) {
     double best=1e9;
     for (int i=0; i<view->wall_count; i++) {
         double d=bot_wall_sdf(&view->walls[i], x, y);
         if (d<best) best=d;
     }
     return best;
+}
+#if BOT_SDF_AVX512
+/* Lanes k..k+7 of the SoA walls (mask m selects the ones that exist). */
+__attribute__((target("avx512f"))) static inline __m512d bot_sdf_lanes(const BotView *view, int k, __mmask8 m, __m512d x, __m512d y) {
+    __m512d px=_mm512_sub_pd(x, _mm512_maskz_loadu_pd(m, view->soa.cx+k));
+    __m512d py=_mm512_sub_pd(y, _mm512_maskz_loadu_pd(m, view->soa.cy+k));
+    __m512d lx=_mm512_add_pd(_mm512_mul_pd(px, _mm512_maskz_loadu_pd(m, view->soa.rx+k)),
+                             _mm512_mul_pd(py, _mm512_maskz_loadu_pd(m, view->soa.ry+k)));
+    __m512d ly=_mm512_add_pd(_mm512_mul_pd(px, _mm512_maskz_loadu_pd(m, view->soa.ux+k)),
+                             _mm512_mul_pd(py, _mm512_maskz_loadu_pd(m, view->soa.uy+k)));
+    __m512d qx=_mm512_sub_pd(_mm512_abs_pd(lx), _mm512_maskz_loadu_pd(m, view->soa.ex+k));
+    __m512d qy=_mm512_sub_pd(_mm512_abs_pd(ly), _mm512_maskz_loadu_pd(m, view->soa.ey+k));
+    __m512d zero=_mm512_setzero_pd();
+    /* max/min return the second operand on a tie, which only differs from
+     * the scalar ?: in the sign of a zero, and outside+inside is +0 then. */
+    __m512d ox=_mm512_max_pd(qx, zero), oy=_mm512_max_pd(qy, zero);
+    __m512d outside=_mm512_sqrt_pd(_mm512_add_pd(_mm512_mul_pd(ox, ox), _mm512_mul_pd(oy, oy)));
+    __m512d inside=_mm512_min_pd(_mm512_max_pd(qx, qy), zero);
+    return _mm512_sub_pd(_mm512_add_pd(outside, inside), _mm512_maskz_loadu_pd(m, view->soa.radius+k));
+}
+__attribute__((target("avx512f"))) static double bot_sdf_avx512(const BotView *view, double x, double y) {
+    __m512d best=_mm512_set1_pd(1e9), vx=_mm512_set1_pd(x), vy=_mm512_set1_pd(y);
+    for (int k=0; k<view->wall_count; k+=8) {
+        int n=view->wall_count-k;
+        __mmask8 m=n>=8?(__mmask8)0xFF:(__mmask8)((1u<<n)-1u);
+        best=_mm512_mask_min_pd(best, m, best, bot_sdf_lanes(view, k, m, vx, vy));
+    }
+    return _mm512_reduce_min_pd(best);
+}
+/* Index of the first wall with the smallest SDF among the lanes `admit`
+ * selects (a bit per wall), or -1 when none; *out_d gets its distance. The
+ * order rule matches the scalar `if (sd<d)` scan: the first index reaching
+ * the minimum wins. */
+__attribute__((target("avx512f"))) static int bot_min_wall_avx512(const BotView *view, double x, double y, uint64_t admit, double *out_d) {
+    __m512d vx=_mm512_set1_pd(x), vy=_mm512_set1_pd(y);
+    double best=1e9; int index=-1;
+    for (int k=0; k<view->wall_count; k+=8) {
+        int n=view->wall_count-k;
+        __mmask8 m=(__mmask8)((n>=8?0xFFu:((1u<<n)-1u))&(unsigned)(admit>>k));
+        if (!m) continue;
+        __m512d d=bot_sdf_lanes(view, k, m, vx, vy);
+        __mmask8 lower=_mm512_mask_cmp_pd_mask(m, d, _mm512_set1_pd(best), _CMP_LT_OQ);
+        if (!lower) continue;
+        best=_mm512_mask_reduce_min_pd(lower, d);
+        __mmask8 hit=_mm512_mask_cmp_pd_mask(lower, d, _mm512_set1_pd(best), _CMP_EQ_OQ);
+        index=k+__builtin_ctz((unsigned)hit);
+    }
+    *out_d=best;
+    return index;
+}
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+static double bot_sdf(const BotView *view, double x, double y) {
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0) return bot_sdf_avx512(view, x, y);
+#endif
+    return bot_sdf_scalar(view, x, y);
 }
 /* Sphere-march a ray; returns distance to the first surface (or max). */
 static double bot_raycast(const BotView *view, double x, double y, double dx, double dy, double max) {
@@ -308,6 +407,25 @@ static double bot_raycast(const BotView *view, double x, double y, double dx, do
         t+=d;
     }
     return max;
+}
+/* Sphere-tracing skip for the tick simulations below, which test
+ * `bot_sdf(p) < limit` at every tick of a path. The SDF is 1-Lipschitz, so
+ * after an evaluation `known` at some point, every point within
+ * `known - limit` of it has an SDF of at least `limit`, and the test is
+ * false without evaluating it. `travel` bounds the path length flown since
+ * that evaluation (the sum of |dx|+|dy| per tick is at least the distance);
+ * the slack covers the rounding in the SDF and in the bound (both ~1e-12 at
+ * arena coordinates). The outcome of every test, and so of every caller,
+ * is the one the per-tick evaluation gives. */
+typedef struct { double known, travel; } BotSkip;
+#define BOT_SKIP_INIT {-1, 0}
+static int bot_skip(BotSkip *s, double dx, double dy, double limit) {
+    s->travel+=fabs(dx)+fabs(dy);
+    return s->known>=0 && s->travel+1e-6<s->known-limit;
+}
+static double bot_sdf_known(BotSkip *s, const BotView *view, double x, double y) {
+    s->known=bot_sdf(view, x, y); s->travel=0;
+    return s->known;
 }
 /* Vertical drop to the nearest surface below (cap 80). */
 static double bot_drop(const BotView *view, double x, double y) {
@@ -340,10 +458,12 @@ static void bot_predict_foe(const BotView *view, double ticks, double *out_x, do
     double x=view->fx, y=view->fy, vx=view->fvx, vy=view->foe_grounded?0:view->fvy;
     if (view->foe_morphing) { *out_x=x; *out_y=y; return; }  /* morphs stay put */
     int grounded=view->foe_grounded;
+    BotSkip skip=BOT_SKIP_INIT;
     for (int t=0; t<(int)ticks; t++) {
         if (!grounded) bot_fall_tick(&vy);
         x+=vx*BOT_TICK; y+=vy*BOT_TICK;
-        if (!grounded && vy<0 && bot_sdf(view, x, y)<BOT_SLIME_RADIUS) { grounded=1; vx=0; vy=0; }
+        int far=bot_skip(&skip, vx*BOT_TICK, vy*BOT_TICK, BOT_SLIME_RADIUS);
+        if (!grounded && vy<0 && !far && bot_sdf_known(&skip, view, x, y)<BOT_SLIME_RADIUS) { grounded=1; vx=0; vy=0; }
     }
     *out_x=x; *out_y=y;
 }
@@ -401,6 +521,9 @@ static int bot_ballistic_moving(double px, double py, double svx, double svy, do
  * final approach. */
 static int bot_closest_wall(const BotView *view, double x, double y) {
     int best=-1; double d=1e9;
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0) return bot_min_wall_avx512(view, x, y, ~0ull, &d);
+#endif
     for (int i=0; i<view->wall_count; i++) {
         double sd=bot_wall_sdf(&view->walls[i], x, y);
         if (sd<d) { d=sd; best=i; }
@@ -409,6 +532,15 @@ static int bot_closest_wall(const BotView *view, double x, double y) {
 }
 static int bot_support_wall(const BotView *view, double x, double y) {
     int best=-1; double d=1e9;
+#if BOT_SDF_AVX512
+    if (bot_cpu_avx512>0) {
+        uint64_t admit=0;
+        /* Overhead slabs are cover, not a floor. */
+        for (int i=0; i<view->wall_count; i++) if (!(view->soa.top[i]>y+1.2)) admit|=1ull<<i;
+        best=bot_min_wall_avx512(view, x, y, admit, &d);
+        return (best>=0 && d<2.5)?best:-1;
+    }
+#endif
     for (int i=0; i<view->wall_count; i++) {
         const BotWall *w=&view->walls[i];
         /* Overhead slabs are cover, not a floor. */
@@ -424,6 +556,7 @@ static int bot_shot_clear(const BotView *view, double px, double py, double vx0,
     int ticks=(int)(seconds*60)+2;
     int home=bot_support_wall(view, px, py);
     const BotWall *hw=home>=0?&view->walls[home]:NULL;
+    BotSkip skip=BOT_SKIP_INIT;
     for (int t=0; t<ticks; t++) {
         vy-=BOT_ARROW_G*BOT_TICK;
         x+=vx*BOT_TICK; y+=vy*BOT_TICK;
@@ -432,7 +565,8 @@ static int bot_shot_clear(const BotView *view, double px, double py, double vx0,
         if (to_target<1.1) return 1;
         double from_start=bot_len(x-px, y-py);
         double margin=(to_target<2.5 || from_start<3.0)?BOT_ARROW_RADIUS*0.7:BOT_ARROW_RADIUS+0.2;
-        if (bot_sdf(view, x, y)<margin) {
+        if (bot_skip(&skip, vx*BOT_TICK, vy*BOT_TICK, BOT_ARROW_RADIUS+0.2)) continue;
+        if (bot_sdf_known(&skip, view, x, y)<margin) {
             /* The deck underfoot overlaps the slime center, so the first
              * ticks of a shot along it would otherwise collide at t≈0. Ignore
              * the home wall only while the arrow is still on/above that deck;
