@@ -311,7 +311,7 @@ def main():
     # BOPL_ASYNC=1 (default) overlaps each rollout with the previous batch's
     # training (see the update loop); 0 is the serial trainer. With overlap
     # BOPL_GPU_SPLIT=<SMs for inference>|auto|0 partitions the GPU between the
-    # rollout and train streams (green contexts; auto = two thirds, 32/16 on
+    # rollout and train streams (green contexts; auto = one half, 24/24 on
     # the 48-SM 5070; 0 shares the SMs on stream priority alone) and
     # BOPL_TRAIN_WAIT=block|spin picks how the trainer waits for its stream.
     # Rollout forward (THROUGHPUT.md 3.C, bopl_rollout.cu): BOPL_BATCHED_FWD=1
