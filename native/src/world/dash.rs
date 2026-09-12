@@ -2,12 +2,7 @@
 use super::*;
 
 impl Player {
-    pub(super) fn enter_dash(
-        &mut self,
-        action: Action,
-        movement_input: Vec2,
-        terrain: Terrain,
-    ) {
+    pub(super) fn enter_dash(&mut self, action: Action, movement_input: Vec2, terrain: Terrain) {
         let platforms = terrain.platforms;
         let mut old = self.clone();
         // OldUpdate enters the ability, but SlimeController.UpdateSim still calls

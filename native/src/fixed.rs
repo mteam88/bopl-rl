@@ -40,7 +40,15 @@ const SCALE: f64 = 4_294_967_296.0;
 /// a double with a fractional part has |v| < 2^52, where the integer part
 /// converts back exactly; a double at or beyond 2^52 is already an integer.
 #[inline]
-const fn round_i64(v: f64) -> i64 {
+fn round_i64(v: f64) -> i64 {
+    // The common case: `round` lowers to a truncate of `v + copysign(0.5 -
+    // ulp, v)` and the conversion of an in-range integral double needs no
+    // saturation or NaN handling. Every observation field goes through here,
+    // so the checked path only handles what the fast one excludes.
+    if v.abs() < 4_611_686_018_427_387_904.0 {
+        // SAFETY: |v| < 2^62, so the rounded value is finite and within i64.
+        return unsafe { v.round().to_int_unchecked::<i64>() };
+    }
     let t = v as i64;
     let fraction = v - t as f64;
     // Saturating like the `as` conversion for |v| >= 2^63 (fraction is then
@@ -125,7 +133,7 @@ impl Fix {
         Self(raw as f64 / SCALE)
     }
     /// The nearest raw Q32.32 integer (the ABI and extracted-data encoding).
-    pub const fn raw(self) -> i64 {
+    pub fn raw(self) -> i64 {
         round_i64(self.0 * SCALE)
     }
     pub const fn from_int(value: i64) -> Self {
@@ -521,6 +529,52 @@ mod tests {
         assert_eq!(Fix::TAU.cos(), Fix::ONE);
         assert_eq!((-Fix::HALF_PI).sin(), -Fix::ONE);
         assert_eq!((Fix::PI + Fix::HALF_PI).cos(), Fix::ZERO);
+    }
+
+    #[test]
+    fn round_i64_is_round_half_away_from_zero() {
+        let reference = |v: f64| -> i64 {
+            let t = v as i64;
+            let fraction = v - t as f64;
+            t.saturating_add((fraction >= 0.5) as i64)
+                .saturating_sub((fraction <= -0.5) as i64)
+        };
+        let mut samples = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            2.5,
+            0.499_999_999_999_999_94,
+            -0.499_999_999_999_999_94,
+            4_503_599_627_370_495.5,
+            -4_503_599_627_370_495.5,
+            4_503_599_627_370_496.0,
+            4_611_686_018_427_387_904.0,
+            -4_611_686_018_427_387_904.0,
+            9.3e18,
+            -9.3e18,
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let magnitude = 2f64.powi((state % 70) as i32 - 5);
+            let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+            samples.push((unit - 0.5) * magnitude);
+            samples.push(((state >> 20) as f64 - (1u64 << 43) as f64) * 0.5);
+        }
+        for v in samples {
+            assert_eq!(round_i64(v), reference(v), "{v:e}");
+        }
     }
 
     #[test]

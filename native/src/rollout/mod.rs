@@ -445,6 +445,18 @@ pub struct RolloutWorld {
     pub platforms: Vec<Platform>,
     /// Raycast broad phase over `platforms` (`rebuild_bounds`).
     pub bounds: PlatformBounds,
+    /// Incremented by every mutation of `platforms`/`platform_dynamics`
+    /// (`platforms_changed`). The derived data below is refreshed only when
+    /// its recorded epoch differs, so an undisturbed level costs nothing per
+    /// tick.
+    platform_epoch: u64,
+    /// `platform_epoch` the broad phase was built for.
+    bounds_epoch: u64,
+    /// `platform_epoch` the platform entity rows were written for.
+    platform_rows_epoch: u64,
+    /// `platform_epoch` at which `platforms_tick` last found every body at
+    /// rest at its home, so the check need not be repeated until a change.
+    quiet_epoch: u64,
     /// Parallel to `platforms`: rigid body and home spring state.
     pub platform_dynamics: Vec<PlatformDynamics>,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
@@ -508,6 +520,10 @@ impl RolloutWorld {
             players: Vec::with_capacity(MAX_PLAYERS),
             platforms: Vec::with_capacity(64),
             bounds: PlatformBounds::default(),
+            platform_epoch: 1,
+            bounds_epoch: 0,
+            platform_rows_epoch: 0,
+            quiet_epoch: 0,
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
@@ -555,6 +571,10 @@ impl RolloutWorld {
         self.players.clone_from(&src.players);
         self.platforms.clone_from(&src.platforms);
         self.bounds.clone_from(&src.bounds);
+        self.platform_epoch = src.platform_epoch;
+        self.bounds_epoch = src.bounds_epoch;
+        self.platform_rows_epoch = src.platform_rows_epoch;
+        self.quiet_epoch = src.quiet_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
@@ -595,6 +615,10 @@ impl RolloutWorld {
             players: _,
             platforms: _,
             bounds: _,
+            platform_epoch: _,
+            bounds_epoch: _,
+            platform_rows_epoch: _,
+            quiet_epoch: _,
             platform_dynamics: _,
             platform_defs: _,
             platform_entities: _,
@@ -677,6 +701,7 @@ impl RolloutWorld {
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
+        self.platforms_changed();
         self.platform_defs.clear();
         self.platform_entities.clear();
         self.entities.clear();
@@ -783,6 +808,7 @@ impl RolloutWorld {
                 rotation_mu: p.rotation_mu,
                 basis: None,
             });
+            self.platforms_changed();
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
@@ -1860,6 +1886,7 @@ impl RolloutWorld {
                     self.platform_dynamics[platform_index].home_rotation = rotation;
                     self.platforms[platform_index].surface.right = up.perp_cw();
                     self.platforms[platform_index].surface.up = up;
+                    self.platforms_changed();
                     self.players[index].base.rotation = rotation;
                     // FixTransform.up stores the exact Slerp axes
                     // (FixTransform.cs:49-59); State.Size sizes along them.
@@ -2127,6 +2154,7 @@ impl RolloutWorld {
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
         self.platform_entities.remove(index);
+        self.platforms_changed();
         self.orbits.retain(|orbit| orbit.0 != index);
         for orbit in &mut self.orbits {
             if orbit.0 > index {
@@ -2146,10 +2174,20 @@ impl RolloutWorld {
         self.rebuild_bounds();
     }
 
+    /// Record a mutation of `platforms`/`platform_dynamics` (positions,
+    /// shapes, bodies, membership) so the derived caches refresh.
+    fn platforms_changed(&mut self) {
+        self.platform_epoch += 1;
+    }
+
     /// Refresh the raycast broad phase after platforms moved, changed shape
-    /// or were added/removed (`world::PlatformBounds`).
+    /// or were added/removed (`world::PlatformBounds`); a no-op while the
+    /// platforms are unchanged since the last build.
     fn rebuild_bounds(&mut self) {
-        self.bounds.rebuild(&self.platforms);
+        if self.bounds_epoch != self.platform_epoch {
+            self.bounds.rebuild(&self.platforms);
+            self.bounds_epoch = self.platform_epoch;
+        }
     }
 
     fn reshape_platform(&mut self, index: usize, center: Vec2, extents: Vec2, radius: Fix) {
@@ -2186,6 +2224,7 @@ impl RolloutWorld {
         dynamics.body.inverse_mass = Fix::ONE / mass;
         dynamics.body.inverse_inertia = Fix::ONE / inertia;
         dynamics.home_position += center - old_center;
+        self.platforms_changed();
         self.rebuild_bounds();
     }
 
@@ -2399,6 +2438,7 @@ impl RolloutWorld {
                     self.platforms[p].surface.center += correction[1];
                     self.platforms[p].collider.inner.center += correction[1];
                 }
+                self.platforms_changed();
                 // Arrow.OnCollide destroys the components from the callback
                 // queue: this pass still observes the corrected collider and
                 // resolved body, flagged destroyed and ownerless
@@ -2624,16 +2664,21 @@ impl RolloutWorld {
                     .as_ref()
                     .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
             });
+        // Bodies and homes only change through paths that bump
+        // `platform_epoch`, so a level found quiet stays quiet until then.
         let disturbed =
-            self.platforms
-                .iter()
-                .zip(&self.platform_dynamics)
-                .any(|(platform, dynamics)| {
-                    platform.surface.center != dynamics.home_position
-                        || dynamics.body.velocity != Vec2::ZERO
-                        || dynamics.body.angular_velocity != Fix::ZERO
-                        || dynamics.body.orientation != dynamics.home_rotation
-                });
+            self.quiet_epoch != self.platform_epoch
+                && self.platforms.iter().zip(&self.platform_dynamics).any(
+                    |(platform, dynamics)| {
+                        platform.surface.center != dynamics.home_position
+                            || dynamics.body.velocity != Vec2::ZERO
+                            || dynamics.body.angular_velocity != Fix::ZERO
+                            || dynamics.body.orientation != dynamics.home_rotation
+                    },
+                );
+        if !disturbed {
+            self.quiet_epoch = self.platform_epoch;
+        }
         if !self.sudden_death
             && !orbit_running
             && !disturbed
@@ -2641,6 +2686,8 @@ impl RolloutWorld {
         {
             return;
         }
+        // Everything below may move a body or its home.
+        self.platforms_changed();
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
@@ -3374,6 +3421,13 @@ impl RolloutWorld {
     }
 
     fn refresh_platform_entities(&mut self) {
+        // The rows below are pure functions of platform state, which only
+        // changes through `platforms_changed`; `remove_platform` marks a
+        // removed row itself.
+        if self.platform_rows_epoch == self.platform_epoch {
+            return;
+        }
+        self.platform_rows_epoch = self.platform_epoch;
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
             let s = &platform.surface;

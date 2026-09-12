@@ -253,7 +253,10 @@ impl PlatformBounds {
     /// Bit `i` set when platform `i`'s bounds meet the axis-aligned box
     /// `[lo, hi]` (`Bounds::may_reach` for a segment with those extents).
     pub fn candidates(&self, lo: Vec2, hi: Vec2) -> u64 {
-        assert!(self.boxes.len() <= 64, "platform count exceeds the candidate mask");
+        assert!(
+            self.boxes.len() <= 64,
+            "platform count exceeds the candidate mask"
+        );
         let (lo_x, hi_x, lo_y, hi_y) = (lo.x.to_f64(), hi.x.to_f64(), lo.y.to_f64(), hi.y.to_f64());
         let mut mask = 0u64;
         for (index, [max_x, min_x, max_y, min_y]) in self.boxes.iter().enumerate() {
@@ -506,8 +509,15 @@ impl Player {
             velocity,
             DT,
             &mut |origin, direction, distance| {
-                closest_among(terrain, candidates, origin, direction, distance, Some(platform.id))
-                    .map(|(_, near, _)| ((), near))
+                closest_among(
+                    terrain,
+                    candidates,
+                    origin,
+                    direction,
+                    distance,
+                    Some(platform.id),
+                )
+                .map(|(_, near, _)| ((), near))
             },
         );
         let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
