@@ -49,11 +49,15 @@ def main():
     by_stream = collections.defaultdict(list)
     for r in recs:
         by_stream[r[2]].append(r)
-    # A step ends at the D2H of the actions (per-bank chain) or at the sampler
-    # kernel of the batched chain (BOPL_BATCHED_FWD with zero-copy: no memcpys).
-    def is_end(r):
-        return r[3] == 'D' or (r[3] == 'K' and 'br_sample' in r[4])
-    d2h = {st: sum(1 for r in rs if is_end(r)) for st, rs in by_stream.items()}
+    # A step ends at the D2H of the actions, or at the sampler kernel of the
+    # batched chain when no D2H follows it (BOPL_ZERO_COPY_ACTIONS=1).
+    def is_end(r, nxt=None):
+        if r[3] == 'D':
+            return True
+        return r[3] == 'K' and 'br_sample' in r[4] and not (nxt is not None and nxt[3] == 'D')
+    def ends(rs):
+        return [is_end(r, rs[i + 1] if i + 1 < len(rs) else None) for i, r in enumerate(rs)]
+    d2h = {st: sum(ends(rs)) for st, rs in by_stream.items()}
     buffer_streams = sorted([st for st, n in d2h.items() if n > 10], key=lambda s: -d2h[s])
     print('streams:', {st: (len(rs), d2h[st]) for st, rs in sorted(by_stream.items())})
     print('buffer streams (step-end count):', [(st, d2h[st]) for st in buffer_streams])
@@ -62,8 +66,9 @@ def main():
     # Steps: end at each step-end record; start at the first record after the previous one.
     steps = []
     start_i = 0
+    end_flags = ends(rs)
     for i, r in enumerate(rs):
-        if is_end(r):
+        if end_flags[i]:
             seg = rs[start_i:i + 1]
             steps.append(seg)
             start_i = i + 1

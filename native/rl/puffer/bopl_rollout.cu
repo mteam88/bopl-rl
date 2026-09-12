@@ -10,8 +10,11 @@
 //   br_encode   set encoder: obs row -> flat_input, pooled entity/slime
 //               channels of joined; also copies the obs row and the reward /
 //               terminal into the rollout tensors (the old cast kernels).
-//   br_gemm     grouped small-M GEMM (16x64 tile, K chunks of 64, fp32 FMA,
-//               optional ReLU epilogue, ldc): flat, fusion, MinGRU, decoder.
+//               Stages only the populated slots of the row (header counts).
+//   br_gemm     grouped small-M GEMM: mma.sync tf32 with the weights stored
+//               in B-fragment order (BOPL_TF32=1) or fp32 FMAs (=0); 16-row
+//               tiles, 8 warps split K in 64-chunks, fixed-order reduction,
+//               optional ReLU epilogue: flat, fusion, MinGRU, decoder.
 //   br_gate     MinGRU gate with the terminal reset fused in, state updated
 //               in place (the old mask_state_rows + gate + state copy).
 //   br_sample   warp-per-row sampler (same Philox stream per row as
@@ -19,14 +22,16 @@
 //               the actions to the env buffer AND the rollout, the float mask
 //               to the rollout.
 //
-// The kernels read observations / rewards / terminals / masks straight from
-// the vector's pinned host buffers (cudaHostAllocMapped) and write the actions
-// back into them, so a step has no memcpy nodes at all (BOPL_ZERO_COPY=2;
-// =1 keeps one H2D memcpy for the obs block and reads the rest zero-copy).
+// Env buffers (BOPL_ZERO_COPY): 0 (default) one H2D memcpy of the live obs
+// rows with rewards | terminals | mask packed into the idle tail behind them
+// (vecenv.h bopl_upload) and one D2H memcpy of the actions, both captured
+// into the buffer's CUDA graph (BOPL_GRAPH_COPIES=1); 1 / 2 read the pinned
+// host buffers directly through their device aliases (slower: PCIe reads
+// from SMs stall the shared partition).
 //
-// Numerics: fp32 FMA everywhere (cuBLAS ran TF32 by default, BOPL_TF32), so
-// logits differ from the per-bank path at the TF32 rounding level; the chain
-// itself is deterministic (fixed reduction order, no atomics).
+// Numerics: the fp32 path is deterministic and within 3e-8 of cuBLAS fp32;
+// the tf32 path rounds inputs to tf32 like cuBLAS did (BOPL_TF32 default).
+// The chain has no atomics; runs are bit-identical.
 #pragma once
 #include <mma.h>
 

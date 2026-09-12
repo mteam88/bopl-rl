@@ -368,6 +368,109 @@ GPU phase (eval_gpu 0.22 ms is 30% of the step and the owner threads' launch
   exactly this (`obs_t = bf16` for GPU envs; `cast` on the way into the
   fp32 rollout tensor).
 
+**Done 2026-09-12 (branch `c-infer`; `native/rl/puffer/bopl_rollout.cu`,
+vecenv.h/pufferlib.cu overlay in `pufferlib-bopl.patch`, native_vector.py,
+binding.c).** eval_gpu per buffer step on the 32-SM partition (BOPL_ASYNC=1,
+BOPL_GPU_SPLIT=auto, 300 updates, seed 73, load1 3-6):
+
+| shape    | before (per-bank chain) | after (batched) | sps before -> after |
+|----------|-------------------------|-----------------|---------------------|
+| w128 b4  | 0.2105 ms (0.229 in §1) | **0.0951 ms**   | 836k -> 935k        |
+| w256 b4  | 0.3177 ms (0.35 in §1)  | **0.1258 ms**   | 880k -> 982k        |
+| w256 b2  | 0.3246 ms               | 0.1915 ms       | 948k -> 980k        |
+
+The update is now training-bound at every shape (`train_s` 0.035 vs
+`rollout_s` 0.018 at w128), so the sps gain is the rollout no longer
+peeking out from under the trainer, not the full 2.2x of the round trip.
+
+What a buffer step looks like now (CUPTI, w128 b4, one buffer stream,
+median window 78.6 us, p10 70 / p90 91, 9 records instead of ~23 per chain
+x 5 chains): one H2D memcpy of the live rows plus the packed rewards |
+terminals | mask (862 KB, 19.6 us) -> `br_encode` 9.4 -> `br_gemm` (flat)
+6.3 -> `br_gemm` (fusion) 4.8 -> `br_gemm` (gru) 5.7 -> `br_gate` 1.4 ->
+`br_gemm` (decoder) 5.6 -> `br_sample` 6.3 -> D2H of the actions 0.3 us.
+Gaps between kernels are 0.1 us (one graph); the D2H waits ~15 us behind
+the other buffers' uploads on the copy engine. Stream events
+(BOPL_GPU_PROF=1): h2d 1 + forward 86 + d2h 2 us of eval_gpu 98 us (the
+copies are graph nodes now, so they count as "forward").
+
+How:
+
+- One chain per buffer over the live rows only. `native_vector.py` orders
+  each buffer as [learner rows | bank 0 live rows | ... | idle rows]
+  (`primary_rows` vec kwarg fixes `bank_layout[1]`, `frozen_bank_pct` the
+  live rows per bank); the idle tail (48 of 112 rows at w128 b4) is never
+  uploaded, computed or sampled. check_routing.py / smoke.py cover it.
+- `bopl_rollout.cu`: grouped kernels take a per-row-group weight table
+  (group 0 = the actor snapshot, 1.. = the frozen banks). `br_encode` (one
+  row per block) stages the row in shared memory once, writes the rollout
+  copy and flat input, and does the set-encoder projections/max-pools;
+  it reads only the populated slots (the header carries the player /
+  entity / slime counts and bopl_encode packs them from slot 0), which is
+  exact and 3-4x fewer bytes. `br_gemm` is a small-M GEMM on
+  `mma.sync.m16n8k8` tf32 with the weights pre-stored in B-fragment order
+  (transposed once per rollout by `br_prepare`), 8 warps split K in
+  64-chunks with a fixed-order shared-memory reduction (deterministic),
+  spare warps take extra column subtiles; the fp32 path (BOPL_TF32=0) is
+  CUDA-core FMAs, within 3e-8 of cuBLAS fp32. `br_gate` fuses the MinGRU
+  gate with the terminal reset; `br_sample` is sample_logits_warp with the
+  same Philox streams reading a byte mask. Falls back to the per-bank chain
+  when the shape is not supported (non-set encoder, continuous actions,
+  non-mingru, >4 layers, >9 groups, banks of different shape).
+- Uploads: rewards | terminals | mask of the live rows are packed by the
+  buffer thread into the idle tail of the buffer's own pinned observation
+  rows, so one memcpy carries everything; that memcpy and the actions D2H
+  are captured into the buffer's CUDA graph (one API call per step). Each
+  `cudaMemcpyAsync` was ~10 us of copy-engine time under four buffers
+  (h2d 45 -> 27 -> 20 us for 4 -> 2 -> 1 copies).
+- Reset semantics preserved: the pack mirrors what the legacy device
+  copies would hold (`static_vec_reset` zeros, `bopl_vec_reset` raises every
+  terminal), so sync fp32 runs of the legacy and batched paths agree to
+  ~1e-6 over 6 updates (`BOPL_ASYNC=0 BOPL_TF32=0 BOPL_BATCHED_FWD=0|1`), and
+  the batched path is bit-identical across runs (fp32 and tf32).
+
+Metric medians, updates 200-300, seed 73, w128 b4 (explained_variance /
+entropy / gradient_norm): sync before 0.563 / 5.758 / 0.286, sync after
+0.575 / 5.793 / 0.270; async before 0.576 / 5.805 / 0.339, async after
+0.574 / 5.766 / 0.385. Within run-to-run noise.
+
+Knobs (all read at trainer start): `BOPL_BATCHED_FWD` (1; 0 = per-bank
+chain), `BOPL_TF32` (1; also selects the tf32 GEMM path here),
+`BOPL_ZERO_COPY` (0 = memcpys; 1 = obs memcpy, rest read from mapped host
+memory; 2 = kernels read every env buffer over PCIe: measured 112 / 127 /
+135 us eval_gpu - kernels reading host memory stall the shared SMs),
+`BOPL_ZERO_COPY_ACTIONS` (0; 1 writes actions straight into host memory:
+saves the D2H but the sampler kernel then waits ~10 us for the PCIe write),
+`BOPL_GRAPH_COPIES` (1), `BOPL_OBS_SPARSE` (1; 0 stages the whole row),
+`BOPL_PACK_TAIL` (1), `BOPL_GPU_PROF=1` (stream-event split), and the
+CUPTI trace (`cupti_profile.cpp`, `BOPL_CUPTI_TRACE=<file>` under
+`CUDA_INJECTION64_PATH`, summarised by `cupti_timeline.py`).
+
+Tried and dropped: zero-copy reads of the observations (27 us isolated but
+45-130 us under contention: 32-byte PCIe read requests from SMs run at a
+third of the DMA rate), cudaMemcpy2D of only the populated columns (no
+faster than the full linear copy), clwb of the env-written lines before the
+DMA (no effect), wmma with B fragments from global (4-byte lane loads),
+software-pipelined K chunks in the GEMM (250 registers -> one block per
+SM -> the other buffers' chains queued for 50 us).
+
+Left for later:
+
+- The 20 us H2D is now the biggest single item and is bandwidth: 862 KB
+  per buffer step, four buffers, on one copy engine. bf16 observations
+  halve it (the sim would write bf16 into the pinned rows, `br_encode`
+  converts while staging, the rollout copy stays fp32 so training is
+  untouched; `OBS_TENSOR_T` and the Python obs views need the dtype). A
+  CPU-side compaction into the packed layout `br_encode` already decodes
+  (~270 KB) would cut it 3x but costs ~15 us of buffer-thread time.
+- `br_gemm` single-block cost is ~3.6 us with 8 active warps vs 1.3 us with
+  2 (the empty launch is 1.4 us); ablating A loads, B loads or the mma
+  changes it by <1 us each, so it is issue/sync overhead in the chunk
+  loop. Worth ~8 us per step if found.
+- The actions D2H waits behind the other buffers' uploads (~15 us): a
+  second stream for the D2H, or a tiny "actions to host" kernel after the
+  sampler instead of the copy.
+
 ### E. Compact observation (1.2-1.5x across the board, medium effort, small fidelity cost)
 
 3298 floats/agent: 96 entity slots x 21 = 2016 of them. Cutting to 32-48

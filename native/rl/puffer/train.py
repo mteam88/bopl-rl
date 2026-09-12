@@ -311,6 +311,18 @@ def main():
     # rollout and train streams (green contexts; auto = two thirds, 32/16 on
     # the 48-SM 5070; 0 shares the SMs on stream priority alone) and
     # BOPL_TRAIN_WAIT=block|spin picks how the trainer waits for its stream.
+    # Rollout forward (THROUGHPUT.md 3.C, bopl_rollout.cu): BOPL_BATCHED_FWD=1
+    # (default) runs one grouped chain per buffer over the live rows with
+    # per-bank weights (0 = the per-bank cuBLAS chain); BOPL_TF32=1 also picks
+    # its tensor-core GEMM (0 = fp32 FMAs, bit-identical across runs);
+    # BOPL_ZERO_COPY=0|1|2 how env buffers reach the kernels (0 = memcpys, the
+    # fastest; 1/2 read mapped host memory), BOPL_ZERO_COPY_ACTIONS=1 writes
+    # actions straight to host memory, BOPL_GRAPH_COPIES=1 (default) captures
+    # the H2D/D2H memcpys into the buffer's CUDA graph, BOPL_OBS_SPARSE=1
+    # (default) stages only the populated obs slots. BOPL_GPU_PROF=1 prints the
+    # h2d/forward/d2h split of eval_gpu; BOPL_CUPTI_TRACE=<file> with
+    # CUDA_INJECTION64_PATH=<cupti_profile.so> dumps a kernel timeline for
+    # cupti_timeline.py.
     # OMP_NUM_THREADS below only governs the single-buffer synchronous step.
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
                            BOPL_RL_LOG_DIR=output/'game-logs',
