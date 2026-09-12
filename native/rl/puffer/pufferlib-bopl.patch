@@ -1,6 +1,6 @@
 diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu	2026-09-12 05:45:38.552861100 -0400
-+++ b/bindings.cu	2026-09-12 05:45:38.556581007 -0400
+--- a/bindings.cu	2026-09-12 05:51:17.948673508 -0400
++++ b/bindings.cu	2026-09-12 05:51:17.974572639 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -193,9 +193,18 @@ diff -ruN a/bindings.cu b/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu	2026-09-12 05:45:38.552861100 -0400
-+++ b/kernels.cu	2026-09-12 05:45:38.556581007 -0400
-@@ -159,6 +159,14 @@
+--- a/kernels.cu	2026-09-12 05:51:17.948673508 -0400
++++ b/kernels.cu	2026-09-12 05:51:17.974572639 -0400
+@@ -6,6 +6,8 @@
+ #include <cstdio>
+ #include <cstdint>
+ #include <cublas_v2.h>
++#include <cublasLt.h>
++#include <vector>
+ #include <curand.h>
+ #include <cassert>
+ #include <stdlib.h>
+@@ -159,6 +161,14 @@
      int src_row, int dst_row, int row_bytes) {
      const char* s = src + (int64_t)src_row * row_bytes;
      char* d = dst + (int64_t)dst_row * row_bytes;
@@ -210,7 +219,7 @@ diff -ruN a/kernels.cu b/kernels.cu
      for (int i = threadIdx.x; i < row_bytes; i += blockDim.x) {
          d[i] = s[i];
      }
-@@ -248,17 +256,40 @@
+@@ -248,17 +258,164 @@
  // Strides derived from M, N, K assuming tightly packed row-major storage.
  static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
  
@@ -256,26 +265,151 @@ diff -ruN a/kernels.cu b/kernels.cu
 +    return tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_PRECISION;
 +}
 +
++// Bopl: GEMMs on the training stream pick their kernel by measurement. The
++// cuBLAS heuristic assumes the whole GPU; on the 16-SM training partition its
++// choices for the weight-gradient shapes ran up to 2x slower than the best
++// candidate cublasLt lists for the same problem. The first call of each
++// (op, shape, compute type) on the registered stream times every heuristic
++// candidate (reduction-free, so results stay deterministic) and caches the
++// fastest; later calls, and the captured training graph, replay it.
++// BOPL_GEMM_TUNE=0 keeps CUBLAS_GEMM_DEFAULT everywhere. Streams other than
++// the registered one (the rollout) are never touched.
++struct BoplGemmKey {
++    cublasOperation_t ta, tb; int m, n, k, lda, ldb, ldc; cublasComputeType_t ct;
++    bool operator==(const BoplGemmKey& o) const {
++        return ta == o.ta && tb == o.tb && m == o.m && n == o.n && k == o.k && lda == o.lda && ldb == o.ldb && ldc == o.ldc && ct == o.ct;
++    }
++};
++struct BoplGemmChoice { BoplGemmKey key; cublasLtMatmulAlgo_t algo; size_t workspace; bool lt; };
++static cudaStream_t g_bopl_tune_stream = nullptr;
++static void* g_bopl_tune_ws = nullptr;
++static std::vector<BoplGemmChoice> g_bopl_gemm_choices;
++static bool bopl_gemm_tune_enabled() {
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("BOPL_GEMM_TUNE"); on = (e && e[0] == '0') ? 0 : 1; }
++    return on != 0;
++}
++void bopl_gemm_tune_stream(cudaStream_t stream) {
++    g_bopl_tune_stream = stream;
++    if (stream && !g_bopl_tune_ws) cudaMalloc(&g_bopl_tune_ws, CUBLAS_WS_BYTES);
++}
++// C(m,n) = alpha op(A) op(B) + beta C in cuBLAS's column-major convention.
++static void bopl_gemm(cublasHandle_t handle, cudaStream_t stream,
++        cublasOperation_t ta, cublasOperation_t tb, int m, int n, int k, const float* alpha,
++        const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc,
++        cublasComputeType_t ct) {
++    auto plain = [&]() {
++        cublasGemmEx(handle, ta, tb, m, n, k, alpha, A, CUBLAS_PRECISION, lda, B, CUBLAS_PRECISION, ldb,
++            beta, C, CUBLAS_PRECISION, ldc, ct, CUBLAS_GEMM_DEFAULT);
++    };
++    if (!bopl_gemm_tune_enabled() || stream == nullptr || stream != g_bopl_tune_stream) { plain(); return; }
++    BoplGemmKey key{ta, tb, m, n, k, lda, ldb, ldc, ct};
++    BoplGemmChoice* choice = nullptr;
++    for (auto& c : g_bopl_gemm_choices) if (c.key == key) { choice = &c; break; }
++    cublasLtHandle_t lt = (cublasLtHandle_t)handle;
++    cublasLtMatmulDesc_t op = nullptr;
++    cublasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr;
++    auto build = [&]() {
++        cublasLtMatmulDescCreate(&op, ct, CUDA_R_32F);
++        cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSA, &ta, sizeof(ta));
++        cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSB, &tb, sizeof(tb));
++        cublasLtMatrixLayoutCreate(&la, CUDA_R_32F, ta == CUBLAS_OP_N ? m : k, ta == CUBLAS_OP_N ? k : m, lda);
++        cublasLtMatrixLayoutCreate(&lb, CUDA_R_32F, tb == CUBLAS_OP_N ? k : n, tb == CUBLAS_OP_N ? n : k, ldb);
++        cublasLtMatrixLayoutCreate(&lc, CUDA_R_32F, m, n, ldc);
++    };
++    auto destroy = [&]() {
++        if (op) cublasLtMatmulDescDestroy(op);
++        if (la) cublasLtMatrixLayoutDestroy(la);
++        if (lb) cublasLtMatrixLayoutDestroy(lb);
++        if (lc) cublasLtMatrixLayoutDestroy(lc);
++    };
++    if (choice == nullptr) {
++        cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
++        cudaStreamIsCapturing(stream, &cap);
++        if (cap != cudaStreamCaptureStatusNone || *beta != 0.0f) { plain(); return; }  // untuned shape: default
++        build();
++        cublasLtMatmulPreference_t pref;
++        cublasLtMatmulPreferenceCreate(&pref);
++        size_t ws = CUBLAS_WS_BYTES;
++        cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws, sizeof(ws));
++        // Split-K is what the k=24576 weight-gradient shapes need on 16 SMs
++        // (a 128x280 output is 10 tiles). Workspace reductions run in a fixed
++        // order and are deterministic run to run; INPLACE (atomics) is not
++        // and stays excluded. BOPL_GEMM_SPLITK=0 forbids all reductions.
++        const char* sk = getenv("BOPL_GEMM_SPLITK");
++        uint32_t red = (sk && sk[0] == '0') ? CUBLASLT_REDUCTION_SCHEME_NONE
++            : (CUBLASLT_REDUCTION_SCHEME_NONE | CUBLASLT_REDUCTION_SCHEME_COMPUTE_TYPE
++               | CUBLASLT_REDUCTION_SCHEME_OUTPUT_TYPE);
++        cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_REDUCTION_SCHEME_MASK, &red, sizeof(red));
++        cublasLtMatmulHeuristicResult_t results[64];
++        int count = 0;
++        cublasLtMatmulAlgoGetHeuristic(lt, op, la, lb, lc, lc, pref, 64, results, &count);
++        cublasLtMatmulPreferenceDestroy(pref);
++        BoplGemmChoice best{key, {}, 0, false};
++        float best_ms = 1e30f, first_ms = 0.0f;
++        cudaEvent_t e0, e1;
++        cudaEventCreate(&e0); cudaEventCreate(&e1);
++        for (int i = 0; i < count; i++) {
++            if (results[i].state != CUBLAS_STATUS_SUCCESS) continue;
++            float ms = 1e30f;
++            bool ok = true;
++            for (int rep = 0; rep < 4 && ok; rep++) {
++                cudaEventRecord(e0, stream);
++                ok = cublasLtMatmul(lt, op, alpha, A, la, B, lb, beta, C, lc, C, lc, &results[i].algo,
++                    g_bopl_tune_ws, results[i].workspaceSize, stream) == CUBLAS_STATUS_SUCCESS;
++                cudaEventRecord(e1, stream);
++                cudaEventSynchronize(e1);
++                float t = 0.0f; cudaEventElapsedTime(&t, e0, e1);
++                if (rep > 0 && t < ms) ms = t;  // best of three timed runs after one warm-up
++            }
++            if (!ok) continue;
++            if (i == 0) first_ms = ms;
++            if (ms < best_ms) { best_ms = ms; best.algo = results[i].algo; best.workspace = results[i].workspaceSize; best.lt = true; }
++        }
++        cudaEventDestroy(e0); cudaEventDestroy(e1);
++        if (getenv("BOPL_GEMM_TUNE_LOG")) {
++            int algo_id = -1;
++            if (best.lt) cublasLtMatmulAlgoConfigGetAttribute(&best.algo, CUBLASLT_ALGO_CONFIG_ID, &algo_id, sizeof(algo_id), nullptr);
++            fprintf(stderr, "bopl gemm tune: %c%c m=%d n=%d k=%d %s: %d candidates, first %.1f us, best %.1f us (algo %d)\n",
++                ta == CUBLAS_OP_N ? 'N' : 'T', tb == CUBLAS_OP_N ? 'N' : 'T', m, n, k,
++                ct == CUBLAS_COMPUTE_32F_FAST_TF32 ? "tf32" : "fp32", count, first_ms * 1e3f, best_ms * 1e3f, algo_id);
++        }
++        g_bopl_gemm_choices.push_back(best);
++        choice = &g_bopl_gemm_choices.back();
++    } else if (choice->lt) {
++        build();
++    }
++    if (choice->lt) {
++        if (cublasLtMatmul(lt, op, alpha, A, la, B, lb, beta, C, lc, C, lc, &choice->algo,
++                g_bopl_tune_ws, choice->workspace, stream) != CUBLAS_STATUS_SUCCESS)
++            plain();
++    } else {
++        plain();
++    }
++    destroy();
++}
++
  static inline void cublasGemmExDense(
          cublasOperation_t op_a, cublasOperation_t op_b,
          int M, int N, int K, void* A, void* B, void* C,
-@@ -266,11 +297,11 @@
+@@ -266,11 +423,10 @@
      int lda = (op_a == CUBLAS_OP_N) ? K : M;
      int ldb = (op_b == CUBLAS_OP_N) ? N : K;
  
 -    cublasHandle_t handle = cublas_get_handle();
 +    cublasHandle_t handle = cublas_get_handle(stream);
      cublasSetStream(handle, stream);
-     cublasGemmEx(handle, op_b, op_a, N, M, K, &alpha,
-         B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
+-    cublasGemmEx(handle, op_b, op_a, N, M, K, &alpha,
+-        B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
 -        C, CUBLAS_PRECISION, N, CUBLAS_COMPUTE_PRECISION, CUBLAS_GEMM_DEFAULT);
-+        C, CUBLAS_PRECISION, N, bopl_cublas_compute_type(), CUBLAS_GEMM_DEFAULT);
++    bopl_gemm(handle, stream, op_b, op_a, N, M, K, &alpha,
++        (const float*)B, ldb, (const float*)A, lda, &beta, (float*)C, N, bopl_cublas_compute_type());
  }
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
 diff -ruN a/models.cu b/models.cu
---- a/models.cu	2026-09-12 05:45:38.552861100 -0400
-+++ b/models.cu	2026-09-12 05:45:38.556581007 -0400
+--- a/models.cu	2026-09-12 05:51:17.948673508 -0400
++++ b/models.cu	2026-09-12 05:51:17.974572639 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -607,8 +741,8 @@ diff -ruN a/models.cu b/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN a/muon.cu b/muon.cu
---- a/muon.cu	2026-09-12 05:45:38.552861100 -0400
-+++ b/muon.cu	2026-09-12 05:45:38.556581007 -0400
+--- a/muon.cu	2026-09-12 05:51:17.948673508 -0400
++++ b/muon.cu	2026-09-12 05:51:17.974572639 -0400
 @@ -83,6 +83,51 @@
      {2.8366, -3.0525, 1.2012},
  };
@@ -897,8 +1031,8 @@ diff -ruN a/muon.cu b/muon.cu
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
 diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu	2026-09-12 05:45:38.552861100 -0400
-+++ b/ocean.cu	2026-09-12 05:45:38.556581007 -0400
+--- a/ocean.cu	2026-09-12 05:51:17.948673508 -0400
++++ b/ocean.cu	2026-09-12 05:51:17.974572639 -0400
 @@ -3,6 +3,8 @@
  
  #include "cudnn_conv2d.cu"
@@ -926,8 +1060,8 @@ diff -ruN a/ocean.cu b/ocean.cu
  }
  
 diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu	2026-09-12 05:45:38.554523976 -0400
-+++ b/pufferlib.cu	2026-09-12 05:45:38.556581007 -0400
+--- a/pufferlib.cu	2026-09-12 05:51:17.972119301 -0400
++++ b/pufferlib.cu	2026-09-12 05:51:17.974572639 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -2355,7 +2489,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +2908,81 @@
+@@ -2122,6 +2908,82 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -2397,6 +2531,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +        int prio_least = 0, prio_greatest = 0;
 +        cudaDeviceGetStreamPriorityRange(&prio_least, &prio_greatest);
 +        pufferl->train_stream = bopl_make_stream(pufferl.get(), false, prio_least);
++        bopl_gemm_tune_stream(pufferl->train_stream);  // measured kernel choice for the training GEMMs
 +        assert(cudaEventCreateWithFlags(&pufferl->rollout_ready_event, cudaEventDisableTiming) == cudaSuccess);
 +        assert(cudaEventCreateWithFlags(&pufferl->train_done_event, cudaEventDisableTiming | cudaEventBlockingSync) == cudaSuccess);
 +        const char* wait = std::getenv("BOPL_TRAIN_WAIT");
@@ -2437,7 +2572,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2178,10 +3039,11 @@
+@@ -2178,10 +3040,11 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
@@ -2450,7 +2585,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          pufferl->train_warmup = 0;
  
          // Snapshot weights + optimizer state before init-time capture
-@@ -2193,40 +3055,41 @@
+@@ -2193,40 +3056,41 @@
          cudaMalloc(&saved_momentum, wb_bytes);
          cudaMemcpy(saved_momentum, pufferl->muon.mb_puf.data, wb_bytes, cudaMemcpyDeviceToDevice);
  
@@ -2513,7 +2648,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
          // Restore weights + optimizer state corrupted by warmup/capture
          cudaMemcpy(pufferl->master_weights.data, saved_weights, wb_bytes, cudaMemcpyDeviceToDevice);
-@@ -2250,15 +3113,6 @@
+@@ -2250,15 +3114,6 @@
          pufferl->global_step = 0;
      }
  
@@ -2529,7 +2664,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      create_static_threads(vec, hypers.num_threads, horizon, pufferl.get(),
          net_callback_wrapper, thread_init_wrapper);
      static_vec_reset(vec);
-@@ -2276,21 +3130,105 @@
+@@ -2276,21 +3131,105 @@
      return pufferl;
  }
  
@@ -2637,7 +2772,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
      for (int buf = 0; buf < pufferl.hypers.num_buffers; buf++) {
          policy_activations_free(&pufferl.policy, pufferl.buffer_activations[buf]);
-@@ -2315,6 +3253,8 @@
+@@ -2315,6 +3254,8 @@
      for (int i = 0; i < NUM_TRAIN_EVENTS; i++) {
          cudaEventDestroy(pufferl.profile.events[i]);
      }
@@ -2647,8 +2782,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      static_vec_close(pufferl.vec);
 diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h	2026-09-12 05:45:38.552861100 -0400
-+++ b/vecenv.h	2026-09-12 05:45:38.556581007 -0400
+--- a/vecenv.h	2026-09-12 05:51:17.948673508 -0400
++++ b/vecenv.h	2026-09-12 05:51:17.974572639 -0400
 @@ -119,6 +119,12 @@
  void create_static_threads(StaticVec* vec, int num_threads, int horizon,
      void* ctx, net_callback_fn net_callback, thread_init_fn thread_init);

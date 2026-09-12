@@ -686,9 +686,7 @@ static void bs_mm_ldc(PrecisionTensor* a, PrecisionTensor* w, precision_t* out, 
     float alpha=1.0f, beta=0.0f;
     cublasHandle_t handle=cublas_get_handle(stream);
     cublasSetStream(handle,stream);
-    cublasGemmEx(handle,CUBLAS_OP_T,CUBLAS_OP_N,N,M,K,&alpha,
-        w->data,CUBLAS_PRECISION,K,a->data,CUBLAS_PRECISION,K,&beta,
-        out,CUBLAS_PRECISION,ldc,compute,CUBLAS_GEMM_DEFAULT);
+    bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,N,M,K,&alpha,w->data,K,a->data,K,&beta,out,ldc,compute);
 }
 static int bs_fwd_blocks(int B) {int n=(B+BS_FWD_ROWS-1)/BS_FWD_ROWS; return n<BS_FWD_MAX_BLOCKS ? n : BS_FWD_MAX_BLOCKS;}
 // BOPL_SET_PACKED (default 1): rows follow bopl_encode's packed slot layout;
