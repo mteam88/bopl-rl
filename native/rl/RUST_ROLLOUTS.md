@@ -573,16 +573,17 @@ branch's own trainer, i.e. without the later trainer-side work; the
 | new header, main .so | 231104 | 173328 | 0.6778 | 0.3211 | 0.3263 | 0.5985 | 5.7903 |
 | + sim .so, bots | 237279 | 177959 | 0.6494 | 0.3452 | 0.2742 | 0.5926 | 5.7571 |
 | + tracked zero tails (823e3d0) | 245542 | 184156 | 0.6115 | 0.2927 | 0.2979 | 0.5926 | 5.7571 |
+| final (c816dcb .so) | 242728 | 182046 | 0.6237 | 0.2919 | 0.3057 | 0.5926 | 5.7571 |
 
 `perf` shares of the trainer process (10 s mid-run): before, libcuda 35.8%,
 libbopl_sim 27.7 (game_tick 4.9, rounded_rounded 2.8, closest 2.8,
 refresh_entities 2.3, refresh_actor_entities 1.8), libc 13.0 (memmove 8.6,
 memset 2.0, malloc 0.9), `_C` 12.8 (compute_observations_from 4.4,
 bot_shot_clear 1.6, bot_predict_foe 1.2, bot_surface_y 1.0), libm 5.8,
-vdso 4.0. After, libcuda 49.5%, libbopl_sim 28.3 (game_tick 9.0,
-rounded_rounded 3.6, refresh_actor_entities 2.0, fast_sin 1.8), `_C` 10.3
-(bopl_encode 4.6, c_step 1.6, bot_sdf_avx512 1.6), vdso 5.4, libc 3.7
-(memmove 0.9, malloc 0.9), libm 1.6. The absolute environment work per
+vdso 4.0. After (final), libcuda 49.9%, libbopl_sim 28.8 (game_tick 9.3,
+rounded_rounded 3.5, refresh_actor_entities 1.9, fast_sin 1.6), `_C` 10.4
+(bopl_encode 4.7, c_step 1.7, bot_sdf_avx512 1.5), vdso 5.4, libc 3.3
+(memmove 0.8; malloc no longer in the list), libm 1.0. The absolute environment work per
 step fell by ~40% at this shape while the GPU round trip did not move, so
 the spin in `cuStreamSynchronize` takes the freed share.
 
