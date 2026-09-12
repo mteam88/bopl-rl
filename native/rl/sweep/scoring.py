@@ -111,10 +111,10 @@ def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band
     """Fixed-pool Bradley-Terry ratings of the last k evaluation checkpoints.
 
     Each checkpoint is rated against the frozen reference pool (reference_pool
-    .rate_checkpoint, cached in <workspace>/<checkpoint>.json, default
-    <run>/reference/). Point i's score is the IQM of the ratings up to i within
-    the window, so the final point — the value Protein optimizes — is the IQM
-    over the last k evaluations rather than one noisy final evaluation.
+    .rate_checkpoint, cached in <run>/reference/<pool_sha8>/). Point i's score
+    is the IQM of the ratings up to i within the window, so the final point —
+    the value Protein optimizes — is the IQM over the last k evaluations.
+    Legacy files at <run>/reference/<checkpoint>.json are still read.
     """
     import reference_pool
     run_dir = Path(run_dir)
@@ -123,7 +123,7 @@ def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band
         return []
     if isinstance(pool, (str, Path)):
         pool = reference_pool.load_pool(pool if Path(pool).is_absolute() else ROOT / pool)
-    workspace = Path(workspace) if workspace else run_dir / 'reference'
+    workspace = Path(workspace) if workspace else reference_pool.rating_dir(run_dir, pool)
     rate = rate or reference_pool.rate_checkpoint
     elapsed_at = _elapsed_lookup(run_dir)
     ratings = []

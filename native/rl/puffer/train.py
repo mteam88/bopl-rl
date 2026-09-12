@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 from common import atomic_json
-from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents
+from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
@@ -195,7 +195,7 @@ def arguments():
                    help='Learner decisions over which the scripted banks hand their matches to self-play: the bot '
                         'share falls linearly from 1 to 0 at this step (0 = bots play every match of their banks). '
                         'With a decay the pool manages the scripted banks too, so their frozen weights are real opponents')
-    p.add_argument('--scripted-opponents', default='mixed-hard',
+    p.add_argument('--scripted-opponents', default=DEFAULT_EVAL_SCRIPTED,
                    help='Comma-separated kind-level scripted opponents for the periodic evaluations (evaluate.py); empty disables')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
     p.add_argument('--no-eval', action='store_true', help='Disable diagnostic evaluation for isolated throughput measurements')

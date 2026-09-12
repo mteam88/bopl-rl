@@ -1,39 +1,27 @@
-"""Round-robin ELO ladder over a run's checkpoints plus fixed anchors.
+"""Playable agents and Bradley-Terry fits for the frozen reference pool.
 
-Plays side-swapped fixed-seed pools among evenly spaced native checkpoints
-(policy-%09d.bin), plus anchors: the random policy and optional frozen native
-reference checkpoints. Ratings come from a Bradley-Terry maximum-likelihood
-fit (timeouts count as draws) anchored at random = 0 Elo, so numbers are
-comparable across reruns of the same pool. Output is written atomically to
-<run>/ladder/ladder.json, which the dashboard reads as-is.
+Model / Random / Scripted decide in games; bradley_terry fits a round robin
+(used when building a pool); bradley_terry_fixed rates one candidate against
+members whose ratings stay put. Timeouts count as draws; random is anchored
+at 0 Elo.
 """
-import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import json
 import math
 from pathlib import Path
-import re
-import time
 import numpy as np
-from evaluation_protocol import map_ids,opponents,scripted_names,scripted_opponent
+from evaluation_protocol import scripted_opponent
 import layout
 # environment.py loads the research library on import; it is imported where games
 # are played so the Bradley-Terry fits and participants stay importable without it
 # (sweep/reference_pool.py and its tests).
 
-SCHEMA=1
 HEAD_BOUNDS=[sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS+1)]  # logits row offsets per head
 ELO_SCALE=400/math.log(10)
 
 
 def as_numpy(value):
     return value.detach().cpu().numpy() if hasattr(value,'detach') else np.asarray(value)
-
-
-def atomic_json(path,payload):
-    temporary=path.with_suffix(path.suffix+'.tmp')
-    temporary.write_text(json.dumps(payload)+'\n'); temporary.replace(path)
 
 
 class Model:
@@ -84,17 +72,6 @@ class Scripted:
     def start(self,task,side,rng):
         # The environment ignores this player's action floats while the bot is pinned.
         return lambda observation,mask: np.zeros(layout.NUM_ATNS,dtype=np.int64)
-
-
-def select_checkpoints(run,count):
-    """Evenly spaced playable checkpoints, always keeping first and last."""
-    rows=[]
-    for path in sorted(run.glob('checkpoints/policy-*.bin'), key=lambda p: int(p.stem.split('-')[-1])):
-        match=re.fullmatch(r'policy-(\d+)\.bin',path.name)
-        if match: rows.append((int(match.group(1)),path))
-    if len(rows)<=count: return rows
-    picks=sorted({round(i*(len(rows)-1)/(count-1)) for i in range(count)})
-    return [rows[i] for i in picks]
 
 
 def bradley_terry(names,records,anchor):
@@ -207,63 +184,3 @@ def tally(games):
         row=records.setdefault((game['a'],game['b']),[0,0,0])
         row[{'a':0,'b':1,'draw':2}[game['outcome']]]+=1
     return records
-
-
-def main():
-    from environment import configure
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--run',type=Path,required=True)
-    parser.add_argument('--checkpoints',type=int,default=8,help='Pool size sampled evenly across the run')
-    parser.add_argument('--games-per-pair',type=int,default=8,help='Per map; even, half per side')
-    parser.add_argument('--maps',type=map_ids,default=None,help='Defaults to the run config training maps')
-    parser.add_argument('--anchors',type=Path,help='Manifest of frozen native reference checkpoints (evaluation opponents format)')
-    parser.add_argument('--scripted-anchors',type=scripted_names,default='mixed-hard',
-                        help='Comma-separated scripted bot anchors (kind-level); empty disables')
-    parser.add_argument('--seed-base',type=int,default=50001)
-    parser.add_argument('--episode-ticks',type=int,default=None,help='Defaults to the run config value')
-    parser.add_argument('--library',type=Path,default=None,help='CPU evaluation library for native_policy.load')
-    parser.add_argument('--workers',type=int,default=2)
-    args=parser.parse_args()
-    if args.games_per_pair%2 or args.games_per_pair<2:
-        parser.error('An even positive games count is required for side-swapped seed pairs')
-    config=json.loads((args.run/'config.json').read_text())
-    maps=args.maps if args.maps is not None else config['training_maps']
-    limit=args.episode_ticks or config['episode_ticks']
-    participants=[Random(),*map(Scripted,args.scripted_anchors)]
-    for item in opponents(args.anchors) if args.anchors else []:
-        participants.append(Model(item['name'],item['path'],'anchor',library=args.library))
-    for step,path in select_checkpoints(args.run,args.checkpoints):
-        participants.append(Model(f'checkpoint-{step:09d}',path,'checkpoint',step,library=args.library))
-    if sum(p.kind=='checkpoint' for p in participants)<2:
-        raise SystemExit('Need at least two native .bin checkpoints to rate')
-    by_name={p.name:p for p in participants}
-    tasks=[]
-    names=sorted(by_name)
-    for i,a in enumerate(names):
-        for b in names[i+1:]:
-            tasks+=pair_tasks(a,b,maps,args.games_per_pair,args.seed_base)
-    out=args.run/'ladder'; out.mkdir(parents=True,exist_ok=True)
-    configure(out/'workers')
-    started=time.monotonic()
-    games=play_games(by_name,tasks,limit,args.workers,args.seed_base)
-    records=tally(games)
-    ratings=bradley_terry(names,records,'random')
-    counts={name:[0,0,0] for name in names}  # wins, losses, draws
-    for (a,b),(wa,wb,d) in records.items():
-        counts[a][0]+=wa; counts[a][1]+=wb; counts[a][2]+=d
-        counts[b][0]+=wb; counts[b][1]+=wa; counts[b][2]+=d
-    atomic_json(out/'ladder.json',dict(
-        schema=SCHEMA,updated=time.time(),elapsed=time.monotonic()-started,
-        games=len(games),games_per_pair=args.games_per_pair,maps=maps,
-        seed_base=args.seed_base,episode_ticks=limit,
-        note='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo',
-        ratings=[dict(name=name,kind=by_name[name].kind,step=by_name[name].step,
-                      sha256=by_name[name].sha256,rating=round(ratings[name],1),
-                      games=sum(counts[name]),wins=counts[name][0],
-                      losses=counts[name][1],draws=counts[name][2]) for name in names],
-        matches=[dict(a=a,b=b,wins_a=wa,wins_b=wb,draws=d) for (a,b),(wa,wb,d) in sorted(records.items())]))
-    for name in sorted(names,key=lambda n:-ratings[n]):
-        print(f'{ratings[name]:8.1f}  {by_name[name].kind:10s}  {name}',flush=True)
-
-
-if __name__=='__main__': main()

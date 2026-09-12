@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
 import time
 import numpy as np
 import torch
@@ -14,7 +15,7 @@ from common import atomic_json
 import decision_dump
 import layout
 from telemetry import FIELDS,summarize
-from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent
+from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent,DEFAULT_EVAL_SCRIPTED
 
 def masked(logits,mask):
     """Apply the environment's action mask (1 = allowed) the way the trainer samples: disallowed logits -> -inf."""
@@ -47,8 +48,10 @@ def main():
     parser.add_argument('--heldout-maps',type=map_ids,default=[1,2])
     parser.add_argument('--opponents',type=Path,help='Manifest of frozen trained opponents and SHA256 identities')
     parser.add_argument('--frozen-games',type=int,default=16)
-    parser.add_argument('--scripted-opponents',type=scripted_names,default='mixed-hard',
+    parser.add_argument('--scripted-opponents',type=scripted_names,default=DEFAULT_EVAL_SCRIPTED,
                         help='Comma-separated scripted bot names (kind-level, e.g. mixed-hard,archer-medium); empty disables')
+    parser.add_argument('--pool',type=Path,default=None,
+                        help='Reference pool.json for in-run Elo (default: pool-v5 if present)')
     parser.add_argument('--seed-base',type=int,default=10001)
     parser.add_argument('--heldout-seed-base',type=int,default=20001)
     parser.add_argument('--selfplay-seed',type=int,default=30001)
@@ -89,7 +92,9 @@ def main():
             or previous.get('frozen_opponents') != frozen
             or previous.get('decision_dump_schema') != 1):
             raise ValueError('Existing evaluation differs from the requested checkpoint, opponents or schedule')
-        print(f'Evaluation {step} already complete',flush=True); return
+        print(f'Evaluation {step} already complete',flush=True)
+        emit_elo(args, previous)
+        return
     out.mkdir(parents=True,exist_ok=True)
     configure(out/'workers', args.game)
     started=time.monotonic()
@@ -189,6 +194,23 @@ def main():
                 interval_note='Descriptive Wilson interval; does not adjust for correlation within seed pairs',
                 elapsed=time.monotonic()-started,groups=groups,games=results)
     atomic_json(out/'result.json',report)
+    emit_elo(args, report)
     print(json.dumps(report),flush=True)
+
+
+def emit_elo(args, report):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sweep'))
+    import reference_pool
+    pool_path = args.pool or (reference_pool.DEFAULT_POOL if reference_pool.DEFAULT_POOL.is_file() else None)
+    if not pool_path:
+        return
+    pool = reference_pool.load_pool(pool_path)
+    rating = reference_pool.write_evaluation_rating(
+        args.run, report, pool, args.checkpoint, game=args.game)
+    if rating:
+        print(json.dumps(dict(elo=rating['rating'], interval=rating['interval'],
+                              games=rating['games'], source=rating.get('source'),
+                              pool_sha8=reference_pool.pool_sha8(pool))), flush=True)
+
 
 if __name__=='__main__': main()

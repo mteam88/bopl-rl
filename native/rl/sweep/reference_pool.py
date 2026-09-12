@@ -8,20 +8,25 @@ SHA-256 and a hash over (name, kind, sha256, rating) are recorded, and both
 are re-checked whenever the pool is loaded. New references are appended by
 building a new pool file; members are never removed or re-rated in place.
 
-A candidate checkpoint is rated OpenAI Five style (Dota 2 paper, appendix J):
-it plays pool members whose ratings stay fixed, and its own rating is the 1-D
-MLE of those games (elo_ladder.bradley_terry_fixed). Game budget follows the
-same recipe: a small first pass against everyone, then the remaining games go
-to members whose expected win rate against the candidate is inside the band
-(default 15-85%); lopsided matchups carry almost no rating information.
-Uncertainty is a cluster bootstrap over side-swapped seed pairs (95% CI).
-Aggregation over a trial's last k evaluations is the interquartile mean of
-rliable (Agarwal et al. 2021, scipy.stats.trim_mean(x, 0.25)).
+A candidate is rated OpenAI Five style (Dota 2 paper, appendix J): it plays
+pool members whose ratings stay fixed, and its own rating is the 1-D MLE of
+those games (elo_ladder.bradley_terry_fixed). The band-allocated rater spends
+a small first pass against everyone, then the remaining games on 15-85%
+matchups. Uncertainty is a cluster bootstrap over side-swapped seed pairs
+(95% CI). A run's score is the interquartile mean of its last k rated
+evaluation checkpoints (rliable / scipy trim_mean 0.25).
 
-    python native/rl/sweep/reference_pool.py build --out DIR/pool.json \
-        --scripted mixed-hard,archer-hard --checkpoint o3-012-final=DIR/o3-012-final.bin ...
+Rating files are derived data on the run: <run>/reference/<pool_sha8>/<checkpoint>.json.
+A rating on another pool lives in another <pool_sha8>/ directory. Legacy files
+at <run>/reference/<checkpoint>.json (overnight-4's driver) are still read.
+Cache key: (pool sha, checkpoint sha, games). A fuller band rating is reused
+for a cheaper request; an evaluation-fit rating is not.
+
+    python native/rl/sweep/reference_pool.py build --out DIR/pool.json ...
     python native/rl/sweep/reference_pool.py verify DIR/pool.json
-    python native/rl/sweep/reference_pool.py rate --pool DIR/pool.json --checkpoint policy.bin --out DIR2
+    python native/rl/sweep/reference_pool.py rate --pool DIR/pool.json --checkpoint policy.bin
+    python native/rl/sweep/reference_pool.py rate-runs --pool DIR/pool.json --run DIR [--sweep DIR]
+    python native/rl/sweep/reference_pool.py human --pool DIR/pool.json
 """
 import argparse
 import hashlib
@@ -42,6 +47,9 @@ from evaluation_protocol import checkpoint_identity, opponents, scripted_names  
 
 SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
+DEFAULT_POOL = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v5/pool.json'
+DEFAULT_HUMAN = ROOT / 'native/artifacts/rl/human/mac'
+CANDIDATE = 'candidate'
 
 
 # ---- files -------------------------------------------------------------------
@@ -110,6 +118,89 @@ def verify_pool(pool):
             raise ValueError(f"Reference {member['name']} changed since the pool was rated")
     if pool_hash(pool['members']) != pool['pool_sha256']:
         raise ValueError('Reference pool members or ratings were edited after rating')
+
+
+def pool_sha8(pool):
+    return pool['pool_sha256'][:8]
+
+
+def rating_dir(run_dir, pool):
+    """<run>/reference/<pool_sha8>/ — the only place new rating files are written."""
+    return Path(run_dir) / 'reference' / pool_sha8(pool)
+
+
+def rating_name(checkpoint):
+    return Path(checkpoint).stem + '.json'
+
+
+def _read_rating(path, pool):
+    try:
+        payload = json.loads(Path(path).read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+    if payload.get('schema') != SCHEMA or payload.get('pool_sha256') != pool['pool_sha256']:
+        return None
+    return payload
+
+
+def find_rating(run_dir, pool, checkpoint):
+    """Return (payload, path) for a cached rating, preferring the sha8 directory.
+
+    Falls back to the overnight-4 location <run>/reference/<stem>.json.
+    path is always the sha8 location when nothing is cached (where to write).
+    """
+    name = rating_name(checkpoint)
+    primary = rating_dir(run_dir, pool) / name
+    payload = _read_rating(primary, pool)
+    if payload:
+        return payload, primary
+    legacy = Path(run_dir) / 'reference' / name
+    payload = _read_rating(legacy, pool)
+    if payload:
+        return payload, legacy
+    return None, primary
+
+
+def load_run_ratings(run_dir, pool):
+    """{checkpoint stem: rating payload} for this pool, sha8 files overriding legacy."""
+    run_dir = Path(run_dir)
+    files = {}
+    for directory in (run_dir / 'reference', rating_dir(run_dir, pool)):
+        if not directory.is_dir():
+            continue
+        for path in directory.glob('*.json'):
+            if path.parent != directory:
+                continue
+            payload = _read_rating(path, pool)
+            if payload:
+                files[path.stem] = payload
+    return files
+
+
+def cache_hit(previous, identity, pool, games):
+    """True when previous is the same (pool, checkpoint sha, games), or a fuller band rating."""
+    if not previous or previous.get('schema') != SCHEMA:
+        return False
+    if previous.get('pool_sha256') != pool['pool_sha256']:
+        return False
+    sha = (previous.get('checkpoint_identity') or {}).get('sha256')
+    if identity and sha and sha != identity.get('sha256'):
+        return False
+    budget = previous.get('budget')
+    if budget == games:
+        return True
+    if previous.get('source') == 'evaluation':
+        return False
+    n = budget if isinstance(budget, int) else previous.get('games')
+    return isinstance(n, int) and n >= games
+
+
+def rate_command(run_dir, pool_path=None):
+    pool_path = pool_path or DEFAULT_POOL
+    python = ROOT / 'native/artifacts/rl/venv/bin/python'
+    script = ROOT / 'native/rl/sweep/reference_pool.py'
+    return (f'BOPL_RL_BACKEND=rust {python} {script} rate-runs '
+            f'--pool {pool_path} --run {run_dir} --workers 3')
 
 
 def participants(pool, library=None):
@@ -197,6 +288,125 @@ def iqm(values):
     return sum(kept) / len(kept)
 
 
+def iqm_interval(rows):
+    """IQM of point ratings and of the per-rating 95% interval bounds."""
+    score = iqm(row['rating'] for row in rows)
+    return score, [iqm(row['interval'][0] for row in rows), iqm(row['interval'][1] for row in rows)]
+
+
+def fit_rating(games, candidate, pool, bootstrap=1000, seed=0):
+    """Fixed-member Bradley-Terry MLE + bootstrap CI from already-played games."""
+    ratings = {m['name']: float(m['rating']) for m in pool['members']}
+    records = records_against(games, candidate)
+    rating = elo_ladder.bradley_terry_fixed(records, ratings)
+    interval = bootstrap_interval(games, candidate, ratings, samples=bootstrap, seed=seed)
+    return rating, interval, records, ratings
+
+
+def rating_records(records, rating, ratings):
+    return {member: dict(wins=w, losses=l, draws=d, games=w + l + d,
+                         expected=expected_score(rating, ratings[member]),
+                         observed=(w + d / 2) / (w + l + d) if w + l + d else 0.0)
+            for member, (w, l, d) in sorted(records.items())}
+
+
+def games_from_evaluation(report, pool):
+    """play_games-shaped rows for eval games against pool members on pool maps."""
+    members = {m['name'] for m in pool['members']}
+    maps = set(pool.get('maps') or ())
+    games = []
+    for game in report.get('games') or ():
+        if game.get('opponent') not in members:
+            continue
+        if maps and game.get('map') not in maps:
+            continue
+        if game.get('timeout'):
+            outcome = 'draw'
+        elif game.get('win'):
+            outcome = 'a'
+        else:
+            outcome = 'b'
+        games.append(dict(a=CANDIDATE, b=game['opponent'], map=game['map'],
+                          seed=game['seed'], side=game.get('side', 0), outcome=outcome))
+    return games
+
+
+def rating_from_evaluation(report, pool, checkpoint, game=None, bootstrap=1000):
+    """Fit a cheap in-run Elo from evaluate.py games (no extra play)."""
+    games = games_from_evaluation(report, pool)
+    if not games:
+        return None
+    rating, interval, records, ratings = fit_rating(
+        games, CANDIDATE, pool, bootstrap=bootstrap, seed=int(report.get('seed_base') or 0))
+    game_path = game_library(game)
+    game_sha = sha256_file(game_path) if Path(game_path).is_file() else None
+    pool_sha = (pool.get('game') or {}).get('sha256')
+    return dict(
+        schema=SCHEMA, source='evaluation', checkpoint=str(checkpoint),
+        checkpoint_identity=report.get('checkpoint_identity'),
+        pool=pool['path'], pool_sha256=pool['pool_sha256'], budget=len(games),
+        maps=sorted({g['map'] for g in games}), seed_base=report.get('seed_base'),
+        game=str(game_path), game_sha256=game_sha,
+        game_mismatch=bool(game_sha and pool_sha and game_sha != pool_sha),
+        rating=rating, interval=interval, bootstrap=bootstrap, games=len(games),
+        draws=sum(1 for g in games if g['outcome'] == 'draw'),
+        records=rating_records(records, rating, ratings),
+        note='Bradley-Terry MLE vs fixed pool ratings from evaluate.py games on pool maps; '
+             'timeouts = draws; one virtual draw per member; 95% percentile bootstrap over seed pairs')
+
+
+def write_evaluation_rating(run_dir, report, pool, checkpoint, game=None):
+    """Write <run>/reference/<sha8>/<stem>.json unless a fuller band rating exists."""
+    result = rating_from_evaluation(report, pool, checkpoint, game=game)
+    if not result:
+        return None
+    identity = result.get('checkpoint_identity') or {}
+    previous, _ = find_rating(run_dir, pool, checkpoint)
+    if previous and cache_hit(previous, identity, pool, result['budget']):
+        return previous
+    path = rating_dir(run_dir, pool) / rating_name(checkpoint)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(path, result)
+    return result
+
+
+def rated_curve(run_dir, pool):
+    """Rated checkpoints in learner-step order: evaluation checkpoints first, else any cached policy-* files."""
+    import scoring
+    files = load_run_ratings(run_dir, pool)
+    rows = []
+    for steps, checkpoint in scoring.evaluation_checkpoints(run_dir):
+        payload = files.get(checkpoint.stem)
+        if payload:
+            rows.append(dict(payload, learner_steps=steps, checkpoint=checkpoint.name))
+    if rows:
+        return rows
+    extra = []
+    for stem, payload in files.items():
+        if not stem.startswith('policy-'):
+            continue
+        try:
+            step = int(stem.split('-', 1)[1])
+        except ValueError:
+            continue
+        learner = scoring._checkpoint_learner_steps(run_dir, stem + '.bin')
+        extra.append(dict(payload, learner_steps=learner if learner is not None else step,
+                          checkpoint=stem + '.bin'))
+    extra.sort(key=lambda r: r['learner_steps'])
+    return extra
+
+
+def run_iqm(run_dir, pool, last_k=3):
+    """IQM over the last k rated evaluation checkpoints, or None if none are rated."""
+    rows = rated_curve(run_dir, pool)
+    if not rows:
+        return None
+    window = rows[-max(1, int(last_k)):]
+    score, interval = iqm_interval(window)
+    return dict(score=score, interval=interval, last_k=window,
+                game_mismatch=any(r.get('game_mismatch') for r in window))
+
+
 # ---- candidate rating ----------------------------------------------------------
 
 def candidate_tasks(candidate, member, maps, pairs, seed_base, start_pair=0):
@@ -233,23 +443,28 @@ def plan_round(rating, ratings, remaining_games, band, round_games):
     return plan
 
 
-def rate_checkpoint(checkpoint, pool, out, games=240, first_pass_games=6, band=(.15, .85),
+def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, band=(.15, .85),
                     round_games=48, workers=4, seed_base=70001, maps=None, library=None,
-                    game=None, bootstrap=1000, name='candidate', log=None):
-    """Rate one checkpoint against the frozen pool; cached in <out>/<checkpoint>.json."""
+                    game=None, bootstrap=1000, name=CANDIDATE, log=None):
+    """Rate one checkpoint against the frozen pool; cached under out or the run's sha8 dir."""
     checkpoint = Path(checkpoint).resolve()
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
     identity = checkpoint_identity(checkpoint)
     maps = list(maps or pool['maps'])
-    cache = out / (checkpoint.stem + '.json')
-    if cache.exists():
-        previous = json.loads(cache.read_text())
-        if (previous.get('schema') == SCHEMA and previous.get('checkpoint_identity') == identity
-                and previous.get('pool_sha256') == pool['pool_sha256']
-                and previous.get('budget') == games and previous.get('maps') == maps
-                and previous.get('band') == list(band) and previous.get('seed_base') == seed_base):
+    if out is None:
+        if checkpoint.parent.name != 'checkpoints':
+            raise ValueError('out is required when the checkpoint is not in a run directory')
+        out = rating_dir(checkpoint.parent.parent, pool)
+        previous, _ = find_rating(checkpoint.parent.parent, pool, checkpoint)
+        if cache_hit(previous, identity, pool, games):
             return previous
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    cache = out / (checkpoint.stem + '.json')
+    previous = _read_rating(cache, pool)
+    if previous is None and out.name == pool_sha8(pool):
+        previous = _read_rating(out.parent / cache.name, pool)
+    if cache_hit(previous, identity, pool, games):
+        return previous
     game = game_library(game)
     game_sha256 = sha256_file(game)
     configure_games(out, game)
@@ -293,10 +508,7 @@ def rate_checkpoint(checkpoint, pool, out, games=240, first_pass_games=6, band=(
         game_mismatch=game_sha256 != pool.get('game', {}).get('sha256'),
         rating=rating, interval=interval, bootstrap=bootstrap, games=len(all_games),
         draws=sum(1 for g in all_games if g['outcome'] == 'draw'),
-        records={member: dict(wins=w, losses=l, draws=d, games=w + l + d,
-                              expected=expected_score(rating, ratings[member]),
-                              observed=(w + d / 2) / (w + l + d))
-                 for member, (w, l, d) in sorted(records.items())},
+        source='band', records=rating_records(records, rating, ratings),
         rounds=rounds, elapsed=time.monotonic() - started,
         note='Bradley-Terry MLE vs fixed pool ratings; timeouts = draws; one virtual draw per member; '
              '95% percentile bootstrap over side-swapped seed pairs')
@@ -394,69 +606,181 @@ def tally_counts(names, records):
     return counts
 
 
-def joint_ladder(pool, checkpoints, out, workers=4, slow_workers=None, library=None, game=None, log=None):
-    """One Bradley-Terry fit over the pool members and new checkpoints together.
+def excluded_rounds(path):
+    if not path or not Path(path).is_file():
+        return set()
+    pairs = set()
+    for item in json.loads(Path(path).read_text()):
+        for round_id in item.get('rounds') or ():
+            pairs.add((item['session'], int(round_id)))
+    return pairs
 
-    The pool's recorded round robin is reused as played; every new checkpoint
-    plays every member and every other new checkpoint with the pool's recipe
-    (maps, games per pair, seeds), so all participants end with comparable
-    game counts. Unlike rate_checkpoint the members are re-rated here. A
-    checkpoint byte-identical to a member is that member. Writes ladder.json
-    in the elo_ladder schema (plus a 95% parametric-bootstrap interval).
+
+def resolve_member(row, pool):
+    """Map a human-game row onto a pool member name, or None."""
+    names = {m['name'] for m in pool['members']}
+    by_sha = {m['sha256']: m['name'] for m in pool['members'] if m.get('sha256')}
+    agent = row.get('agent')
+    if isinstance(agent, str) and agent in names:
+        return agent
+    if isinstance(agent, str) and agent.startswith('bot:') and agent[4:] in names:
+        return agent[4:]
+    sha = row.get('agent_sha256')
+    if sha in by_sha:
+        return by_sha[sha]
+    b = row.get('b') or ''
+    if b.startswith('bot:') and b[4:] in names:
+        return b[4:]
+    if b.startswith('policy:') and b[7:] in by_sha:
+        return by_sha[b[7:]]
+    return None
+
+
+def load_human_rows(directory):
+    """games.jsonl plus .session-*.jsonl kind=round rows, deduped on (session, round)."""
+    directory = Path(directory)
+    rows, seen = [], set()
+    games_path = directory / 'games.jsonl'
+    if games_path.is_file():
+        for line in games_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            seen.add((row.get('session'), row.get('round')))
+            rows.append(row)
+    for path in sorted(directory.glob('.session-*.jsonl')):
+        session = path.name[len('.session-'):-len('.jsonl')]
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get('kind') not in (None, 'round'):
+                continue
+            key = (session, row.get('round'))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(dict(row, session=session))
+    return rows
+
+
+def rate_human(pool, directory, excluded=None, bootstrap=1000, seed=0):
+    """Matthew's Elo vs pool members with ratings held fixed.
+
+    agent_won means the bot won; games.jsonl outcome 'a' is a human win (a=human).
+    Games against non-members are dropped. Maps 0-123 vs the pool's 0-2.
     """
-    out = Path(out).resolve()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    game = game_library(game)
-    configure_games(out.parent, game)
-    by_name = participants(pool, library=library)
-    hashes = {m.get('sha256'): m['name'] for m in pool['members'] if m['kind'] == 'checkpoint'}
-    kinds = {name: 'anchor' for name in by_name}
-    for name, path in checkpoints:
-        identity = checkpoint_identity(path)
-        if identity['sha256'] in hashes:
-            if log:
-                log(f"{name} is pool member {hashes[identity['sha256']]}")
+    directory = Path(directory)
+    skip = excluded_rounds(directory / 'excluded.json' if excluded is None else excluded)
+    games, maps, skipped = [], [], 0
+    for row in load_human_rows(directory):
+        if (row.get('session'), row.get('round')) in skip:
             continue
-        if name in by_name:
-            raise ValueError(f'Duplicate participant {name}')
-        by_name[name] = elo_ladder.Model(name, path, 'checkpoint', library=library)
-        kinds[name] = 'checkpoint'
-    new = [name for name, kind in kinds.items() if kind == 'checkpoint']
-    names = sorted(by_name)
-    pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if a in new or b in new]
-    started = time.monotonic()
-    games, timing = play_pairs(by_name, pairs, pool['maps'], pool['games_per_pair'], pool['seed_base'],
-                               int(pool['episode_ticks']), int(pool.get('observation_delay_ticks', 9)),
-                               workers, slow_workers, log)
-    records = elo_ladder.tally(games)
-    for match in pool['matches']:
-        records[(match['a'], match['b'])] = [match['wins_a'], match['wins_b'], match['draws']]
-    ratings = elo_ladder.bradley_terry(names, records, 'random')
-    intervals = pool_intervals(names, records)
-    counts = tally_counts(names, records)
-    ladder = dict(
-        schema=elo_ladder.SCHEMA, updated=time.time(), elapsed=time.monotonic() - started,
-        games=sum(sum(row) for row in records.values()), games_per_pair=pool['games_per_pair'], maps=pool['maps'],
-        seed_base=pool['seed_base'], episode_ticks=int(pool['episode_ticks']),
-        pool=pool['path'], pool_sha256=pool['pool_sha256'], pool_games=pool['games'], timing=timing,
-        game=dict(path=str(game), sha256=sha256_file(game)),
-        note='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo; '
-             'pool games reused, members re-rated jointly; 95% parametric bootstrap over games',
-        ratings=[dict(name=name, kind=kinds[name], step=None, sha256=getattr(by_name[name], 'sha256', None),
-                      rating=round(float(ratings[name]), 1), interval=intervals[name], games=sum(counts[name]),
-                      wins=counts[name][0], losses=counts[name][1], draws=counts[name][2]) for name in names],
-        matches=[dict(a=a, b=b, wins_a=wa, wins_b=wb, draws=d) for (a, b), (wa, wb, d) in sorted(records.items())])
-    atomic_json(out, ladder)
-    return ladder
+        member = resolve_member(row, pool)
+        if not member:
+            skipped += 1
+            continue
+        if 'agent_won' in row:
+            if row.get('draw'):
+                outcome = 'draw'
+            elif row.get('agent_won'):
+                outcome = 'b'
+            else:
+                outcome = 'a'
+            map_id = int(row.get('level', row.get('map', 0)))
+        else:
+            outcome = row.get('outcome', 'draw')
+            map_id = int(row.get('map', 0))
+        maps.append(map_id)
+        games.append(dict(a='human', b=member, map=map_id, seed=int(row.get('seed') or 0),
+                          side=int(row.get('side') or 0), outcome=outcome))
+    if not games:
+        raise ValueError(f'No human games against pool members in {directory}')
+    rating, interval, records, ratings = fit_rating(games, 'human', pool, bootstrap=bootstrap, seed=seed)
+    pool_sha = (pool.get('game') or {}).get('sha256')
+    return dict(
+        schema=SCHEMA, source='human', name='human', pool=pool['path'], pool_sha256=pool['pool_sha256'],
+        budget=len(games), maps=sorted(set(maps)), map_min=min(maps), map_max=max(maps),
+        skipped_unknown=skipped, excluded=len(skip),
+        game_mismatch=True,  # Unity, maps 0-123
+        pool_game_sha256=pool_sha, rating=rating, interval=interval, bootstrap=bootstrap,
+        games=len(games), draws=sum(1 for g in games if g['outcome'] == 'draw'),
+        records=rating_records(records, rating, ratings),
+        caveats=['The game rotates maps 0-123 while the pool plays 0-2.',
+                 f'n={len(games)} games after exclusions.'],
+        note='Matthew vs pool members; agent_won = bot won; maps rotate 0-123 while the pool plays 0-2; n is small')
+
+
+def sweep_run_dirs(sweep_dir):
+    sweep_dir = Path(sweep_dir)
+    state_path = sweep_dir / 'sweep.json'
+    if state_path.is_file():
+        state = json.loads(state_path.read_text())
+        return [sweep_dir / trial['id'] for trial in state.get('trials') or []
+                if (sweep_dir / trial['id']).is_dir()]
+    return sorted(p for p in sweep_dir.iterdir() if p.is_dir() and (p / 'config.json').is_file())
+
+
+def rate_runs(pool, runs, last_k=3, games=240, first_pass_games=6, band=(.15, .85),
+              round_games=48, workers=4, seed_base=70001, log=None):
+    """Band-rate the last k evaluation checkpoints of each run into the run dir."""
+    import flags
+    import scoring
+    rows = []
+    for run_dir in runs:
+        run_dir = Path(run_dir)
+        curve = scoring.reference_curve(run_dir, pool, last_k=last_k, games=games,
+                                        first_pass_games=first_pass_games, band=band,
+                                        round_games=round_games, workers=workers,
+                                        seed_base=seed_base, log=log)
+        if not curve:
+            if log:
+                log(f'{run_dir.name}: no evaluated checkpoints, skipped')
+            continue
+        summary = run_iqm(run_dir, pool, last_k=last_k)
+        annotated = flags.annotate_run(run_dir, write=False)
+        final = summary['last_k'][-1]
+        row = dict(run=str(run_dir), name=run_dir.name, rating=final['rating'], interval=final['interval'],
+                   games=final['games'], iqm=summary['score'], iqm_interval=summary['interval'],
+                   last_k=[dict(checkpoint=r['checkpoint'], learner_steps=r['learner_steps'],
+                                rating=r['rating'], interval=r['interval'], games=r['games'])
+                           for r in summary['last_k']],
+                   flags=annotated[-1][1]['flags'] if annotated else [],
+                   game_mismatch=summary['game_mismatch'])
+        rows.append(row)
+        if log:
+            log(f"{run_dir.name}: {row['rating']:.0f} [{row['interval'][0]:.0f}, {row['interval'][1]:.0f}]  "
+                f"IQM{last_k} {row['iqm']:.0f}"
+                + (f"; flags {', '.join(row['flags'])}" if row['flags'] else '')
+                + ('  game_mismatch' if row['game_mismatch'] else ''))
+    return rows
 
 
 def format_table(members):
     lines = [f"{'rating':>8}  {'95% CI':>12}  {'kind':10}  {'W-L-D':>12}  name"]
     for member in sorted(members, key=lambda m: -m['rating']):
         low, high = member.get('interval', (member['rating'], member['rating']))
-        lines.append(f"{member['rating']:8.1f}  [{low:5.0f},{high:5.0f}]  {member['kind']:10}  "
-                     f"{member['wins']:>4}-{member['losses']}-{member['draws']:<3}  {member['name']}")
+        wins, losses, draws = member.get('wins', 0), member.get('losses', 0), member.get('draws', 0)
+        if 'wins' not in member and member.get('records'):
+            wins = sum(r['wins'] for r in member['records'].values())
+            losses = sum(r['losses'] for r in member['records'].values())
+            draws = sum(r['draws'] for r in member['records'].values())
+        lines.append(f"{member['rating']:8.1f}  [{low:5.0f},{high:5.0f}]  {member.get('kind', ''):10}  "
+                     f"{wins:>4}-{losses}-{draws:<3}  {member['name']}")
     return '\n'.join(lines)
+
+
+def format_run_table(rows, last_k=3):
+    lines = [f"{'IQM'+str(last_k):>8}  {'95% CI':>12}  {'final':>8}  {'mismatch':8}  flags  name"]
+    for row in sorted(rows, key=lambda r: -r['iqm']):
+        low, high = row['iqm_interval']
+        lines.append(f"{row['iqm']:8.1f}  [{low:5.0f},{high:5.0f}]  {row['rating']:8.1f}  "
+                     f"{'yes' if row['game_mismatch'] else '':8}  {' '.join(row['flags']):20}  {row['name']}")
+    return '\n'.join(lines)
+
+
+def _band(value):
+    return tuple(float(v) for v in value.split(','))
 
 
 def main():
@@ -483,7 +807,8 @@ def main():
     rate = commands.add_parser('rate', help='Rate one checkpoint against a pool')
     rate.add_argument('--pool', type=Path, required=True)
     rate.add_argument('--checkpoint', type=Path, required=True)
-    rate.add_argument('--out', type=Path, required=True)
+    rate.add_argument('--out', type=Path, default=None,
+                      help='Directory for the rating file (default: <run>/reference/<pool_sha8>/)')
     rate.add_argument('--games', type=int, default=240)
     rate.add_argument('--first-pass-games', type=int, default=6)
     rate.add_argument('--band', default='0.15,0.85')
@@ -491,14 +816,21 @@ def main():
     rate.add_argument('--seed-base', type=int, default=70001)
     rate.add_argument('--library', type=Path, default=None)
     rate.add_argument('--game', type=Path, default=None)
-    ladder = commands.add_parser('ladder', help='Joint round robin of the pool plus checkpoints -> ladder.json')
-    ladder.add_argument('--pool', type=Path, required=True)
-    ladder.add_argument('--checkpoint', action='append', default=[], metavar='NAME=PATH')
-    ladder.add_argument('--out', type=Path, required=True, help='ladder.json path')
-    ladder.add_argument('--workers', type=int, default=4)
-    ladder.add_argument('--slow-workers', type=int, default=None)
-    ladder.add_argument('--library', type=Path, default=None)
-    ladder.add_argument('--game', type=Path, default=None)
+    runs = commands.add_parser('rate-runs', help='Rate run directories into <run>/reference/<pool_sha8>/')
+    runs.add_argument('--pool', type=Path, required=True)
+    runs.add_argument('--run', action='append', default=[], type=Path, help='Run directory (repeatable)')
+    runs.add_argument('--sweep', type=Path, help='Sweep directory: rate every trial with a run dir')
+    runs.add_argument('--last-k', type=int, default=3)
+    runs.add_argument('--games', type=int, default=240)
+    runs.add_argument('--first-pass-games', type=int, default=6)
+    runs.add_argument('--band', default='0.15,0.85')
+    runs.add_argument('--round-games', type=int, default=48)
+    runs.add_argument('--workers', type=int, default=4)
+    runs.add_argument('--seed-base', type=int, default=70001)
+    human = commands.add_parser('human', help="Matthew's Elo vs the pool from human/mac games")
+    human.add_argument('--pool', type=Path, required=True)
+    human.add_argument('--dir', type=Path, default=DEFAULT_HUMAN)
+    human.add_argument('--excluded', type=Path, default=None)
     args = parser.parse_args()
     log = lambda message: print(f'[reference {time.strftime("%H:%M:%S")}] {message}', flush=True)
 
@@ -524,19 +856,37 @@ def main():
         pool = load_pool(args.pool)
         print(format_table(pool['members']))
         print(f"verified pool {pool['pool_sha256']}")
-    elif args.command == 'ladder':
-        result = joint_ladder(load_pool(args.pool), named_checkpoints(), args.out, workers=args.workers,
-                              slow_workers=args.slow_workers, library=args.library, game=args.game, log=log)
-        print(format_table(result['ratings']))
-        print(f"{result['games']} games ({result['pool_games']} reused) in {result['elapsed']:.0f}s -> {args.out}")
+    elif args.command == 'rate-runs':
+        pool = load_pool(args.pool)
+        directories = list(args.run)
+        if args.sweep:
+            directories += sweep_run_dirs(args.sweep)
+        if not directories:
+            parser.error('rate-runs needs --run and/or --sweep')
+        lo, hi = _band(args.band)
+        rows = rate_runs(pool, directories, last_k=args.last_k, games=args.games,
+                         first_pass_games=args.first_pass_games, band=(lo, hi),
+                         round_games=args.round_games, workers=args.workers,
+                         seed_base=args.seed_base, log=log)
+        print(format_run_table(rows, last_k=args.last_k))
+    elif args.command == 'human':
+        pool = load_pool(args.pool)
+        result = rate_human(pool, args.dir, excluded=args.excluded)
+        print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
+              f"{result['games']} games ({result['draws']} draws)")
+        for line in result['caveats']:
+            print(f'  {line}')
+        for member, row in sorted(result['records'].items(), key=lambda kv: -kv[1]['games']):
+            print(f"  {member:20} {row['wins']:>3}-{row['losses']}-{row['draws']:<3} expected {row['expected']:.2f} observed {row['observed']:.2f}")
     else:
         pool = load_pool(args.pool)
-        lo, hi = (float(v) for v in args.band.split(','))
+        lo, hi = _band(args.band)
         result = rate_checkpoint(args.checkpoint, pool, args.out, games=args.games,
                                  first_pass_games=args.first_pass_games, band=(lo, hi), workers=args.workers,
                                  seed_base=args.seed_base, library=args.library, game=args.game, log=log)
         print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
-              f"{result['games']} games ({result['draws']} draws) in {result['elapsed']:.0f}s")
+              f"{result['games']} games ({result['draws']} draws)"
+              + (f" in {result['elapsed']:.0f}s" if 'elapsed' in result else ''))
         for member, row in sorted(result['records'].items(), key=lambda kv: -kv[1]['games']):
             print(f"  {member:20} {row['wins']:>3}-{row['losses']}-{row['draws']:<3} expected {row['expected']:.2f} observed {row['observed']:.2f}")
 

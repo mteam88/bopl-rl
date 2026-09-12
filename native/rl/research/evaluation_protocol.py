@@ -36,6 +36,11 @@ def scripted_opponent(name):
     return None
 
 
+# Pool-v5 members spanning the 15-85% band for current (~400 Elo) policies.
+DEFAULT_EVAL_SCRIPTED = (
+    'mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,search-medium')
+
+
 def scripted_names(value):
     names=[item for item in value.split(',') if item]
     if len(set(names))!=len(names) or any(scripted_opponent(name) is None for name in names):

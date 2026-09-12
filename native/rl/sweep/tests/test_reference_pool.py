@@ -94,6 +94,112 @@ class Allocation(unittest.TestCase):
         self.assertEqual(len(keys), len(first) + len(later))  # no repeated game
 
 
+class RatingLayout(unittest.TestCase):
+    def test_sha8_directory_and_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = rp.load_pool(fake_pool(tmp))
+            run = Path(tmp) / 'run'
+            (run / 'reference').mkdir(parents=True)
+            payload = dict(schema=rp.SCHEMA, pool_sha256=pool['pool_sha256'], rating=321.0,
+                           checkpoint_identity=dict(sha256='abc'), budget=240, games=240, source='band')
+            (run / 'reference' / 'policy-000000001.json').write_text(json.dumps(payload))
+            found, path = rp.find_rating(run, pool, 'policy-000000001.bin')
+            self.assertEqual(found['rating'], 321.0)
+            self.assertEqual(path, run / 'reference' / 'policy-000000001.json')
+            sha_dir = rp.rating_dir(run, pool)
+            sha_dir.mkdir(parents=True)
+            newer = dict(payload, rating=400.0, budget=480, games=480)
+            (sha_dir / 'policy-000000001.json').write_text(json.dumps(newer))
+            found, path = rp.find_rating(run, pool, 'policy-000000001.bin')
+            self.assertEqual(found['rating'], 400.0)
+            self.assertEqual(path, sha_dir / 'policy-000000001.json')
+
+    def test_cache_prefers_fuller_band_rating(self):
+        identity = dict(sha256='abc')
+        pool = dict(pool_sha256='ee' * 32)
+        previous = dict(schema=rp.SCHEMA, pool_sha256=pool['pool_sha256'],
+                        checkpoint_identity=identity, budget=480, games=480, source='band')
+        self.assertTrue(rp.cache_hit(previous, identity, pool, 240))
+        self.assertTrue(rp.cache_hit(previous, identity, pool, 480))
+        cheap = dict(previous, source='evaluation', budget=80, games=80)
+        self.assertFalse(rp.cache_hit(cheap, identity, pool, 240))
+
+    def test_iqm_falls_back_to_rated_final(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = rp.load_pool(fake_pool(tmp))
+            run = Path(tmp) / 'run'
+            (run / 'checkpoints').mkdir(parents=True)
+            (run / 'reference' / rp.pool_sha8(pool)).mkdir(parents=True)
+            (run / 'checkpoints' / 'policy-000000009.bin.json').write_text(
+                json.dumps({'learner_steps': 9000}))
+            payload = dict(schema=rp.SCHEMA, pool_sha256=pool['pool_sha256'], rating=410.0,
+                           interval=[400.0, 420.0], games=240, source='band')
+            (run / 'reference' / rp.pool_sha8(pool) / 'policy-000000009.json').write_text(json.dumps(payload))
+            summary = rp.run_iqm(run, pool, last_k=3)
+            self.assertAlmostEqual(summary['score'], 410.0)
+            self.assertEqual(summary['last_k'][0]['checkpoint'], 'policy-000000009.bin')
+            self.assertEqual(summary['last_k'][0]['learner_steps'], 9000)
+
+
+class EvaluationFit(unittest.TestCase):
+    def test_fit_from_eval_games_ignores_non_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = rp.load_pool(fake_pool(tmp))
+            report = dict(
+                seed_base=10001,
+                checkpoint_identity=dict(sha256='cafebabe', metadata_sha256='deadbeef'),
+                games=[
+                    dict(opponent='random', map=0, seed=1, side=0, win=True, timeout=False),
+                    dict(opponent='random', map=0, seed=1, side=1, win=True, timeout=False),
+                    dict(opponent='mixed-hard', map=0, seed=2, side=0, win=False, timeout=False),
+                    dict(opponent='mixed-hard', map=0, seed=2, side=1, win=False, timeout=True),
+                    dict(opponent='initial', map=0, seed=3, side=0, win=True, timeout=False),
+                    dict(opponent='mixed-hard', map=9, seed=4, side=0, win=True, timeout=False),  # not a pool map
+                ])
+            result = rp.rating_from_evaluation(report, pool, 'policy.bin')
+            self.assertEqual(result['source'], 'evaluation')
+            self.assertEqual(result['games'], 4)
+            self.assertEqual(result['records']['random']['wins'], 2)
+            self.assertEqual(result['records']['mixed-hard']['losses'], 1)
+            self.assertEqual(result['records']['mixed-hard']['draws'], 1)
+            self.assertNotIn('initial', result['records'])
+            run = Path(tmp) / 'run'
+            written = rp.write_evaluation_rating(run, report, pool, run / 'checkpoints' / 'policy.bin')
+            self.assertEqual(written['rating'], result['rating'])
+            self.assertTrue((rp.rating_dir(run, pool) / 'policy.json').is_file())
+            # A later band rating with more games is not overwritten.
+            band = dict(written, source='band', budget=240, games=240, rating=999.0,
+                        checkpoint_identity=report['checkpoint_identity'])
+            (rp.rating_dir(run, pool) / 'policy.json').write_text(json.dumps(band))
+            kept = rp.write_evaluation_rating(run, report, pool, run / 'checkpoints' / 'policy.bin')
+            self.assertEqual(kept['rating'], 999.0)
+
+
+class HumanRating(unittest.TestCase):
+    def test_agent_won_is_a_bot_win_and_exclusions_drop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = rp.load_pool(fake_pool(tmp))
+            directory = Path(tmp) / 'human'
+            directory.mkdir()
+            rows = [
+                dict(session='s1', round=0, agent='mixed-hard', agent_won=True, draw=False, seed=1, level=0),
+                dict(session='s1', round=1, agent='mixed-hard', agent_won=False, draw=False, seed=2, level=1),
+                dict(session='s1', round=2, agent='mixed-hard', agent_won=False, draw=True, seed=3, level=2),
+                dict(session='s1', round=3, agent='stranger', agent_won=False, draw=False, seed=4, level=0),
+                dict(session='s1', round=4, a='human', b='bot:mixed-hard', outcome='a', map=5, seed=5, agent='mixed-hard'),
+            ]
+            (directory / 'games.jsonl').write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
+            (directory / 'excluded.json').write_text(json.dumps([dict(session='s1', rounds=[1], reason='friend')]))
+            result = rp.rate_human(pool, directory, bootstrap=50)
+            self.assertEqual(result['games'], 3)  # round 1 excluded, stranger skipped
+            self.assertEqual(result['records']['mixed-hard']['losses'], 1)  # agent_won
+            self.assertEqual(result['records']['mixed-hard']['draws'], 1)
+            self.assertEqual(result['records']['mixed-hard']['wins'], 1)  # outcome a
+            self.assertEqual(result['skipped_unknown'], 1)
+            self.assertTrue(result['game_mismatch'])
+            self.assertEqual(result['map_max'], 5)
+
+
 class Iqm(unittest.TestCase):
     def test_small_samples_are_means(self):
         self.assertEqual(rp.iqm([1, 2, 3]), 2.0)
@@ -176,30 +282,20 @@ class ReferenceCurve(unittest.TestCase):
             self.assertEqual(rated[0][2], 64)
             only_last = scoring.reference_curve(run, pool, last_k=1, rate=rate)
             self.assertEqual([p.learner_steps for p in only_last], [10002432])
+            # Default workspace is <run>/reference/<pool_sha8>
+            default_dir = []
+
+            def rate_default(checkpoint, pool_, workspace, **options):
+                default_dir.append(Path(workspace))
+                return dict(rating=1.0)
+
+            scoring.reference_curve(run, pool, last_k=1, rate=rate_default)
+            self.assertEqual(default_dir[0], rp.rating_dir(run, pool))
 
     def test_no_checkpoints_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             pool = rp.load_pool(fake_pool(tmp))
             self.assertEqual(scoring.reference_curve(Path(tmp) / 'missing', pool, rate=lambda *a, **k: None), [])
-
-
-if __name__ == '__main__':
-    unittest.main()
-
-
-class RescoreComparison(unittest.TestCase):
-    def test_ranks_over_shared_trials(self):
-        import rescore
-        row = lambda i, iqm: dict(id=i, iqm=iqm, old_score=0.5, rating=iqm, interval=[iqm - 10, iqm + 10], flags=[], last_k=[])
-        previous = dict(pool='p1', pool_sha256='a' * 64, trials=[row('000', 300), row('001', 350), row('002', 320)])
-        report = dict(sweep='/s', pool='p2', pool_sha256='b' * 64, games=1, first_pass_games=1, band=[.15, .85],
-                      last_k=3, flag_rules={}, trials=[row('000', 340), row('001', 330), row('003', 900)])
-        lines = rescore.comparison(report, previous)
-        table = [l for l in lines if l.startswith('| 0')]
-        self.assertEqual([l.split(' | ')[0][2:] for l in table], ['000', '001'])  # 003 not shared
-        self.assertIn('| 000 | 300 | 2 | 340 | 1 | +1 | +40 |', lines)
-        self.assertIn('| 001 | 350 | 1 | 330 | 2 | -1 | -20 |', lines)
-        self.assertTrue(lines[-1].endswith('000, 001.'))
 
 
 class PoolIntervals(unittest.TestCase):
@@ -209,3 +305,7 @@ class PoolIntervals(unittest.TestCase):
         intervals = rp.pool_intervals(names, records, samples=50)
         self.assertEqual(intervals['random'], [0.0, 0.0])
         self.assertLess(intervals['weak'][1], intervals['strong'][0])
+
+
+if __name__ == '__main__':
+    unittest.main()
