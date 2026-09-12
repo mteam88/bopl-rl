@@ -149,6 +149,51 @@ inference has priority via stream priorities. Expect rollout to slow
 - Pin the buffer threads and workers; disable the `clock_gettime` per-step
   timers in production (3.9%).
 
+**Done 2026-09-12 (branch `d-omp`, vecenv.h overlay in `pufferlib-bopl.patch`).**
+`bench_shape.sh` at the canonical shape (w128 b4 p4, 300 updates, quiet box),
+same seed, every loss/metric bit-identical to the baseline row (the env RNG is
+per env, so scheduling cannot change results):
+
+| build | sps | learner sps | rollout s | train s | eval_gpu ms | eval_env ms |
+|---|---|---|---|---|---|---|
+| baseline (OMP 32 threads x 4 buffers, spin sync) | 227k | 170k | 0.0893 | 0.0545 | 0.302 | 0.364 |
+| (a) only: OMP team = 12 or 24 threads total, passive | 250-257k | 188-193k | 0.072-0.076 | 0.0545 | 0.29-0.33 | 0.240 |
+| env pool, `BOPL_ENV_THREADS=8`, LPT, steal, poll | 292-297k | 219-223k | 0.0555 | 0.0545 | 0.29 | 0.12 |
+
+What is in the pool (all knobs documented in train.py): persistent workers
+claiming envs off a per-buffer atomic counter (dynamic, no static partition);
+buffer threads step envs too, and step other buffers' envs while their own
+forward runs; idle workers spin 100 us then park on a futex; the trainer <->
+buffer handshake is a futex (the 20/50 us nanosleep polls are gone);
+`cudaStreamSynchronize` is replaced by a `cudaStreamQuery` poll the buffer
+thread fills with env steps; each step's claim order is longest-last-step
+first (`BOPL_ENV_LPT`), which cut the per-step straggler wait from ~65 us to
+~13 us (the scripted-bot envs run lookahead rollouts and are consistently the
+slow ones). Per c_step: 17 us at 8 stepping threads, 21 us at 12 (SMT
+contention), so the box is close to CPU-bound on the sim: 0.55 ms of
+thread-time per buffer-step x 4 buffers per 0.43 ms step = ~5 hardware
+threads in `c_step` continuously.
+
+Measured and not adopted: `cudaDeviceScheduleBlockingSync` (eval_env 0.14 but
+eval_gpu +45 us wake latency, net -2%); `Yield` (no change); pinning (within
+noise); one or two "driver" threads polling several streams each (serialises
+launches, +10-20 us on eval_gpu, net -2..-5%); more threads (12-16: SMT
+inflates c_step, futex wakes rise); longer idle spins (400-1000 us: worse at
+12 threads, neutral at 10); buffer threads stealing the fastest envs from the
+tail of the LPT order (eval_gpu -5 us, stragglers +5-20 us, neutral); 2
+buffers (275k: E doubles, G unchanged); 8 buffers (rollout 0.0546 = same as
+b4, eval_env 0.09, but `train` goes 0.054 -> 0.30 s at 8 buffers, a
+train-side scaling bug independent of this work; also 8 buffers x 4 streams
+overflowed the 32 cuBLAS handles per thread, raised to 64).
+
+Where the floor is now: per buffer-step = G 0.29 ms (graph launch is 9-10 us
+of CPU; the rest is GPU execution + D2H + PCIe, flat across b2/b4/b8, so the
+GPU is latency-bound with spare capacity) + E 0.12 ms (32 x 17 us over ~5
+effective threads + 13 us straggler). Double-buffered halves per buffer (3.D
+step e) is equivalent to b8 without the extra pollers and would buy <= 5%;
+not done. The next CPU-side lever is `c_step` itself (memmove 9%, obs encode
+4%, bots 5%, libm 6% of cycles), i.e. E/F, and G is C.
+
 ### C. Shrink the GPU round trip (eval_gpu 0.27 -> ~0.15 ms, ~1.2x on rollout, medium effort)
 
 - Fuse the 5 forwards (learner + 4 banks) into one batched forward: same

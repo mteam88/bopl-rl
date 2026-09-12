@@ -1,6 +1,6 @@
 diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu	2026-09-09 14:06:22.111337139 -0400
-+++ b/bindings.cu	2026-09-09 14:06:22.118413855 -0400
+--- a/bindings.cu	2026-09-12 00:33:25.382286278 -0400
++++ b/bindings.cu	2026-09-12 01:15:11.232428506 -0400
 @@ -52,6 +52,24 @@
          losses_dict["old_kl"] = losses_host[LOSS_OLD_APPROX_KL] * inv_n;
          losses_dict["kl"] = losses_host[LOSS_APPROX_KL] * inv_n;
@@ -86,8 +86,8 @@ diff -ruN a/bindings.cu b/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu	2026-09-09 14:06:22.111337139 -0400
-+++ b/kernels.cu	2026-09-09 14:06:22.118413855 -0400
+--- a/kernels.cu	2026-09-12 00:33:25.382286278 -0400
++++ b/kernels.cu	2026-09-12 01:15:11.232748329 -0400
 @@ -248,14 +248,24 @@
  // Strides derived from M, N, K assuming tightly packed row-major storage.
  static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
@@ -105,7 +105,7 @@ diff -ruN a/kernels.cu b/kernels.cu
 +// cuBLAS workspace must not be shared by concurrently running GEMMs; a graph
 +// captured on a shared workspace would bake that race in. Same workspace size
 +// everywhere so algorithm selection, and results, stay identical.
-+#define CUBLAS_HANDLES_PER_THREAD 32
++#define CUBLAS_HANDLES_PER_THREAD 64  // 8 buffers x (1 + BOPL_MAX_BANK_STREAMS) side streams + warmup + train
 +static cublasHandle_t cublas_get_handle(cudaStream_t stream) {
 +    static thread_local cudaStream_t streams[CUBLAS_HANDLES_PER_THREAD];
 +    static thread_local cublasHandle_t handles[CUBLAS_HANDLES_PER_THREAD];
@@ -131,8 +131,8 @@ diff -ruN a/kernels.cu b/kernels.cu
      cublasGemmEx(handle, op_b, op_a, N, M, K, &alpha,
          B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
 diff -ruN a/models.cu b/models.cu
---- a/models.cu	2026-09-09 14:06:22.111337139 -0400
-+++ b/models.cu	2026-09-09 14:06:22.118413855 -0400
+--- a/models.cu	2026-09-12 00:33:25.382286278 -0400
++++ b/models.cu	2026-09-12 01:15:11.233002869 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -290,8 +290,8 @@ diff -ruN a/models.cu b/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu	2026-09-09 14:06:22.111337139 -0400
-+++ b/ocean.cu	2026-09-09 14:06:22.118413855 -0400
+--- a/ocean.cu	2026-09-12 00:33:25.382286278 -0400
++++ b/ocean.cu	2026-09-12 01:15:11.233329465 -0400
 @@ -3,6 +3,8 @@
  
  #include "cudnn_conv2d.cu"
@@ -319,8 +319,8 @@ diff -ruN a/ocean.cu b/ocean.cu
  }
  
 diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu	2026-09-09 14:06:22.116432839 -0400
-+++ b/pufferlib.cu	2026-09-09 14:06:22.118413855 -0400
+--- a/pufferlib.cu	2026-09-12 00:33:25.385713504 -0400
++++ b/pufferlib.cu	2026-09-12 01:15:11.233620214 -0400
 @@ -20,9 +20,17 @@
  enum LossIdx {
      LOSS_PG = 0, LOSS_VF = 1, LOSS_ENT = 2, LOSS_TOTAL = 3,
@@ -892,7 +892,29 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              if (USE_BF16) {
                  int n = numel(pufferl.param_puf.shape);
                  cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-@@ -2106,6 +2345,14 @@
+@@ -1993,6 +2232,21 @@
+     pufferl->env_name = env_name;
+ 
+     cudaSetDevice(hypers.gpu_id);
++    // Bopl: host-side scheduling of cudaStreamSynchronize (BOPL_CUDA_SCHED =
++    // auto|spin|yield|blocking). torch.cuda.init() runs before this call, so
++    // the primary context exists; cudaSetDeviceFlags overwrites its flags.
++    // Default `auto` spins when threads <= cores, which is where the 35% of
++    // cycles in cuStreamSynchronize came from (THROUGHPUT.md).
++    if (const char* sched = std::getenv("BOPL_CUDA_SCHED")) {
++        unsigned flags = cudaDeviceScheduleAuto;
++        if (strcmp(sched, "spin") == 0) flags = cudaDeviceScheduleSpin;
++        else if (strcmp(sched, "yield") == 0) flags = cudaDeviceScheduleYield;
++        else if (strcmp(sched, "blocking") == 0) flags = cudaDeviceScheduleBlockingSync;
++        cudaError_t err = cudaSetDeviceFlags(flags);
++        if (err != cudaSuccess) {
++            fprintf(stderr, "cudaSetDeviceFlags(%s): %s\n", sched, cudaGetErrorString(err));
++        }
++    }
+ 
+     // Multi-GPU: initialize NCCL
+     if (hypers.world_size > 1) {
+@@ -2106,6 +2360,14 @@
      pufferl->advantages_puf = {.shape = {total_agents, horizon}};
      alloc_register(acts, &pufferl->advantages_puf);
  
@@ -907,7 +929,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +2369,31 @@
+@@ -2122,6 +2384,31 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -939,7 +961,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2178,6 +2450,7 @@
+@@ -2178,6 +2465,7 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
@@ -947,7 +969,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      // Cudagraph rolluts and entire training step
      if (hypers.cudagraphs >= 0) {
-@@ -2289,6 +2562,7 @@
+@@ -2289,6 +2577,7 @@
                  cudaGraphExecDestroy(pufferl.fused_rollout_cudagraphs[i]);
          }
      }
@@ -956,36 +978,661 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      policy_weights_free(&pufferl.policy, &pufferl.weights);
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
 diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h	2026-09-09 14:06:22.111337139 -0400
-+++ b/vecenv.h	2026-09-09 14:06:22.118413855 -0400
-@@ -262,10 +262,14 @@
+--- a/vecenv.h	2026-09-12 00:33:25.382286278 -0400
++++ b/vecenv.h	2026-09-12 01:18:22.120695261 -0400
+@@ -217,13 +217,117 @@
+ #endif
  
-     printf("Num workers: %d\n", num_workers);
+ 
++// Bopl env pool (THROUGHPUT.md 3.D). Upstream stepped each buffer's envs with
++// `#pragma omp parallel for num_threads(num_threads / buffers)`: a fork/join of
++// 32 OMP threads per buffer-step (128 threads on 12 hardware threads), and the
++// buffer thread spun in cuStreamSynchronize while the GPU ran. Here:
++//   - one shared pool of persistent workers (BOPL_ENV_THREADS stepping threads
++//     in total, buffer threads included; default = CPUs in the affinity mask - 4);
++//   - per buffer a job = the envs of the current step; any thread claims envs
++//     with one fetch_add (dynamic scheduling, no straggler partition);
++//   - the buffer thread publishes its job, steps envs itself, and can step other
++//     buffers' envs while its own GPU forward runs (BOPL_ENV_STEAL=1);
++//   - claim order per step is longest-last-step first (BOPL_ENV_LPT=1): the
++//     scripted-bot envs (lookahead rollouts) are the stragglers otherwise;
++//   - BOPL_ENV_DRIVER=k (default 0) instead runs k threads that each drive
++//     several buffers' streams; measured slower, kept for A/B;
++//   - idle workers spin briefly (BOPL_ENV_SPIN_US) then park on a futex; the
++//     rollout handshake between the trainer thread and the buffer threads is a
++//     futex too (no more nanosleep polls);
++//   - BOPL_GPU_WAIT=poll replaces cudaStreamSynchronize with a cudaStreamQuery
++//     loop the buffer thread fills with env steps; sync keeps upstream's call;
++//   - BOPL_ENV_PIN=1 pins buffer threads then workers to BOPL_ENV_PIN_CPUS
++//     (default: CPUs of the affinity mask in order).
++// Semantics are unchanged: every env is stepped exactly once per buffer-step,
++// between the same D2H and H2D as before.
++#include <sched.h>
++#include <unistd.h>
++#include <limits.h>
++#include <errno.h>
++#include <stdint.h>
++#include <linux/futex.h>
++#include <sys/syscall.h>
++#if defined(__x86_64__) || defined(__i386__)
++#include <immintrin.h>
++#define bopl_cpu_relax() _mm_pause()
++#else
++#define bopl_cpu_relax() do {} while (0)
++#endif
++
++#define cudaErrorNotReady 600
++
++static inline long bopl_futex(atomic_int* addr, int op, int val) {
++    return syscall(SYS_futex, addr, op, val, NULL, NULL, 0);
++}
++static inline void bopl_futex_wait(atomic_int* addr, int expected) {
++    bopl_futex(addr, FUTEX_WAIT_PRIVATE, expected);
++}
++static inline void bopl_futex_wake(atomic_int* addr, int n) {
++    bopl_futex(addr, FUTEX_WAKE_PRIVATE, n);
++}
++static inline int64_t bopl_now_ns(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (int64_t)ts.tv_sec * 1000000000ll + ts.tv_nsec;
++}
++static int bopl_env_int(const char* name, int fallback) {
++    const char* spec = getenv(name);
++    if (!spec || !spec[0]) return fallback;
++    return atoi(spec);
++}
++
++// One job per buffer: the envs [env_start, env_start + env_count) of the
++// buffer's current step. A job is claimable while next < env_count; the buffer
++// thread republishes it (done = 0, next = 0) once done == env_count and it has
++// uploaded the observations.
++typedef struct BoplEnvJob {
++    _Alignas(64) atomic_int next;        // next claim index into order[]
++    _Alignas(64) atomic_int done;
++    _Alignas(64) int env_start;
++    int env_count;
++    int* order;          // claim i steps env_start + order[i] (identity, or LPT: slowest last step first)
++    int64_t* last_ns;    // per env offset: duration of its last c_step (LPT input)
++    int64_t t_launch;    // driver mode: forward launched (eval_gpu start)
++    int64_t t_publish;   // driver mode: job published (eval_env start)
++    int t;               // driver mode: step index within the rollout
++    int state;           // driver mode: BOPL_BUF_*
++} BoplEnvJob;
++
++enum { BOPL_BUF_IDLE = 0, BOPL_BUF_GPU, BOPL_BUF_ENV, BOPL_BUF_FINAL, BOPL_BUF_DONE };
++
+ struct StaticThreading {
+-    atomic_int* buffer_states;
++    atomic_int* buffer_states;   // OMP_WAITING / OMP_RUNNING per buffer (futex words)
+     atomic_int shutdown;
+     int num_threads;
+     int num_buffers;
+     pthread_t* threads;
+     float* accum;  // [num_buffers * NUM_EVAL_PROF] per-buffer timing in ms
++    // Bopl env pool
++    BoplEnvJob* jobs;
++    _Alignas(64) atomic_int work_seq;   // bumped on every publish; the workers' futex word
++    _Alignas(64) atomic_int sleepers;   // workers parked in futex_wait
++    int num_workers;
++    pthread_t* workers;
++    int spin_ns;
++    int steal;
++    int gpu_wait;
++    int poll_pause;      // BOPL_GPU_POLL_PAUSE: cpu_relax() iterations between cudaStreamQuery calls
++    int lpt;             // BOPL_ENV_LPT: order each step's claims by last duration, longest first
++    int driver;          // BOPL_ENV_DRIVER: one thread drives every buffer's stream (else one thread per buffer)
++    int pin;
++    int* pin_cpus;
++    int pin_count;
++    int prof;
++    // BOPL_ENV_PROF=1 counters (relaxed atomics, printed from read_profile)
++    _Alignas(64) atomic_llong stat_env_ns;
++    atomic_llong stat_envs_owner;
++    atomic_llong stat_envs_worker;
++    atomic_llong stat_envs_stolen;
++    atomic_llong stat_sleeps;
++    atomic_llong stat_polls;
++    atomic_llong stat_straggler_ns;
++    atomic_llong stat_launch_ns;   // net_callback + D2H issue (CPU side of eval_gpu)
++    int prof_calls;
+ };
+ 
+ typedef struct StaticOMPArg {
+@@ -235,7 +339,125 @@
+     thread_init_fn thread_init;
+ } StaticOMPArg;
+ 
+-// OMP thread manager
++typedef struct BoplWorkerArg {
++    StaticVec* vec;
++    int index;
++} BoplWorkerArg;
++
++static void bopl_pool_pin_self(StaticThreading* th, int participant) {
++    if (!th->pin || th->pin_count <= 0) return;
++    int cpu = th->pin_cpus[participant % th->pin_count];
++    cpu_set_t set;
++    CPU_ZERO(&set);
++    CPU_SET(cpu, &set);
++    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
++}
++
++// Step one env of buffer `buf` if any is unclaimed: claim order[next++] with
++// one fetch_add (with LPT the slowest envs go first). `kind` = 0 owner, 1
++// worker, 2 stolen (BOPL_ENV_PROF bookkeeping only). Tried and dropped: thieves
++// claiming from the tail (fastest envs) via a packed head/tail CAS; it shaved
++// ~5 us off eval_gpu but the stragglers grew more.
++static inline int bopl_pool_try(StaticThreading* th, Env* envs, int buf, int kind) {
++    BoplEnvJob* job = &th->jobs[buf];
++    int count = job->env_count;
++    if (atomic_load_explicit(&job->next, memory_order_relaxed) >= count) return 0;
++    int i = atomic_fetch_add_explicit(&job->next, 1, memory_order_acquire);
++    if (i >= count) return 0;
++    int e = job->order[i];
++    if (th->prof || th->lpt) {
++        int64_t t0 = bopl_now_ns();
++        c_step(&envs[job->env_start + e]);
++        int64_t dt = bopl_now_ns() - t0;
++        job->last_ns[e] = dt;
++        if (th->prof) {
++            atomic_fetch_add_explicit(&th->stat_env_ns, dt, memory_order_relaxed);
++            atomic_llong* counter = kind == 0 ? &th->stat_envs_owner : kind == 1 ? &th->stat_envs_worker : &th->stat_envs_stolen;
++            atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
++        }
++    } else {
++        c_step(&envs[job->env_start + e]);
++    }
++    atomic_fetch_add_explicit(&job->done, 1, memory_order_release);
++    return 1;
++}
++
++// Step one env of any buffer other than `self` (buffer threads while their GPU
++// forward runs).
++static inline int bopl_pool_steal(StaticThreading* th, Env* envs, int self) {
++    int nb = th->num_buffers;
++    for (int k = 1; k <= nb; k++) {
++        int b = (self + k) % nb;
++        if (b == self) continue;
++        if (bopl_pool_try(th, envs, b, 2)) return 1;
++    }
++    return 0;
++}
++
++static void bopl_pool_publish(StaticThreading* th, int buf) {
++    BoplEnvJob* job = &th->jobs[buf];
++    if (th->lpt) {
++        // Longest-processing-time first: insertion sort of <= a few dozen
++        // offsets by last step's duration (the scripted-bot envs, which run
++        // lookahead rollouts, are consistently the slow ones).
++        int n = job->env_count;
++        int* order = job->order;
++        int64_t* key = job->last_ns;
++        for (int i = 1; i < n; i++) {
++            int v = order[i];
++            int64_t k = key[v];
++            int j = i - 1;
++            while (j >= 0 && key[order[j]] < k) { order[j + 1] = order[j]; j--; }
++            order[j + 1] = v;
++        }
++    }
++    atomic_store_explicit(&job->done, 0, memory_order_relaxed);
++    atomic_store_explicit(&job->next, 0, memory_order_release);
++    atomic_fetch_add_explicit(&th->work_seq, 1, memory_order_seq_cst);
++    if (atomic_load_explicit(&th->sleepers, memory_order_seq_cst) > 0) {
++        bopl_futex_wake(&th->work_seq, INT_MAX);
++    }
++}
++
++static void* bopl_pool_worker(void* arg) {
++    BoplWorkerArg* warg = (BoplWorkerArg*)arg;
++    StaticVec* vec = warg->vec;
++    StaticThreading* th = vec->threading;
++    Env* envs = (Env*)vec->envs;
++    int nb = th->num_buffers;
++    int index = warg->index;
++    bopl_pool_pin_self(th, nb + index);
++    int rr = index % nb;
++    while (!atomic_load_explicit(&th->shutdown, memory_order_relaxed)) {
++        int seen = atomic_load_explicit(&th->work_seq, memory_order_acquire);
++        int did = 0;
++        for (int k = 0; k < nb; k++) {
++            int b = (rr + k) % nb;
++            while (bopl_pool_try(th, envs, b, 1)) did++;
++        }
++        if (did) continue;
++        // Nothing to do: spin on work_seq for spin_ns, then park.
++        int64_t t0 = bopl_now_ns();
++        int spun = 0;
++        while (atomic_load_explicit(&th->work_seq, memory_order_acquire) == seen) {
++            bopl_cpu_relax();
++            if ((++spun & 31) == 0) {
++                if (bopl_now_ns() - t0 > th->spin_ns) break;
++            }
++        }
++        if (atomic_load_explicit(&th->work_seq, memory_order_acquire) != seen) continue;
++        atomic_fetch_add_explicit(&th->sleepers, 1, memory_order_seq_cst);
++        if (atomic_load_explicit(&th->work_seq, memory_order_seq_cst) == seen
++                && !atomic_load_explicit(&th->shutdown, memory_order_relaxed)) {
++            if (th->prof) atomic_fetch_add_explicit(&th->stat_sleeps, 1, memory_order_relaxed);
++            bopl_futex_wait(&th->work_seq, seen);
++        }
++        atomic_fetch_sub_explicit(&th->sleepers, 1, memory_order_seq_cst);
++    }
++    return NULL;
++}
++
++// Buffer thread: GPU forward -> D2H -> step envs -> H2D, horizon times per rollout.
+ static void* static_omp_threadmanager(void* arg) {
+     StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
+     StaticVec* vec = worker_arg->vec;
+@@ -246,34 +468,37 @@
+     net_callback_fn net_callback = worker_arg->net_callback;
+     thread_init_fn thread_init = worker_arg->thread_init;
+ 
++    bopl_pool_pin_self(threading, buf);
+     if (thread_init != NULL) {
+         thread_init(ctx, buf);
+     }
+ 
+     int agents_per_buffer = vec->agents_per_buffer;
+     int agent_start = buf * agents_per_buffer;
+-    int env_start = vec->buffer_env_starts[buf];
+-    int env_count = vec->buffer_env_counts[buf];
+     atomic_int* buffer_states = threading->buffer_states;
+-    int num_workers = threading->num_threads / vec->buffers;
+-    if (num_workers < 1) num_workers = 1;
++    BoplEnvJob* job = &threading->jobs[buf];
++    int env_count = job->env_count;
++    int steal = threading->steal;
++    int gpu_wait = threading->gpu_wait;
++    int poll_pause = threading->poll_pause;
++    int prof = threading->prof;
+ 
+     Env* envs = (Env*)vec->envs;
+ 
+-    printf("Num workers: %d\n", num_workers);
      while (true) {
-+        // Bopl: sleep-poll between rollouts instead of spinning through the
-+        // train step and the trainer's Python bookkeeping (~5 ms per update).
-         while (atomic_load(&buffer_states[buf]) != OMP_RUNNING) {
-             if (atomic_load(&threading->shutdown)) {
-                 return NULL;
-             }
-+            struct timespec pause = {0, 20000};
-+            nanosleep(&pause, NULL);
+-        while (atomic_load(&buffer_states[buf]) != OMP_RUNNING) {
+-            if (atomic_load(&threading->shutdown)) {
+-                return NULL;
+-            }
++        // Park between rollouts (train step + Python bookkeeping).
++        for (;;) {
++            int s = atomic_load_explicit(&buffer_states[buf], memory_order_acquire);
++            if (s == OMP_RUNNING) break;
++            if (atomic_load(&threading->shutdown)) return NULL;
++            bopl_futex_wait(&buffer_states[buf], s);
          }
          cudaStream_t stream = vec->streams[buf];
  
-@@ -328,8 +332,14 @@
-     for (int buf = 0; buf < vec->buffers; buf++) {
-         atomic_store(&threading->buffer_states[buf], OMP_RUNNING);
-     }
-+    // Bopl: the rollout takes ~100 ms; a 50 us sleep-poll costs at most one
-+    // poll interval of latency per rollout and frees the core the upstream
-+    // hot spin burned for the whole rollout (measured ~100% of one CPU).
-     for (int buf = 0; buf < vec->buffers; buf++) {
--        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
-+        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {
-+            struct timespec pause = {0, 50000};
-+            nanosleep(&pause, NULL);
+         float* my_accum = &threading->accum[buf * NUM_EVAL_PROF];
+-        struct timespec t0, t1;
+ 
+         for (int t = 0; t < horizon; t++) {
+-            clock_gettime(CLOCK_MONOTONIC, &t0);
++            int64_t t0 = bopl_now_ns();
+             net_callback(ctx, buf, t);
+ 
+             cudaMemcpyAsync(
+@@ -281,19 +506,32 @@
+                 &vec->gpu_actions[agent_start * NUM_ATNS],
+                 agents_per_buffer * NUM_ATNS * sizeof(float),
+                 cudaMemcpyDeviceToHost, stream);
+-            cudaStreamSynchronize(stream);
+-            clock_gettime(CLOCK_MONOTONIC, &t1);
+-            my_accum[EVAL_GPU] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
++            if (prof) atomic_fetch_add_explicit(&threading->stat_launch_ns, bopl_now_ns() - t0, memory_order_relaxed);
++            if (gpu_wait == 0) {
++                cudaStreamSynchronize(stream);
++            } else {
++                // Poll; between polls step another buffer's envs (steal) or pause.
++                while (cudaStreamQuery(stream) == cudaErrorNotReady) {
++                    if (prof) atomic_fetch_add_explicit(&threading->stat_polls, 1, memory_order_relaxed);
++                    if (steal && bopl_pool_steal(threading, envs, buf)) continue;
++                    for (int k = 0; k < 40; k++) bopl_cpu_relax();
++                }
++            }
++            int64_t t1 = bopl_now_ns();
++            my_accum[EVAL_GPU] += (float)(t1 - t0) / 1e6f;
+ 
+             memset(&vec->rewards[agent_start], 0, agents_per_buffer * sizeof(float));
+             memset(&vec->terminals[agent_start], 0, agents_per_buffer * sizeof(float));
+-            clock_gettime(CLOCK_MONOTONIC, &t0);
+-            #pragma omp parallel for schedule(static) num_threads(num_workers)
+-            for (int i = env_start; i < env_start + env_count; i++) {
+-                c_step(&envs[i]);
++            bopl_pool_publish(threading, buf);
++            while (bopl_pool_try(threading, envs, buf, 0)) {}
++            // Stragglers: at most one env step of latency.
++            int64_t ts = prof ? bopl_now_ns() : 0;
++            while (atomic_load_explicit(&job->done, memory_order_acquire) < env_count) {
++                bopl_cpu_relax();
+             }
+-            clock_gettime(CLOCK_MONOTONIC, &t1);
+-            my_accum[EVAL_ENV_STEP] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
++            int64_t t2 = bopl_now_ns();
++            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
++            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
+ 
+             cudaMemcpyAsync(
+                 (char*)vec->gpu_observations + agent_start * OBS_SIZE * obs_element_size(),
+@@ -319,25 +557,175 @@
+ #endif
+         }
+         cudaStreamSynchronize(stream);
+-        atomic_store(&buffer_states[buf], OMP_WAITING);
++        atomic_store_explicit(&buffer_states[buf], OMP_WAITING, memory_order_seq_cst);
++        bopl_futex_wake(&buffer_states[buf], INT_MAX);
++    }
++}
++
++// Driver mode (BOPL_ENV_DRIVER=1): one thread owns every buffer's stream. It
++// launches forward + D2H per buffer, polls the streams round-robin, publishes
++// each buffer's env job the moment its actions land, and uploads the moment
++// the job's last env finishes. Buffers are never blocked on each other or on
++// their own stragglers, and only one hardware thread is spent on the GPU
++// handshake instead of one per buffer.
++static void bopl_driver_launch(StaticVec* vec, StaticOMPArg* a, int buf) {
++    StaticThreading* th = vec->threading;
++    BoplEnvJob* job = &th->jobs[buf];
++    int agents_per_buffer = vec->agents_per_buffer;
++    int agent_start = buf * agents_per_buffer;
++    if (a->thread_init) a->thread_init(a->ctx, buf);  // thread-local stream = this buffer's
++    job->t_launch = bopl_now_ns();
++    a->net_callback(a->ctx, buf, job->t);
++    cudaMemcpyAsync(
++        &vec->actions[agent_start * NUM_ATNS],
++        &vec->gpu_actions[agent_start * NUM_ATNS],
++        agents_per_buffer * NUM_ATNS * sizeof(float),
++        cudaMemcpyDeviceToHost, vec->streams[buf]);
++    job->state = BOPL_BUF_GPU;
++}
++
++static void bopl_driver_upload(StaticVec* vec, int buf) {
++    int agents_per_buffer = vec->agents_per_buffer;
++    int agent_start = buf * agents_per_buffer;
++    cudaStream_t stream = vec->streams[buf];
++    cudaMemcpyAsync(
++        (char*)vec->gpu_observations + agent_start * OBS_SIZE * obs_element_size(),
++        (char*)vec->observations + agent_start * OBS_SIZE * obs_element_size(),
++        agents_per_buffer * OBS_SIZE * obs_element_size(),
++        cudaMemcpyHostToDevice, stream);
++    cudaMemcpyAsync(
++        &vec->gpu_rewards[agent_start],
++        &vec->rewards[agent_start],
++        agents_per_buffer * sizeof(float),
++        cudaMemcpyHostToDevice, stream);
++    cudaMemcpyAsync(
++        &vec->gpu_terminals[agent_start],
++        &vec->terminals[agent_start],
++        agents_per_buffer * sizeof(float),
++        cudaMemcpyHostToDevice, stream);
++#ifdef MY_ACTION_MASK
++    cudaMemcpyAsync(
++        vec->gpu_action_mask + agent_start * MY_ACTION_MASK,
++        vec->action_mask     + agent_start * MY_ACTION_MASK,
++        agents_per_buffer * MY_ACTION_MASK * sizeof(unsigned char),
++        cudaMemcpyHostToDevice, stream);
++#endif
++}
++
++static void* bopl_pool_driver(void* arg) {
++    StaticOMPArg* a = (StaticOMPArg*)arg;
++    StaticVec* vec = a->vec;
++    StaticThreading* th = vec->threading;
++    int nb = vec->buffers;
++    int me = a->buf;                 // driver index; owns buffers me, me + k, me + 2k, ...
++    int k = th->driver;
++    int horizon = a->horizon;
++    int agents_per_buffer = vec->agents_per_buffer;
++    atomic_int* buffer_states = th->buffer_states;
++    Env* envs = (Env*)vec->envs;
++    int steal = th->steal;
++    int prof = th->prof;
++    bopl_pool_pin_self(th, me);
++
++    while (true) {
++        for (;;) {
++            int s = atomic_load_explicit(&buffer_states[me], memory_order_acquire);
++            if (s == OMP_RUNNING) break;
++            if (atomic_load(&th->shutdown)) return NULL;
++            bopl_futex_wait(&buffer_states[me], s);
++        }
++        int live = 0;
++        for (int buf = me; buf < nb; buf += k) {
++            th->jobs[buf].t = 0;
++            bopl_driver_launch(vec, a, buf);
++            live++;
++        }
++        while (live > 0) {
++            int progressed = 0;
++            for (int buf = me; buf < nb; buf += k) {
++                BoplEnvJob* job = &th->jobs[buf];
++                float* my_accum = &th->accum[buf * NUM_EVAL_PROF];
++                int agent_start = buf * agents_per_buffer;
++                switch (job->state) {
++                case BOPL_BUF_GPU: {
++                    if (prof) atomic_fetch_add_explicit(&th->stat_polls, 1, memory_order_relaxed);
++                    if (cudaStreamQuery(vec->streams[buf]) == cudaErrorNotReady) break;
++                    int64_t now = bopl_now_ns();
++                    my_accum[EVAL_GPU] += (float)(now - job->t_launch) / 1e6f;
++                    memset(&vec->rewards[agent_start], 0, agents_per_buffer * sizeof(float));
++                    memset(&vec->terminals[agent_start], 0, agents_per_buffer * sizeof(float));
++                    job->t_publish = now;
++                    job->state = BOPL_BUF_ENV;
++                    bopl_pool_publish(th, buf);
++                    progressed = 1;
++                    break;
++                }
++                case BOPL_BUF_ENV: {
++                    // Help with our own job first (the workers take the rest).
++                    if (bopl_pool_try(th, envs, buf, 0)) { progressed = 1; break; }
++                    if (atomic_load_explicit(&job->done, memory_order_acquire) < job->env_count) break;
++                    my_accum[EVAL_ENV_STEP] += (float)(bopl_now_ns() - job->t_publish) / 1e6f;
++                    bopl_driver_upload(vec, buf);
++                    job->t++;
++                    if (job->t < horizon) {
++                        bopl_driver_launch(vec, a, buf);
++                    } else {
++                        job->state = BOPL_BUF_FINAL;
++                    }
++                    progressed = 1;
++                    break;
++                }
++                case BOPL_BUF_FINAL: {
++                    if (cudaStreamQuery(vec->streams[buf]) == cudaErrorNotReady) break;
++                    job->state = BOPL_BUF_DONE;
++                    live--;
++                    progressed = 1;
++                    break;
++                }
++                default:
++                    break;
++                }
++            }
++            if (!progressed) {
++                if (steal && bopl_pool_steal(th, envs, -1)) continue;
++                for (int j = 0; j < 8; j++) bopl_cpu_relax();
++            }
++        }
++        for (int buf = me; buf < nb; buf += k) {
++            th->jobs[buf].state = BOPL_BUF_IDLE;
++            atomic_store_explicit(&buffer_states[buf], OMP_WAITING, memory_order_seq_cst);
++            bopl_futex_wake(&buffer_states[buf], INT_MAX);
 +        }
      }
  }
  
+ void static_vec_omp_step(StaticVec* vec) {
+     StaticThreading* threading = vec->threading;
+     for (int buf = 0; buf < vec->buffers; buf++) {
+-        atomic_store(&threading->buffer_states[buf], OMP_RUNNING);
++        atomic_store_explicit(&threading->buffer_states[buf], OMP_RUNNING, memory_order_seq_cst);
++    }
++    for (int buf = 0; buf < vec->buffers; buf++) {
++        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
+     }
+     for (int buf = 0; buf < vec->buffers; buf++) {
+-        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
++        for (;;) {
++            int s = atomic_load_explicit(&threading->buffer_states[buf], memory_order_acquire);
++            if (s == OMP_WAITING) break;
++            bopl_futex_wait(&threading->buffer_states[buf], s);
++        }
+     }
+ }
+ 
+ void static_vec_seq_step(StaticVec* vec) {
+     StaticThreading* threading = vec->threading;
+     for (int buf = 0; buf < vec->buffers; buf++) {
+-        atomic_store(&threading->buffer_states[buf], OMP_RUNNING);
+-        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
++        atomic_store_explicit(&threading->buffer_states[buf], OMP_RUNNING, memory_order_seq_cst);
++        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
++        for (;;) {
++            int s = atomic_load_explicit(&threading->buffer_states[buf], memory_order_acquire);
++            if (s == OMP_WAITING) break;
++            bopl_futex_wait(&threading->buffer_states[buf], s);
++        }
+     }
+ }
+ 
+@@ -592,6 +980,75 @@
+     vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
+     vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
+ 
++    // Bopl env pool configuration (see the comment above BoplEnvJob).
++    StaticThreading* th = vec->threading;
++    cpu_set_t mask;
++    CPU_ZERO(&mask);
++    int ncpu = 0;
++    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) ncpu = CPU_COUNT(&mask);
++    if (ncpu <= 0) ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
++    if (ncpu <= 0) ncpu = vec->buffers;
++    // Default CPUs - 4: on the 12-thread box 8-11 stepping threads were within
++    // noise (292-297k sps at w128 b4) and 8 inflated c_step least (17 vs 21 us
++    // at 12, SMT contention); the trainer thread and the GPU pollers' SMT
++    // siblings take the rest.
++    int total_stepping = bopl_env_int("BOPL_ENV_THREADS", ncpu - 4);
++    // Stepping threads = workers + the GPU-side threads (1 driver, or one per buffer).
++    int drivers = bopl_env_int("BOPL_ENV_DRIVER", 0);
++    if (drivers > vec->buffers) drivers = vec->buffers;
++    int gpu_threads = drivers > 0 ? drivers : vec->buffers;
++    if (total_stepping < gpu_threads + 1) total_stepping = gpu_threads + 1;
++    th->num_workers = total_stepping - gpu_threads;
++    th->spin_ns = bopl_env_int("BOPL_ENV_SPIN_US", 100) * 1000;
++    th->steal = bopl_env_int("BOPL_ENV_STEAL", 1);
++    {
++        const char* spec = getenv("BOPL_GPU_WAIT");
++        th->gpu_wait = (spec && strcmp(spec, "sync") == 0) ? 0 : 1;
++    }
++    th->poll_pause = bopl_env_int("BOPL_GPU_POLL_PAUSE", 40);
++    th->prof = bopl_env_int("BOPL_ENV_PROF", 0);
++    th->lpt = bopl_env_int("BOPL_ENV_LPT", 1);
++    th->driver = drivers;
++    th->pin = bopl_env_int("BOPL_ENV_PIN", 0);
++    if (th->pin) {
++        th->pin_cpus = (int*)calloc(ncpu + 256, sizeof(int));
++        const char* spec = getenv("BOPL_ENV_PIN_CPUS");
++        if (spec && spec[0]) {
++            const char* p = spec;
++            while (*p && th->pin_count < ncpu + 256) {
++                th->pin_cpus[th->pin_count++] = atoi(p);
++                const char* comma = strchr(p, ',');
++                if (!comma) break;
++                p = comma + 1;
++            }
++        } else {
++            for (int c = 0; c < CPU_SETSIZE && th->pin_count < ncpu; c++) {
++                if (CPU_ISSET(c, &mask)) th->pin_cpus[th->pin_count++] = c;
++            }
++        }
++    }
++    th->jobs = (BoplEnvJob*)aligned_alloc(64, vec->buffers * sizeof(BoplEnvJob));
++    memset(th->jobs, 0, vec->buffers * sizeof(BoplEnvJob));
++    for (int b = 0; b < vec->buffers; b++) {
++        th->jobs[b].env_start = vec->buffer_env_starts[b];
++        th->jobs[b].env_count = vec->buffer_env_counts[b];
++        th->jobs[b].order = (int*)calloc(th->jobs[b].env_count, sizeof(int));
++        th->jobs[b].last_ns = (int64_t*)calloc(th->jobs[b].env_count, sizeof(int64_t));
++        for (int e = 0; e < th->jobs[b].env_count; e++) th->jobs[b].order[e] = e;
++        atomic_store(&th->jobs[b].next, th->jobs[b].env_count);  // idle: nothing claimable
++        atomic_store(&th->jobs[b].done, th->jobs[b].env_count);
++    }
++    fprintf(stderr, "bopl env pool: %d %s + %d workers (%d CPUs), spin %d us, steal %d, gpu_wait %s, lpt %d, pin %d\n",
++        gpu_threads, th->driver ? "driver threads" : "buffer threads", th->num_workers, ncpu, th->spin_ns / 1000, th->steal,
++        th->gpu_wait ? "poll" : "sync", th->lpt, th->pin);
++    th->workers = (pthread_t*)calloc(th->num_workers > 0 ? th->num_workers : 1, sizeof(pthread_t));
++    BoplWorkerArg* wargs = (BoplWorkerArg*)calloc(th->num_workers > 0 ? th->num_workers : 1, sizeof(BoplWorkerArg));
++    for (int i = 0; i < th->num_workers; i++) {
++        wargs[i].vec = vec;
++        wargs[i].index = i;
++        pthread_create(&th->workers[i], NULL, bopl_pool_worker, &wargs[i]);
++    }
++
+     // Streams are now created by pufferlib.cu (PyTorch-managed streams)
+     // Do NOT create streams here - they've already been set up
+ 
+@@ -603,7 +1060,11 @@
+         args[i].ctx = ctx;
+         args[i].net_callback = net_callback;
+         args[i].thread_init = thread_init;
+-        pthread_create(&vec->threading->threads[i], NULL, static_omp_threadmanager, &args[i]);
++        if (th->driver) {
++            if (i < th->driver) pthread_create(&th->threads[i], NULL, bopl_pool_driver, &args[i]);
++        } else {
++            pthread_create(&th->threads[i], NULL, static_omp_threadmanager, &args[i]);
++        }
+     }
+ }
+ 
+@@ -611,10 +1072,21 @@
+     Env* envs = (Env*)vec->envs;
+ 
+     if (vec->threading != NULL) {
+-        atomic_store(&vec->threading->shutdown, 1);
++        StaticThreading* th = vec->threading;
++        atomic_store(&th->shutdown, 1);
+         for (int i = 0; i < vec->buffers; i++) {
+-            pthread_join(vec->threading->threads[i], NULL);
++            bopl_futex_wake(&th->buffer_states[i], INT_MAX);
++            if (!th->driver || i < th->driver) pthread_join(th->threads[i], NULL);
+         }
++        atomic_fetch_add(&th->work_seq, 1);
++        bopl_futex_wake(&th->work_seq, INT_MAX);
++        for (int i = 0; i < th->num_workers; i++) {
++            pthread_join(th->workers[i], NULL);
++        }
++        free(th->workers);
++        for (int b = 0; b < vec->buffers; b++) { free(th->jobs[b].order); free(th->jobs[b].last_ns); }
++        free(th->jobs);
++        free(th->pin_cpus);
+     }
+ 
+     for (int i = 0; i < vec->size; i++) {
+@@ -723,6 +1195,24 @@
+     for (int i = 0; i < NUM_EVAL_PROF; i++) {
+         out[i] /= threading->num_buffers;
+     }
++    if (threading->prof && ++threading->prof_calls % 50 == 0) {
++        long long ns = atomic_exchange(&threading->stat_env_ns, 0);
++        long long owner = atomic_exchange(&threading->stat_envs_owner, 0);
++        long long worker = atomic_exchange(&threading->stat_envs_worker, 0);
++        long long stolen = atomic_exchange(&threading->stat_envs_stolen, 0);
++        long long sleeps = atomic_exchange(&threading->stat_sleeps, 0);
++        long long polls = atomic_exchange(&threading->stat_polls, 0);
++        long long strag = atomic_exchange(&threading->stat_straggler_ns, 0);
++        long long launch = atomic_exchange(&threading->stat_launch_ns, 0);
++        long long envs = owner + worker + stolen;
++        // 50 rollouts x horizon x buffers buffer-steps; horizon = envs / (size * 50)
++        double buffer_steps = envs > 0 ? (double)envs / vec->size * threading->num_buffers : 1.0;
++        fprintf(stderr, "bopl env pool: %.1f us c_step (mean), %.3f ms env CPU per buffer-step, envs owner %.1f%% worker %.1f%% stolen %.1f%%, "
++            "%.2f futex sleeps and %.1f gpu polls per buffer-step, straggler wait %.1f us, launch %.1f us\n",
++            envs > 0 ? ns / 1e3 / envs : 0.0, ns / 1e6 / buffer_steps,
++            100.0 * owner / (envs ? envs : 1), 100.0 * worker / (envs ? envs : 1), 100.0 * stolen / (envs ? envs : 1),
++            sleeps / buffer_steps, polls / buffer_steps, strag / 1e3 / buffer_steps, launch / 1e3 / buffer_steps);
++    }
+ }
+ 
+ void static_vec_render(StaticVec* vec, int env_id) {

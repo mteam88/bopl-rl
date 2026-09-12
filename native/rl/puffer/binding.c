@@ -1,3 +1,5 @@
+/* vecenv.h's env pool pins threads (pthread_setaffinity_np, sched_getaffinity). */
+#define _GNU_SOURCE 1
 #include "bopl_puffer.h"
 #define OBS_SIZE BOPL_OBS_SIZE
 #define NUM_ATNS BOPL_NUM_ATNS

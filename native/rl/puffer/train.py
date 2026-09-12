@@ -146,7 +146,7 @@ def arguments():
     p.add_argument('--steps', type=int, default=100_000, help='Actual learner decisions (excludes frozen players)')
     p.add_argument('--workers', type=int, default=16, help='Number of simultaneous two-player games')
     p.add_argument('--buffers', type=int, choices=(1, 2, 4, 8),
-                   help='Rollout buffers (independent OMP teams + CUDA streams). 4 measured +11%% learner/s over 2 '
+                   help='Rollout buffers (independent buffer threads + CUDA streams over one env pool). 4 measured +11%% learner/s over 2 '
                         'at 128 workers on the f64 sim (2026-09-10): GPU sync of one buffer overlaps env stepping of the others')
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
@@ -296,6 +296,14 @@ def main():
     # per runtime measured within 5-15% of one runtime per world at a
     # fraction of the memory. Honour an explicit setting.
     os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
+    # The rollout steps games on vecenv.h's own env pool (THROUGHPUT.md 3.D), not
+    # OpenMP: BOPL_ENV_THREADS stepping threads in total (buffer threads
+    # included; default CPUs - 4, i.e. 8 on the 12-thread box, where 8-11 were
+    # within noise and 8 inflated c_step least), BOPL_ENV_LPT=1 slowest-first
+    # claim order, BOPL_ENV_STEAL=1 buffer threads step other buffers' games
+    # while their own forward runs, BOPL_ENV_SPIN_US=100 idle spin before a
+    # futex park, BOPL_GPU_WAIT=poll|sync, BOPL_ENV_PIN=1 to pin threads.
+    # OMP_NUM_THREADS below only governs the single-buffer synchronous step.
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
                            BOPL_RL_LOG_DIR=output/'game-logs',
                            OMP_NUM_THREADS=os.environ.get('BOPL_OMP_THREADS', a.workers)).items():

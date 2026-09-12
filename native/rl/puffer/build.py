@@ -33,9 +33,10 @@ subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=
 # sampling, no reward clamp, per-head entropy / gradient-norm / advantage
 # statistics, the bopl branch of create_custom_encoder (BOPL_NATIVE_ENCODER
 # = linear|set selects bopl_set_encoder.cu, found via the -I below), per-bank
-# rollout graph branches with per-stream cuBLAS handles, and sleep-polling
-# rollout barriers in vecenv.h (which binding.c compiles, so it too builds
-# against the overlay). See pufferlib-bopl.patch (generated with
+# rollout graph branches with per-stream cuBLAS handles, and the rollout env
+# pool in vecenv.h (persistent work-stealing workers and futex handshakes in
+# place of the per-step OpenMP fork/join and the spinning stream sync;
+# binding.c compiles vecenv.h, so it too builds against the overlay). See pufferlib-bopl.patch (generated with
 # diff -ruN against the pristine overlay: cd artifacts/rl && diff -ruN
 # pristine-src puffer-overlay).
 subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
