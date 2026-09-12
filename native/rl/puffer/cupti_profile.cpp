@@ -24,19 +24,27 @@
 
 namespace {
 struct Agg { uint64_t count = 0, total = 0, mn = ~0ull, mx = 0; };
+struct Rec { uint64_t start, end; std::string name; };
 struct StreamAgg {
     std::map<std::string, Agg> kernels;
     uint64_t busy = 0, last_end = 0, first_start = ~0ull, last = 0, records = 0;
+    std::vector<Rec> seq;  // every record in arrival order (BOPL_CUPTI_SEQ)
 };
 std::mutex g_mutex;
 std::map<uint32_t, StreamAgg> g_streams;
 bool g_flushed = false;
+// BOPL_CUPTI_SEQ=<marker kernel substring>: also print, for the stream that
+// runs the marker, every record between its 10th and 11th marker launch in
+// launch order with duration and the gap to the previous record (one
+// training minibatch when the marker is bs_fused_forward).
+const char* g_seq_marker = getenv("BOPL_CUPTI_SEQ");
 
 void add(uint32_t stream, const char* name, uint64_t start, uint64_t end) {
     StreamAgg& s = g_streams[stream];
     Agg& a = s.kernels[name];
     uint64_t d = end - start;
     a.count++; a.total += d; a.mn = std::min(a.mn, d); a.mx = std::max(a.mx, d);
+    if (g_seq_marker) s.seq.push_back({start, end, name});
     if (start < s.first_start) s.first_start = start;
     if (end > s.last) s.last = end;
     // Approximate interval union (records on one stream arrive nearly in order).
@@ -116,6 +124,34 @@ void flush() {
         for (auto& [name, a] : rows) {
             fprintf(out, "%12.3f %9llu %10.2f %9.2f %9.2f  %s\n", a.total / 1e6, (unsigned long long)a.count,
                     a.total / 1e3 / a.count, a.mn / 1e3, a.mx / 1e3, demangle_short(name).c_str());
+        }
+        if (g_seq_marker) {
+            std::sort(s->seq.begin(), s->seq.end(), [](const Rec& a, const Rec& b) { return a.start < b.start; });
+            int hits = 0; size_t from = 0, to = 0;
+            for (size_t i = 0; i < s->seq.size(); i++) {
+                if (s->seq[i].name.find(g_seq_marker) == std::string::npos) continue;
+                if (++hits == 10) from = i;
+                if (hits == 11) { to = i; break; }
+            }
+            // Every launch of the marker kernel in order (drift, interference from
+            // the other partition, clocks): one duration per line, 16 per row.
+            fprintf(out, "-- marker launch durations (us), in order\n");
+            int n = 0;
+            for (auto& r : s->seq) {
+                if (r.name.find(g_seq_marker) == std::string::npos) continue;
+                fprintf(out, "%8.1f%s", (r.end - r.start) / 1e3, (++n % 16) ? "" : "\n");
+            }
+            if (n % 16) fprintf(out, "\n");
+            if (to > from) {
+                fprintf(out, "-- sequence between marker launches 10 and 11 (%zu records, %.3f ms span)\n",
+                        to - from, (s->seq[to].start - s->seq[from].start) / 1e6);
+                fprintf(out, "%9s %8s  %s\n", "dur_us", "gap_us", "name");
+                for (size_t i = from; i < to; i++) {
+                    double gap = i > from ? ((double)s->seq[i].start - (double)s->seq[i - 1].end) / 1e3 : 0.0;
+                    fprintf(out, "%9.2f %8.2f  %s\n", (s->seq[i].end - s->seq[i].start) / 1e3, gap,
+                            demangle_short(s->seq[i].name).c_str());
+                }
+            }
         }
     }
     if (out != stderr) fclose(out);

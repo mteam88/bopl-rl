@@ -1,6 +1,6 @@
 diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/bindings.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/bindings.cu	2026-09-12 04:51:51.744431600 -0400
++++ b/bindings.cu	2026-09-12 04:51:51.747564297 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -193,8 +193,8 @@ diff -ruN a/bindings.cu b/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/kernels.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/kernels.cu	2026-09-12 04:51:51.744431600 -0400
++++ b/kernels.cu	2026-09-12 04:51:51.747564297 -0400
 @@ -159,6 +159,14 @@
      int src_row, int dst_row, int row_bytes) {
      const char* s = src + (int64_t)src_row * row_bytes;
@@ -274,8 +274,8 @@ diff -ruN a/kernels.cu b/kernels.cu
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
 diff -ruN a/models.cu b/models.cu
---- a/models.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/models.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/models.cu	2026-09-12 04:51:51.744431600 -0400
++++ b/models.cu	2026-09-12 04:51:51.747564297 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -473,7 +473,132 @@ diff -ruN a/models.cu b/models.cu
  }
  
  __global__ void sum_rows_to_precision_kernel(precision_t* __restrict__ dst,
-@@ -731,6 +778,7 @@
+@@ -407,7 +454,9 @@
+         return;
+     }
+     int row = idx / od_plus_1, col = idx % od_plus_1;
+-    dst[idx] = from_float((col < od) ? grad_logits[row * od + col] : grad_value[row]);
++    // Bopl: od_plus_1 is the (possibly padded) row stride; columns past od are
++    // the value gradient then zeros.
++    dst[idx] = from_float((col < od) ? grad_logits[row * od + col] : (col == od ? grad_value[row] : 0.0f));
+ }
+ 
+ static PrecisionTensor encoder_forward(void* w, void* activations, PrecisionTensor input, cudaStream_t stream) {
+@@ -479,16 +528,48 @@
+     bool continuous;
+ };
+ 
++// Bopl: the training decoder pads its output width od + 1 (278 here) up to a
++// multiple of 4 (280) so the forward, weight-gradient and input-gradient
++// GEMMs run 16-byte aligned tensor-op kernels (the align1 variants cuBLAS
++// picked for 278 cost 0.29 / 0.41 / 0.18 ms per 24576-row minibatch on 16
++// SMs). out and grad_out are (B, od1_pad); the weight is padded into
++// weight_pad with zero rows every forward and the weight gradient comes
++// back through wgrad_pad. The rollout decoder (no saved_input) is unchanged.
++// The PPO loss kernel takes the row stride from out.shape[2] and the logit
++// count from the policy, and writes grad_out directly (grad_fused) unless
++// bopl_decoder_grad_fused is cleared, in which case assemble_decoder_grad
++// builds it from grad_logits / grad_values as upstream does.
++static bool g_bopl_decoder_grad_fused = false;
++void bopl_decoder_set_grad_fused(bool fused) { g_bopl_decoder_grad_fused = fused; }
++static inline int decoder_padded_width(int od1) { return (od1 + 3) / 4 * 4; }
++
+ struct DecoderActivations {
+     PrecisionTensor out, grad_out, saved_input, grad_input, wgrad_scratch, logstd_scratch;
++    PrecisionTensor weight_pad, wgrad_pad;  // training: (od1_pad, hidden) scratch
++    int od1_pad;                             // row stride of out / grad_out (0 in rollout)
+ };
+ 
++// dst (rows_pad, cols) = src (rows, cols) followed by zero rows; and back.
++__global__ void decoder_pad_rows(precision_t* __restrict__ dst, const precision_t* __restrict__ src,
++        int rows, int rows_pad, int cols) {
++    int i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= rows_pad * cols) return;
++    dst[i] = (i < rows * cols) ? src[i] : from_float(0.0f);
++}
++
+ static PrecisionTensor decoder_forward(void* w, void* activations, PrecisionTensor input, cudaStream_t stream) {
+     DecoderWeights* dw = (DecoderWeights*)w;
+     DecoderActivations* a = (DecoderActivations*)activations;
+     if (a->saved_input.data) {
+         puf_copy(&a->saved_input, &input, stream);
+     }
++    if (a->od1_pad > 0) {
++        int od1 = dw->output_dim + 1;
++        decoder_pad_rows<<<grid_size(a->od1_pad * dw->hidden_dim), BLOCK_SIZE, 0, stream>>>(
++            a->weight_pad.data, dw->weight.data, od1, a->od1_pad, dw->hidden_dim);
++        puf_mm(&input, &a->weight_pad, &a->out, stream);
++        return a->out;
++    }
+     puf_mm(&input, &dw->weight, &a->out, stream);
+     return a->out;
+ }
+@@ -516,18 +597,24 @@
+     DecoderWeights* dw = (DecoderWeights*)w;
+     DecoderActivations* a = (DecoderActivations*)activations;
+     int od1 = dw->output_dim + 1;
++    int od1_pad = decoder_padded_width(od1);
+     *a = (DecoderActivations){
+-        .out =              {.shape = {B_TT, od1}},
+-        .grad_out =         {.shape = {B_TT, od1}},
++        .out =              {.shape = {B_TT, od1_pad}},
++        .grad_out =         {.shape = {B_TT, od1_pad}},
+         .saved_input =      {.shape = {B_TT, dw->hidden_dim}},
+         .grad_input =       {.shape = {B_TT, dw->hidden_dim}},
+         .wgrad_scratch =    {.shape = {od1, dw->hidden_dim}},
+         .logstd_scratch =   {.shape = {1, dw->output_dim}},
++        .weight_pad =       {.shape = {od1_pad, dw->hidden_dim}},
++        .wgrad_pad =        {.shape = {od1_pad, dw->hidden_dim}},
++        .od1_pad = od1_pad,
+     };
+     alloc_register(acts,&a->out);
+     alloc_register(acts,&a->saved_input);
+     alloc_register(acts,&a->grad_out);
+     alloc_register(acts,&a->grad_input);
++    alloc_register(acts,&a->weight_pad);
++    alloc_register(acts,&a->wgrad_pad);
+     alloc_register(grads,&a->wgrad_scratch);
+     if (dw->continuous) alloc_register(grads,&a->logstd_scratch);
+ }
+@@ -537,6 +624,7 @@
+     DecoderActivations* a = (DecoderActivations*)activations;
+     a->out = {.shape = {B, dw->output_dim + 1}};
+     alloc_register(alloc,&a->out);
++    a->od1_pad = 0;
+ }
+ 
+ static void* decoder_create_weights(void* self) {
+@@ -560,14 +648,25 @@
+     DecoderActivations* a = (DecoderActivations*)activations;
+     int B_TT = a->saved_input.shape[0];
+     int od = dw->output_dim, od1 = od + 1;
+-    assemble_decoder_grad<<<grid_size(B_TT * od1), BLOCK_SIZE, 0, stream>>>(
+-        a->grad_out.data, grad_logits.data, grad_value.data, B_TT, od, od1);
+-    puf_mm_tn(&a->grad_out, &a->saved_input, &a->wgrad_scratch, stream);
++    int width = a->od1_pad > 0 ? a->od1_pad : od1;
++    if (!(g_bopl_decoder_grad_fused && !dw->continuous)) {
++        assemble_decoder_grad<<<grid_size(B_TT * width), BLOCK_SIZE, 0, stream>>>(
++            a->grad_out.data, grad_logits.data, grad_value.data, B_TT, od, width);
++    }
++    if (a->od1_pad > 0) {
++        // (od1_pad, hidden) = grad_out^T @ saved_input; rows >= od1 are zero.
++        puf_mm_tn(&a->grad_out, &a->saved_input, &a->wgrad_pad, stream);
++        cudaMemcpyAsync(a->wgrad_scratch.data, a->wgrad_pad.data,
++            (size_t)od1 * dw->hidden_dim * sizeof(precision_t), cudaMemcpyDeviceToDevice, stream);
++    } else {
++        puf_mm_tn(&a->grad_out, &a->saved_input, &a->wgrad_scratch, stream);
++    }
+     if (dw->continuous && grad_logstd.data != nullptr) {
+         sum_rows_to_precision_kernel<<<grid_size(dw->output_dim), BLOCK_SIZE, 0, stream>>>(
+             a->logstd_scratch.data, grad_logstd.data, B_TT, dw->output_dim);
+     }
+-    puf_mm_nn(&a->grad_out, &dw->weight, &a->grad_input, stream);
++    if (a->od1_pad > 0) puf_mm_nn(&a->grad_out, &a->weight_pad, &a->grad_input, stream);
++    else puf_mm_nn(&a->grad_out, &dw->weight, &a->grad_input, stream);
+     return a->grad_input;
+ }
+ 
+@@ -731,6 +830,7 @@
          a->scan_bufs[i].combined_ptr = a->combined_bufs[i].data;
          a->scan_bufs[i].state_ptr = state_i.data;
          a->scan_bufs[i].input_ptr = a->saved_inputs[i].data;
@@ -481,9 +606,299 @@ diff -ruN a/models.cu b/models.cu
          mingru_scan_forward<<<grid_size(B*m->hidden), BLOCK_SIZE, 0, stream>>>(a->scan_bufs[i]);
          x = a->scan_bufs[i].out;
      }
+diff -ruN a/muon.cu b/muon.cu
+--- a/muon.cu	2026-09-12 04:51:51.744431600 -0400
++++ b/muon.cu	2026-09-12 04:51:51.747564297 -0400
+@@ -83,6 +83,51 @@
+     {2.8366, -3.0525, 1.2012},
+ };
+ 
++// Bopl: grouped Newton-Schulz (BOPL_MUON_FUSED=1, default). Upstream runs
++// the 5 NS iterations one weight matrix at a time through cuBLAS: per matrix
++// 3 norm kernels + 5 x (gram GEMM, copy, A^2 GEMM, copy, update GEMM) + the
++// weight update = 29 launches, 174 per step for this policy's 6 matrices,
++// and the 128 x 128 grams (K = 946 / 384 / 278 / 256) land on 4 tensor-op
++// blocks each (~130 us apiece on a 16-SM partition): ~9.5 ms of a 40 ms
++// update. Here every 2-D parameter is orthogonalised in the same launch:
++// one normalise kernel (block per matrix), then per NS iteration three
++// grouped fp32 SIMT GEMM launches (gram, B = b A + c A^2, X' = a X + B X or
++// X B) whose grid is the union of all matrices' 64 x 64 output tiles, then
++// one fused weight update. 17 launches per step, ~0.6 ms. Plain fp32 FMAs
++// (the cuBLAS path runs TF32 by default); BOPL_MUON_FUSED=0 restores the
++// per-matrix cuBLAS path bit for bit.
++#define MUON_MAX_MATS 16
++#define MUON_TILE 64
++#define MUON_BK 16
++#define MUON_THREADS 256
++#define MUON_SMEM_STRIDE 68  // 64 + 4: k-major staging without 16-way bank conflicts, float4-aligned rows
++struct MuonGemm {
++    const float* A; const float* B; const float* Cin; float* C;
++    int M, N, K;                      // C(M, N) = alpha * A(M, K) @ B(K, N) + beta * Cin(M, N)
++    int sa_i, sa_k, sb_k, sb_j;       // A(i, k) = A[i sa_i + k sa_k], B(k, j) = B[k sb_k + j sb_j]
++    float alpha, beta;
++    int tile_begin, tiles_n;          // first tile of this problem in the grid, tiles along N
++};
++struct MuonGroup {
++    MuonGemm g[MUON_MAX_MATS];
++    int count, total_tiles;
++};
++struct MuonMatDesc {
++    float* x;          // gradient block (R, C), row-major, also NS ping buffer
++    float* x_buf;      // NS pong buffer (R, C)
++    float* gram;       // (M, M)
++    float* gram_buf;   // (M, M)
++    long offset;       // element offset in the flat parameter buffer
++    int R, C, M, N;    // M = min(R, C), N = max(R, C)
++    int tall;          // R > C: gram = X^T X, X' = X B; else gram = X X^T, X' = B X
++    float scale;       // sqrt(max(1, R / C))
++};
++struct MuonMats {
++    MuonMatDesc m[MUON_MAX_MATS];
++    int count;
++    long total;        // total parameter count (2-D and other)
++};
++
+ struct Muon {
+     double momentum, weight_decay, eps;
+     float lr_val_init;
+@@ -98,8 +143,161 @@
+     Allocator* param_alloc;  // params allocator — shapes used by muon_step
+     ncclComm_t nccl_comm;
+     int world_size;
++    // Bopl grouped path
++    int fused;
++    FloatTensor fused_x_buf;      // one pong buffer per 2-D parameter, laid out like the params
++    FloatTensor fused_grams;      // 2 x sum(M^2)
++    MuonMats mats;                // filled by muon_post_create (needs device pointers)
+ };
+ 
++// One 64 x 64 output tile of one problem per block; 4 x 4 outputs per thread.
++__global__ void __launch_bounds__(MUON_THREADS) muon_grouped_gemm(MuonGroup grp) {
++    __shared__ __align__(16) float As[MUON_BK][MUON_SMEM_STRIDE];
++    __shared__ __align__(16) float Bs[MUON_BK][MUON_SMEM_STRIDE];
++    int tile = blockIdx.x, p = 0;
++    while (p + 1 < grp.count && tile >= grp.g[p + 1].tile_begin) p++;
++    const MuonGemm& g = grp.g[p];
++    tile -= g.tile_begin;
++    const int tm = tile / g.tiles_n, tn = tile - tm * g.tiles_n;
++    const int row0 = tm * MUON_TILE, col0 = tn * MUON_TILE;
++    const int tid = threadIdx.x, ty = tid >> 4, tx = tid & 15;
++    float acc[4][4];
++    #pragma unroll
++    for (int i = 0; i < 4; i++)
++        #pragma unroll
++        for (int j = 0; j < 4; j++) acc[i][j] = 0.0f;
++    // Load mapping: the contiguous operand dimension goes to consecutive threads.
++    const bool a_kfast = g.sa_k == 1, b_jfast = g.sb_j == 1;
++    for (int k0 = 0; k0 < g.K; k0 += MUON_BK) {
++        #pragma unroll
++        for (int r = 0; r < (MUON_TILE * MUON_BK) / MUON_THREADS; r++) {
++            int e = tid + r * MUON_THREADS;
++            int i, k;
++            if (a_kfast) { i = e / MUON_BK; k = e - i * MUON_BK; } else { k = e / MUON_TILE; i = e - k * MUON_TILE; }
++            int gi = row0 + i, gk = k0 + k;
++            As[k][i] = (gi < g.M && gk < g.K) ? g.A[(long)gi * g.sa_i + (long)gk * g.sa_k] : 0.0f;
++            int j, kb;
++            if (b_jfast) { kb = e / MUON_TILE; j = e - kb * MUON_TILE; } else { j = e / MUON_BK; kb = e - j * MUON_BK; }
++            int gj = col0 + j, gkb = k0 + kb;
++            Bs[kb][j] = (gj < g.N && gkb < g.K) ? g.B[(long)gkb * g.sb_k + (long)gj * g.sb_j] : 0.0f;
++        }
++        __syncthreads();
++        #pragma unroll
++        for (int k = 0; k < MUON_BK; k++) {
++            float4 a = *(const float4*)&As[k][ty * 4];
++            float4 b = *(const float4*)&Bs[k][tx * 4];
++            const float av[4] = {a.x, a.y, a.z, a.w}, bv[4] = {b.x, b.y, b.z, b.w};
++            #pragma unroll
++            for (int i = 0; i < 4; i++)
++                #pragma unroll
++                for (int j = 0; j < 4; j++) acc[i][j] = fmaf(av[i], bv[j], acc[i][j]);
++        }
++        __syncthreads();
++    }
++    #pragma unroll
++    for (int i = 0; i < 4; i++) {
++        int gi = row0 + ty * 4 + i;
++        if (gi >= g.M) continue;
++        #pragma unroll
++        for (int j = 0; j < 4; j++) {
++            int gj = col0 + tx * 4 + j;
++            if (gj >= g.N) continue;
++            long o = (long)gi * g.N + gj;
++            float v = g.alpha * acc[i][j];
++            if (g.beta != 0.0f) v += g.beta * g.Cin[o];
++            g.C[o] = v;
++        }
++    }
++}
++
++// Block per matrix: x /= max(||x||_F, eps), in place.
++__global__ void muon_grouped_normalize(MuonMats mats, float eps) {
++    __shared__ float sdata[256];
++    const MuonMatDesc& d = mats.m[blockIdx.x];
++    long n = (long)d.R * d.C;
++    float sum = 0.0f;
++    for (long i = threadIdx.x; i < n; i += blockDim.x) { float v = d.x[i]; sum += v * v; }
++    sdata[threadIdx.x] = sum;
++    __syncthreads();
++    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
++        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
++        __syncthreads();
++    }
++    float inv = 1.0f / fmaxf(sqrtf(sdata[0]), eps);
++    for (long i = threadIdx.x; i < n; i += blockDim.x) d.x[i] *= inv;
++}
++
++// Fused clip + Nesterov over the flat gradient (same per-element operation
++// order as muon_clip_norm followed by muon_nesterov).
++__global__ void muon_clip_nesterov(float* __restrict__ mb, precision_t* __restrict__ gc,
++        const float* __restrict__ sum_sq_ptr, float max_norm, float eps, float mu, int n) {
++    float clip_coef = fminf(max_norm / (sqrtf(*sum_sq_ptr) + eps), 1.0f);
++    int idx = blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx < n) {
++        float g = to_float(gc[idx]) * clip_coef;
++        float m = mu * mb[idx] + g;
++        mb[idx] = m;
++        gc[idx] = from_float(g + mu * m);
++    }
++}
++
++// wb = wb (1 - lr wd) - lr scale_m update_m over the whole parameter buffer;
++// update_m is the matrix's NS result (its pong buffer after 5 iterations) or,
++// for parameters that are not matrices, the momentum-corrected gradient.
++__global__ void muon_grouped_weight_update(float* __restrict__ wb, const precision_t* __restrict__ grads,
++        MuonMats mats, const float* __restrict__ lr_ptr, float wd, long n) {
++    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx >= n) return;
++    float lr = *lr_ptr;
++    float wd_scale = 1.0f - lr * wd;
++    float scale = 1.0f, u = to_float(grads[idx]);
++    for (int m = 0; m < mats.count; m++) {
++        const MuonMatDesc& d = mats.m[m];
++        long rel = idx - d.offset;
++        if (rel >= 0 && rel < (long)d.R * d.C) { scale = d.scale; u = d.x_buf[rel]; break; }
++    }
++    wb[idx] = wb[idx] * wd_scale - lr * scale * u;
++}
++
++static void muon_group_add(MuonGroup& grp, MuonGemm g) {
++    assert(grp.count < MUON_MAX_MATS && "muon: too many matrices for one group");
++    g.tiles_n = (g.N + MUON_TILE - 1) / MUON_TILE;
++    int tiles_m = (g.M + MUON_TILE - 1) / MUON_TILE;
++    g.tile_begin = grp.total_tiles;
++    grp.total_tiles += tiles_m * g.tiles_n;
++    grp.g[grp.count++] = g;
++}
++static void muon_group_launch(const MuonGroup& grp, cudaStream_t stream) {
++    if (grp.total_tiles > 0) muon_grouped_gemm<<<grp.total_tiles, MUON_THREADS, 0, stream>>>(grp);
++}
++
++// The 5 NS iterations for every matrix, 3 launches each; result in x_buf.
++static void muon_grouped_ns(Muon* m, cudaStream_t stream) {
++    MuonMats& mats = m->mats;
++    muon_grouped_normalize<<<mats.count, 256, 0, stream>>>(mats, 1e-7f);
++    for (int i = 0; i < 5; ++i) {
++        const float a = (float)ns_coeffs[i][0], b = (float)ns_coeffs[i][1], c = (float)ns_coeffs[i][2];
++        MuonGroup gram = {}, sq = {}, upd = {};
++        for (int k = 0; k < mats.count; k++) {
++            const MuonMatDesc& d = mats.m[k];
++            float* src = (i % 2 == 0) ? d.x : d.x_buf;
++            float* dst = (i % 2 == 0) ? d.x_buf : d.x;
++            int M = d.M, N = d.N;
++            // gram = X^T X (tall: X is N x M) or X X^T (wide: X is M x N)
++            if (d.tall) muon_group_add(gram, {src, src, nullptr, d.gram, M, M, N, 1, M, M, 1, 1.0f, 0.0f, 0, 0});
++            else        muon_group_add(gram, {src, src, nullptr, d.gram, M, M, N, N, 1, 1, N, 1.0f, 0.0f, 0, 0});
++            // gram_buf = b gram + c gram @ gram
++            muon_group_add(sq, {d.gram, d.gram, d.gram, d.gram_buf, M, M, M, M, 1, M, 1, c, b, 0, 0});
++            // dst = a src + src @ gram_buf (tall) | gram_buf @ src (wide), all R x C
++            if (d.tall) muon_group_add(upd, {src, d.gram_buf, src, dst, d.R, d.C, M, d.C, 1, M, 1, 1.0f, a, 0, 0});
++            else        muon_group_add(upd, {d.gram_buf, src, src, dst, d.R, d.C, M, M, 1, d.C, 1, 1.0f, a, 0, 0});
++        }
++        muon_group_launch(gram, stream);
++        muon_group_launch(sq, stream);
++        muon_group_launch(upd, stream);
++    }
++}
++
+ void muon_init(Muon* m, Allocator* param_alloc, double lr_val,
+         double momentum, double eps, double weight_decay,
+         Allocator* alloc) {
+@@ -144,6 +342,50 @@
+         alloc_register(alloc, &m->x_buf);
+         alloc_register(alloc, &m->ns_norm_puf);
+     }
++    // Bopl grouped path: fp32 only (the kernels read the gradient as float),
++    // at most MUON_MAX_MATS matrices.
++    {
++        const char* flag = getenv("BOPL_MUON_FUSED");
++        int mats = 0; long gram_elems = 0;
++        for (int _i = 0; _i < param_alloc->num_regs; _i++) {
++            AllocEntry& e = param_alloc->regs[_i];
++            if (ndim(e.shape) >= 2) { long R = e.shape[0], C = numel(e.shape) / R, M = min(R, C); mats++; gram_elems += M * M; }
++        }
++        m->fused = (!USE_BF16 && mats > 0 && mats <= MUON_MAX_MATS && (flag == nullptr || atoi(flag) != 0)) ? 1 : 0;
++        m->mats = {};
++        if (m->fused) {
++            m->fused_x_buf = {.shape = {n}};
++            m->fused_grams = {.shape = {2 * gram_elems}};
++            alloc_register(alloc, &m->fused_x_buf);
++            alloc_register(alloc, &m->fused_grams);
++        }
++    }
++}
++
++// Bopl: per-matrix descriptors for the grouped path (device pointers exist now).
++static void muon_build_mats(Muon* m, PrecisionTensor grads) {
++    MuonMats& mats = m->mats;
++    mats = {};
++    mats.total = numel(grads.shape);
++    long offset = 0, gram_off = 0;
++    for (int _i = 0; _i < m->param_alloc->num_regs; _i++) {
++        AllocEntry& e = m->param_alloc->regs[_i];
++        long ne = numel(e.shape);
++        if (ndim(e.shape) >= 2) {
++            long R = e.shape[0], C = ne / R, M = min(R, C), N = max(R, C);
++            MuonMatDesc d;
++            d.x = (float*)(grads.data + offset);
++            d.x_buf = m->fused_x_buf.data + offset;
++            d.gram = m->fused_grams.data + gram_off;
++            d.gram_buf = d.gram + M * M;
++            d.offset = offset; d.R = (int)R; d.C = (int)C; d.M = (int)M; d.N = (int)N;
++            d.tall = R > C;
++            d.scale = sqrtf(fmaxf(1.0f, (float)R / (float)C));
++            mats.m[mats.count++] = d;
++            gram_off += 2 * M * M;
++        }
++        offset += ne;
++    }
+ }
+ 
+ void muon_post_create(Muon* m) {
+@@ -168,6 +410,21 @@
+     muon_norm_partials<<<clip_blocks, 256, 0, stream>>>(
+         m->norm_partials.data, grads.data, numel(grads.shape));
+     muon_norm_reduce<<<1, 256, 0, stream>>>(m->grad_norm_ptr, m->norm_partials.data, clip_blocks);
++
++    if (m->fused) {
++        // Bopl grouped path: clip + Nesterov in one pass, every matrix's NS in
++        // 16 launches, one weight update over the flat buffer.
++        long n = numel(grads.shape);
++        assert(n == numel(m->mb_puf.shape));
++        muon_clip_nesterov<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
++            m->mb_puf.data, grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, (float)m->momentum, (int)n);
++        if (m->mats.count == 0 || m->mats.m[0].x != (float*)grads.data) muon_build_mats(m, grads);
++        muon_grouped_ns(m, stream);
++        muon_grouped_weight_update<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
++            weights.data, grads.data, m->mats, m->lr_ptr, (float)m->weight_decay, n);
++        return;
++    }
++
+     muon_clip_norm<<<grid_size(numel(grads.shape)), BLOCK_SIZE, 0, stream>>>(
+         grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
+ 
 diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/ocean.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/ocean.cu	2026-09-12 04:51:51.744431600 -0400
++++ b/ocean.cu	2026-09-12 04:51:51.747564297 -0400
 @@ -3,6 +3,8 @@
  
  #include "cudnn_conv2d.cu"
@@ -511,8 +926,8 @@ diff -ruN a/ocean.cu b/ocean.cu
  }
  
 diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu	2026-09-12 03:12:37.374011073 -0400
-+++ b/pufferlib.cu	2026-09-12 03:12:37.375720247 -0400
+--- a/pufferlib.cu	2026-09-12 04:51:51.746432854 -0400
++++ b/pufferlib.cu	2026-09-12 04:51:51.747564297 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -556,7 +971,23 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      alloc_register(alloc, &bufs.mb_state);
      alloc_register(alloc, &bufs.mb_actions);
      alloc_register(alloc, &bufs.mb_logprobs);
-@@ -190,7 +202,10 @@
+@@ -162,6 +174,15 @@
+     const int* act_sizes;
+     const precision_t* action_mask; // (N, T, A_total) or nullptr
+     int mask_stride_n, mask_stride_t;
++    // Bopl: with mask_idx the mask row of sequence n is mask_idx[n] (the
++    // minibatch's segment indices into the (T, B_total, A) rollout mask), so
++    // the mask is never transposed or copied per minibatch.
++    const int* mask_idx;
++    // Bopl: when set, the discrete kernel writes the decoder's fused gradient
++    // (B, grad_fused_stride) directly: logits gradient in columns [0, A_total),
++    // value gradient in column A_total, zeros beyond (padded decoder layout).
++    precision_t* grad_fused;
++    int grad_fused_stride;
+     const signed char* head_consume; // (nverbs, num_atns) or nullptr
+     int hc_stride;
+     int num_atns;
+@@ -190,7 +211,10 @@
          .grad_values = {.shape = {N, T, 1}},
          .grad_logstd = {.shape = {N, T, A_total}},
          .adv_scratch = {.shape = {2}},
@@ -568,7 +999,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      };
      alloc_register(alloc, &bufs.loss_output);
      alloc_register(alloc, &bufs.saved_for_bwd);
-@@ -244,6 +259,84 @@
+@@ -244,6 +268,84 @@
      ByteTensor action_mask; // (total_agents, mask_size); .data=nullptr when env opts out
  };
  
@@ -653,7 +1084,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  StaticVec* create_environments(int num_buffers, int total_agents,
          const std::string& env_name, Dict* vec_kwargs, Dict* env_kwargs, EnvBuf& env) {
      StaticVec* vec = create_static_vec(total_agents, num_buffers, 1, vec_kwargs, env_kwargs);
-@@ -354,6 +447,14 @@
+@@ -354,6 +456,14 @@
      EnvBuf env;
      TrainGraph train_buf;
      PrecisionTensor advantages_puf;  // Pre-allocated for train_impl (B, T)
@@ -668,7 +1099,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      cudaGraphExec_t* fused_rollout_cudagraphs;  // [horizon][num_buffers]
      cudaGraphExec_t train_cudagraph;
      cudaStream_t* streams;  // per-buffer raw CUDA streams
-@@ -388,7 +489,147 @@
+@@ -388,7 +498,147 @@
      // worker thread only writes inside its own physical chunk.
      // Bank 0 = primary (learner). NULL = no layout set (primary owns full chunk).
      int* bank_layout;
@@ -816,7 +1247,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
  Dict* log_environments_impl(PuffeRL& pufferl) {
      // Capacity raised from 32 to 64 to accommodate chess's per-bank
-@@ -415,6 +656,44 @@
+@@ -415,6 +665,44 @@
      tl_stream = pufferl->streams[buf];
  }
  
@@ -861,7 +1292,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  __global__ void rng_init(curandStatePhilox4_32_10_t* states, uint64_t seed, int n) {
      int idx = blockIdx.x * blockDim.x + threadIdx.x;
      if (idx < n) {
-@@ -499,8 +778,9 @@
+@@ -499,8 +787,9 @@
          const precision_t* __restrict__ action_mask, // (B, A_total) or nullptr
          int mask_stride,                      // 0 when action_mask is nullptr
          const signed char* __restrict__ head_consume, // (nverbs, num_atns) or nullptr
@@ -873,7 +1304,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      int fused_cols = dec_out.shape[1];
      int num_atns = numel(act_sizes_puf.shape);
      const int* act_sizes = act_sizes_puf.data;
-@@ -624,12 +904,115 @@
+@@ -624,12 +913,115 @@
      rng_states[idx] = state;
  }
  
@@ -990,7 +1421,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      profile_begin("fused_rollout", hypers.profile);
  
      cudaStream_t current_stream = tl_stream;
-@@ -646,7 +1029,7 @@
+@@ -646,7 +1038,7 @@
                  && "cudaStreamBeginCapture failed");
      }
  
@@ -999,7 +1430,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      EnvBuf& env = pufferl->env;
      int block_size = pufferl->vec->total_agents / hypers.num_buffers;
      int start = buf * block_size;
-@@ -687,11 +1070,23 @@
+@@ -687,11 +1079,23 @@
      // Cudagraph capture absorbs the extra kernel launches.
      int num_banks = 1 + pufferl->num_frozen_banks;
      long act_cols = env.actions.shape[1];
@@ -1023,7 +1454,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
          Policy* p_bank;
          PolicyWeights* w_bank;
-@@ -699,7 +1094,9 @@
+@@ -699,7 +1103,9 @@
          PrecisionTensor* s_bank;
          if (b == 0) {
              p_bank = &pufferl->policy;
@@ -1034,7 +1465,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              a_bank = &pufferl->buffer_activations[buf];
              s_bank = &pufferl->buffer_states[buf];
          } else {
-@@ -722,6 +1119,15 @@
+@@ -722,6 +1128,15 @@
              mask_stride_b = mask_stride;
          }
  
@@ -1050,7 +1481,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          PrecisionTensor dec_puf = policy_forward(p_bank, *w_bank, *a_bank, obs_b, *s_bank, stream);
  
          PrecisionTensor p_logstd = {};
-@@ -733,15 +1139,34 @@
+@@ -733,15 +1148,34 @@
          // Offset RNG by bank_off so banks don't collide on per-buffer rng slots.
          int hc_stride_s = 0;
          const signed char* hc_dev_s = get_head_consume_dev(&hc_stride_s);
@@ -1090,7 +1521,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
  
      if (capturing) {
-@@ -888,6 +1313,7 @@
+@@ -888,6 +1322,7 @@
      float pg_loss, total_entropy, logratio, ratio;
      float total_log_prob = 0.0f;
      total_entropy = 0.0f;
@@ -1098,7 +1529,16 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      // Discrete-only: per-head arrays needed across forward + backward
      float head_logsumexp[MAX_ATN_HEADS];
-@@ -915,7 +1341,7 @@
+@@ -896,7 +1331,7 @@
+     int head_used[MAX_ATN_HEADS];
+ 
+     int mask_base = (a.action_mask != nullptr)
+-        ? n * a.mask_stride_n + t * a.mask_stride_t : 0;
++        ? (a.mask_idx != nullptr ? a.mask_idx[n] : n) * a.mask_stride_n + t * a.mask_stride_t : 0;
+ 
+     if (!a.is_continuous) {
+         // consumed-head gating: heads the sampled verb (head 0) does not use
+@@ -915,7 +1350,7 @@
                                a.action_mask, mask_base, &lse, &ent, &lp);
              head_logsumexp[h] = lse;
              head_entropy[h] = ent;
@@ -1107,7 +1547,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              logits_offset += A;
          }
      } else {
-@@ -927,6 +1353,7 @@
+@@ -927,6 +1362,7 @@
              ppo_continuous_head(mean, log_std, action, &lp, &ent);
              total_log_prob += lp;
              total_entropy += ent;
@@ -1115,7 +1555,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          }
      }
  
-@@ -961,6 +1388,7 @@
+@@ -961,6 +1397,7 @@
              int act = head_act[h];
              float logsumexp = head_logsumexp[h];
              float ent = head_entropy[h];
@@ -1123,7 +1563,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
              for (int j = 0; j < A; ++j) {
                  float l = load_logit_masked(a.logits, logits_base, a.logits_stride_a,
-@@ -969,7 +1397,7 @@
+@@ -969,7 +1406,7 @@
                  float p = __expf(logp);
                  float d_logit = (j == act) ? d_new_logp : 0.0f;
                  d_logit -= p * d_new_logp;
@@ -1132,7 +1572,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
                  a.grad_logits[grad_logits_base + logits_offset + j] = d_logit;
              }
              logits_offset += A;
-@@ -989,7 +1417,7 @@
+@@ -989,7 +1426,7 @@
      }
  
      // Forward: loss partials
@@ -1141,7 +1581,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      block_losses[LOSS_PG][tid] = pg_loss * inv_NT;
      block_losses[LOSS_VF][tid] = v_loss * inv_NT;
      block_losses[LOSS_ENT][tid] = total_entropy * inv_NT;
-@@ -997,6 +1425,11 @@
+@@ -997,6 +1434,11 @@
      block_losses[LOSS_OLD_APPROX_KL][tid] = (-logratio) * inv_NT;
      block_losses[LOSS_APPROX_KL][tid] = ((ratio - 1.0f) - logratio) * inv_NT;
      block_losses[LOSS_CLIPFRAC][tid] = (fabsf(ratio - 1.0f) > a.clip_coef ? 1.0f : 0.0f) * inv_NT;
@@ -1153,7 +1593,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      } // end if (idx < total_elements)
  
  // Deterministic aggregation
-@@ -1021,6 +1454,176 @@
+@@ -1021,6 +1463,183 @@
      }
  }
  
@@ -1195,7 +1635,9 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +        const int logits_base = n * a.logits_stride_n + t * a.logits_stride_t;
 +        const int values_idx = n * a.values_stride_n + t * a.values_stride_t;
 +        const int grad_logits_base = nt * a.A_total;
-+        const int mask_base = (a.action_mask != nullptr) ? n * a.mask_stride_n + t * a.mask_stride_t : 0;
++        const int mask_base = (a.action_mask != nullptr)
++            ? (a.mask_idx != nullptr ? a.mask_idx[n] : n) * a.mask_stride_n + t * a.mask_stride_t : 0;
++        precision_t* grad_row = (a.grad_fused != nullptr) ? a.grad_fused + (long)nt * a.grad_fused_stride : nullptr;
 +
 +        const float old_logp = to_float(g.old_logprobs[nt]);
 +        const float adv = to_float(g.advantages[nt]);
@@ -1224,8 +1666,11 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +        }
 +        if (lane == 0) {
 +            g.out_newvalue[nt] = from_float(val_pred);
-+            a.grad_values_pred[nt] = dL * a.vf_coef * d_val_pred;
++            if (grad_row != nullptr) grad_row[a.A_total] = from_float(dL * a.vf_coef * d_val_pred);
++            else a.grad_values_pred[nt] = dL * a.vf_coef * d_val_pred;
 +        }
++        if (grad_row != nullptr)
++            for (int j = a.A_total + 1 + lane; j < a.grad_fused_stride; j += 32) grad_row[j] = from_float(0.0f);
 +
 +        // Per head: logsumexp, entropy, chosen logit (32 lanes stride the head).
 +        const int verb = static_cast<int>(g.actions[nt * a.num_atns]);
@@ -1281,7 +1726,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +            int A = a.act_sizes[h];
 +            int used = s_used[warp][h];
 +            if (!used) {
-+                for (int j = lane; j < A; j += 32) a.grad_logits[grad_logits_base + logits_offset + j] = 0.0f;
++                if (grad_row != nullptr) for (int j = lane; j < A; j += 32) grad_row[logits_offset + j] = from_float(0.0f);
++                else for (int j = lane; j < A; j += 32) a.grad_logits[grad_logits_base + logits_offset + j] = 0.0f;
 +                logits_offset += A;
 +                continue;
 +            }
@@ -1295,7 +1741,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +                float d_logit = (j == act) ? d_new_logp : 0.0f;
 +                d_logit -= p * d_new_logp;
 +                d_logit += d_entropy_head * p * (-ent - logp);
-+                a.grad_logits[grad_logits_base + logits_offset + j] = d_logit;
++                if (grad_row != nullptr) grad_row[logits_offset + j] = from_float(d_logit);
++                else a.grad_logits[grad_logits_base + logits_offset + j] = d_logit;
 +            }
 +            logits_offset += A;
 +        }
@@ -1330,7 +1777,33 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  // Deterministic reduction of per-block PPO loss partials + count increment
  __global__ void ppo_loss_reduce(
          float* __restrict__ loss,
-@@ -1111,7 +1714,9 @@
+@@ -1091,6 +1710,11 @@
+ // This is a huge kernel for a relatively cheap operation. But without this,
+ // it's death by a thousand cuts with repeated kernel launches. Even graphed, you
+ // blow up the memory bandwidth.
++// Bopl: A_total is the decoder's output width (logits); fused_cols, the row
++// stride of dec_out, may be padded beyond A_total + 1 (models.cu decoder).
++// mask_src / mask_idx read the action mask in place from the (T, B_total, A)
++// rollout buffer (nullptr: the transposed minibatch copy in graph). grad_fused
++// (discrete only) receives the decoder gradient directly, stride grad_fused_stride.
+ void ppo_loss_fwd_bwd(
+         PrecisionTensor& dec_out,    // (N, T, fused_cols) — fused logits+value from decoder
+         PrecisionTensor& logstd,     // continuous logstd or empty
+@@ -1098,9 +1722,11 @@
+         IntTensor& act_sizes, FloatTensor& losses_acc,
+         float clip_coef, float vf_clip_coef, float vf_coef, const float* ent_coef,
+         PPOBuffersPuf& bufs, bool is_continuous,
+-        cudaStream_t stream) {
++        cudaStream_t stream, int A_total,
++        const precision_t* mask_src = nullptr, const int* mask_idx = nullptr, int mask_B_total = 0,
++        precision_t* grad_fused = nullptr, int grad_fused_stride = 0) {
+     int N = dec_out.shape[0], T = dec_out.shape[1], fused_cols = dec_out.shape[2];
+-    int A_total = fused_cols - 1;  // last column is value
++    assert(A_total + 1 <= fused_cols);
+     int total = N * T;
+ 
+     // Pointers into fused decoder output
+@@ -1111,7 +1737,9 @@
      ppo_var_mean<<<1, 256, 0, stream>>>(
          graph.mb_advantages.data, adv_var_ptr, adv_mean_ptr, numel(graph.mb_advantages.shape));
  
@@ -1341,7 +1814,32 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      static float* ppo_partials_buf = nullptr;
      static int ppo_partials_capacity = 0;
-@@ -1162,7 +1767,11 @@
+@@ -1135,7 +1763,7 @@
+         .returns = graph.mb_returns.data,
+     };
+ 
+-    bool has_mask = (graph.mb_action_mask.data != nullptr);
++    bool has_mask = (graph.mb_action_mask.data != nullptr) || (mask_src != nullptr);
+             int hc_stride_l = 0;
+         const signed char* hc_dev_l = get_head_consume_dev(&hc_stride_l);
+ PPOKernelArgs args = {
+@@ -1148,9 +1776,12 @@
+         .adv_mean = adv_mean_ptr,
+         .adv_var = adv_var_ptr,
+         .act_sizes = act_sizes.data,
+-        .action_mask = has_mask ? graph.mb_action_mask.data : nullptr,
+-        .mask_stride_n = has_mask ? T * A_total : 0,
+-        .mask_stride_t = has_mask ? A_total : 0,
++        .action_mask = mask_src != nullptr ? mask_src : (has_mask ? graph.mb_action_mask.data : nullptr),
++        .mask_stride_n = mask_src != nullptr ? A_total : (has_mask ? T * A_total : 0),
++        .mask_stride_t = mask_src != nullptr ? mask_B_total * A_total : (has_mask ? A_total : 0),
++        .mask_idx = mask_src != nullptr ? mask_idx : nullptr,
++        .grad_fused = is_continuous ? nullptr : grad_fused,
++        .grad_fused_stride = grad_fused_stride,
+         .head_consume = hc_dev_l,
+         .hc_stride = hc_stride_l,
+         .num_atns = (int)numel(act_sizes.shape),
+@@ -1162,7 +1793,11 @@
          .is_continuous = is_continuous,
      };
  
@@ -1354,7 +1852,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      ppo_loss_reduce<<<1, LOSS_N + 1, 0, stream>>>(
          bufs.loss_output.data, losses_acc.data, ppo_partials_buf, ppo_grid);
-@@ -1174,10 +1783,16 @@
+@@ -1174,10 +1809,16 @@
  #define PRIO_NUM_WARPS (PRIO_BLOCK_SIZE / PRIO_WARP_SIZE)
  __global__ void compute_prio_adv_reduction(
          const precision_t* __restrict__ advantages,
@@ -1372,7 +1870,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      float local_sum = 0.0f;
      for (int t = tx; t < stride; t += blockDim.x) {
-@@ -1196,7 +1811,8 @@
+@@ -1196,7 +1837,8 @@
      }
  }
  
@@ -1382,7 +1880,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      __shared__ float shmem[PRIO_NUM_WARPS];
      __shared__ float block_sum;
  
-@@ -1207,7 +1823,8 @@
+@@ -1207,7 +1849,8 @@
  
      float local_sum = 0.0f;
      for (int t = tx; t < length; t += blockDim.x) {
@@ -1392,7 +1890,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
      for (int s = PRIO_WARP_SIZE / 2; s >= 1; s /= 2) {
          local_sum += __shfl_down_sync(PRIO_FULL_MASK, local_sum, s);
-@@ -1223,13 +1840,14 @@
+@@ -1223,13 +1866,14 @@
              val += __shfl_down_sync(PRIO_FULL_MASK, val, s);
          }
          if (tx == 0) {
@@ -1409,7 +1907,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
  }
  
-@@ -1265,6 +1883,7 @@
+@@ -1265,6 +1909,7 @@
  
  // Multinomial with replacement (uses cuRAND)
  __global__ void multinomial_sample(int* __restrict__ out_idx, const float* __restrict__ cdf,
@@ -1417,7 +1915,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          int B, int num_samples, uint64_t seed, const int64_t* __restrict__ offset_ptr) {
      int tid = blockIdx.x * blockDim.x + threadIdx.x;
      if (tid >= num_samples) return;
-@@ -1280,6 +1899,10 @@
+@@ -1280,6 +1925,10 @@
          if (cdf[mid] < u) lo = mid + 1;
          else hi = mid;
      }
@@ -1428,7 +1926,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      out_idx[tid] = lo;
  }
  
-@@ -1288,26 +1911,31 @@
+@@ -1288,26 +1937,31 @@
  // It is a major improvement in some complex environments
  // The values of alpha and beta found by sweeps will tell you
  // whether it is important for your task
@@ -1465,7 +1963,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  }
  
  // Experience the puffer advantage! Generalized advantage estimation + V-Trace
-@@ -1464,12 +2092,24 @@
+@@ -1464,12 +2118,24 @@
  }
  
  // Minor copy bandwidth optimizations
@@ -1494,7 +1992,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
  }
  
-@@ -1496,9 +2136,9 @@
+@@ -1496,9 +2162,9 @@
  
  __global__ void select_copy(RolloutBuf rollouts, TrainGraph graph,
          const int* __restrict__ idx, const precision_t* __restrict__ advantages,
@@ -1506,7 +2004,16 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      int src_row = idx[mb];
  
      // Compute row byte counts from tensor shapes
-@@ -1535,6 +2175,11 @@
+@@ -1528,13 +2194,19 @@
+         }
+         break;
+     case 5:
+-        if (graph.mb_action_mask.data != nullptr) {
++        // Bopl: a null source means the mask is read in place (train_impl mask_gather).
++        if (graph.mb_action_mask.data != nullptr && rollouts.action_mask.data != nullptr) {
+             int mask_row_bytes = (numel(rollouts.action_mask.shape)
+                 / rollouts.action_mask.shape[0]) * sizeof(precision_t);
+             copy_bytes((const char*)rollouts.action_mask.data,
                         (char*)graph.mb_action_mask.data, src_row, mb, mask_row_bytes);
          }
          break;
@@ -1518,7 +2025,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
  }
  
-@@ -1549,11 +2194,15 @@
+@@ -1549,11 +2221,15 @@
      // Update to HypersT& p
      HypersT& hypers = pufferl.hypers;
  
@@ -1537,7 +2044,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      RolloutBuf& rollouts = pufferl.train_rollouts;
      PrecisionTensor& advantages_puf = pufferl.advantages_puf;
  
-@@ -1561,8 +2210,19 @@
+@@ -1561,8 +2237,19 @@
      int obs_size = (ndim(src.observations.shape) >= 3) ? src.observations.shape[2] : 1;
      int num_atns = (ndim(src.actions.shape) >= 3) ? src.actions.shape[2] : 1;
  
@@ -1559,9 +2066,25 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      transpose_102<<<grid_size(T*B*num_atns), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.actions.data, src.actions.data, T, B, num_atns);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1581,9 +2241,8 @@
+@@ -1575,15 +2262,23 @@
+         rollouts.ratio.data, src.ratio.data, T, B, 1);
+     transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
+         rollouts.values.data, src.values.data, T, B, 1);
+-    if (src.action_mask.data != nullptr) {
++    // Bopl: the PPO loss reads the action mask in place from the (T, B, A)
++    // rollout slot through the minibatch's segment indices (BOPL_MASK_GATHER=0
++    // restores the transposed copy + per-minibatch select_copy: 64 MB of
++    // strided writes, 0.47 ms, plus 27 MB per minibatch at w128).
++    static const bool mask_gather = !(std::getenv("BOPL_MASK_GATHER") && atoi(std::getenv("BOPL_MASK_GATHER")) == 0);
++    if (src.action_mask.data != nullptr && !mask_gather) {
+         int mask_size = src.action_mask.shape[2];
+         transpose_102<<<grid_size(T*B*mask_size), BLOCK_SIZE, 0, train_stream>>>(
              rollouts.action_mask.data, src.action_mask.data, T, B, mask_size);
      }
++    // Bopl: the PPO kernel writes the decoder's gradient buffer directly
++    // (BOPL_PPO_FUSED_GRAD=0: upstream's grad_logits/grad_values + assemble).
++    static const bool ppo_fused_grad = !(std::getenv("BOPL_PPO_FUSED_GRAD") && atoi(std::getenv("BOPL_PPO_FUSED_GRAD")) == 0);
++    bopl_decoder_set_grad_fused(ppo_fused_grad && !pufferl.is_continuous);
  
 -    // We hard-clamp rewards to -1, 1. Our envs are mostly designed to respect this range
 -    clamp_precision_kernel<<<grid_size(numel(rollouts.rewards.shape)), BLOCK_SIZE, 0, train_stream>>>(
@@ -1571,7 +2094,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      // Set importance weights to 1.0
      fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1600,10 +2259,14 @@
+@@ -1600,10 +2295,14 @@
  
      Muon* muon = &pufferl.muon;
      int total_epochs = hypers.total_timesteps / batch_size;
@@ -1587,7 +2110,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
  
      // Annealed entropy coefficient — same cosine shape as lr. With PG signal
-@@ -1617,17 +2280,25 @@
+@@ -1617,17 +2316,25 @@
                                              current_epoch, total_epochs);
      }
      // copy ent_coef to the device buffer read by the loss kernel
@@ -1617,7 +2140,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          puf_zero(&advantages_puf, train_stream);
  
          profile_begin("compute_advantage", hypers.profile);
-@@ -1639,6 +2310,13 @@
+@@ -1639,6 +2346,13 @@
              zero_frozen_advantages_cuda(advantages_puf, apb,
                  pufferl.bank_layout[1], train_stream);
          }
@@ -1631,7 +2154,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          profile_end(hypers.profile);
  
          profile_begin("compute_prio", hypers.profile);
-@@ -1646,28 +2324,43 @@
+@@ -1646,28 +2360,44 @@
          long* train_rng_offset = pufferl.rng_offset_puf.data + hypers.num_buffers;
          prio_replay_cuda(advantages_puf, prio_alpha, minibatch_segments,
              hypers.total_agents, anneal_beta,
@@ -1662,6 +2185,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 -            select_copy<<<dim3(mb_segs, channels), SELECT_COPY_THREADS, 0, train_stream>>>(
 +            int channels = 7;  // Bopl: channel 6 = terminals (5 is self-guarded)
 +            int first_channel = obs_gather ? 1 : 0;  // Bopl: encoder reads obs in place
++            if (mask_gather) sel_src.action_mask.data = nullptr;  // Bopl: channel 5 skipped (read in place)
 +            select_copy<<<dim3(mb_segs, channels - first_channel), SELECT_COPY_THREADS, 0, train_stream>>>(
                  sel_src, graph, pufferl.prio_bufs.idx.data,
 -                advantages_puf.data, pufferl.prio_bufs.mb_prio.data);
@@ -1685,7 +2209,27 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              if (capturing) {
                  assert(cudaStreamBeginCapture(train_stream, cudaStreamCaptureModeGlobal) == cudaSuccess
                          && "cudaStreamBeginCapture failed");
-@@ -1696,6 +2389,8 @@
+@@ -1683,11 +2413,18 @@
+                 p_logstd = dw_train->logstd;
+             }
+ 
++            DecoderActivations* dec_acts = (DecoderActivations*)pufferl.train_activations.decoder;
++            bool use_mask_gather = mask_gather && src.action_mask.data != nullptr;
+             ppo_loss_fwd_bwd(dec_puf, p_logstd, graph,
+                 pufferl.act_sizes_puf, pufferl.losses_puf,
+                 hypers.clip_coef, hypers.vf_clip_coef, hypers.vf_coef,
+                 pufferl.ppo_bufs_puf.ent_coef.data,
+-                pufferl.ppo_bufs_puf, pufferl.is_continuous, stream);
++                pufferl.ppo_bufs_puf, pufferl.is_continuous, stream,
++                pufferl.policy.output_dim,
++                use_mask_gather ? src.action_mask.data : nullptr,
++                use_mask_gather ? pufferl.prio_bufs.idx.data : nullptr, use_mask_gather ? B : 0,
++                ppo_fused_grad ? dec_acts->grad_out.data : nullptr,
++                ppo_fused_grad ? (int)dec_acts->grad_out.shape[1] : 0);
+ 
+             FloatTensor grad_logits_puf = pufferl.ppo_bufs_puf.grad_logits;
+             FloatTensor grad_logstd_puf = pufferl.is_continuous ? pufferl.ppo_bufs_puf.grad_logstd : FloatTensor();
+@@ -1696,6 +2433,8 @@
                  grad_logits_puf, grad_logstd_puf, grad_values_puf, stream);
  
              muon_step(&pufferl.muon, pufferl.master_weights, pufferl.grad_puf, hypers.max_grad_norm, stream);
@@ -1694,7 +2238,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              if (USE_BF16) {
                  int n = numel(pufferl.param_puf.shape);
                  cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-@@ -1705,10 +2400,11 @@
+@@ -1705,10 +2444,11 @@
                  cudaGraph_t _graph;
                  assert(cudaStreamEndCapture(train_stream, &_graph) == cudaSuccess
                          && "cudaStreamEndCapture failed");
@@ -1707,7 +2251,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
                  pufferl.train_captured = true;
              }
              pufferl.train_warmup++;
-@@ -1720,22 +2416,31 @@
+@@ -1720,22 +2460,31 @@
          {
              int num_idx = numel(pufferl.prio_bufs.idx.shape);
              int row_bytes = (numel(graph.mb_ratio.shape) / graph.mb_ratio.shape[0]) * sizeof(precision_t);
@@ -1743,7 +2287,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      if (total_minibatches > 0) {
          float ms;
-@@ -1993,6 +2698,21 @@
+@@ -1993,6 +2742,21 @@
      pufferl->env_name = env_name;
  
      cudaSetDevice(hypers.gpu_id);
@@ -1765,7 +2309,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      // Multi-GPU: initialize NCCL
      if (hypers.world_size > 1) {
-@@ -2081,13 +2801,27 @@
+@@ -2081,13 +2845,27 @@
          alloc_register(acts, &pufferl->buffer_states[i]);
      }
      int mask_size = pufferl->vec->action_mask_size;
@@ -1796,7 +2340,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      register_ppo_buffers(pufferl->ppo_bufs_puf,
          acts, minibatch_segments, hypers.horizon, decoder_output_size, is_continuous);
      register_prio_buffers(pufferl->prio_bufs,
-@@ -2106,6 +2840,14 @@
+@@ -2106,6 +2884,14 @@
      pufferl->advantages_puf = {.shape = {total_agents, horizon}};
      alloc_register(acts, &pufferl->advantages_puf);
  
@@ -1811,7 +2355,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +2864,79 @@
+@@ -2122,6 +2908,79 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -1891,7 +2435,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2178,10 +2993,11 @@
+@@ -2178,10 +3037,11 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
@@ -1904,7 +2448,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          pufferl->train_warmup = 0;
  
          // Snapshot weights + optimizer state before init-time capture
-@@ -2193,40 +3009,41 @@
+@@ -2193,40 +3053,41 @@
          cudaMalloc(&saved_momentum, wb_bytes);
          cudaMemcpy(saved_momentum, pufferl->muon.mb_puf.data, wb_bytes, cudaMemcpyDeviceToDevice);
  
@@ -1967,7 +2511,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
          // Restore weights + optimizer state corrupted by warmup/capture
          cudaMemcpy(pufferl->master_weights.data, saved_weights, wb_bytes, cudaMemcpyDeviceToDevice);
-@@ -2250,15 +3067,6 @@
+@@ -2250,15 +3111,6 @@
          pufferl->global_step = 0;
      }
  
@@ -1983,7 +2527,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      create_static_threads(vec, hypers.num_threads, horizon, pufferl.get(),
          net_callback_wrapper, thread_init_wrapper);
      static_vec_reset(vec);
-@@ -2276,21 +3084,105 @@
+@@ -2276,21 +3128,105 @@
      return pufferl;
  }
  
@@ -2091,7 +2635,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
      for (int buf = 0; buf < pufferl.hypers.num_buffers; buf++) {
          policy_activations_free(&pufferl.policy, pufferl.buffer_activations[buf]);
-@@ -2315,6 +3207,8 @@
+@@ -2315,6 +3251,8 @@
      for (int i = 0; i < NUM_TRAIN_EVENTS; i++) {
          cudaEventDestroy(pufferl.profile.events[i]);
      }
@@ -2101,8 +2645,8 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      static_vec_close(pufferl.vec);
 diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h	2026-09-12 03:12:37.374011073 -0400
-+++ b/vecenv.h	2026-09-12 03:12:37.375720247 -0400
+--- a/vecenv.h	2026-09-12 04:51:51.744564266 -0400
++++ b/vecenv.h	2026-09-12 04:51:51.747564297 -0400
 @@ -119,6 +119,12 @@
  void create_static_threads(StaticVec* vec, int num_threads, int horizon,
      void* ctx, net_callback_fn net_callback, thread_init_fn thread_init);

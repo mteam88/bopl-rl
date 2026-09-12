@@ -123,4 +123,6 @@ extern "C" double bopl_set_check_time(void* context, int iterations, int forward
     cudaEventDestroy(start); cudaEventDestroy(stop);
     return ms/iterations;
 }
+// Select the packed-row forward (BOPL_SET_PACKED) or the every-slot forward.
+extern "C" void bopl_set_check_set_packed(int packed) {bs_set_packed(packed);}
 extern "C" void bopl_set_check_close(void* context) {delete (SetCheck*)context;}

@@ -42,14 +42,17 @@ def build(output, source, compiler):
                     '-o',str(output)],check=True)
 
 
-def oracle(obs, weights, hidden, incoming):
-    """Independent functional reference; autograd supplies all four weight gradients."""
+def oracle(obs, weights, hidden, incoming, dtype=torch.float32):
+    """Independent functional reference; autograd supplies all four weight gradients.
+    float64 for large batches: at 4096 rows the CPU float32 flat gradient can be
+    off by 1e-2 relative (cancellation over the batch) where the CUDA fp32 result
+    is within 2e-5 of float64."""
     sizes=[hidden*FLAT,64*W_ENT,64*W_SLIME,hidden*(hidden+128)]
-    w=torch.tensor(weights,requires_grad=True)
+    w=torch.tensor(weights,dtype=dtype,requires_grad=True)
     flat,entity,slime,fusion=w.split(sizes)
     flat=flat.reshape(hidden,FLAT);entity=entity.reshape(64,W_ENT)
     slime=slime.reshape(64,W_SLIME);fusion=fusion.reshape(hidden,hidden+128)
-    obs=torch.from_numpy(obs)
+    obs=torch.from_numpy(obs).to(dtype)
     x=torch.cat((obs[:,:PREFIX],obs[:,PREV_OFF:]),-1)
     def pool(rows,projection):
         mask=rows[:,:,0]!=0
@@ -60,8 +63,8 @@ def oracle(obs, weights, hidden, incoming):
     entities=pool(obs[:,PREFIX:SLIME_OFF].reshape(-1,N_ENT,W_ENT),entity)
     slimes=pool(obs[:,SLIME_OFF:PREV_OFF].reshape(-1,N_SLIME,W_SLIME),slime)
     out=(torch.cat(((x@flat.T).relu(),entities,slimes),-1)@fusion.T).relu()
-    (out*torch.from_numpy(incoming)).sum().backward()
-    return out.detach().numpy(),w.grad.numpy()
+    (out*torch.from_numpy(incoming).to(dtype)).sum().backward()
+    return out.detach().float().numpy(),w.grad.float().numpy()
 
 
 class Check:
@@ -94,6 +97,62 @@ def random_obs(rng,batch):
         rows=obs[:,start:stop].reshape(batch,count,width)
         rows[:,:,0]=rng.choice([0.,1.],size=(batch,count),p=[.7,.3])
     return obs
+
+
+def packed_obs(rng,batch,counts=None):
+    """Rows laid out like bopl_encode: valid slots [0, n) with feature 0 = 1 and an
+    all-zero tail. n spans empty, the common few, the 16-slot head boundary of the
+    packed forward (15, 16, 17) and full blocks."""
+    obs=rng.normal(size=(batch,OBS)).astype(np.float32)
+    for start,stop,count,width in [(PREFIX,SLIME_OFF,N_ENT,W_ENT),(SLIME_OFF,PREV_OFF,N_SLIME,W_SLIME)]:
+        rows=obs[:,start:stop].reshape(batch,count,width)
+        pool=[0,1,2,9,10,12,15,16,17,31,32,33,64,95,96] if count==N_ENT else list(range(count+1))
+        n=rng.choice(pool,size=batch) if counts is None else np.asarray(counts)
+        n=np.minimum(n,count)
+        mask=np.arange(count)[None,:]<n[:,None]
+        rows[:,:,0]=mask
+        rows[~mask]=0
+    return obs
+
+
+def packed_cases(lib,rng):
+    """BOPL_SET_PACKED=1 (the default): on bopl_encode's layout the packed forward
+    must match the every-slot forward bit for bit (same arithmetic, fewer bytes
+    read), directly and through a captured graph, including rows that take the
+    slow path (>= 16 entities). The oracle comparison is limited to 1030 rows: at
+    4096 rows with 16..96 random slots a few fp32-vs-float64 near-ties flip a
+    pool winner and the entity gradient legitimately differs."""
+    results=[]
+    for batch,hidden in [(15,8),(1030,32),(4096,128)]:
+        obs=packed_obs(rng,batch)
+        crowded=packed_obs(rng,batch,counts=rng.integers(16,97,size=batch))
+        count=hidden*FLAT+64*(W_ENT+W_SLIME)+hidden*(hidden+128)
+        weights=(rng.normal(size=count)*.03).astype(np.float32)
+        incoming=rng.normal(size=(batch,hidden)).astype(np.float32)
+        check=Check(lib,batch,hidden)
+        try:
+            lib.bopl_set_check_set_packed(0)
+            every,every_grad=check.run(weights,obs,incoming)
+            every_slow,every_slow_grad=check.run(weights,crowded,incoming)
+            lib.bopl_set_check_set_packed(1)
+            packed,packed_grad=check.run(weights,obs,incoming)
+            np.testing.assert_array_equal(packed,every);np.testing.assert_array_equal(packed_grad,every_grad)
+            graph,graph_grad=check.run(weights,obs,incoming,True)
+            np.testing.assert_array_equal(graph,packed);np.testing.assert_array_equal(graph_grad,packed_grad)
+            slow,slow_grad=check.run(weights,crowded,incoming,True)  # replay on slow-path rows
+            np.testing.assert_array_equal(slow,every_slow);np.testing.assert_array_equal(slow_grad,every_slow_grad)
+            report=dict(batch=batch,hidden=hidden,bit_identical=True,graph_replay=True,
+                        slow_path_rows=int((obs[:,PREFIX:SLIME_OFF].reshape(batch,N_ENT,W_ENT)[:,:,0].sum(1)>=16).sum()))
+            if batch<=1030:
+                for got,got_grad,rows in ((packed,packed_grad,obs),(slow,slow_grad,crowded)):
+                    want,want_grad=oracle(rows,weights,hidden,incoming,torch.float64)
+                    np.testing.assert_allclose(got,want,rtol=2e-4,atol=1e-5)
+                    np.testing.assert_allclose(got_grad,want_grad,rtol=3e-4,atol=5e-5)
+                report.update(forward_max_abs=float(np.abs(got-want).max()),gradient_max_abs=float(np.abs(got_grad-want_grad).max()))
+            results.append(report)
+        finally:
+            check.close();lib.bopl_set_check_set_packed(0)
+    return results
 
 
 def gather_cases(lib,rng):
@@ -222,6 +281,10 @@ def main():
     lib.bopl_set_check_gather.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,np.ctypeslib.ndpointer(dtype=np.int32,flags='C_CONTIGUOUS')]
     lib.bopl_set_check_gather.restype=ctypes.c_int
     lib.bopl_set_check_time.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int];lib.bopl_set_check_time.restype=ctypes.c_double
+    lib.bopl_set_check_set_packed.argtypes=[ctypes.c_int]
+    # The random corpus below has arbitrary slot masks: every-slot forward. The
+    # production default (packed rows) is qualified by packed_cases.
+    lib.bopl_set_check_set_packed(0)
     torch.set_num_threads(1)
     rng=np.random.default_rng(73);results=[]
     # 1 / 3 / 7 rows exercise partial blocks; 1030 rows (> 4 x 192 backward
@@ -268,7 +331,8 @@ def main():
                                 gradient_max_abs=float(np.abs(grad-expected_grad).max()),
                                 graph_replay=True,permutation=True,masked_poison=True,empty_after_populated=True))
         finally:check.close()
-    report=dict(schema=2,pass_all=True,cases=results,gather=gather_cases(lib,rng),finite_differences=finite_differences(lib))
+    report=dict(schema=3,pass_all=True,cases=results,gather=gather_cases(lib,rng),packed=packed_cases(lib,rng),
+                finite_differences=finite_differences(lib))
     if args.time:report['timing']=timing(lib)
     (args.output/'result.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report))
