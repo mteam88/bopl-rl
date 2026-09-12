@@ -62,7 +62,8 @@
     const w = r.width, h = r.height, left = 44, right = 8, top = 8, bottom = 18;
     const pts = series.filter((p) => p.y != null);
     if (!pts.length) return;
-    const xs = pts.map((p) => p.x), ys = pts.flatMap((p) => [p.y, p.lo, p.hi].filter((v) => v != null));
+    const marks = (opts.mark || []).filter((p) => p.y != null);
+    const xs = pts.map((p) => p.x), ys = [...pts, ...marks].flatMap((p) => [p.y, p.lo, p.hi].filter((v) => v != null));
     const x0 = Math.min(...xs), x1 = Math.max(...xs) || 1;
     const y0 = Math.min(...ys), y1 = Math.max(...ys);
     const x = (v) => left + ((w - left - right) * (v - x0)) / (x1 - x0 || 1);
@@ -88,9 +89,9 @@
     ctx.beginPath();
     pts.forEach((p, i) => (i ? ctx.lineTo(x(p.x), y(p.y)) : ctx.moveTo(x(p.x), y(p.y))));
     ctx.stroke();
-    if (opts.mark) {
+    if (marks.length) {
       ctx.fillStyle = "#3ee0c5";
-      for (const p of opts.mark) {
+      for (const p of marks) {
         ctx.beginPath(); ctx.arc(x(p.x), y(p.y), 3.5, 0, 6.3); ctx.fill();
       }
     }
@@ -299,11 +300,12 @@
     show("sweep");
     if (!sweep) return;
     $("sweepTitle").textContent = sweep.name;
-    $("sweepLede").textContent = `${(sweep.trials || []).length} trials · Pareto ${(sweep.pareto || []).join(", ") || "none"}`;
+    const scored = (sweep.trials || []).filter((t) => t.score != null);
+    const best = scored.reduce((b, t) => (b == null || t.score > b.score ? t : b), null);
+    $("sweepLede").textContent = `${(sweep.trials || []).length} trials · ${scored.length} scored${best ? ` · best ${best.id} at ${fmt(best.score, 0)}` : ""}`;
     const params = Object.keys(((sweep.trials || []).find((t) => t.hypers) || {}).hypers || {});
-    $("sweepHead").innerHTML = ["trial", ...params, "cost", "score", "IQM3", "flags", "pareto"]
+    $("sweepHead").innerHTML = ["trial", ...params, "cost", "score", "IQM3", "flags"]
       .map((h) => `<th>${h}</th>`).join("");
-    const front = new Set(sweep.pareto || []);
     $("sweepRows").replaceChildren(...(sweep.trials || []).map((t) => {
       const tr = document.createElement("tr");
       const cells = [`<td><a href="/run/${encodeURIComponent(sweep.name + "-" + t.id)}">${t.id}</a></td>`];
@@ -315,13 +317,14 @@
       cells.push(`<td class="num">${fmt(t.score, 1)}</td>`);
       cells.push(`<td class="num">${t.unrated ? "unrated" : elo(t.rating)}</td>`);
       cells.push(`<td>${(t.flags || []).join(" ")}</td>`);
-      cells.push(`<td>${front.has(t.id) ? "*" : ""}</td>`);
       tr.innerHTML = cells.join("");
       return tr;
     }));
-    chart($("paretoChart"), (sweep.trials || []).filter((t) => t.cost != null && t.score != null).map((t) => ({
-      x: t.cost, y: t.score,
-    })), { color: "#9ec0ff", mark: (sweep.trials || []).filter((t) => front.has(t.id) && t.cost != null).map((t) => ({ x: t.cost, y: t.score })) });
+    // x = position in launch order (sweep.json order), line = best score so far, dots = each trial.
+    let running = null;
+    const points = scored.map((t, i) => ({ x: i, y: t.score }));
+    const bestSoFar = scored.map((t, i) => ({ x: i, y: (running = running == null ? t.score : Math.max(running, t.score)) }));
+    chart($("scoreChart"), bestSoFar, { color: "#9ec0ff", mark: points });
     $("connectionBox").classList.add("online");
     $("connection").textContent = "Live";
   }

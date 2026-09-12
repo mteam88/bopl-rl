@@ -20,7 +20,6 @@ from metrics_store import store
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
 import reference_pool
-import report as sweep_report
 
 
 def read_json(path, default=None):
@@ -301,9 +300,8 @@ def main():
                 spark=summary.get('spark') or [], unrated=summary.get('unrated', True),
                 game_mismatch=summary.get('game_mismatch', False),
                 is_failure=trial.get('is_failure'), early_stop=trial.get('early_stop')))
-        front = [t['id'] for t in sweep_report.pareto_front(state.get('trials') or [])]
         return dict(name=name, path=str(directory), config=state.get('config'),
-                    created=state.get('created'), trials=trials, pareto=front,
+                    created=state.get('created'), trials=trials,
                     pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
                                                     sha256=pool['pool_sha256']))
 

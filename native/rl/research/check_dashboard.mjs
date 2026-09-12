@@ -118,7 +118,7 @@ if (sweepHref) {
   }
   sweepView = await evaluate(`({
     rows: document.querySelectorAll('#sweepRows tr').length,
-    chart: document.querySelector('#paretoChart')?.width > 0,
+    chart: document.querySelector('#scoreChart')?.width > 0,
     wide: document.documentElement.scrollWidth > innerWidth
   })`);
   if (!sweepView.rows || sweepView.wide) throw Error("Sweep view failed: " + JSON.stringify(sweepView));
