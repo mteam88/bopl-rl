@@ -76,6 +76,11 @@ pub struct Player {
     /// paid again for the same input (the value is identical either way).
     #[serde(skip)]
     pub(crate) aligned: Option<(Vec2, Fix)>,
+    /// `(input, input.normalized_safe())` from the last grounded step: a
+    /// decision holds its stick for several ticks, so the square root and
+    /// divisions are usually already known (identical value either way).
+    #[serde(skip)]
+    pub(crate) input_normalized: Option<(Vec2, Vec2)>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DashState {
@@ -450,7 +455,25 @@ fn ray_group_candidates(
 
 impl Player {
     pub(crate) fn platform<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
-        platforms.iter().find(|p| Some(p.id) == self.ground)
+        self.platform_indexed(platforms)
+            .map(|(_, platform)| platform)
+    }
+    fn platform_indexed<'a>(&self, platforms: &'a [Platform]) -> Option<(usize, &'a Platform)> {
+        platforms
+            .iter()
+            .enumerate()
+            .find(|(_, p)| Some(p.id) == self.ground)
+    }
+    /// `input.normalized_safe()`, memoized on the exact input vector.
+    fn normalized_input(&mut self, input: Vec2) -> Vec2 {
+        match self.input_normalized {
+            Some((cached, normalized)) if cached == input => normalized,
+            _ => {
+                let normalized = input.normalized_safe();
+                self.input_normalized = Some((input, normalized));
+                normalized
+            }
+        }
     }
     pub(crate) fn align(&mut self, platform: &Platform) {
         self.align_to(platform.surface.normal(self.position));
@@ -505,6 +528,12 @@ impl Player {
         // the candidates are raycast per ray. When the mask is empty the rays are still issued
         // so `collision_cast` keeps its exact control flow, but cost nothing.
         let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT);
+        // No platform near any of the rays: every query would return None and
+        // `collision_cast` would only have spent a square root and divisions
+        // building rays that hit nothing.
+        if candidates == 0 {
+            return;
+        }
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
             velocity,
@@ -535,10 +564,10 @@ impl Player {
         self.apply_ground_state(motion);
     }
     fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {
-        let platform = self.platform(terrain.platforms).unwrap();
+        let (platform_index, platform) = self.platform_indexed(terrain.platforms).unwrap();
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
-        let alignment = input.normalized_safe().dot(forward);
+        let alignment = self.normalized_input(input).dot(forward);
         let into_ground = normal.dot(input);
         let sign = if alignment.abs() >= Fix::from_f32(0.2)
             || (into_ground <= Fix::ZERO && alignment.abs() >= Fix::from_f32(0.01))
@@ -565,24 +594,33 @@ impl Player {
         self.align_to(normal);
         let speed = self.grounded_speed + self.external_velocity.dot(forward);
         let velocity = forward * speed;
-        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT);
-        let (allowed, _) = crate::platform_motion::movement_limit(
-            self.position,
-            self.radius,
-            velocity,
-            DT,
-            &mut |origin, direction, distance| {
-                closest_among(
-                    terrain,
-                    candidates,
-                    origin,
-                    direction,
-                    distance,
-                    Some(platform.id),
-                )
-                .map(|(_, near, _)| ((), near))
-            },
-        );
+        // The own platform is excluded from the blocking test; with no other
+        // platform near the rays `movement_limit` would return its unblocked
+        // sentinel without any query, so skip building the rays.
+        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT)
+            & !(1u64 << platform_index);
+        let allowed = if candidates == 0 {
+            crate::platform_motion::MOVEMENT_UNBLOCKED
+        } else {
+            crate::platform_motion::movement_limit(
+                self.position,
+                self.radius,
+                velocity,
+                DT,
+                &mut |origin, direction, distance| {
+                    closest_among(
+                        terrain,
+                        candidates,
+                        origin,
+                        direction,
+                        distance,
+                        Some(platform.id),
+                    )
+                    .map(|(_, near, _)| ((), near))
+                },
+            )
+            .0
+        };
         let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
         self.local = platform
             .surface

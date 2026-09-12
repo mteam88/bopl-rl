@@ -878,6 +878,7 @@ impl RolloutWorld {
                     collider_rotation: Fix::ZERO,
                     collider_basis: Vec2::ZERO,
                     aligned: None,
+                    input_normalized: None,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
