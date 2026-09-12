@@ -3149,9 +3149,7 @@ impl RolloutWorld {
 
     fn observe_main(&mut self) {
         self.refresh_entities();
-        self.state_entities.clear();
-        self.state_entities
-            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
+        Self::publish_entities(&mut self.state_entities, &self.entities);
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
         self.slimes = slimes;
@@ -3172,9 +3170,7 @@ impl RolloutWorld {
 
     fn observe_sample(&mut self) {
         self.refresh_entities();
-        self.sample_entities.clear();
-        self.sample_entities
-            .extend(self.entities.iter().filter(|e| e.flags & E_REMOVED == 0));
+        Self::publish_entities(&mut self.sample_entities, &self.entities);
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
         self.sample_slimes = slimes;
@@ -3191,6 +3187,19 @@ impl RolloutWorld {
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
+    }
+
+    /// The live rows minus the removed ones. A plain slice copy when nothing
+    /// was removed (the common case): the element-wise filtered copy goes
+    /// through a stack temporary whose 64-byte vector reload stalls on store
+    /// forwarding and dominated this function.
+    fn publish_entities(out: &mut Vec<CEntity>, entities: &[CEntity]) {
+        out.clear();
+        if entities.iter().any(|e| e.flags & E_REMOVED != 0) {
+            out.extend(entities.iter().filter(|e| e.flags & E_REMOVED == 0));
+        } else {
+            out.extend_from_slice(entities);
+        }
     }
 
     fn flags(&self) -> u32 {

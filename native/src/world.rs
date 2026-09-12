@@ -219,49 +219,112 @@ impl World {
 
 /// The raycast broad phase: every platform's axis-aligned bounds
 /// (`RoundedRect::bounds`, already widened by `Bounds::may_reach`'s 1e-6
-/// margin) as four flat arrays, so a query tests them with a handful of
-/// contiguous loads and compares instead of re-deriving the bounds from each
-/// 150-byte `Platform`. Platforms move only in the physics stage, so the
-/// owner rebuilds this once per tick and after any mid-tick platform
-/// creation, resize or removal (`RolloutWorld::rebuild_bounds`).
+/// margin) in lanes of eight, so a query is a few vector compares instead of
+/// re-deriving the bounds from each 150-byte `Platform`. Platforms move only
+/// in the physics stage, so the owner rebuilds this once per change
+/// (`RolloutWorld::rebuild_bounds`).
 #[derive(Clone, Debug, Default)]
 pub struct PlatformBounds {
-    /// Per platform: `[max_x, min_x, max_y, min_y]`, one 32-byte load.
-    boxes: Vec<[f64; 4]>,
+    chunks: Vec<BoundsChunk>,
+    len: usize,
+}
+
+const BOUNDS_LANES: usize = 8;
+
+/// Eight platforms' bounds, one axis per array. Unused lanes hold an empty
+/// box (`max < min`) that no query meets.
+#[derive(Clone, Copy, Debug)]
+struct BoundsChunk {
+    max_x: [f64; BOUNDS_LANES],
+    min_x: [f64; BOUNDS_LANES],
+    max_y: [f64; BOUNDS_LANES],
+    min_y: [f64; BOUNDS_LANES],
+}
+
+impl BoundsChunk {
+    const EMPTY: Self = Self {
+        max_x: [f64::NEG_INFINITY; BOUNDS_LANES],
+        min_x: [f64::INFINITY; BOUNDS_LANES],
+        max_y: [f64::NEG_INFINITY; BOUNDS_LANES],
+        min_y: [f64::INFINITY; BOUNDS_LANES],
+    };
+    /// Lane bits of the boxes meeting `[lo, hi]`, as one 8-bit mask: four
+    /// ordered vector compares (a NaN lane never hits, like the scalar `<=`).
+    #[inline]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    fn candidates(&self, lo_x: f64, hi_x: f64, lo_y: f64, hi_y: f64) -> u64 {
+        use std::arch::x86_64::{
+            _CMP_GE_OQ, _CMP_LE_OQ, _mm512_cmp_pd_mask, _mm512_loadu_pd, _mm512_set1_pd,
+        };
+        // SAFETY: avx512f is a compile-time target feature here, and each
+        // array is exactly eight f64 (unaligned loads).
+        unsafe {
+            let mask = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(
+                _mm512_set1_pd(lo_x),
+                _mm512_loadu_pd(self.max_x.as_ptr()),
+            ) & _mm512_cmp_pd_mask::<_CMP_GE_OQ>(
+                _mm512_set1_pd(hi_x),
+                _mm512_loadu_pd(self.min_x.as_ptr()),
+            ) & _mm512_cmp_pd_mask::<_CMP_LE_OQ>(
+                _mm512_set1_pd(lo_y),
+                _mm512_loadu_pd(self.max_y.as_ptr()),
+            ) & _mm512_cmp_pd_mask::<_CMP_GE_OQ>(
+                _mm512_set1_pd(hi_y),
+                _mm512_loadu_pd(self.min_y.as_ptr()),
+            );
+            u64::from(mask)
+        }
+    }
+    /// Lane bits of the boxes meeting `[lo, hi]`, as one 8-bit mask.
+    #[inline]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+    fn candidates(&self, lo_x: f64, hi_x: f64, lo_y: f64, hi_y: f64) -> u64 {
+        let mut mask = 0u64;
+        for lane in 0..BOUNDS_LANES {
+            let hit = lo_x <= self.max_x[lane]
+                && hi_x >= self.min_x[lane]
+                && lo_y <= self.max_y[lane]
+                && hi_y >= self.min_y[lane];
+            mask |= u64::from(hit) << lane;
+        }
+        mask
+    }
 }
 
 impl PlatformBounds {
     pub fn rebuild(&mut self, platforms: &[Platform]) {
+        assert!(
+            platforms.len() <= 64,
+            "platform count exceeds the candidate mask"
+        );
         let margin = Fix::from_f64(1e-6);
-        self.boxes.clear();
-        self.boxes.extend(platforms.iter().map(|platform| {
+        self.len = platforms.len();
+        self.chunks.clear();
+        self.chunks
+            .resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
+        for (index, platform) in platforms.iter().enumerate() {
             let bounds = platform.collider.bounds();
-            [
-                (bounds.max.x + margin).to_f64(),
-                (bounds.min.x - margin).to_f64(),
-                (bounds.max.y + margin).to_f64(),
-                (bounds.min.y - margin).to_f64(),
-            ]
-        }));
+            let chunk = &mut self.chunks[index / BOUNDS_LANES];
+            let lane = index % BOUNDS_LANES;
+            chunk.max_x[lane] = (bounds.max.x + margin).to_f64();
+            chunk.min_x[lane] = (bounds.min.x - margin).to_f64();
+            chunk.max_y[lane] = (bounds.max.y + margin).to_f64();
+            chunk.min_y[lane] = (bounds.min.y - margin).to_f64();
+        }
     }
     pub fn len(&self) -> usize {
-        self.boxes.len()
+        self.len
     }
     pub fn is_empty(&self) -> bool {
-        self.boxes.is_empty()
+        self.len == 0
     }
     /// Bit `i` set when platform `i`'s bounds meet the axis-aligned box
     /// `[lo, hi]` (`Bounds::may_reach` for a segment with those extents).
     pub fn candidates(&self, lo: Vec2, hi: Vec2) -> u64 {
-        assert!(
-            self.boxes.len() <= 64,
-            "platform count exceeds the candidate mask"
-        );
         let (lo_x, hi_x, lo_y, hi_y) = (lo.x.to_f64(), hi.x.to_f64(), lo.y.to_f64(), hi.y.to_f64());
         let mut mask = 0u64;
-        for (index, [max_x, min_x, max_y, min_y]) in self.boxes.iter().enumerate() {
-            let hit = lo_x <= *max_x && hi_x >= *min_x && lo_y <= *max_y && hi_y >= *min_y;
-            mask |= u64::from(hit) << index;
+        for (index, chunk) in self.chunks.iter().enumerate() {
+            mask |= chunk.candidates(lo_x, hi_x, lo_y, hi_y) << (index * BOUNDS_LANES);
         }
         mask
     }
