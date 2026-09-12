@@ -48,6 +48,17 @@ The v1 freeze is checked by fixed-seed fingerprints: `check_scripted_bots.py`
 plus 20 idle-opponent games per `kind-level` must reproduce the same replay
 bytes before and after any change to the bot headers.
 
+One class of edit to `bopl_bots.h` is permitted under that check:
+performance-only transformations whose output is bit-identical (2026-09-12:
+the eight-wall AVX-512 terrain SDF kernel with the same IEEE operations in
+the same order, sphere-tracing skips that only omit evaluations whose
+verdict is already known, square roots taken only where the squared
+distance leaves the comparison open, dash raycasts skipped beyond the
+reach tolerance). Each such change must reproduce the fingerprints of all
+eight `kind-level` opponents over 200k decisions on both the vector and
+the `-DBOT_SDF_AVX512=0` scalar path before it is committed; a change
+that alters a single decision is a new kind, not an edit.
+
 ## search (kind 5, v2): rollout search on a forked sim
 
 `search-hard` / `search-medium` / `search-easy` (`bopl_bots_v2.h`) are

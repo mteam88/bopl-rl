@@ -34,7 +34,7 @@ CPU time is system time (futex/wake). `perf` user cycles, 10 s:
 |---|---|---|
 | libcuda | 35% | spin loop inside `cuStreamSynchronize` (4 buffer threads) |
 | libbopl_sim | 32% | game_tick 6.5, rounded_rounded 3.8, refresh_entities 2.8, closest 2.5, refresh_actor_entities 1.9, Vec2::angle 1.4, Vec alloc/retain/malloc ~3 |
-| libc | 13% | memmove 8.2 (obs scratch -> sample -> history -> publish), memset 2.0, malloc 1.2 |
+| libc | 13% | memmove 8.2 (obs scratch -> sample -> history -> publish; gone since 2026-09-12: the delay keeps two ~3 KB state snapshots and encodes once into the routed slot, libc is now 3.7%), memset 2.0, malloc 1.2 |
 | `_C` env | 8% | compute_observations_from 5.2 |
 | libm | 6.5% | sin 2.7, acos 0.9, fmod |
 | vdso | 3.9% | clock_gettime (native_perf timers) |
@@ -193,6 +193,12 @@ full-state write per decision (phase-3 sample + final) to one memcpy.
 No per-tick `Vec` allocation (`from_iter`/`retain`/malloc ~3%), cache
 platform bounds for `closest` (23% of sim-only), sin/acos table (libm
 6.5%). Worth ~0.1 core. Do it after A/D/E, when the sim is actually hot.
+
+Done 2026-09-12 (RUST_ROLLOUTS.md "Speed work (2026-09-12)"): 2.35x fewer
+instructions per tick, sim-only 1.9M -> 3.8M ticks/s, the observation copy
+chain and per-tick allocations removed, scripted bots 3x cheaper; at w128
+the environment time per step went 0.40 -> 0.30 ms and sps 223k -> 246k
+on the old trainer, with the GPU round trip now the binding phase.
 
 ### G. More agents per round trip (the Puffer way; 1.5-2x on top, once D lands)
 

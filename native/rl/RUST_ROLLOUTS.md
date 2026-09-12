@@ -109,6 +109,17 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 - The rollout only contains dynamic bodies needed by ids 2/4/14. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
+- f64 build only (2026-09-12): `Fix::sin` evaluates the quadrant-reduced
+  argument with fdlibm's `__kernel_sin`/`__kernel_cos` polynomials instead
+  of libm's `sin`. The result is within one ulp (~1e-16) of libm; the
+  `fast_sin` table floor to the 2^-32 grid absorbs the difference except
+  when the exact value lies within 1e-16 of a grid boundary. This is the
+  only change of the speed work that alters trajectories (300 gate episodes
+  bit-identical; over a 217-game `evaluate.py` suite 216 games are identical
+  in winner and length, one diverges in length with the same winner; the
+  trainer's fixed-seed bench moves EV 0.5985 -> 0.5926, entropy 5.7903 ->
+  5.7571, the same values every other build of the branch reproduces). The
+  q32 build keeps its table arithmetic.
 
 ## Gameplay fidelity audit (2026-09-10)
 
@@ -500,3 +511,92 @@ this shape. Inside the sim (`perf` on `benchmark.c`): `world::closest`
 need every collider write to refresh them), `acos` 11% and `sin` 10%
 (`normalized_angle` / `Vec2::angle`, the game's stored-rotation model),
 `game_tick` 9%, `refresh_entities` 8% (observation encoding, untouched).
+
+### Speed work (2026-09-12): per-decision CPU
+
+Sim-only (`benchmark.c`, 2 players, repeat 4, 400k ticks; `perf stat`
+user instructions and cycles per tick are load-independent, the rates were
+taken in one interleaved window with one other job on the box). Every row
+except the sine kernel is bit-identical to the previous one over the
+300-episode gate (`repr_ab`: 74807/74809 ticks within tolerance, 300/300
+equal length and winner) and byte-identical in observations, masks and
+rewards over 200k environment decisions (delayed, undelayed and
+no-autoreset paths).
+
+| build (commit) | ins/tick | cycles/tick | stepping ticks/s |
+|---|---|---|---|
+| main 59be9a2 | 9314 | 2750 | 1.91M |
+| release profile lto=fat, codegen-units=1 | 9130 | 2701 | 1.95M |
+| + `target-cpu=native` (fab5039) | 7867 | 2540 | 2.05M |
+| + fdlibm sine kernel, branch period reduction, align/basis caches (9f43e11) | 7235 | 2604 | 1.99M |
+| + cached platform bounds, one broad phase per 3-ray group (f8e9474) | 5802 | 1863 | 2.75M |
+| + libm-free `Fix::raw`, platform epoch skips (b0c3a57) | 4678 | 1572 | 3.32M |
+| + slice-copy publish, AVX-512 candidate mask (377ff7f) | 4328 | 1518 | 3.44M |
+| + no rays without candidates, one sqrt in movement_limit, input memo (f2c1b86) | 4056 | 1390 | 3.71M |
+| + platform stage reuses its buffers (39ef3f0), stack winner check (c816dcb) | 3958 | 1372 | 3.77M |
+
+2.35x fewer instructions and 2.0x fewer cycles per tick; the reset cost
+went from 14.7 to 6.2 us. The sine kernel row is slower in cycles on its
+own (the libm call it replaces was well predicted) and pays off once the
+callers around it shrink; it is kept for the instruction count.
+
+Where the sim's time goes now (`perf` on `benchmark.c`, final build):
+`game_tick` 19% (flat: the per-player ability/movement dispatch),
+`move_grounded` 12%, `refresh_actor_entities` 11% (the entity rows the
+DetPhysics sweep axis reads every tick, mostly `Fix::raw` conversions),
+`normal_and_zone` 8%, `collision_rays` 5%, `fast_sin` 4%, `sin` 4%
+(`Surface::position` corners, dash), `acos` 4% (`align`), `step` 4%,
+`Surface::position` 3%, `edge_hits` 3%, `sync_collider` 2%, `fill_slimes`
+2%. No per-tick heap allocation remains on the common path (the dash
+target collect and arrow contact lists allocate only when they have
+entries). Deferring `refresh_actor_entities` to the observation was
+measured as a 6-12% cycle bound and rejected: `platform_pairs` reads
+every row's position for the sweep axis whenever two or more platforms
+exist, so the per-tick pass is part of the physics, not the export.
+
+Environment side (`bopl_puffer.h`, no bots, `env_bench`, 200k decisions,
+9-tick delay): 3.2 us per decision of which the four ticks are ~1.6 us,
+`bopl_encode` 0.5 us (two rows), the two state exports (`observe_sample`
+at phase 3, `observe_main` at the end: entity rows, slime rows, header)
+~0.3 us and the phase-3 state snapshot ~0.05 us. The delay path used to
+copy the 13 KB observation four times per decision (scratch -> sample ->
+history -> publish) and memset it twice; it now encodes each observation
+exactly once into its routed slot from a ~3 KB state snapshot and zeroes
+only the entity/slime/player slots the previous encode into that row left
+non-zero. Trainer bench (`bench_shape.sh`, w128 b4 p4, 300 updates, the
+branch's own trainer, i.e. without the later trainer-side work; the
+`eval_env` column is the environment time per step):
+
+| build | sps | learner sps | rollout ms/step | eval_gpu | eval_env | EV | entropy |
+|---|---|---|---|---|---|---|---|
+| main 59be9a2 | 222866 | 167149 | 0.7179 | 0.2914 | 0.3977 | 0.5985 | 5.7903 |
+| new header, main .so | 231104 | 173328 | 0.6778 | 0.3211 | 0.3263 | 0.5985 | 5.7903 |
+| + sim .so, bots | 237279 | 177959 | 0.6494 | 0.3452 | 0.2742 | 0.5926 | 5.7571 |
+| + tracked zero tails (823e3d0) | 245542 | 184156 | 0.6115 | 0.2927 | 0.2979 | 0.5926 | 5.7571 |
+
+`perf` shares of the trainer process (10 s mid-run): before, libcuda 35.8%,
+libbopl_sim 27.7 (game_tick 4.9, rounded_rounded 2.8, closest 2.8,
+refresh_entities 2.3, refresh_actor_entities 1.8), libc 13.0 (memmove 8.6,
+memset 2.0, malloc 0.9), `_C` 12.8 (compute_observations_from 4.4,
+bot_shot_clear 1.6, bot_predict_foe 1.2, bot_surface_y 1.0), libm 5.8,
+vdso 4.0. After, libcuda 49.5%, libbopl_sim 28.3 (game_tick 9.0,
+rounded_rounded 3.6, refresh_actor_entities 2.0, fast_sin 1.8), `_C` 10.3
+(bopl_encode 4.6, c_step 1.6, bot_sdf_avx512 1.6), vdso 5.4, libc 3.7
+(memmove 0.9, malloc 0.9), libm 1.6. The absolute environment work per
+step fell by ~40% at this shape while the GPU round trip did not move, so
+the spin in `cuStreamSynchronize` takes the freed share.
+
+Scripted bots (`bopl_bots.h`, v1 code frozen by SCRIPTED_BOTS.md): every
+edit is a bit-identical transformation checked by fixed-seed fingerprints
+of all eight `kind-level` opponents (observation, mask, reward, terminal and
+applied-action hashes over 200k decisions, both the AVX-512 and the
+`-DBOT_SDF_AVX512=0` scalar path). mixed-hard 24.1 -> 7.3 us per decision,
+archer-v2-hard 30.7 -> 8.1 (including the ~3 us of ticks and encode).
+
+Intentional deviations of this branch, all documented above or in the
+code: the fdlibm sine kernel (the only trajectory change, quantified in
+"Known approximations"); `target-cpu=native` in `.cargo/config.toml` (the
+trainer .so runs on the box that built it; not portable); the observation
+overflow telemetry is counted when a state is sampled rather than when it
+is published (same totals, two decisions earlier); the golden movement
+projection drops the Rust-only bookkeeping fields (`golden.py`).
