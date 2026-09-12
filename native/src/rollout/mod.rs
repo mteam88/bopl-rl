@@ -9,7 +9,7 @@
 use crate::{
     fixed::Fix,
     geometry::{Circle, OrientedBox, RoundedRect},
-    physics::{Body, positional_correction, resolve},
+    physics::{Body, Contact, positional_correction, resolve},
     random::Random,
     surface::Surface,
     vector::Vec2,
@@ -429,6 +429,20 @@ impl PlayerSlot {
     }
 }
 
+/// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
+/// are meaningless between ticks; never copied by `fork_from`).
+#[derive(Default)]
+struct PlatformScratch {
+    others: Vec<Vec2>,
+    bounds: Vec<[Vec2; 2]>,
+    active: Vec<usize>,
+    window: Vec<usize>,
+    pairs: Vec<[usize; 2]>,
+    callback_colliders: Vec<RoundedRect>,
+    contacts: Vec<(usize, usize, Contact)>,
+    squished: Vec<usize>,
+}
+
 pub struct RolloutWorld {
     pub valid: bool,
     pub failed: bool,
@@ -457,6 +471,9 @@ pub struct RolloutWorld {
     /// `platform_epoch` at which `platforms_tick` last found every body at
     /// rest at its home, so the check need not be repeated until a change.
     quiet_epoch: u64,
+    /// Buffers of the platform physics stage, kept between ticks so a level
+    /// with moving platforms does not allocate on every tick.
+    scratch: PlatformScratch,
     /// Parallel to `platforms`: rigid body and home spring state.
     pub platform_dynamics: Vec<PlatformDynamics>,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
@@ -524,6 +541,7 @@ impl RolloutWorld {
             bounds_epoch: 0,
             platform_rows_epoch: 0,
             quiet_epoch: 0,
+            scratch: PlatformScratch::default(),
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
@@ -619,6 +637,7 @@ impl RolloutWorld {
             bounds_epoch: _,
             platform_rows_epoch: _,
             quiet_epoch: _,
+            scratch: _,
             platform_dynamics: _,
             platform_defs: _,
             platform_entities: _,
@@ -2529,32 +2548,35 @@ impl RolloutWorld {
 
     /// Stable rounded-rectangle broad phase, matching the RR subset of the
     /// generic DetPhysics sweep (strict touching-edge rejection included).
-    fn platform_pairs(&self) -> Vec<[usize; 2]> {
+    fn platform_pairs(&self, scratch: &mut PlatformScratch) {
+        scratch.pairs.clear();
         if self.platforms.len() < 2 {
-            return Vec::new();
+            return;
         }
         // DetPhysics picks the sweep axis from every registered collider:
         // the mean over the active ones, the spread over all of them,
         // including frozen inactive hurtboxes (DetPhysics.cs:2827-2894).
         // Rounded rectangles have just integrated; the other rows were
         // synced by `refresh_actor_entities`.
-        let others: Vec<Vec2> = self
-            .entities
-            .iter()
-            .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
-            .map(|e| {
-                (
-                    Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
-                    e.flags & 3 == 3,
-                )
-            })
-            .filter_map(|(p, active)| active.then_some(p))
-            .collect();
+        let others = &mut scratch.others;
+        others.clear();
+        others.extend(
+            self.entities
+                .iter()
+                .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
+                .map(|e| {
+                    (
+                        Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
+                        e.flags & 3 == 3,
+                    )
+                })
+                .filter_map(|(p, active)| active.then_some(p)),
+        );
         let mut mean = Vec2::ZERO;
         for platform in &self.platforms {
             mean += platform.surface.center;
         }
-        for p in &others {
+        for p in others.iter() {
             mean += *p;
         }
         mean = mean / Fix::from_int((self.platforms.len() + others.len()) as i64);
@@ -2574,30 +2596,32 @@ impl RolloutWorld {
         let sweep_x = variance.x > variance.y;
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
-        let bounds: Vec<_> = self
-            .platforms
-            .iter()
-            .map(|platform| {
-                let r = platform.collider;
-                let extent = Vec2::new(
-                    r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
-                    r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
-                );
-                [r.inner.center - extent, r.inner.center + extent]
-            })
-            .collect();
-        let mut active: Vec<_> = (0..self.platforms.len()).collect();
+        let bounds = &mut scratch.bounds;
+        bounds.clear();
+        bounds.extend(self.platforms.iter().map(|platform| {
+            let r = platform.collider;
+            let extent = Vec2::new(
+                r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
+                r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
+            );
+            [r.inner.center - extent, r.inner.center + extent]
+        }));
+        let bounds = &*bounds;
+        let active = &mut scratch.active;
+        active.clear();
+        active.extend(0..self.platforms.len());
         active.sort_by(|&a, &b| {
             (axis(bounds[a][0]) - axis(bounds[b][0]))
                 .sign()
                 .cmp(&0)
                 .then(a.cmp(&b))
         });
-        let mut pairs = Vec::new();
-        let mut window = Vec::new();
-        for b in active {
+        let pairs = &mut scratch.pairs;
+        let window = &mut scratch.window;
+        window.clear();
+        for &b in active.iter() {
             window.retain(|&a: &usize| axis(bounds[a][1]) > axis(bounds[b][0]));
-            for &a in &window {
+            for &a in window.iter() {
                 if other(bounds[a][1]) <= other(bounds[b][0])
                     || other(bounds[a][0]) >= other(bounds[b][1])
                 {
@@ -2611,7 +2635,6 @@ impl RolloutWorld {
             }
             window.push(b);
         }
-        pairs
     }
 
     /// Rounded-platform rigid-body stage. The order matches DetPhysics:
@@ -2842,22 +2865,25 @@ impl RolloutWorld {
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
-        let callback_colliders: Vec<_> = self.platforms.iter().map(|p| p.collider).collect();
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.callback_colliders.clear();
+        scratch
+            .callback_colliders
+            .extend(self.platforms.iter().map(|p| p.collider));
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.
-        let contacts: Vec<_> = self
-            .platform_pairs()
-            .into_iter()
-            .filter_map(|[a, b]| {
-                crate::physics::contact::rounded_rounded(
-                    self.platforms[a].collider,
-                    self.platforms[b].collider,
-                )
-                .map(|contact| (a, b, contact))
-            })
-            .collect();
-        for (a, b, contact) in contacts {
+        self.platform_pairs(&mut scratch);
+        scratch.contacts.clear();
+        for &[a, b] in &scratch.pairs {
+            if let Some(contact) = crate::physics::contact::rounded_rounded(
+                self.platforms[a].collider,
+                self.platforms[b].collider,
+            ) {
+                scratch.contacts.push((a, b, contact));
+            }
+        }
+        for &(a, b, contact) in &scratch.contacts {
             let pos_a = self.platforms[a].surface.center;
             let pos_b = self.platforms[b].surface.center;
             let (body_a, body_b) = if a < b {
@@ -2880,22 +2906,25 @@ impl RolloutWorld {
         // rounded rectangle contains its squish point (the stock player
         // prefab uses the body centre). Player boxes are triggers, so this is
         // a callback effect rather than a rigid-body response.
-        let squished: Vec<_> = self
-            .players
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
-            .filter(|(_, slot)| {
-                callback_colliders.iter().enumerate().any(|(i, &collider)| {
-                    Some(self.platforms[i].id) != slot.base.ground
-                        && collider.overlaps(slot.base.position)
+        let callback_colliders = &scratch.callback_colliders;
+        scratch.squished.clear();
+        scratch.squished.extend(
+            self.players
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
+                .filter(|(_, slot)| {
+                    callback_colliders.iter().enumerate().any(|(i, &collider)| {
+                        Some(self.platforms[i].id) != slot.base.ground
+                            && collider.overlaps(slot.base.position)
+                    })
                 })
-            })
-            .map(|(index, _)| index)
-            .collect();
-        for index in squished {
+                .map(|(index, _)| index),
+        );
+        for &index in &scratch.squished {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true);
         }
+        self.scratch = scratch;
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is
         // intentionally not synchronized: its UpdateSim copied the platform's
