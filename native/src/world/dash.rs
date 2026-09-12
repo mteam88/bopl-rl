@@ -6,19 +6,20 @@ impl Player {
         &mut self,
         action: Action,
         movement_input: Vec2,
-        platforms: &[Platform],
+        terrain: Terrain,
     ) {
+        let platforms = terrain.platforms;
         let mut old = self.clone();
         // OldUpdate enters the ability, but SlimeController.UpdateSim still calls
         // Move once on its now-inactive original body before returning.
         if old.grounded {
-            old.move_grounded(movement_input, platforms);
+            old.move_grounded(movement_input, terrain);
         } else {
             old.velocity += Vec2::new(movement_input.x * old.constants.air_accel, Fix::ZERO);
             old.velocity += (-Vec2::RIGHT)
                 * (old.constants.air_accel / (old.constants.max_speed + old.constants.air_accel))
                 * old.velocity.x;
-            old.collision_rays(platforms);
+            old.collision_rays(terrain);
         }
         self.dash.saved_local = old.local;
         if self.grounded {
@@ -51,7 +52,8 @@ impl Player {
         self.dash.input = action.direction();
         self.cooldown = Fix::ZERO;
     }
-    pub(super) fn dash_step(&mut self, action: Action, platforms: &[Platform]) {
+    pub(super) fn dash_step(&mut self, action: Action, terrain: Terrain) {
+        let platforms = terrain.platforms;
         self.dash.time += DT;
         if self.dash.time < Fix::from_raw(42_949_672) {
             let aim = action.direction();
@@ -82,7 +84,7 @@ impl Player {
             self.velocity = Vec2::ZERO;
             self.external_velocity = Vec2::ZERO;
             if let Some((index, _, position)) = closest(
-                platforms,
+                terrain,
                 self.position,
                 self.dash.input,
                 Fix::from_int(13),

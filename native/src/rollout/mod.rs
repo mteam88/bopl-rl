@@ -13,8 +13,19 @@ use crate::{
     random::Random,
     surface::Surface,
     vector::Vec2,
-    world::{Action, DT, DashState, Platform, Player},
+    world::{Action, DT, DashState, Platform, PlatformBounds, Player, Terrain},
 };
+
+/// `Terrain` over this world's platforms, as a field-level borrow so a
+/// player can be stepped (`&mut self.players[i]`) against it.
+macro_rules! terrain {
+    ($world:expr) => {
+        Terrain {
+            platforms: &$world.platforms,
+            bounds: &$world.bounds,
+        }
+    };
+}
 
 pub mod abi;
 pub mod data;
@@ -432,6 +443,8 @@ pub struct RolloutWorld {
     pub rng: Random,
     pub players: Vec<PlayerSlot>,
     pub platforms: Vec<Platform>,
+    /// Raycast broad phase over `platforms` (`rebuild_bounds`).
+    pub bounds: PlatformBounds,
     /// Parallel to `platforms`: rigid body and home spring state.
     pub platform_dynamics: Vec<PlatformDynamics>,
     /// Parallel to `platforms`: index into the map's PlatformDef list, or
@@ -494,6 +507,7 @@ impl RolloutWorld {
             rng: Random::new(1),
             players: Vec::with_capacity(MAX_PLAYERS),
             platforms: Vec::with_capacity(64),
+            bounds: PlatformBounds::default(),
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
@@ -540,6 +554,7 @@ impl RolloutWorld {
         self.rng = src.rng;
         self.players.clone_from(&src.players);
         self.platforms.clone_from(&src.platforms);
+        self.bounds.clone_from(&src.bounds);
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
@@ -579,6 +594,7 @@ impl RolloutWorld {
             rng: _,
             players: _,
             platforms: _,
+            bounds: _,
             platform_dynamics: _,
             platform_defs: _,
             platform_entities: _,
@@ -947,11 +963,12 @@ impl RolloutWorld {
 
     /// One movement-only tick (used for warmup settling).
     fn movement_tick(&mut self, actions: &[Action]) {
+        self.rebuild_bounds();
         for (index, action) in actions.iter().enumerate() {
             if !self.players[index].base.alive {
                 continue;
             }
-            self.players[index].base.step(*action, &self.platforms);
+            self.players[index].base.step(*action, terrain!(self));
         }
         for slot in &mut self.players {
             if slot.base.alive {
@@ -1122,6 +1139,8 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        // Platforms moved in the previous tick's physics stage.
+        self.rebuild_bounds();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
         // player/ability prefab (100,000,000+). A death produced by a player
         // component or DetPhysics is therefore visible to the match result
@@ -1290,7 +1309,7 @@ impl RolloutWorld {
             // (SlimeController.cs:712): on a landing tick that is the
             // AttachToGround position, before Move slides along the surface.
             if !slot.base.grounded {
-                slot.base.gravity_step(&self.platforms);
+                slot.base.gravity_step(terrain!(self));
             }
             slot.reported_position = slot.base.position;
             for s in 0..3 {
@@ -1327,7 +1346,7 @@ impl RolloutWorld {
                     // (SlimeController.cs:1084), which is what its record
                     // shows for the rest of the ability.
                     let mut frozen = slot.base.clone();
-                    frozen.move_only(movement_input, &self.platforms);
+                    frozen.move_only(movement_input, terrain!(self));
                     slot.ability_origin = frozen.position;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
@@ -1476,14 +1495,14 @@ impl RolloutWorld {
         };
         self.players[index]
             .base
-            .move_step(masked, movement_input, &self.platforms);
+            .move_step(masked, movement_input, terrain!(self));
     }
 
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
         self.players[index]
             .base
-            .move_step(action, movement_input, &self.platforms);
+            .move_step(action, movement_input, terrain!(self));
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
@@ -1498,7 +1517,7 @@ impl RolloutWorld {
                 // with the leave velocity: the slime can land on the ejection
                 // tick, after the ejected position was published.
                 slot.exit_to_fall();
-                slot.base.collision_rays(&self.platforms);
+                slot.base.collision_rays(terrain!(self));
             }
         }
         let dash_cast = {
@@ -1511,7 +1530,7 @@ impl RolloutWorld {
         };
         if let Some((origin, direction, caster_id)) = dash_cast {
             let wall =
-                crate::world::closest(&self.platforms, origin, direction, Fix::from_int(13), None)
+                crate::world::closest(terrain!(self), origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
 
             // Dash.performDash raycasts the Projectile layer too. It first
@@ -1595,7 +1614,7 @@ impl RolloutWorld {
         let b = &mut self.players[index].bow;
         if b.has_fired {
             if b.fire_ticks_left == 0 {
-                bow_exit(&mut self.players[index], &self.platforms);
+                bow_exit(&mut self.players[index], terrain!(self));
                 return;
             }
             b.fire_ticks_left -= 1;
@@ -1644,7 +1663,11 @@ impl RolloutWorld {
         let mut exit = false;
         let this = &mut *self;
         let slot = &mut this.players[index];
-        let platforms: &[Platform] = &this.platforms;
+        let terrain = Terrain {
+            platforms: &this.platforms,
+            bounds: &this.bounds,
+        };
+        let platforms: &[Platform] = terrain.platforms;
         // Bow's boundary component runs after BowTransform but before
         // PlayerBody performs this pass's position integration; its
         // ExitAbility deactivates the Bow, so the body is never integrated.
@@ -1664,7 +1687,7 @@ impl RolloutWorld {
                 exit = true;
             } else {
                 // Grounded aiming: physics.Move(zero) = friction, stay attached.
-                slot.base.step(Action::default(), platforms);
+                slot.base.step(Action::default(), terrain);
             }
         } else if !slot.bow.has_fired {
             // Airborne aiming: near-frozen fall (gravity_modifier 0.03), the
@@ -1678,11 +1701,11 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            slot.base.collision_rays(platforms);
+            slot.base.collision_rays(terrain);
             if slot.base.grounded {
                 // Landed while aiming: physics.Move(zero) in the same pass
                 // (BowTransform.cs:240-243); the shot later exits on landing.
-                slot.base.move_only(Vec2::ZERO, platforms);
+                slot.base.move_only(Vec2::ZERO, terrain);
             } else if slot.base.velocity.length() > bow.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * bow.max_slow_mo_speed;
             }
@@ -1701,7 +1724,7 @@ impl RolloutWorld {
                 false,
             )
             .expect("valid bow gravity constants");
-            slot.base.collision_rays(platforms);
+            slot.base.collision_rays(terrain);
             if slot.base.grounded {
                 exit = true;
             } else {
@@ -1728,7 +1751,7 @@ impl RolloutWorld {
             }
         }
         if exit {
-            bow_exit(slot, platforms);
+            bow_exit(slot, terrain);
         }
     }
 
@@ -1894,7 +1917,7 @@ impl RolloutWorld {
                     // body may already have reattached for the next tick.
                     slot.reported_position = slot.base.position;
                     slot.reported_tick = self.tick;
-                    slot.base.collision_rays(&self.platforms);
+                    slot.base.collision_rays(terrain!(self));
                 }
             }
         }
@@ -2120,6 +2143,13 @@ impl RolloutWorld {
                 p.platform.platform_index -= 1;
             }
         }
+        self.rebuild_bounds();
+    }
+
+    /// Refresh the raycast broad phase after platforms moved, changed shape
+    /// or were added/removed (`world::PlatformBounds`).
+    fn rebuild_bounds(&mut self) {
+        self.bounds.rebuild(&self.platforms);
     }
 
     fn reshape_platform(&mut self, index: usize, center: Vec2, extents: Vec2, radius: Fix) {
@@ -2156,6 +2186,7 @@ impl RolloutWorld {
         dynamics.body.inverse_mass = Fix::ONE / mass;
         dynamics.body.inverse_inertia = Fix::ONE / inertia;
         dynamics.home_position += center - old_center;
+        self.rebuild_bounds();
     }
 
     fn spawn_arrow(
@@ -3203,10 +3234,18 @@ impl RolloutWorld {
                 // Box.SetRotation: axis length `One / inverseExtents`, not
                 // `extents`. An active row is the synced Player-layer box
                 // itself (the slime is never dashing while its row is active).
-                let hurtbox = if body_active {
-                    slot.base.collider
+                // By reference: a by-value copy of the 64-byte box followed
+                // by a vector reload of its axes stalls on store forwarding.
+                let rebuilt;
+                let hurtbox: &OrientedBox = if body_active {
+                    &slot.base.collider
                 } else {
-                    OrientedBox::from_basis(center, Vec2::angle(angle), data.player.hurtbox_extents)
+                    rebuilt = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(angle),
+                        data.player.hurtbox_extents,
+                    );
+                    &rebuilt
                 };
                 body.right_x = hurtbox.right.x.raw();
                 body.right_y = hurtbox.right.y.raw();
@@ -3699,7 +3738,8 @@ impl RolloutWorld {
 
 /// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
 /// fire animation's end (BowTransform.cs:116-130).
-fn bow_exit(slot: &mut PlayerSlot, platforms: &[Platform]) {
+fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
+    let platforms = terrain.platforms;
     slot.active = ActiveAbility::None;
     slot.exit_to_fall();
     if slot.base.grounded {
@@ -3733,7 +3773,7 @@ fn bow_exit(slot: &mut PlayerSlot, platforms: &[Platform]) {
         slot.base.force_unground(platforms);
         slot.reported_position = slot.base.position; // Ability.cs:151
         slot.base.ground = None;
-        slot.base.collision_rays(platforms);
+        slot.base.collision_rays(terrain);
     }
 }
 
