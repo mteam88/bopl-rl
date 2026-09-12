@@ -20,6 +20,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <stdexcept>
+#include <type_traits>
 #include "bopl_layout.h"
 
 static_assert(!USE_BF16, "bopl_set_encoder.cu: the fused kernels assume PRECISION_FLOAT");
@@ -681,10 +682,6 @@ __global__ void bs_unpad_rows(float* __restrict__ dst, const float* __restrict__
     int r=i/BS_FLAT, c=i-r*BS_FLAT;
     dst[i]=src[r*pad+c];
 }
-__global__ void bs_to_bf16(__nv_bfloat16* __restrict__ dst, const float* __restrict__ src, int count) {
-    int i=blockIdx.x*blockDim.x+threadIdx.x;
-    if(i<count) dst[i]=__float2bfloat16(src[i]);
-}
 // ReLU in place on the flat columns [0, H) of joined (B, H+128).
 __global__ void bs_relu_flat(float* joined, int B, int H) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -701,13 +698,16 @@ __global__ void bs_relu_grad(precision_t* dst, const precision_t* grad,
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i<count) dst[i]=to_float(output[i])>0.0f ? grad[i] : from_float(0.0f);
 }
-// grad_flat = grad_joined[:, :H] masked by the ReLU output stored in joined.
-__global__ void bs_flat_grad(precision_t* dst, const precision_t* joined_grad,
+// grad_flat = grad_joined[:, :H] masked by the ReLU output stored in joined
+// (fp32, or bf16 straight into the bf16 flat weight-gradient GEMM operand).
+template<typename T>
+__global__ void bs_flat_grad(T* dst, const precision_t* joined_grad,
                              const precision_t* joined, int B, int H) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=B*H) return;
     long j=(long)(i/H)*(H+2*BS_E)+i%H;
-    dst[i]=to_float(joined[j])>0.0f ? joined_grad[j] : from_float(0.0f);
+    float g=to_float(joined[j])>0.0f ? to_float(joined_grad[j]) : 0.0f;
+    if constexpr(std::is_same<T,__nv_bfloat16>::value) dst[i]=__float2bfloat16(g); else dst[i]=from_float(g);
 }
 
 // out(B, N) = a(B, K) @ w(N, K)^T written with row stride ldc (cuBLAS, same
@@ -715,22 +715,25 @@ __global__ void bs_flat_grad(precision_t* dst, const precision_t* joined_grad,
 // unless BOPL_TF32=0): with exact fp32 this 24576 x 948 x 128 GEMM ran an
 // fp32 SIMT kernel, 1.07 ms of the minibatch on 16 SMs, 0.6 ms as TF32. The
 // rollout forward keeps exact fp32 (its 112-row GEMM is a few microseconds).
-static void bs_mm_ldc(PrecisionTensor* a, PrecisionTensor* w, precision_t* out, int ldc, cudaStream_t stream,
-                      cublasComputeType_t compute=CUBLAS_COMPUTE_PRECISION) {
+// relu: ReLU fused into the GEMM epilogue when the tuned cublasLt path runs
+// it (training stream); returns whether it did.
+static bool bs_mm_ldc(PrecisionTensor* a, PrecisionTensor* w, precision_t* out, int ldc, cudaStream_t stream,
+                      cublasComputeType_t compute=CUBLAS_COMPUTE_PRECISION, bool relu=false) {
     int M=a->shape[0], K=a->shape[1], N=w->shape[0];
     float alpha=1.0f, beta=0.0f;
     cublasHandle_t handle=cublas_get_handle(stream);
     cublasSetStream(handle,stream);
-    bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,N,M,K,&alpha,w->data,K,a->data,K,&beta,out,ldc,compute);
+    return bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,N,M,K,&alpha,w->data,K,a->data,K,&beta,out,ldc,compute,
+                     CUBLAS_PRECISION,relu ? CUBLASLT_EPILOGUE_RELU : CUBLASLT_EPILOGUE_DEFAULT);
 }
 // bf16 flat GEMMs (fp32 accumulate, fp32 out). Forward: joined[:, :H] (ldc) =
 // x(B, pad) @ w(H, pad)^T; backward: dw(H, pad) = g(B, H)^T @ x(B, pad).
-static void bs_mm_flat_bf16(const void* x, int B, int pad, const void* w, int H, float* out, int ldc, cudaStream_t stream) {
+static bool bs_mm_flat_bf16(const void* x, int B, int pad, const void* w, int H, float* out, int ldc, cudaStream_t stream, bool relu) {
     float alpha=1.0f, beta=0.0f;
     cublasHandle_t handle=cublas_get_handle(stream);
     cublasSetStream(handle,stream);
-    bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,H,B,pad,&alpha,(const float*)w,pad,(const float*)x,pad,&beta,out,ldc,
-              CUBLAS_COMPUTE_32F,CUDA_R_16BF);
+    return bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,H,B,pad,&alpha,(const float*)w,pad,(const float*)x,pad,&beta,out,ldc,
+                     CUBLAS_COMPUTE_32F,CUDA_R_16BF,relu ? CUBLASLT_EPILOGUE_RELU : CUBLASLT_EPILOGUE_DEFAULT);
 }
 static void bs_mm_flat_wgrad_bf16(const void* g, int B, int H, const void* x, int pad, float* dw, cudaStream_t stream) {
     float alpha=1.0f, beta=0.0f;
@@ -786,18 +789,21 @@ static PrecisionTensor bs_forward(void* weights, void* activations, PrecisionTen
     kernel<<<bs_fwd_blocks(B),BS_FWD_THREADS,0,stream>>>(
         input.data,a->gather,B,H,w->entity.data,w->slime.data,
         a->flat_input.data,flat_width,a->train && a->flat_bf16,a->joined.data,a->entity_winner.data,a->slime_winner.data);
+    bool relu_done;
     if(a->train && a->flat_bf16) {
         bs_pad_rows_bf16<<<grid_size(H*flat_width),BLOCK_SIZE,0,stream>>>((__nv_bfloat16*)a->flat_pad.data,w->flat.data,H,flat_width);
-        bs_mm_flat_bf16(a->flat_input.data,B,flat_width,a->flat_pad.data,H,a->joined.data,H+2*BS_E,stream);
+        relu_done=bs_mm_flat_bf16(a->flat_input.data,B,flat_width,a->flat_pad.data,H,a->joined.data,H+2*BS_E,stream,true);
     } else if(a->train) {
         bs_pad_rows<<<grid_size(H*flat_width),BLOCK_SIZE,0,stream>>>(a->flat_pad.data,w->flat.data,H,flat_width);
-        bs_mm_ldc(&a->flat_input,&a->flat_pad,a->joined.data,H+2*BS_E,stream,bopl_cublas_compute_type());
+        relu_done=bs_mm_ldc(&a->flat_input,&a->flat_pad,a->joined.data,H+2*BS_E,stream,bopl_cublas_compute_type(),true);
     } else {
-        bs_mm_ldc(&a->flat_input,&w->flat,a->joined.data,H+2*BS_E,stream);
+        relu_done=bs_mm_ldc(&a->flat_input,&w->flat,a->joined.data,H+2*BS_E,stream);
     }
-    bs_relu_flat<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->joined.data,B,H);
-    puf_mm(&a->joined,&w->fusion,&a->out,stream);
-    bs_relu<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->out.data,B*H);
+    if(!relu_done) bs_relu_flat<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->joined.data,B,H);
+    // out = relu(joined @ fusion^T): puf_mm's GEMM, ReLU in the epilogue when tuned.
+    if(a->train) relu_done=bs_mm_ldc(&a->joined,&w->fusion,a->out.data,H,stream,bopl_cublas_compute_type(),true);
+    else {puf_mm(&a->joined,&w->fusion,&a->out,stream); relu_done=false;}
+    if(!relu_done) bs_relu<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->out.data,B*H);
     return a->out;
 }
 static void bs_backward(void* weights, void* activations, PrecisionTensor grad, cudaStream_t stream) {
@@ -806,15 +812,16 @@ static void bs_backward(void* weights, void* activations, PrecisionTensor grad, 
     bs_relu_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->grad_out.data,grad.data,a->out.data,B*H);
     puf_mm_tn(&a->grad_out,&a->joined,&a->wgrad_fusion,stream);
     puf_mm_nn(&a->grad_out,&w->fusion,&a->grad_joined,stream);
-    bs_flat_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->grad_flat.data,a->grad_joined.data,a->joined.data,B,H);
     if(a->train && a->flat_bf16) {
-        bs_to_bf16<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>((__nv_bfloat16*)a->grad_flat_bf16.data,a->grad_flat.data,B*H);
+        bs_flat_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>((__nv_bfloat16*)a->grad_flat_bf16.data,a->grad_joined.data,a->joined.data,B,H);
         bs_mm_flat_wgrad_bf16(a->grad_flat_bf16.data,B,H,a->flat_input.data,a->flat_width,a->wgrad_flat_pad.data,stream);
         bs_unpad_rows<<<grid_size(H*BS_FLAT),BLOCK_SIZE,0,stream>>>(a->wgrad_flat.data,a->wgrad_flat_pad.data,H,a->flat_width);
     } else if(a->train) {
+        bs_flat_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->grad_flat.data,a->grad_joined.data,a->joined.data,B,H);
         puf_mm_tn(&a->grad_flat,&a->flat_input,&a->wgrad_flat_pad,stream);
         bs_unpad_rows<<<grid_size(H*BS_FLAT),BLOCK_SIZE,0,stream>>>(a->wgrad_flat.data,a->wgrad_flat_pad.data,H,a->flat_width);
     } else {
+        bs_flat_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->grad_flat.data,a->grad_joined.data,a->joined.data,B,H);
         puf_mm_tn(&a->grad_flat,&a->flat_input,&a->wgrad_flat,stream);
     }
     int blocks=bs_bwd_blocks(B);
