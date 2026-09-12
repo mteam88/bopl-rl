@@ -636,32 +636,70 @@ static int bot_solve_shot(const BotView *view, int hold, double lead_ticks, int 
  * the foe, and slightly higher ground. */
 static int bot_dash_reaches(const BotView *view, double tx, double ty);
 static int bot_nearest_perch(const BotView *view, double x, double y, double *px, double *py);
+/* A drop compared against a threshold below `cap` needs no march past the
+ * cap: the march up to it is the same, and everything the 80-unit probe
+ * could still return is on the same side of the threshold as the cap. */
+static double bot_drop_capped(const BotView *view, double x, double y, double cap) {
+    return bot_raycast(view, x, y, 0, -1, cap);
+}
 static int bot_deck_walkable(const BotView *view, double tx, double ty) {
     if (fabs(ty-view->y)>3.2) return 0;
     double step=tx>=view->x?2.0:-2.0;
     for (double x=view->x; (step>0)?(x<tx):(x>tx); x+=step)
-        if (bot_drop(view, x, view->y+0.6)>5.0) return 0;
-    return bot_drop(view, tx, view->y+0.6)<5.0;
+        if (bot_drop_capped(view, x, view->y+0.6, 6.0)>5.0) return 0;
+    return bot_drop_capped(view, tx, view->y+0.6, 6.0)<5.0;
 }
-static int bot_dash_hits_perch(const BotView *view, double tx, double ty) {
-    double dx=tx-view->x, dy=ty-view->y, dist=bot_len(dx, dy);
-    if (dist<1e-6) return 1;
-    dx/=dist; dy/=dist;
-    double hit=bot_raycast(view, view->x, view->y, dx, dy, BOT_DASH_LENGTH);
+/* The dash ray from (ox,oy) toward a target, as bot_dash_reaches_from and
+ * bot_dash_hits_perch both cast it: the unit direction and distance, and the
+ * raycast along it computed at most once between the two. Targets farther
+ * than the dash length plus a verdict's tolerance get that verdict without
+ * the cast: the dash ends within BOT_DASH_LENGTH of its origin (the ray
+ * direction is a unit vector to rounding, hence the 0.1 slack), so its end
+ * point cannot come within the tolerance of the target. */
+typedef struct { double ox, oy, dx, dy, dist, hit; int cast; } BotDashRay;
+static void bot_dash_ray(double ox, double oy, double tx, double ty, BotDashRay *r) {
+    r->ox=ox; r->oy=oy; r->dx=tx-ox; r->dy=ty-oy; r->dist=bot_len(r->dx, r->dy); r->cast=0; r->hit=0;
+    if (r->dist<1e-6) return;
+    r->dx/=r->dist; r->dy/=r->dist;
+}
+static double bot_dash_ray_hit(const BotView *view, BotDashRay *r) {
+    if (!r->cast) { r->hit=bot_raycast(view, r->ox, r->oy, r->dx, r->dy, BOT_DASH_LENGTH); r->cast=1; }
+    return r->hit;
+}
+static int bot_dash_reaches_ray(const BotView *view, double tx, double ty, BotDashRay *r) {
+    if (r->dist<1e-6) return 1;
+    if (r->dist>BOT_DASH_LENGTH+3.5+0.1) return 0;
+    double hit=bot_dash_ray_hit(view, r);
+    double end=fmin(hit, BOT_DASH_LENGTH);
+    return bot_len(tx-(r->ox+r->dx*end), ty-(r->oy+r->dy*end))<3.5;
+}
+static int bot_dash_hits_perch_ray(const BotView *view, double tx, double ty, BotDashRay *r) {
+    if (r->dist<1e-6) return 1;
+    if (r->dist>BOT_DASH_LENGTH+8.0+0.1) return 0;
+    double hit=bot_dash_ray_hit(view, r);
     if (hit>=BOT_DASH_LENGTH) return 0;
-    double hx=view->x+dx*hit, hy=view->y+dy*hit;
+    double hx=r->ox+r->dx*hit, hy=r->oy+r->dy*hit;
     /* Hitting the underside of the target pancake is how pursuers clung
      * under map-1's top slab for two minutes. */
     if (hy<ty-3.5) return 0;
     return bot_len(tx-hx, ty-hy)<8.0;
 }
+static int bot_dash_hits_perch(const BotView *view, double tx, double ty) {
+    BotDashRay r; bot_dash_ray(view->x, view->y, tx, ty, &r);
+    return bot_dash_hits_perch_ray(view, tx, ty, &r);
+}
+/* bot_dash_reaches(view, tx, ty) || bot_dash_hits_perch(view, tx, ty), one cast. */
+static int bot_dash_reaches_or_hits_perch(const BotView *view, double tx, double ty) {
+    BotDashRay r; bot_dash_ray(view->x, view->y, tx, ty, &r);
+    return bot_dash_reaches_ray(view, tx, ty, &r) || bot_dash_hits_perch_ray(view, tx, ty, &r);
+}
 static int bot_can_reach(const BotView *view, double px, double py) {
     double dx=px-view->x, dy=py-view->y;
     if (bot_len(dx, dy)<2.2) return 1;
     if (bot_deck_walkable(view, px, py)) return 1;
-    if (bot_dash_reaches(view, px, py) || bot_dash_hits_perch(view, px, py)) return 1;
+    if (bot_dash_reaches_or_hits_perch(view, px, py)) return 1;
     /* A jump reaches ~7 u up and ~7-10 u across. */
-    if (dy>1.5 && dy<8.0 && fabs(dx)<12.0 && bot_drop(view, px, py+0.6)<6.0) return 1;
+    if (dy>1.5 && dy<8.0 && fabs(dx)<12.0 && bot_drop_capped(view, px, py+0.6, 6.0)<6.0) return 1;
     return 0;
 }
 static int bot_firing_spot(const BotView *view, double *sx, double *sy) {
@@ -819,18 +857,15 @@ static int bot_dash_safe(const BotView *view, double dx, double dy) {
     }
     double ex=view->x+dx*(BOT_DASH_LENGTH+5), ey=view->y+dy*(BOT_DASH_LENGTH+5);
     if (ey<BOT_WATER+1.5 || fabs(ex)>BOT_BLAST_X-10) return 0;
-    return ey-bot_drop(view, ex, ey)>BOT_WATER || bot_drop(view, ex, ey)<12;
+    double drop=bot_drop(view, ex, ey);
+    return ey-drop>BOT_WATER || drop<12;
 }
 /* Does a dash from (ox,oy) actually end near (tx,ty)? A dash that attaches to
  * a wall far short of the target (e.g. the underside of the foe's platform)
  * is a wasted cooldown. */
 static int bot_dash_reaches_from(const BotView *view, double ox, double oy, double tx, double ty) {
-    double dx=tx-ox, dy=ty-oy, dist=bot_len(dx, dy);
-    if (dist<1e-6) return 1;
-    dx/=dist; dy/=dist;
-    double hit=bot_raycast(view, ox, oy, dx, dy, BOT_DASH_LENGTH);
-    double end=fmin(hit, BOT_DASH_LENGTH);
-    return bot_len(tx-(ox+dx*end), ty-(oy+dy*end))<3.5;
+    BotDashRay r; bot_dash_ray(ox, oy, tx, ty, &r);
+    return bot_dash_reaches_ray(view, tx, ty, &r);
 }
 static int bot_dash_reaches(const BotView *view, double tx, double ty) {
     return bot_dash_reaches_from(view, view->x, view->y, tx, ty);
@@ -853,8 +888,7 @@ static int bot_waypoint(const BotView *view, double tx, double ty, double *wx, d
                         || (py>ty-6.0 && fabs(px-tx)<7);
             if (!enables) continue;
             /* Plausibly reachable from here without further routing. */
-            int reachable=py-view->y<8.0 || bot_dash_reaches(view, px, py)
-                         || bot_dash_hits_perch(view, px, py);
+            int reachable=py-view->y<8.0 || bot_dash_reaches_or_hits_perch(view, px, py);
             if (!reachable) continue;
             double score=bot_len(px-view->x, py-view->y)+0.5*bot_len(px-tx, py-ty);
             if (score<best) { best=score; *wx=px; *wy=py; found=1; }
@@ -964,7 +998,7 @@ static void bot_nav(const BotView *view, BoplBot *bot, double tx, double ty,
      * Do not require the target to be nearly overhead: map-1's high pancake
      * is ~20 u across and 10 u up, and the old |dx|<dy+9 gate walked under. */
     for (int depth=0; depth<2 && dy>4.5; depth++) {
-        if (bot_dash_reaches(view, tx, ty) || bot_dash_hits_perch(view, tx, ty)) {
+        if (bot_dash_reaches_or_hits_perch(view, tx, ty)) {
             if (view->dash_ready && bot_dash_safe(view, dx, dy))
                 { *buttons|=BOT_DASH; *aim=bot_aim_byte(dx, dy); return; }
         }
