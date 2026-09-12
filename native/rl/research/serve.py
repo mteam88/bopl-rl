@@ -367,7 +367,13 @@ def main():
             parts.append((entry['name'], None if directory is None else summary_sig(directory)))
         return tuple(parts)
 
-    def ladder_snapshot():
+    def ladder_current():
+        with cache_lock:
+            if ladder_state[1] is not None:
+                return ladder_state[1]
+        return ladder_rebuild()
+
+    def ladder_rebuild():
         sig = ladder_sig()
         with cache_lock:
             if ladder_state[1] is not None and ladder_state[0] == sig:
@@ -503,7 +509,14 @@ def main():
                     pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
                                                     sha256=pool['pool_sha256']))
 
-    def sweep_snapshot(name, directory):
+    def sweep_current(name, directory):
+        with cache_lock:
+            hit = sweep_state.get(name)
+            if hit:
+                return hit[1]
+        return sweep_rebuild(name, directory)
+
+    def sweep_rebuild(name, directory):
         sig = (stamp(directory / 'sweep.json'),
                tuple((trial['id'], summary_sig(directory / trial['id']))
                      for trial in (read_json(directory / 'sweep.json', {}).get('trials') or [])
@@ -519,9 +532,9 @@ def main():
 
     def refresh():
         try:
-            ladder_snapshot()
+            ladder_rebuild()
             for name, directory in discover_sweeps(root, extra_runs, run_globs).items():
-                sweep_snapshot(name, directory)
+                sweep_rebuild(name, directory)
         except Exception:
             traceback.print_exc()
 
@@ -569,7 +582,7 @@ def main():
         def do_GET(self):
             path = unquote(urlparse(self.path).path)
             if path == '/api/ladder':
-                return self.send_snapshot(ladder_snapshot())
+                return self.send_snapshot(ladder_current())
             if path == '/api/runs':
                 return self.json(runs())
             if path == '/api/sweeps':
@@ -580,7 +593,7 @@ def main():
                 directory = discover_sweeps(root, extra_runs, run_globs).get(name)
                 if directory is None:
                     return self.send_error(404)
-                return self.send_snapshot(sweep_snapshot(name, directory))
+                return self.send_snapshot(sweep_current(name, directory))
             if path.startswith('/api/run/'):
                 rest = path[len('/api/run/'):]
                 name, slash, tail = rest.partition('/')
