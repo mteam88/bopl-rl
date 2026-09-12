@@ -57,10 +57,15 @@ impl Vec2 {
         )
     }
     pub fn normalized_angle(self) -> Fix {
-        let x = self
-            .x
-            .checked_rem(Fix::from_raw(Fix::ONE.raw() + 1), true)
-            .unwrap();
+        // The reference's `x % (One + 1 raw)` only ever sees a normalized
+        // component, for which the remainder is the identity; keep the
+        // general remainder for anything larger.
+        let modulus = Fix::from_raw(Fix::ONE.raw() + 1);
+        let x = if self.x.abs() < modulus {
+            self.x
+        } else {
+            self.x.checked_rem(modulus, true).unwrap()
+        };
         let angle = x.acos().expect("normalized vector outside cosine domain");
         if self.y > Fix::ZERO {
             angle

@@ -71,6 +71,11 @@ pub struct Player {
     /// not pay for the sine table again (zero until the first sync).
     #[serde(default)]
     pub collider_basis: Vec2,
+    /// `(up, rotation)` as `align` last derived them: a step along a flat
+    /// stretch of surface keeps the same normal, so the arc-cosine is not
+    /// paid again for the same input (the value is identical either way).
+    #[serde(skip)]
+    pub(crate) aligned: Option<(Vec2, Fix)>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DashState {
@@ -236,8 +241,18 @@ impl Player {
         platforms.iter().find(|p| Some(p.id) == self.ground)
     }
     pub(crate) fn align(&mut self, platform: &Platform) {
-        self.up = platform.surface.normal(self.position);
-        self.rotation = self.up.perp_cw().normalized_angle();
+        self.align_to(platform.surface.normal(self.position));
+    }
+    /// `align` with the surface normal already evaluated.
+    fn align_to(&mut self, up: Vec2) {
+        self.up = up;
+        match self.aligned {
+            Some((cached_up, rotation)) if cached_up == up => self.rotation = rotation,
+            _ => {
+                self.rotation = up.perp_cw().normalized_angle();
+                self.aligned = Some((up, self.rotation));
+            }
+        }
     }
     fn ground_state(&self) -> crate::player_ground::State {
         crate::player_ground::State {
@@ -330,7 +345,8 @@ impl Player {
                 DT,
             );
         }
-        self.align(platform);
+        // The position has not moved since `normal` was evaluated above.
+        self.align_to(normal);
         let speed = self.grounded_speed + self.external_velocity.dot(forward);
         let velocity = forward * speed;
         let (allowed, _) = crate::platform_motion::movement_limit(

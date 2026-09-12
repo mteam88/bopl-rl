@@ -291,6 +291,10 @@ pub struct PlatformDynamics {
     pub mu: Fix,
     pub rotation_speed: Fix,
     pub rotation_mu: Fix,
+    /// `(orientation, Vec2::angle(orientation))` from the last integration:
+    /// a platform that translates without rotating (sudden death, a spring
+    /// settling) keeps its basis instead of consulting the sine table twice.
+    pub basis: Option<(Fix, Vec2)>,
 }
 
 /// PlatformTransform.State.
@@ -761,6 +765,7 @@ impl RolloutWorld {
                 mu: p.mu,
                 rotation_speed: p.rotation_speed,
                 rotation_mu: p.rotation_mu,
+                basis: None,
             });
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
@@ -830,6 +835,7 @@ impl RolloutWorld {
                     },
                     collider_rotation: Fix::ZERO,
                     collider_basis: Vec2::ZERO,
+                    aligned: None,
                 },
                 team,
                 keyboard: config.player[i].keyboard != 0,
@@ -2037,6 +2043,7 @@ impl RolloutWorld {
             mu: pd.spawn_mu,
             rotation_speed: pd.spawn_rotation_speed,
             rotation_mu: pd.spawn_rotation_mu,
+            basis: None,
         });
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
@@ -2734,9 +2741,17 @@ impl RolloutWorld {
             }
             let shift = dynamics.body.integrate(DT, Fix::from_int(-40));
             let orientation = dynamics.body.orientation;
+            let basis = match dynamics.basis {
+                Some((rotation, basis)) if rotation == orientation => basis,
+                _ => {
+                    let basis = Vec2::angle(orientation);
+                    dynamics.basis = Some((orientation, basis));
+                    basis
+                }
+            };
             let platform = &mut self.platforms[i];
             platform.surface.center += shift;
-            platform.surface.right = Vec2::angle(orientation);
+            platform.surface.right = basis;
             platform.surface.up = platform.surface.right.perp();
             // Box.SetRotation from the retained inverseExtents (RoundedRect.cs:22-26).
             let inner = &mut platform.collider.inner;
