@@ -38,6 +38,14 @@
 #define BR_MAX_GROUPS 9   // learner + up to 8 frozen banks
 #define BR_MAX_LAYERS 4
 
+// Rollout encoder tiling (the original bs_fused_forward layout: 12 slot
+// groups x 8 channels per BS_FWD_TPR=96-thread row). The training encoder in
+// bopl_set_encoder.cu moved to its own tiling and no longer defines these.
+static constexpr int BS_FWD_SLOTS = 8;                 // slots per thread
+static constexpr int BS_XT_STRIDE = 100;               // >= BS_N_ENT, multiple of 4
+static constexpr int BS_WSL_STRIDE = BS_W_SLIME + 1;   // conflict-free per-channel reads
+static_assert(BS_N_ENT / BS_FWD_SLOTS * BS_FWD_CH == BS_FWD_TPR, "rollout encoder tiling");
+
 struct BrGroups {
     int n;
     int end[BR_MAX_GROUPS + 1];  // end[0] = 0; group g owns rows [end[g], end[g+1])
