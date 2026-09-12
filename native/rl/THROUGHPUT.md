@@ -1,4 +1,4 @@
-# Trainer throughput: where the time goes and how to get 2-3x
+# Trainer throughput: where the time goes and how to get 2-3x (delivered 6.7x, see 4)
 
 Written 2026-09-11 against the live `overnight-4` sweep (trial 000, workers
 128, buffers 4, banks 4, hidden 128, horizon 128, learner_passes 4, Rust sim
@@ -693,3 +693,39 @@ changes batch size. 2-3x is D + A, possibly with the bf16 obs H2D from C.
 Measurement to do before E: entity-count histogram per decision on the
 three maps (cheap: count non-zero entity slots in the obs scratch for a
 few thousand steps in `bench_throughput.py`, outside the sweep's cgroup).
+
+### Measured curve (2026-09-12, `bench_shape.sh`, seed 73, box idle)
+
+Every row is `main` after the named merge, w128 b4 unless noted, 250-300
+updates, medians. `BOPL_ENV_THREADS=8`, `BOPL_GPU_SPLIT=auto`.
+
+| main | merged | rollout/update | train/update | wall | physical sps | learner sps |
+|---|---|---|---|---|---|---|
+| 59be9a2 | baseline | 0.0891 | 0.0545 | 0.144 | 227k | 170k |
+| 486e99c | D (env pool) | 0.052 | 0.0545 | 0.107 | 296k | 222k |
+| 23be71d | + B (fused set encoder) | 0.0437 | 0.0156 | 0.0603 | 547k | 410k |
+| d25a3c9 | + A (async overlap, 32/16 SM split) | 0.0472 | 0.0386 | 0.0479 | 684k | 513k |
+| 4aed572 | + F (sim 1.9M -> 3.8M ticks/s, obs copy chain) | 0.0393 | 0.0388 | 0.0400 | 819k | 615k |
+| 625ca5e | + C (batched rollout chain, live rows) | 0.0187 | 0.0345 | 0.0351 | 934k | 700k |
+| eec504b | + E (tensor-core training pass) | 0.0184 | 0.0210 | 0.0216 | 1.52M | 1.14M |
+| ddec5bf | auto split 24/24 | 0.0209 | 0.0150 | 0.0214 | 1.53M | 1.15M |
+| ddec5bf | w256 b4 | 0.0358 | 0.0290 | 0.0363 | **1.81M** | **1.36M** |
+
+6.7x physical / 8x learner at w256 from the 2026-09-11 baseline, same model,
+same 96 entity slots, same hyperparameters. Shapes that lose at ddec5bf:
+w256 b2 (1.30M), w512 b2 (1.18M; eval_gpu 0.51 ms/step), 16/32 split at
+w256 (1.46M). Training on the 24-SM partition is 0.015-0.029 s/update, the
+rollout 0.021-0.036: the wall is the rollout again at both shapes, split
+about evenly between the GPU chain (0.10-0.15 ms/step) and the env step
+(0.05-0.12 ms/step). Remaining levers are listed at the end of 3.B (part 2),
+3.C and 3.F.
+
+Learning check (`/tmp/sanity_run.sh`, the overnight-4/000 arguments with
+eval every 20M learner decisions, seed 73): at 4aed572, pool Elo 237 / 363 /
+366 / 428 / 491 vs the reference's 240 / 324 / 355 / 399 / 491 at 25-125M
+learner steps; evaluation wins per checkpoint 75, 78, 74, 75, 80, 82, 92 vs
+65, 74, 80, 77, 70, 83, 76 of 217. Same curve, 150M learner steps in 245 s
+(the reference needed ~14 min). At ddec5bf (`sanity/final-w128`): pool Elo
+230 / 329 / 348 / 380 / 493 / 454 vs 240 / 324 / 355 / 399 / 491 / 478 at
+25-150M; evaluation wins 71, 82, 80, 86, 69, 85, 82 vs 65, 74, 80, 77, 70,
+83, 76; 150M learner steps in 160 s including seven evaluations.
