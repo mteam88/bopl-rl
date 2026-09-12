@@ -42,13 +42,16 @@ def build(output, source, compiler):
                     '-o',str(output)],check=True)
 
 
-def oracle(obs, weights, hidden, incoming, dtype=torch.float32, value_obs=None):
+def oracle(obs, weights, hidden, incoming, dtype=torch.float32, value_obs=None, flat_bf16=False):
     """Independent functional reference; autograd supplies all four weight gradients.
     float64 for large batches: at 4096 rows the CPU float32 flat gradient can be
     off by 1e-2 relative (cancellation over the batch) where the CUDA fp32 result
     is within 2e-5 of float64. value_obs (the tensor-core forward): the set
     projections take their *values* from these rows (TF32-rounded features) while
-    the weight gradients use `obs`, as the CUDA backward reads the raw rows."""
+    the weight gradients use `obs`, as the CUDA backward reads the raw rows.
+    flat_bf16 (BOPL_SET_FLAT_BF16): the flat block and flat weights are bf16 for
+    the flat projection, and its incoming gradient is rounded to bf16 before the
+    flat weight gradient, as the CUDA path stores flat_input / grad_flat in bf16."""
     sizes=[hidden*FLAT,64*W_ENT,64*W_SLIME,hidden*(hidden+128)]
     w=torch.tensor(weights,dtype=dtype,requires_grad=True)
     flat,entity,slime,fusion=w.split(sizes)
@@ -68,7 +71,13 @@ def oracle(obs, weights, hidden, incoming, dtype=torch.float32, value_obs=None):
         return torch.where(mask.any(1,keepdim=True),pooled,torch.zeros_like(pooled))
     entities=pool(obs[:,PREFIX:SLIME_OFF].reshape(-1,N_ENT,W_ENT),vobs[:,PREFIX:SLIME_OFF].reshape(-1,N_ENT,W_ENT),entity)
     slimes=pool(obs[:,SLIME_OFF:PREV_OFF].reshape(-1,N_SLIME,W_SLIME),vobs[:,SLIME_OFF:PREV_OFF].reshape(-1,N_SLIME,W_SLIME),slime)
-    out=(torch.cat(((x@flat.T).relu(),entities,slimes),-1)@fusion.T).relu()
+    if flat_bf16:
+        bf16=lambda t:t.to(torch.bfloat16).to(dtype)
+        pre=bf16(x)@(flat-flat.detach()+bf16(flat).detach()).T
+        pre.register_hook(bf16)
+    else:
+        pre=x@flat.T
+    out=(torch.cat((pre.relu(),entities,slimes),-1)@fusion.T).relu()
     (out*torch.from_numpy(incoming).to(dtype)).sum().backward()
     return out.detach().float().numpy(),w.grad.float().numpy()
 
@@ -215,6 +224,57 @@ def mma_cases(lib,rng):
     return results
 
 
+def flat_bf16_cases(lib,rng):
+    """BOPL_SET_FLAT_BF16=1 (the training default with TF32 GEMMs): the flat obs
+    block is stored as bf16 by the forward kernel and both flat GEMMs run bf16 x
+    bf16 with fp32 accumulation; checked against the float64 oracle fed the same
+    bf16-rounded flat rows / weights / incoming gradient, with both forward kernels
+    (tensor-core and fp32), packed and every-slot layouts bit-identical, and a
+    graph replay. The gradient tolerance allows the rare element whose fp32
+    grad_flat rounds to the other bf16 neighbour than the float64 one."""
+    sizes=lambda hidden:[hidden*FLAT,64*W_ENT,64*W_SLIME,hidden*(hidden+128)]
+    results=[]
+    lib.bopl_set_check_set_flat_bf16(1)
+    try:
+        for batch,hidden,mma in [(15,8,1),(1030,32,1),(1030,32,0),(4096,128,1)]:
+            lib.bopl_set_check_set_mma(mma)
+            count=sum(sizes(hidden))
+            weights=(rng.normal(size=count)*.03).astype(np.float32)
+            incoming=rng.normal(size=(batch,hidden)).astype(np.float32)
+            rows=packed_obs(rng,batch)
+            report=dict(batch=batch,hidden=hidden,mma=mma,bit_identical=True,graph_replay=True)
+            check=Check(lib,batch,hidden)
+            try:
+                lib.bopl_set_check_set_packed(0)
+                every,every_grad=check.run(weights,rows,incoming)
+                lib.bopl_set_check_set_packed(1)
+                packed,packed_grad=check.run(weights,rows,incoming)
+                np.testing.assert_array_equal(packed,every);np.testing.assert_array_equal(packed_grad,every_grad)
+                graph,graph_grad=check.run(weights,rows,incoming,True)
+                np.testing.assert_array_equal(graph,packed);np.testing.assert_array_equal(graph_grad,packed_grad)
+                if batch<=1030:
+                    vrows,vweights=rows,weights
+                    if mma:
+                        vrows=rows.copy();vrows[:,PREFIX:PREV_OFF]=tf32(rows[:,PREFIX:PREV_OFF])
+                        vweights=weights.copy();start=sizes(hidden)[0];stop=start+sizes(hidden)[1]+sizes(hidden)[2]
+                        vweights[start:stop]=tf32(weights[start:stop])
+                    want,want_grad=oracle(rows,vweights,hidden,incoming,torch.float64,value_obs=vrows,flat_bf16=True)
+                    np.testing.assert_allclose(packed,want,rtol=2e-4,atol=1e-5)
+                    np.testing.assert_allclose(packed_grad,want_grad,rtol=1e-3,atol=1e-4)
+                    report['forward_max_abs']=float(np.abs(packed-want).max())
+                    report['gradient_max_abs']=float(np.abs(packed_grad-want_grad).max())
+                    # The bf16 rounding is visible: the fp32-flat oracle must be further away.
+                    fp32,_=oracle(rows,vweights,hidden,incoming,torch.float64,value_obs=vrows)
+                    report['fp32_oracle_max_abs']=float(np.abs(packed-fp32).max())
+                    assert report['fp32_oracle_max_abs']>report['forward_max_abs']
+            finally:
+                check.close()
+            results.append(report)
+    finally:
+        lib.bopl_set_check_set_flat_bf16(0);lib.bopl_set_check_set_mma(0);lib.bopl_set_check_set_packed(0)
+    return results
+
+
 def gather_cases(lib,rng):
     """Training path: rows read from a (T, B_total, obs) rollout buffer through
     segment indices must equal the contiguous path bit for bit (same kernels,
@@ -343,6 +403,8 @@ def main():
     lib.bopl_set_check_time.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int];lib.bopl_set_check_time.restype=ctypes.c_double
     lib.bopl_set_check_set_packed.argtypes=[ctypes.c_int]
     lib.bopl_set_check_set_mma.argtypes=[ctypes.c_int]
+    lib.bopl_set_check_set_flat_bf16.argtypes=[ctypes.c_int]
+    lib.bopl_set_check_set_flat_bf16(0)  # exact fp32 flat block unless a case asks for bf16
     # The random corpus below has arbitrary slot masks: every-slot forward. The
     # production default (packed rows) is qualified by packed_cases.
     lib.bopl_set_check_set_packed(0)
@@ -392,7 +454,8 @@ def main():
                                 gradient_max_abs=float(np.abs(grad-expected_grad).max()),
                                 graph_replay=True,permutation=True,masked_poison=True,empty_after_populated=True))
         finally:check.close()
-    report=dict(schema=4,pass_all=True,cases=results,gather=gather_cases(lib,rng),packed=packed_cases(lib,rng),mma=mma_cases(lib,rng),
+    report=dict(schema=5,pass_all=True,cases=results,gather=gather_cases(lib,rng),packed=packed_cases(lib,rng),mma=mma_cases(lib,rng),
+                flat_bf16=flat_bf16_cases(lib,rng),
                 finite_differences=finite_differences(lib))
     if args.time:report['timing']=timing(lib)
     (args.output/'result.json').write_text(json.dumps(report,indent=2)+'\n')

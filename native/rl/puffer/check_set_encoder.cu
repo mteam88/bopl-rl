@@ -151,6 +151,8 @@ extern "C" double bopl_set_check_time(void* context, int iterations, int forward
 extern "C" void bopl_set_check_set_packed(int packed) {bs_set_packed(packed);}
 // Select the tensor-core (TF32) training forward or the fp32 kernel.
 extern "C" void bopl_set_check_set_mma(int mma) {bs_set_mma(mma);}
+// bf16 flat block + flat GEMMs (training); takes effect for Checks created afterwards.
+extern "C" void bopl_set_check_set_flat_bf16(int on) {bs_set_flat_bf16(on);}
 #ifdef BS_PROF
 extern "C" void bopl_set_check_prof(double* out) {
     unsigned long long h[4]; cudaMemcpyFromSymbol(h,bs_prof,sizeof(h)); unsigned long long z[4]={0,0,0,0}; cudaMemcpyToSymbol(bs_prof,z,sizeof(z));

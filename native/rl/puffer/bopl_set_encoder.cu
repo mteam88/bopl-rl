@@ -37,6 +37,12 @@ static constexpr int BS_WGRAD_FLOATS=BS_E*BS_W_ENT+BS_E*BS_W_SLIME;  // one part
 // kernel (1.07 ms) and the flat weight gradient to an align1 kernel (0.79 ms)
 // per 24576-row minibatch on 16 SMs. The rollout forward keeps the unpadded path.
 static constexpr int BS_FLAT_PAD=(BS_FLAT+3)/4*4;
+// bf16 flat block (BOPL_SET_FLAT_BF16): the training forward stores the flat
+// obs columns as bf16 and the flat GEMMs run bf16 x bf16 -> fp32 on tensor
+// cores at twice the TF32 rate; on 16 SMs both 24576 x 948 x 128 GEMMs were
+// compute-bound at ~0.55 ms each. Rows are padded to a multiple of 8 (16-byte
+// rows) and live in the fp32-sized flat_input allocation.
+static constexpr int BS_FLAT_PAD_BF16=(BS_FLAT+7)/8*8;
 
 // Forward tiling: a row is handled by BS_FWD_TPR threads; thread (sg, cg)
 // owns channels [4 cg, 4 cg + 4) u [32 + 4 cg, 36 + 4 cg) of one valid slot per
@@ -81,6 +87,8 @@ struct BoplSetActs {
     PrecisionTensor wgrad_partials;          // (BS_BWD_MAX_BLOCKS, BS_WGRAD_FLOATS)
     PrecisionTensor wgrad_flat, wgrad_entity, wgrad_slime, wgrad_fusion;
     PrecisionTensor flat_pad, wgrad_flat_pad; // training: (H, 948) zero-padded weight / gradient scratch
+    PrecisionTensor grad_flat_bf16;          // training, bf16 flat: (B, H/2) fp32-sized bf16 copy of grad_flat
+    int flat_bf16, flat_width;               // training: bf16 flat block, padded flat row width
     BsGather gather;                         // training only; zero = contiguous input
     const float* saved_input;                // contiguous input of the last forward (for backward)
     int train;                               // registered by bs_reg_train (padded flat block)
@@ -131,8 +139,18 @@ __device__ __forceinline__ void bs_row_load(BsRowRegs<PACKED,FLAT>& r, const flo
     }
 }
 // Entities -> Xs (natural layout), slimes -> Ss, flat block -> flat_input row (if live).
-template<bool PACKED, bool FLAT>
-__device__ __forceinline__ void bs_row_store(const BsRowRegs<PACKED,FLAT>& r, float* xs, float* ss, float* flat, int flat_width, bool live, int tr) {
+// Flat block element store: fp32, or bf16 (training, BOPL_SET_FLAT_BF16).
+template<bool BF16> __device__ __forceinline__ void bs_flat_put2(void* flat, int i, float2 v) {
+    if constexpr(BF16) ((__nv_bfloat162*)flat)[i]=__float22bfloat162_rn(v); else ((float2*)flat)[i]=v;
+}
+template<bool BF16> __device__ __forceinline__ void bs_flat_zero(void* flat, int i) {
+    if constexpr(BF16) ((__nv_bfloat16*)flat)[i]=__float2bfloat16(0.0f); else ((float*)flat)[i]=0.0f;
+}
+__device__ __forceinline__ void* bs_flat_row(void* flat, int row, int flat_width, bool bf16) {
+    return (char*)flat+(long)row*flat_width*(bf16 ? 2 : 4);
+}
+template<bool PACKED, bool FLAT, bool BF16=false>
+__device__ __forceinline__ void bs_row_store(const BsRowRegs<PACKED,FLAT>& r, float* xs, float* ss, void* flat, int flat_width, bool live, int tr) {
     typedef BsRowRegs<PACKED,FLAT> R;
     float2* x2=(float2*)xs;
     #pragma unroll
@@ -141,12 +159,11 @@ __device__ __forceinline__ void bs_row_store(const BsRowRegs<PACKED,FLAT>& r, fl
     #pragma unroll
     for(int it=0;it<R::SL2;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_SLIME_FLOATS/2) s2[i]=r.sl[it];}
     if(FLAT && live) {
-        float2* f2=(float2*)flat; float2* p2=(float2*)(flat+BS_PREFIX);
         #pragma unroll
-        for(int it=0;it<R::PRE2;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_PREFIX/2) f2[i]=r.pre[it];}
+        for(int it=0;it<R::PRE2;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_PREFIX/2) bs_flat_put2<BF16>(flat,i,r.pre[it]);}
         #pragma unroll
-        for(int it=0;it<R::PREV2;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_PREVIOUS/2) p2[i]=r.prev[it];}
-        if(tr<flat_width-BS_FLAT) flat[BS_FLAT+tr]=0.0f;  // zero pad columns (training)
+        for(int it=0;it<R::PREV2;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_PREVIOUS/2) bs_flat_put2<BF16>(flat,BS_PREFIX/2+i,r.prev[it]);}
+        if(tr<flat_width-BS_FLAT) bs_flat_zero<BF16>(flat,BS_FLAT+tr);  // zero pad columns (training)
     }
 }
 // Flat block (prefix + previous action) of a row staged through shared memory
@@ -166,11 +183,12 @@ __device__ __forceinline__ void bs_flat_stage_issue(float* fs, const float* src,
     asm volatile("cp.async.commit_group;");
 }
 __device__ __forceinline__ void bs_flat_stage_wait() {asm volatile("cp.async.wait_group 0;" ::: "memory");}
-__device__ __forceinline__ void bs_flat_stage_store(const float* fs, float* flat, int flat_width, int tr) {
-    const float2* f2=(const float2*)fs; float2* o2=(float2*)flat;
+template<bool BF16>
+__device__ __forceinline__ void bs_flat_stage_store(const float* fs, void* flat, int flat_width, int tr) {
+    const float2* f2=(const float2*)fs;
     #pragma unroll
-    for(int it=0;it<(BS_FLAT_STAGE/2+BS_FWD_TPR-1)/BS_FWD_TPR;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_FLAT_STAGE/2) o2[i]=f2[i];}
-    if(tr<flat_width-BS_FLAT) flat[BS_FLAT+tr]=0.0f;  // zero pad columns (training)
+    for(int it=0;it<(BS_FLAT_STAGE/2+BS_FWD_TPR-1)/BS_FWD_TPR;it++) {int i=tr+it*BS_FWD_TPR; if(i<BS_FLAT_STAGE/2) bs_flat_put2<BF16>(flat,i,f2[i]);}
+    if(tr<flat_width-BS_FLAT) bs_flat_zero<BF16>(flat,BS_FLAT+tr);  // zero pad columns (training)
 }
 static_assert(BS_FLAT_STAGE==BS_FLAT && BS_FLAT_STAGE%2==0, "flat block = prefix + previous");
 
@@ -184,7 +202,7 @@ template<bool PACKED>
 __global__ void __launch_bounds__(BS_FWD_THREADS, 2) bs_fused_forward(
         const float* __restrict__ input, BsGather g, int B, int H,
         const float* __restrict__ w_ent, const float* __restrict__ w_slime,
-        float* __restrict__ flat_input, int flat_width, float* __restrict__ joined,
+        float* __restrict__ flat_input, int flat_width, int flat_bf16, float* __restrict__ joined,
         int* __restrict__ ent_winner, int* __restrict__ slime_winner) {
     // PACKED: Xs holds one chunk of BS_ENT_HEAD slots per row (the head, then
     // the remaining chunks of a crowded row on the slow path); every slot else.
@@ -219,7 +237,8 @@ __global__ void __launch_bounds__(BS_FWD_THREADS, 2) bs_fused_forward(
         const int row=live ? row0+rg : B-1;
         const float* src=bs_row_ptr(input,g,row);
         __syncthreads();  // previous iteration is done with Xs/Ss/red
-        bs_row_store<PACKED,true>(regs,Xs[rg],Ss[rg],flat_input+(long)row*flat_width,flat_width,live,tr);
+        if(flat_bf16) bs_row_store<PACKED,true,true>(regs,Xs[rg],Ss[rg],bs_flat_row(flat_input,row,flat_width,true),flat_width,live,tr);
+        else bs_row_store<PACKED,true,false>(regs,Xs[rg],Ss[rg],bs_flat_row(flat_input,row,flat_width,false),flat_width,live,tr);
         if(row0+stride<B) {  // prefetch the next rows (in flight during the compute below)
             int r=row0+stride+rg; if(r>=B) r=B-1;
             bs_row_load<PACKED,true>(regs,bs_row_ptr(input,g,r),tr);
@@ -454,7 +473,7 @@ template<bool PACKED>
 __global__ void __launch_bounds__(BS_FWD_THREADS, 2) bs_fused_forward_mma(
         const float* __restrict__ input, BsGather g, int B, int H,
         const float* __restrict__ w_ent, const float* __restrict__ w_slime,
-        float* __restrict__ flat_input, int flat_width, float* __restrict__ joined,
+        float* __restrict__ flat_input, int flat_width, int flat_bf16, float* __restrict__ joined,
         int* __restrict__ ent_winner, int* __restrict__ slime_winner) {
     constexpr int CHUNK=PACKED ? BS_ENT_HEAD : BS_N_ENT, NCHUNK=BS_N_ENT/CHUNK;
     typedef BsMmaTile<BS_W_ENT,16> EntTile; typedef BsMmaTile<BS_W_SLIME,BS_N_SLIME> SlimeTile;
@@ -496,8 +515,14 @@ __global__ void __launch_bounds__(BS_FWD_THREADS, 2) bs_fused_forward_mma(
         const float* src=bs_row_ptr(input,g,row);
         if constexpr(STAGE) bs_flat_stage_wait();
         __syncthreads();  // previous iteration is done with Xs/Ss/pool; Fs landed
-        bs_row_store<PACKED,!STAGE>(regs,Xs[rg],Ss[rg],flat_input+(long)row*flat_width,flat_width,live,tr);
-        if constexpr(STAGE) {if(live) bs_flat_stage_store(Fs[rg],flat_input+(long)row*flat_width,flat_width,tr);}
+        if(flat_bf16) bs_row_store<PACKED,!STAGE,true>(regs,Xs[rg],Ss[rg],bs_flat_row(flat_input,row,flat_width,true),flat_width,live,tr);
+        else bs_row_store<PACKED,!STAGE,false>(regs,Xs[rg],Ss[rg],bs_flat_row(flat_input,row,flat_width,false),flat_width,live,tr);
+        if constexpr(STAGE) {
+            if(live) {
+                if(flat_bf16) bs_flat_stage_store<true>(Fs[rg],bs_flat_row(flat_input,row,flat_width,true),flat_width,tr);
+                else bs_flat_stage_store<false>(Fs[rg],bs_flat_row(flat_input,row,flat_width,false),flat_width,tr);
+            }
+        }
         const bool prefetch=row0+stride<B;
         int rnext=row0+stride+rg; if(rnext>=B) rnext=B-1;
         if(prefetch) bs_row_load<PACKED,!STAGE>(regs,bs_row_ptr(input,g,rnext),tr);  // in flight during the compute
@@ -637,18 +662,28 @@ __global__ void bs_reduce_partials(const float* __restrict__ partials, int block
     for(int b=0;b<blocks;b++) s+=partials[(long)b*BS_WGRAD_FLOATS+i];
     if(i<BS_E*BS_W_ENT) wgrad_ent[i]=s; else wgrad_slime[i-BS_E*BS_W_ENT]=s;
 }
-// dst (H, 948) = w (H, 946) with two zero columns; and back for the gradient.
-__global__ void bs_pad_rows(float* __restrict__ dst, const float* __restrict__ src, int H) {
+// dst (H, pad) = w (H, 946) with zero columns (fp32, or bf16); and back for the gradient.
+__global__ void bs_pad_rows(float* __restrict__ dst, const float* __restrict__ src, int H, int pad) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
-    if(i>=H*BS_FLAT_PAD) return;
-    int r=i/BS_FLAT_PAD, c=i-r*BS_FLAT_PAD;
+    if(i>=H*pad) return;
+    int r=i/pad, c=i-r*pad;
     dst[i]=c<BS_FLAT ? src[r*BS_FLAT+c] : 0.0f;
 }
-__global__ void bs_unpad_rows(float* __restrict__ dst, const float* __restrict__ src, int H) {
+__global__ void bs_pad_rows_bf16(__nv_bfloat16* __restrict__ dst, const float* __restrict__ src, int H, int pad) {
+    int i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=H*pad) return;
+    int r=i/pad, c=i-r*pad;
+    dst[i]=__float2bfloat16(c<BS_FLAT ? src[r*BS_FLAT+c] : 0.0f);
+}
+__global__ void bs_unpad_rows(float* __restrict__ dst, const float* __restrict__ src, int H, int pad) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=H*BS_FLAT) return;
     int r=i/BS_FLAT, c=i-r*BS_FLAT;
-    dst[i]=src[r*BS_FLAT_PAD+c];
+    dst[i]=src[r*pad+c];
+}
+__global__ void bs_to_bf16(__nv_bfloat16* __restrict__ dst, const float* __restrict__ src, int count) {
+    int i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i<count) dst[i]=__float2bfloat16(src[i]);
 }
 // ReLU in place on the flat columns [0, H) of joined (B, H+128).
 __global__ void bs_relu_flat(float* joined, int B, int H) {
@@ -688,6 +723,23 @@ static void bs_mm_ldc(PrecisionTensor* a, PrecisionTensor* w, precision_t* out, 
     cublasSetStream(handle,stream);
     bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,N,M,K,&alpha,w->data,K,a->data,K,&beta,out,ldc,compute);
 }
+// bf16 flat GEMMs (fp32 accumulate, fp32 out). Forward: joined[:, :H] (ldc) =
+// x(B, pad) @ w(H, pad)^T; backward: dw(H, pad) = g(B, H)^T @ x(B, pad).
+static void bs_mm_flat_bf16(const void* x, int B, int pad, const void* w, int H, float* out, int ldc, cudaStream_t stream) {
+    float alpha=1.0f, beta=0.0f;
+    cublasHandle_t handle=cublas_get_handle(stream);
+    cublasSetStream(handle,stream);
+    bopl_gemm(handle,stream,CUBLAS_OP_T,CUBLAS_OP_N,H,B,pad,&alpha,(const float*)w,pad,(const float*)x,pad,&beta,out,ldc,
+              CUBLAS_COMPUTE_32F,CUDA_R_16BF);
+}
+static void bs_mm_flat_wgrad_bf16(const void* g, int B, int H, const void* x, int pad, float* dw, cudaStream_t stream) {
+    float alpha=1.0f, beta=0.0f;
+    cublasHandle_t handle=cublas_get_handle(stream);
+    cublasSetStream(handle,stream);
+    // Row-major dw(H, pad) = g^T x  ==  column-major dw^T(pad, H) = x^T(pad, B) g(B, H).
+    bopl_gemm(handle,stream,CUBLAS_OP_N,CUBLAS_OP_T,pad,H,B,&alpha,(const float*)x,pad,(const float*)g,H,&beta,dw,pad,
+              CUBLAS_COMPUTE_32F,CUDA_R_16BF);
+}
 static int bs_fwd_blocks(int B) {int n=(B+BS_FWD_ROWS-1)/BS_FWD_ROWS; return n<BS_FWD_MAX_BLOCKS ? n : BS_FWD_MAX_BLOCKS;}
 // BOPL_SET_PACKED (default 1): rows follow bopl_encode's packed slot layout;
 // bs_set_packed overrides it (check_set_encoder exercises both kernels).
@@ -709,20 +761,36 @@ static bool bs_mma() {
     return g_bs_mma!=0;
 }
 void bs_set_mma(int mma) {g_bs_mma=mma ? 1 : 0;}
+// BOPL_SET_FLAT_BF16: training flat block and flat GEMMs in bf16 (fp32
+// accumulate). Default: follows BOPL_TF32 like the tensor-core forward. Read
+// when the training activations are registered (bs_reg_train); bs_set_flat_bf16
+// overrides before registration (check_set_encoder).
+static int g_bs_flat_bf16=-1;
+static bool bs_flat_bf16() {
+    if(g_bs_flat_bf16<0) {
+        const char* e=getenv("BOPL_SET_FLAT_BF16");
+        g_bs_flat_bf16=e && e[0] ? atoi(e)!=0 : bopl_cublas_compute_type()==CUBLAS_COMPUTE_32F_FAST_TF32;
+    }
+    return g_bs_flat_bf16!=0;
+}
+void bs_set_flat_bf16(int on) {g_bs_flat_bf16=on ? 1 : 0;}
 static int bs_bwd_blocks(int B) {int n=(B+BS_BWD_ROWS-1)/BS_BWD_ROWS; return n<BS_BWD_MAX_BLOCKS ? n : BS_BWD_MAX_BLOCKS;}
 
 static PrecisionTensor bs_forward(void* weights, void* activations, PrecisionTensor input, cudaStream_t stream) {
     auto* w=(BoplSetWeights*)weights; auto* a=(BoplSetActs*)activations;
     int B=a->out.shape[0], H=w->hidden;
     a->saved_input=input.data;
-    int flat_width=a->train ? BS_FLAT_PAD : BS_FLAT;
+    int flat_width=a->train ? a->flat_width : BS_FLAT;
     auto kernel=a->train && bs_mma() ? (bs_packed() ? bs_fused_forward_mma<true> : bs_fused_forward_mma<false>)
                                      : (bs_packed() ? bs_fused_forward<true> : bs_fused_forward<false>);
     kernel<<<bs_fwd_blocks(B),BS_FWD_THREADS,0,stream>>>(
         input.data,a->gather,B,H,w->entity.data,w->slime.data,
-        a->flat_input.data,flat_width,a->joined.data,a->entity_winner.data,a->slime_winner.data);
-    if(a->train) {
-        bs_pad_rows<<<grid_size(H*BS_FLAT_PAD),BLOCK_SIZE,0,stream>>>(a->flat_pad.data,w->flat.data,H);
+        a->flat_input.data,flat_width,a->train && a->flat_bf16,a->joined.data,a->entity_winner.data,a->slime_winner.data);
+    if(a->train && a->flat_bf16) {
+        bs_pad_rows_bf16<<<grid_size(H*flat_width),BLOCK_SIZE,0,stream>>>((__nv_bfloat16*)a->flat_pad.data,w->flat.data,H,flat_width);
+        bs_mm_flat_bf16(a->flat_input.data,B,flat_width,a->flat_pad.data,H,a->joined.data,H+2*BS_E,stream);
+    } else if(a->train) {
+        bs_pad_rows<<<grid_size(H*flat_width),BLOCK_SIZE,0,stream>>>(a->flat_pad.data,w->flat.data,H,flat_width);
         bs_mm_ldc(&a->flat_input,&a->flat_pad,a->joined.data,H+2*BS_E,stream,bopl_cublas_compute_type());
     } else {
         bs_mm_ldc(&a->flat_input,&w->flat,a->joined.data,H+2*BS_E,stream);
@@ -739,9 +807,13 @@ static void bs_backward(void* weights, void* activations, PrecisionTensor grad, 
     puf_mm_tn(&a->grad_out,&a->joined,&a->wgrad_fusion,stream);
     puf_mm_nn(&a->grad_out,&w->fusion,&a->grad_joined,stream);
     bs_flat_grad<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>(a->grad_flat.data,a->grad_joined.data,a->joined.data,B,H);
-    if(a->train) {
+    if(a->train && a->flat_bf16) {
+        bs_to_bf16<<<grid_size(B*H),BLOCK_SIZE,0,stream>>>((__nv_bfloat16*)a->grad_flat_bf16.data,a->grad_flat.data,B*H);
+        bs_mm_flat_wgrad_bf16(a->grad_flat_bf16.data,B,H,a->flat_input.data,a->flat_width,a->wgrad_flat_pad.data,stream);
+        bs_unpad_rows<<<grid_size(H*BS_FLAT),BLOCK_SIZE,0,stream>>>(a->wgrad_flat.data,a->wgrad_flat_pad.data,H,a->flat_width);
+    } else if(a->train) {
         puf_mm_tn(&a->grad_flat,&a->flat_input,&a->wgrad_flat_pad,stream);
-        bs_unpad_rows<<<grid_size(H*BS_FLAT),BLOCK_SIZE,0,stream>>>(a->wgrad_flat.data,a->wgrad_flat_pad.data,H);
+        bs_unpad_rows<<<grid_size(H*BS_FLAT),BLOCK_SIZE,0,stream>>>(a->wgrad_flat.data,a->wgrad_flat_pad.data,H,a->flat_width);
     } else {
         puf_mm_tn(&a->grad_flat,&a->flat_input,&a->wgrad_flat,stream);
     }
@@ -767,6 +839,10 @@ static void bs_reg_params(void* weights, Allocator* alloc) {
 static void bs_reg_forward(void* weights, void* activations, Allocator* alloc, int B, int train) {
     auto* w=(BoplSetWeights*)weights; auto* a=(BoplSetActs*)activations; int H=w->hidden;
     a->train=train;
+    a->flat_bf16=train && bs_flat_bf16();
+    a->flat_width=a->flat_bf16 ? BS_FLAT_PAD_BF16 : BS_FLAT_PAD;
+    // bf16 rows (2 x 952 bytes) live in the fp32-sized (B, 948) allocation.
+    static_assert(BS_FLAT_PAD_BF16*2<=BS_FLAT_PAD*4, "bf16 flat rows fit the fp32 allocation");
     a->flat_input={.shape={B,train ? BS_FLAT_PAD : BS_FLAT}};
     a->joined={.shape={B,H+2*BS_E}}; a->out={.shape={B,H}};
     a->entity_winner={.shape={B,BS_E}}; a->slime_winner={.shape={B,BS_E}};
@@ -780,10 +856,11 @@ static void bs_reg_rollout(void* weights, void* activations, Allocator* alloc, i
 static void bs_reg_train(void* weights, void* activations, Allocator* acts, Allocator* grads, int B) {
     auto* w=(BoplSetWeights*)weights; auto* a=(BoplSetActs*)activations; int H=w->hidden;
     bs_reg_forward(weights,activations,acts,B,1);
-    a->flat_pad={.shape={H,BS_FLAT_PAD}}; a->wgrad_flat_pad={.shape={H,BS_FLAT_PAD}};
+    a->flat_pad={.shape={H,a->flat_width}}; a->wgrad_flat_pad={.shape={H,a->flat_width}};
     a->grad_out={.shape={B,H}}; a->grad_joined={.shape={B,H+2*BS_E}}; a->grad_flat={.shape={B,H}};
     a->wgrad_partials={.shape={BS_BWD_MAX_BLOCKS,BS_WGRAD_FLOATS}};
     for(auto* tensor:{&a->flat_pad,&a->wgrad_flat_pad,&a->grad_out,&a->grad_joined,&a->grad_flat,&a->wgrad_partials}) alloc_register(acts,tensor);
+    if(a->flat_bf16) {a->grad_flat_bf16={.shape={B,H/2}}; alloc_register(acts,&a->grad_flat_bf16);}
     a->wgrad_flat={.shape={H,BS_FLAT}}; a->wgrad_entity={.shape={BS_E,BS_W_ENT}};
     a->wgrad_slime={.shape={BS_E,BS_W_SLIME}}; a->wgrad_fusion={.shape={H,H+2*BS_E}};
     for(auto* tensor:{&a->wgrad_flat,&a->wgrad_entity,&a->wgrad_slime,&a->wgrad_fusion}) alloc_register(grads,tensor);
