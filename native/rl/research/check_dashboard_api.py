@@ -29,8 +29,8 @@ with tempfile.TemporaryDirectory() as directory:
             except urllib.error.HTTPError as error:
                 return error.code, None, None
 
-        def request(etag=None):
-            status, etag_out, body = open_url('/api/run/test', etag)
+        def request(path='/api/run/test', etag=None):
+            status, etag_out, body = open_url(path, etag)
             data = json.loads(body) if body else None
             return status, etag_out, data
 
@@ -42,25 +42,33 @@ with tempfile.TemporaryDirectory() as directory:
                 time.sleep(.05)
         else:
             raise SystemExit('server did not start')
-        assert status == 200 and data['metrics_total'] == 1
-        assert data['unrated'] is True
-        assert request(etag)[0] == 304
+        assert status == 200 and data['unrated'] is True
+        assert 'metrics' not in data and data['evaluations'] == []
+        assert request(etag=etag)[0] == 304
+        metrics_status, metrics_etag, metrics = request('/api/run/test/metrics')
+        assert metrics_status == 200 and metrics['metrics_total'] == 1
+        assert request('/api/run/test/metrics', metrics_etag)[0] == 304
         with file.open('a') as out:
             out.write('{"step":2,"map_matches":{"0":4}}\n')
-        status, new_etag, data = request(etag)
-        assert status == 200 and new_etag != etag and data['metrics_total'] == 2 and data['map_matches']['0'] == 4
-        assert request(new_etag)[0] == 304
+        status, new_metrics_etag, metrics = request('/api/run/test/metrics', metrics_etag)
+        assert status == 200 and new_metrics_etag != metrics_etag
+        assert metrics['metrics_total'] == 2 and metrics['map_matches']['0'] == 4
+        assert request('/api/run/test', etag)[0] == 304
         (run / 'status.json').write_text('{"status":"interrupted"}')
-        status, etag, data = request(new_etag)
+        status, etag, data = request(etag=etag)
         assert status == 200 and data['status']['status'] == 'interrupted'
         evaldir = run / 'evaluations' / '000000002'
         evaldir.mkdir(parents=True)
         (evaldir / 'result.json').write_text('{"step":2,"games":[],"groups":[]}')
-        status, etag, data = request(etag)
+        status, etag, data = request(etag=etag)
         assert status == 200 and len(data['evaluations']) == 1
+        status, _, report = request('/api/run/test/evaluation/000000002')
+        assert status == 200 and report['directory'] == '000000002' and report['games'] == []
         file.write_text('{"step":9}\n')
-        status, etag, data = request(etag)
-        assert status == 200 and data['metrics_total'] == 1 and data['metrics'][0]['step'] == 9
+        status, _, metrics = request('/api/run/test/metrics')
+        assert status == 200 and metrics['metrics_total'] == 1 and metrics['metrics'][0]['step'] == 9
+        status, _, data = request()
+        assert status == 200 and 'metrics' not in data
 
         status, _, body = open_url('/api/ladder')
         ladder = json.loads(body)

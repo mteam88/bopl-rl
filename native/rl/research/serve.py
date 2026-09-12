@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 import sys
 import threading
+import time
+import traceback
 from functools import lru_cache
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
@@ -20,6 +22,15 @@ from metrics_store import store
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
 import reference_pool
+
+CHART_KEYS = (
+    'step', 'learner_steps', 'elapsed', 'sps', 'learner_sps', 'policy_loss',
+    'value_loss', 'entropy', 'kl', 'clip_fraction', 'gradient_norm',
+    'explained_variance', 'mean_reward', 'entropy_coefficient', 'learning_rate',
+    'advantage_std', 'entropy_aim', 'entropy_buttons', 'cuda_memory_mb',
+)
+CHART_POINTS = 360
+LAST_K = 3
 
 
 def read_json(path, default=None):
@@ -35,6 +46,11 @@ def stamp(path):
     except FileNotFoundError:
         return None
     return value.st_ino, value.st_mtime_ns, value.st_size
+
+
+def encode_json(data):
+    raw = json.dumps(data, allow_nan=False, separators=(',', ':')).encode()
+    return raw, gzip.compress(raw, 1), '"' + hashlib.sha256(raw).hexdigest() + '"'
 
 
 def compact_report(path):
@@ -93,44 +109,96 @@ def discover_sweeps(root, extra_runs, run_globs):
     return found
 
 
+def evaluation_results(directory):
+    root = Path(directory) / 'evaluations'
+    if not root.is_dir():
+        return []
+    found = [child / 'result.json' for child in root.iterdir() if (child / 'result.json').is_file()]
+    found.sort(key=step_order)
+    return found
+
+
+def rating_signature(directory, pool):
+    if not pool:
+        return None
+    files = []
+    for folder in (Path(directory) / 'reference', reference_pool.rating_dir(directory, pool)):
+        if not folder.is_dir():
+            continue
+        for path in folder.glob('*.json'):
+            files.append((path.name, stamp(path)))
+    files.sort()
+    return tuple(files)
+
+
 def run_flags(directory):
     result = read_json(directory / 'result.json', {})
     if result.get('flags') is not None:
         return result['flags']
-    reports = sorted(directory.glob('evaluations/*/result.json'), key=step_order)
+    reports = evaluation_results(directory)
     if reports:
         return read_json(reports[-1], {}).get('flags') or []
     return []
 
 
-def run_curve(directory, pool):
-    rows = []
-    for payload in reference_pool.rated_curve(directory, pool):
-        rows.append(dict(checkpoint=payload['checkpoint'], learner_steps=payload['learner_steps'],
-                         rating=payload['rating'], interval=payload['interval'],
-                         games=payload.get('games'), source=payload.get('source'),
-                         game_mismatch=payload.get('game_mismatch', False)))
-    return rows
-
-
-def run_summary(directory, pool, name, last_k=3):
-    curve = run_curve(directory, pool)
-    summary = reference_pool.run_iqm(directory, pool, last_k=last_k) if curve else None
+def run_summary(directory, pool, name, last_k=LAST_K):
+    curve = reference_pool.rated_curve(directory, pool) if pool else []
+    summary = None
+    if curve:
+        window = curve[-max(1, int(last_k)):]
+        score, interval = reference_pool.iqm_interval(window)
+        summary = dict(score=score, interval=interval, last_k=window,
+                       game_mismatch=any(row.get('game_mismatch') for row in window))
     return dict(
         name=name, kind='run', path=str(directory),
         rating=None if not summary else summary['score'],
         interval=None if not summary else summary['interval'],
-        spark=[{'steps': r['learner_steps'], 'rating': r['rating'],
-                'lo': r['interval'][0], 'hi': r['interval'][1]} for r in curve],
+        spark=[{'steps': row['learner_steps'], 'rating': row['rating'],
+                'lo': (row['interval'] or [None, None])[0],
+                'hi': (row['interval'] or [None, None])[1]} for row in curve],
+        ratings=curve,
         flags=run_flags(directory),
         game_mismatch=bool(summary and summary['game_mismatch']),
         unrated=summary is None,
-        rate_command=None if summary else reference_pool.rate_command(directory, pool.get('path')),
+        rate_command=None if summary else reference_pool.rate_command(directory, pool.get('path') if pool else None),
         last_k=None if not summary else [
-            dict(checkpoint=r['checkpoint'], learner_steps=r['learner_steps'],
-                 rating=r['rating'], interval=r['interval'], games=r.get('games'))
-            for r in summary['last_k']],
+            dict(checkpoint=row['checkpoint'], learner_steps=row['learner_steps'],
+                 rating=row['rating'], interval=row['interval'], games=row.get('games'))
+            for row in summary['last_k']],
     )
+
+
+def attach_media(report, folder):
+    for game in report.get('games') or ():
+        video = folder / (game['name'] + '.mp4')
+        if video.exists():
+            game['video'] = video.name
+        poster = video.with_suffix('.jpg')
+        if poster.exists():
+            game['poster'] = poster.name
+        mind = folder / (game['name'] + '.mind.json.gz')
+        if mind.exists():
+            game['mind'] = mind.name
+    return report
+
+
+def evaluation_payload(result_file):
+    report = compact_report(result_file)
+    if not report:
+        return None
+    report['directory'] = result_file.parent.name
+    return attach_media(report, result_file.parent)
+
+
+def thin_metrics(snapshot):
+    rows = snapshot['rows']
+    if len(rows) > CHART_POINTS:
+        stride = max(1, (len(rows) - 1) // (CHART_POINTS - 1))
+        picked = rows[::stride]
+        if picked[-1] is not rows[-1]:
+            picked.append(rows[-1])
+        rows = picked
+    return [{key: row[key] for key in CHART_KEYS if key in row} for row in rows]
 
 
 def main():
@@ -164,26 +232,47 @@ def main():
     if args.pool and args.pool.is_file():
         pool = reference_pool.load_pool(args.pool)
 
+    cache_lock = threading.Lock()
+    named_state = [None, None]
+    summary_state = {}
+    human_state = [None, None]
+    ladder_state = [None, None]
+    sweep_state = {}
+    run_state = OrderedDict()
+    eval_state = OrderedDict()
+    metrics_state = OrderedDict()
+
+    def named():
+        sig = (tuple((name, str(path), stamp(path)) for name, path in extra_runs.items()),
+               tuple((name, pattern, stamp(Path(pattern).parent)) for name, pattern in run_globs.items()))
+        with cache_lock:
+            if named_state[0] == sig:
+                return named_state[1]
+        found = named_runs(extra_runs, run_globs)
+        with cache_lock:
+            named_state[0], named_state[1] = sig, found
+        return found
+
     def runs():
         candidates = []
-        named = named_runs(extra_runs, run_globs)
-        for file in [*root.glob('*/config.json'), *(path / 'config.json' for path in named.values())]:
+        known = named()
+        for file in [*root.glob('*/config.json'), *(path / 'config.json' for path in known.values())]:
             try:
                 config = read_json(file, {})
             except (OSError, ValueError):
                 continue
             if not (config and config.get('schema') in (1, 2) and config.get('algorithm') == 'recurrent PPO'):
                 continue
-            name = next((n for n, p in named.items() if p == file.parent), file.parent.name)
+            name = next((n for n, p in known.items() if p == file.parent), file.parent.name)
             candidates.append(dict(name=name, created=file.stat().st_mtime,
-                                   workspace=str(file.parent) if name in named else None,
+                                   workspace=str(file.parent) if name in known else None,
                                    status=read_json(file.parent / 'status.json', {})))
         return sorted(candidates, key=lambda r: r['created'], reverse=True)
 
     def run_directory(name):
-        named = named_runs(extra_runs, run_globs)
-        if name in named:
-            return named[name]
+        known = named()
+        if name in known:
+            return known[name]
         if re.fullmatch(r'[A-Za-z0-9_.-]+', name) and (root / name / 'config.json').is_file():
             return root / name
         return None
@@ -194,6 +283,40 @@ def main():
             if name.startswith(token):
                 return prefix, name[len(token):]
         return None, None
+
+    def human_rating():
+        if not pool or not args.human.is_dir() or not (args.human / 'games.jsonl').is_file():
+            return None
+        sig = (stamp(args.human / 'games.jsonl'), stamp(args.human / 'excluded.json'), pool['pool_sha256'])
+        with cache_lock:
+            if human_state[0] == sig:
+                return human_state[1]
+        try:
+            value = reference_pool.rate_human(pool, args.human)
+        except ValueError:
+            value = None
+        with cache_lock:
+            human_state[0], human_state[1] = sig, value
+        return value
+
+    def summary_sig(directory):
+        reports = evaluation_results(directory)
+        return (stamp(directory / 'status.json'), stamp(directory / 'result.json'),
+                stamp(reports[-1]) if reports else None, rating_signature(directory, pool))
+
+    def cached_summary(directory, name):
+        key = str(directory)
+        sig = summary_sig(directory)
+        with cache_lock:
+            hit = summary_state.get(key)
+            if hit and hit[0] == sig:
+                return hit[1]
+        row = run_summary(directory, pool, name)
+        with cache_lock:
+            summary_state[key] = (sig, row)
+            if len(summary_state) > 256:
+                summary_state.pop(next(iter(summary_state)))
+        return row
 
     def ladder_payload():
         members = []
@@ -206,24 +329,21 @@ def main():
                     losses=member.get('losses'), draws=member.get('draws'),
                     spark=[], flags=[], game_mismatch=False, unrated=False,
                     sweep=None, trial=None))
-        human = None
-        if pool and args.human.is_dir() and (args.human / 'games.jsonl').is_file():
-            try:
-                human = reference_pool.rate_human(pool, args.human)
-                members.append(dict(
-                    name='human', kind='human', member_kind='human',
-                    rating=human['rating'], interval=human['interval'],
-                    games=human['games'], spark=[], flags=[],
-                    game_mismatch=True, unrated=False, sweep=None, trial=None,
-                    caveats=human.get('caveats'), records=human.get('records')))
-            except ValueError:
-                human = None
+        human = human_rating()
+        if human:
+            members.append(dict(
+                name='human', kind='human', member_kind='human',
+                rating=human['rating'], interval=human['interval'],
+                games=human['games'], spark=[], flags=[],
+                game_mismatch=True, unrated=False, sweep=None, trial=None,
+                caveats=human.get('caveats'), records=human.get('records')))
         rows = []
         for entry in runs():
             directory = run_directory(entry['name'])
-            if directory is None or pool is None:
+            if directory is None:
                 continue
-            row = run_summary(directory, pool, entry['name'])
+            row = dict(cached_summary(directory, entry['name']))
+            row.pop('ratings', None)
             sweep, trial = split_sweep(entry['name'])
             row.update(sweep=sweep, trial=trial, kind='sweep-trial' if sweep else 'run',
                        status=(entry.get('status') or {}).get('status'),
@@ -240,6 +360,29 @@ def main():
             rows=rows, members=members,
         )
 
+    def ladder_sig():
+        parts = [stamp(args.pool), stamp(args.human / 'games.jsonl'), stamp(args.human / 'excluded.json')]
+        for entry in runs():
+            directory = run_directory(entry['name'])
+            parts.append((entry['name'], None if directory is None else summary_sig(directory)))
+        return tuple(parts)
+
+    def ladder_current():
+        with cache_lock:
+            if ladder_state[1] is not None:
+                return ladder_state[1]
+        return ladder_rebuild()
+
+    def ladder_rebuild():
+        sig = ladder_sig()
+        with cache_lock:
+            if ladder_state[1] is not None and ladder_state[0] == sig:
+                return ladder_state[1]
+        encoded = encode_json(ladder_payload())
+        with cache_lock:
+            ladder_state[0], ladder_state[1] = sig, encoded
+        return encoded
+
     def run_payload(directory, name):
         status = dict(read_json(directory / 'status.json', {'status': 'starting'}))
         if status.get('status') == 'running':
@@ -247,48 +390,109 @@ def main():
                 os.kill(status['pid'], 0)
             except (ProcessLookupError, KeyError):
                 status['status'] = 'interrupted'
+        summary = cached_summary(directory, name)
+        reports = evaluation_results(directory)
+        evaluations = [{'directory': path.parent.name} for path in reports]
+        if reports:
+            latest = evaluation_payload(reports[-1])
+            if latest:
+                evaluations[-1] = latest
+        sweep, trial = split_sweep(name)
+        return dict(
+            name=name, config=read_json(directory / 'config.json'), status=status,
+            evaluations=evaluations, ratings=summary.get('ratings') or [],
+            iqm=None if summary['unrated'] else dict(
+                score=summary['rating'], interval=summary['interval'], last_k=summary['last_k'],
+                game_mismatch=summary['game_mismatch']),
+            flags=summary.get('flags') or [],
+            game_mismatch=summary.get('game_mismatch', False),
+            unrated=summary.get('unrated', True), sweep=sweep, trial=trial,
+            rate_command=summary.get('rate_command'),
+            final_evaluation=latest_report(directory, 'final-evaluations/*/result.json'),
+            pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
+                                            sha256=pool['pool_sha256']))
+
+    def run_alive(directory):
+        status = read_json(directory / 'status.json', {})
+        if status.get('status') == 'running':
+            try:
+                os.kill(status['pid'], 0)
+                return True
+            except (ProcessLookupError, KeyError):
+                return False
+        return None
+
+    def run_sig(directory):
+        reports = evaluation_results(directory)
+        return (run_alive(directory), stamp(directory / 'config.json'), stamp(directory / 'status.json'),
+                tuple(path.parent.name for path in reports),
+                stamp(reports[-1]) if reports else None,
+                rating_signature(directory, pool))
+
+    def run_snapshot(directory, name):
+        sig = run_sig(directory)
+        with cache_lock:
+            hit = run_state.pop(name, None)
+            if hit and hit[0] == sig:
+                run_state[name] = hit
+                return hit[1]
+        encoded = encode_json(run_payload(directory, name))
+        with cache_lock:
+            run_state[name] = (sig, encoded)
+            while len(run_state) > 8:
+                run_state.popitem(last=False)
+        return encoded
+
+    def metrics_payload(directory):
         try:
             summary = store.read(directory / 'metrics.jsonl')
         except ValueError:
             raise ValueError('Invalid metrics record')
-        evaluations = []
-        for file in sorted(directory.glob('evaluations/*/result.json'), key=step_order):
-            report = compact_report(file)
-            if not report:
-                continue
-            report['directory'] = file.parent.name
-            for game in report['games']:
-                video = file.parent / (game['name'] + '.mp4')
-                if video.exists():
-                    game['video'] = video.name
-                poster = video.with_suffix('.jpg')
-                if poster.exists():
-                    game['poster'] = poster.name
-                mind = file.parent / (game['name'] + '.mind.json.gz')
-                if mind.exists():
-                    game['mind'] = mind.name
-            evaluations.append(report)
-        ratings = run_curve(directory, pool) if pool else []
-        iqm = reference_pool.run_iqm(directory, pool) if pool and ratings else None
-        sweep, trial = split_sweep(name)
-        return dict(
-            name=name, config=read_json(directory / 'config.json'), status=status,
-            metrics=summary['rows'], metrics_total=summary['count'],
-            map_matches=summary['map_matches'], evaluations=evaluations,
-            ratings=ratings, iqm=iqm, flags=run_flags(directory),
-            game_mismatch=bool(iqm and iqm['game_mismatch']),
-            unrated=not ratings, sweep=sweep, trial=trial,
-            rate_command=None if ratings else reference_pool.rate_command(directory, pool['path'] if pool else None),
-            final_evaluation=latest_report(directory, 'final-evaluations/*/result.json'),
-            pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
-                                            sha256=pool['pool_sha256']))
+        return dict(metrics=thin_metrics(summary), metrics_total=summary['count'],
+                    map_matches=summary['map_matches'])
+
+    def metrics_snapshot(directory, name):
+        sig = stamp(directory / 'metrics.jsonl')
+        key = name
+        with cache_lock:
+            hit = metrics_state.pop(key, None)
+            if hit and hit[0] == sig:
+                metrics_state[key] = hit
+                return hit[1]
+        encoded = encode_json(metrics_payload(directory))
+        with cache_lock:
+            metrics_state[key] = (sig, encoded)
+            while len(metrics_state) > 4:
+                metrics_state.popitem(last=False)
+        return encoded
+
+    def eval_snapshot(directory, name, folder):
+        result = directory / 'evaluations' / folder / 'result.json'
+        if not result.is_file():
+            return None
+        sig = stamp(result)
+        key = (name, folder)
+        with cache_lock:
+            hit = eval_state.pop(key, None)
+            if hit and hit[0] == sig:
+                eval_state[key] = hit
+                return hit[1]
+        payload = evaluation_payload(result)
+        if payload is None:
+            return None
+        encoded = encode_json(payload)
+        with cache_lock:
+            eval_state[key] = (sig, encoded)
+            while len(eval_state) > 16:
+                eval_state.popitem(last=False)
+        return encoded
 
     def sweep_payload(name, directory):
         state = read_json(directory / 'sweep.json', {})
         trials = []
         for trial in state.get('trials') or []:
             run_dir = directory / trial['id']
-            summary = run_summary(run_dir, pool, f'{name}-{trial["id"]}') if pool and run_dir.is_dir() else {}
+            summary = cached_summary(run_dir, f'{name}-{trial["id"]}') if pool and run_dir.is_dir() else {}
             point = (trial.get('observations') or [None])[-1]
             trials.append(dict(
                 id=trial['id'], status=trial.get('status'), hypers=trial.get('hypers'),
@@ -305,21 +509,63 @@ def main():
                     pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
                                                     sha256=pool['pool_sha256']))
 
-    responses = OrderedDict()
-    response_lock = threading.Lock()
+    def sweep_current(name, directory):
+        with cache_lock:
+            hit = sweep_state.get(name)
+            if hit:
+                return hit[1]
+        return sweep_rebuild(name, directory)
+
+    def sweep_rebuild(name, directory):
+        sig = (stamp(directory / 'sweep.json'),
+               tuple((trial['id'], summary_sig(directory / trial['id']))
+                     for trial in (read_json(directory / 'sweep.json', {}).get('trials') or [])
+                     if (directory / trial['id']).is_dir()))
+        with cache_lock:
+            hit = sweep_state.get(name)
+            if hit and hit[0] == sig:
+                return hit[1]
+        encoded = encode_json(sweep_payload(name, directory))
+        with cache_lock:
+            sweep_state[name] = (sig, encoded)
+        return encoded
+
+    def refresh():
+        try:
+            ladder_rebuild()
+            for name, directory in discover_sweeps(root, extra_runs, run_globs).items():
+                sweep_rebuild(name, directory)
+        except Exception:
+            traceback.print_exc()
+
+    def refresh_loop():
+        while True:
+            time.sleep(2)
+            refresh()
+
+    refresh()
+    threading.Thread(target=refresh_loop, daemon=True).start()
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, fmt, *arguments):
             if len(arguments) < 2 or str(arguments[1]) not in ('200', '206', '304'):
                 super().log_message(fmt, *arguments)
 
-        def json(self, data):
-            payload = json.dumps(data, allow_nan=False, separators=(',', ':')).encode()
+        def send_snapshot(self, encoded):
+            raw, compressed, etag = encoded
+            if self.headers.get('If-None-Match') == etag:
+                self.send_response(304)
+                self.send_header('ETag', etag)
+                self.end_headers()
+                return
+            payload = raw
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
-            self.send_header('Cache-Control', 'no-store')
-            if len(payload) > 16384 and 'gzip' in self.headers.get('Accept-Encoding', ''):
-                payload = gzip.compress(payload, 1)
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('ETag', etag)
+            self.send_header('Vary', 'Accept-Encoding')
+            if len(raw) > 16384 and 'gzip' in self.headers.get('Accept-Encoding', ''):
+                payload = compressed
                 self.send_header('Content-Encoding', 'gzip')
             self.send_header('Content-Length', str(len(payload)))
             self.end_headers()
@@ -329,10 +575,14 @@ def main():
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
+        def json(self, data):
+            encoded = encode_json(data)
+            self.send_snapshot(encoded)
+
         def do_GET(self):
             path = unquote(urlparse(self.path).path)
             if path == '/api/ladder':
-                return self.json(ladder_payload())
+                return self.send_snapshot(ladder_current())
             if path == '/api/runs':
                 return self.json(runs())
             if path == '/api/sweeps':
@@ -343,60 +593,29 @@ def main():
                 directory = discover_sweeps(root, extra_runs, run_globs).get(name)
                 if directory is None:
                     return self.send_error(404)
-                return self.json(sweep_payload(name, directory))
+                return self.send_snapshot(sweep_current(name, directory))
             if path.startswith('/api/run/'):
-                name = path[len('/api/run/'):]
+                rest = path[len('/api/run/'):]
+                name, slash, tail = rest.partition('/')
                 directory = run_directory(name)
                 if directory is None:
                     return self.send_error(404)
-                try:
-                    with response_lock:
-                        dependencies = [directory / file for file in
-                                        ('config.json', 'status.json', 'metrics.jsonl')]
-                        for result in sorted(directory.glob('evaluations/*/result.json')):
-                            dependencies.extend((result, result.parent))
-                        dependencies.append(reference_pool.rating_dir(directory, pool) if pool else directory)
-                        status = read_json(directory / 'status.json', {})
-                        alive = True
-                        if status.get('status') == 'running':
-                            try:
-                                os.kill(status['pid'], 0)
-                            except (ProcessLookupError, KeyError):
-                                alive = False
-                        signature = (alive, tuple((str(p), stamp(p)) for p in dependencies))
-                        cached = responses.pop(name, None)
-                        if cached is None or cached[0] != signature:
-                            payload = json.dumps(run_payload(directory, name),
-                                                 allow_nan=False, separators=(',', ':')).encode()
-                            cached = (signature, '"' + hashlib.sha256(payload).hexdigest() + '"',
-                                      payload, gzip.compress(payload, 1))
-                        responses[name] = cached
-                        while len(responses) > 4:
-                            responses.popitem(last=False)
-                except ValueError:
-                    return self.send_error(500, 'Invalid metrics record')
-                _, etag, payload, compressed = cached
-                if self.headers.get('If-None-Match') == etag:
-                    self.send_response(304)
-                    self.send_header('ETag', etag)
-                    self.end_headers()
-                    return
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Cache-Control', 'no-cache')
-                self.send_header('ETag', etag)
-                self.send_header('Vary', 'Accept-Encoding')
-                if 'gzip' in self.headers.get('Accept-Encoding', ''):
-                    payload = compressed
-                    self.send_header('Content-Encoding', 'gzip')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                if self.command != 'HEAD':
+                if tail == 'metrics':
                     try:
-                        self.wfile.write(payload)
-                    except (BrokenPipeError, ConnectionResetError):
-                        pass
-                return
+                        return self.send_snapshot(metrics_snapshot(directory, name))
+                    except ValueError:
+                        return self.send_error(500, 'Invalid metrics record')
+                if tail.startswith('evaluation/'):
+                    folder = tail[len('evaluation/'):]
+                    if not re.fullmatch(r'[A-Za-z0-9_.-]+', folder):
+                        return self.send_error(404)
+                    encoded = eval_snapshot(directory, name, folder)
+                    if encoded is None:
+                        return self.send_error(404)
+                    return self.send_snapshot(encoded)
+                if tail:
+                    return self.send_error(404)
+                return self.send_snapshot(run_snapshot(directory, name))
             if path.startswith('/runs/'):
                 parts = path[len('/runs/'):].split('/')
                 directory = run_directory(parts[0]) if parts else None

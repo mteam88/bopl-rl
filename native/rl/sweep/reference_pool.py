@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import os
+from functools import lru_cache
 from pathlib import Path
 import sys
 import time
@@ -370,30 +371,53 @@ def write_evaluation_rating(run_dir, report, pool, checkpoint, game=None):
     return result
 
 
+@lru_cache(maxsize=4096)
+def _sidecar_learner_steps(path, inode, modified, size):
+    meta = json.loads(Path(path).read_text())
+    if meta.get('learner_steps') is not None:
+        return int(meta['learner_steps'])
+    return None
+
+
+def _checkpoint_learner_steps(run_dir, stem):
+    """learner_steps from the checkpoint sidecar, else the policy-* step number."""
+    sidecar = Path(run_dir) / 'checkpoints' / (stem + '.bin.json')
+    try:
+        stat = sidecar.stat()
+        value = _sidecar_learner_steps(str(sidecar), stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        if value is not None:
+            return value
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+    try:
+        return int(stem.split('-', 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _curve_row(stem, payload, learner_steps):
+    return dict(
+        checkpoint=stem + '.bin', learner_steps=learner_steps,
+        rating=payload['rating'],
+        interval=payload.get('interval') or [payload['rating'], payload['rating']],
+        games=payload.get('games'), source=payload.get('source'),
+        game_mismatch=payload.get('game_mismatch', False),
+    )
+
+
 def rated_curve(run_dir, pool):
-    """Rated checkpoints in learner-step order: evaluation checkpoints first, else any cached policy-* files."""
-    import scoring
-    files = load_run_ratings(run_dir, pool)
+    """Rated checkpoints in learner-step order from cached rating files (no eval JSON)."""
+    run_dir = Path(run_dir)
     rows = []
-    for steps, checkpoint in scoring.evaluation_checkpoints(run_dir):
-        payload = files.get(checkpoint.stem)
-        if payload:
-            rows.append(dict(payload, learner_steps=steps, checkpoint=checkpoint.name))
-    if rows:
-        return rows
-    extra = []
-    for stem, payload in files.items():
+    for stem, payload in load_run_ratings(run_dir, pool).items():
         if not stem.startswith('policy-'):
             continue
-        try:
-            step = int(stem.split('-', 1)[1])
-        except ValueError:
+        learner_steps = _checkpoint_learner_steps(run_dir, stem)
+        if learner_steps is None or payload.get('rating') is None:
             continue
-        learner = scoring._checkpoint_learner_steps(run_dir, stem + '.bin')
-        extra.append(dict(payload, learner_steps=learner if learner is not None else step,
-                          checkpoint=stem + '.bin'))
-    extra.sort(key=lambda r: r['learner_steps'])
-    return extra
+        rows.append(_curve_row(stem, payload, learner_steps))
+    rows.sort(key=lambda row: row['learner_steps'])
+    return rows
 
 
 def run_iqm(run_dir, pool, last_k=3):

@@ -21,10 +21,36 @@
     if (!interval) return "—";
     return `${elo(interval[0])}–${elo(interval[1])}`;
   }
+  const mem = new Map();
+  function apply(url, payload) {
+    const r = route();
+    if (url === "/api/ladder" && r.view === "ladder") {
+      ladder = payload;
+      renderLadder();
+    } else if (r.view === "run" && url === `/api/run/${encodeURIComponent(r.name)}`) {
+      data = payload;
+      renderRun();
+    } else if (r.view === "sweep" && url === `/api/sweep/${encodeURIComponent(r.name)}`) {
+      sweep = payload;
+      renderSweep();
+    }
+  }
   async function json(url) {
-    const r = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!r.ok) throw Error(`${url} ${r.status}`);
-    return r.json();
+    const hit = mem.get(url);
+    const headers = { Accept: "application/json" };
+    if (hit?.etag) headers["If-None-Match"] = hit.etag;
+    const pending = fetch(url, { headers }).then(async (r) => {
+      if (r.status === 304 && hit) return hit.data;
+      if (!r.ok) throw Error(`${url} ${r.status}`);
+      const payload = await r.json();
+      mem.set(url, { data: payload, etag: r.headers.get("ETag") });
+      return payload;
+    });
+    if (hit?.data) {
+      pending.then((payload) => { if (payload !== hit.data) apply(url, payload); }).catch(() => {});
+      return hit.data;
+    }
+    return pending;
   }
   function fileUrl(evaluation, file) {
     return `/runs/${encodeURIComponent(data.name)}/evaluations/${evaluation.directory}/${encodeURIComponent(file)}`;
@@ -329,8 +355,15 @@
     $("connection").textContent = "Live";
   }
 
-  function selectEvaluation() {
-    selectedEvaluation = (data?.evaluations || []).find((e) => e.directory === $("checkpoint").value);
+  async function selectEvaluation() {
+    const dir = $("checkpoint").value;
+    let report = (data?.evaluations || []).find((e) => e.directory === dir);
+    if (data && dir && report && !('games' in report)) {
+      report = await json(`/api/run/${encodeURIComponent(data.name)}/evaluation/${encodeURIComponent(dir)}`);
+      const i = data.evaluations.findIndex((e) => e.directory === dir);
+      if (i >= 0) data.evaluations[i] = report;
+    }
+    selectedEvaluation = report;
     if (!selectedEvaluation) return;
     const games = (selectedEvaluation.games || []).filter((g) => g.visual);
     $("match").replaceChildren(...games.map((g) => {
