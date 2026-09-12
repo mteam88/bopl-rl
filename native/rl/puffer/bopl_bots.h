@@ -47,13 +47,18 @@
  * (sub, mul, add, abs, max, sqrt, no fused multiply-add: fp-contract is off
  * for the kernels), so the vector and scalar paths return the same bits and
  * the frozen v1 fingerprints (SCRIPTED_BOTS.md, Versioning) are unchanged.
- * Other targets, and CPUs without AVX-512, run the scalar loops. */
+ * Other targets, and CPUs without AVX-512, run the scalar loops
+ * (-DBOT_SDF_AVX512=0 forces them, to check the two agree). */
+#ifndef BOT_SDF_AVX512
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-#include <immintrin.h>
 #define BOT_SDF_AVX512 1
-static int bot_cpu_avx512=-1;
 #else
 #define BOT_SDF_AVX512 0
+#endif
+#endif
+#if BOT_SDF_AVX512
+#include <immintrin.h>
+static int bot_cpu_avx512=-1;
 #endif
 
 /* Kind table (SCRIPTED_BOTS.md "Versioning"). Ids, names and behaviour are
