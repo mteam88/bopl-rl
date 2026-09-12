@@ -135,6 +135,87 @@ GPU contention: train kernels compete with the ~85 tiny inference kernels;
 inference has priority via stream priorities. Expect rollout to slow
 5-10%, still a big net win.
 
+**Done 2026-09-12 (branch `a-async`; pufferlib.cu/bindings.cu/vecenv.h overlay
+in `pufferlib-bopl.patch`, train.py, build.py).** `bench_shape.sh` at the
+canonical shape on top of the merged D+B trees (seed 73, 300 updates, the box
+shared with CPU sim work, so +-3% between runs):
+
+| build | workers | sps | learner sps | rollout s | train s | wall/update s | eval_gpu ms | eval_env ms |
+|---|---|---|---|---|---|---|---|---|
+| merged D+B, serial (`BOPL_ASYNC=0`, bit-identical) | 128 | 544-547k | 408-410k | 0.0441 | 0.0156 | 0.0603 | 0.172 | 0.149 |
+| async, shared GPU (`BOPL_GPU_SPLIT=0`) | 128 | 657-667k | 493-500k | 0.0486-0.0494 | 0.0276 | 0.0491-0.0499 | 0.222 | 0.138-0.146 |
+| async, 32/16 SM split (default `auto`) | 128 | 692-698k | 519-523k | 0.0464-0.0469 | 0.0385 | 0.0470-0.0474 | 0.198-0.210 | 0.135-0.137 |
+| async, 40/8 split | 128 | 478k | 359k | 0.0443 | 0.0679 | 0.0685 | 0.185 | 0.143 |
+| async, 8/40 and 16/32 splits | 128 | 330k / 530k | | 0.099 / 0.061 | 0.022 / 0.024 | | 0.62 / 0.34 | |
+| serial, w256 | 256 | 610-622k | 458-467k | 0.0765 | 0.0300 | 0.1074 | 0.217 | 0.363 |
+| async, shared GPU, w256 | 256 | 761k | 571k | 0.0852 | 0.0529 | 0.0861 | 0.306 | 0.343 |
+| async, 32/16 split, w256 | 256 | 845k | 634k | 0.0769 | 0.0744 | 0.0776 | 0.277 | 0.315 |
+| async, 24/24 split, w256 | 256 | 797k | 598k | 0.0816 | 0.0584 | 0.0822 | 0.343 | 0.283 |
+
+wall/update is the new `wall_seconds` in metrics.jsonl (what sps divides by;
+with overlap rollout and train no longer sum to it). w128: 0.0603 -> 0.0471
+(+27%), of which the ideal is 0.0441 (rollout alone on an idle GPU, 735k);
+w256: 0.1074 -> 0.0776 (+36%), now bound by rollout and train equally.
+
+What is in it (the 5.0 Cleanba design, per PufferLib's pufferl.cu):
+two rollout slots (`rollouts`, `rollout_start_states`, per-(slot,t,buffer)
+inference graphs, one train graph per slot because the set encoder bakes the
+slot's observation pointer into the graph); a second `PolicyWeights` in its
+own `Allocator` that the actor plays, refreshed by one flat D2D copy of the
+parameter buffer when a rollout starts (same registration order, so the
+copy is a snapshot); a non-blocking low-priority `train_stream` and
+high-priority per-buffer and bank streams; `rollouts_start`/`rollouts_finish`
+split at the C level (`_C.rollouts` = both) with the env pool's
+`static_vec_omp_start/wait` split to match; the trainer thread parks on a
+`cudaEventBlockingSync` event instead of spinning (`BOPL_TRAIN_WAIT=block`,
+spin is within noise). `train` advances `global_step` (data trained), and
+train.py keeps `counts` = trained-through and `ready` = the slot collected
+for the next update, so every update still accounts for exactly one batch
+(the per-update learner_steps check holds), a batch collected but not
+trained at SIGTERM is dropped, `--resume` restarts from trained data, and
+env logs/counters/bank loads/`load_weights` only run between rollouts (the
+bindings throw if a rollout is in flight). Async is deterministic per seed:
+three runs gave identical losses.
+
+Learning: medians over updates 200-300, w128: serial ev 0.568 / entropy
+5.780 / grad-norm 0.279, async 0.577 / 5.800 / 0.334 (identical for every
+split); w256: 0.541 / 5.774 / 0.395 vs 0.538 / 5.751 / 0.456. One epoch of
+policy lag; the stored logprobs are the actor snapshot's, so PPO ratios are
+exact and the 4.0 advantage kernel's V-trace correction (rho/c clip 1.0 from
+default.ini, always on) sees the lag as part of the ratio. Checked: serial
+mode is bit-identical to the merged tree over all 300 updates,
+check_routing, smoke (`--encoder set`, async and serial), a 40-update run
+with eval + checkpoints every 250k then `--resume` to 60 and a SIGTERM run
+resumed to completion (accounting exact in both), test_native_selfplay.
+
+GPU contention is the whole story of the remaining gap. Shared GPU: the
+inference graphs (~85 kernels of a few blocks each per step) queue behind
+the resident training blocks even at highest stream priority (priority only
+orders pending blocks), eval_gpu 0.172 -> 0.222 ms/step and train 0.0156 ->
+0.0276 s. It is not the CPU: `train_s` is unchanged with 6 instead of 8 env
+threads (0.0274 vs 0.0279 shared, 0.0385 vs 0.0385 split; the box has 12
+threads, the pool uses 8 and the trainer is one `cudaGraphLaunch` + an event
+wait per update). The fix that worked is spatial: CUDA green contexts
+(`cuDevSmResourceSplitByCount`, driver API, `-l:libcuda.so.1`) put the
+rollout streams in a partition of n SMs and the train stream in the rest;
+`cudaGraphLaunch`, cuBLAS and events all work on the green streams and the
+memory is shared. The 5070's split granularity is 8 SMs, so the choices are
+32/16 (best: inference +20% latency over idle, training 2.5x slower but
+hidden under the rollout up to w256) and 40/8 (inference at idle speed,
+training 4.4x slower, becomes the binding phase). Inference wants all 48
+SMs: 8/16/24 SMs give 0.62/0.34/0.25 ms eval_gpu.
+
+Did not help: stream priorities alone (that is the "shared" row); fewer env
+threads to free a core for the trainer (only slows eval_env); spin instead
+of blocking wait for the train stream.
+
+Headroom: at w128 the floor for this design is the idle rollout, 0.0441 s
+(735k), 6% away, and the 6% is inference on 32 instead of 48 SMs. Beyond
+that the update is rollout-bound and the levers are C/E/G again (a cheaper
+inference step, or more agents per round trip); at w256 training on 16 SMs
+is already as long as the rollout, so 3.B-style train work (or a finer SM
+split on a bigger GPU) is needed before larger shapes pay off.
+
 ### D. Fix the CPU side of the round trip (eval_env 0.47 -> ~0.15 ms, ~1.4x on rollout, low effort)
 
 - Stop the `num_threads(32)` override: size per-buffer workers to

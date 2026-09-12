@@ -304,7 +304,11 @@ def main():
     # while their own forward runs, BOPL_ENV_SPIN_US=100 idle spin before a
     # futex park, BOPL_GPU_WAIT=poll|sync, BOPL_ENV_PIN=1 to pin threads.
     # BOPL_ASYNC=1 (default) overlaps each rollout with the previous batch's
-    # training (see the update loop); 0 is the serial trainer.
+    # training (see the update loop); 0 is the serial trainer. With overlap
+    # BOPL_GPU_SPLIT=<SMs for inference>|auto|0 partitions the GPU between the
+    # rollout and train streams (green contexts; auto = two thirds, 32/16 on
+    # the 48-SM 5070; 0 shares the SMs on stream priority alone) and
+    # BOPL_TRAIN_WAIT=block|spin picks how the trainer waits for its stream.
     # OMP_NUM_THREADS below only governs the single-buffer synchronous step.
     for key, value in dict(BOPL_RL_GAME=game, BOPL_RL_BOOTSTRAP=ROOT/'native/fixtures/movement.rep',
                            BOPL_RL_LOG_DIR=output/'game-logs',
