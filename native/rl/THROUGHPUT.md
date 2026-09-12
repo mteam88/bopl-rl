@@ -194,6 +194,84 @@ step e) is equivalent to b8 without the extra pollers and would buy <= 5%;
 not done. The next CPU-side lever is `c_step` itself (memmove 9%, obs encode
 4%, bots 5%, libm 6% of cycles), i.e. E/F, and G is C.
 
+**Re-tune on the merged build (2026-09-12, after B's fused encoder, `d-omp`
+follow-up).** `bench_shape.sh`, 150 updates, box idle (load 1-3), b4 unless
+noted, `BOPL_ENV_PROF=0`:
+
+| shape | threads | sps | learner | rollout s | eval_gpu | eval_env |
+|---|---|---|---|---|---|---|
+| w128 | 8 | 556-558k | 417-418k | 0.0427-0.0430 | 0.174 | 0.141 |
+| w128 | 9 | 557-560k | 418-420k | 0.0425-0.0428 | 0.178-0.180 | 0.133 |
+| w128 | 10 | 542-555k | 407-417k | 0.0430-0.0444 | 0.180-0.183 | 0.129-0.140 |
+| w128 b8 | 8 / 10 | 531k / 539k | 398k / 404k | 0.0417 / 0.0408 | 0.179 / 0.185 | 0.121 / 0.105 (train 0.0195) |
+| w256 | 8 | 611-625k | 459-469k | 0.0743-0.0766 | 0.216-0.223 | 0.338-0.361 |
+| w256 | 9 | 626-634k | 469-475k | 0.0729-0.0741 | 0.223-0.227 | 0.319-0.331 |
+| w256 | 10 | 627-647k | 471-485k | 0.0707-0.0739 | 0.234-0.237 | 0.292-0.316 |
+| w256 | 12 | 596k (pinned 644k) | 447k | 0.0793 | 0.252 | 0.317 |
+| w256 | 14 | 518k | 389k | 0.0958 | 0.265 | 0.437 |
+| w256 b8 | 10 / 12 | 599k / 596k | 449k / 447k | 0.0708 / 0.0714 | 0.204 / 0.225 | 0.320 / 0.285 (train 0.038) |
+
+Default `BOPL_ENV_THREADS` moved to CPUs - 3 (9 here); 10 for a w256 run.
+More than ~10 stepping threads loses twice: c_step inflates with SMT
+sharing (self-play env 12.2 us at 5 threads, 15.1 at 8, 17.9 at 10, 19.7 at
+12, 21.0 at 14) and, once every hardware thread is occupied, a worker holding
+a claimed env gets preempted and the buffer waits for it (straggler wait 14 us
+at t8, 41 at t10, 104 at t12, 204 at t14). Pinning removes the t12 chaos
+(596k -> 644k) but does not beat unpinned t10. b8 shortens the rollout 4-5%
+and costs more in train (0.0155 -> 0.0195 at w128, 0.030 -> 0.038 at w256):
+b4 stays. `BOPL_ENV_SPIN_US` 0/10/100, `BOPL_GPU_POLL_PAUSE` 40/200/1000,
+`BOPL_GPU_WAIT=sync`, `BOPL_ENV_PIN` are all within noise or worse
+(sync: eval_gpu 0.152 but eval_env 0.195, no owner steals). New knobs, both
+measured and left off: `BOPL_GPU_STEAL_MARGIN_US` (stop stealing that long
+before the predicted stream completion: moves 10-20 us per step from eval_gpu
+to eval_env one-for-one, net -1..-2%) and `BOPL_ENV_AFFINITY=1` (stable env ->
+thread slices instead of the LPT order: c_step 15.7 vs 15.1 us, -3% overall,
+because an env's working set is ~130 KB and each thread touches 16-32 envs per
+round, so nothing stays in a 1 MB L2 whatever the mapping; the L3 holds it all).
+A dead knob was fixed (`BOPL_GPU_POLL_PAUSE` was a literal 40).
+
+Where the CPU time goes (`BOPL_ENV_PROF=2` timers between c_step's phases,
+w256 b4, us per env-step; `perf record` of the same run for the split inside
+"sim"):
+
+| phase | self-play (50% of envs) | historical (38%) | scripted evasive-v2 (12%) | at 5 threads (no SMT) |
+|---|---|---|---|---|
+| begin: actions, bot decide | 0.2 | 0.2 | 16.9 | 0.1 / 13.4 |
+| sim: `bopl_rl_step_sampled` (4 ticks + 2 state exports) | 8.9 | 8.4 | 9.0 | 7.0 |
+| sample: `compute_observations_from` + 26 KB copy | 3.2 | 3.1 | 3.4 | 2.6 |
+| finish: telemetry, 2 x 26 KB history copies, masks, publish 2 x 13 KB | 2.9 | 3.1 | 3.1 | 2.5 |
+| total | 15.1 | 14.8 | 32.5 | 12.2 / 25.7 |
+
+Mean over the mix 17.2 us; the v2 play bots do no sim ticks (analytic
+raycasts/prediction: `bot_shot_clear`, `bot_predict_foe`, `bot_raycast`,
+`bot_surface_y`, `fmin/fmax` ~8.5% of cycles). Inside the 8.9 us "sim"
+(perf shares of all cycles, 96% of which are c_step): game tick + physics
+~22% (`game_tick` 6.7, `rounded_rounded` 4.2, `closest` 3.4, `Vec2::angle`
+1.6, ...) = ~3.8 us; state export ~15% (`refresh_entities` 3.2,
+`refresh_actor_entities` 2.6, `observe_main` 1.5, `fill_slimes` 1.1,
+`step_sampled` 1.1, `write_state` 0.6, a sort 1.0, `Vec::retain` +
+`from_iter` 2.5, malloc/free 1.6) = ~2.6 us; libm 8.7% (`sin` 3.1, `acos`
+1.3, `fmod`/`floor` 1.9; `fmin`/`fmax` 2.9 are mostly the bots) = ~1.5 us.
+`memmove` is 16.6% of all cycles and `memset` 4.4%: the observation path
+copies 132 KB per env-step (memset scratch 26 KB, scratch -> sample 26 KB,
+history -> scratch and sample -> history 26 KB each, publish 2 x 13 KB into
+the pinned slot) plus the sim's state export. That 21% is the single largest
+item and is a pointer rotation, not a copy (track F / E: encode straight into
+the pinned slot or rotate scratch/sample/history pointers; skip the memset by
+writing every field). `perf stat` on the trainer: IPC 1.6, L1d miss rate
+9.8%, ~820 cache-misses and ~70 dTLB misses per env-step (of the ~2000 cache
+lines the copy chain touches), 0 migrations.
+
+Why eval_env cannot reach (64 x c_step) / 12 at w256: the rollout is at the
+CPU roof. 32768 env-steps x 17.2 us = 0.56 CPU-s per update on ~8 effective
+hardware threads = 0.070 s; measured 0.071-0.074. The 8-10 stepping threads
+are >95% busy in c_step, the 4 buffers overlap their env phases (~2.4 in the
+env phase at any moment), so each buffer sees ~3.3 threads: 64 x 17.2 / 3.3
+= 0.33 ms, as measured. Scheduling has nothing left to give at this shape;
+the levers are c_step (the 21% copy chain, the state export, libm) and the
+GPU phase (eval_gpu 0.22 ms is 30% of the step and the owner threads' launch
++ poll is ~5% of their time).
+
 ### C. Shrink the GPU round trip (eval_gpu 0.27 -> ~0.15 ms, ~1.2x on rollout, medium effort)
 
 - Fuse the 5 forwards (learner + 4 banks) into one batched forward: same
