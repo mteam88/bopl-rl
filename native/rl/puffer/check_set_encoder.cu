@@ -6,6 +6,30 @@
 #include <vector>
 #include "models.cu"
 #include "bopl_set_encoder.cu"
+#include <cuda.h>
+static void checked(cudaError_t result);
+
+// BOPL_CHECK_SMS=<n>: run the harness stream in a CUDA green context of n SMs
+// (the trainer's 16-SM training partition) so timings match the trainer.
+static cudaStream_t check_make_stream() {
+    const char* sms=getenv("BOPL_CHECK_SMS");
+    if(sms && atoi(sms)>0) {
+        CUdevice dev; CUdevResource all, part, rest; unsigned groups=1; CUdevResourceDesc desc; CUgreenCtx green;
+        if(cuInit(0)==CUDA_SUCCESS && cuDeviceGet(&dev,0)==CUDA_SUCCESS
+           && cuDeviceGetDevResource(dev,&all,CU_DEV_RESOURCE_TYPE_SM)==CUDA_SUCCESS
+           && cuDevSmResourceSplitByCount(&part,&groups,&all,&rest,0,(unsigned)atoi(sms))==CUDA_SUCCESS && groups>=1
+           && cuDevResourceGenerateDesc(&desc,&part,1)==CUDA_SUCCESS
+           && cuGreenCtxCreate(&green,desc,dev,CU_GREEN_CTX_DEFAULT_STREAM)==CUDA_SUCCESS) {
+            CUstream s;
+            if(cuGreenCtxStreamCreate(&s,green,CU_STREAM_NON_BLOCKING,0)==CUDA_SUCCESS) {
+                fprintf(stderr,"check_set_encoder: %u-SM green context\n",part.sm.smCount);
+                return (cudaStream_t)s;
+            }
+        }
+        throw std::runtime_error("BOPL_CHECK_SMS: green context creation failed");
+    }
+    cudaStream_t s; checked(cudaStreamCreateWithFlags(&s,cudaStreamNonBlocking)); return s;
+}
 
 static void checked(cudaError_t result) {
     if(result!=cudaSuccess) throw std::runtime_error(cudaGetErrorString(result));
@@ -52,7 +76,7 @@ extern "C" void* bopl_set_check_create(int batch, int hidden) {
         checked(alloc_create(&check->params)); checked(alloc_create(&check->activations)); checked(alloc_create(&check->gradients));
         if(check->params.total_bytes!=check->gradients.total_bytes)
             throw std::runtime_error("Weight and gradient layout differ");
-        checked(cudaStreamCreateWithFlags(&check->stream,cudaStreamNonBlocking));
+        check->stream=check_make_stream();
         return check;
     } catch(const std::exception& e) {last_error=e.what(); delete check; return nullptr;}
 }
@@ -123,4 +147,16 @@ extern "C" double bopl_set_check_time(void* context, int iterations, int forward
     cudaEventDestroy(start); cudaEventDestroy(stop);
     return ms/iterations;
 }
+// Select the packed-row forward (BOPL_SET_PACKED) or the every-slot forward.
+extern "C" void bopl_set_check_set_packed(int packed) {bs_set_packed(packed);}
+// Select the tensor-core (TF32) training forward or the fp32 kernel.
+extern "C" void bopl_set_check_set_mma(int mma) {bs_set_mma(mma);}
+// bf16 flat block + flat GEMMs (training); takes effect for Checks created afterwards.
+extern "C" void bopl_set_check_set_flat_bf16(int on) {bs_set_flat_bf16(on);}
+#ifdef BS_PROF
+extern "C" void bopl_set_check_prof(double* out) {
+    unsigned long long h[4]; cudaMemcpyFromSymbol(h,bs_prof,sizeof(h)); unsigned long long z[4]={0,0,0,0}; cudaMemcpyToSymbol(bs_prof,z,sizeof(z));
+    for(int i=0;i<4;i++) out[i]=(double)h[i];
+}
+#endif
 extern "C" void bopl_set_check_close(void* context) {delete (SetCheck*)context;}

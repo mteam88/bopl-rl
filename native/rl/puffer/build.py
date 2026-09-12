@@ -58,7 +58,7 @@ if args.device == "cuda":
                         "-c", str(overlay / "bindings.cu"), "-o", str(out / "puffer_cuda.o")], check=True)
 
     libraries = [cuda / "lib", nvidia / "cudnn/lib", nvidia / "nccl/lib"]
-    names = ["libcudart.so.13", "libcublas.so.13", "libcusolver.so.12", "libcurand.so.10",
+    names = ["libcudart.so.13", "libcublas.so.13", "libcublasLt.so.13", "libcusolver.so.12", "libcurand.so.10",
              "libcudnn.so.9", "libnccl.so.2"]
     links = []
     for name in names:

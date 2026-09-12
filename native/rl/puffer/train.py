@@ -155,6 +155,9 @@ def arguments():
     p.add_argument('--layers', type=int, default=1)
     p.add_argument('--horizon', type=int, default=128)
     p.add_argument('--learner-passes', type=int, default=1, help='Native minibatches per rollout; each has one learner batch of samples')
+    p.add_argument('--minibatch-div', type=int, default=1,
+                   help='Split each learner batch into this many minibatches (optimizer steps); must divide the learner rows. '
+                        'Throughput knob: smaller minibatches give the 16-SM training partition less work per GEMM but more launches; default 1')
     p.add_argument('--learning-rate', type=float, default=.0003)
     p.add_argument('--anneal-lr', type=int, choices=(0, 1), default=0,
                    help='0 keeps learning rate constant; 1 uses native cosine decay over the run budget')
@@ -344,6 +347,9 @@ def main():
     args = pufferl.load_config('bopl')
     vector = NativeVector(_C, a.workers, a.buffers, a.banks)
     learner_batch = vector.learner_rows * a.horizon
+    if a.minibatch_div < 1 or vector.learner_rows % a.minibatch_div:
+        raise SystemExit(f'--minibatch-div {a.minibatch_div} must divide the {vector.learner_rows} learner rows')
+    minibatch = learner_batch // a.minibatch_div
     native_batch = vector.total_agents * a.horizon
     updates = math.ceil(a.steps / learner_batch)
     # Native replay_ratio multiplies padded rows. Correct for those rows, and
@@ -359,7 +365,7 @@ def main():
                        primary_rows=vector.primary_rows)
     args['policy'].update(hidden_size=a.hidden, num_layers=a.layers)
     args['train'].update(total_timesteps=updates*native_batch, seed=a.seed,
-                         horizon=a.horizon, minibatch_size=learner_batch, replay_ratio=ratio,
+                         horizon=a.horizon, minibatch_size=minibatch, replay_ratio=ratio,
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)

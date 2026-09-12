@@ -36,7 +36,7 @@ def build(output, overlay, source, compiler):
                     "-I" + str(overlay), "-I" + str(source / "src"), "-I" + str(cuda / "include"),
                     "-c", str(HERE / "check_recurrent.cu"), "-o", str(obj)], check=True)
     subprocess.run([compiler, "-shared", "-Wl,--no-undefined", str(obj),
-                    str(cuda / "lib/libcudart.so.13"), str(cuda / "lib/libcublas.so.13"),
+                    str(cuda / "lib/libcudart.so.13"), str(cuda / "lib/libcublas.so.13"), str(cuda / "lib/libcublasLt.so.13"),
                     str(cuda / "lib/libcurand.so.10"),
                     "-Wl,--disable-new-dtags,-rpath," + str(cuda / "lib"),
                     "-o", str(output)], check=True)
