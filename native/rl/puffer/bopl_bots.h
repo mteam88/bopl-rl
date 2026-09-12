@@ -30,6 +30,7 @@
  */
 #include "bopl_rl.h"
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -211,7 +212,10 @@ static int bot_view(BotView *view, const BoplRlState *state, int index) {
 #if BOT_SDF_AVX512
     if (bot_cpu_avx512<0) bot_cpu_avx512=__builtin_cpu_supports("avx512f")?1:0;
 #endif
-    memset(view, 0, sizeof(*view));
+    /* Only the scalar fields are cleared: walls, arrows and the SoA mirror are
+     * read up to their counts, which start at zero. */
+    memset(view, 0, offsetof(BotView, walls));
+    view->wall_count=0; view->arrow_count=0;
     view->state=state;
     if (!state || (uint32_t)index>=state->header.player_count || state->header.player_count<2) return 0;
     view->me=&state->players[index];
@@ -463,7 +467,12 @@ static void bot_predict_foe(const BotView *view, double ticks, double *out_x, do
         if (!grounded) bot_fall_tick(&vy);
         x+=vx*BOT_TICK; y+=vy*BOT_TICK;
         int far=bot_skip(&skip, vx*BOT_TICK, vy*BOT_TICK, BOT_SLIME_RADIUS);
-        if (!grounded && vy<0 && !far && bot_sdf_known(&skip, view, x, y)<BOT_SLIME_RADIUS) { grounded=1; vx=0; vy=0; }
+        if (!grounded && vy<0 && !far && bot_sdf_known(&skip, view, x, y)<BOT_SLIME_RADIUS) {
+            grounded=1; vx=0; vy=0;
+            /* Landed: the remaining ticks add +0 to x and y, which changes
+             * neither unless one is -0 (then it would become +0). */
+            if (x!=0 && y!=0) break;
+        }
     }
     *out_x=x; *out_y=y;
 }
