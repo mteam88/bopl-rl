@@ -127,11 +127,19 @@ void flush() {
         }
         if (g_seq_marker) {
             std::sort(s->seq.begin(), s->seq.end(), [](const Rec& a, const Rec& b) { return a.start < b.start; });
+            // Window: marker launch BOPL_CUPTI_SEQ_AT (default: 60% into the
+            // run). The first launches are warmup / graph capture on blank
+            // rollout rows, where data-dependent kernels (set encoder) are fast.
+            int total = 0;
+            for (auto& r : s->seq) total += r.name.find(g_seq_marker) != std::string::npos;
+            const char* at_env = getenv("BOPL_CUPTI_SEQ_AT");
+            int at = at_env ? atoi(at_env) : (total * 6) / 10;
+            if (at < 1) at = 1;
             int hits = 0; size_t from = 0, to = 0;
             for (size_t i = 0; i < s->seq.size(); i++) {
                 if (s->seq[i].name.find(g_seq_marker) == std::string::npos) continue;
-                if (++hits == 10) from = i;
-                if (hits == 11) { to = i; break; }
+                if (++hits == at) from = i;
+                if (hits == at + 1) { to = i; break; }
             }
             // Every launch of the marker kernel in order (drift, interference from
             // the other partition, clocks): one duration per line, 16 per row.
@@ -143,8 +151,8 @@ void flush() {
             }
             if (n % 16) fprintf(out, "\n");
             if (to > from) {
-                fprintf(out, "-- sequence between marker launches 10 and 11 (%zu records, %.3f ms span)\n",
-                        to - from, (s->seq[to].start - s->seq[from].start) / 1e6);
+                fprintf(out, "-- sequence between marker launches %d and %d of %d (%zu records, %.3f ms span)\n",
+                        at, at + 1, total, to - from, (s->seq[to].start - s->seq[from].start) / 1e6);
                 fprintf(out, "%9s %8s  %s\n", "dur_us", "gap_us", "name");
                 for (size_t i = from; i < to; i++) {
                     double gap = i > from ? ((double)s->seq[i].start - (double)s->seq[i - 1].end) / 1e3 : 0.0;
