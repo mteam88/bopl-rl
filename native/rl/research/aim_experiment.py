@@ -41,7 +41,10 @@ TRAIN = ROOT / 'native/rl/puffer/train.py'
 BASE_CONFIG = ROOT / 'native/rl/sweep/configs/overnight-6.toml'
 DEFAULT_ROOT = ROOT / 'native/artifacts/rl/sweeps/aim-ar-fourier'
 
-ARMS = {'baseline': (0, 0), 'ar': (0, 1), 'fourier': (16, 0), 'both': (16, 1)}
+ARMS = {'baseline': (0, 0), 'ar': (0, 1), 'fourier': (16, 0), 'both': (16, 1),
+        # K sweep (2026-09-13, after Fourier 16 won the four-arm comparison): Fourier only.
+        'k4': (4, 0), 'k8': (8, 0), 'k32': (32, 0), 'k64': (64, 0)}
+MAIN_ARMS = ('baseline', 'ar', 'fourier', 'both')
 SEEDS = (73, 74, 75)
 STEPS = 200_000_000
 CHECKPOINT_EVERY = 25_000_000
@@ -306,7 +309,8 @@ def report(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=DEFAULT_ROOT)
-    parser.add_argument('--arms', type=lambda s: s.split(','), default=list(ARMS))
+    parser.add_argument('--arms', type=lambda s: s.split(','), default=list(MAIN_ARMS),
+                        help='Comma-separated arm names from ' + ','.join(ARMS))
     parser.add_argument('--seeds', type=lambda s: [int(x) for x in s.split(',')], default=list(SEEDS))
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('launch')
