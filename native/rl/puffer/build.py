@@ -80,5 +80,10 @@ else:
 subprocess.run(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(HERE.parent),
                 str(HERE / "eval_binding.c"), str(HERE.parent / "bopl_rl.c"), "-lm",
                 "-o", str(out / "libbopl_research.so")], check=True)
+# policy_eval.c is the CPU forward pass evaluate.py / the pool rater load through
+# native_policy.py; it shares the head layout with the trainer, so rebuild it in
+# lockstep (overnight-7 lost 4 trials to a stale copy missing _create_aim).
+subprocess.run(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared", "-I" + str(source / "src"),
+                str(HERE / "policy_eval.c"), "-lm", "-o", str(out / "libbopl_policy_eval.so")], check=True)
 shutil.copyfile(HERE / "bopl.ini", source / "config/bopl.ini")
 print(target)
