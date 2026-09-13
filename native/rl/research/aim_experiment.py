@@ -43,7 +43,7 @@ DEFAULT_ROOT = ROOT / 'native/artifacts/rl/sweeps/aim-ar-fourier'
 
 ARMS = {'baseline': (0, 0), 'ar': (0, 1), 'fourier': (16, 0), 'both': (16, 1),
         # K sweep (2026-09-13, after Fourier 16 won the four-arm comparison): Fourier only.
-        'k2': (2, 0), 'k3': (3, 0), 'k4': (4, 0), 'k8': (8, 0), 'k32': (32, 0), 'k64': (64, 0)}
+        'k1': (1, 0), 'k2': (2, 0), 'k3': (3, 0), 'k4': (4, 0), 'k8': (8, 0), 'k32': (32, 0), 'k64': (64, 0)}
 MAIN_ARMS = ('baseline', 'ar', 'fourier', 'both')
 SEEDS = (73, 74, 75)
 STEPS = 200_000_000
