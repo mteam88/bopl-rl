@@ -534,6 +534,8 @@ struct BrPlan {
     int sparse;          // stage only the populated obs slots (BOPL_OBS_SPARSE, default 1)
     int rows;            // live rows per buffer (bank_layout end)
     int H, layers, A_total, num_atns, mask_stride;
+    int dec_cols;      // raw decoder logit columns (== A_total unless the aim head is reparameterised)
+    int aim_fourier, aim_ar;
     int ld_dec;          // decoder columns padded to a multiple of 8
     BrGroups g;
     int tiles[BR_MAX_GROUPS + 1];
@@ -578,7 +580,8 @@ static void br_transpose_launch(const BrPlan& p, const BrLinear& src, const BrLi
 // Sampler: sample_logits_warp with the env's byte mask as input and the
 // actions written to both the env buffer (float) and the rollout.
 struct BrSampleArgs {
-    const float* dec; int ld_dec, A_total; // (rows, ld_dec >= A_total + 1): logits then the value
+    const float* dec; int ld_dec, A_total; // (rows, ld_dec >= dec_cols + 1): raw logits then the value
+    int dec_cols, aim_fourier, aim_ar;       // bopl_aim.h: A_total game logits are materialised from dec_cols columns
     const int* act_sizes; int num_atns;
     const unsigned char* env_mask; int mask_stride;  // NULL when the env has no mask
     float* rollout_mask;                   // (rows, mask_stride) float copy for training
@@ -606,26 +609,37 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
         #pragma unroll
         for (int it = 0; it < MASK_ITERS; it++) { int i = lane + it * 32; mv[it] = i < A_total ? mask[i] : 1; }
     }
-    #pragma unroll
-    for (int it = 0; it < MASK_ITERS; it++) {
-        int i = lane + it * 32;
-        if (i >= A_total) break;
-        float l = finite_or_clamp(logits[i], -1.0e4f, 1.0e4f);
-        if (mask) {
-            float m = (float)mv[it];
-            a.rollout_mask[(long)idx * a.mask_stride + i] = m;
-            if (m == 0.0f) l = -1e4f;
+    if (mask) {
+        #pragma unroll
+        for (int it = 0; it < MASK_ITERS; it++) {
+            int i = lane + it * 32;
+            if (i < A_total) a.rollout_mask[(long)idx * a.mask_stride + i] = (float)mv[it];
         }
-        row[i] = l;
     }
-    __syncwarp();
+    const bool aim = a.aim_fourier > 0 || a.aim_ar;
+    // Stage game logits [g0, g1) from the raw row (bopl_aim.h; identity unless aim).
+    auto stage = [&](int g0, int g1, int buttons) {
+        #pragma unroll
+        for (int it = 0; it < MASK_ITERS; it++) {
+            int i = lane + it * 32;
+            if (i < g0 || i >= g1) continue;
+            float l = aim ? bopl_game_logit(logits, a.aim_fourier, a.aim_ar, buttons, i) : logits[i];
+            l = finite_or_clamp(l, -1.0e4f, 1.0e4f);
+            if (mask && mv[it] == 0) l = -1e4f;
+            row[i] = l;
+        }
+        __syncwarp();
+    };
 
     curandStatePhilox4_32_10_t state;
     if (lane == 0) state = a.rng[idx];
     float total_log_prob = 0.0f;
-    int logits_offset = 0, verb = 0;
-    for (int h = 0; h < a.num_atns; ++h) {
+    int verb = 0;
+    int sampled[MAX_ATN_HEADS];
+    auto sample_head = [&](int h) {
         const int A = a.act_sizes[h];
+        int logits_offset = 0;
+        for (int i = 0; i < h; ++i) logits_offset += a.act_sizes[i];
         const int chunk = (A + 31) >> 5;
         const int a0 = lane * chunk;
         const int a1 = min(a0 + chunk, A);
@@ -677,11 +691,23 @@ __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs 
             a.rollout_actions[(long)idx * a.num_atns + h] = (float)sampled_action;
             a.env_actions[(long)idx * a.num_atns + h] = (float)sampled_action;
         }
-        logits_offset += A;
+        sampled[h] = sampled_action;
+    };
+    if (a.aim_ar) {
+        // Autoregressive aim: buttons (head 1) first, then the aim block of
+        // that combo (head 0), then the rest. Same order as sample_logits_warp.
+        stage(BOPL_ACT_AIM, A_total, 0);
+        sample_head(1);
+        stage(0, BOPL_ACT_AIM, sampled[1]);
+        sample_head(0);
+        for (int h = 2; h < a.num_atns; ++h) sample_head(h);
+    } else {
+        stage(0, A_total, 0);
+        for (int h = 0; h < a.num_atns; ++h) sample_head(h);
     }
     if (lane == 0) {
         a.logprobs[idx] = total_log_prob;
-        a.values[idx] = logits[A_total];
+        a.values[idx] = logits[a.dec_cols];
         a.rng[idx] = state;
     }
 }
@@ -709,7 +735,7 @@ static void br_init(PuffeRL* pufferl) {
     else if (pufferl->policy.network.forward != mingru_forward) why = "network is not MinGRU";
     else if (mw->num_layers > BR_MAX_LAYERS) why = "too many MinGRU layers";
     else if (1 + pufferl->num_frozen_banks > BR_MAX_GROUPS) why = "too many frozen banks";
-    else if (dw->output_dim > SAMPLE_MAX_LOGITS) why = "too many logits for the warp sampler";
+    else if (pufferl->policy.num_atns > SAMPLE_MAX_LOGITS) why = "too many logits for the warp sampler";
     for (int b = 0; !why && b < pufferl->num_frozen_banks; b++) {
         WeightBank* fb = &pufferl->frozen_banks[b];
         if (fb->hidden_size != mw->hidden || fb->num_layers != mw->num_layers
@@ -731,7 +757,15 @@ static void br_init(PuffeRL* pufferl) {
         p->g.end[k + 1] = pufferl->bank_layout ? pufferl->bank_layout[k + 1] : apb;
     p->rows = p->g.end[p->g.n];
     br_tiles(p->g, p->tiles);
-    p->A_total = dw->output_dim;
+    p->A_total = pufferl->policy.num_atns;  // game logits (sum of the head sizes)
+    p->dec_cols = dw->output_dim;           // raw decoder columns (bopl_aim.h)
+    {
+        const BoplAimConfig aim_cfg = bopl_aim_config();
+        const bool aim = p->dec_cols != p->A_total;
+        p->aim_fourier = aim ? aim_cfg.fourier : 0;
+        p->aim_ar = aim ? aim_cfg.ar : 0;
+        assert((!aim || p->dec_cols == aim_cfg.width) && "decoder width does not match BOPL_AIM_FOURIER/BOPL_AIM_AR");
+    }
     p->num_atns = pufferl->env.actions.shape[1];
     p->mask_stride = pufferl->env.action_mask.data ? (int)pufferl->env.action_mask.shape[1] : 0;
     // Kernels reading pinned host memory through PCIe are latency-bound and
@@ -746,7 +780,7 @@ static void br_init(PuffeRL* pufferl) {
     p->graph_copies = p->zero_copy == 0 ? br_env_int("BOPL_GRAPH_COPIES", 1) != 0 : 0;
     p->tf32 = br_env_int("BOPL_TF32", 1) != 0;
     p->sparse = br_env_int("BOPL_OBS_SPARSE", 1) != 0;
-    p->ld_dec = br_pad8(p->A_total + 1);
+    p->ld_dec = br_pad8(p->dec_cols + 1);
     p->acts = (BrActs*)calloc(hypers.num_buffers, sizeof(BrActs));
     int H = p->H, JW = H + 2 * BS_E;
     auto zalloc = [](float** ptr, size_t n) {
@@ -832,7 +866,7 @@ static void br_prepare(PuffeRL* pufferl, cudaStream_t stream) {
     br_transpose_launch(p, s_flat, d_flat, p.g.n, H, BS_FLAT, H, stream);
     br_transpose_launch(p, s_fus, d_fus, p.g.n, H, JW, H, stream);
     for (int l = 0; l < p.layers; l++) br_transpose_launch(p, s_gru[l], d_gru[l], p.g.n, 3 * H, H, 3 * H, stream);
-    br_transpose_launch(p, s_dec, d_dec, p.g.n, p.A_total + 1, H, p.ld_dec, stream);
+    br_transpose_launch(p, s_dec, d_dec, p.g.n, p.dec_cols + 1, H, p.ld_dec, stream);
 }
 
 static void br_free(PuffeRL* pufferl) {
@@ -932,12 +966,13 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         br_gate<<<grid_size(rows * H), BLOCK_SIZE, 0, stream>>>(gate);
         x = A.gru[l & 1];
     }
-    br_gemm_launch(p, x, H, A.dec, p.ld_dec, H, p.A_total + 1, p.ld_dec, 0, w_dec, stream);
+    br_gemm_launch(p, x, H, A.dec, p.ld_dec, H, p.dec_cols + 1, p.ld_dec, 0, w_dec, stream);
 
     int hc_stride = 0;
     const signed char* hc_dev = get_head_consume_dev(&hc_stride);
     BrSampleArgs smp = {};
     smp.dec = A.dec; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
+    smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
     smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
     smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
     smp.env_actions = env_actions; smp.rollout_actions = act_dst.data;

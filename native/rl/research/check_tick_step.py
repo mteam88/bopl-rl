@@ -26,7 +26,7 @@ sys.path.insert(0, str(HERE))
 from environment import Environment, configure
 from evaluation_protocol import scripted_opponent
 import layout, native_policy
-from evaluate import masked, sample
+from native_policy import decide
 
 ROOT = HERE.parents[2]
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
@@ -51,8 +51,7 @@ def play(env, seed, map_id, bots, policy, per_tick, out):
         actions = torch.zeros(2, layout.NUM_ATNS, dtype=torch.int64)
         if policy is not None:
             with torch.no_grad():
-                logits, _, state = policy.step(observation, state)
-                actions = sample(masked(logits, mask), generator)
+                _, _, actions, state = decide(policy, observation, mask, state, generator)
         if per_tick:
             n = 0
             for _ in env.step_ticks(actions.numpy()):

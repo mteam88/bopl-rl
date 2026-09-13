@@ -10,21 +10,12 @@ import time
 import numpy as np
 import torch
 from environment import Environment,configure
-from native_policy import load
+from native_policy import load,masked,sample,decide
 from common import atomic_json
 import decision_dump
 import layout
 from telemetry import FIELDS,summarize
 from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent,DEFAULT_EVAL_SCRIPTED
-
-def masked(logits,mask):
-    """Apply the environment's action mask (1 = allowed) the way the trainer samples: disallowed logits -> -inf."""
-    return logits.masked_fill(torch.from_numpy(np.asarray(mask,dtype=np.uint8)==0),float('-inf'))
-
-def sample(logits,generator):
-    """One index per head (aim, buttons, hold), shape (batch, layout.NUM_ATNS)."""
-    return torch.stack([torch.multinomial(part.softmax(-1),1,generator=generator).squeeze(-1)
-                        for part in logits.split(layout.ACTION_SIZES,-1)],-1)
 
 def random_action(rng):
     """Scripted opponent without a hold output: hold index 0 (length 1) keeps every decision free."""
@@ -124,13 +115,13 @@ def main():
                     observation=torch.from_numpy(env.obs.copy())
                     mask=env.mask.copy()
                     with torch.no_grad():
-                        logits,values,state=policy.step(observation,state)
-                        logits=masked(logits,mask)
-                        actions=sample(logits,generator)
+                        # native_policy.decide samples as the trainer does (buttons before aim when the aim head
+                        # is autoregressive); the logits are those the actions were sampled from.
+                        logits,values,actions,state=decide(policy,observation,mask,state,generator)
                         other=1-task['side']
                         if opponent is not None:
-                            old_logits,_,other_state=opponent.step(observation,other_state)
-                            actions[other]=sample(masked(old_logits,mask),generator)[other]
+                            _,_,old_actions,other_state=decide(opponent,observation,mask,other_state,generator)
+                            actions[other]=old_actions[other]
                         elif task['opponent']=='random':
                             actions[other]=random_action(rng)
                     if task['save']:

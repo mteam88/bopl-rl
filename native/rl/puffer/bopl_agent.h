@@ -38,6 +38,9 @@
  * of its masked logits (disallowed -> -inf), the distribution evaluate.py's
  * torch.multinomial draws from; the draw uses this library's seeded
  * generator, so a match is reproducible from (spec, round seed, states).
+ * Checkpoints with a Fourier aim block or an aim block per button combo
+ * (sidecar aim_fourier / aim_ar, bopl_aim.h) are materialised to the same
+ * 256 aim logits; with aim_ar the buttons are drawn before the aim.
  * Not thread-safe per handle; handles are independent. */
 #include "bopl_rl.h"
 #include <stddef.h>
@@ -79,7 +82,9 @@ int bopl_agent_is_policy(const BoplAgent *agent);
 /* Introspection of the latest decision (valid after a tick at a decision
  * boundary): the published observation row and mask the policy saw, the raw
  * decoder output (BOPL_LOGITS logits then the value), the sampled head
- * indices (aim, buttons, hold), and the count of decisions so far. */
+ * indices (aim, buttons, hold), and the count of decisions so far. The
+ * logits are the game logits the decision was drawn from (with aim_ar: the
+ * aim block of the sampled button combo). */
 const float *bopl_agent_observation(const BoplAgent *agent);
 const unsigned char *bopl_agent_mask(const BoplAgent *agent);
 const float *bopl_agent_logits(const BoplAgent *agent);

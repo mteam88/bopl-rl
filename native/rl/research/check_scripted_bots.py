@@ -35,12 +35,10 @@ def play(env, policy, kind, map_id, seed, bot_side, generator=None):
     while not env.ended:
         actions = np.zeros((2, layout.NUM_ATNS), dtype=np.float32)
         if policy:
+            from native_policy import decide
             with torch.no_grad():
-                logits, _, state = policy.step(torch.from_numpy(env.obs.copy()), state)
-            masked = logits.masked_fill(torch.from_numpy(env.mask.copy() == 0), float('-inf'))
-            actions[other] = torch.stack([
-                torch.multinomial(part.softmax(-1), 1, generator=generator).squeeze(-1)
-                for part in masked.split(layout.ACTION_SIZES, -1)], -1)[other].numpy()
+                _, _, sampled, state = decide(policy, torch.from_numpy(env.obs.copy()), env.mask.copy(), state, generator)
+            actions[other] = sampled[other].numpy()
         env.step(actions)
         stats += env.telemetry[bot_side]
     final = env.state

@@ -31,6 +31,28 @@ HOLD_MAX = 16
 LOGITS = sum(ACTION_SIZES)       # 277
 DECODER = LOGITS + 1             # + value = 278
 
+# Aim head parameterisations (native/rl/puffer/bopl_aim.h): a Fourier aim block
+# of 1 + 2K coefficients instead of 256 bins, and one aim block per button combo
+# (buttons sampled first). Both off (0, 0) is the plain 277 + 1 decoder row.
+AIM_MAX_HARMONICS = 64
+
+
+def aim_block_width(harmonics):
+    return 1 + 2 * harmonics if harmonics > 0 else ACT_AIM
+
+
+def decoder_buttons_offset(harmonics, autoregressive):
+    return (ACT_BUTTONS if autoregressive else 1) * aim_block_width(harmonics)
+
+
+def decoder_logits(harmonics=0, autoregressive=0):
+    """Decoder logit columns (the value follows them); LOGITS when both are off."""
+    return decoder_buttons_offset(harmonics, autoregressive) + ACT_BUTTONS + ACT_HOLD
+
+
+def aim_block_offset(harmonics, autoregressive, buttons):
+    return (buttons if autoregressive else 0) * aim_block_width(harmonics)
+
 # Set encoder parameter count (bopl_set_encoder.h): flat, entity, slime, fusion.
 SET_DIM = 64
 SET_FLAT = OBS_PREFIX + PREVIOUS_FEATURES     # 946
@@ -40,9 +62,9 @@ def set_encoder_weights(hidden):
     return hidden * SET_FLAT + SET_DIM * (ENTITY_FEATURES + SLIME_FEATURES) + hidden * (hidden + 2 * SET_DIM)
 
 
-def policy_weights(hidden, num_layers, architecture):
+def policy_weights(hidden, num_layers, architecture, aim_fourier=0, aim_ar=0):
     encoder = set_encoder_weights(hidden) if architecture == ARCHITECTURE else hidden * OBS_SIZE
-    return encoder + DECODER * hidden + num_layers * 3 * hidden ** 2
+    return encoder + (decoder_logits(aim_fourier, aim_ar) + 1) * hidden + num_layers * 3 * hidden ** 2
 
 
 LAYOUT_FIELDS = (OBS_SIZE, PLAYER_FEATURES, ABILITY_FEATURES, ENTITY_FEATURES, SLIME_FEATURES, PREVIOUS_FEATURES,

@@ -35,18 +35,27 @@ class Model:
     def start(self,task,side,rng):
         import torch
         state=self.policy.initial(2,'cpu')
+        policy=self.policy
+        def head(row,index):
+            part=row[HEAD_BOUNDS[index]:HEAD_BOUNDS[index+1]]
+            weights=np.exp(part-part.max()); weights/=weights.sum()
+            return rng.choice(len(part),p=weights)
         def act(observation,mask):
             nonlocal state
             with torch.no_grad():
                 batch=torch.from_numpy(np.ascontiguousarray(observation,dtype=np.float32))
-                logits,_,state=self.policy.step(batch,state)
-            # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices.
-            row=np.where(np.asarray(mask[side])!=0,as_numpy(logits)[side],-np.inf)
-            action=[]
-            for lo,hi in zip(HEAD_BOUNDS,HEAD_BOUNDS[1:]):  # aim, buttons, hold
-                part=row[lo:hi]
-                weights=np.exp(part-part.max()); weights/=weights.sum()
-                action.append(rng.choice(len(part),p=weights))
+                rows,state=policy.step_raw(batch,state)
+                logits,_=policy.game_logits(rows)
+            # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices;
+            # an autoregressive aim head is materialised for the sampled button combo before aim is drawn.
+            allowed=np.asarray(mask[side])!=0
+            row=np.where(allowed,as_numpy(logits)[side],-np.inf)
+            action=[0,head(row,1),0]
+            if policy.aim_ar:
+                combos=np.zeros(rows.shape[0],dtype=np.int32); combos[side]=action[1]
+                with torch.no_grad(): logits,_=policy.game_logits(rows,combos)
+                row=np.where(allowed,as_numpy(logits)[side],-np.inf)
+            action[0]=head(row,0); action[2]=head(row,2)
             return np.asarray(action,dtype=np.int64)
         return act
 

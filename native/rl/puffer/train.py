@@ -70,7 +70,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
-                 'scripted_bots', 'scripted_level', 'scripted_decay')
+                 'scripted_bots', 'scripted_level', 'scripted_decay', 'aim_fourier', 'aim_ar')
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -106,7 +106,8 @@ def recorded_hypers(config):
                 pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
                 entropy_free_rows=config.get('entropy_free_rows', 0),
                 scripted_bots=config.get('scripted_bots', []), scripted_level=config.get('scripted_level', 'hard'),
-                scripted_decay=config.get('scripted_decay', 0))
+                scripted_decay=config.get('scripted_decay', 0),
+                aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0))
 
 
 def offset_counters(counts, base):
@@ -172,6 +173,12 @@ def arguments():
     p.add_argument('--entropy-free-rows', type=int, choices=(0, 1), default=1,
                    help='1 normalises the button/hold entropy bonus over free (unlatched) rows: the head scale is '
                         'divided by the previous rollout\'s free-decision fraction (latched rows carry no entropy)')
+    p.add_argument('--aim-fourier', type=int, default=0, choices=range(0, layout.AIM_MAX_HARMONICS + 1), metavar='K',
+                   help='Aim head as a Fourier series over angle: the decoder emits a neutral logit and K cos/sin '
+                        'harmonics per aim block instead of 256 bins (puffer/bopl_aim.h); 0 keeps raw bins')
+    p.add_argument('--aim-ar', type=int, choices=(0, 1), default=0,
+                   help='1 conditions the aim head on the sampled button combo: one aim block per combo, buttons '
+                        'sampled before aim (in the trainer, the CPU evaluator and the in-game agent)')
     p.add_argument('--episode-ticks', type=int, default=7200)
     p.add_argument('--reward-kill', type=float, default=0.,
                    help='Per-kill bonus, also paid as a per-death penalty (game credit incl. self-kills)')
@@ -334,6 +341,8 @@ def main():
     (output/'game-logs').mkdir(exist_ok=True)
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
     os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
+    os.environ['BOPL_AIM_FOURIER'] = str(a.aim_fourier)  # read once by the trainer (bopl_aim_config)
+    os.environ['BOPL_AIM_AR'] = str(a.aim_ar)
     import numpy as np
     import torch
     from pufferlib import _C, pufferl, selfplay
@@ -404,6 +413,7 @@ def main():
                   reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
                   entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=a.head_scale,
                   entropy_free_rows=a.entropy_free_rows,
+                  aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
                   layout=dict(version=2, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
                               hold_lengths=layout.HOLD_LENGTHS),
@@ -452,7 +462,8 @@ def main():
                 path = output/'checkpoints'/f'policy-{step:09d}.bin'
                 write_checkpoint(path, lambda name: _C.save_weights(trainer, name), obs_size=layout.OBS_SIZE,
                                  hidden=a.hidden, num_layers=a.layers, architecture=layout.ARCHITECTURE if a.encoder == 'set' else 'puffernet-mingru',
-                                 game_steps=step, learner_steps=counts['learner_steps'], config=config)
+                                 game_steps=step, learner_steps=counts['learner_steps'], config=config,
+                                 aim_fourier=a.aim_fourier, aim_ar=a.aim_ar)
                 saved[step] = path
             if pool is not None:
                 # Everything --resume needs besides the weights, written with

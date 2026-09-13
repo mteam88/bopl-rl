@@ -37,6 +37,28 @@ class NativeCheckpointTests(unittest.TestCase):
                     write_checkpoint(path, weights.tofile, **kwargs)
                 self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [path.name, path.name + ".json"])
 
+    def test_aim_parameterisation_is_recorded_and_sizes_the_decoder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hidden = 8
+            for aim_fourier, aim_ar in ((0, 1), (16, 0), (16, 1)):
+                with self.subTest(aim_fourier=aim_fourier, aim_ar=aim_ar):
+                    count = hidden * (11 + layout.decoder_logits(aim_fourier, aim_ar) + 1) + 3 * hidden**2
+                    weights = np.linspace(-.02, .02, count, dtype=np.float32)
+                    path = Path(directory) / f"policy-{aim_fourier}-{aim_ar}.bin"
+                    kwargs = dict(obs_size=11, hidden=hidden, num_layers=1, architecture="puffernet-mingru",
+                                  game_steps=32, learner_steps=24, config=dict(training_maps=[0], episode_ticks=7200),
+                                  aim_fourier=aim_fourier, aim_ar=aim_ar)
+                    metadata = write_checkpoint(path, weights.tofile, **kwargs)
+                    self.assertEqual((metadata["aim_fourier"], metadata["aim_ar"]), (aim_fourier, aim_ar))
+                    policy, _ = load(path)
+                    self.assertEqual((policy.aim_fourier, policy.aim_ar), (aim_fourier, aim_ar))
+                    logits, value, state = policy.step(torch.ones(1, 11), policy.initial(1))
+                    self.assertEqual(tuple(logits.shape), (1, layout.LOGITS))
+                    with self.assertRaises(ValueError):  # the plain decoder does not fit these weights
+                        write_checkpoint(Path(directory) / "plain.bin", weights.tofile, **dict(kwargs, aim_fourier=0, aim_ar=0))
+                    with self.assertRaises(ValueError):
+                        write_checkpoint(Path(directory) / "bad.bin", weights.tofile, **dict(kwargs, aim_ar=2))
+
     def test_failed_save_never_publishes_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy.bin"

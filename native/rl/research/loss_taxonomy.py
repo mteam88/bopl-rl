@@ -80,7 +80,7 @@ def _worker(args):
     os.environ['BOPL_BOT_DEBUG'] = '1'
     from environment import Environment, configure
     from native_policy import load
-    from evaluate import masked, sample
+    from native_policy import decide
     import layout
     configure(out / 'workers', ROOT / 'native/target/release/libbopl_sim.so')
     models = {name: load(Path(path)) for name, path in checkpoints.items()}
@@ -118,8 +118,7 @@ def _worker(args):
                         observation = torch.from_numpy(env.obs.copy())
                         mask = env.mask.copy()
                         with torch.no_grad():
-                            logits, values, state = policy.step(observation, state)
-                            actions = sample(masked(logits, mask), generator)
+                            logits, values, actions, state = decide(policy, observation, mask, state, generator)
                         actions = actions.numpy()
                     else:
                         actions = np.zeros((2, layout.NUM_ATNS), dtype=np.float32)

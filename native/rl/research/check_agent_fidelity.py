@@ -81,7 +81,9 @@ def check_sim(args):
                     state = policy.initial(1)
                 while not env.ended and ticks < limit + 8:
                     if policy is not None:
-                        logits, value, state = policy.step(torch.from_numpy(env.obs[1:2].copy()), state)
+                        rows, state = policy.step_raw(torch.from_numpy(env.obs[1:2].copy()), state)
+                        # The shim's logits are the game logits of the button combo it sampled (aim_ar).
+                        logits, value = policy.game_logits(rows, np.array([agent.decision[1]], dtype=np.int32))
                         if not np.array_equal(logits.numpy()[0], agent.logits[:layout.LOGITS]): mismatches.append(('logits', decisions))
                         logits_checked += 1
                     human = sample_masked(rng, env.mask[0])

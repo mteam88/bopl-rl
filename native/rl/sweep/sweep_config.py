@@ -49,7 +49,7 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'evaluation_maps', 'heldout_maps', 'evaluation_baseline',
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
                'frozen_games', 'evaluation_workers', 'scripted_bots', 'scripted_level',
-               'scripted_decay', 'scripted_opponents')
+               'scripted_decay', 'scripted_opponents', 'aim_fourier', 'aim_ar')
 STORE_TRUE = ('no_eval',)
 # Virtual swept parameters for the scripted-bot curriculum (SCRIPTED_BOTS.md):
 # scripted_banks = how many of [fixed].scripted_bots (an ordered candidate
@@ -60,7 +60,7 @@ SCRIPTED_VIRTUAL = ('scripted_banks', 'scripted_level_index')
 HEAD_SCALE = {'head_scale_aim': 0, 'head_scale_buttons': 1, 'head_scale_hold': 2}
 # Parameters that must be integers on the command line even when the space
 # yields floats (log_normal steps, for example).
-ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'scripted_decay',
+ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'scripted_decay', 'aim_fourier', 'aim_ar',
                   'scripted_banks', 'scripted_level_index',
                   'horizon', 'learner_passes', 'entropy_half_life', 'episode_ticks',
                   'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout',

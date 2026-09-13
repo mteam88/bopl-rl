@@ -47,8 +47,12 @@ parser.add_argument('--threads', type=int, default=4)
 parser.add_argument('--seed', type=int, default=73)
 parser.add_argument('--game', type=Path)
 parser.add_argument('--encoder', choices=('linear', 'set'), default='linear', help='native encoder (sets BOPL_NATIVE_ENCODER before the trainer is created)')
+parser.add_argument('--aim-fourier', type=int, default=0, help='Fourier aim head harmonics (BOPL_AIM_FOURIER); 0 = raw bins')
+parser.add_argument('--aim-ar', type=int, choices=(0, 1), default=0, help='aim head conditioned on the sampled buttons (BOPL_AIM_AR)')
 options = parser.parse_args()
 os.environ['BOPL_NATIVE_ENCODER'] = options.encoder
+os.environ['BOPL_AIM_FOURIER'] = str(options.aim_fourier)
+os.environ['BOPL_AIM_AR'] = str(options.aim_ar)
 ARCHITECTURE = policy_layout.ARCHITECTURE if options.encoder == 'set' else 'puffernet-mingru'
 if options.games % (2*options.buffers) or options.banks < 1 or options.updates < 1 or options.graphs == 0:
     parser.error('games must be a multiple of 2*buffers, banks and updates positive, graphs >= 1 or -1')
@@ -134,7 +138,8 @@ try:
         path = output/name
         return path, write_checkpoint(path, lambda p: _C.save_weights(trainer, p), obs_size=OBS, hidden=options.hidden,
                                       num_layers=1, architecture=ARCHITECTURE, game_steps=count['game_steps'],
-                                      learner_steps=count['learner_steps'], config=config)
+                                      learner_steps=count['learner_steps'], config=config,
+                                      aim_fourier=options.aim_fourier, aim_ar=options.aim_ar)
     initial, initial_meta = save('initial.bin', empty_counters())
     for bank in range(banks): _C.load_frozen_bank(trainer, bank, str(initial))
     check('vector reset after permutation', lib.bopl_vec_reset(C.c_void_p(vec.gpu_obs_ptr)) == 0)
@@ -197,6 +202,8 @@ try:
     policy, restored = load_policy(final)
     check('CPU evaluator reload', restored['step'] == count['game_steps'] and restored['learner_steps'] == count['learner_steps'], meta=restored)
     check('CPU evaluator step is finite', all(torch.isfinite(v).all() for v in policy.step(torch.zeros(2, OBS), policy.initial(2))))
+    check('CPU evaluator aim parameterisation', (policy.aim_fourier, policy.aim_ar) == (options.aim_fourier, options.aim_ar)
+          and policy.width == policy_layout.decoder_logits(options.aim_fourier, options.aim_ar), width=policy.width)
     # Pool rotation: bank 0 now serves the trained weights, bank 1 keeps the initial ones.
     _C.load_frozen_bank(trainer, 0, str(final))
     count = one_update(options.updates+1, [0, count['game_steps']])

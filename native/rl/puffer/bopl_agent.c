@@ -6,13 +6,16 @@
  * policy_eval.c, the sampler, and the wire-format decoder. */
 #include "bopl_agent.h"
 #include "bopl_puffer.h"
+#include "bopl_aim.h"
 #include <errno.h>
 #include <stdarg.h>
 
 /* policy_eval.c (no header of its own) */
-void *bopl_policy_eval_create(const float *data, size_t count, int batch, int observations, int hidden, int layers);
-void *bopl_policy_eval_create_set(const float *data, size_t count, int batch, int observations, int hidden, int layers);
-void bopl_policy_eval_step(void *handle, float *observations, const float *state, float *logits_and_value, float *next_state);
+void *bopl_policy_eval_create_aim(const float *data, size_t count, int batch, int observations, int hidden, int layers,
+                                  int use_set, int aim_fourier, int aim_ar);
+int bopl_policy_eval_width(void *handle);
+void bopl_policy_eval_step_raw(void *handle, float *observations, const float *state, float *rows, float *next_state);
+void bopl_policy_eval_game_logits(void *handle, const float *rows, const int *buttons, float *out);
 void bopl_policy_eval_close(void *handle);
 
 #define BOPL_AGENT_ABI 1u
@@ -28,8 +31,8 @@ struct BoplAgent {
     uint32_t expected;
     int players, player;
     /* policy */
-    void *policy; int hidden, layers, is_policy;
-    float *rstate, *rnext, *decoder;
+    void *policy; int hidden, layers, is_policy, aim_fourier, aim_ar;
+    float *rstate, *rnext, *decoder, *row;  /* decoder: BOPL_LOGITS game logits + value; row: the raw decoder row */
     uint64_t rng;
     int decision[3], decisions;
     /* scripted */
@@ -194,17 +197,24 @@ static int bopl_agent_open_policy(BoplAgent *a, const char *path, char *error, s
     else if (bopl_json_int(j, "episode_ticks", &value)) a->limit=(int)value;
     const char *slots[3]={"ability1", "ability2", "ability3"};
     for (int s=0; s<3; s++) if (bopl_json_int(j, slots[s], &value)) a->ability[s]=(int)value;
+    /* Aim head parameterisation (bopl_aim.h); absent in checkpoints from before 2026-09-12 = plain. */
+    if (bopl_json_int(j, "aim_fourier", &value)) a->aim_fourier=(int)value;
+    if (bopl_json_int(j, "aim_ar", &value)) a->aim_ar=(int)value;
     free(json);
+    if (a->aim_fourier<0 || a->aim_fourier>BOPL_AIM_MAX_HARMONICS || a->aim_ar<0 || a->aim_ar>1) {
+        free(data); bopl_agent_error(error, capacity, "unsupported aim_fourier %d / aim_ar %d", a->aim_fourier, a->aim_ar); return -1;
+    }
     if (a->delay!=0 && (a->delay!=9 || a->repeat!=4)) { free(data); bopl_agent_error(error, capacity, "unsupported observation delay %d / repeat %d", a->delay, a->repeat); return -1; }
     int set=!strcmp(architecture, BOPL_ARCHITECTURE), linear=!strcmp(architecture, "puffernet-mingru");
     if (!set && !linear) { free(data); bopl_agent_error(error, capacity, "unknown architecture %s", architecture); return -1; }
-    a->policy=(set?bopl_policy_eval_create_set:bopl_policy_eval_create)((const float*)data, length/sizeof(float), 1, BOPL_OBS_SIZE, (int)hidden, (int)layers);
+    a->policy=bopl_policy_eval_create_aim((const float*)data, length/sizeof(float), 1, BOPL_OBS_SIZE, (int)hidden, (int)layers, set, a->aim_fourier, a->aim_ar);
     free(data);
-    if (!a->policy) { bopl_agent_error(error, capacity, "weights (%zu floats) do not fit %s hidden %ld layers %ld", length/sizeof(float), architecture, hidden, layers); return -1; }
+    if (!a->policy) { bopl_agent_error(error, capacity, "weights (%zu floats) do not fit %s hidden %ld layers %ld aim_fourier %d aim_ar %d", length/sizeof(float), architecture, hidden, layers, a->aim_fourier, a->aim_ar); return -1; }
     a->hidden=(int)hidden; a->layers=(int)layers; a->is_policy=1;
     a->rstate=calloc((size_t)layers*hidden, sizeof(float)); a->rnext=calloc((size_t)layers*hidden, sizeof(float));
     a->decoder=calloc(BOPL_DECODER, sizeof(float));
-    if (!a->rstate || !a->rnext || !a->decoder) { bopl_agent_error(error, capacity, "out of memory"); return -1; }
+    a->row=calloc((size_t)bopl_policy_eval_width(a->policy)+1, sizeof(float));
+    if (!a->rstate || !a->rnext || !a->decoder || !a->row) { bopl_agent_error(error, capacity, "out of memory"); return -1; }
     snprintf(a->id, sizeof(a->id), "policy:%s", sha);
     return 0;
 }
@@ -245,7 +255,7 @@ BoplAgent *bopl_agent_open(const char *spec, int players, int player, char *erro
 void bopl_agent_close(BoplAgent *a) {
     if (!a) return;
     bopl_policy_eval_close(a->policy);
-    free(a->rstate); free(a->rnext); free(a->decoder);
+    free(a->rstate); free(a->rnext); free(a->decoder); free(a->row);
     BoplPuffer *env=&a->env;
     free(env->observations); free(env->actions); free(env->rewards); free(env->terminals); free(env->action_mask);
     for (int i=0; i<2; i++) bopl_state_copy_free(&env->delayed[i]);
@@ -295,10 +305,20 @@ static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
     if (a->is_policy) {
         float *obs=env->observations+(size_t)a->player*BOPL_OBS_SIZE;
         const unsigned char *mask=env->action_mask+(size_t)a->player*BOPL_LOGITS;
-        bopl_policy_eval_step(a->policy, obs, a->rstate, a->decoder, a->rnext);
+        bopl_policy_eval_step_raw(a->policy, obs, a->rstate, a->row, a->rnext);
         float *swap=a->rstate; a->rstate=a->rnext; a->rnext=swap;
-        a->decision[0]=bopl_sample_head(a->decoder, mask, BOPL_ACT_AIM, &a->rng);
-        a->decision[1]=bopl_sample_head(a->decoder+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &a->rng);
+        /* Head order as the trainer draws them: buttons first when the aim
+         * head is conditioned on the sampled combo (bopl_aim.h), else aim,
+         * buttons, hold. The button and hold logits do not depend on the combo. */
+        bopl_policy_eval_game_logits(a->policy, a->row, NULL, a->decoder);
+        if (a->aim_ar) {
+            a->decision[1]=bopl_sample_head(a->decoder+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &a->rng);
+            bopl_policy_eval_game_logits(a->policy, a->row, &a->decision[1], a->decoder);
+            a->decision[0]=bopl_sample_head(a->decoder, mask, BOPL_ACT_AIM, &a->rng);
+        } else {
+            a->decision[0]=bopl_sample_head(a->decoder, mask, BOPL_ACT_AIM, &a->rng);
+            a->decision[1]=bopl_sample_head(a->decoder+BOPL_ACT_AIM, mask+BOPL_ACT_AIM, BOPL_ACT_BUTTONS, &a->rng);
+        }
         a->decision[2]=bopl_sample_head(a->decoder+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, mask+BOPL_ACT_AIM+BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, &a->rng);
         float *action=env->actions+(size_t)a->player*BOPL_NUM_ATNS;
         for (int h=0; h<3; h++) action[h]=(float)a->decision[h];
