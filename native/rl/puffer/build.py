@@ -51,7 +51,19 @@ if args.device == "cuda":
     cuda = nvidia / "cu13"
     includes = [overlay, source / "src", HERE, Path(sysconfig.get_path("include")), Path(pybind11.get_include()),
                 Path(numpy.get_include()), cuda / "include", nvidia / "cudnn/include", nvidia / "nccl/include"]
-    if not args.binding_only:
+    if args.binding_only:
+        # The CUDA object compiles bindings.cu -> pufferlib.cu -> bopl_aim.h, bopl_rollout.cu,
+        # ocean.cu -> bopl_set_encoder.cu, plus the two overlay patches. Refuse to relink a
+        # stale one rather than ship a binding whose kernels predate their sources.
+        cuda_object = out / "puffer_cuda.o"
+        cuda_sources = [HERE / name for name in ("bopl_rollout.cu", "bopl_set_encoder.cu", "bopl_aim.h",
+                                                  "bopl_layout.h", "pufferlib-close.patch", "pufferlib-bopl.patch")]
+        if not cuda_object.exists():
+            raise SystemExit(f"--binding-only: {cuda_object} does not exist; run a full build")
+        newer = [path.name for path in cuda_sources if path.stat().st_mtime > cuda_object.stat().st_mtime]
+        if newer:
+            raise SystemExit(f"--binding-only: {cuda_object} is older than {newer}; run a full build")
+    else:
         subprocess.run([str(cuda / "bin/nvcc"), "-O3", "-std=c++17", "-arch=sm_120", "-ccbin", args.cuda_host_compiler,
                         "-Xcompiler=-fPIC,-fopenmp", "-DPRECISION_FLOAT", "-DENV_NAME=bopl",
                         "-DOBS_TENSOR_T=FloatTensor", *["-I" + str(path) for path in includes],

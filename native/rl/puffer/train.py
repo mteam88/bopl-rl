@@ -395,6 +395,17 @@ def main():
     from pufferlib import _C, pufferl, selfplay
     if not _C.gpu:
         raise RuntimeError('Native training requires the CUDA build')
+    # A binding compiled from another checkout (a rift's copied venv finder) or before
+    # the current env/kernel sources trains silently on stale code; fail instead.
+    binding = Path(_C.__file__).resolve()
+    if not binding.is_relative_to(ROOT):
+        raise RuntimeError(f'pufferlib._C resolves to {binding}, outside {ROOT}: fix the venv editable finder and rebuild')
+    puffer_dir = ROOT/'native/rl/puffer'
+    sources = [puffer_dir/name for name in ('bopl_puffer.h', 'binding.c', 'bopl_rollout.cu', 'bopl_set_encoder.cu',
+                                           'bopl_aim.h', 'bopl_layout.h')] + [ROOT/'native/rl/bopl_rl.c']
+    stale = [path.name for path in sources if path.exists() and path.stat().st_mtime > binding.stat().st_mtime]
+    if stale:
+        raise RuntimeError(f'pufferlib._C ({binding}) is older than {stale}; run native/rl/puffer/build.py --device cuda')
     torch.cuda.init()
     torch.manual_seed(a.seed)
     torch.set_num_threads(1)

@@ -53,6 +53,13 @@ def build(output=LIBRARY):
 
 
 def _library(path):
+    path = Path(path)
+    source = ROOT / "native/rl/puffer/policy_eval.c"
+    if not path.exists():
+        raise RuntimeError(f"{path} is missing; run native_policy.build() (or puffer/build.py)")
+    if source.exists() and source.stat().st_mtime > path.stat().st_mtime:
+        # overnight-7 lost its first trials to a copy that predated the Fourier aim head.
+        raise RuntimeError(f"{path} is older than {source}; run native_policy.build() (or puffer/build.py)")
     lib = ctypes.CDLL(str(path))
     array = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
     ints = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
