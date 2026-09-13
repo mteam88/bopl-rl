@@ -49,12 +49,14 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'evaluation_maps', 'heldout_maps', 'evaluation_baseline',
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
                'frozen_games', 'evaluation_workers', 'scripted_bots', 'scripted_level',
-               'scripted_roster', 'scripted_share_min', 'scripted_share_max',
+               'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
                'scripted_opponents', 'aim_fourier', 'aim_ar')
 STORE_TRUE = ('no_eval',)
 # Virtual swept parameters for the scripted-bot curriculum (SCRIPTED_BOTS.md):
-# scripted_banks = how many of [fixed].scripted_bots (an ordered candidate
-# list) take over banks, scripted_level_index = easy/medium/hard.
+# scripted_banks = how many banks draw from [fixed].scripted_roster (passed
+# through as --scripted-banks), or without a roster how many of
+# [fixed].scripted_bots (an ordered candidate list) take over banks;
+# scripted_level_index = easy/medium/hard for the scripted_bots path.
 SCRIPTED_LEVELS = ('easy', 'medium', 'hard')
 SCRIPTED_VIRTUAL = ('scripted_banks', 'scripted_level_index')
 # Virtual swept parameters composed into --entropy-head-scale "aim,buttons,hold".
@@ -162,9 +164,9 @@ class SweepSpec:
         _require(self.params, 'At least one [params.*] entry is required')
         _require(not (self.fixed_cost and 'steps' in self.params),
                  'fixed_cost sweeps must not sweep steps')
-        if any(name in self.params for name in SCRIPTED_VIRTUAL):
+        if 'scripted_level_index' in self.params or ('scripted_banks' in self.params and not self.fixed.get('scripted_roster')):
             _require(self.scripted_pool(), '[fixed].scripted_bots (ordered candidate kinds) is required '
-                     'to sweep scripted_banks/scripted_level_index')
+                     'to sweep scripted_level_index, or scripted_banks without [fixed].scripted_roster')
 
     def scripted_pool(self):
         """Ordered bot kinds from [fixed].scripted_bots (list or comma string)."""
@@ -201,7 +203,7 @@ class SweepSpec:
                 triple = _head_scale_triple(self.fixed.get('entropy_head_scale', '1,1,1'))
                 value = triple[HEAD_SCALE[name]]
             elif name == 'scripted_banks':
-                value = len(self.scripted_pool())
+                value = int(self.fixed.get('scripted_banks', 1)) if self.fixed.get('scripted_roster') else len(self.scripted_pool())
             elif name == 'scripted_level_index':
                 value = SCRIPTED_LEVELS.index(self.fixed.get('scripted_level', 'hard'))
             else:
@@ -230,6 +232,8 @@ class SweepSpec:
         for name, value in hypers.items():
             if name in HEAD_SCALE:
                 head_scale[HEAD_SCALE[name]] = max(0.0, min(100.0, float(value)))
+            elif name == 'scripted_banks' and self.fixed.get('scripted_roster'):
+                merged['scripted_banks'] = max(1, round(value))
             elif name == 'scripted_banks':
                 pool = self.scripted_pool()
                 merged['scripted_bots'] = pool[:max(0, min(len(pool), round(value)))]

@@ -49,18 +49,22 @@ def scripted_roster_arg(value):
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def resolve_scripted(scripted_kinds, level, roster):
+def resolve_scripted(scripted_kinds, level, roster, banks=0):
     """Roster names and how many last banks they occupy.
 
     `--scripted-roster` is the list of (kind, level) entries. `--scripted-bots`
     without a roster is a one-entry-per-kind roster at `--scripted-level`. Bank
-    count is len(scripted-bots) when that flag is set, otherwise 1 if a roster
-    exists.
+    count is `--scripted-banks` when given, else len(scripted-bots) when that
+    flag is set, otherwise 1 if a roster exists. Every scripted bank draws from
+    the same roster (bopl_puffer.h c_reset), so banks is a plain sweepable count.
     """
     names = list(roster or [])
     if not names and scripted_kinds:
         names = [f'{kind}-{level}' for kind in scripted_kinds]
-    n_banks = len(scripted_kinds) if scripted_kinds else (1 if names else 0)
+    if banks:
+        n_banks = banks if names else 0
+    else:
+        n_banks = len(scripted_kinds) if scripted_kinds else (1 if names else 0)
     return names, n_banks
 
 
@@ -100,7 +104,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
-                 'scripted_share_max', 'aim_fourier', 'aim_ar')
+                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar')
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -139,6 +143,7 @@ def recorded_hypers(config):
                 scripted_roster=config.get('scripted_roster', []),
                 scripted_share_min=config.get('scripted_share_min', 0.0),
                 scripted_share_max=config.get('scripted_share_max', 1.0),
+                n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0))
 
 
@@ -238,6 +243,9 @@ def arguments():
                         f'(default roster: {",".join(scripted_roster.DEFAULT_ROSTER)}). '
                         'Pass the flag with no value for that default. Empty / omitted with no '
                         '--scripted-bots disables scripted banks')
+    p.add_argument('--scripted-banks', type=int, default=0,
+                   help='How many of the last banks draw from the scripted roster (0 = derive: '
+                        'len(--scripted-bots), else 1 with a roster). Must leave one policy bank')
     p.add_argument('--scripted-share-max', type=float, default=1.0,
                    help='Upper clamp on the scripted bank\'s bot-match share (1 = the bank always '
                         'plays a roster bot while some entry is a coin flip)')
@@ -273,7 +281,9 @@ def arguments():
         p.error('half the workers must divide evenly among the banks')
     a.scripted_bots = list(a.scripted_bots or [])
     a.scripted_roster = a.scripted_roster or []
-    roster_names, n_scripted = resolve_scripted(a.scripted_bots, a.scripted_level, a.scripted_roster)
+    if a.scripted_banks < 0:
+        p.error('scripted-banks must be >= 0')
+    roster_names, n_scripted = resolve_scripted(a.scripted_bots, a.scripted_level, a.scripted_roster, a.scripted_banks)
     a.scripted_roster = roster_names
     a.n_scripted = n_scripted
     if n_scripted >= a.banks:
@@ -281,8 +291,13 @@ def arguments():
     if n_scripted and not roster_names:
         p.error('scripted-roster/scripted-bots produced no roster entries')
     if not (math.isfinite(a.scripted_share_min) and math.isfinite(a.scripted_share_max)
-            and 0 <= a.scripted_share_min <= a.scripted_share_max <= 1):
-        p.error('scripted-share-min/max must be finite with 0 <= min <= max <= 1')
+            and 0 <= a.scripted_share_min <= 1 and 0 <= a.scripted_share_max <= 1):
+        p.error('scripted-share-min/max must be finite in [0, 1]')
+    if a.scripted_share_min > a.scripted_share_max:
+        # A sweep may propose min > max; that is a constant share at max, not a
+        # rejected trial (the optimizer observes exactly what it suggested).
+        print(f'scripted-share-min {a.scripted_share_min} > max {a.scripted_share_max}: clamping min to max', flush=True)
+        a.scripted_share_min = a.scripted_share_max
     if a.hidden < 8 or a.hidden % 8:
         p.error('hidden must be a positive multiple of eight')
     if a.cudagraphs != -1 and a.cudagraphs < 1:
@@ -469,6 +484,7 @@ def main():
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
                   scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
+                  scripted_banks=a.n_scripted,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,

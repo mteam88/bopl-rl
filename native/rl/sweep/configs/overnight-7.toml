@@ -1,45 +1,34 @@
-# Overnight sweep 7 (2026-09-13): overnight-6's 1B protocol with the Fourier aim head.
-# Score: Bradley-Terry Elo vs pool v5 (unchanged; game_mismatch=true on every rating
-# is informational, see overnight-5.toml), IQM over the last 3 evaluations, 480 games
-# per checkpoint. Fourier checkpoints carry aim_fourier in the sidecar, so the pool
-# rater and the dashboard read them unchanged.
+# Overnight sweep 7 (2026-09-13, relaunched 17:0x): overnight-6's 1B protocol with the
+# Fourier aim head and the Elo-matchmade scripted roster, with the optimizer owning
+# the curriculum. Score: Bradley-Terry Elo vs pool v5 (unchanged; game_mismatch=true on
+# every rating is informational, see overnight-5.toml), IQM over the last 3
+# evaluations, 480 games per checkpoint.
 #
-# Why: the aim-head study (main fa60e0b, sweeps/aim-ar-fourier/report.md; 4 arms +
-# K sweep x 3 seeds x 200M at overnight-6 trial-002 settings) found --aim-fourier K
-# (circular Fourier parameterisation of the 256 aim logits, 1+2K decoder columns)
-# beats the absolute-bin head on every pre-registered metric, monotonically as K
-# shrinks to a plateau at K=1..4: K=4 at 200M = hit rate 0.087 vs 0.025, median
-# aim change 15.5 vs 46.6 deg, Elo 575 vs 377, same learner throughput. K=1..3
-# are within seed noise of K=4 (545/485/507); K=4 keeps the Elo tiebreak and is
-# fixed here. --aim-ar (buttons-then-aim) lost everywhere and halved sps; not used.
-# 575 at 200M equals overnight-6's best trial at 1B, so the absolute-bin aim head
-# was the binding constraint and this sweep re-tunes around the new head.
+# Fixed by evidence, not by hand: aim_fourier 4 (aim-head arm study, main fa60e0b,
+# sweeps/aim-ar-fourier/report.md: K=4 beats absolute bins on every metric, K=1..4 a
+# plateau, --aim-ar lost everywhere); w128 b4 hidden 128 (throughput); the 12-entry v2
+# roster (search bots cut learner sps 84% as env-pool stragglers, see scripted_roster.py).
 #
-# Budget: as overnight-6 (1B, w128 b4, eval_every 40M): 20.7 min per trial measured
-# over 36 trials -> 60 trials ~ 21 h. The v2-only roster costs no throughput
-# (evasive-v2-hard alone measured 1.10M learner sps); the search bots were
-# dropped from the default roster because they cut it 84% as env-pool stragglers.
+# Everything else is swept over wide boxes. The first launch of this sweep pinned
+# scripted_banks = 1 (carried over from overnight-6's verdict under the old
+# time-decayed fixed bot), boxed scripted_share_min below share_max's floor to dodge a
+# validation error, and hand-narrowed lr/entropy/reward_kill/aim/half-life around
+# overnight-6's cell. Its three finished trials (556 / 499 / 580 with banks=1) are kept
+# in sweeps/overnight-7-banks1. Rules: the optimizer decides; a box edge is only ever a
+# hard constraint (train.py validation, throughput), never a guess about the optimum.
+#   scripted_banks 1..3  how many of the 4 banks draw from the roster (3 leaves the one
+#                        policy bank train.py requires); 3 banks at share 1 = 75% bot games.
+#   scripted_share_max/min 0.02..1 each  the Elo-informativeness share and its floor;
+#                        min > max is clamped to a constant share at max (train.py), so
+#                        both span the full range.
+#   learning_rate 1e-4..3e-3, entropy 4e-3..1e-1 (3e-3 collapsed in overnight-5: let the
+#   GP see that edge), entropy_half_life 1e8..3e9, reward_kill 0.1..3, head_scale_aim
+#   0.05..3.
+# Trial 000 = overnight-6's 028 + aim_fourier 4 + banks 1 + share 0.15/0.02, i.e. the
+# first launch's trial 000 (556), the one fixed point across sweeps.
 #
-# Space (7 params, 1 default + 10 Sobol + 49 GP), from overnight-6's 36 trials:
-#   learning_rate  corr -0.57, every GP trial pinned at the 5e-4 floor -> 2e-4..8e-4.
-#   reward_kill    corr +0.58, GP at 0.50-0.57 against the 0.6 cap -> 0.3..1.0.
-#   entropy        corr +0.55, GP at 0.020-0.028 -> 1.2e-2..5e-2.
-#   head_scale_aim corr +0.24, GP at 0.34-0.57; with the Fourier head the aim
-#                  distribution is smooth so the scale may matter less -> 0.15..1.0.
-#   entropy_half_life  GP at 390-460M -> 2.5e8..8e8.
-#   scripted_share_max/min replace overnight-6's time decay (curriculum knobs
-#   are swept, not guessed): one bank draws a (kind, level) per episode from the
-#   default 12-entry roster (4 v2 kinds x easy/medium/hard) weighted towards
-#   entries near the learner's Elo, and the bank's bot share is
-#   clamp(share_min, share_max * I) with I = max 4p(1-p) the roster's remaining
-#   informativeness. share_max spans "bots are a rare seasoning" (0.05 of one
-#   bank = 1/160 of games) to "the bank always plays a coin-flip bot" (1.0);
-#   share_min is the floor once every entry is beaten, boxed below share_max's
-#   floor so Protein cannot propose min > max (train.py rejects that).
-# Sobol 10 for 7 params: the new head can move the lr/entropy optimum, so the box
-# is widened around overnight-6's cell rather than shrunk onto it.
-# Trial 000 = overnight-6's 028 + aim_fourier 4 + share 0.15/0.02: the "what does
-# the head buy at 1B" comparison (028 = 575 with absolute bins).
+# Budget: 21.5 min per trial measured (train 17 + score 4.5) -> 60 trials ~ 21.5 h.
+# 8 params: 1 default + 12 Sobol + 47 GP.
 
 [sweep]
 method = "Protein"
@@ -49,8 +38,8 @@ metric_distribution = "linear"     # Elo, not a rate
 downsample = 3                     # = [scoring].last_k points per trial
 fixed_cost = true
 max_suggestion_cost = 1.01e9
-max_runs = 60                      # 7 params: 1 default + 10 Sobol + 49 GP, ~21 h
-num_random_samples = 10
+max_runs = 60                      # 8 params: 1 default + 12 Sobol + 47 GP, ~21.5 h
+num_random_samples = 12
 use_gpu = false
 cost = "learner_steps"
 seeds = "fixed"
@@ -98,7 +87,8 @@ entropy_head_scale = "0.41,1.5,1"
 entropy_free_rows = 1
 reward_kill = 0.52
 reward_timeout = -1
-scripted_roster = "default"        # 12 v2 kind-levels, one bank; search bots opt-in (84% sps hit)
+scripted_roster = "default"        # 12 v2 kind-levels; search bots opt-in (84% sps hit)
+scripted_banks = 1                 # trial-000 value; swept 1..3 below
 scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
 training_maps = [0, 1, 2]
 evaluation_maps = [0, 1, 2]
@@ -113,46 +103,51 @@ cudagraphs = 1
 
 [params.learning_rate]
 distribution = "log_normal"
-min = 2e-4
-max = 8e-4                         # overnight-6 pinned at its 5e-4 floor
+min = 1e-4
+max = 3e-3
 scale = 0.5
 
 [params.entropy]
 distribution = "log_normal"
-min = 1.2e-2
-max = 5e-2
+min = 4e-3
+max = 1e-1
 scale = 0.5
 
 [params.entropy_half_life]
 distribution = "log_normal"
-min = 2.5e8
-max = 8e8
+min = 1e8
+max = 3e9
 scale = 0.5
 integer = true
 
 [params.reward_kill]
-distribution = "uniform"
-min = 0.3
-max = 1.0                          # overnight-6 pressed on its 0.6 cap
-scale = "auto"
+distribution = "log_normal"
+min = 0.1
+max = 3.0
+scale = 0.5
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 1
+max = 3
 
 [params.scripted_share_max]
 distribution = "log_normal"
-min = 0.05
-max = 1.0                          # 1.0 = the bank always plays a bot while one is a coin flip
+min = 0.02
+max = 1.0
 scale = 0.5
 default = 0.15
 
 [params.scripted_share_min]
 distribution = "log_normal"
-min = 0.002
-max = 0.05                         # = share_max's floor, so min <= max always
+min = 0.02
+max = 1.0
 scale = 0.5
 default = 0.02
 
 [params.head_scale_aim]
 distribution = "log_normal"
-min = 0.15
-max = 1.0
+min = 0.05
+max = 3.0
 scale = 0.5
 default = 0.41
