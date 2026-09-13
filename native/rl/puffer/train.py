@@ -286,8 +286,8 @@ def arguments():
     roster_names, n_scripted = resolve_scripted(a.scripted_bots, a.scripted_level, a.scripted_roster, a.scripted_banks)
     a.scripted_roster = roster_names
     a.n_scripted = n_scripted
-    if n_scripted >= a.banks:
-        p.error('scripted-roster/scripted-bots must leave at least one policy bank for the self-play pool')
+    if n_scripted > a.banks:
+        p.error(f'scripted-banks {n_scripted} exceeds --banks {a.banks}')
     if n_scripted and not roster_names:
         p.error('scripted-roster/scripted-bots produced no roster entries')
     if not (math.isfinite(a.scripted_share_min) and math.isfinite(a.scripted_share_max)
@@ -454,8 +454,11 @@ def main():
     # Scripted banks are the LAST ones. When share_min < 1 some of their matches
     # fall to frozen weights, so the pool manages every bank (bot matches stay
     # out of hist_*_bank). At share_min = share_max = 1 the leftover never
-    # happens and the pool skips those banks, as in the old no-decay path.
+    # happens and the pool skips those banks, as in the old no-decay path --
+    # unless every bank is scripted, where the pool keeps one (idle) bank so it
+    # still exists to carry the learner's Elo for the roster matchmaking.
     policy_banks = a.banks if (a.n_scripted and a.scripted_share_min < 1.0) else a.banks - a.n_scripted
+    policy_banks = max(1, policy_banks)
     scripted_first_bank = a.banks - a.n_scripted
     scripted_kinds = 0
     for i in range(a.n_scripted):

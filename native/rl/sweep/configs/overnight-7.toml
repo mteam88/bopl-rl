@@ -16,8 +16,11 @@
 # overnight-6's cell. Its three finished trials (556 / 499 / 580 with banks=1) are kept
 # in sweeps/overnight-7-banks1. Rules: the optimizer decides; a box edge is only ever a
 # hard constraint (train.py validation, throughput), never a guess about the optimum.
-#   scripted_banks 1..3  how many of the 4 banks draw from the roster (3 leaves the one
-#                        policy bank train.py requires); 3 banks at share 1 = 75% bot games.
+#   scripted_banks 1..4  how many of the 4 banks draw from the roster; 4 at share 1 puts
+#                        every bank match against a bot = 50% of all games. The other 50%
+#                        are mirror self-play envs by rollout layout (native_vector pairs
+#                        one self-play env with one bank env); making that split a knob
+#                        is a layout change, queued, not a config edit.
 #   scripted_share_max/min 0.02..1 each  the Elo-informativeness share and its floor;
 #                        min > max is clamped to a constant share at max (train.py), so
 #                        both span the full range.
@@ -88,7 +91,7 @@ entropy_free_rows = 1
 reward_kill = 0.52
 reward_timeout = -1
 scripted_roster = "default"        # 12 v2 kind-levels; search bots opt-in (84% sps hit)
-scripted_banks = 1                 # trial-000 value; swept 1..3 below
+scripted_banks = 1                 # trial-000 value; swept 1..4 below
 scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
 training_maps = [0, 1, 2]
 evaluation_maps = [0, 1, 2]
@@ -129,7 +132,7 @@ scale = 0.5
 [params.scripted_banks]
 distribution = "int_uniform"
 min = 1
-max = 3
+max = 4
 
 [params.scripted_share_max]
 distribution = "log_normal"
