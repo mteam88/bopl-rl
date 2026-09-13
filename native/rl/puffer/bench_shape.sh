@@ -43,7 +43,7 @@ systemd-run --user --scope --collect --quiet -p MemoryMax=20G --unit "$UNIT" -- 
   --entropy-half-life 200000000 --entropy-head-scale 0.15,1.5,1 --episode-ticks 7200 \
   --no-eval --hidden 128 --horizon "$HORIZON" --layers 1 --learner-passes "$PASSES" \
   --learning-rate 0.00125 --reward-kill 0.27 --reward-timeout -1 \
-  --scripted-bots evasive-v2 --scripted-decay 120000000 --scripted-level hard \
+  --scripted-bots evasive-v2 --scripted-level hard \
   --scripted-opponents mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard \
   --seed 73 --steps "$STEPS" --training-maps 0,1,2 --workers "$WORKERS" "$@" > "$DIR.log" 2>&1
 rc=$?

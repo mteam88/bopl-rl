@@ -559,22 +559,28 @@ Scripted anchors participate in the round robin as `kind='anchor'` entries
 ### Training (`puffer/train.py`)
 
 ```sh
-venv/bin/python native/rl/puffer/train.py ... --banks 4 --scripted-bots mixed --scripted-level hard
+venv/bin/python native/rl/puffer/train.py ... --banks 4 --scripted-roster default \
+    --scripted-share-max 1 --scripted-share-min 0
 ```
 
-`--scripted-bots` (comma list of kinds) permanently converts the **last**
-len(list) banks into scripted banks: their environments' opponent player is
-driven by the bot in C while the bank's GPU rows still step (fixed graph;
-their actions are unread). The learner's share of games against bots is
-`len(list)/banks` of the historical half (one bank of four ≈ 1/8 of all
-games). PufferLib's self-play pool only manages the remaining policy banks,
-so it never swaps weights into a scripted bank; `pool/state.json` stores only
-policy banks, which keeps `--resume` exact (scripted banks reload the initial
-checkpoint on resume just to keep their unused rows deterministic).
-`metrics.jsonl` gains a per-update `scripted` field
-(`{"mixed-hard": {bank, games, winrate}}`) and the console line a compact
-`scripted` win-rate summary. Both `--scripted-bots` and `--scripted-level`
-are resume-checked hyperparameters.
+`--scripted-roster` is a comma list of `kind-level` names (or `default`: the
+four v2 kinds × easy/medium/hard plus `search-medium` and `search-hard`).
+The last scripted bank draws one entry per episode by Elo matchmaking on
+the pool's scale: `p_i = 1/(1+10^((elo_i-elo_learner)/400))`,
+`weight_i = p_i(1-p_i)+0.1/n`, share `clamp(share_min, share_max * I)` with
+`I = max_i 4p_i(1-p_i)`. `--scripted-bots` / `--scripted-level` still build a
+one-entry (or N-kind) roster. `--scripted-decay` is gone.
+
+The learner's share of games against bots is still `n_scripted/banks` of the
+historical half, times the Elo share (one bank of four ≈ 1/8 of all games
+at share 1). PufferLib's self-play pool manages leftover frozen-weight
+matches on those banks when `share_min < 1`; bot matches stay out of
+`hist_*_bank`. `pool/roster.json` next to `pool/state.json` persists each
+entry's Elo and decided-game counts so `--resume` is exact.
+`metrics.jsonl` `scripted` is per-entry `{bank, elo, games, winrate, weight,
+window_games, window_wins}` plus `scripted_share` and `scripted_learner_elo`.
+`--scripted-roster`, `--scripted-share-min/max`, `--scripted-bots` and
+`--scripted-level` are resume-checked hyperparameters.
 
 Smoke-verified (10M learner decisions, 8 workers, `--scripted-bots mixed`):
 see `native/artifacts/rl/smoke-scripted-001`.

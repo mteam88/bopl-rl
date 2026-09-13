@@ -27,6 +27,9 @@ typedef struct {
      * kept out of hist_*_bank so the pool's swap/Elo statistics only see the
      * bank's frozen weights. */
     float bot_n_bank[8], bot_score_bank[8];
+    /* Decided learner-vs-roster-entry games this window (timeouts excluded).
+     * Index is the process-wide roster slot pushed from train.py. */
+    float bot_n_entry[32], bot_score_entry[32];
     /* Hold head (learner decisions, n-averaged): how often each hold length
      * was chosen when the button state was free, and how many decisions the
      * button head was ignored because a latch was in force. */
@@ -47,11 +50,19 @@ typedef struct {
 } BoplCounters;
 _Static_assert(sizeof(BoplCounters)==BOPL_COUNTER_SIZE*sizeof(double), "BoplCounters layout");
 /* Fraction of a scripted bank's matches that the bot plays; the rest fall to
- * the bank's frozen weights, so a curriculum can start on bots and hand over
- * to self-play. Process-wide and exported: train.py lowers it between updates
- * through ctypes (`bopl_scripted_share` in the trainer module), which is why
- * it is a plain global read once per c_reset rather than a kwarg. */
+ * the bank's frozen weights. Process-wide and exported: train.py writes it
+ * between updates through ctypes (`bopl_scripted_share` in the trainer
+ * module), which is why it is a plain global read once per c_reset rather
+ * than a kwarg. Share is Elo-informativeness, not a time decay. */
 float bopl_scripted_share=1.0f;
+/* Process-wide roster of (kind, level) weighted for the per-episode draw on
+ * a scripted bank. train.py pushes Elos-derived weights the same way as share.
+ * n=0 keeps the old fixed nibble kind + scripted_level. */
+enum { BOPL_ROSTER_MAX=32 };
+int bopl_roster_n=0;
+uint8_t bopl_roster_kind[BOPL_ROSTER_MAX];
+uint8_t bopl_roster_level[BOPL_ROSTER_MAX];
+float bopl_roster_weight[BOPL_ROSTER_MAX];
 /* A world state that outlives the game's own state buffer: header, players and
  * telemetry by value, entity and slime rows in owned buffers. */
 typedef struct {
@@ -181,6 +192,8 @@ typedef struct {
     uint8_t bot_select[6], bot_select_level[6];
     BoplBot bots[6];
     uint32_t bot_rng;
+    /* Roster slot drawn for this match (-1 = not a bot match / no roster). */
+    int roster_pick;
     /* Reward shaping. Phase-1 comparison keeps the old trainer's values (kill
      * 0.1, timeout 0); the final trainer uses sparse outcome only, with a
      * timeout penalty paid by both players. */
@@ -566,6 +579,24 @@ static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
     memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
     for (int i=0; i<env->players; i++) { bopl_obs_row(env, i)[BOPL_OBS_PREVIOUS_OFFSET]=1; bopl_write_mask(env, i); }
 }
+/* Weighted roster draw from the bot stream. Same LCG as the share coin-flip
+ * so (seed, map, weights) still determine the opponent. */
+static int bopl_draw_roster(uint32_t *rng) {
+    int n=bopl_roster_n;
+    if (n<1) return -1;
+    if (n>BOPL_ROSTER_MAX) n=BOPL_ROSTER_MAX;
+    float total=0.f;
+    for (int i=0; i<n; i++) total+=bopl_roster_weight[i];
+    *rng=*rng*747796405u+2891336453u;
+    float u=(float)(*rng>>8)*(1.0f/16777216.0f);
+    if (!(total>0.f) || !isfinite(total)) return n-1;
+    float x=u*total, acc=0.f;
+    for (int i=0; i<n; i++) {
+        acc+=bopl_roster_weight[i];
+        if (x<acc) return i;
+    }
+    return n-1;
+}
 static void c_reset(BoplPuffer *env) {
     bopl_world_ready(env);
     bopl_spare_ready(env);
@@ -610,6 +641,7 @@ static void c_reset(BoplPuffer *env) {
         /* A scripted bank drives this match's opponent player from C; the
          * bank's GPU row still steps (fixed graph) but its actions are unread. */
         memset(env->bot_select, 0, sizeof(env->bot_select));
+        env->roster_pick=-1;
         uint32_t kind=(env->scripted_kinds>>(4*env->active_bank))&15u;
         if (kind) {
             /* Below full share, a draw from the bot stream decides whether this
@@ -621,8 +653,15 @@ static void c_reset(BoplPuffer *env) {
             }
         }
         if (kind) {
+            int pick=bopl_draw_roster(&env->bot_rng);
+            if (pick>=0) {
+                kind=bopl_roster_kind[pick];
+                env->bot_select_level[1-env->side]=(uint8_t)bopl_roster_level[pick];
+                env->roster_pick=pick;
+            } else {
+                env->bot_select_level[1-env->side]=(uint8_t)env->scripted_level;
+            }
             env->bot_select[1-env->side]=(uint8_t)kind;
-            env->bot_select_level[1-env->side]=(uint8_t)env->scripted_level;
         }
     }
     for (int i=0; i<env->players; i++) if (env->bot_select[i])
@@ -755,7 +794,14 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
                      * cleared boundary_reached; the next c_reset raises it). */
                     int scripted=0;
                     for (int p=0; p<env->players; p++) scripted|=env->bot_select[p];
-                    if (scripted) { env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=won; }
+                    if (scripted) {
+                        env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=won;
+                        /* Timeouts are not roster games: Elo and per-entry
+                         * winrate count decided matches only. */
+                        if (!truncated && env->roster_pick>=0 && env->roster_pick<BOPL_ROSTER_MAX) {
+                            env->log.bot_n_entry[env->roster_pick]++; env->log.bot_score_entry[env->roster_pick]+=won;
+                        }
+                    }
                     else if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
                 }
             }

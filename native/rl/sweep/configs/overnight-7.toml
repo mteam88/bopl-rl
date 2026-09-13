@@ -25,12 +25,14 @@
 #   head_scale_aim corr +0.24, GP at 0.34-0.57; with the Fourier head the aim
 #                  distribution is smooth so the scale may matter less -> 0.15..1.0.
 #   entropy_half_life  GP at 390-460M -> 2.5e8..8e8.
-#   scripted_decay corr +0.22, GP at 275-360M -> 1.5e8..6e8.
-#   scripted_banks stays fixed at 1 (evasive-v2).
+#   scripted_share_max/min replace overnight-6's time decay: Elo matchmaking
+#   over the default 14-entry roster (v2 easy/medium/hard + search-medium/hard).
+#   scripted_banks stays 1 (the last bank draws from the roster).
 # Sobol kept at 8: the new head can move the lr/entropy optimum, so the box is
 # widened around overnight-6's cell rather than shrunk onto it.
 # Trial 000 = overnight-6's 028 + aim_fourier 4: the direct "what does the head buy
-# at 1B" comparison (028 = 575 with absolute bins).
+# at 1B" comparison (028 = 575 with absolute bins). The parent finalises the
+# share-min/max boxes; values here only have to validate.
 
 [sweep]
 method = "Protein"
@@ -89,9 +91,7 @@ entropy_head_scale = "0.41,1.5,1"
 entropy_free_rows = 1
 reward_kill = 0.52
 reward_timeout = -1
-scripted_bots = ["evasive-v2"]     # one bank; the other three stay self-play
-scripted_level = "hard"
-scripted_decay = 318000000
+scripted_roster = "default"        # 14-entry v2+search roster, one bank
 scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
 training_maps = [0, 1, 2]
 evaluation_maps = [0, 1, 2]
@@ -129,12 +129,19 @@ min = 0.3
 max = 1.0                          # overnight-6 pressed on its 0.6 cap
 scale = "auto"
 
-[params.scripted_decay]
+[params.scripted_share_max]
 distribution = "log_normal"
-min = 1.5e8
-max = 6e8
+min = 0.02
+max = 0.5
 scale = 0.5
-integer = true
+default = 0.15
+
+[params.scripted_share_min]
+distribution = "log_normal"
+min = 0.005
+max = 0.1
+scale = 0.5
+default = 0.02
 
 [params.head_scale_aim]
 distribution = "log_normal"
