@@ -1,32 +1,44 @@
-# Elo roster (WIP)
+# Elo roster
 
-Date: 2026-09-13. Branch `elo-roster` off `acbeb73`. Rift child only.
+Date: 2026-09-13. Branch `elo-roster` (WIP commit 56fc4b2 + this). Rift child only.
 
-## Plan
+## Done
 
-Replace `--scripted-decay` with an Elo-matchmade roster of `(kind, level)` entries.
+- Rift venv finder now points at this rift's PufferLib; `_C` rebuilt `--binding-only`; `libbopl_policy_eval.so` rebuilt (stale copy was missing `bopl_policy_eval_create_aim`).
+- `--scripted-decay` removed. New flags: `--scripted-roster` (`default` = 14), `--scripted-share-min` (0), `--scripted-share-max` (1).
+- C: process-wide roster weights, per-episode draw from `bot_rng`, per-entry decided-game logs.
+- Persist `pool/roster.json`. Metrics: `scripted_share`, `scripted_learner_elo`, per-entry `{bank, elo, games, winrate, weight, window_games, window_wins}`.
+- overnight-7.toml: `scripted_roster = "default"`, params `scripted_share_max` 0.02–0.5 (default 0.15) and `scripted_share_min` 0.005–0.1 (default 0.02). Driver `--dry-run 2` validates.
+- Tests: sweep unittest 80 OK; research 22 OK; `test_native_selfplay` 5 OK; `check_tick_step --scripted mixed-v2-hard` and `search-hard` TICK_STEP_OK; idle `check_scripted_bots` OK (search skipped: that process resolved the Unity game).
 
-- `--scripted-roster` names (`family[-vN]-level`); `default` = 4 v2 kinds × easy/medium/hard + search-medium + search-hard (14).
-- `--scripted-bots/--scripted-level` stay as a one-entry (or N-kind) roster.
-- Per-episode C draw: `w_i = p_i(1-p_i) + 0.1/n`, `p_i = 1/(1+10^((elo_i-elo_learner)/400))`.
-- Share: `clamp(share_min, share_max * I)` with `I = max 4p(1-p)`.
-- Entry Elo = `elo_init + pool-v5 rating` (unrated levels: hard − 75 per step). Update from decided games only, pool `update_elo` once per log interval per entry (timeouts excluded). Persist `pool/roster.json`.
-- Drop `--scripted-decay` everywhere it is live (train.py, sweep_config TRAIN_FLAGS/ALWAYS_INTEGER, overnight-7, smoke, bench_shape).
+## sps (w128 b4 p4 aim_fourier 4, share forced to 1 so the bot actually plays)
 
-# Status (2026-09-13)
+| label | median learner_sps | elapsed 20M |
+| --- | --- | --- |
+| evasive-v2-hard | 1,096,508 | 19.7 s |
+| default 14-entry roster | 177,738 | 113.7 s |
 
-- [x] Read SCRIPTED_BOTS.md, train.py, bopl_puffer.h, sweep_config, overnight-7, pool-v5, METRICS_CONTRACT
-- [x] Fix rift venv editable finder (points at this rift's PufferLib)
-- [x] `scripted_roster.py` + C globals/draw/entry logs + train.py flags/persist/metrics
-- [x] sweep_config + overnight-7 params + smoke.toml + bench_shape.sh + docs
-- [ ] Rebuild `_C --binding-only`
-- [ ] Unit tests, research tests, check_tick_step, resume
-- [ ] sps 20M default-roster vs evasive-v2-hard; 40M smoke; driver --dry-run 2
+Roster is **−83.8%** learner_sps (far past the ~5% ask) because search-hard/medium are rollout stragglers (~1.2 ms/decision vs ~0.2 ms). Do not silently drop them: proposed mitigation is to make the default training roster the 12 v2 levels only and keep `search-*` as eval opponents / an explicit `--scripted-roster` opt-in. A `--scripted-search-weight` floor would be another guessed constant.
 
-## Findings
+At the real curriculum (`share_min=0`, `share_max=1`) 40M median learner_sps was ~230k–350k: share started at 0.27 (mixed-v2-easy is only ~450 Elo, I≈0.26) and rose to 0.56 as the learner climbed to 230 Elo, so search still shows up enough to hurt.
 
-- Copied venv finder pointed at `/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/.../PufferLib-.../pufferlib`; now this rift.
-- Pool Elo is one `K * (window_rate - expected)` update per bank per log interval, not per game. Roster matches that (decided games only).
-- With overlap, weight push lags one rollout (same as the old decay share).
-- `policy_banks = all banks` when `share_min < 1` so leftover matches are real frozen opponents.
-- overnight-7 now has 7 Protein params (decay replaced by share_max + share_min). Parent finalises boxes; seed defaults 0.15 / 0.02 sit inside the asked log_normal ranges. Smoke uses train.py `--scripted-share-max 1`.
+## 40M smoke (`sweeps/smoke-roster/40m`, overnight-7 fixed + share_max 1, no-eval)
+
+Share 0.27 → 0.56 (the opposite of time decay: more bot games as the learner approaches the roster). Learner WR vs easy v2 ~12–17% by 30–40M, vs evasive-v2-hard still ~4–12%. Pick mass at 0–10M is easy v2 (11–12%); by 30–40M the hard/search entries have a larger weight share.
+
+## Resume
+
+`--resume` restores `pool/roster.json` and continues counts (10M 2517 decided games → first post-resume window 2517+ε). Uninterrupted 20M vs 10M+10M is **not** bit-identical even with `BOPL_TF32=0` (CUDA training). Report that as GPU nondeterminism, not a roster bug.
+
+## Left for the parent
+
+- Finalise overnight-7: 7 Protein params now; `scripted_share_min` max (0.1) overlaps `scripted_share_max` min (0.02), so Protein can suggest min>max and train.py will reject the trial.
+- Decide whether default roster keeps search.
+- Historical overnight-3..6 TOML still contain `scripted_decay` and will not load.
+- No `bopl-*` units other than `bopl-roster-*` were touched; those scopes have exited.
+
+## Candidate memories
+
+- Rift-copied venv `__editable___pufferlib_*_finder.py` hardcodes the source checkout; sed to the rift and rebuild `_C` or training silently uses the stale binding (scripted WR ~50%).
+- Search bots in a shared env pool dominate rollout wall as stragglers even at ~5–12% of scripted games.
+- PufferLib pool Elo is one K-update per log interval on the window rate, not per game; roster matches that.

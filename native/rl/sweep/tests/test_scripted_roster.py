@@ -57,9 +57,9 @@ class EloMath(unittest.TestCase):
         self.assertAlmostEqual(scripted_roster.scripted_share(elos, 100.0, 0.05, 0.4), 0.4)
 
     def test_hopeless_share_hits_min(self):
-        # Every entry 800 Elo above the learner: p~0, I~0, share = share_min.
-        elos = [800.0, 900.0]
-        self.assertLess(scripted_roster.informativeness(elos, 0.0), 0.02)
+        # Every entry far above the learner: p~0, I~0, share = share_min.
+        elos = [2000.0, 2500.0]
+        self.assertLess(scripted_roster.informativeness(elos, 0.0), 1e-4)
         self.assertAlmostEqual(scripted_roster.scripted_share(elos, 0.0, 0.01, 1.0), 0.01)
         weights = scripted_roster.draw_weights(elos, 0.0)
         self.assertGreater(min(weights), 0.0)
