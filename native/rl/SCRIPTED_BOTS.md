@@ -563,8 +563,11 @@ venv/bin/python native/rl/puffer/train.py ... --banks 4 --scripted-roster defaul
     --scripted-share-max 1 --scripted-share-min 0
 ```
 
-`--scripted-roster` is a comma list of `kind-level` names (or `default`: the
-four v2 kinds × easy/medium/hard plus `search-medium` and `search-hard`).
+`--scripted-roster` is a comma list of `kind-level` names; `default` expands
+to the four v2 kinds × easy/medium/hard (12). The search bots are opt-in
+(`default,search-medium,search-hard`): at ~1.2 ms per decision they straggle
+the shared env pool and cut learner sps by 84% even at 5-12% of the scripted
+games, so they stay evaluation opponents unless a run asks for them.
 The last scripted bank draws one entry per episode by Elo matchmaking on
 the pool's scale: `p_i = 1/(1+10^((elo_i-elo_learner)/400))`,
 `weight_i = p_i(1-p_i)+0.1/n`, share `clamp(share_min, share_max * I)` with

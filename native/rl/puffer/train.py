@@ -42,7 +42,7 @@ def scripted_bots(value):
 
 
 def scripted_roster_arg(value):
-    """Comma-separated kind-level names, or `default` for the 14-entry v2+search roster."""
+    """Comma-separated kind-level names, or `default` for the 12 v2 kind-levels (search bots are opt-in)."""
     try:
         return scripted_roster.parse_roster(value)
     except ValueError as error:

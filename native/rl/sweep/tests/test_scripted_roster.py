@@ -4,20 +4,21 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path[:0] = [str(ROOT / 'native/rl/puffer'), str(ROOT / 'native/rl/research')]
+sys.path[:0] = [str(ROOT / 'native/rl/puffer'), str(ROOT / 'native/rl/research'), str(ROOT / 'native/rl/sweep')]
 import scripted_roster
 import sweep_config
 
 
 class ParseRoster(unittest.TestCase):
-    def test_default_is_fourteen(self):
+    def test_default_is_the_twelve_v2_levels(self):
         names = scripted_roster.parse_roster('default')
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 12)
         self.assertEqual(names, list(scripted_roster.DEFAULT_ROSTER))
         self.assertIn('mixed-v2-easy', names)
-        self.assertIn('search-hard', names)
-        self.assertNotIn('search-easy', names)
+        self.assertNotIn('search-hard', names)   # opt-in: it straggles the env pool
         self.assertNotIn('mixed-hard', names)
+        with_search = scripted_roster.parse_roster('default,search-medium,search-hard')
+        self.assertEqual(with_search, names + ['search-medium', 'search-hard'])
 
     def test_explicit_and_v1(self):
         self.assertEqual(scripted_roster.parse_roster('mixed-v2-hard,search-medium'),

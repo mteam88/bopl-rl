@@ -1,9 +1,12 @@
 """Elo-matchmade scripted-bot roster for train.py (--scripted-roster).
 
 Names are the public `kind-level` strings in evaluation_protocol / SCRIPTED_BOTS.md.
-The default roster is the four v2 kinds at easy/medium/hard plus search-medium
-and search-hard (14 entries). Anchor Elos are pool-v5 ratings (random = 0);
-unrated levels start at that kind's hard rating minus 75 per step down.
+The default roster is the four v2 kinds at easy/medium/hard (12 entries). The
+search bots are opt-in (`--scripted-roster default,search-medium,search-hard`):
+at ~1.2 ms per decision they straggle the shared env pool and cut learner sps
+by 84% even at 5-12% of the scripted games (2026-09-13, w128 b4). Anchor Elos
+are pool-v5 ratings (random = 0); unrated levels start at that kind's hard
+rating minus 75 per step down.
 """
 from pathlib import Path
 
@@ -13,7 +16,7 @@ DEFAULT_ROSTER = tuple(
     f'{kind}-{level}'
     for kind in ('archer-v2', 'pursuer-v2', 'evasive-v2', 'mixed-v2')
     for level in ('easy', 'medium', 'hard')
-) + ('search-medium', 'search-hard')
+)
 ROSTER_MAX = 32
 LEVEL_GAP = 75.0
 WEIGHT_FLOOR = 0.1
@@ -45,10 +48,12 @@ def parse_roster(value):
         text = str(value).strip()
         if not text or text == 'none':
             return []
-        if text == 'default':
-            names = list(DEFAULT_ROSTER)
-        else:
-            names = [item for item in text.split(',') if item]
+        names = []
+        for item in text.split(','):
+            if item == 'default':
+                names.extend(DEFAULT_ROSTER)
+            elif item:
+                names.append(item)
     if len(names) > ROSTER_MAX:
         raise ValueError(f'At most {ROSTER_MAX} roster entries, got {len(names)}')
     if len(set(names)) != len(names):
