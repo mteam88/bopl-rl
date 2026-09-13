@@ -112,10 +112,10 @@ void my_log(Log *log, Dict *out) {
         "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
         "map_28_fraction", "map_29_fraction", "map_30_fraction"
     };
-    if (out->capacity<96) {
-        DictItem *items=realloc(out->items,96*sizeof(DictItem));
+    if (out->capacity<192) {
+        DictItem *items=realloc(out->items,192*sizeof(DictItem));
         if (!items) abort();
-        out->items=items;out->capacity=96;
+        out->items=items;out->capacity=192;
     }
     dict_set(out, "perf", log->perf); dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return); dict_set(out, "episode_length", log->episode_length);
@@ -135,6 +135,18 @@ void my_log(Log *log, Dict *out) {
     static const char *bot_score[8]={"bot_score_bank_0","bot_score_bank_1","bot_score_bank_2","bot_score_bank_3","bot_score_bank_4","bot_score_bank_5","bot_score_bank_6","bot_score_bank_7"};
     for (int bank=0; bank<8; bank++) if (log->bot_n_bank[bank]) {
         dict_set(out, bot_n[bank], log->bot_n_bank[bank]); dict_set(out, bot_score[bank], log->bot_score_bank[bank]);
+    }
+    static char entry_n[32][24], entry_score[32][28];
+    static int entry_keys;
+    if (!entry_keys) {
+        for (int i=0; i<32; i++) {
+            snprintf(entry_n[i], sizeof(entry_n[i]), "bot_n_entry_%d", i);
+            snprintf(entry_score[i], sizeof(entry_score[i]), "bot_score_entry_%d", i);
+        }
+        entry_keys=1;
+    }
+    for (int i=0; i<32; i++) if (log->bot_n_entry[i]) {
+        dict_set(out, entry_n[i], log->bot_n_entry[i]); dict_set(out, entry_score[i], log->bot_score_entry[i]);
     }
     for (int map=0; map<31; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);

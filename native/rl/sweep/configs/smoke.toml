@@ -63,7 +63,6 @@ reward_kill = 0.27
 reward_timeout = -1
 scripted_bots = ["mixed-v2"]
 scripted_level = "hard"
-scripted_decay = 120000000
 scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
 training_maps = [0, 1, 2]
 evaluation_maps = [0, 1, 2]

@@ -20,6 +20,7 @@ from native_metrics import empty_counters, update
 import native_selfplay
 from native_vector import NativeVector
 import reference
+import scripted_roster
 
 
 def maps(value):
@@ -40,15 +41,43 @@ def scripted_bots(value):
     return names
 
 
-def scripted_share(learner_steps, decay):
-    """Fraction of a scripted bank's matches the bot plays: 1 without a decay, else linear to 0 at `decay`."""
-    return 1.0 if not decay else max(0.0, 1.0 - learner_steps / decay)
+def scripted_roster_arg(value):
+    """Comma-separated kind-level names, or `default` for the 14-entry v2+search roster."""
+    try:
+        return scripted_roster.parse_roster(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def set_scripted_share(_C, share):
-    """Write the C environment's process-wide bot share (bopl_puffer.h bopl_scripted_share)."""
+def resolve_scripted(scripted_kinds, level, roster):
+    """Roster names and how many last banks they occupy.
+
+    `--scripted-roster` is the list of (kind, level) entries. `--scripted-bots`
+    without a roster is a one-entry-per-kind roster at `--scripted-level`. Bank
+    count is len(scripted-bots) when that flag is set, otherwise 1 if a roster
+    exists.
+    """
+    names = list(roster or [])
+    if not names and scripted_kinds:
+        names = [f'{kind}-{level}' for kind in scripted_kinds]
+    n_banks = len(scripted_kinds) if scripted_kinds else (1 if names else 0)
+    return names, n_banks
+
+
+def set_scripted_curriculum(_C, share, entries, weights):
+    """Write share + roster kind/level/weight into the C environment (ctypes globals)."""
     import ctypes
-    ctypes.c_float.in_dll(ctypes.CDLL(_C.__file__), 'bopl_scripted_share').value = float(share)
+    lib = ctypes.CDLL(_C.__file__)
+    ctypes.c_float.in_dll(lib, 'bopl_scripted_share').value = float(share)
+    n = len(entries)
+    ctypes.c_int.in_dll(lib, 'bopl_roster_n').value = n
+    kinds = (ctypes.c_uint8 * scripted_roster.ROSTER_MAX).in_dll(lib, 'bopl_roster_kind')
+    levels = (ctypes.c_uint8 * scripted_roster.ROSTER_MAX).in_dll(lib, 'bopl_roster_level')
+    warr = (ctypes.c_float * scripted_roster.ROSTER_MAX).in_dll(lib, 'bopl_roster_weight')
+    for i, (entry, weight) in enumerate(zip(entries, weights)):
+        kinds[i] = entry['kind']
+        levels[i] = entry['level']
+        warr[i] = float(weight)
 
 
 def entropy_coefficient(learner_steps, initial, floor, half_life):
@@ -70,7 +99,8 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
-                 'scripted_bots', 'scripted_level', 'scripted_decay', 'aim_fourier', 'aim_ar')
+                 'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
+                 'scripted_share_max', 'aim_fourier', 'aim_ar')
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -106,7 +136,9 @@ def recorded_hypers(config):
                 pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
                 entropy_free_rows=config.get('entropy_free_rows', 0),
                 scripted_bots=config.get('scripted_bots', []), scripted_level=config.get('scripted_level', 'hard'),
-                scripted_decay=config.get('scripted_decay', 0),
+                scripted_roster=config.get('scripted_roster', []),
+                scripted_share_min=config.get('scripted_share_min', 0.0),
+                scripted_share_max=config.get('scripted_share_max', 1.0),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0))
 
 
@@ -197,14 +229,21 @@ def arguments():
     p.add_argument('--elo-k', type=float, default=16.)
     p.add_argument('--pool-seed', type=int, help='Opponent sampling seed (defaults to --seed)')
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
-                   help='Comma-separated bot kinds (archer,pursuer,evasive,mixed) that permanently take over the '
-                        'last banks: those banks play the scripted bot instead of frozen snapshots, so the fraction '
-                        'of the learner\'s historical games against bots is len(list)/banks')
+                   help='Comma-separated bot kinds that take over the last banks. Without '
+                        '--scripted-roster each kind is a one-entry roster at --scripted-level; '
+                        'with a roster this only sets how many banks draw from it')
     p.add_argument('--scripted-level', choices=sorted(SCRIPTED_LEVELS, key=SCRIPTED_LEVELS.get), default='hard')
-    p.add_argument('--scripted-decay', type=int, default=0,
-                   help='Learner decisions over which the scripted banks hand their matches to self-play: the bot '
-                        'share falls linearly from 1 to 0 at this step (0 = bots play every match of their banks). '
-                        'With a decay the pool manages the scripted banks too, so their frozen weights are real opponents')
+    p.add_argument('--scripted-roster', nargs='?', const='default', default=None, type=scripted_roster_arg,
+                   help='Comma-separated kind-level opponents the scripted bank matchmakes among '
+                        f'(default roster: {",".join(scripted_roster.DEFAULT_ROSTER)}). '
+                        'Pass the flag with no value for that default. Empty / omitted with no '
+                        '--scripted-bots disables scripted banks')
+    p.add_argument('--scripted-share-max', type=float, default=1.0,
+                   help='Upper clamp on the scripted bank\'s bot-match share (1 = the bank always '
+                        'plays a roster bot while some entry is a coin flip)')
+    p.add_argument('--scripted-share-min', type=float, default=0.0,
+                   help='Lower clamp on the scripted bank\'s bot-match share (0 = drop the bot '
+                        'once every roster entry is beaten or hopeless)')
     p.add_argument('--scripted-opponents', default=DEFAULT_EVAL_SCRIPTED,
                    help='Comma-separated kind-level scripted opponents for the periodic evaluations (evaluate.py); empty disables')
     p.add_argument('--cudagraphs', type=int, default=1, help='Warmup updates before capture; -1 disables capture; 0 is unsupported')
@@ -232,10 +271,18 @@ def arguments():
         p.error('workers must be divisible by twice the buffer count')
     if (a.workers // 2) % a.banks:
         p.error('half the workers must divide evenly among the banks')
-    if len(a.scripted_bots) >= a.banks:
-        p.error('scripted-bots must leave at least one policy bank for the self-play pool')
-    if a.scripted_decay < 0 or (a.scripted_decay and not a.scripted_bots):
-        p.error('scripted-decay needs scripted-bots and a non-negative step count')
+    a.scripted_bots = list(a.scripted_bots or [])
+    a.scripted_roster = a.scripted_roster or []
+    roster_names, n_scripted = resolve_scripted(a.scripted_bots, a.scripted_level, a.scripted_roster)
+    a.scripted_roster = roster_names
+    a.n_scripted = n_scripted
+    if n_scripted >= a.banks:
+        p.error('scripted-roster/scripted-bots must leave at least one policy bank for the self-play pool')
+    if n_scripted and not roster_names:
+        p.error('scripted-roster/scripted-bots produced no roster entries')
+    if not (math.isfinite(a.scripted_share_min) and math.isfinite(a.scripted_share_max)
+            and 0 <= a.scripted_share_min <= a.scripted_share_max <= 1):
+        p.error('scripted-share-min/max must be finite with 0 <= min <= max <= 1')
     if a.hidden < 8 or a.hidden % 8:
         p.error('hidden must be a positive multiple of eight')
     if a.cudagraphs != -1 and a.cudagraphs < 1:
@@ -378,16 +425,19 @@ def main():
                          learning_rate=a.learning_rate, anneal_lr=a.anneal_lr, min_lr_ratio=a.min_lr_ratio,
                          ent_coef=a.entropy, anneal_ent_coef=0,
                          min_ent_coef_ratio=a.entropy_floor/a.entropy)
-    # Scripted banks are the LAST ones so the self-play pool, which only
-    # manages banks 0..policy_banks-1, never swaps weights into them. Under a
-    # decay the bots hand a growing share of their banks' matches to the banks'
-    # frozen weights, so the pool must manage every bank; bot matches stay out
-    # of the pool's statistics (bopl_puffer.h bot_*_bank).
-    policy_banks = a.banks if a.scripted_decay else a.banks - len(a.scripted_bots)
-    scripted_first_bank = a.banks - len(a.scripted_bots)
+    # Scripted banks are the LAST ones. When share_min < 1 some of their matches
+    # fall to frozen weights, so the pool manages every bank (bot matches stay
+    # out of hist_*_bank). At share_min = share_max = 1 the leftover never
+    # happens and the pool skips those banks, as in the old no-decay path.
+    policy_banks = a.banks if (a.n_scripted and a.scripted_share_min < 1.0) else a.banks - a.n_scripted
+    scripted_first_bank = a.banks - a.n_scripted
     scripted_kinds = 0
-    for i, name in enumerate(a.scripted_bots):
-        scripted_kinds |= SCRIPTED_KINDS[name] << 4 * (scripted_first_bank + i)
+    for i in range(a.n_scripted):
+        if a.scripted_bots:
+            kind_name = a.scripted_bots[i]
+        else:
+            kind_name, _, _, _ = scripted_roster.split_name(a.scripted_roster[0])
+        scripted_kinds |= SCRIPTED_KINDS[kind_name] << 4 * (scripted_first_bank + i)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        training_map_mask=sum(1 << m for m in a.training_maps),
@@ -406,7 +456,8 @@ def main():
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
-                  scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_decay=a.scripted_decay,
+                  scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
+                  scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
@@ -450,12 +501,27 @@ def main():
             atomic_json(output/'result.json', record)
     status('starting')
     saved = {}
+    roster_entries = (scripted_roster.entries_from_names(
+        a.scripted_roster, scripted_roster.load_anchor_ratings(), a.elo_init)
+        if a.scripted_roster else [])
+    share = 0.0
     try:
         trainer = _C.create_pufferl(args)
         vector.attach(trainer)
         pool = ledger = None
         update_index = 0
         elapsed_before = 0.
+        def persist_roster(learner_elo):
+            if roster_entries:
+                atomic_json(output/'pool/roster.json', scripted_roster.state_dict(
+                    roster_entries, share=share, learner_elo=learner_elo))
+        def sync_scripted(learner_elo):
+            nonlocal share
+            if not roster_entries:
+                return
+            elos = [entry['elo'] for entry in roster_entries]
+            share = scripted_roster.scripted_share(elos, learner_elo, a.scripted_share_min, a.scripted_share_max)
+            set_scripted_curriculum(_C, share, roster_entries, scripted_roster.draw_weights(elos, learner_elo))
         def save():
             step = counts['game_steps']
             if step not in saved:
@@ -471,6 +537,7 @@ def main():
                 atomic_json(output/'pool/state.json', pool_state_json(
                     pool, ledger, counts=counts, elapsed=elapsed_before + time.monotonic() - training_started,
                     global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step]))
+                persist_roster(pool['primary_elo'])
             return saved[step]
         training_started = time.monotonic()
         if resume:
@@ -490,6 +557,11 @@ def main():
                 _C.load_frozen_bank(trainer, bank, str(initial))
             update_index = resume['update_index']
             elapsed_before = resume['elapsed']
+            if roster_entries:
+                roster_path = output/'pool/roster.json'
+                if not roster_path.is_file():
+                    raise SystemExit('--resume: pool/roster.json is missing')
+                scripted_roster.restore_counts(roster_entries, json.loads(roster_path.read_text()))
         else:
             initial = save()
             # Every bank starts from the initial policy; PufferLib's pool swaps
@@ -503,6 +575,8 @@ def main():
                                          opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
                                          elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed)
             ledger = native_selfplay.members(str(initial))
+        if roster_entries:
+            sync_scripted(pool['primary_elo'])
         vector.reset()
         _C.log(trainer)  # Warmup losses are not measured training updates.
         if vector.snapshot()['learner_steps'] or vector.snapshot()['game_steps']:
@@ -547,9 +621,6 @@ def main():
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         previous, previous_elapsed = counts, elapsed_before
         free, applied_scale = None, list(a.head_scale)
-        share = scripted_share(counts['learner_steps'], a.scripted_decay)
-        if a.scripted_bots:
-            set_scripted_share(_C, share)
         # Overlap (THROUGHPUT.md 3.A, BOPL_ASYNC=1 default; 0 restores the
         # serial trainer bit for bit): the native trainer keeps two rollout
         # slots, so each update collects the next batch on the buffer threads
@@ -575,17 +646,13 @@ def main():
                 if overlap:
                     # Another update follows this one: collect its batch now.
                     more = ready['learner_steps'] < a.steps
-                    if a.scripted_decay:
-                        # Matches starting during the next rollout draw against this share.
-                        share = scripted_share(counts['learner_steps'], a.scripted_decay)
-                        set_scripted_share(_C, share)
+                    if roster_entries:
+                        # Matches starting during the next rollout draw against this roster.
+                        sync_scripted(pool['primary_elo'])
                     if more:
                         _C.rollouts_start(trainer)
                 else:
                     rollout_seconds = _C.rollouts(trainer)
-                    if a.scripted_decay:
-                        share = scripted_share(counts['learner_steps'], a.scripted_decay)
-                        set_scripted_share(_C, share)
                 rolled = time.monotonic()
                 # Configure the native loss before training. Native train_impl
                 # copies this scalar into a device buffer each update, so CUDA
@@ -639,19 +706,26 @@ def main():
                 record['wall_seconds'] = elapsed-previous_elapsed
                 record['overlap'] = overlap
                 record['pool'] = after_pool
-                if a.scripted_bots:
-                    # Scripted banks sit after the pool's policy banks; their
-                    # hist_*_bank fields are n-averaged like every env metric.
+                if roster_entries:
                     n = float(flat.get('env/n', 0.0))
+                    window = []
+                    for i in range(len(roster_entries)):
+                        games = round(float(flat.get(f'env/bot_n_entry_{i}', 0.0)) * n)
+                        wins = round(float(flat.get(f'env/bot_score_entry_{i}', 0.0)) * n)
+                        window.append((games, wins))
+                    scripted_roster.apply_window(roster_entries, window, after_pool['elo'], a.elo_k)
+                    sync_scripted(after_pool['elo'])
+                    weights = scripted_roster.draw_weights([e['elo'] for e in roster_entries], after_pool['elo'])
                     scripted = {}
-                    for i, name in enumerate(a.scripted_bots):
-                        bank = scripted_first_bank + i
-                        games = round(float(flat.get(f'env/bot_n_bank_{bank}', 0.0)) * n)
-                        wins = round(float(flat.get(f'env/bot_score_bank_{bank}', 0.0)) * n)
-                        scripted[f'{name}-{a.scripted_level}'] = dict(
-                            bank=bank, games=games, winrate=wins/games if games else None)
+                    for i, entry in enumerate(roster_entries):
+                        games = entry['games']
+                        scripted[entry['name']] = dict(
+                            bank=scripted_first_bank, elo=entry['elo'], games=games,
+                            winrate=(entry['wins']/games if games else None), weight=weights[i],
+                            window_games=window[i][0], window_wins=window[i][1])
                     record['scripted'] = scripted
                     record['scripted_share'] = share
+                    record['scripted_learner_elo'] = after_pool['elo']
                 record['free_fraction'] = free
                 record['entropy_head_scale_applied'] = applied_scale
                 # The native trainer's own per-update timers (seconds, averaged
@@ -665,9 +739,11 @@ def main():
                 console = dict(step=record['step'], learner_steps=record['learner_steps'],
                                learner_sps=record['learner_sps'], matches=record['matches'],
                                elo=round(after_pool['elo'], 1), pool=after_pool['size'])
-                if a.scripted_bots:
-                    console['scripted'] = {name: (None if row['winrate'] is None else round(row['winrate'], 3))
-                                           for name, row in record['scripted'].items()}
+                if roster_entries:
+                    console['scripted'] = dict(
+                        share=round(share, 3), elo=round(after_pool['elo'], 1),
+                        **{name: (None if row['winrate'] is None else round(row['winrate'], 3))
+                           for name, row in record['scripted'].items()})
                 print(json.dumps(console), flush=True)
                 previous, previous_elapsed = counts, elapsed
                 if counts['learner_steps'] >= next_checkpoint:

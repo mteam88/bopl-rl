@@ -86,10 +86,17 @@ Required (all currently written by `train.py`):
   current opponent only. `<run>/pool.jsonl` holds the corresponding events
   (`snapshot`, `evicted` with lifetime stats, `armed`, `loaded` with the
   retired opponent's stats), each with `learner_steps` and the learner `elo`.
-  With `--scripted-bots`, `pool.banks` covers only the policy banks; the
-  scripted banks report per update under `scripted`
-  (`{"<kind>-<level>": {bank, games, winrate}}`, learner's win rate against
-  the bot over this update's finished games; `native/rl/SCRIPTED_BOTS.md`).
+  With `--scripted-bots` / `--scripted-roster`, `pool.banks` covers only the
+  policy banks (or all banks when leftover frozen matches are possible);
+  the scripted banks report per update under `scripted` and the sibling
+  fields `scripted_share`, `scripted_learner_elo`:
+  `scripted` is `{"<kind>-<level>": {bank, elo, games, winrate, weight,
+  window_games, window_wins}}` — `games`/`winrate`/`elo` are lifetime
+  decided learner-vs-entry totals (timeouts excluded); `window_*` and
+  `weight` are this update's draw. `scripted_share` is the bot-match
+  fraction pushed to C (`clamp(share_min, share_max * I)` with
+  `I = max 4p(1-p)`). `scripted_learner_elo` is the pool's learner Elo
+  used for matchmaking. (`native/rl/SCRIPTED_BOTS.md`, `--scripted-roster`).
 
 New — the dashboard renders these once present (per update):
 

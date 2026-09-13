@@ -174,7 +174,6 @@ workers = 64
 banks = 4
 scripted_bots = ["mixed", "archer"]
 scripted_level = "hard"
-scripted_decay = 100000000
 entropy = 0.01
 entropy_floor = 0.004
 no_eval = true
@@ -228,10 +227,10 @@ class ScriptedCurriculum(unittest.TestCase):
                                      'learning_rate': 1e-3, 'steps': 12345}, Path('/tmp/x'))
         self.assertEqual(argv[argv.index('--scripted-bots') + 1], 'mixed')
         self.assertEqual(argv[argv.index('--scripted-level') + 1], 'easy')
-        self.assertEqual(argv[argv.index('--scripted-decay') + 1], '100000000')
+        self.assertNotIn('--scripted-decay', argv)
         self.assertEqual(argv[argv.index('--steps') + 1], '200000000')
 
-    def test_no_bots_drops_the_decay(self):
+    def test_no_bots_renders_empty_list(self):
         spec = load_text(CURRICULUM)
         argv = spec.trial_arguments({'scripted_banks': 0, 'scripted_level_index': 2,
                                      'learning_rate': 1e-3}, Path('/tmp/x'))
