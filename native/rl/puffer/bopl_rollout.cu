@@ -363,7 +363,9 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
         for (int t = 0; t < 4; t++) { acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f; }
         // B chunk: 4 k-pairs (64 k) x 4 n-tiles (32 columns), one float4 per lane each,
         // a warp instruction reads 512 contiguous bytes. k-pairs past K are zero padding
-        // in the fragment buffer (br_frag_floats rounds K up to 16).
+        // in the fragment buffer (br_frag_floats rounds K up to 16). n-tiles past ntiles
+        // (the block's column span exceeds N, e.g. narrow decoders) are outside the
+        // buffer: skip them, their columns are dropped by the epilogue anyway.
         float4 bf[4][4];
         auto load_b = [&](int k0) {
             #pragma unroll
@@ -371,7 +373,9 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
                 #pragma unroll
                 for (int t = 0; t < 4; t++) {
                     long kpair = (k0 >> 4) + kp;
-                    bf[kp][t] = *(const float4*)(Wt + ((kpair * ntiles + ntile0 + t) * 32 + lane) * 4);
+                    bf[kp][t] = (ntile0 + t < ntiles)
+                        ? *(const float4*)(Wt + ((kpair * ntiles + ntile0 + t) * 32 + lane) * 4)
+                        : make_float4(0.f, 0.f, 0.f, 0.f);
                 }
         };
         for (int ch = kg; ch < nchunks; ch += sub) {
