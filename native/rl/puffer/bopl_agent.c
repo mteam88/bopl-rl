@@ -42,7 +42,11 @@ struct BoplAgent {
     char id[96];
     /* wire decode */
     BoplRlState decoded; BoplRlEntity *entities; BoplRlSlime *slimes; uint32_t ecap, scap;
+    /* roster (bopl_agent.h): members opened once, one drawn per round */
+    BoplAgent **members; double *weights; char **specs; int count, current;
+    char *log_path;
 };
+#define BOPL_ROSTER_MAX 64
 
 uint32_t bopl_agent_abi_version(void) { return BOPL_AGENT_ABI; }
 int bopl_agent_obs_size(void) { return BOPL_OBS_SIZE; }
@@ -236,16 +240,93 @@ static int bopl_agent_open_bot(BoplAgent *a, const char *spec, char *error, size
     return -1;
 }
 
+/* Roster file (spec "<...>.roster"): one member per line, "<spec>[<ws><weight>]",
+ * '#' comments and blank lines ignored; specs are checkpoints or bots (no
+ * nested rosters), relative paths resolve against the roster's directory.
+ * Every member is opened up front; bopl_agent_reset draws one for the round
+ * (weighted, from the round seed, so a session is reproducible) and appends
+ * {"seed","member","spec","id"} to $BOPL_AGENT_ROSTER_LOG or "<roster>.log"
+ * for Tools/play_vs_agent_results.py to attribute rounds. The game reads the
+ * loadout, warmup and episode length once per match, so members must agree. */
+static int bopl_agent_open_roster(BoplAgent *a, const char *path, char *error, size_t capacity) {
+    size_t length=0;
+    unsigned char *text=bopl_read_file(path, &length);
+    if (!text) { bopl_agent_error(error, capacity, "cannot read roster %s", path); return -1; }
+    a->members=calloc(BOPL_ROSTER_MAX, sizeof(*a->members)); a->weights=calloc(BOPL_ROSTER_MAX, sizeof(*a->weights));
+    a->specs=calloc(BOPL_ROSTER_MAX, sizeof(*a->specs));
+    if (!a->members || !a->weights || !a->specs) { free(text); bopl_agent_error(error, capacity, "out of memory"); return -1; }
+    char dir[4096]; snprintf(dir, sizeof(dir), "%s", path);
+    char *slash=strrchr(dir, '/'); if (slash) slash[1]=0; else dir[0]=0;
+    char *line=(char*)text, *next;
+    int number=0;
+    for (; line; line=next, number++) {
+        next=strchr(line, '\n'); if (next) *next++=0;
+        char *hash=strchr(line, '#'); if (hash) *hash=0;
+        while (*line==' '||*line=='\t'||*line=='\r') line++;
+        size_t n=strlen(line); while (n && (line[n-1]==' '||line[n-1]=='\t'||line[n-1]=='\r')) line[--n]=0;
+        if (!n) continue;
+        if (a->count>=BOPL_ROSTER_MAX) { free(text); bopl_agent_error(error, capacity, "roster %s: more than %d members", path, BOPL_ROSTER_MAX); return -1; }
+        char *space=line; while (*space && *space!=' ' && *space!='\t') space++;
+        double weight=1;
+        if (*space) { *space++=0; while (*space==' '||*space=='\t') space++; char *end; weight=strtod(space, &end); if (end==space || weight<=0) { bopl_agent_error(error, capacity, "roster %s line %d: bad weight '%s'", path, number+1, space); free(text); return -1; } }
+        size_t sl=strlen(line);
+        if (sl>7 && !strcmp(line+sl-7, ".roster")) { free(text); bopl_agent_error(error, capacity, "roster %s line %d: nested roster", path, number+1); return -1; }
+        char resolved[4096];
+        if (sl>4 && !strcmp(line+sl-4, ".bin") && line[0]!='/') snprintf(resolved, sizeof(resolved), "%s%s", dir, line); else snprintf(resolved, sizeof(resolved), "%s", line);
+        char member_error[512];
+        BoplAgent *m=bopl_agent_open(resolved, a->players, a->player, member_error, sizeof(member_error));
+        if (!m) { bopl_agent_error(error, capacity, "roster %s line %d (%s): %s", path, number+1, line, member_error); free(text); return -1; }
+        if (a->count) {
+            BoplAgent *f=a->members[0];
+            if (memcmp(f->ability, m->ability, sizeof(f->ability)) || f->warmup!=m->warmup || f->limit!=m->limit) {
+                bopl_agent_error(error, capacity, "roster %s line %d (%s): loadout %d,%d,%d warmup %d limit %d differs from the first member's %d,%d,%d / %d / %d",
+                                 path, number+1, line, m->ability[0], m->ability[1], m->ability[2], m->warmup, m->limit,
+                                 f->ability[0], f->ability[1], f->ability[2], f->warmup, f->limit);
+                bopl_agent_close(m); free(text); return -1;
+            }
+        } else { memcpy(a->ability, m->ability, sizeof(a->ability)); a->warmup=m->warmup; a->limit=m->limit; a->delay=m->delay; a->repeat=m->repeat; }
+        a->members[a->count]=m; a->weights[a->count]=weight; a->specs[a->count]=strdup(resolved); a->count++;
+    }
+    free(text);
+    if (!a->count) { bopl_agent_error(error, capacity, "roster %s has no members", path); return -1; }
+    const char *log=getenv("BOPL_AGENT_ROSTER_LOG");
+    char fallback[4096]; if (!log || !*log) { snprintf(fallback, sizeof(fallback), "%s.log", path); log=fallback; }
+    a->log_path=strdup(log);
+    const char *base=strrchr(path, '/'); base=base?base+1:path;
+    snprintf(a->id, sizeof(a->id), "roster:%.*s", (int)(strlen(base)-7), base);
+    return 0;
+}
+
+static uint64_t bopl_splitmix(uint64_t *state);
+static void bopl_roster_reset(BoplAgent *a, uint32_t seed) {
+    uint64_t rng=(uint64_t)seed*0x9E3779B97F4A7C15ull+0x632BE59BD9B4E019ull;
+    double total=0; for (int i=0; i<a->count; i++) total+=a->weights[i];
+    double u=(double)(bopl_splitmix(&rng)>>11)*(1.0/9007199254740992.0)*total, acc=0;
+    int pick=a->count-1;
+    for (int i=0; i<a->count; i++) { acc+=a->weights[i]; if (u<acc) { pick=i; break; } }
+    a->current=pick;
+    bopl_agent_reset(a->members[pick], seed);
+    FILE *f=a->log_path?fopen(a->log_path, "a"):NULL;
+    if (f) { fprintf(f, "{\"seed\": %u, \"member\": %d, \"spec\": \"%s\", \"id\": \"%s\"}\n", seed, pick, a->specs[pick], a->members[pick]->id); fclose(f); }
+}
+
 BoplAgent *bopl_agent_open(const char *spec, int players, int player, char *error, size_t capacity) {
     if (error && capacity) error[0]=0;
     if (!spec || !*spec) { bopl_agent_error(error, capacity, "empty agent spec"); return NULL; }
     if (players<1 || players>BOPL_MAX_PLAYERS || player<0 || player>=players) { bopl_agent_error(error, capacity, "players %d / player %d", players, player); return NULL; }
+    size_t n=strlen(spec);
+    if (n>7 && !strcmp(spec+n-7, ".roster")) {
+        BoplAgent *a=calloc(1, sizeof(*a));
+        if (!a) { bopl_agent_error(error, capacity, "out of memory"); return NULL; }
+        a->players=players; a->player=player;
+        if (bopl_agent_open_roster(a, spec, error, capacity)) { bopl_agent_close(a); return NULL; }
+        return a;
+    }
     BoplAgent *a=calloc(1, sizeof(*a));
     if (!a) { bopl_agent_error(error, capacity, "out of memory"); return NULL; }
     a->players=players; a->player=player;
     memcpy(a->ability, BOPL_AGENT_DEFAULT_ABILITIES, sizeof(a->ability));
     a->warmup=BOPL_AGENT_DEFAULT_WARMUP; a->limit=BOPL_AGENT_DEFAULT_LIMIT; a->delay=BOPL_AGENT_DEFAULT_DELAY; a->repeat=BOPL_AGENT_DEFAULT_REPEAT;
-    size_t n=strlen(spec);
     int status=n>4 && !strcmp(spec+n-4, ".bin")?bopl_agent_open_policy(a, spec, error, capacity):bopl_agent_open_bot(a, spec, error, capacity);
     if (status || bopl_agent_env_alloc(a)) { if (!status) bopl_agent_error(error, capacity, "out of memory"); bopl_agent_close(a); return NULL; }
     if (a->kind) { a->env.bot_select[player]=(uint8_t)a->kind; a->env.bot_select_level[player]=(uint8_t)a->level; }
@@ -254,6 +335,11 @@ BoplAgent *bopl_agent_open(const char *spec, int players, int player, char *erro
 
 void bopl_agent_close(BoplAgent *a) {
     if (!a) return;
+    if (a->members) {
+        for (int i=0; i<a->count; i++) { bopl_agent_close(a->members[i]); free(a->specs[i]); }
+        free(a->members); free(a->weights); free(a->specs); free(a->log_path);
+        free(a); return;
+    }
     bopl_policy_eval_close(a->policy);
     free(a->rstate); free(a->rnext); free(a->decoder); free(a->row);
     BoplPuffer *env=&a->env;
@@ -266,6 +352,7 @@ void bopl_agent_close(BoplAgent *a) {
 
 void bopl_agent_reset(BoplAgent *a, uint32_t seed) {
     if (!a) return;
+    if (a->members) { bopl_roster_reset(a, seed); return; }
     BoplPuffer *env=&a->env;
     env->config.seed=seed; env->rng=seed;
     env->bot_rng=env->config.seed*2654435761u^0x9E3779B9u;
@@ -332,7 +419,11 @@ static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
     a->open=1; a->tick=0; a->sampled=0; a->decisions++;
 }
 
+/* Roster handles delegate everything after open to the round's member. */
+#define BOPL_MEMBER(a) ((a)&&(a)->members?(a)->members[(a)->current]:(a))
+
 int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
+    if (a && a->members) return bopl_agent_tick(BOPL_MEMBER(a), state, out);
     if (out) memset(out, 0, sizeof(*out));
     if (!a || !state || !out || !a->armed) return -1;
     if ((int)state->header.player_count!=a->players) return -1;
@@ -370,6 +461,7 @@ int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
 /* RlObservation.cs / bopl_rl_state wire format: header, player_count players,
  * entity_count entities, slime_count slimes, player_count telemetry rows. */
 int bopl_agent_tick_bytes(BoplAgent *a, const void *bytes, size_t length, BoplRlAction *out) {
+    if (a && a->members) return bopl_agent_tick_bytes(BOPL_MEMBER(a), bytes, length, out);
     if (out) memset(out, 0, sizeof(*out));
     if (!a || !bytes || !out) return -1;
     if (length<sizeof(BoplRlHeader)) return -2;
@@ -396,10 +488,11 @@ int bopl_agent_warmup_ticks(const BoplAgent *a) { return a?a->warmup:-1; }
 int bopl_agent_repeat(const BoplAgent *a) { return a?a->repeat:-1; }
 int bopl_agent_observation_delay(const BoplAgent *a) { return a?a->delay:-1; }
 int bopl_agent_max_episode_ticks(const BoplAgent *a) { return a?a->limit:-1; }
-const char *bopl_agent_id(const BoplAgent *a) { return a?a->id:""; }
-int bopl_agent_is_policy(const BoplAgent *a) { return a?a->is_policy:0; }
-const float *bopl_agent_observation(const BoplAgent *a) { return a?a->env.observations+(size_t)a->player*BOPL_OBS_SIZE:NULL; }
-const unsigned char *bopl_agent_mask(const BoplAgent *a) { return a?a->env.action_mask+(size_t)a->player*BOPL_LOGITS:NULL; }
-const float *bopl_agent_logits(const BoplAgent *a) { return a?a->decoder:NULL; }
-void bopl_agent_decision(const BoplAgent *a, int out[3]) { if (a && out) memcpy(out, a->decision, sizeof(a->decision)); else if (out) memset(out, 0, 3*sizeof(int)); }
-int bopl_agent_decisions(const BoplAgent *a) { return a?a->decisions:0; }
+const char *bopl_agent_id(const BoplAgent *a) { return a?a->id:""; }  /* a roster reports "roster:<name>"; the round's member is in the roster log */
+int bopl_agent_is_policy(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->is_policy:0; }
+const float *bopl_agent_observation(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.observations+(size_t)a->player*BOPL_OBS_SIZE:NULL; }
+const unsigned char *bopl_agent_mask(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.action_mask+(size_t)a->player*BOPL_LOGITS:NULL; }
+const float *bopl_agent_logits(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->decoder:NULL; }
+void bopl_agent_decision(const BoplAgent *a, int out[3]) { a=BOPL_MEMBER(a); if (a && out) memcpy(out, a->decision, sizeof(a->decision)); else if (out) memset(out, 0, 3*sizeof(int)); }
+int bopl_agent_decisions(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->decisions:0; }
+const char *bopl_agent_member_id(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->id:""; }

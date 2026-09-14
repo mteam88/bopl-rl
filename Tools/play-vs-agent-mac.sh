@@ -1,8 +1,11 @@
 #!/bin/bash
 # Play against a trained policy or a scripted bot in the native macOS build.
 #
-#   Tools/play-vs-agent-mac.sh <policy-*.bin | mixed-v2-hard | ...> [--seed N]
+#   Tools/play-vs-agent-mac.sh <policy-*.bin | mixed-v2-hard | ... | <name>.roster> [--seed N]
 #   Tools/play-vs-agent-mac.sh            # default agent (native/artifacts/rl/human/default-agent, else mixed-v2-hard)
+#
+# A .roster (Tools/rating_roster.py) draws a different member per round; the
+# shim logs the draws and play_vs_agent_results.py attributes each round.
 #
 # The macOS counterpart of play-vs-agent.sh: same BOPL_AGENT / BOPL_AGENT_SEED /
 # BOPL_AGENT_RESULTS contract with RlAgent.cs, same result archive
@@ -37,6 +40,8 @@ fi
 case "$AGENT" in
   *.bin) AGENT=$(cd "$(dirname "$AGENT")" && pwd)/$(basename "$AGENT")
          [ -f "$AGENT" ] && [ -f "$AGENT.json" ] || { echo "checkpoint or its .json sidecar missing: $AGENT" >&2; exit 2; } ;;
+  *.roster) AGENT=$(cd "$(dirname "$AGENT")" && pwd)/$(basename "$AGENT")
+         [ -f "$AGENT" ] || { echo "roster missing: $AGENT" >&2; exit 2; } ;;
 esac
 [ -x "$GAME" ] || { echo "no build at $GAME (just sync-mac && just build-mac on the PowerSpec)" >&2; exit 2; }
 # `open` would only focus a running copy; a second exec'd instance would fight over the save dir.
@@ -52,11 +57,12 @@ mkdir -p "$HUMAN"
 SESSION=$(date +%Y%m%d-%H%M%S)
 RESULTS=$HUMAN/.session-$SESSION.jsonl
 [ -n "$SEED" ] || SEED=$(( $(date +%s) % 1000000000 ))
-export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS
+ROSTER_LOG=$HUMAN/.session-$SESSION.roster.jsonl
+export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS BOPL_AGENT_ROSTER_LOG=$ROSTER_LOG
 echo "agent $AGENT  seed $SEED  results $RESULTS"
 echo "$AGENT" > "$HUMAN/last-agent"
 
 "$GAME"
 STATUS=$?
-"$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" --agent "$AGENT" --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG"
+"$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" --agent "$AGENT" --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG" --roster-log "$ROSTER_LOG"
 exit $STATUS

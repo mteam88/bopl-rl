@@ -16,6 +16,10 @@ tally()/Bradley-Terry can rate them like any other pairing:
   ticks        episode ticks (after the 240-tick warmup)
   outcome      "a" (human won), "b" (agent won), "draw" (nobody / both)
   agent        the BOPL_AGENT spec as given, agent_path, agent_sha256 (checkpoint)
+  roster       when the spec was a .roster: the roster path; agent/agent_path/
+               agent_sha256/b then describe the member the shim drew for the
+               round (joined on the round seed from --roster-log, the shim's
+               {"seed","member","spec","id"} lines)
   human_abilities, agent_abilities   ability catalog indices
   replay       archived .rep path, replay_sha256, replay_source (game's copy)
   game_sha256, library_sha256, source_hash, catalog_hash, time, session
@@ -44,6 +48,7 @@ def main():
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--player-log', type=Path)
+    parser.add_argument('--roster-log', type=Path, help="the shim's BOPL_AGENT_ROSTER_LOG (roster specs)")
     args = parser.parse_args()
     if not args.results.exists():
         print('no rounds were played (no results file)', file=sys.stderr)
@@ -56,8 +61,32 @@ def main():
     session = args.results.stem.replace('.session-', '')
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
-    agent_path = Path(args.agent) if args.agent.endswith('.bin') else None
-    agent_sha = sha256(agent_path) if agent_path else None
+    roster_path = args.agent if args.agent.endswith('.roster') else None
+    draws = {}
+    if roster_path:
+        log = args.roster_log or Path(roster_path + '.log')
+        if not log.exists():
+            print(f'roster session without its draw log {log}; rounds cannot be attributed', file=sys.stderr)
+            return 1
+        for line in log.read_text().splitlines():
+            if line.strip():
+                draw = json.loads(line)
+                draws[int(draw['seed'])] = draw
+    shas = {}
+
+    def member(record):
+        """(spec, id) deciding this round: the roster's draw, else the agent itself."""
+        if not roster_path:
+            return args.agent, record.get('agent_id')
+        draw = draws.get(int(record.get('seed', -1)))
+        return (draw['spec'], draw['id']) if draw else (None, None)
+
+    def checkpoint(spec):
+        path = Path(spec) if spec and spec.endswith('.bin') else None
+        if path and path not in shas:
+            shas[path] = sha256(path) if path.exists() else None
+        return path, shas.get(path)
+
     game_sha = sha256(args.game) if args.game.exists() else None
     assembly = args.game.parent / 'BoplBattle_Data/Managed/Assembly-CSharp.dll'
     assembly_sha = sha256(assembly) if assembly.exists() else None
@@ -85,10 +114,16 @@ def main():
                 outcome = 'b'
             else:
                 outcome = 'a'
+            spec, agent_id = member(record)
+            if spec is None:
+                print(f"round {record.get('round')}: seed {record.get('seed')} has no roster draw; skipped", file=sys.stderr)
+                continue
+            agent_path, agent_sha = checkpoint(spec)
             row = {
-                'a': 'human', 'b': record.get('agent_id'), 'map': record.get('level'), 'seed': record.get('seed'),
+                'a': 'human', 'b': agent_id, 'map': record.get('level'), 'seed': record.get('seed'),
                 'side': human_index, 'ticks': record.get('episode_ticks'), 'outcome': outcome,
-                'agent': args.agent, 'agent_path': str(agent_path) if agent_path else None, 'agent_sha256': agent_sha,
+                'agent': spec, 'agent_path': str(agent_path) if agent_path else None, 'agent_sha256': agent_sha,
+                'roster': roster_path,
                 'agent_index': record.get('agent_index'), 'agent_player': record.get('agent_player'),
                 'human_abilities': [p.get('abilities') for p in humans], 'agent_abilities': agent.get('abilities'),
                 'human_keyboard': [p.get('keyboard') for p in humans], 'players': roster,
@@ -104,9 +139,12 @@ def main():
             games.write(json.dumps(row) + '\n')
             written += 1
             print(f"round {record.get('round')}: map {row['map']} seed {row['seed']} outcome {outcome} "
-                  f"({row['ticks']} ticks) replay {replay_copy}")
+                  f"({row['ticks']} ticks) vs {Path(spec).name if spec.endswith('.bin') else spec} replay {replay_copy}")
     if args.player_log and args.player_log.exists():
         shutil.copy2(args.player_log, out / f'{session}-Player.log')
+    if roster_path and args.roster_log and args.roster_log.exists():
+        shutil.copy2(args.roster_log, out / f'{session}-roster.log')
+        args.roster_log.unlink()
     args.results.unlink()
     print(f"{written} game row(s) appended to {out / 'games.jsonl'}")
     return 0

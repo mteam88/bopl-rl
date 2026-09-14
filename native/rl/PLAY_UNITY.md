@@ -275,6 +275,26 @@ source_hash catalog_hash  warmup_ticks level_ticks decisions stocks game_mode fa
 
 `seed` + `agent_index` + `replay` are what the `replay` fidelity check needs.
 
+## Rating sessions (rosters)
+
+A spec ending in `.roster` is a text file of specs (one per line, optional
+weight, `#` comments). The shim opens every member at once and draws one per
+round from the round seed, so one game session spreads ~100 rounds over a
+pool and every round is a Bradley-Terry observation of the human against a
+rated opponent. Members must share loadout, warmup and episode length (the
+game reads those once at character select). Each draw is appended to
+`$BOPL_AGENT_ROSTER_LOG` (the launchers set `.session-<id>.roster.jsonl`),
+and `play_vs_agent_results.py --roster-log` attributes the rounds: `games.jsonl`
+rows carry the member as `agent`/`agent_sha256`/`b` plus `roster=<path>`, so
+`reference_pool.rate_human` and the ladder see plain human-vs-member games.
+
+`Tools/rating_roster.py` writes one from a pool: the scripted members (minus
+`search-*`, which the shim cannot run) and the checkpoints, weighted by a
+Gaussian in Elo distance from the human's current `rate_human` estimate
+(floored so every member keeps appearing), with paths rewritten for the Mac
+(`--mac-root`). Sync the roster and the anchors it names, then
+`Tools/play-vs-agent-mac.sh native/artifacts/rl/human/rosters/<name>.roster`.
+
 ## Limitations / notes
 
 - Training opponents carried the same fixed Dash/Bow/Platform loadout; a human

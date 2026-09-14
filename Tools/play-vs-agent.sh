@@ -2,7 +2,7 @@
 # Play the real Unity game against a trained policy or a scripted bot
 # (native/rl/PLAY_UNITY.md).
 #
-#   Tools/play-vs-agent.sh <policy-*.bin | mixed-v2-hard | ...> [--seed N] [--headless [:DISPLAY]]
+#   Tools/play-vs-agent.sh <policy-*.bin | mixed-v2-hard | ... | <name>.roster> [--seed N] [--headless [:DISPLAY]]
 #   Tools/play-vs-agent.sh                      # default agent (see below)
 #   Tools/play-vs-agent.sh --install-desktop    # desktop entry next to bopl-battle.desktop
 #
@@ -62,6 +62,7 @@ if [ -z "$AGENT" ]; then
 fi
 case "$AGENT" in
   *.bin) AGENT=$(readlink -f "$AGENT"); [ -f "$AGENT" ] && [ -f "$AGENT.json" ] || { echo "checkpoint or its .json sidecar missing: $AGENT" >&2; exit 2; } ;;
+  *.roster) AGENT=$(readlink -f "$AGENT"); [ -f "$AGENT" ] || { echo "roster missing: $AGENT" >&2; exit 2; } ;;
 esac
 [ -x "$GAME" ] || { echo "no build at $GAME (build the play-unity project first)" >&2; exit 2; }
 if pgrep -f 'BoplBattle\.x86_64' >/dev/null; then echo "BoplBattle is already running; not launching a second instance" >&2; exit 3; fi
@@ -76,7 +77,8 @@ mkdir -p "$HUMAN"
 SESSION=$(date +%Y%m%d-%H%M%S)
 RESULTS=$HUMAN/.session-$SESSION.jsonl
 [ -n "$SEED" ] || SEED=$(( $(date +%s) % 1000000000 ))
-export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS
+ROSTER_LOG=$HUMAN/.session-$SESSION.roster.jsonl
+export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS BOPL_AGENT_ROSTER_LOG=$ROSTER_LOG
 echo "agent $AGENT  seed $SEED  results $RESULTS"
 echo "$AGENT" > "$HUMAN/last-agent"
 
@@ -110,5 +112,5 @@ fi
 wait "$GPID"
 STATUS=$?
 [ -n "$HEADLESS" ] && { kill "${XVFB:-0}" 2>/dev/null; pkill -f "Xvfb $HEADLESS" 2>/dev/null; }
-"$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" --agent "$AGENT" --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG"
+"$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" --agent "$AGENT" --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG" --roster-log "$ROSTER_LOG"
 exit $STATUS

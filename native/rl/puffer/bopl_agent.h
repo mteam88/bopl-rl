@@ -34,6 +34,18 @@
  * bopl_bots.h (archer|pursuer|evasive|mixed[-v2]-easy|medium|hard). The
  * search bot (kind 5) forks the sim per decision and is refused.
  *
+ * A third form, "<...>.roster", is a text file of such specs (one per line,
+ * optional weight after whitespace, '#' comments; relative checkpoint paths
+ * resolve against the roster's directory). All members are opened at once
+ * and every bopl_agent_reset draws one for the round, weighted, from the
+ * round seed; the draw is appended as one JSON line {"seed","member","spec",
+ * "id"} to $BOPL_AGENT_ROSTER_LOG (default "<roster>.log") so a session's
+ * rounds can be attributed afterwards (Tools/play_vs_agent_results.py).
+ * Members must share loadout, warmup and episode length: the game reads
+ * those once per match. bopl_agent_id stays "roster:<name>";
+ * bopl_agent_member_id is the current member's id. Rating sessions for a
+ * human (Tools/rating_roster.py) use this to spread ~100 rounds over a pool.
+ *
  * Sampling: each head (aim 256, buttons 16, hold 5) is drawn from the softmax
  * of its masked logits (disallowed -> -inf), the distribution evaluate.py's
  * torch.multinomial draws from; the draw uses this library's seeded
@@ -75,8 +87,10 @@ int bopl_agent_warmup_ticks(const BoplAgent *agent);
 int bopl_agent_repeat(const BoplAgent *agent);
 int bopl_agent_observation_delay(const BoplAgent *agent);
 int bopl_agent_max_episode_ticks(const BoplAgent *agent);
-/* "policy:<weights sha256>" or "bot:<kind>-<level>"; "" for NULL. */
+/* "policy:<weights sha256>", "bot:<kind>-<level>" or "roster:<name>"; "" for NULL. */
 const char *bopl_agent_id(const BoplAgent *agent);
+/* The id deciding this round: the roster's drawn member, else the agent itself. */
+const char *bopl_agent_member_id(const BoplAgent *agent);
 int bopl_agent_is_policy(const BoplAgent *agent);
 
 /* Introspection of the latest decision (valid after a tick at a decision
