@@ -42,6 +42,11 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `bow_test.c`: Rust-only bow scenario used while porting.
 - `platform_ab.c`: grounded platform transform overlap, jump-and-land player
   carry, and the map-2 AntiLockPlatform trajectory.
+- `gust_ability_ab.c`: complete QuickSpell cast and exit, active Gust hurtbox,
+  deferred Shockwave registration, exact captured targets, both time-zero
+  impulses around the map spring updater, force-curve platform trajectories,
+  and recovery. It compares every public player, slime, telemetry, and entity
+  field for 360 ticks; static authored geometry allows one Q32.32 least bit.
 - `repr_ab.c`: number-representation A/B between two builds of the Rust
   backend (Q32.32 `--features q32` vs the default f64 `Fix`), or .NET vs Rust:
   gate action stream at repeat 1, every observation field compared per tick,

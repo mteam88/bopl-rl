@@ -52,6 +52,7 @@ struct RawPlatform {
     scale: i64,
     extents: RawVec2,
     radius: i64,
+    hierarchy: u32,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
     orbit: Option<RawOrbit>,
@@ -200,6 +201,27 @@ struct RawPrefabs {
     ability_pickup: RawPickup,
     platform_ability: RawPlatformAbility,
     resizable_platform: RawResizable,
+    gust: RawGust,
+}
+
+#[derive(Deserialize)]
+struct RawGust {
+    anims: RawGustAnimations,
+    shockwave_offset: RawVec2,
+    collider_offset: RawVec2,
+    hurtbox_radius: i64,
+    platform_force: i64,
+    default_force: i64,
+    grounded_multiplier: i64,
+    radius: i64,
+    curve: Curve,
+}
+
+#[derive(Deserialize)]
+struct RawGustAnimations {
+    #[serde(rename = "castAir")]
+    cast_air: Vec<i32>,
+    exit: Vec<i32>,
 }
 #[derive(Deserialize)]
 struct RawRollout {
@@ -219,6 +241,7 @@ struct RawAbility {
     instant: bool,
     rope: bool,
     offensive: bool,
+    updatable_count: u32,
     effect_cooldown: Option<i64>,
     effect_duration: Option<i64>,
     air_jump_strength: Option<i64>,
@@ -231,6 +254,7 @@ pub struct PlatformDef {
     /// The collider's authored half-extents (`startExtents * scale`); the
     /// surface carries the perimeter's `One / (One / e)` reading instead.
     pub collider_extents: Vec2,
+    pub hierarchy: u32,
     /// AnimateVelocity home spring (speed * (home - position)) and damping
     /// (-mu * velocity).
     pub speed: Fix,
@@ -337,6 +361,18 @@ pub struct DashData {
     pub cooldown: Fix,
     pub hurtbox_extents: Vec2,
 }
+pub struct GustData {
+    pub cast_ticks: u32,
+    pub exit_ticks: u32,
+    pub shockwave_offset: Vec2,
+    pub collider_offset: Vec2,
+    pub hurtbox_radius: Fix,
+    pub platform_force: Fix,
+    pub default_force: Fix,
+    pub grounded_multiplier: Fix,
+    pub radius: Fix,
+    pub curve: Curve,
+}
 pub struct AbilityData {
     pub id: u32,
     pub name: String,
@@ -348,6 +384,7 @@ pub struct AbilityData {
     pub instant: bool,
     pub rope: bool,
     pub offensive: bool,
+    pub updatable_count: u32,
     pub effect_cooldown: Option<Fix>,
     pub effect_duration: Option<Fix>,
     pub air_jump_strength: Option<Fix>,
@@ -361,6 +398,7 @@ pub struct RolloutData {
     pub arrow: ArrowData,
     pub pickup: PickupData,
     pub platform: PlatformAbilityData,
+    pub gust: GustData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -454,6 +492,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                     radius: Fix::from_raw(p.radius) * scale,
                 },
                 collider_extents,
+                hierarchy: p.hierarchy,
                 speed: Fix::from_raw(p.animate_velocity.speed),
                 mu: Fix::from_raw(p.animate_velocity.mu),
                 rotation_speed: Fix::from_raw(p.animate_velocity.rotation_speed),
@@ -636,6 +675,18 @@ pub fn get() -> &'static RolloutData {
                     .sudden_death_y_speed
                     .clone(),
             },
+            gust: GustData {
+                cast_ticks: ticks(&raw.prefabs.gust.anims.cast_air),
+                exit_ticks: ticks(&raw.prefabs.gust.anims.exit),
+                shockwave_offset: raw.prefabs.gust.shockwave_offset.get(),
+                collider_offset: raw.prefabs.gust.collider_offset.get(),
+                hurtbox_radius: Fix::from_raw(raw.prefabs.gust.hurtbox_radius),
+                platform_force: Fix::from_raw(raw.prefabs.gust.platform_force),
+                default_force: Fix::from_raw(raw.prefabs.gust.default_force),
+                grounded_multiplier: Fix::from_raw(raw.prefabs.gust.grounded_multiplier),
+                radius: Fix::from_raw(raw.prefabs.gust.radius),
+                curve: raw.prefabs.gust.curve.clone(),
+            },
             abilities: raw
                 .abilities
                 .into_iter()
@@ -653,6 +704,7 @@ pub fn get() -> &'static RolloutData {
                         instant: ability.instant,
                         rope: ability.rope,
                         offensive: ability.offensive,
+                        updatable_count: ability.updatable_count,
                         effect_cooldown: ability.effect_cooldown.map(Fix::from_raw),
                         effect_duration: ability.effect_duration.map(Fix::from_raw),
                         air_jump_strength: ability.air_jump_strength.map(Fix::from_raw),

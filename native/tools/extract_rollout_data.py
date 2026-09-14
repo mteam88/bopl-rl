@@ -165,6 +165,7 @@ def extract_map(index):
                 "extents": vec2(rr, "startExtents"),
                 "radius": fix(rr, "startRadius") if "startRadius.m_rawValue" in rr else fix(rr, "radius"),
                 "layer": node.get("layer"),
+                "hierarchy": rr["hierarchyNumber"],
                 "animate_velocity": {
                     "speed": fix(av, "speed"),
                     "mu": fix(av, "mu"),
@@ -368,6 +369,25 @@ def main():
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
     }
 
+    # ---- Gust / QuickSpell ----
+    _, gust = find_prefab("Assets/GameObject/Gust.prefab")
+    gust_quick = component(gust, "QuickSpell")
+    gust_circle = component(gust, "DPhysicsCircle")
+    gust_fix = component(gust, "FixTransform")
+    gust_spell = ASSETS[guid_of(gust_quick["spell"])]
+    gust_wave = component(gust_spell, "Shockwave")
+    out["prefabs"]["gust"] = {
+        "anims": animations(guid_of(gust_quick["animData"])),
+        "shockwave_offset": vec2(gust_quick, "shockwaveOffset"),
+        "collider_offset": vec2(gust_fix, "offset"),
+        "hurtbox_radius": fix(gust_circle, "startRadius"),
+        "platform_force": fix(gust_wave, "platformForce"),
+        "default_force": fix(gust_wave, "defaultForce"),
+        "grounded_multiplier": fix(gust_wave, "groundedPlayerForceMultiplier"),
+        "radius": fix(gust_wave, "radius"),
+        "curve": curve(gust_wave, "forceCurve01"),
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written
@@ -423,6 +443,8 @@ def main():
             "instant": instant,
             "rope": props.get("isHookshot", False),
             "offensive": icon_props[f"{prefix}.isOffensiveAbility"],
+            "updatable_count": max((c.get("properties", {}).get("hierarchyNumber", 0)
+                                    for c in components), default=0),
             "effect_cooldown": effect_cooldown,
             "effect_duration": effect_duration,
             "air_jump_strength": air_jump_strength,

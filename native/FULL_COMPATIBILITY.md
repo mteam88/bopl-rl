@@ -921,6 +921,40 @@ does no per-tick allocation. Form-specific jump speed and the rope exclusion are
 retained in extracted metadata for the later form and rope integrations; neither
 path is reachable in this isolated verified loadout yet.
 
+### Executable Gust (2026-09-14)
+
+Catalog id 7 now executes the shipped Gust `Ability`, `QuickSpell`, and
+`AirWave_Shockwave` lifecycle in the public rollout backend. The extractor
+retains the prefab's active circle and offsets, cast/exit animation durations,
+forces, grounded-player multiplier, radius, and Hermite force curve as Q32.32.
+QuickSpell copies the incoming grounded body, performs its first 0.05-unit
+`UnGround` separation, clears both velocity channels, publishes the ability
+collider through `Player.SetPosition`, casts after the measured animation
+callback, and exits after the measured recovery callback. Because the original
+`PlayerPhysics.UnGround` leaves `attachedGround` populated, exit deliberately
+performs a second separation along the now-moving platform's current normal.
+
+The spawned shockwave uses fixed storage and preserves Unity's unusual updater
+phases. `Init` runs on the pass after the cast, captures at most 50 colliders
+with exact circle/shape narrow phases, and applies the first time-zero impulse
+before any existing updater. Map `AnimateVelocity` then sees and damps that
+first impulse. The wave's later `UpdateSim` applies a second time-zero impulse
+and advances the authored 0.25-second curve. Its captured platform-id array
+rejects destroyed targets and computes closest surface points, current normals,
+distance scaling, impulse arms, and body torque each pass. A center-radius player
+approximation was rejected during measurement: the map-0 opponent passes that
+broad phase but misses the actual oriented box.
+
+`gust_ability_ab.c` compares NativeAOT with optimized Q32 Rust for 360 complete
+ticks, including initial loadout rows, cast and public position arbitration, the
+active Gust circle, deferred wave registration, all six map-platform trajectories,
+the complete force curve, exit and later recovery. Headers, players, slimes,
+telemetry, dynamic positions/velocities/rotations, hierarchy numbers and entity
+lifecycle match. Static authored collider vectors allow one Q32.32 least bit;
+the observed case is Dash's inactive half-extent imported through a Unity float
+path and has no semantic effect. Cross-ability targets beyond the currently
+executable public forms remain part of those abilities' later integration.
+
 
 ## Executable Invisibility and streamed actor verification
 

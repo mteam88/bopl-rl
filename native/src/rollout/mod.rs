@@ -39,6 +39,7 @@ pub const MAX_PLAYERS: usize = 6;
 pub const ABILITY_RANDOM: u32 = 1;
 pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_BOW: u32 = 4;
+pub const ABILITY_GUST: u32 = 7;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
@@ -359,11 +360,49 @@ pub struct GoldMushroomState {
     pub time: Fix,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct GustState {
+    /// Zero while playing castAir, one while playing exit.
+    pub phase: u32,
+    pub ticks: u32,
+    /// PlayerPhysics.UnGround deliberately leaves attachedGround populated.
+    /// QuickSpell calls it again on exit and receives a second separation
+    /// along the platform's then-current normal.
+    pub attached_ground: Option<u32>,
+}
+
+/// AirWave_Shockwave has no collider of its own. It captures rigid targets on
+/// initialization and keeps applying its curve to that fixed set.
+#[derive(Clone, Copy)]
+pub struct GustWave {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub position: Vec2,
+    pub time: Fix,
+    pub target_count: usize,
+    pub platform_ids: [u32; 50],
+}
+impl Default for GustWave {
+    fn default() -> Self {
+        Self {
+            active: false,
+            registered: false,
+            born_tick: 0,
+            position: Vec2::ZERO,
+            time: Fix::ZERO,
+            target_count: 0,
+            platform_ids: [0; 50],
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ActiveAbility {
     None,
     Dash,
     Bow,
+    Gust,
     Platform,
 }
 
@@ -408,6 +447,7 @@ pub struct PlayerSlot {
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
     pub platform: PlatformState,
+    pub gust: GustState,
     pub gold_mushroom: [GoldMushroomState; 3],
     /// SlimeController.currentState as the policy observes it. The .NET enum
     /// never takes the `ability` value (nothing assigns it), so the state
@@ -430,6 +470,7 @@ pub struct PlayerSlot {
     pub telemetry: CTelemetry,
     // Fixed entity table indices.
     pub circle_entity: usize,
+    pub gust_entity: usize,
     pub body_entity: usize,
     pub dash_entity: usize,
     pub bow_entity: usize,
@@ -502,6 +543,7 @@ pub struct RolloutWorld {
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
     pub spawned: Vec<SpawnedPlatform>,
+    pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
@@ -566,6 +608,7 @@ impl RolloutWorld {
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
             spawned: Vec::with_capacity(64),
+            gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
@@ -617,6 +660,7 @@ impl RolloutWorld {
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
         self.spawned.clone_from(&src.spawned);
+        self.gust_waves = src.gust_waves;
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
@@ -662,6 +706,7 @@ impl RolloutWorld {
             platform_entities: _,
             arrows: _,
             spawned: _,
+            gust_waves: _,
             sudden_death: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
@@ -736,6 +781,7 @@ impl RolloutWorld {
         self.sudden_death = false;
         self.arrows.clear();
         self.spawned.clear();
+        self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
@@ -746,27 +792,87 @@ impl RolloutWorld {
         self.slimes.clear();
 
         let def = &data.maps[map];
-        // Entity table, in the .NET DetPhysics registration order:
-        // circles (one Platform-ability collider per player), boxes (water,
-        // then body/dash/bow per player), rounded rects (map platforms).
+        // GameSessionHandler.Init samples one randomDelay per authored ground
+        // for the level-intro animation before SpawnPlayers resolves Random
+        // abilities. Build the resolved loadouts here so entity registration
+        // and hierarchy numbering use the concrete prefabs as well.
+        for _ in &def.platforms {
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        }
+        let mut resolved_abilities = [[0u32; 3]; MAX_PLAYERS];
+        for (i, abilities) in resolved_abilities.iter_mut().enumerate().take(players) {
+            abilities[..slots].copy_from_slice(&config.player[i].abilities[..slots]);
+            let all_random = abilities[..slots]
+                .iter()
+                .all(|&ability| ability == ABILITY_RANDOM);
+            let mut has_offensive = false;
+            for s in 0..slots {
+                if abilities[s] != ABILITY_RANDOM {
+                    continue;
+                }
+                let mut resolved = self.rng.uint_range(2, ABILITY_COUNT);
+                has_offensive |= data.abilities[resolved as usize].offensive;
+                if all_random && !has_offensive && s + 1 == slots {
+                    resolved = self.rng.uint_range(2, ABILITY_COUNT);
+                }
+                abilities[s] = resolved;
+            }
+        }
+        // Entity table, in the .NET DetPhysics shape-group order. Within a
+        // group registration follows player then equipped-slot order.
         // Dynamic entities (arrows, spawned platforms) append after.
         self.next_entity_id = 0;
+        let mut player_hierarchy = [0u32; MAX_PLAYERS];
+        let mut ability_hierarchy = [[0u32; 3]; MAX_PLAYERS];
+        let mut hierarchy_cursor = 0u32;
         for i in 0..players {
-            let id = self.next_id();
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: LAYER_PLAYER,
-                owner: 0,
-                // The ability GameObject starts inactive. Its collider keeps
-                // its trigger body in DetPhysics, but neither activeInHierarchy
-                // nor enabled is set; Ability receives its owner on first use.
-                flags: E_TRIGGER,
-                hierarchy: 100_000_030 + 30 * i as u32,
-                radius: data.platform.hurtbox_radius.raw(),
-                inverse_mass: -(1 << 32),
-                ..CEntity::default()
-            });
+            player_hierarchy[i] = hierarchy_cursor;
+            hierarchy_cursor += 8; // shipped Slime prefab MonoUpdatables
+            for (s, hierarchy) in ability_hierarchy[i].iter_mut().enumerate().take(slots) {
+                *hierarchy = hierarchy_cursor;
+                let ability = resolved_abilities[i][s] as usize;
+                hierarchy_cursor += data.abilities[ability].updatable_count;
+            }
+        }
+        let mut circle_entity = [usize::MAX; MAX_PLAYERS];
+        let mut gust_entity = [usize::MAX; MAX_PLAYERS];
+        let mut body_entity = [usize::MAX; MAX_PLAYERS];
+        let mut dash_entity = [usize::MAX; MAX_PLAYERS];
+        let mut bow_entity = [usize::MAX; MAX_PLAYERS];
+        for i in 0..players {
+            for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
+                let ability = resolved_abilities[i][s];
+                let (radius, offset, relative_hierarchy, target) = match ability {
+                    ABILITY_GUST => (
+                        data.gust.hurtbox_radius,
+                        data.gust.collider_offset,
+                        8,
+                        &mut gust_entity[i],
+                    ),
+                    ABILITY_PLATFORM => (
+                        data.platform.hurtbox_radius,
+                        Vec2::ZERO,
+                        7,
+                        &mut circle_entity[i],
+                    ),
+                    _ => continue,
+                };
+                *target = self.entities.len();
+                let id = self.next_id();
+                self.entities.push(CEntity {
+                    id,
+                    kind: 0,
+                    layer: LAYER_PLAYER,
+                    owner: 0,
+                    flags: E_TRIGGER,
+                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                    x: offset.x.raw(),
+                    y: offset.y.raw(),
+                    radius: radius.raw(),
+                    inverse_mass: -(1 << 32),
+                    ..CEntity::default()
+                });
+            }
         }
         let water_id = self.next_id();
         // DPhysicsBox's collider axes are `Vec2.right / inverseExtents.x`
@@ -788,13 +894,34 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         for i in 0..players {
-            for (offset, extents, hier) in [
-                (0usize, data.player.hurtbox_extents, 100_000_006u32),
-                (1, data.dash.hurtbox_extents, 100_000_015),
-                (2, data.bow.hurtbox_extents, 100_000_022),
-            ] {
+            for s in 0..=slots {
+                let (extents, hierarchy, target, body) = if s == 0 {
+                    (
+                        data.player.hurtbox_extents,
+                        100_000_000 + player_hierarchy[i] + 6,
+                        &mut body_entity[i],
+                        true,
+                    )
+                } else {
+                    let slot_index = s - 1;
+                    match resolved_abilities[i][slot_index] {
+                        ABILITY_DASH => (
+                            data.dash.hurtbox_extents,
+                            100_000_000 + ability_hierarchy[i][slot_index] + 7,
+                            &mut dash_entity[i],
+                            false,
+                        ),
+                        ABILITY_BOW => (
+                            data.bow.hurtbox_extents,
+                            100_000_000 + ability_hierarchy[i][slot_index] + 7,
+                            &mut bow_entity[i],
+                            false,
+                        ),
+                        _ => continue,
+                    }
+                };
+                *target = self.entities.len();
                 let id = self.next_id();
-                let body = offset == 0;
                 self.entities.push(CEntity {
                     id,
                     kind: 1,
@@ -805,7 +932,7 @@ impl RolloutWorld {
                     } else {
                         E_TRIGGER
                     },
-                    hierarchy: hier + 30 * i as u32,
+                    hierarchy,
                     right_x: extents.x.raw(),
                     up_y: extents.y.raw(),
                     inverse_mass: -(1 << 32),
@@ -825,7 +952,7 @@ impl RolloutWorld {
                 layer: LAYER_WALL,
                 owner: 0,
                 flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 105 + 7 * index as u32,
+                hierarchy: p.hierarchy,
                 inverse_mass: p.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
@@ -857,40 +984,14 @@ impl RolloutWorld {
             }
         }
 
-        // GameSessionHandler.Init samples one randomDelay per authored ground
-        // for the level-intro animation. The rollout starts after that cosmetic
-        // animation, but must consume the same samples so later gameplay RNG
-        // (notably AnimateVelocity's sudden-death delays) stays aligned.
-        for _ in &def.platforms {
-            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-        }
-
         // Players at their team spawns (GameSessionHandler.SpawnPlayers: one
         // authored spawn per team slot, wrapped for extra teams).
         for i in 0..players {
             let team = config.player[i].team;
             let spawn = def.team_spawns[team as usize % def.team_spawns.len()];
-            let mut abilities = [0u32; 3];
+            let abilities = resolved_abilities[i];
             let mut cooldowns = [Fix::ZERO; 3];
-            abilities[..slots].copy_from_slice(&config.player[i].abilities[..slots]);
-            // GameSessionHandler.SpawnPlayers replaces Random prefabs before
-            // constructing the slime. The full catalog excludes the two menu
-            // entries (Null and Random), giving indices 2..38. If every slot
-            // is Random, the source makes one extra draw for the final slot
-            // when none of the preceding draws was offensive.
-            let all_random = abilities[..slots]
-                .iter()
-                .all(|&ability| ability == ABILITY_RANDOM);
-            let mut has_offensive = false;
             for s in 0..slots {
-                if abilities[s] == ABILITY_RANDOM {
-                    let mut resolved = self.rng.uint_range(2, ABILITY_COUNT);
-                    has_offensive |= data.abilities[resolved as usize].offensive;
-                    if all_random && !has_offensive && s + 1 == slots {
-                        resolved = self.rng.uint_range(2, ABILITY_COUNT);
-                    }
-                    abilities[s] = resolved;
-                }
                 cooldowns[s] = data.abilities[abilities[s] as usize].cooldown;
             }
             // -1.5 s on the wake tick, one DT per tick since (every phase
@@ -955,6 +1056,7 @@ impl RolloutWorld {
                 removed_ground_normal: None,
                 bow: BowState::default(),
                 platform: PlatformState::default(),
+                gust: GustState::default(),
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 obs_state: STATE_FALL,
                 state_ticks: 0,
@@ -965,10 +1067,11 @@ impl RolloutWorld {
                 respawn_selected: 1,
                 input_jump_was_down: false,
                 telemetry: CTelemetry::default(),
-                circle_entity: i,
-                body_entity: players + 1 + 3 * i,
-                dash_entity: players + 2 + 3 * i,
-                bow_entity: players + 3 + 3 * i,
+                circle_entity: circle_entity[i],
+                gust_entity: gust_entity[i],
+                body_entity: body_entity[i],
+                dash_entity: dash_entity[i],
+                bow_entity: bow_entity[i],
             });
         }
 
@@ -1218,6 +1321,11 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        // Updater initializes every prefab queued during the prior pass
+        // before it invokes any existing MonoUpdatable. A newly spawned Gust
+        // wave therefore applies its first time-zero impulse before map home
+        // springs, while its same-tick UpdateSim impulse runs after them.
+        self.gust_waves_init(data);
         // Platforms moved in the previous tick's physics stage.
         self.rebuild_bounds();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
@@ -1225,6 +1333,12 @@ impl RolloutWorld {
         // component or DetPhysics is therefore visible to the match result
         // check on the following tick, not later in the tick that killed it.
         self.session_result_tick();
+        // Authored level updaters have small serialized hierarchy numbers
+        // (roughly 100), while player prefabs and anything they spawn start at
+        // 100,000,000. Compute their home springs before a later ability such
+        // as Gust changes a platform body's velocity. DetPhysics integrates
+        // both the queued spring force and those later direct impulses below.
+        self.platform_updaters_tick(data);
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
@@ -1298,6 +1412,7 @@ impl RolloutWorld {
         {
             self.gold_mushroom_tick(index, jump_pressed, data);
         }
+        self.gust_waves_update(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -1311,7 +1426,10 @@ impl RolloutWorld {
                 // SlimeController callback; the ordinary slime on the other
                 // side still receives its one-sided overlap push.
                 let collider_enabled = |slot: &PlayerSlot| match slot.active {
-                    ActiveAbility::None | ActiveAbility::Dash | ActiveAbility::Bow => true,
+                    ActiveAbility::None
+                    | ActiveAbility::Dash
+                    | ActiveAbility::Bow
+                    | ActiveAbility::Gust => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -1348,8 +1466,11 @@ impl RolloutWorld {
                     slot.dash_entity,
                     slot.circle_entity,
                     slot.bow_entity,
+                    slot.gust_entity,
                 ] {
-                    self.entities[e].flags = E_REMOVED;
+                    if e != usize::MAX {
+                        self.entities[e].flags = E_REMOVED;
+                    }
                 }
             }
         }
@@ -1560,6 +1681,40 @@ impl RolloutWorld {
                         self.bow_tick(index, action, data);
                         return;
                     }
+                    ABILITY_GUST => {
+                        let attached_ground = self.players[index].base.ground;
+                        let detach_normal = self.players[index]
+                            .base
+                            .ground
+                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+                            .map(|platform| {
+                                platform.surface.normal(self.players[index].base.position)
+                            });
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Gust;
+                        slot.active_slot = s;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.gust = GustState {
+                            attached_ground,
+                            ..GustState::default()
+                        };
+                        // QuickSpell synchronizes the copied PlayerInfo,
+                        // ungrounds by the standard 0.05-unit separation and
+                        // then clears both velocity channels.
+                        if let Some(normal) = detach_normal {
+                            slot.base.position += normal * Fix::from_f32(0.05);
+                        }
+                        slot.base.rotation = Fix::ZERO;
+                        slot.base.up = Vec2::UP;
+                        slot.base.grounded = false;
+                        slot.base.ground = None;
+                        slot.base.grounded_speed = Fix::ZERO;
+                        slot.base.velocity = Vec2::ZERO;
+                        slot.base.external_velocity = Vec2::ZERO;
+                        self.gust_tick(index, data);
+                        return;
+                    }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
@@ -1623,6 +1778,10 @@ impl RolloutWorld {
 
         if self.players[index].active == ActiveAbility::Bow {
             self.bow_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Gust {
+            self.gust_tick(index, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
@@ -1702,6 +1861,158 @@ impl RolloutWorld {
                 effect.active = false;
                 slot.cooldowns[effect_slot] = restored_cooldown;
             }
+        }
+    }
+
+    fn gust_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        slot.gust.ticks += 1;
+        if slot.gust.phase == 0 && slot.gust.ticks > data.gust.cast_ticks {
+            let wave = index * 3 + slot.active_slot;
+            self.gust_waves[wave] = GustWave {
+                active: true,
+                born_tick: self.tick,
+                position: slot.base.position + data.gust.shockwave_offset,
+                ..GustWave::default()
+            };
+            slot.gust.phase = 1;
+            slot.gust.ticks = 0;
+        } else if slot.gust.phase == 1 && slot.gust.ticks > data.gust.exit_ticks {
+            // QuickSpell calls UnGround a second time. PlayerPhysics kept the
+            // old attachedGround reference even though isGrounded was false,
+            // so a moving platform supplies a fresh normal for this nudge.
+            let exit_normal = slot.gust.attached_ground.and_then(|id| {
+                self.platforms
+                    .iter()
+                    .find(|platform| platform.id == id)
+                    .map(|platform| platform.surface.normal(slot.base.position))
+            });
+            if let Some(normal) = exit_normal {
+                slot.base.position += normal * Fix::from_f32(0.05);
+            }
+            // Ability.ExitAbility publishes the QuickSpell collider before
+            // SlimeController installs the returned body and immediately
+            // raycasts it (Ability.cs:151, SlimeController.cs:217-272).
+            let ability_position = slot.base.position;
+            slot.active = ActiveAbility::None;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.exit_to_fall();
+            slot.base.collision_rays(terrain!(self));
+            slot.reported_position = ability_position;
+            slot.reported_tick = self.tick;
+            return;
+        }
+        // Ability.UpdateSim follows QuickSpell in the prefab and publishes
+        // the live collider position on entry and every active pass.
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
+    /// Updater initializes a prefab registered during the preceding pass
+    /// before any MonoUpdatable runs. Shockwave.Init captures targets and
+    /// performs the curve's first time-zero impulse immediately.
+    fn gust_waves_init(&mut self, data: &data::RolloutData) {
+        for wave_index in 0..self.gust_waves.len() {
+            let mut wave = self.gust_waves[wave_index];
+            if !wave.active || wave.registered || wave.born_tick >= self.tick {
+                continue;
+            }
+            wave.registered = true;
+            let query = Circle {
+                center: wave.position,
+                radius: data.gust.radius,
+            };
+            for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
+                if wave.target_count == wave.platform_ids.len() {
+                    break;
+                }
+                if crate::physics::contact::circle_rounded(query, platform.collider)
+                    .is_some_and(|contact| contact.penetration > Fix::ZERO)
+                    && dynamics.body.inverse_mass >= Fix::ZERO
+                {
+                    wave.platform_ids[wave.target_count] = platform.id;
+                    wave.target_count += 1;
+                }
+            }
+            // Player-layer colliders are processed during activation and are
+            // deliberately excluded from the persistent target set.
+            for player_index in 0..self.players.len() {
+                if player_index == wave_index / 3 || !self.playable(player_index) {
+                    continue;
+                }
+                let target = &mut self.players[player_index];
+                if target.active != ActiveAbility::None {
+                    continue;
+                }
+                // CircleCastAll performs the real circle/box narrow phase.
+                // A radius-only approximation incorrectly includes the other
+                // map-0 spawn in this golden: its centre is within the sum of
+                // broad-phase radii, but the wave misses the oriented slime
+                // box's corner.
+                if crate::physics::contact::circle_box(query, target.base.collider).is_none() {
+                    continue;
+                }
+                let delta = target.base.position - wave.position;
+                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                let force = data.gust.default_force / distance;
+                let force = if target.base.grounded {
+                    data.gust.grounded_multiplier * delta * force
+                } else {
+                    delta * force
+                };
+                target.base.external_velocity += force * Fix::from_int(35);
+            }
+            self.gust_waves[wave_index] = wave;
+            self.gust_wave_apply(wave_index, Fix::ZERO, data);
+        }
+    }
+
+    fn gust_waves_update(&mut self, data: &data::RolloutData) {
+        for wave_index in 0..self.gust_waves.len() {
+            if self.gust_waves[wave_index].active && self.gust_waves[wave_index].registered {
+                self.gust_wave_apply(wave_index, DT, data);
+            }
+        }
+    }
+
+    fn gust_wave_apply(&mut self, wave_index: usize, dt: Fix, data: &data::RolloutData) {
+        let mut wave = self.gust_waves[wave_index];
+        let strength = data.gust.curve.evaluate(wave.time);
+        wave.time += dt;
+        let duration = data.gust.curve.keys.last().expect("Gust force curve").time;
+        if wave.time > duration {
+            wave.active = false;
+            self.gust_waves[wave_index] = wave;
+            return;
+        }
+        let mut applied = false;
+        for target in 0..wave.target_count {
+            let Some(platform_index) = self
+                .platforms
+                .iter()
+                .position(|platform| platform.id == wave.platform_ids[target])
+            else {
+                continue;
+            };
+            let platform = &self.platforms[platform_index];
+            let Ok(point) = platform.surface.closest_point(wave.position) else {
+                continue;
+            };
+            let direction = -platform.surface.normal(point);
+            let distance = ((wave.position - point).length_squared() / Fix::from_int(10))
+                .max(Fix::from_f64(1.5));
+            let force = data.gust.platform_force / distance;
+            let impulse = direction.normalized_safe() * force * strength * Fix::from_int(60);
+            let arm = (point - platform.surface.center).normalized_safe();
+            self.platform_dynamics[platform_index]
+                .body
+                .apply_impulse(impulse, arm);
+            applied = true;
+        }
+        self.gust_waves[wave_index] = wave;
+        if applied {
+            self.platforms_changed();
         }
     }
 
@@ -2798,81 +3109,11 @@ impl RolloutWorld {
         }
     }
 
-    /// Rounded-platform rigid-body stage. The order matches DetPhysics:
-    /// gameplay forces (AnimateVelocity and AntiLockPlatform), integration,
-    /// broad phase, narrow phase, collision impulse, positional correction,
-    /// then transform/rider synchronization.
-    fn platforms_tick(&mut self, data: &data::RolloutData) {
-        // ResizablePlatform.UpdateSim runs every tick while an evicted platform
-        // remains a normal collidable body. It evaluates before incrementing
-        // time and destroys at the final key without applying another resize.
-        let removal_end = data
-            .platform
-            .remove_curve
-            .keys
-            .last()
-            .expect("authored platform removal curve")
-            .time;
-        let mut removal_resizes = Vec::new();
-        let mut removal_destroys = Vec::new();
-        for spawn in &mut self.spawned {
-            if !spawn.active || !spawn.being_removed {
-                continue;
-            }
-            if spawn.removal_time >= removal_end {
-                spawn.active = false;
-                removal_destroys.push(spawn.platform_index);
-                continue;
-            }
-            let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
-            spawn.removal_time += DT;
-            // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
-            // so the curve's overshoot past 1 scales the original size.
-            let minimum = Fix::from_f32(0.1);
-            let lerp =
-                |o: Fix| minimum * (Fix::ONE - amount.clamp(Fix::ZERO, Fix::ONE)) + o * amount;
-            removal_resizes.push((
-                spawn.platform_index,
-                Vec2::new(lerp(spawn.removal_extents.x), lerp(spawn.removal_extents.y)),
-                lerp(spawn.removal_radius),
-            ));
-        }
-
-        // Most short episodes never create or disturb a platform. Preserve
-        // that hot path without changing semantics: a body exactly at its
-        // home with zero velocity cannot produce motion or a new contact.
-        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        let orbit_running = !self.sudden_death
-            && self.orbits.iter().any(|orbit| {
-                data.maps[self.map].platforms[self.platform_defs[orbit.0]]
-                    .orbit
-                    .as_ref()
-                    .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
-            });
-        // Bodies and homes only change through paths that bump
-        // `platform_epoch`, so a level found quiet stays quiet until then.
-        let disturbed =
-            self.quiet_epoch != self.platform_epoch
-                && self.platforms.iter().zip(&self.platform_dynamics).any(
-                    |(platform, dynamics)| {
-                        platform.surface.center != dynamics.home_position
-                            || dynamics.body.velocity != Vec2::ZERO
-                            || dynamics.body.angular_velocity != Fix::ZERO
-                            || dynamics.body.orientation != dynamics.home_rotation
-                    },
-                );
-        if !disturbed {
-            self.quiet_epoch = self.platform_epoch;
-        }
-        if !self.sudden_death
-            && !orbit_running
-            && !disturbed
-            && !self.spawned.iter().any(|spawn| spawn.active)
-        {
-            return;
-        }
-        // Everything below may move a body or its home.
-        self.platforms_changed();
+    /// Level-authored AnimateVelocity and AntiLockPlatform updater pass. Map
+    /// components run before the dynamically registered player prefabs, so
+    /// their damping must observe the velocity from the start of the tick,
+    /// before Gust or another later ability applies a direct impulse.
+    fn platform_updaters_tick(&mut self, data: &data::RolloutData) {
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
@@ -2951,19 +3192,6 @@ impl RolloutWorld {
                 * (Fix::ONE - dynamics.rotation_mu);
         }
 
-        // ResizablePlatform follows AnimateVelocity in its prefab
-        // (ResizablePlatform.prefab component order), so the spring impulse
-        // above used the pre-resize mass while DetPhysics integrates it with
-        // the new one.
-        for (index, extents, radius) in removal_resizes {
-            let center = self.platforms[index].surface.center;
-            self.reshape_platform(index, center, extents, radius);
-        }
-        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
-        for index in removal_destroys {
-            self.remove_platform(index);
-        }
-
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
         // and re-home at the pre-integration position, preserving the existing
         // one-tick-lagged home behavior.
@@ -2992,6 +3220,94 @@ impl RolloutWorld {
                     orbit.1 = (orbit.1 + 1) % o.path.len();
                 }
             }
+        }
+    }
+
+    /// Rounded-platform rigid-body stage. The order matches DetPhysics after
+    /// the updater pass: resize, integration, broad phase, narrow phase,
+    /// collision impulse, positional correction, and transform sync.
+    fn platforms_tick(&mut self, data: &data::RolloutData) {
+        // ResizablePlatform.UpdateSim runs every tick while an evicted platform
+        // remains a normal collidable body. It evaluates before incrementing
+        // time and destroys at the final key without applying another resize.
+        let removal_end = data
+            .platform
+            .remove_curve
+            .keys
+            .last()
+            .expect("authored platform removal curve")
+            .time;
+        let mut removal_resizes = Vec::new();
+        let mut removal_destroys = Vec::new();
+        for spawn in &mut self.spawned {
+            if !spawn.active || !spawn.being_removed {
+                continue;
+            }
+            if spawn.removal_time >= removal_end {
+                spawn.active = false;
+                removal_destroys.push(spawn.platform_index);
+                continue;
+            }
+            let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
+            spawn.removal_time += DT;
+            // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
+            // so the curve's overshoot past 1 scales the original size.
+            let minimum = Fix::from_f32(0.1);
+            let lerp =
+                |o: Fix| minimum * (Fix::ONE - amount.clamp(Fix::ZERO, Fix::ONE)) + o * amount;
+            removal_resizes.push((
+                spawn.platform_index,
+                Vec2::new(lerp(spawn.removal_extents.x), lerp(spawn.removal_extents.y)),
+                lerp(spawn.removal_radius),
+            ));
+        }
+
+        // Most short episodes never create or disturb a platform. Preserve
+        // that hot path without changing semantics: a body exactly at its
+        // home with zero velocity cannot produce motion or a new contact.
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let orbit_running = !self.sudden_death
+            && self.orbits.iter().any(|orbit| {
+                data.maps[self.map].platforms[self.platform_defs[orbit.0]]
+                    .orbit
+                    .as_ref()
+                    .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
+            });
+        // Bodies and homes only change through paths that bump
+        // `platform_epoch`, so a level found quiet stays quiet until then.
+        let disturbed =
+            self.quiet_epoch != self.platform_epoch
+                && self.platforms.iter().zip(&self.platform_dynamics).any(
+                    |(platform, dynamics)| {
+                        platform.surface.center != dynamics.home_position
+                            || dynamics.body.velocity != Vec2::ZERO
+                            || dynamics.body.angular_velocity != Fix::ZERO
+                            || dynamics.body.orientation != dynamics.home_rotation
+                    },
+                );
+        if !disturbed {
+            self.quiet_epoch = self.platform_epoch;
+        }
+        if !self.sudden_death
+            && !orbit_running
+            && !disturbed
+            && !self.spawned.iter().any(|spawn| spawn.active)
+        {
+            return;
+        }
+        // Everything below may move a body.
+        self.platforms_changed();
+        // ResizablePlatform follows AnimateVelocity in its prefab
+        // (ResizablePlatform.prefab component order), so the spring impulse
+        // above used the pre-resize mass while DetPhysics integrates it with
+        // the new one.
+        for (index, extents, radius) in removal_resizes {
+            let center = self.platforms[index].surface.center;
+            self.reshape_platform(index, center, extents, radius);
+        }
+        removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
+        for index in removal_destroys {
+            self.remove_platform(index);
         }
 
         // DetPhysics integrates every rounded body before it constructs any
@@ -3161,8 +3477,12 @@ impl RolloutWorld {
                 slot.dash_entity,
                 slot.circle_entity,
                 slot.bow_entity,
+                slot.gust_entity,
             ];
             for e in rows {
+                if e == usize::MAX {
+                    continue;
+                }
                 let row = &mut self.entities[e];
                 if by_callback {
                     row.flags = (row.flags & E_TRIGGER) | E_DESTROYED;
@@ -3418,9 +3738,15 @@ impl RolloutWorld {
     /// rows keep the position of their last active pass.
     fn refresh_actor_entities(&mut self) {
         for index in 0..self.players.len() {
-            let (body_e, dash_e, circle_e) = {
+            let (body_e, dash_e, circle_e, bow_e, gust_e) = {
                 let s = &self.players[index];
-                (s.body_entity, s.dash_entity, s.circle_entity)
+                (
+                    s.body_entity,
+                    s.dash_entity,
+                    s.circle_entity,
+                    s.bow_entity,
+                    s.gust_entity,
+                )
             };
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
@@ -3500,41 +3826,46 @@ impl RolloutWorld {
                 body.rotation = angle.raw();
             }
 
-            let dash_box = &mut self.entities[dash_e];
-            let dash_was_active = dash_box.flags & E_ACTIVE != 0;
-            if alive && dashing {
-                dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                dash_box.owner = slot.base.id;
-            } else {
-                dash_box.flags = E_ENABLED | E_TRIGGER;
-            }
-            // Ability.ExitAbility deactivates the body where it ended
-            // (Ability.cs:151-152); that pass still syncs it.
-            if (alive && dashing) || dash_was_active {
-                // The Dash body's FixTransform rotation is
-                // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
-                // before performDash); `sync_collider` already built the
-                // synced box with the dash extents from that rotation.
-                // On the exit pass the slime body has taken over, so the
-                // box is rebuilt at the teleport/landing pose.
-                let (center, angle) = if alive && dashing {
-                    (synced, rotation)
+            if dash_e != usize::MAX {
+                let dash_box = &mut self.entities[dash_e];
+                let dash_was_active = dash_box.flags & E_ACTIVE != 0;
+                if alive && dashing {
+                    dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    dash_box.owner = slot.base.id;
                 } else {
-                    (exit_position, dash_exit_rotation)
-                };
-                let collider =
-                    OrientedBox::from_basis(center, Vec2::angle(angle), data.dash.hurtbox_extents);
-                dash_box.x = center.x.raw();
-                dash_box.y = center.y.raw();
-                // DPhysicsBox is a trigger body; PlayerBody velocity is not
-                // stored on its PhysicsBody observation record.
-                dash_box.vx = 0;
-                dash_box.vy = 0;
-                dash_box.right_x = collider.right.x.raw();
-                dash_box.right_y = collider.right.y.raw();
-                dash_box.up_x = collider.up.x.raw();
-                dash_box.up_y = collider.up.y.raw();
-                dash_box.rotation = angle.raw();
+                    dash_box.flags = E_ENABLED | E_TRIGGER;
+                }
+                // Ability.ExitAbility deactivates the body where it ended
+                // (Ability.cs:151-152); that pass still syncs it.
+                if (alive && dashing) || dash_was_active {
+                    // The Dash body's FixTransform rotation is
+                    // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
+                    // before performDash); `sync_collider` already built the
+                    // synced box with the dash extents from that rotation.
+                    // On the exit pass the slime body has taken over, so the
+                    // box is rebuilt at the teleport/landing pose.
+                    let (center, angle) = if alive && dashing {
+                        (synced, rotation)
+                    } else {
+                        (exit_position, dash_exit_rotation)
+                    };
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(angle),
+                        data.dash.hurtbox_extents,
+                    );
+                    dash_box.x = center.x.raw();
+                    dash_box.y = center.y.raw();
+                    // DPhysicsBox is a trigger body; PlayerBody velocity is not
+                    // stored on its PhysicsBody observation record.
+                    dash_box.vx = 0;
+                    dash_box.vy = 0;
+                    dash_box.right_x = collider.right.x.raw();
+                    dash_box.right_y = collider.right.y.raw();
+                    dash_box.up_x = collider.up.x.raw();
+                    dash_box.up_y = collider.up.y.raw();
+                    dash_box.rotation = angle.raw();
+                }
             }
             // Bow hurtbox: active while aiming/firing. BowTransform writes
             // `body.up = inputVector` each tick until the shot
@@ -3544,66 +3875,95 @@ impl RolloutWorld {
             // from that angle (Box.SetRotation, Box.cs:30-35). Its centre is
             // the DetPhysics-synced position: a grounded Bow body also moves
             // only in PlayerPhysics.LateUpdateSim, after the sync.
-            let bow_e = self.players[index].bow_entity;
-            let bow_box = &mut self.entities[bow_e];
-            let bow_was_active = bow_box.flags & E_ACTIVE != 0;
-            if alive && bowing {
-                bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                bow_box.owner = slot.base.id;
-            } else {
-                bow_box.flags = E_ENABLED | E_TRIGGER;
-            }
-            if (alive && bowing) || bow_was_active {
-                let extents = data.bow.hurtbox_extents;
-                // Both exits zero the Bow body's rotation before
-                // ExitAbility (BowTransform.cs:119, 225).
-                let (center, rotation) = if alive && bowing {
-                    (synced, bow_aim.perp_cw().normalized_angle())
+            if bow_e != usize::MAX {
+                let bow_box = &mut self.entities[bow_e];
+                let bow_was_active = bow_box.flags & E_ACTIVE != 0;
+                if alive && bowing {
+                    bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    bow_box.owner = slot.base.id;
                 } else {
-                    (exit_position, Fix::ZERO)
-                };
-                let hurtbox = OrientedBox::from_basis(center, Vec2::angle(rotation), extents);
-                bow_box.x = center.x.raw();
-                bow_box.y = center.y.raw();
-                bow_box.vx = 0;
-                bow_box.vy = 0;
-                bow_box.right_x = hurtbox.right.x.raw();
-                bow_box.right_y = hurtbox.right.y.raw();
-                bow_box.up_x = hurtbox.up.x.raw();
-                bow_box.up_y = hurtbox.up.y.raw();
-                bow_box.rotation = rotation.raw();
+                    bow_box.flags = E_ENABLED | E_TRIGGER;
+                }
+                if (alive && bowing) || bow_was_active {
+                    let extents = data.bow.hurtbox_extents;
+                    // Both exits zero the Bow body's rotation before
+                    // ExitAbility (BowTransform.cs:119, 225).
+                    let (center, rotation) = if alive && bowing {
+                        (synced, bow_aim.perp_cw().normalized_angle())
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    let hurtbox = OrientedBox::from_basis(center, Vec2::angle(rotation), extents);
+                    bow_box.x = center.x.raw();
+                    bow_box.y = center.y.raw();
+                    bow_box.vx = 0;
+                    bow_box.vy = 0;
+                    bow_box.right_x = hurtbox.right.x.raw();
+                    bow_box.right_y = hurtbox.right.y.raw();
+                    bow_box.up_x = hurtbox.up.x.raw();
+                    bow_box.up_y = hurtbox.up.y.raw();
+                    bow_box.rotation = rotation.raw();
+                }
             }
             // The Platform ability's hurtbox circle is live during
             // anticipation only (hurtBox.enabled until CreatePlatform).
-            let circle = &mut self.entities[circle_e];
-            let circle_was_active = circle.flags & E_ACTIVE != 0;
-            let transforming = alive && slot.active == ActiveAbility::Platform;
-            if alive && anticipating {
-                circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                circle.owner = slot.base.id;
-            } else if transforming {
-                circle.flags = E_ACTIVE | E_TRIGGER;
-                circle.owner = slot.base.id;
-            } else {
-                circle.flags = if slot.platform.hurtbox_disabled {
-                    E_TRIGGER
+            if circle_e != usize::MAX {
+                let circle = &mut self.entities[circle_e];
+                let circle_was_active = circle.flags & E_ACTIVE != 0;
+                let transforming = alive && slot.active == ActiveAbility::Platform;
+                if alive && anticipating {
+                    circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    circle.owner = slot.base.id;
+                } else if transforming {
+                    circle.flags = E_ACTIVE | E_TRIGGER;
+                    circle.owner = slot.base.id;
+                } else {
+                    circle.flags = if slot.platform.hurtbox_disabled {
+                        E_TRIGGER
+                    } else {
+                        E_ENABLED | E_TRIGGER
+                    };
+                }
+                if transforming || circle_was_active {
+                    // DetPhysics copies the ability body's FixTransform rotation
+                    // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
+                    // in ExitAbility, PlatformTransform.cs:462, at the ejected
+                    // position the exit pass published).
+                    let (center, rotation) = if transforming {
+                        (slot.base.position, slot.base.rotation)
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    circle.x = center.x.raw();
+                    circle.y = center.y.raw();
+                    circle.rotation = rotation.raw();
+                }
+            }
+            // Gust's QuickSpell body is a circle with the FixTransform's
+            // authored offset. It remains still through both animations.
+            if gust_e != usize::MAX {
+                let circle = &mut self.entities[gust_e];
+                let was_active = circle.flags & E_ACTIVE != 0;
+                let gusting = alive && slot.active == ActiveAbility::Gust;
+                circle.flags = if gusting {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-            }
-            if transforming || circle_was_active {
-                // DetPhysics copies the ability body's FixTransform rotation
-                // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
-                // in ExitAbility, PlatformTransform.cs:462, at the ejected
-                // position the exit pass published).
-                let (center, rotation) = if transforming {
-                    (slot.base.position, slot.base.rotation)
-                } else {
-                    (exit_position, Fix::ZERO)
-                };
-                circle.x = center.x.raw();
-                circle.y = center.y.raw();
-                circle.rotation = rotation.raw();
+                if gusting {
+                    circle.owner = slot.base.id;
+                }
+                if gusting || was_active {
+                    let (position, rotation) = if gusting {
+                        (slot.base.position, slot.base.rotation)
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    let offset = Vec2::angle(rotation).complex_mul(data.gust.collider_offset);
+                    circle.x = (position + offset).x.raw();
+                    circle.y = (position + offset).y.raw();
+                    circle.rotation = rotation.raw();
+                }
             }
         }
         for arrow in &self.arrows {

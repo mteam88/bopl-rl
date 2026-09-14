@@ -57,8 +57,8 @@
       "name": "Gust",
       "prefab": "Assets/GameObject/Gust.prefab",
       "prefab_guid": "05feec16b8416224fb842a3774879cf4",
-      "native_status": "partial",
-      "verification": "Composed QuickSpell entry/exit and dynamically registered shockwaves, including actor/platform impulses and clone interactions. Complete-match lifecycle and C environment integration remain required."
+      "native_status": "slice-only",
+      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred AirWave Shockwave, exact target capture, player/platform impulses, force curve, and entity observations; gust_ability_ab compares 360 complete NativeAOT/Rust ticks. Cross-ability targets expand with each concrete ability port."
     },
     {
       "id": 8,
