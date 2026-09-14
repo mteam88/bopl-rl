@@ -590,6 +590,69 @@ def main():
         },
     }
 
+    # ---- Mjolnir / shared ThrowItem2 item path ----
+    _, mjolnir_ability = find_prefab("Assets/GameObject/Mjolnir.prefab")
+    mjolnir_throw = component(mjolnir_ability, "ThrowItem2")
+    mjolnir_box = component(mjolnir_ability, "DPhysicsBox")
+    mjolnir_phys = component(mjolnir_ability, "PlayerPhysics")
+    mjolnir_anims = animations(guid_of(mjolnir_throw["animData"]))
+    mjolnir_item = ASSETS[guid_of(mjolnir_throw["ItemPrefab"])]
+    mjolnir_item_data = component(mjolnir_item, "Item")
+    mjolnir_circle = component(mjolnir_item, "DPhysicsCircle")
+    mjolnir_body = component(mjolnir_item, "BoplBody")
+    mjolnir = component(mjolnir_item, "Mjolnir")
+    out["prefabs"]["mjolnir"] = {
+        "hurtbox_extents": vec2(mjolnir_box, "startExtents"),
+        "throw": {
+            "air_position": vec2(mjolnir_throw, "aThrowPosition"),
+            "ground_position": vec2(mjolnir_throw, "gThrowPosition"),
+            "ground_dummy": [vec2(mjolnir_throw, f"groundedDummyPositions.Array.data[{i}]")
+                             for i in range(mjolnir_throw["groundedDummyPositions.Array.size"])],
+            "air_dummy": [vec2(mjolnir_throw, f"airealDummyPositions.Array.data[{i}]")
+                          for i in range(mjolnir_throw["airealDummyPositions.Array.size"])],
+            "hurt_owner_delay": fix(mjolnir_throw, "DisableGrenadeHitBoxTime"),
+            "max_force": fix(mjolnir_throw, "maxThrowForce"),
+            "min_force": fix(mjolnir_throw, "minThrowForce"),
+            "force_gain_speed": fix(mjolnir_throw, "ThrowForceGainSpeed"),
+            "max_slow_mo_speed": fix(mjolnir_throw, "maxSlowMoSpeed"),
+            "knockback": fix(mjolnir_throw, "knockback"),
+            "physics": {
+                "max_speed": fix(mjolnir_phys, "maxSpeed"),
+                "jump_strength": fix(mjolnir_phys, "jumpStrength"),
+                "accel": fix(mjolnir_phys, "accel"),
+                "radius": fix(mjolnir_phys, "radius"),
+                "gravity_accel": fix(mjolnir_phys, "gravity_accel"),
+                "gravity_max_fall_speed": fix(mjolnir_phys, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(mjolnir_phys, "gravity_modifier"),
+                "jump_extra_x": fix(mjolnir_phys, "jumpExtraXStrength"),
+                "jump_momentum": fix(mjolnir_phys, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(mjolnir_phys, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(mjolnir_phys, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(mjolnir_phys, "airAccel"),
+            },
+            "animations": {name: mjolnir_anims[name]
+                           for name in ("gEnter", "gExit", "aEnter", "aExit")},
+        },
+        "item": {
+            "layer": mjolnir_item["data"].get("layer"),
+            "updatable_count": updater_count(mjolnir_item),
+            "collider_hierarchy": mjolnir_circle["hierarchyNumber"],
+            "radius": fix(mjolnir_circle, "startRadius"),
+            "body": physics_body(mjolnir_body),
+            "clone_count": mjolnir_item_data["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": mjolnir_item_data["duplicatePattern"],
+            "duplicate_spacing": fix(mjolnir_item_data, "duplicate_spacing"),
+            "duplicate_angle": fix(mjolnir_item_data, "duplicate_angle"),
+            "outbound_drag": fix(mjolnir, "outboundDrag"),
+            "return_speed_threshold": fix(mjolnir, "returnSpeedThreshold"),
+            "max_flight_seconds": fix(mjolnir, "maxFlightSeconds"),
+            "recall_accel": fix(mjolnir, "recallAccel"),
+            "recall_max_speed": fix(mjolnir, "recallMaxSpeed"),
+            "clang_grace_seconds": fix(mjolnir, "clangGraceSeconds"),
+            "platform_push_force": fix(mjolnir, "platformPushForce"),
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

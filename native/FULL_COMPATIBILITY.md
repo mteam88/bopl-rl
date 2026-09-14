@@ -1026,6 +1026,31 @@ drives the thrower away and back across the armed trap, covering owner-clear
 immunity, the one-use kill, updater-phase removal and the stock-choice prefix.
 The shared `Item.Duplicate` behavior remains for the Duplicator integration.
 
+### Executable Mjolnir flight and recall (2026-09-14)
+
+Catalog id 37 is the third consumer of the extracted `ThrowItem2` form. Its
+MjolnirItem body has zero gravity and receives the source's signed angular
+velocity and Projectile owner on the first updater pass after release. The
+outbound pass applies the prefab's per-tick exponential-style damping and uses
+the strict grace/velocity thresholds to enter recall. Recall adds a constant
+acceleration toward 1.1 units above the owner's current live form, clamps speed,
+coasts when no owner body is active, and removes the hammer inside the strict
+two-unit catch radius or after its maximum lifetime.
+
+Rounded-platform contacts retain ordinary rigid-body resolution. Once the clang
+grace has elapsed, every queued callback adds the authored 3000 force along the
+hammer's post-resolution velocity. The first outbound clang switches to recall;
+later clangs keep applying force without resetting the phase. Per-hammer victim
+history uses a six-bit fixed mask rather than the source `HashSet<int>`, avoiding
+allocation while retaining its once-per-player semantics.
+
+`mjolnir_ability_ab.c` compares 1,450 exact NativeAOT/Q32 ticks through an aerial
+throw, outbound flight, stall-triggered recall and owner catch.
+`mjolnir_wall_ab.c` compares another 1,450 exact ticks through a grounded throw,
+terrain collision, platform motion, clang-triggered recall and catch. Victim-hit
+and shared `Item.Duplicate` interactions still need dedicated goldens before the
+catalog entry is complete.
+
 ### Executable Gust (2026-09-14)
 
 Catalog id 7 now executes the shipped Gust `Ability`, `QuickSpell`, and

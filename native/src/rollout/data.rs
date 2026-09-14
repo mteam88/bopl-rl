@@ -207,6 +207,7 @@ struct RawPrefabs {
     teleport: RawTeleport,
     grenade: RawGrenade,
     tack: RawTack,
+    mjolnir: RawMjolnir,
 }
 
 #[derive(Deserialize)]
@@ -276,6 +277,32 @@ struct RawTackItem {
     duplicate_angle: i64,
     arm_seconds: i64,
     lifetime_seconds: i64,
+}
+#[derive(Deserialize)]
+struct RawMjolnir {
+    hurtbox_extents: RawVec2,
+    #[serde(rename = "throw")]
+    throw_data: RawThrowItem,
+    item: RawMjolnirItem,
+}
+#[derive(Deserialize)]
+struct RawMjolnirItem {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    body: RawBody,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+    outbound_drag: i64,
+    return_speed_threshold: i64,
+    max_flight_seconds: i64,
+    recall_accel: i64,
+    recall_max_speed: i64,
+    clang_grace_seconds: i64,
+    platform_push_force: i64,
 }
 #[derive(Deserialize)]
 struct RawGrenadeExplosion {
@@ -603,6 +630,40 @@ pub struct TackData {
     pub arm_seconds: Fix,
     pub lifetime_seconds: Fix,
 }
+pub struct MjolnirData {
+    pub hurtbox_extents: Vec2,
+    pub air_position: Vec2,
+    pub ground_position: Vec2,
+    pub ground_dummy: Vec<Vec2>,
+    pub air_dummy: Vec<Vec2>,
+    pub hurt_owner_delay: Fix,
+    pub max_force: Fix,
+    pub min_force: Fix,
+    pub force_gain_speed: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub knockback: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub ground_enter_ticks: u32,
+    pub ground_exit_ticks: u32,
+    pub air_enter_ticks: u32,
+    pub air_exit_ticks: u32,
+    pub item_layer: u32,
+    pub item_updatable_count: u32,
+    pub item_collider_hierarchy: u32,
+    pub item_radius: Fix,
+    pub item_body: crate::physics::Body,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub outbound_drag: Fix,
+    pub return_speed_threshold: Fix,
+    pub max_flight_seconds: Fix,
+    pub recall_accel: Fix,
+    pub recall_max_speed: Fix,
+    pub clang_grace_seconds: Fix,
+    pub platform_push_force: Fix,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -641,6 +702,7 @@ pub struct RolloutData {
     pub teleport: TeleportData,
     pub grenade: GrenadeData,
     pub tack: TackData,
+    pub mjolnir: MjolnirData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -1046,6 +1108,44 @@ pub fn get() -> &'static RolloutData {
                     duplicate_angle: Fix::from_raw(tack.item.duplicate_angle),
                     arm_seconds: Fix::from_raw(tack.item.arm_seconds),
                     lifetime_seconds: Fix::from_raw(tack.item.lifetime_seconds),
+                }
+            },
+            mjolnir: {
+                let mjolnir = &raw.prefabs.mjolnir;
+                let throw = &mjolnir.throw_data;
+                MjolnirData {
+                    hurtbox_extents: mjolnir.hurtbox_extents.get(),
+                    air_position: throw.air_position.get(),
+                    ground_position: throw.ground_position.get(),
+                    ground_dummy: throw.ground_dummy.iter().map(RawVec2::get).collect(),
+                    air_dummy: throw.air_dummy.iter().map(RawVec2::get).collect(),
+                    hurt_owner_delay: Fix::from_raw(throw.hurt_owner_delay),
+                    max_force: Fix::from_raw(throw.max_force),
+                    min_force: Fix::from_raw(throw.min_force),
+                    force_gain_speed: Fix::from_raw(throw.force_gain_speed),
+                    max_slow_mo_speed: Fix::from_raw(throw.max_slow_mo_speed),
+                    knockback: Fix::from_raw(throw.knockback),
+                    constants: constants(&throw.physics),
+                    ground_enter_ticks: ticks(&throw.animations.ground_enter),
+                    ground_exit_ticks: ticks(&throw.animations.ground_exit),
+                    air_enter_ticks: ticks(&throw.animations.air_enter),
+                    air_exit_ticks: ticks(&throw.animations.air_exit),
+                    item_layer: mjolnir.item.layer,
+                    item_updatable_count: mjolnir.item.updatable_count,
+                    item_collider_hierarchy: mjolnir.item.collider_hierarchy,
+                    item_radius: Fix::from_raw(mjolnir.item.radius),
+                    item_body: body(&mjolnir.item.body, Fix::ZERO),
+                    clone_count: mjolnir.item.clone_count,
+                    duplicate_pattern: mjolnir.item.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(mjolnir.item.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(mjolnir.item.duplicate_angle),
+                    outbound_drag: Fix::from_raw(mjolnir.item.outbound_drag),
+                    return_speed_threshold: Fix::from_raw(mjolnir.item.return_speed_threshold),
+                    max_flight_seconds: Fix::from_raw(mjolnir.item.max_flight_seconds),
+                    recall_accel: Fix::from_raw(mjolnir.item.recall_accel),
+                    recall_max_speed: Fix::from_raw(mjolnir.item.recall_max_speed),
+                    clang_grace_seconds: Fix::from_raw(mjolnir.item.clang_grace_seconds),
+                    platform_push_force: Fix::from_raw(mjolnir.item.platform_push_force),
                 }
             },
             abilities: raw

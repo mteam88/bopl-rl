@@ -48,6 +48,7 @@ pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 pub const ABILITY_TACK: u32 = 35;
+pub const ABILITY_MJOLNIR: u32 = 37;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
@@ -335,6 +336,10 @@ pub struct ThrownItem {
     pub settled: bool,
     pub owner_clear: bool,
     pub settle_position: Vec2,
+    /// Ability-specific phase (Mjolnir: 0 outbound, 1 returning).
+    pub phase: u8,
+    /// Mjolnir's allocation-free equivalent of `HashSet<int> alreadyKilled`.
+    pub killed_players: u8,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -389,7 +394,32 @@ struct ThrowConfig<'a> {
 }
 
 fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
-    if ability == ABILITY_TACK {
+    if ability == ABILITY_MJOLNIR {
+        let d = &data.mjolnir;
+        ThrowConfig {
+            hurtbox_extents: d.hurtbox_extents,
+            air_position: d.air_position,
+            ground_position: d.ground_position,
+            ground_dummy: &d.ground_dummy,
+            air_dummy: &d.air_dummy,
+            hurt_owner_delay: d.hurt_owner_delay,
+            max_force: d.max_force,
+            min_force: d.min_force,
+            force_gain_speed: d.force_gain_speed,
+            max_slow_mo_speed: d.max_slow_mo_speed,
+            knockback: d.knockback,
+            constants: &d.constants,
+            ground_enter_ticks: d.ground_enter_ticks,
+            ground_exit_ticks: d.ground_exit_ticks,
+            air_enter_ticks: d.air_enter_ticks,
+            air_exit_ticks: d.air_exit_ticks,
+            item_layer: d.item_layer,
+            item_updatable_count: d.item_updatable_count,
+            item_collider_hierarchy: d.item_collider_hierarchy,
+            item_radius: d.item_radius,
+            item_body: d.item_body,
+        }
+    } else if ability == ABILITY_TACK {
         let d = &data.tack;
         ThrowConfig {
             hurtbox_extents: d.hurtbox_extents,
@@ -764,9 +794,18 @@ pub enum ActiveAbility {
     Bow,
     Grenade,
     Tack,
+    Mjolnir,
     Gust,
     Revival,
     Platform,
+}
+
+fn active_throw_ability(active: ActiveAbility) -> u32 {
+    match active {
+        ActiveAbility::Tack => ABILITY_TACK,
+        ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
+        _ => ABILITY_GRENADE,
+    }
 }
 
 /// One player's match state beyond the movement body.
@@ -1344,7 +1383,7 @@ impl RolloutWorld {
                             &mut bow_entity[i],
                             false,
                         ),
-                        ability @ (ABILITY_GRENADE | ABILITY_TACK) => (
+                        ability @ (ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR) => (
                             throw_config(data, ability).hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i],
@@ -1948,6 +1987,7 @@ impl RolloutWorld {
                     | ActiveAbility::Bow
                     | ActiveAbility::Grenade
                     | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
@@ -2263,13 +2303,13 @@ impl RolloutWorld {
                         self.dash_move(index, masked, movement_input);
                         return;
                     }
-                    ABILITY_GRENADE | ABILITY_TACK => {
+                    ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR => {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = if ability == ABILITY_TACK {
-                            ActiveAbility::Tack
-                        } else {
-                            ActiveAbility::Grenade
+                        slot.active = match ability {
+                            ABILITY_TACK => ActiveAbility::Tack,
+                            ABILITY_MJOLNIR => ActiveAbility::Mjolnir,
+                            _ => ActiveAbility::Grenade,
                         };
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
@@ -2468,7 +2508,7 @@ impl RolloutWorld {
         }
         if matches!(
             self.players[index].active,
-            ActiveAbility::Grenade | ActiveAbility::Tack
+            ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir
         ) {
             self.throw_item_tick(index, action, data);
             return;
@@ -3161,7 +3201,7 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ability @ (ABILITY_GRENADE | ABILITY_TACK) => (
+                    ability @ (ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
@@ -3336,7 +3376,7 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ability @ (ABILITY_GRENADE | ABILITY_TACK) => (
+                    ability @ (ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
@@ -3621,10 +3661,7 @@ impl RolloutWorld {
     /// collider is manually initialized by `Fire`, so it joins DetPhysics in
     /// the cast pass even though its MonoUpdatables initialize next pass.
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
-        let ability = match self.players[index].active {
-            ActiveAbility::Tack => ABILITY_TACK,
-            _ => ABILITY_GRENADE,
-        };
+        let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
         let aim = action.direction();
         // Ability.UpdateSim publishes Player.Position before ThrowItem2 and
@@ -3797,10 +3834,7 @@ impl RolloutWorld {
     }
 
     fn spawn_held_item(&mut self, index: usize, data: &data::RolloutData) -> usize {
-        let ability = match self.players[index].active {
-            ActiveAbility::Tack => ABILITY_TACK,
-            _ => ABILITY_GRENADE,
-        };
+        let ability = active_throw_ability(self.players[index].active);
         let config = throw_config(data, ability);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += config.item_updatable_count;
@@ -3828,6 +3862,8 @@ impl RolloutWorld {
             settled: false,
             owner_clear: false,
             settle_position: Vec2::ZERO,
+            phase: 0,
+            killed_players: 0,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -3840,10 +3876,7 @@ impl RolloutWorld {
     }
 
     fn fire_thrown_item(&mut self, index: usize, data: &data::RolloutData) {
-        let ability = match self.players[index].active {
-            ActiveAbility::Tack => ABILITY_TACK,
-            _ => ABILITY_GRENADE,
-        };
+        let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
         let item_index = self.players[index]
             .throw_item
@@ -4724,6 +4757,95 @@ impl RolloutWorld {
             }
         }
 
+        // Mjolnir.UpdateSim also begins one pass after release. The fixed
+        // player bitset replaces the source HashSet without allocating.
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].ability != ABILITY_MJOLNIR
+                || self.thrown_items[item_index].born_tick >= self.tick
+            {
+                continue;
+            }
+            {
+                let item = &mut self.thrown_items[item_index];
+                if !item.launched {
+                    item.launched = true;
+                    item.body.angular_velocity = if item.body.velocity.x >= Fix::ZERO {
+                        Fix::from_int(-11)
+                    } else {
+                        Fix::from_int(11)
+                    };
+                    if let Some(entity) = item.entity {
+                        self.entities[entity].owner = item.owner as u32 + 1;
+                    }
+                }
+                item.age += DT;
+            }
+            if self.thrown_items[item_index].age > data.mjolnir.max_flight_seconds {
+                self.remove_thrown_item(item_index, false);
+                continue;
+            }
+
+            let item_position = self.thrown_items[item_index].position;
+            let owner = self.thrown_items[item_index].owner;
+            let hit_radius = data.mjolnir.item_radius + Fix::from_f32(0.8);
+            let mut victims = 0u8;
+            for player_index in 0..self.players.len() {
+                if player_index == owner
+                    || !self.playable(player_index)
+                    || self.thrown_items[item_index].killed_players & (1 << player_index) != 0
+                {
+                    continue;
+                }
+                if (self.players[player_index].base.position - item_position).length_squared()
+                    < hit_radius * hit_radius
+                {
+                    victims |= 1 << player_index;
+                }
+            }
+            self.thrown_items[item_index].killed_players |= victims;
+            for player_index in 0..self.players.len() {
+                if victims & (1 << player_index) == 0 {
+                    continue;
+                }
+                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+                self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false);
+            }
+
+            if self.thrown_items[item_index].phase == 0 {
+                let damping = (Fix::ONE - data.mjolnir.outbound_drag * DT).max(Fix::ZERO);
+                let item = &mut self.thrown_items[item_index];
+                item.body.velocity *= damping;
+                if item.age > data.mjolnir.clang_grace_seconds
+                    && item.body.velocity.length() < data.mjolnir.return_speed_threshold
+                {
+                    item.phase = 1;
+                }
+            } else {
+                if self.players[owner].out {
+                    self.remove_thrown_item(item_index, false);
+                    continue;
+                }
+                if !self.playable(owner) || self.players[owner].teleport_effect_active {
+                    continue;
+                }
+                let to_owner = self.players[owner].base.position + Vec2::UP * Fix::from_f32(1.1)
+                    - self.thrown_items[item_index].position;
+                {
+                    let item = &mut self.thrown_items[item_index];
+                    item.body.velocity +=
+                        to_owner.normalized_safe() * data.mjolnir.recall_accel * DT;
+                    let speed = item.body.velocity.length();
+                    if speed > data.mjolnir.recall_max_speed {
+                        item.body.velocity *= data.mjolnir.recall_max_speed / speed;
+                    }
+                }
+                if to_owner.length_squared() < Fix::from_int(4) {
+                    self.remove_thrown_item(item_index, false);
+                }
+            }
+        }
+
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active {
                 continue;
@@ -4930,19 +5052,13 @@ impl RolloutWorld {
                             inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                         }
                     }
-                    ActiveAbility::Grenade | ActiveAbility::Tack => OrientedBox::from_basis(
-                        player.base.position,
-                        Vec2::angle(player.base.rotation),
-                        throw_config(
-                            data,
-                            if player.active == ActiveAbility::Tack {
-                                ABILITY_TACK
-                            } else {
-                                ABILITY_GRENADE
-                            },
+                    ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir => {
+                        OrientedBox::from_basis(
+                            player.base.position,
+                            Vec2::angle(player.base.rotation),
+                            throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
                         )
-                        .hurtbox_extents,
-                    ),
+                    }
                     _ => player.base.collider,
                 };
                 if crate::physics::contact::circle_box(circle, hurtbox).is_some() {
@@ -5018,13 +5134,29 @@ impl RolloutWorld {
                 thrown.body = body;
                 thrown.position = center;
                 let entity = thrown.entity.expect("contacting grenade collider");
-                let row = &mut self.entities[entity];
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-                row.vx = body.velocity.x.raw();
-                row.vy = body.velocity.y.raw();
-                row.rotation = body.orientation.raw();
-                row.angular_velocity = body.angular_velocity.raw();
+                {
+                    let row = &mut self.entities[entity];
+                    row.x = center.x.raw();
+                    row.y = center.y.raw();
+                    row.vx = body.velocity.x.raw();
+                    row.vy = body.velocity.y.raw();
+                    row.rotation = body.orientation.raw();
+                    row.angular_velocity = body.angular_velocity.raw();
+                }
+
+                if item.ability == ABILITY_MJOLNIR
+                    && item.launched
+                    && item.age >= data.mjolnir.clang_grace_seconds
+                {
+                    let force = body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
+                    for &(platform_index, _) in &contacts[..contact_count] {
+                        self.platform_dynamics[platform_index].body.force += force;
+                    }
+                    self.platforms_changed();
+                    if self.thrown_items[item_index].phase == 0 {
+                        self.thrown_items[item_index].phase = 1;
+                    }
+                }
 
                 if item.ability == ABILITY_TACK
                     && !item.settled
@@ -5040,13 +5172,14 @@ impl RolloutWorld {
                     thrown.settle_position = center;
                     thrown.body.velocity = Vec2::ZERO;
                     thrown.body.angular_velocity = Fix::ZERO;
+                    let row = &mut self.entities[entity];
                     row.vx = 0;
                     row.vy = 0;
                     row.angular_velocity = 0;
                 }
             }
 
-            if item.ability == ABILITY_TACK {
+            if matches!(item.ability, ABILITY_TACK | ABILITY_MJOLNIR) {
                 continue;
             }
 
@@ -5092,19 +5225,14 @@ impl RolloutWorld {
                                 ),
                             }
                         }
-                        ActiveAbility::Grenade | ActiveAbility::Tack => OrientedBox::from_basis(
-                            player.base.position,
-                            Vec2::angle(player.base.rotation),
-                            throw_config(
-                                data,
-                                if player.active == ActiveAbility::Tack {
-                                    ABILITY_TACK
-                                } else {
-                                    ABILITY_GRENADE
-                                },
+                        ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir => {
+                            OrientedBox::from_basis(
+                                player.base.position,
+                                Vec2::angle(player.base.rotation),
+                                throw_config(data, active_throw_ability(player.active))
+                                    .hurtbox_extents,
                             )
-                            .hurtbox_extents,
-                        ),
+                        }
                         _ => player.base.collider,
                     };
                     crate::physics::contact::circle_box(circle, hurtbox).is_some()
@@ -6001,15 +6129,11 @@ impl RolloutWorld {
             let teleporting = slot.teleport_effect_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
-            let throwing = matches!(slot.active, ActiveAbility::Grenade | ActiveAbility::Tack);
-            let throw_config = throw_config(
-                data::get(),
-                if slot.active == ActiveAbility::Tack {
-                    ABILITY_TACK
-                } else {
-                    ABILITY_GRENADE
-                },
+            let throwing = matches!(
+                slot.active,
+                ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir
             );
+            let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;

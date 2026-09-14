@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Gust, Platform, Revival, Invisibility, Teleport, Rewind, Gold mushroom, Tack**
-  (catalog ids 0/1/2/3/4/7/14/15/19/25/31/34/35): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Gust, Platform, Revival, Invisibility, Teleport, Rewind, Gold mushroom, Tack, Mjolnir**
+  (catalog ids 0/1/2/3/4/7/14/15/19/25/31/34/35/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -126,6 +126,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   contact, pins at the resolved landing position, arms after 0.8 seconds, and
   expires after 20 seconds. Its owner must first leave the proximity circle;
   a later owner or opponent overlap kills once and removes the trap.
+  Mjolnir uses the same throw form and then applies its authored outbound
+  damping, wall-clang/stall return transition, constant recall acceleration,
+  speed clamp and owner catch. Rounded-platform callbacks apply its 3000 force
+  on every eligible contact while the rigid body continues to resolve normally.
 - **Observation**: `bopl_layout.h` layout with the .NET entity id
   assignment order (circles, boxes, rounded rects by first-seen), matching
   kinds/layers/owner/flags, slime ability slots, cooldowns and timers
@@ -156,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/14/15/19/25/31/34/35 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/7/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -164,6 +168,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   detonation, and stock recovery; duplication and forced-exit paths remain absent.
   Tack is exact through throw, settling, arming, owner-clear re-entry, kill and
   expiry; its shared `Item.Duplicate` path remains absent.
+  Mjolnir is exact through outbound flight, platform clangs, return and catch;
+  its victim-hit and shared `Item.Duplicate` interactions remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
