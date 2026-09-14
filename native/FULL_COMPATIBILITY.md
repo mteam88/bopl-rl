@@ -979,10 +979,17 @@ and copied-ability hierarchy, DetPhysics circle-before-box IDs, three stock
 choice indicators, their 360-tick timeout, fast spawn and subsequent landing
 all match.
 
+`grenade_fuse_ab.c` adds a separate 700-tick exact comparison which never
+releases the cast button. It covers the authored three-second fuse while held,
+the prefab child's local-x-only facing mirror, detonation before the manually
+initialized DetPhysics circle can consume an entity ID, and the same lethal
+explosion/stock recovery path. Held grenades remain payload state rather than
+registered colliders, and their fuse pass reuses the existing item pool.
+
 The two shockwaves use the authored masks, radii and forces, apply their impulses
 before map home springs, and reuse existing fixed arrays/entity pools. Grenade
-terrain bounce, non-owner hits, timed detonation, grenade duplication and the
-aerial/forced-exit paths still require separate goldens before id 3 is complete.
+terrain bounce, non-owner hits, grenade duplication and the aerial/forced-exit
+paths still require separate goldens before id 3 is complete.
 
 ### Executable Gust (2026-09-14)
 

@@ -30,7 +30,7 @@
       "prefab": "Assets/GameObject/Grenade_0.prefab",
       "prefab_guid": "7deaedf5cf4a92e4585ce06988f30efd",
       "native_status": "partial",
-      "verification": "grenade_ability_ab matches 700 NativeAOT/Rust ticks through grounded ThrowItem2 entry, charged release, recoil/body split, delayed owner contact, deferred explosion, both startup shockwaves, first-frame self-kill, 90-frame lifetime, stock choice, fast respawn and landing. Terrain bounce, non-owner hits, fuse expiry, duplication, and aerial/forced exits remain open."
+      "verification": "grenade_ability_ab and grenade_fuse_ab each match 700 NativeAOT/Rust ticks. Together they cover grounded ThrowItem2 entry, charged release, recoil/body split, delayed owner contact, held-position fuse expiry, deferred explosion, both startup shockwaves, first-frame self-kill, 90-frame lifetime, stock choice, fast respawn and landing. Terrain bounce, non-owner hits, duplication, and aerial/forced exits remain open."
     },
     {
       "id": 4,

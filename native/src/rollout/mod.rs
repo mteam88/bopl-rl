@@ -3205,6 +3205,28 @@ impl RolloutWorld {
             self.fire_grenade(index, data);
         }
 
+        if self.players[index].throw_item.phase == 0
+            && let Some(item_index) = self.players[index].throw_item.item
+            && self.thrown_items[item_index].active
+        {
+            let slot = &self.players[index];
+            let local_sign = if slot.facing_right {
+                -Fix::ONE
+            } else {
+                Fix::ONE
+            };
+            let mut dummy = if slot.throw_item.grounded {
+                *gd.ground_dummy.last().expect("Grenade ground dummy")
+            } else {
+                *gd.air_dummy.last().expect("Grenade air dummy")
+            };
+            // Unlike Fire's authored vector-wide mirror, dummyPos flips only
+            // the child's local x coordinate.
+            dummy.x *= local_sign;
+            self.thrown_items[item_index].position =
+                slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation));
+        }
+
         if self.players[index].throw_item.phase == 1 {
             let exit_ticks = if self.players[index].throw_item.grounded {
                 gd.ground_exit_ticks
@@ -3244,10 +3266,11 @@ impl RolloutWorld {
     fn spawn_held_grenade(&mut self, index: usize, data: &data::RolloutData) -> usize {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.grenade.item_updatable_count;
-        let id = self.next_id();
         let item = ThrownItem {
             active: true,
-            id,
+            // Stable collider IDs are assigned when ManualInit joins
+            // DetPhysics. A held grenade can explode without consuming one.
+            id: 0,
             owner: index,
             born_tick: self.tick,
             hierarchy_base,
@@ -3274,6 +3297,9 @@ impl RolloutWorld {
             .throw_item
             .item
             .unwrap_or_else(|| self.spawn_held_grenade(index, data));
+        let new_collider_id = (self.thrown_items[item_index].active
+            && self.thrown_items[item_index].entity.is_none())
+        .then(|| self.next_id());
         let slot = &mut self.players[index];
         let state = &mut slot.throw_item;
         let direction = state.direction;
@@ -3294,26 +3320,29 @@ impl RolloutWorld {
             .min(Fix::ONE);
         let force = gd.min_force + (gd.max_force - gd.min_force) * charge;
         let impulse_force = direction * force * Fix::from_int(60);
-        let item = &mut self.thrown_items[item_index];
-        item.position = position;
-        item.body.orientation = slot.base.rotation;
-        item.body.force += impulse_force;
-        item.hurt_owner_delay = gd.hurt_owner_delay;
-        if item.entity.is_none() {
-            self.entities.push(CEntity::default());
-            item.entity = Some(self.entities.len() - 1);
+        if self.thrown_items[item_index].active {
+            let item = &mut self.thrown_items[item_index];
+            item.position = position;
+            item.body.orientation = slot.base.rotation;
+            item.body.force += impulse_force;
+            item.hurt_owner_delay = gd.hurt_owner_delay;
+            if item.entity.is_none() {
+                item.id = new_collider_id.expect("new grenade collider id");
+                self.entities.push(CEntity::default());
+                item.entity = Some(self.entities.len() - 1);
+            }
+            let entity = item.entity.expect("grenade collider allocated");
+            self.entities[entity] = CEntity {
+                id: item.id,
+                kind: 0,
+                layer: gd.item_layer,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
+                radius: gd.item_radius.raw(),
+                inverse_mass: item.body.inverse_mass.raw(),
+                ..CEntity::default()
+            };
         }
-        let entity = item.entity.expect("grenade collider allocated");
-        self.entities[entity] = CEntity {
-            id: item.id,
-            kind: 0,
-            layer: gd.item_layer,
-            flags: E_ACTIVE | E_ENABLED,
-            hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
-            radius: gd.item_radius.raw(),
-            inverse_mass: item.body.inverse_mass.raw(),
-            ..CEntity::default()
-        };
         slot.base.velocity -= gd.knockback * direction;
         state.has_fired = true;
         state.item = Some(item_index);
@@ -4073,9 +4102,7 @@ impl RolloutWorld {
 
     fn thrown_items_integrate(&mut self, data: &data::RolloutData) {
         for item_index in 0..self.thrown_items.len() {
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].entity.is_none()
-            {
+            if !self.thrown_items[item_index].active {
                 continue;
             }
             let timed_out = {
@@ -4093,6 +4120,9 @@ impl RolloutWorld {
             };
             if timed_out {
                 self.detonate_grenade(item_index, false, data);
+                continue;
+            }
+            if self.thrown_items[item_index].entity.is_none() {
                 continue;
             }
             let item = &mut self.thrown_items[item_index];
