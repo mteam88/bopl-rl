@@ -30,7 +30,7 @@ static int valid_rows(float *obs, int offset, int count, int width) {
     return valid;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     BoplPuffer env={0}; env.num_agents=2; env.players=2; env.config.max_episode_ticks=3600;
     env.observations=calloc(2*BOPL_OBS_SIZE, sizeof(float)); env.scratch=env.observations;
     BoplRlEntity entities[96]={{0}}; BoplRlSlime slimes[17]={{0}};
@@ -85,6 +85,8 @@ int main(void) {
 
     compute_observations(&env);
     float *obs=env.observations;
+    float *fixture_rows=calloc(2*BOPL_OBS_SIZE, sizeof(float));
+    assert(fixture_rows); memcpy(fixture_rows, obs, BOPL_OBS_SIZE*sizeof(float));
     assert(BOPL_OBS_SIZE==3690 && BOPL_OBS_ENTITY_OFFSET==542);
     assert(obs[10]==(float)(10.0/120.0) && obs[11]==0 && obs[13]==0.75f);
     assert(obs[14+4]==20.0f/BOPL_COUNT_SCALE); /* all 20 grenades, before truncation */
@@ -110,9 +112,16 @@ int main(void) {
      * slime/slot/body rows while keeping the independently owned smoke. */
     state.players[1].ability_time=Q(1);
     compute_observations(&env); obs=env.observations;
+    memcpy(fixture_rows+BOPL_OBS_SIZE, obs, BOPL_OBS_SIZE*sizeof(float));
     assert(obs[BOPL_OBS_PLAYER_OFFSET+BOPL_PLAYER_FEATURES+16]==0);
     assert(entity_with_source(obs,3)==NULL && entity_with_source(obs,12)!=NULL);
     assert(valid_rows(obs,BOPL_OBS_SLIME_OFFSET,BOPL_OBS_SLIMES,BOPL_SLIME_FEATURES)==16);
+    if (argc==3 && !strcmp(argv[1], "--dump")) {
+        FILE *file=fopen(argv[2], "wb"); assert(file);
+        assert(fwrite(fixture_rows, sizeof(float), 2*BOPL_OBS_SIZE, file)==2*BOPL_OBS_SIZE);
+        assert(fclose(file)==0);
+    } else assert(argc==1);
     puts("OBSERVATION_LAYOUT_V3_CROWDED_FIXTURE_OK");
+    free(fixture_rows);
     free(env.observations);
 }
