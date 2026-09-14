@@ -75,9 +75,14 @@ def family_of(rel):
     return parts[0] if parts else 'run'
 
 
-def sweep_of(rel):
+def sweep_of(rel, root=None):
+    """(sweep, trial) for sweeps/<sweep>/<trial>/... when <sweep> is a driver
+    sweep (has sweep.json). Hand-run experiments parked under sweeps/ (e.g.
+    aim-ar-fourier: ar-s73, baseline-s73, ...) are plain families."""
     parts = Path(rel).parts
     if parts and parts[0] == 'sweeps' and len(parts) >= 3:
+        if root is not None and not (Path(root) / 'sweeps' / parts[1] / 'sweep.json').is_file():
+            return None, None
         return parts[1], parts[2]
     return None, None
 
@@ -119,7 +124,7 @@ def discover_runs(root, extra=None):
             if not ((path / 'metrics.jsonl').is_file() or (path / 'checkpoints').is_dir()):
                 continue
             dirs.clear()
-            sweep, trial = sweep_of(rel)
+            sweep, trial = sweep_of(rel, root)
             add(run_name(rel), path, rel, family_of(rel), sweep, trial)
 
     for name, path in (extra or {}).items():
@@ -135,7 +140,7 @@ def discover_runs(root, extra=None):
             rel = path.relative_to(root)
         except ValueError:
             pass
-        sweep, trial = sweep_of(rel) if not isinstance(rel, str) else (None, None)
+        sweep, trial = sweep_of(rel, root) if not isinstance(rel, str) else (None, None)
         add(name, path, rel, family_of(rel) if not isinstance(rel, str) else name,
             sweep, trial, extra_flag=True)
     return found
