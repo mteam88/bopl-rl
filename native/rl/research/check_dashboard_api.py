@@ -86,7 +86,52 @@ with tempfile.TemporaryDirectory() as directory:
         assert status == 200 and 'id="runElo"' in body.decode()
         status, _, _ = open_url('/api/sweeps')
         assert status == 200
-        print('PASS: cache invalidation, ladder payload, human/pool rows, HTML routes')
+
+        evaldir.mkdir(parents=True, exist_ok=True)
+        visual = evaldir / 'bot-0.json'
+        replay = evaldir / 'bot-0.rep'
+        mind = evaldir / 'bot-0.mind.json.gz'
+        visual.write_text(json.dumps({
+            'schema': 1, 'step': 2, 'task': {'name': 'bot-0'},
+            'result': {'win': True}, 'tick_rate': 60,
+            'frames': [
+                {'t': 0, 'flags': 4, 'players': [{'id': 1, 'flags': 1, 'kills': 0, 'x': -1.23456, 'y': 2.0, 'scale': 1.0}],
+                 'entities': [], 'telemetry': [], 'slimes': [], 'actions': []},
+                {'t': 4, 'flags': 4, 'players': [{'id': 1, 'flags': 1, 'kills': 0, 'x': 3.14159, 'y': 2.0, 'scale': 1.0}],
+                 'entities': [], 'telemetry': [], 'slimes': [], 'actions': []},
+            ],
+        }))
+        replay.write_bytes(b'BOPLREP2')
+        with __import__('gzip').open(mind, 'wt') as handle:
+            handle.write('{"schema":1}')
+        visual_path = '/runs/test/evaluations/000000002/bot-0.json'
+        status, etag, body = open_url(visual_path)
+        assert status == 200 and etag
+        lines = body.decode().strip().split('\n')
+        assert len(lines) == 3
+        meta, frame0, frame1 = map(json.loads, lines)
+        assert 'frames' not in meta and meta['tick_rate'] == 60
+        assert frame0['players'][0]['x'] == -1.235
+        req = urllib.request.Request(f'http://127.0.0.1:{port}{visual_path}',
+                                     headers={'Accept-Encoding': 'gzip'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            gz_body = response.read()
+            assert response.headers.get('Content-Encoding') == 'gzip'
+            assert response.headers.get('Content-Type') == 'application/x-ndjson'
+            assert len(gz_body) < visual.stat().st_size
+        assert open_url(visual_path, etag)[0] == 304
+        visual.write_text(visual.read_text().replace('2.0', '9.5'))
+        status, new_etag, body = open_url(visual_path)
+        assert status == 200 and new_etag != etag
+        assert json.loads(body.decode().strip().split('\n')[1])['players'][0]['y'] == 9.5
+        status, _, body = open_url('/runs/test/evaluations/000000002/bot-0.rep')
+        assert status == 200 and body == b'BOPLREP2'
+        status, _, body = open_url('/runs/test/evaluations/000000002/bot-0.mind.json.gz')
+        if body[:2] == b'\x1f\x8b':
+            body = __import__('gzip').decompress(body)
+        assert status == 200 and json.loads(body)['schema'] == 1
+        assert (evaldir / 'bot-0.json.dash.gz').is_file()
+        print('PASS: cache invalidation, ladder payload, human/pool rows, HTML routes, visual ndjson')
     finally:
         server.terminate()
         server.wait(timeout=5)
