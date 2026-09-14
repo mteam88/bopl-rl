@@ -516,6 +516,12 @@ pub struct PlayerSlot {
     /// Marker owned by each equipped Revival instance. Recasting the same
     /// instance ends its previous marker before creating another.
     pub revival_markers: [Option<usize>; 3],
+    /// A replacement clone is queued on death, then held hidden while the
+    /// ReviveEffect wisp and doubly-registered particle reach this marker.
+    pub revival_clone_pending: bool,
+    pub revival_target_marker: Option<usize>,
+    pub revival_effect_ticks: u32,
+    pub revival_particle_ticks: u32,
     pub gold_mushroom: [GoldMushroomState; 3],
     /// SlimeController.currentState as the policy observes it. The .NET enum
     /// never takes the `ability` value (nothing assigns it), so the state
@@ -1147,6 +1153,10 @@ impl RolloutWorld {
                 gust: GustState::default(),
                 revival: RevivalState::default(),
                 revival_markers: [None; 3],
+                revival_clone_pending: false,
+                revival_target_marker: None,
+                revival_effect_ticks: 0,
+                revival_particle_ticks: 0,
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 obs_state: STATE_FALL,
                 state_ticks: 0,
@@ -1264,6 +1274,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if !slot.base.alive
             || slot.respawn_ticks > 0
+            || slot.revival_clone_pending
+            || slot.revival_effect_ticks > 0
             || slot.active != ActiveAbility::None
             || slot.base.dash.active
         {
@@ -1413,6 +1425,7 @@ impl RolloutWorld {
         let data = data::get();
         self.register_pending_arrows();
         self.register_pending_revival_markers(data);
+        self.register_pending_revival_clones(data);
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
@@ -1505,6 +1518,7 @@ impl RolloutWorld {
             self.gold_mushroom_tick(index, jump_pressed, data);
         }
         self.gust_waves_update(data);
+        self.revival_effects_tick(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -1591,6 +1605,8 @@ impl RolloutWorld {
             && slot.unspawned == 0
             && slot.respawn_ticks == 0
             && slot.respawn_spawn_ticks == 0
+            && !slot.revival_clone_pending
+            && slot.revival_effect_ticks == 0
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -2120,6 +2136,162 @@ impl RolloutWorld {
             });
             self.revival_marker_pool[marker_index].registered = true;
             self.revival_marker_pool[marker_index].entity = Some(entity);
+        }
+    }
+
+    fn register_pending_revival_clones(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if !self.players[index].revival_clone_pending {
+                continue;
+            }
+            let marker_index = self.players[index]
+                .revival_target_marker
+                .expect("pending Revival clone marker");
+            let position = self.revival_marker_pool[marker_index].position;
+            let abilities = self.players[index].abilities;
+
+            let player_hierarchy = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += 8;
+            let mut ability_hierarchy = [0u32; 3];
+            for (slot, hierarchy) in ability_hierarchy.iter_mut().enumerate() {
+                *hierarchy = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy +=
+                    data.abilities[abilities[slot] as usize].updatable_count;
+            }
+
+            let mut platform_entity = usize::MAX;
+            let mut gust_entity = usize::MAX;
+            let mut revival_entity = usize::MAX;
+            for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+                let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
+                    ABILITY_GUST => (
+                        data.gust.hurtbox_radius,
+                        data.gust.collider_offset,
+                        8,
+                        &mut gust_entity,
+                    ),
+                    ABILITY_PLATFORM => (
+                        data.platform.hurtbox_radius,
+                        Vec2::ZERO,
+                        7,
+                        &mut platform_entity,
+                    ),
+                    ABILITY_REVIVAL => (
+                        data.revival.hurtbox_radius,
+                        data.revival.collider_offset,
+                        8,
+                        &mut revival_entity,
+                    ),
+                    _ => continue,
+                };
+                let id = self.next_id();
+                *target = self.entities.len();
+                self.entities.push(CEntity {
+                    id,
+                    kind: 0,
+                    layer: LAYER_PLAYER,
+                    flags: E_ENABLED | E_TRIGGER,
+                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                    x: offset.x.raw(),
+                    y: offset.y.raw(),
+                    radius: radius.raw(),
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                });
+            }
+
+            let body_entity = self.entities.len();
+            let body_id = self.next_id();
+            self.entities.push(CEntity {
+                id: body_id,
+                kind: 1,
+                layer: LAYER_PLAYER,
+                owner: index as u32 + 1,
+                flags: E_ACTIVE | E_TRIGGER,
+                hierarchy: 100_000_000 + player_hierarchy + 6,
+                x: position.x.raw(),
+                y: position.y.raw(),
+                right_x: data.player.hurtbox_extents.x.raw(),
+                up_y: data.player.hurtbox_extents.y.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+            let mut dash_entity = usize::MAX;
+            let mut bow_entity = usize::MAX;
+            for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+                let (extents, target) = match abilities[slot] {
+                    ABILITY_DASH => (data.dash.hurtbox_extents, &mut dash_entity),
+                    ABILITY_BOW => (data.bow.hurtbox_extents, &mut bow_entity),
+                    _ => continue,
+                };
+                let id = self.next_id();
+                *target = self.entities.len();
+                self.entities.push(CEntity {
+                    id,
+                    kind: 1,
+                    layer: LAYER_PLAYER,
+                    flags: E_ENABLED | E_TRIGGER,
+                    hierarchy: 100_000_000 + hierarchy + 7,
+                    right_x: extents.x.raw(),
+                    up_y: extents.y.raw(),
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                });
+            }
+            // ReviveEffect is instantiated after the clone and its copied
+            // ability prefabs. It has no collider but consumes hierarchy.
+            self.next_spawn_hierarchy += data.revival.effect_updatable_count;
+
+            let slot = &mut self.players[index];
+            slot.base.position = position;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.external_velocity = Vec2::ZERO;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.base.sync_collider();
+            slot.reported_position = position;
+            slot.reported_tick = self.tick;
+            slot.obs_state = STATE_NOTHING;
+            slot.timers.fill(Fix::from_f32(-1.5));
+            slot.active = ActiveAbility::None;
+            slot.body_entity = body_entity;
+            slot.dash_entity = dash_entity;
+            slot.bow_entity = bow_entity;
+            slot.circle_entity = platform_entity;
+            slot.gust_entity = gust_entity;
+            slot.revival_entity = revival_entity;
+            slot.revival_clone_pending = false;
+        }
+    }
+
+    fn revival_effects_tick(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if self.players[index].revival_clone_pending
+                || self.players[index].revival_effect_ticks == 0
+            {
+                continue;
+            }
+            self.players[index].revival_effect_ticks -= 1;
+            if self.players[index].revival_effect_ticks
+                == self.players[index].revival_particle_ticks
+            {
+                self.next_spawn_hierarchy += data.revival.particle_updatable_count;
+            }
+            if self.players[index].revival_effect_ticks != 0 {
+                continue;
+            }
+            let marker_index = self.players[index]
+                .revival_target_marker
+                .take()
+                .expect("live Revival effect marker");
+            self.end_revival_marker(marker_index);
+            let slot = &mut self.players[index];
+            slot.revival_particle_ticks = 0;
+            slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
+            slot.obs_state = STATE_FALL;
         }
     }
 
@@ -3636,6 +3808,12 @@ impl RolloutWorld {
     /// (after this pass's contacts) rather than an updatable.
     pub fn kill(&mut self, index: usize, killer: u32, cause: u32, by_callback: bool) {
         let players = self.players.len();
+        let revival_marker = self.players[index]
+            .revival_markers
+            .iter()
+            .flatten()
+            .copied()
+            .find(|&marker| self.revival_marker_pool[marker].active);
         let slot = &mut self.players[index];
         slot.base.alive = false;
         slot.deaths += 1;
@@ -3660,6 +3838,52 @@ impl RolloutWorld {
             self.players[killer as usize - 1].kills += 1;
         }
         let slot = &mut self.players[index];
+        if let Some(marker_index) = revival_marker {
+            // The ordinary death effect is instantiated before SpawnClone and
+            // consumes two hierarchy entries despite having no collider.
+            self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            let rows = [
+                slot.body_entity,
+                slot.dash_entity,
+                slot.circle_entity,
+                slot.bow_entity,
+                slot.gust_entity,
+                slot.revival_entity,
+            ];
+            for entity in rows {
+                if entity == usize::MAX {
+                    continue;
+                }
+                let row = &mut self.entities[entity];
+                if by_callback {
+                    row.flags = (row.flags & E_TRIGGER) | E_DESTROYED;
+                    row.owner = 0;
+                } else {
+                    row.flags = E_REMOVED;
+                }
+            }
+            let target = self.revival_marker_pool[marker_index].position;
+            let distance = (target - drop_position).length();
+            let particle_step = data::get().revival.particle_speed * DT * Fix::from_int(2);
+            let particle_ticks =
+                ((distance.raw() + particle_step.raw() - 1) / particle_step.raw()) as u32;
+            slot.base.alive = true;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.external_velocity = Vec2::ZERO;
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.cause_of_death = CAUSE_NOT_DEAD_YET;
+            slot.revival_markers = [None; 3];
+            slot.revival_clone_pending = true;
+            slot.revival_target_marker = Some(marker_index);
+            slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1 + particle_ticks;
+            slot.revival_particle_ticks = particle_ticks;
+            slot.respawn_ticks = 0;
+            slot.respawn_spawn_ticks = 0;
+            slot.obs_state = STATE_NOTHING;
+            return;
+        }
         // Stocks: spawn the replacement clone at the chooser's safe center
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
@@ -3968,7 +4192,7 @@ impl RolloutWorld {
             };
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
-            let choosing_respawn = slot.respawn_ticks > 0;
+            let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
             let in_ability = slot.active != ActiveAbility::None;
@@ -3983,7 +4207,7 @@ impl RolloutWorld {
             let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
-            if slot.out {
+            if slot.out || slot.revival_clone_pending {
                 continue; // rows were settled by `kill`
             }
             let body = &mut self.entities[body_e];
@@ -4267,12 +4491,26 @@ impl RolloutWorld {
 
     fn fill_slimes(&self, slimes: &mut Vec<CSlime>) {
         slimes.clear();
-        for slot in &self.players {
-            if !slot.base.alive || slot.unspawned > 0 {
-                continue; // not instantiated yet, or destroyed with the player
+        let mut order = [usize::MAX; MAX_PLAYERS];
+        let mut count = 0;
+        for (index, slot) in self.players.iter().enumerate() {
+            if slot.base.alive && slot.unspawned == 0 && !slot.revival_clone_pending {
+                order[count] = index;
+                count += 1;
             }
+        }
+        // RlObservation walks live SlimeControllers in updater registration
+        // order. A Revival clone is registered after the surviving original
+        // players, regardless of its lower player id.
+        order[..count].sort_unstable_by_key(|&index| {
+            self.entities[self.players[index].body_entity].hierarchy
+        });
+        for &index in &order[..count] {
+            let slot = &self.players[index];
             let in_ability = slot.active != ActiveAbility::None;
-            let respawning = slot.respawn_ticks > 0 || slot.respawn_spawn_ticks > 0;
+            let respawning = slot.respawn_ticks > 0
+                || slot.respawn_spawn_ticks > 0
+                || slot.revival_effect_ticks > 0;
             let mut flags = S_ACTIVE;
             if respawning {
                 flags |= S_SUPPRESS_INPUT;

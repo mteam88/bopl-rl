@@ -397,6 +397,14 @@ def main():
     marker_circle = component(revival_marker, "DPhysicsCircle")
     marker_fix = component(revival_marker, "FixTransform")
     marker_body = component(revival_marker, "BoplBody")
+    revival_effect = ASSETS[guid_of(component(revival, "PlayerCollision")["reviveEffectPrefab"])]
+    effect_config = component(revival_effect, "ReviveEffect")
+    particle = ASSETS[guid_of(effect_config["Particle"])]
+    particle_config = component(particle, "ReviveParticle")
+    death_effect = ASSETS[guid_of(component(revival, "PlayerCollision")["deathEffect"])]
+    updater_count = lambda prefab: sum(
+        "hierarchyNumber" in c.get("properties", {}) for c in prefab["data"]["components"]
+    )
     out["prefabs"]["revival"] = {
         "anims": animations(guid_of(revival_quick["animData"])),
         "shockwave_offset": vec2(revival_quick, "shockwaveOffset"),
@@ -410,6 +418,13 @@ def main():
             "radius": fix(marker_circle, "startRadius"),
             "body": physics_body(marker_body),
         },
+        "death_effect_updatable_count": updater_count(death_effect),
+        "effect_updatable_count": updater_count(revival_effect),
+        # ReviveParticle registers itself in Awake and InitRevive in addition
+        # to its SpriteAnimator, consuming three updater hierarchy entries.
+        "particle_updatable_count": updater_count(particle) + 1,
+        "effect_wisp_ticks": sum(abs(t) for t in animations(guid_of(effect_config["animData"]))["wisp"]),
+        "particle_speed": fix(particle_config, "speed"),
     }
 
     # ---- Complete ability catalog ----

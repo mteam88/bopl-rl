@@ -232,6 +232,11 @@ struct RawRevival {
     collider_offset: RawVec2,
     hurtbox_radius: i64,
     marker: RawRevivalMarker,
+    death_effect_updatable_count: u32,
+    effect_updatable_count: u32,
+    particle_updatable_count: u32,
+    effect_wisp_ticks: u32,
+    particle_speed: i64,
 }
 
 #[derive(Deserialize)]
@@ -405,6 +410,11 @@ pub struct RevivalData {
     pub marker_offset: Vec2,
     pub marker_radius: Fix,
     pub marker_body: crate::physics::Body,
+    pub death_effect_updatable_count: u32,
+    pub effect_updatable_count: u32,
+    pub particle_updatable_count: u32,
+    pub effect_wisp_ticks: u32,
+    pub particle_speed: Fix,
 }
 pub struct AbilityData {
     pub id: u32,
@@ -735,6 +745,11 @@ pub fn get() -> &'static RolloutData {
                     marker_offset: revival.marker.offset.get(),
                     marker_radius: Fix::from_raw(revival.marker.radius),
                     marker_body: body(&revival.marker.body, Fix::ZERO),
+                    death_effect_updatable_count: revival.death_effect_updatable_count,
+                    effect_updatable_count: revival.effect_updatable_count,
+                    particle_updatable_count: revival.particle_updatable_count,
+                    effect_wisp_ticks: revival.effect_wisp_ticks,
+                    particle_speed: Fix::from_raw(revival.particle_speed),
                 }
             },
             abilities: raw

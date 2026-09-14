@@ -115,7 +115,7 @@
       "prefab": "Assets/GameObject/Revival.prefab",
       "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
       "native_status": "partial",
-      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred RevivePositionIndicator registration, exact shape-group observation order, marker replacement, and camera/water clamp; revival_ability_ab compares 650 complete NativeAOT/Rust ticks exactly. Composed effects, duplicate particle updates, arrival and respawn have source differential coverage, but the public death-to-respawn path is still being connected."
+      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred RevivePositionIndicator registration, exact shape-group observation order, marker replacement, and camera/water clamp; revival_ability_ab compares 650 complete NativeAOT/Rust ticks exactly. revival_death_ab compares 900 exact ticks through boundary death, hidden copied clone registration, distance-derived wisp/particle delay, marker removal, spawn animation and launch. Multiple simultaneous markers still require the general multi-clone rollout representation."
     },
     {
       "id": 16,

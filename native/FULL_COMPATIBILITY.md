@@ -1518,7 +1518,7 @@ records are in `fixtures/bopl-body.jsonl.gz`; hashes and raw captures are in
 
 These are component-method checks against seeded registered physics state.
 The public rollout integration described below now covers fresh collider
-initialization and dynamic marker registration; death-to-respawn remains open.
+initialization, dynamic marker registration, and the one-marker death path.
 
 ### Revival marker allocation and lifetime
 
@@ -1564,6 +1564,19 @@ enumerates all circles before boxes and rounded rectangles, independent of
 when a circle was registered. The Rust observation writer now performs those
 three allocation-free linear passes while preserving registration order within
 each group.
+
+`revival_death_ab.c` then drives that same player out of the map and compares
+900 complete ticks. At the death tick the old slime and its ability colliders
+are removed while the marker and player life remain. On the following pass,
+the copied Player/Revival/Dash/Platform prefabs receive their source hierarchy
+numbers and collider identities, and the hidden clone appears after the
+surviving original slime. The clone remains suppressed through the 60-tick
+wisp and distance-derived particle flight. The port accounts for
+ReviveParticle's duplicate updater registration, removes the marker on the
+same pass as `ReSpawn`, advances fresh cooldowns through the 105-frame spawn,
+and launches at exactly 11.25 units/second. All player, slime, telemetry and
+entity fields match NativeAOT exactly across the scenario. Multiple marker
+positions still need the general multi-clone rollout representation.
 
 ### Revival death, effects and particles
 

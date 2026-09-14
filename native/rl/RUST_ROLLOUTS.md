@@ -79,7 +79,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same
   ability slot on recast. Dynamic colliders are published in DetPhysics shape
-  group order, so the new circle precedes the static water box.
+  group order, so the new circle precedes the static water box. A death with
+  one live marker preserves stocks, replaces the dead slime with a hidden
+  clone, waits through the measured wisp and doubly-registered particle
+  travel, removes the marker, and plays the ordinary spawn animation before
+  restoring input.
   Invisibility is an instant cast: its five-second player clocks, castability
   gate, 10,000-second live sentinel, six-second restored cooldown, strict
   expiry, duplicate-slot chaining, player flags, and telemetry follow the
@@ -120,8 +124,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 - Only ids 0/1/2/4/7/14/15/19/34 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
-  while Dash/Bow/Gust/Platform/Revival execute casts. Revival death-to-marker
-  respawn is still being connected to the public match lifecycle. Every slot uses its exact authored
+  while Dash/Bow/Gust/Platform/Revival execute casts. Revival's public death
+  path currently supports one live marker; multiple simultaneous markers
+  require the general multi-clone rollout representation. Every slot uses its exact authored
   cooldown and common ground/castability metadata from the exported prefab;
   unported catalog ids never activate. Closing this scope requires the remaining
   catalog abilities and their dynamic bodies/collision pairs.
