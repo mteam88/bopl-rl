@@ -204,16 +204,24 @@ synchronized to playback. Implemented natively (native-evaluation rift commit
 Mind dumps are produced only by the native evaluator; historical games without
 one simply don't show the panel (no torch backfill).
 
-## Checkpoints and the quality number
+## Checkpoints and the quality numbers
 
-Quality is one number: fixed-pool Bradley-Terry Elo vs pool-v5 (members held
-fixed, random = 0), summarised as the IQM of the last three rated evaluation
-checkpoints with a 95% interval. `evaluate.py` fits it from the evaluation
-games against pool members on pool maps and writes
-`<run>/reference/<pool_sha8>/<stem>.json`. The band rater (`rate-runs`, the
-sweep scorer) writes the same path with more games. The dashboard ladder is
-`GET /api/ladder`; a run is `GET /api/run/<name>` (`ratings`, `iqm`). There
-is no joint ladder and no `<run>/ladder/ladder.json`.
+There are two families of numbers. They never share an axis.
+
+**Frozen-pool IQM** is still the sweep objective: Bradley-Terry Elo vs one
+frozen `pool.json` (members held fixed, random = 0), summarised as the IQM of
+the last three rated checkpoints with a 95% interval. `evaluate.py` and
+`rate-runs` write `<run>/reference/<pool_sha8>/<stem>.json`. The dashboard
+labels each such curve (`pool v5 IQM3`, `pool v6 IQM3`, …) and will not mix
+pools.
+
+**Joint Elo** is one Bradley-Terry over every pool round-robin `matches[]`,
+every on-disk candidate `records` dict, and human games (excluded rounds
+dropped). Identity is checkpoint sha256 / bot name / `random` / `human`.
+Regularizer is one virtual draw per played pair so 480-game matches keep
+their weight. `GET /api/ladder` is this fit; `GET /api/index` lists every
+discovered run. A run payload (`GET /api/run/<name>`) carries both `joint`
+and labelled `pools[]`. There is no `<run>/ladder/ladder.json`.
 
 ## Asks that are trainer configuration (not dashboard code)
 
@@ -226,15 +234,20 @@ is no joint ladder and no `<run>/ladder/ladder.json`.
 
 ## Dashboard reader limits
 
-Ladder and sweep payloads are assembled from rating files
-(`reference/<pool_sha8>/*.json` and legacy `reference/*.json`), `status.json`,
-`result.json` flags, and `sweep.json`. They do not parse `metrics.jsonl` or
-evaluation `result.json` bodies. Bootstrap intervals already stored in a rating
-file are reused; they are not refit. A background thread keeps the last good
-ladder and sweep JSON warm; responses are ETag'd.
+The index, joint ladder, and sweep payloads are assembled from rating files
+(`reference/<pool_sha8>/*.json` and legacy `reference/*.json`), each pool's
+`matches[]`, `status.json`, `result.json` flags, `sweep.json`, and
+`human/mac/games.jsonl` (minus `excluded.json`). They do not parse
+`metrics.jsonl` or evaluation `result.json` bodies to fit Elo. Frozen-pool
+bootstrap intervals already stored in a rating file are reused; they are not
+refit. The joint fit is a new MLE (sparse Newton, diagonal Wald CI) cached by
+the mtimes of those inputs. A background thread keeps the last good index,
+ladder, and sweep JSON warm; responses are ETag'd.
 
-`GET /api/run/<name>` is the first-paint run payload: status, config, the
-slim rating curve, IQM, flags, an evaluation directory list, and the **latest**
+`GET /api/run/<name>` is the first-paint run payload: status, config, labelled
+frozen-pool curves (`pools[]`, `iqm` for the primary pool), the joint curve,
+human records against this run's checkpoints when he played them, flags, an
+evaluation directory list, and the **latest**
 evaluation report (groups + replay metadata). Older evaluation reports load
 from `GET /api/run/<name>/evaluation/<dir>`. Training charts load from
 `GET /api/run/<name>/metrics` (not the first paint): at most 360 points with

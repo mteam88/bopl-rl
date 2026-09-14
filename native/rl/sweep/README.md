@@ -324,24 +324,26 @@ configuration; `launch-best.sh` is a ready-to-run launch script for it
 (`STEPS=... OUT=... bash launch-best.sh`, long-run conventions). Raw
 per-trial records live in `results.jsonl` and `sweep.json`.
 
-Trials are ordinary run directories, so the dashboard renders them. Register
-roots with `--root`, isolated live runs with `--run-root NAME=PATH`, and a
-sweep's trials with `--run-root-glob`. `--pool` is the scale (default
-pool-v5). `--ladder` and `--study-root` are gone.
+Trials are ordinary run directories, so the dashboard renders them. `--root`
+walks the tree; `--run-root` / `--run-root-glob` are only for isolated
+workspaces. `--pool` labels frozen-pool IQM (and is the fallback when
+`sweep.json` has no scoring pool). Joint Elo is a separate fit over every
+rated game on disk and must not be compared to a pool IQM.
 
 ```sh
 native/artifacts/rl/venv/bin/python native/rl/research/serve.py \
   --host 127.0.0.1 --port 8876 \
   --root native/artifacts/rl \
-  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
-  --run-root-glob 'overnight-3=native/artifacts/rl/sweeps/overnight-3/[0-9]*' \
-  --run-root-glob 'overnight-4=native/artifacts/rl/sweeps/overnight-4/[0-9]*'
+  --pool native/artifacts/rl/sweeps/anchors/pool-v6/pool.json \
+  --human native/artifacts/rl/human/mac
 ```
 
-`/` is the ladder (IQM3 ± CI on pool-v5, pool members frozen, human row).
-`/run/<name>` is Elo over steps plus win rates, behaviour, checkpoints, replay.
-`/sweep/<name>` is the trial table and Pareto front. New glob matches appear
-without restarting.
+`/` is the run index (families + a searchable table). `/ladder` is the joint
+Bradley-Terry scale (random = 0, human row, 95% CI). `/run/<name>` is joint
+Elo over steps, labelled frozen-pool curves on their own chart, win rates,
+behaviour, checkpoints, replay. `/sweep/<name>` is the trial table (objective
+score, that pool's IQM, joint Elo) and Pareto front. New runs appear without
+restarting.
 
 ## Cautions
 
