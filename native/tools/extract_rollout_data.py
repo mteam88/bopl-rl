@@ -368,6 +368,51 @@ def main():
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
     }
 
+    # ---- Complete ability catalog ----
+    # The catalog order is the public RL ability id. Pull common routing data
+    # from the concrete prefab instead of maintaining a second hand-written
+    # cooldown table in Rust. Rewind derives from InstantAbility, so its
+    # inherited serialized fields live on the Rewind component itself.
+    coverage = json.load(open(ROOT / "data" / "ability-coverage.json"))["abilities"]
+    _, icons = find_prefab("Assets/MonoBehaviour/AbilityIcons.asset")
+    icon_props = icons["data"]["properties"]
+    ability_catalog = []
+    for expected_id, item in enumerate(coverage):
+        if item["id"] != expected_id:
+            raise ValueError(f"ability coverage is not dense at {expected_id}")
+        _, prefab = find_prefab(item["prefab"])
+        components = prefab["data"]["components"]
+        ordinary = next((c for c in components if c["type"] == "Ability"), None)
+        if ordinary is not None:
+            props = ordinary["properties"]
+            cooldown = fix(props, "Cooldown")
+            instant = False
+            castable = props["isCastable"]
+        else:
+            inherited = next((c for c in components
+                              if "cooldown.m_rawValue" in c.get("properties", {})
+                              and "OnlyCastableOnGround" in c.get("properties", {})), None)
+            if inherited is None:
+                raise KeyError(f"{item['prefab']}: AbilityMonoBehaviour")
+            props = inherited["properties"]
+            cooldown = fix(props, "cooldown")
+            instant = True
+            castable = True
+        prefix = f"sprites.Array.data[{expected_id}]"
+        ability_catalog.append({
+            "id": expected_id,
+            "name": item["name"],
+            "prefab": item["prefab"],
+            "cooldown": cooldown,
+            "ground_only": props["OnlyCastableOnGround"],
+            "stopped_during_time_stop": props["cooldownStoppedDuringTimeStop"],
+            "castable": castable,
+            "instant": instant,
+            "rope": props.get("isHookshot", False),
+            "offensive": icon_props[f"{prefix}.isOffensiveAbility"],
+        })
+    out["abilities"] = ability_catalog
+
     # ---- validation against the verified Level1 movement data ----
     ref = json.load(open(ROOT / "data" / "level1-movement.json"))
     ref_platforms = {(p["surface"]["center"]["x"], p["surface"]["center"]["y"]):

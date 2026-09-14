@@ -878,6 +878,28 @@ released buttons or CanUseAbilities; separate calls to Unity's actual readiness
 and castability methods exercise true and false predicates. These checks do not
 yet prove successful selection/entry or any complete ability implementation.
 
+### Rollout catalog routing and Random (2026-09-14)
+
+The public rollout backend now embeds common metadata for all 39 catalog entries,
+generated from each shipped prefab by `extract_rollout_data.py`. Cooldown,
+ground-only, time-stop cooldown, castability, instant/rope and offensive fields
+therefore retain their authored Q32.32 values rather than using the previous
+four-second placeholder for unimplemented abilities.
+
+Catalog id 1 (Random) is resolved at the same point as
+`GameSessionHandler.SpawnPlayers`: after level-intro RNG draws and before ability
+objects are constructed. Each Random slot draws uniformly from ids 2 through 38.
+When all equipped slots are Random and no draw through the final slot was
+offensive, the final slot is redrawn once, matching the source's deliberately
+non-guaranteed fallback. The replay header retains the configured Random ids while
+the live slime observation exposes the resolved abilities.
+
+`random_ability_ab.c` compares the NativeAOT oracle and optimized Q32 Rust backend
+over six seeds, all five maps, mixed and all-Random configurations: 72 resolved
+slot ids and cooldowns match exactly. This certifies the complete behavior of the
+Random catalog entry; behavior of the concrete ability selected by it remains
+covered only when that selected ability itself is listed as ported.
+
 
 ## Executable Invisibility and streamed actor verification
 

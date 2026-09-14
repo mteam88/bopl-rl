@@ -14,7 +14,8 @@
       "name": "Random",
       "prefab": "Assets/GameObject/Random.prefab",
       "prefab_guid": "104ab7202bc7daf48bf2cc31fd8cf403",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Spawn-time replacement matches GameSessionHandler across exact seeded draws, ids 2..38, authored cooldowns, and the all-Random offensive fallback; random_ability_ab compares 72 NativeAOT/Rust slots."
     },
     {
       "id": 2,

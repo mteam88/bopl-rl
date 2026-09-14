@@ -36,6 +36,7 @@ pub const MAP_COUNT: u32 = 5;
 pub const ABILITY_COUNT: u32 = 39;
 pub const MAX_PLAYERS: usize = 6;
 /// Catalog indices with real behaviour in this backend.
+pub const ABILITY_RANDOM: u32 = 1;
 pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_PLATFORM: u32 = 14;
@@ -854,15 +855,25 @@ impl RolloutWorld {
             let mut abilities = [0u32; 3];
             let mut cooldowns = [Fix::ZERO; 3];
             abilities[..slots].copy_from_slice(&config.player[i].abilities[..slots]);
+            // GameSessionHandler.SpawnPlayers replaces Random prefabs before
+            // constructing the slime. The full catalog excludes the two menu
+            // entries (Null and Random), giving indices 2..38. If every slot
+            // is Random, the source makes one extra draw for the final slot
+            // when none of the preceding draws was offensive.
+            let all_random = abilities[..slots]
+                .iter()
+                .all(|&ability| ability == ABILITY_RANDOM);
+            let mut has_offensive = false;
             for s in 0..slots {
-                cooldowns[s] = match abilities[s] {
-                    ABILITY_DASH => data.dash.cooldown,
-                    ABILITY_BOW => data.bow.cooldown,
-                    ABILITY_PLATFORM => data.platform.cooldown,
-                    // Unsimulated abilities keep a plausible cooldown so the
-                    // ready bit still cycles for the policy.
-                    _ => Fix::from_int(4),
-                };
+                if abilities[s] == ABILITY_RANDOM {
+                    let mut resolved = self.rng.uint_range(2, ABILITY_COUNT);
+                    has_offensive |= data.abilities[resolved as usize].offensive;
+                    if all_random && !has_offensive && s + 1 == slots {
+                        resolved = self.rng.uint_range(2, ABILITY_COUNT);
+                    }
+                    abilities[s] = resolved;
+                }
+                cooldowns[s] = data.abilities[abilities[s] as usize].cooldown;
             }
             // -1.5 s on the wake tick, one DT per tick since (every phase
             // below, including the pre-instantiation ticks, advances it).
@@ -1376,6 +1387,10 @@ impl RolloutWorld {
                     continue;
                 }
                 let ability = slot.abilities[s];
+                let ability_data = &data.abilities[ability as usize];
+                if (ability_data.ground_only && !slot.base.grounded) || !ability_data.castable {
+                    continue;
+                }
                 {
                     let slot = &mut self.players[index];
                     // A landing in this pass's PlayerPhysics.UpdateSim already

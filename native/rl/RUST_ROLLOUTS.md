@@ -49,7 +49,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **Dash, Bow, Platform** (catalog ids 2/4/14): ported from `sim/Gameplay`
+- **Random, Dash, Bow, Platform** (catalog ids 1/2/4/14): Random loadouts are
+  resolved during player spawning with the reference RNG sequence, full-catalog
+  selection range, and the all-Random offensive fallback. Dash, Bow, and
+  Platform are ported from `sim/Gameplay`
   with measured timings. Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,
   fire-on-release (early release fires from transform sprite index 2, tick
@@ -95,8 +98,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 2/4/14 have real behavior. Other catalog ids tick a plausible
-  cooldown and never activate. Closing this scope requires the remaining
+- Only ids 1/2/4/14 have real behavior. Random is a spawn-time replacement,
+  while Dash/Bow/Platform execute casts. Every slot now uses its exact authored
+  cooldown and common ground/castability metadata from the exported prefab;
+  unported catalog ids never activate. Closing this scope requires the remaining
   catalog abilities and their dynamic bodies/collision pairs.
 - Landed arrows are freed from the native entity table instead of remaining
   as attached visual children. The gameplay-relevant projectile collider is

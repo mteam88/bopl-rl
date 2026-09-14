@@ -205,6 +205,20 @@ struct RawPrefabs {
 struct RawRollout {
     maps: Vec<RawMap>,
     prefabs: RawPrefabs,
+    abilities: Vec<RawAbility>,
+}
+#[derive(Deserialize)]
+struct RawAbility {
+    id: u32,
+    name: String,
+    prefab: String,
+    cooldown: i64,
+    ground_only: bool,
+    stopped_during_time_stop: bool,
+    castable: bool,
+    instant: bool,
+    rope: bool,
+    offensive: bool,
 }
 
 /// A platform's authored geometry plus the behaviours that move it.
@@ -319,6 +333,18 @@ pub struct DashData {
     pub cooldown: Fix,
     pub hurtbox_extents: Vec2,
 }
+pub struct AbilityData {
+    pub id: u32,
+    pub name: String,
+    pub prefab: String,
+    pub cooldown: Fix,
+    pub ground_only: bool,
+    pub stopped_during_time_stop: bool,
+    pub castable: bool,
+    pub instant: bool,
+    pub rope: bool,
+    pub offensive: bool,
+}
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
     pub player: MovementData,
@@ -327,6 +353,7 @@ pub struct RolloutData {
     pub arrow: ArrowData,
     pub pickup: PickupData,
     pub platform: PlatformAbilityData,
+    pub abilities: Vec<AbilityData>,
 }
 
 /// Grounded friction per tick, from the verified Level1 movement goldens
@@ -601,6 +628,26 @@ pub fn get() -> &'static RolloutData {
                     .sudden_death_y_speed
                     .clone(),
             },
+            abilities: raw
+                .abilities
+                .into_iter()
+                .enumerate()
+                .map(|(index, ability)| {
+                    assert_eq!(ability.id as usize, index, "ability catalog must be dense");
+                    AbilityData {
+                        id: ability.id,
+                        name: ability.name,
+                        prefab: ability.prefab,
+                        cooldown: Fix::from_raw(ability.cooldown),
+                        ground_only: ability.ground_only,
+                        stopped_during_time_stop: ability.stopped_during_time_stop,
+                        castable: ability.castable,
+                        instant: ability.instant,
+                        rope: ability.rope,
+                        offensive: ability.offensive,
+                    }
+                })
+                .collect(),
         }
     })
 }
