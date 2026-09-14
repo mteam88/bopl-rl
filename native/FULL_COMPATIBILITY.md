@@ -1322,7 +1322,8 @@ actor scheduler. It stores all 188 samples, including position, both velocities,
 rotation and three cooldown timers. Recording continues during time stop and
 while body simulation is disabled, and pauses when the owner is inactive or its
 controller is marked destroyed. Whole-object deletion retains the final history.
-Playback remains explicitly unsupported.
+The standalone actor runner still limits this fixture to history recording;
+the public rollout integration below executes playback against the full map.
 
 The original Unity RewindRecorder.UpdateSim matches in all 48 comparisons, eight
 cases for each one-through-six-player roster: 36 complete 410-tick episodes
@@ -1339,8 +1340,33 @@ samples. The verifier uses Python's standard-library lzma support. Run
 `python3 native/tools/verify_actor_rewind.py --golden`; fresh captures use the same
 command without `--golden`. Raw evidence and exact source/input/output hashes are
 in `artifacts/actor-rewind/report.json`. Existing spawn and death regressions,
-Rust tests/lints, Python checks and the C smoke test pass. Rewind casting/playback,
-the complete match environment remain outstanding. Clone allocation is covered below.
+Rust tests/lints, Python checks and the C smoke test pass. Clone allocation is
+covered below.
+
+### Executable Rewind playback (2026-09-14)
+
+Catalog id 31 now connects that fixed 188-sample history to the public rollout.
+Its fixed-capacity path contains at most 15 ten-tick Catmull-Rom segments and a
+121-entry arc-length table, so recording, path construction and playback do not
+allocate. A successful cast selects at most 150 prior ticks, plays them over the
+source's integer-truncated 17/25 duration, and evaluates the same smootherstep,
+spline and arc reparameterization arithmetic. `PlayerBody.AddForce` uses the
+original inverse-mass cancellation rather than assigning velocity directly.
+
+Playback disables PlayerPhysics and input while preserving PlayerBody integration
+and ordinary cooldown advancement. Each path segment raycasts against rounded
+platforms and applies the authored 3000 force; waking a quiet map also invalidates
+the platform fast path. Completion occurs on the following updater pass. It runs
+the six-pass rounded-rectangle depenetration, restores both velocity channels,
+rotation and the two other cooldowns, preserves the live Rewind cooldown, and
+repeats `UnGround(false)` against the platform reference deliberately retained by
+the source. The other cooldowns then advance once later in the same pass.
+
+`rewind_ability_ab.c` compares every public header, player, slime, telemetry and
+entity field for 300 NativeAOT/Q32 ticks. The scenario records grounded and aerial
+movement, reverses direction, casts from a moving platform, observes the full
+102-tick suppressed playback, pushes that platform, and completes the retained
+ground release with no death. All fields match exactly.
 
 ## Scheduled map-boundary deaths
 

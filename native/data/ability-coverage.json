@@ -230,7 +230,8 @@
       "name": "Rewind",
       "prefab": "Assets/GameObject/Rewind.prefab",
       "prefab_guid": "b03946a27fb04a3092575c77faa0d9e6",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "rewind_ability_ab matches 300 NativeAOT/Rust Q32 ticks across recorded grounded and aerial movement, 150-tick history selection, 102-tick smootherstep/Catmull-Rom playback, input and physics suppression, platform raycast force, destination velocity/rotation/cooldown restoration, arrival depenetration and retained-ground release."
     },
     {
       "id": 32,

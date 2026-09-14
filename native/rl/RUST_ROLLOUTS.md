@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Gust, Platform, Revival, Invisibility, Teleport, Gold mushroom**
-  (catalog ids 0/1/2/3/4/7/14/15/19/25/34): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Gust, Platform, Revival, Invisibility, Teleport, Rewind, Gold mushroom**
+  (catalog ids 0/1/2/3/4/7/14/15/19/25/31/34): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -108,6 +108,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and disables each moved GameObject for the strict 0.6-second visual-effect
   interval. Each effect consumes the same four RNG samples per active tick,
   including its removal pass.
+  Rewind records the live body and all three cooldown clocks in a fixed
+  188-sample ring. A cast follows the source's arc-length-parametrized
+  Catmull-Rom path for 17/25 of the recorded interval, suppresses input and
+  PlayerPhysics, pushes intersected platforms, and restores the destination
+  velocities, rotation and non-Rewind cooldowns. Arrival depenetration and the
+  retained-ground release offset run in their original updater order.
   Invisibility is an instant cast: its five-second player clocks, castability
   gate, 10,000-second live sentinel, six-second restored cooldown, strict
   expiry, duplicate-slot chaining, player flags, and telemetry follow the
@@ -145,12 +151,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/14/15/19/25/34 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/7/14/15/19/25/31/34 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
-  while Dash/Grenade/Bow/Gust/Platform/Revival/Teleport execute casts. Grenade is
-  exact through grounded owner-impact detonation and stock recovery; its aerial,
-  timed-fuse and duplication paths remain absent.
+  while Dash/Grenade/Bow/Gust/Platform/Revival/Teleport/Rewind execute casts. Grenade is
+  exact through grounded and aerial release, owner-impact or timed-fuse
+  detonation, and stock recovery; duplication and forced-exit paths remain absent.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

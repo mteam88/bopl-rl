@@ -45,6 +45,7 @@ pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_TELEPORT: u32 = 25;
+pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
@@ -355,6 +356,156 @@ pub struct ThrowItemState {
     pub item: Option<usize>,
 }
 
+const REWIND_CAPACITY: usize = 188;
+const REWIND_MAX_SEGMENTS: usize = 15;
+const REWIND_ARC_SAMPLES: usize = REWIND_MAX_SEGMENTS * 8 + 1;
+
+#[derive(Clone, Copy, Default)]
+pub struct RewindSample {
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub external_velocity: Vec2,
+    pub rotation: Fix,
+    pub cooldowns: [Fix; 3],
+}
+
+#[derive(Clone)]
+pub struct RewindState {
+    pub ring: [RewindSample; REWIND_CAPACITY],
+    pub head: usize,
+    pub count: usize,
+    pub rewinding: bool,
+    pub playback_ticks: u32,
+    pub playback_tick: u32,
+    pub ability_slot: usize,
+    /// `PlayerPhysics.UnGround` deliberately retains its attached platform;
+    /// ReleaseControl calls it again after arrival and repeats the 0.05 push.
+    pub attached_ground: Option<u32>,
+    pub finish_next_tick: bool,
+    pub destination: RewindSample,
+    pub path_segments: usize,
+    pub path_positions: [Vec2; REWIND_MAX_SEGMENTS + 1],
+    pub path_rotations: [Fix; REWIND_MAX_SEGMENTS + 1],
+    pub arc_lengths: [Fix; REWIND_ARC_SAMPLES],
+    pub arc_count: usize,
+    pub total_arc_length: Fix,
+}
+
+impl Default for RewindState {
+    fn default() -> Self {
+        Self {
+            ring: [RewindSample::default(); REWIND_CAPACITY],
+            head: 0,
+            count: 0,
+            rewinding: false,
+            playback_ticks: 0,
+            playback_tick: 0,
+            ability_slot: 0,
+            attached_ground: None,
+            finish_next_tick: false,
+            destination: RewindSample::default(),
+            path_segments: 0,
+            path_positions: [Vec2::ZERO; REWIND_MAX_SEGMENTS + 1],
+            path_rotations: [Fix::ZERO; REWIND_MAX_SEGMENTS + 1],
+            arc_lengths: [Fix::ZERO; REWIND_ARC_SAMPLES],
+            arc_count: 0,
+            total_arc_length: Fix::ZERO,
+        }
+    }
+}
+
+impl RewindState {
+    fn push(&mut self, sample: RewindSample) {
+        self.ring[self.head] = sample;
+        self.head = (self.head + 1) % REWIND_CAPACITY;
+        self.count = (self.count + 1).min(REWIND_CAPACITY);
+    }
+
+    fn sample_back(&self, ticks: usize) -> RewindSample {
+        self.ring[(self.head + REWIND_CAPACITY - 1 - ticks) % REWIND_CAPACITY]
+    }
+
+    fn evaluate_spline(&self, t: Fix) -> (Vec2, Fix) {
+        let s = t * Fix::from_int(self.path_segments as i64);
+        let segment = (s.to_int().max(0) as usize).min(self.path_segments - 1);
+        let u = s - Fix::from_int(segment as i64);
+        let p0 = self.path_positions[segment.saturating_sub(1)];
+        let p1 = self.path_positions[segment];
+        let p2 = self.path_positions[segment + 1];
+        let p3 = self.path_positions[(segment + 2).min(self.path_segments)];
+        let u2 = u * u;
+        let u3 = u2 * u;
+        let half = Fix::from_f32(0.5);
+        let position = half
+            * (Fix::from_int(2) * p1
+                + (p2 - p0) * u
+                + (Fix::from_int(2) * p0 - Fix::from_int(5) * p1 + Fix::from_int(4) * p2 - p3)
+                    * u2
+                + (Fix::from_int(3) * (p1 - p2) + p3 - p0) * u3);
+        let rotation =
+            self.path_rotations[segment] * (Fix::ONE - u) + self.path_rotations[segment + 1] * u;
+        (position, rotation)
+    }
+
+    fn evaluate_path(&self, t: Fix) -> (Vec2, Fix) {
+        if self.total_arc_length <= Fix::ZERO {
+            return self.evaluate_spline(t);
+        }
+        let target = t * self.total_arc_length;
+        let mut lo = 0usize;
+        let mut hi = self.arc_count - 1;
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if self.arc_lengths[mid] <= target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let span = self.arc_lengths[hi] - self.arc_lengths[lo];
+        let fraction = if span > Fix::ZERO {
+            (target - self.arc_lengths[lo]) / span
+        } else {
+            Fix::ZERO
+        };
+        self.evaluate_spline(
+            (Fix::from_int(lo as i64) + fraction) / Fix::from_int((self.arc_count - 1) as i64),
+        )
+    }
+
+    fn begin(&mut self, position: Vec2, rotation: Fix, ability_slot: usize) -> bool {
+        if self.rewinding || self.count < 2 {
+            return false;
+        }
+        let ticks_back = 150usize.min(self.count - 1);
+        self.playback_ticks = ((ticks_back * 17) / 25).max(1) as u32;
+        self.playback_tick = 0;
+        self.ability_slot = ability_slot;
+        self.finish_next_tick = false;
+        self.destination = self.sample_back(ticks_back);
+        self.path_segments = (ticks_back / 10).max(1);
+        self.path_positions[0] = position;
+        self.path_rotations[0] = rotation;
+        for i in 1..=self.path_segments {
+            let sample = self.sample_back(ticks_back * i / self.path_segments);
+            self.path_positions[i] = sample.position;
+            self.path_rotations[i] = sample.rotation;
+        }
+        self.arc_count = self.path_segments * 8 + 1;
+        self.arc_lengths[0] = Fix::ZERO;
+        let mut previous = self.path_positions[0];
+        for i in 1..self.arc_count {
+            let t = Fix::from_int(i as i64) / Fix::from_int((self.arc_count - 1) as i64);
+            let current = self.evaluate_spline(t).0;
+            self.arc_lengths[i] = self.arc_lengths[i - 1] + (current - previous).length();
+            previous = current;
+        }
+        self.total_arc_length = self.arc_lengths[self.arc_count - 1];
+        self.rewinding = true;
+        true
+    }
+}
+
 /// A platform spawned by the Platform ability (ResizablePlatform prefab).
 /// Each player keeps at most one (PlatformTransform's one-slot srrBuffer);
 /// a re-cast removes the previous platform.
@@ -598,6 +749,7 @@ pub struct PlayerSlot {
     pub teleport_effect_active: bool,
     pub teleport_effect_time: Fix,
     pub gold_mushroom: [GoldMushroomState; 3],
+    pub rewind: RewindState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
     /// never takes the `ability` value (nothing assigns it), so the state
     /// freezes at its pre-ability value while an ability runs.
@@ -1295,6 +1447,7 @@ impl RolloutWorld {
                 teleport_effect_active: false,
                 teleport_effect_time: Fix::ZERO,
                 gold_mushroom: [GoldMushroomState::default(); 3],
+                rewind: RewindState::default(),
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
@@ -1347,9 +1500,10 @@ impl RolloutWorld {
                             Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                     }
                 }
+                self.record_warmup_rewind(i);
                 continue;
             }
-            self.movement_tick(&no_input);
+            self.movement_tick(&no_input, i);
         }
         // A warmup that ends inside the spawn animation hands the rest of it
         // to the episode (respawn_tick counts it down and launches the same
@@ -1383,8 +1537,22 @@ impl RolloutWorld {
         self.next_entity_id
     }
 
+    fn record_warmup_rewind(&mut self, warmup_tick: u32) {
+        let timer = TIMER_START
+            + DT * Fix::from_int(i64::from(warmup_tick.saturating_sub(SLIME_AWAKE_TICK)));
+        for slot in &mut self.players {
+            slot.rewind.push(RewindSample {
+                position: slot.base.position,
+                velocity: slot.base.velocity,
+                external_velocity: slot.base.external_velocity,
+                rotation: slot.base.rotation,
+                cooldowns: [timer; 3],
+            });
+        }
+    }
+
     /// One movement-only tick (used for warmup settling).
-    fn movement_tick(&mut self, actions: &[Action]) {
+    fn movement_tick(&mut self, actions: &[Action], warmup_tick: u32) {
         self.rebuild_bounds();
         for (index, action) in actions.iter().enumerate() {
             if !self.players[index].base.alive {
@@ -1392,6 +1560,9 @@ impl RolloutWorld {
             }
             self.players[index].base.step(*action, terrain!(self));
         }
+        // RewindRecorder.UpdateSim is after PlayerBody.UpdateSim but before
+        // PlayerPhysics.LateUpdateSim snaps grounded riders to their surface.
+        self.record_warmup_rewind(warmup_tick);
         for slot in &mut self.players {
             if slot.base.alive {
                 slot.base.sync_collider();
@@ -1656,6 +1827,7 @@ impl RolloutWorld {
                 self.kill(index, ENVIRONMENT, cause, false);
             }
         }
+        self.rewind_recorders_tick();
         // SuperStarEffect prefabs spawned during a slime update join the
         // updater list on the following tick. Once live they run after player
         // forms and can overwrite the tick's vertical self-imposed velocity.
@@ -1747,7 +1919,11 @@ impl RolloutWorld {
         // physics; their Player-layer box keeps the position DetPhysics
         // synced above until the next Simulate.
         for slot in &mut self.players {
-            if slot.base.alive && slot.base.grounded && slot.removed_ground_normal.is_none() {
+            if slot.base.alive
+                && slot.base.grounded
+                && slot.removed_ground_normal.is_none()
+                && !slot.rewind.rewinding
+            {
                 slot.base.late_step(&self.platforms);
             }
         }
@@ -1788,6 +1964,20 @@ impl RolloutWorld {
             self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
         }
+        if self.players[index].rewind.rewinding {
+            // RewindRecorder disables PlayerPhysics and suppresses the slime
+            // controller's input. Cooldowns still advance, SlimeController
+            // calls Move(zero), and PlayerBody remains live ahead of the
+            // recorder.
+            let slot = &mut self.players[index];
+            for timer in &mut slot.timers {
+                *timer += DT;
+            }
+            slot.base.move_only(Vec2::ZERO, terrain!(self));
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+            return;
+        }
         if let Some(normal) = self.players[index].removed_ground_normal.take() {
             let slot = &mut self.players[index];
             // Ordinary SlimeController explicitly zeros rotation before
@@ -1817,6 +2007,14 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             for s in 0..3 {
                 slot.timers[s] += DT;
+                if slot.abilities[s] == ABILITY_REWIND
+                    && !slot.rewind.rewinding
+                    && slot.rewind.finish_next_tick
+                    && action.buttons & (2 << s) as u8 == 0
+                {
+                    slot.timers[s] = slot.cooldowns[s];
+                    slot.rewind.finish_next_tick = false;
+                }
                 if slot.abilities[s] == ABILITY_TELEPORT
                     && slot.teleport_markers[s]
                         .is_some_and(|marker| self.teleport_marker_pool[marker].active)
@@ -1926,6 +2124,35 @@ impl RolloutWorld {
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
+                        break;
+                    }
+                    ABILITY_REWIND => {
+                        let attached_ground = self.players[index].base.ground;
+                        let started = {
+                            let slot = &mut self.players[index];
+                            slot.rewind.begin(slot.base.position, slot.base.rotation, s)
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.telemetry.ability_activations[s] += 1;
+                        if started {
+                            slot.rewind.attached_ground = attached_ground;
+                            slot.base.force_unground(&self.platforms);
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                            // EnterAbility returns from OldUpdate, but this
+                            // already-running SlimeController pass still uses
+                            // the input vector captured before Rewind set
+                            // suppressInput.
+                            slot.base.move_only(movement_input, terrain!(self));
+                            slot.base.position +=
+                                (slot.base.velocity + slot.base.external_velocity) * DT;
+                            slot.base.external_velocity *= Fix::from_f64(0.95);
+                            return;
+                        }
+                        // Rewind sets InstantAbility.ignoreNextCooldown when
+                        // the recorder has fewer than two samples.
+                        slot.rewind.finish_next_tick = true;
                         break;
                     }
                     ABILITY_DASH => {
@@ -2235,6 +2462,145 @@ impl RolloutWorld {
             if effect.time >= duration {
                 effect.active = false;
                 slot.cooldowns[effect_slot] = restored_cooldown;
+            }
+        }
+    }
+
+    fn rewind_recorders_tick(&mut self) {
+        for index in 0..self.players.len() {
+            if !self.playable(index) {
+                continue;
+            }
+            if !self.players[index].rewind.rewinding {
+                if self.players[index].active == ActiveAbility::None
+                    && !self.players[index].base.dash.active
+                {
+                    let slot = &mut self.players[index];
+                    slot.rewind.push(RewindSample {
+                        position: slot.base.position,
+                        velocity: slot.base.velocity,
+                        external_velocity: slot.base.external_velocity,
+                        rotation: slot.base.rotation,
+                        cooldowns: slot.timers,
+                    });
+                }
+                continue;
+            }
+
+            if self.players[index].rewind.finish_next_tick {
+                let destination = self.players[index].rewind.destination;
+                let preserved = self.players[index].timers[self.players[index].rewind.ability_slot];
+                let mut position = self.players[index].base.position;
+                let radius = self.players[index].base.radius + Fix::from_f32(0.05);
+                for _ in 0..6 {
+                    let mut changed = false;
+                    for platform in &self.platforms {
+                        let shape = platform.collider;
+                        let Ok(closest) = shape.closest_point(position) else {
+                            continue;
+                        };
+                        let delta = position - closest;
+                        let magnitude = delta.length();
+                        if shape.overlaps(position) {
+                            let direction = if magnitude > Fix::ZERO {
+                                (closest - position) / magnitude
+                            } else {
+                                Vec2::UP
+                            };
+                            position = closest + direction * radius;
+                            changed = true;
+                        } else if magnitude < radius {
+                            position = closest + delta / magnitude * radius;
+                            changed = true;
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                let slot = &mut self.players[index];
+                slot.base.position = position;
+                slot.base.velocity = destination.velocity;
+                slot.base.external_velocity = destination.external_velocity;
+                slot.base.rotation = destination.rotation;
+                slot.base.up = Vec2::angle(destination.rotation).perp();
+                if let Some(ground_id) = slot.rewind.attached_ground
+                    && let Some(platform) = self
+                        .platforms
+                        .iter()
+                        .find(|platform| platform.id == ground_id)
+                {
+                    slot.base.position +=
+                        platform.surface.normal(slot.base.position) * Fix::from_f32(0.05);
+                }
+                slot.base.grounded = false;
+                slot.base.ground = None;
+                slot.base.grounded_speed = Fix::ZERO;
+                slot.timers = destination.cooldowns;
+                slot.timers[slot.rewind.ability_slot] = preserved;
+                for ability_slot in 0..slot.timers.len() {
+                    if ability_slot != slot.rewind.ability_slot {
+                        // RewindRecorder (hierarchy 8) restores these before
+                        // SlimeController advances its ordinary cooldown pass.
+                        slot.timers[ability_slot] += DT;
+                    }
+                }
+                slot.rewind.rewinding = false;
+                slot.rewind.finish_next_tick = false;
+                slot.rewind.attached_ground = None;
+                continue;
+            }
+
+            let (from, target, rotation, done) = {
+                let slot = &mut self.players[index];
+                let rewind = &mut slot.rewind;
+                rewind.playback_tick = (rewind.playback_tick + 1).min(rewind.playback_ticks);
+                let t = Fix::from_int(i64::from(rewind.playback_tick))
+                    / Fix::from_int(i64::from(rewind.playback_ticks));
+                let eased = t
+                    * t
+                    * t
+                    * (t * (t * Fix::from_int(6) - Fix::from_int(15)) + Fix::from_int(10));
+                let (target, rotation) = rewind.evaluate_path(eased);
+                (
+                    slot.base.position,
+                    target,
+                    rotation,
+                    rewind.playback_tick >= rewind.playback_ticks,
+                )
+            };
+            let travel = target - from;
+            let distance = travel.length();
+            if distance > Fix::ZERO {
+                let direction = travel / distance;
+                let reach = distance + self.players[index].base.radius;
+                let mut nearest = Fix::MAX;
+                let mut hit_platform = None;
+                for (platform, body) in self.platforms.iter().enumerate() {
+                    if let Some(hit) = body.collider.raycast_within(from, direction, reach)
+                        && hit.near < nearest
+                    {
+                        nearest = hit.near;
+                        hit_platform = Some(platform);
+                    }
+                }
+                if let Some(platform) = hit_platform {
+                    self.platform_dynamics[platform].body.force += direction * Fix::from_int(3000);
+                    // Rewind can wake an otherwise quiet dynamic platform. The
+                    // platform epoch is also the deterministic dirty bit used
+                    // by `platforms_tick` to leave its no-work fast path.
+                    self.platforms_changed();
+                }
+            }
+            let slot = &mut self.players[index];
+            let desired = (target - slot.base.position) / DT;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.external_velocity +=
+                ((desired - slot.base.external_velocity) / Fix::from_int(35)) * Fix::from_int(35);
+            slot.base.rotation = rotation;
+            slot.base.up = Vec2::angle(rotation).perp();
+            if done {
+                slot.rewind.finish_next_tick = true;
             }
         }
     }
@@ -2737,6 +3103,7 @@ impl RolloutWorld {
             slot.timers.fill(Fix::from_f32(-1.5));
             slot.active = ActiveAbility::None;
             slot.throw_item = ThrowItemState::default();
+            slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
@@ -2895,6 +3262,7 @@ impl RolloutWorld {
             slot.base.sync_collider();
             slot.active = ActiveAbility::None;
             slot.throw_item = ThrowItemState::default();
+            slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
@@ -4819,6 +5187,7 @@ impl RolloutWorld {
                 && self.platforms.iter().zip(&self.platform_dynamics).any(
                     |(platform, dynamics)| {
                         platform.surface.center != dynamics.home_position
+                            || dynamics.body.force != Vec2::ZERO
                             || dynamics.body.velocity != Vec2::ZERO
                             || dynamics.body.angular_velocity != Fix::ZERO
                             || dynamics.body.orientation != dynamics.home_rotation
@@ -5768,6 +6137,8 @@ impl RolloutWorld {
                 flags = S_SPAWNED | S_SIMULATED;
             } else if respawning {
                 flags |= S_SUPPRESS_INPUT;
+            } else if slot.rewind.rewinding {
+                flags |= S_SPAWNED | S_SUPPRESS_INPUT;
             } else if in_ability {
                 // onEnterAbility disables the original slime GameObject but
                 // its spawned/simulated state remains visible to observation.
