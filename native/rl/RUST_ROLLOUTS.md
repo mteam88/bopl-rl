@@ -69,8 +69,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
-  the release pass and published in shape-group order. Collision callbacks,
-  timed detonation, duplication and the explosion remain open.
+  the release pass and published in shape-group order. Player collision honors
+  the delayed owner gate and queues the layer-18 explosion for the following
+  pass. Both startup shockwaves, the first-frame lethal box, its 90-frame visual
+  lifetime, self-kill accounting, stock clone, three choice indicators and the
+  complete respawn interval are exact. Aerial/forced exits, timed fuse and
+  duplication remain open.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
   the authored translational and rotational home springs, ejection and
@@ -140,7 +144,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Platform/Revival/Teleport execute casts. Grenade is
-  exact through pre-contact flight; its collision/detonation path is still absent.
+  exact through grounded owner-impact detonation and stock recovery; its aerial,
+  timed-fuse and duplication paths remain absent.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

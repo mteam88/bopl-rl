@@ -330,6 +330,18 @@ pub struct ThrownItem {
 }
 
 #[derive(Clone, Copy, Default)]
+pub struct GrenadeExplosion {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub position: Vec2,
+    pub owner: usize,
+    pub age: u32,
+}
+
+#[derive(Clone, Copy, Default)]
 pub struct ThrowItemState {
     /// 0: enter animation, 1: exit animation.
     pub phase: u32,
@@ -569,6 +581,9 @@ pub struct PlayerSlot {
     /// A replacement clone is queued on death, then held hidden while the
     /// ReviveEffect wisp and doubly-registered particle reach this marker.
     pub revival_clone_pending: bool,
+    /// A stock death instantiates its replacement in the callback, but the
+    /// new prefab's colliders and SlimeController register next pass.
+    pub stock_clone_pending: bool,
     pub revival_target_marker: Option<usize>,
     pub revival_effect_ticks: u32,
     pub revival_particle_ticks: u32,
@@ -598,6 +613,7 @@ pub struct PlayerSlot {
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
     pub respawn_spawn_ticks: u32,
     pub respawn_selected: usize,
+    pub stock_indicator_entities: [usize; 3],
     /// Player.InputProfile's frame-edge state is updated even without a live
     /// controllable slime and is what the stock chooser reads.
     pub input_jump_was_down: bool,
@@ -679,6 +695,7 @@ pub struct RolloutWorld {
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
     pub thrown_items: Vec<ThrownItem>,
+    pub grenade_explosions: Vec<GrenadeExplosion>,
     pub spawned: Vec<SpawnedPlatform>,
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
@@ -749,6 +766,7 @@ impl RolloutWorld {
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
             thrown_items: Vec::with_capacity(64),
+            grenade_explosions: Vec::with_capacity(64),
             spawned: Vec::with_capacity(64),
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
@@ -805,6 +823,7 @@ impl RolloutWorld {
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
         self.thrown_items.clone_from(&src.thrown_items);
+        self.grenade_explosions.clone_from(&src.grenade_explosions);
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
         self.revival_marker_pool
@@ -857,6 +876,7 @@ impl RolloutWorld {
             platform_entities: _,
             arrows: _,
             thrown_items: _,
+            grenade_explosions: _,
             spawned: _,
             gust_waves: _,
             revival_marker_pool: _,
@@ -936,6 +956,7 @@ impl RolloutWorld {
         self.sudden_death = false;
         self.arrows.clear();
         self.thrown_items.clear();
+        self.grenade_explosions.clear();
         self.spawned.clear();
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.revival_marker_pool.clear();
@@ -1264,6 +1285,7 @@ impl RolloutWorld {
                 revival: RevivalState::default(),
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
+                stock_clone_pending: false,
                 revival_target_marker: None,
                 revival_effect_ticks: 0,
                 revival_particle_ticks: 0,
@@ -1280,6 +1302,7 @@ impl RolloutWorld {
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
+                stock_indicator_entities: [usize::MAX; 3],
                 input_jump_was_down: false,
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
@@ -1543,6 +1566,8 @@ impl RolloutWorld {
         self.register_pending_revival_markers(data);
         self.register_pending_teleport_markers(data);
         self.register_pending_revival_clones(data);
+        self.register_pending_stock_clones(data);
+        self.register_pending_grenade_explosions(data);
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
@@ -1645,6 +1670,7 @@ impl RolloutWorld {
         self.revival_effects_tick(data);
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
+        self.grenade_explosions_tick(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -1714,6 +1740,8 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         self.platforms_tick(data);
         self.arrows_contacts(data);
+        self.thrown_items_contacts(data);
+        self.grenade_explosion_contacts(data);
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -1735,6 +1763,7 @@ impl RolloutWorld {
             && slot.respawn_ticks == 0
             && slot.respawn_spawn_ticks == 0
             && !slot.revival_clone_pending
+            && !slot.stock_clone_pending
             && slot.revival_effect_ticks == 0
             && !slot.teleport_effect_active
     }
@@ -2369,6 +2398,143 @@ impl RolloutWorld {
         }
     }
 
+    /// Remove callback-destroyed items, register explosions queued by the
+    /// preceding pass, and execute both Shockwave.Init calls before the
+    /// updater loop begins.
+    fn register_pending_grenade_explosions(&mut self, data: &data::RolloutData) {
+        for item in &self.thrown_items {
+            if !item.active
+                && let Some(entity) = item.entity
+                && self.entities[entity].flags & E_DESTROYED != 0
+            {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
+        for explosion_index in 0..self.grenade_explosions.len() {
+            let explosion = self.grenade_explosions[explosion_index];
+            if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
+                continue;
+            }
+            let entity = match explosion.entity {
+                Some(entity) => entity,
+                None => {
+                    self.entities.push(CEntity::default());
+                    let entity = self.entities.len() - 1;
+                    self.grenade_explosions[explosion_index].entity = Some(entity);
+                    entity
+                }
+            };
+            let id = self.next_id();
+            let collider = OrientedBox::from_basis(
+                explosion.position,
+                Vec2::RIGHT,
+                data.grenade.explosion_extents,
+            );
+            self.entities[entity] = CEntity {
+                id,
+                kind: 1,
+                layer: data.grenade.explosion_layer,
+                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000
+                    + explosion.hierarchy_base
+                    + data.grenade.explosion_collider_hierarchy,
+                x: explosion.position.x.raw(),
+                y: explosion.position.y.raw(),
+                right_x: collider.right.x.raw(),
+                right_y: collider.right.y.raw(),
+                up_x: collider.up.x.raw(),
+                up_y: collider.up.y.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            };
+            self.grenade_explosions[explosion_index].registered = true;
+            for wave in data.grenade.explosion_shockwaves {
+                self.apply_explosion_shockwave(explosion.position, wave);
+            }
+        }
+    }
+
+    fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
+        let query = Circle {
+            center: position,
+            radius: wave.radius,
+        };
+        if wave.collision_mask & (1 << 11) != 0 {
+            let mut applied = false;
+            for platform_index in 0..self.platforms.len() {
+                if crate::physics::contact::circle_rounded(
+                    query,
+                    self.platforms[platform_index].collider,
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                let platform = &self.platforms[platform_index];
+                let Ok(point) = platform.surface.closest_point(position) else {
+                    continue;
+                };
+                let direction = -platform.surface.normal(point);
+                let distance = ((position - point).length_squared() / Fix::from_int(10))
+                    .max(Fix::from_f64(1.5));
+                let impulse = direction.normalized_safe()
+                    * (wave.platform_force / distance)
+                    * Fix::from_int(60);
+                let arm = (point - platform.surface.center).normalized_safe();
+                self.platform_dynamics[platform_index]
+                    .body
+                    .apply_impulse(impulse, arm);
+                applied = true;
+            }
+            if applied {
+                self.platforms_changed();
+            }
+        }
+        if wave.collision_mask & (1 << LAYER_PLAYER) == 0 {
+            return;
+        }
+        for player_index in 0..self.players.len() {
+            if !self.playable(player_index)
+                || crate::physics::contact::circle_box(
+                    query,
+                    self.players[player_index].base.collider,
+                )
+                .is_none()
+            {
+                continue;
+            }
+            let target = &mut self.players[player_index];
+            let delta = target.base.position - position;
+            let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+            let mut force = delta * (wave.default_force / distance / Fix::from_int(7));
+            if target.base.grounded {
+                force *= wave.grounded_player_multiplier;
+            }
+            target.base.external_velocity += force * Fix::from_int(35);
+        }
+    }
+
+    fn grenade_explosions_tick(&mut self, data: &data::RolloutData) {
+        for explosion in &mut self.grenade_explosions {
+            if !explosion.active || !explosion.registered {
+                continue;
+            }
+            let entity = explosion.entity.expect("registered grenade explosion");
+            if explosion.age >= data.grenade.explosion_animation_ticks {
+                explosion.active = false;
+                explosion.registered = false;
+                self.entities[entity].flags = E_REMOVED;
+                continue;
+            }
+            self.entities[entity].flags = if explosion.age == 0 {
+                E_ACTIVE | E_ENABLED | E_TRIGGER
+            } else {
+                E_ACTIVE | E_TRIGGER
+            };
+            explosion.age += 1;
+        }
+    }
+
     fn teleport_effects_tick(&mut self, data: &data::RolloutData) {
         for index in 0..self.players.len() {
             if !self.players[index].teleport_effect_active {
@@ -2579,6 +2745,165 @@ impl RolloutWorld {
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.revival_clone_pending = false;
+        }
+    }
+
+    fn register_pending_stock_clones(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if !self.players[index].stock_clone_pending {
+                continue;
+            }
+            for entity in [
+                self.players[index].body_entity,
+                self.players[index].dash_entity,
+                self.players[index].circle_entity,
+                self.players[index].bow_entity,
+                self.players[index].throw_entity,
+                self.players[index].gust_entity,
+                self.players[index].revival_entity,
+            ] {
+                if entity != usize::MAX {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            }
+
+            let abilities = self.players[index].abilities;
+            let position = self.players[index].base.position;
+            let player_hierarchy = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += 8;
+            let mut ability_hierarchy = [0u32; 3];
+            for (slot, hierarchy) in ability_hierarchy.iter_mut().enumerate() {
+                *hierarchy = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy +=
+                    data.abilities[abilities[slot] as usize].updatable_count;
+            }
+
+            let mut platform_entity = usize::MAX;
+            let mut gust_entity = usize::MAX;
+            let mut revival_entity = usize::MAX;
+            for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+                let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
+                    ABILITY_GUST => (
+                        data.gust.hurtbox_radius,
+                        data.gust.collider_offset,
+                        8,
+                        &mut gust_entity,
+                    ),
+                    ABILITY_PLATFORM => (
+                        data.platform.hurtbox_radius,
+                        Vec2::ZERO,
+                        7,
+                        &mut platform_entity,
+                    ),
+                    ABILITY_REVIVAL => (
+                        data.revival.hurtbox_radius,
+                        data.revival.collider_offset,
+                        8,
+                        &mut revival_entity,
+                    ),
+                    _ => continue,
+                };
+                let id = self.next_id();
+                *target = self.entities.len();
+                self.entities.push(CEntity {
+                    id,
+                    kind: 0,
+                    layer: LAYER_PLAYER,
+                    flags: E_ENABLED | E_TRIGGER,
+                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                    x: offset.x.raw(),
+                    y: offset.y.raw(),
+                    radius: radius.raw(),
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                });
+            }
+
+            let mut indicator_entities = [usize::MAX; 3];
+            for (indicator, target) in indicator_entities.iter_mut().enumerate() {
+                let hierarchy_base = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy += data.revival.marker_updatable_count;
+                let id = self.next_id();
+                *target = self.entities.len();
+                let indicator_position = data.maps[self.map].respawn_points[indicator];
+                self.entities.push(CEntity {
+                    id,
+                    kind: 0,
+                    layer: data.revival.marker_layer,
+                    owner: index as u32 + 1,
+                    flags: E_ACTIVE | E_ENABLED,
+                    hierarchy: 100_000_000
+                        + hierarchy_base
+                        + data.revival.marker_collider_hierarchy,
+                    x: indicator_position.x.raw(),
+                    y: indicator_position.y.raw(),
+                    radius: data.revival.marker_radius.raw(),
+                    inverse_mass: data.revival.marker_body.inverse_mass.raw(),
+                    ..CEntity::default()
+                });
+            }
+
+            let body_entity = self.entities.len();
+            let body_id = self.next_id();
+            let body_collider =
+                OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
+            self.entities.push(CEntity {
+                id: body_id,
+                kind: 1,
+                layer: LAYER_PLAYER,
+                owner: index as u32 + 1,
+                flags: E_ACTIVE | E_TRIGGER,
+                hierarchy: 100_000_000 + player_hierarchy + 6,
+                x: position.x.raw(),
+                y: position.y.raw(),
+                right_x: body_collider.right.x.raw(),
+                right_y: body_collider.right.y.raw(),
+                up_x: body_collider.up.x.raw(),
+                up_y: body_collider.up.y.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+            let mut dash_entity = usize::MAX;
+            let mut bow_entity = usize::MAX;
+            let mut throw_entity = usize::MAX;
+            for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+                let (extents, relative_hierarchy, target) = match abilities[slot] {
+                    ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
+                    ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
+                    ABILITY_GRENADE => (data.grenade.hurtbox_extents, 8, &mut throw_entity),
+                    _ => continue,
+                };
+                let id = self.next_id();
+                *target = self.entities.len();
+                let collider = OrientedBox::from_basis(Vec2::ZERO, Vec2::RIGHT, extents);
+                self.entities.push(CEntity {
+                    id,
+                    kind: 1,
+                    layer: LAYER_PLAYER,
+                    flags: E_ENABLED | E_TRIGGER,
+                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                    right_x: collider.right.x.raw(),
+                    right_y: collider.right.y.raw(),
+                    up_x: collider.up.x.raw(),
+                    up_y: collider.up.y.raw(),
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                });
+            }
+
+            let slot = &mut self.players[index];
+            slot.base.sync_collider();
+            slot.active = ActiveAbility::None;
+            slot.throw_item = ThrowItemState::default();
+            slot.body_entity = body_entity;
+            slot.dash_entity = dash_entity;
+            slot.bow_entity = bow_entity;
+            slot.throw_entity = throw_entity;
+            slot.circle_entity = platform_entity;
+            slot.gust_entity = gust_entity;
+            slot.revival_entity = revival_entity;
+            slot.stock_indicator_entities = indicator_entities;
+            slot.stock_clone_pending = false;
         }
     }
 
@@ -3747,19 +4072,30 @@ impl RolloutWorld {
     }
 
     fn thrown_items_integrate(&mut self, data: &data::RolloutData) {
-        for item in &mut self.thrown_items {
-            if !item.active || item.entity.is_none() {
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].entity.is_none()
+            {
                 continue;
             }
-            if item.born_tick < self.tick {
-                item.fuse -= DT;
-                if item.hurt_owner_delay > Fix::ZERO {
-                    item.hurt_owner_delay -= DT;
-                    if item.hurt_owner_delay <= Fix::ZERO {
-                        item.detonates_on_owner = true;
+            let timed_out = {
+                let item = &mut self.thrown_items[item_index];
+                if item.born_tick < self.tick {
+                    item.fuse -= DT;
+                    if item.hurt_owner_delay > Fix::ZERO {
+                        item.hurt_owner_delay -= DT;
+                        if item.hurt_owner_delay <= Fix::ZERO {
+                            item.detonates_on_owner = true;
+                        }
                     }
                 }
+                item.fuse <= Fix::ZERO
+            };
+            if timed_out {
+                self.detonate_grenade(item_index, false, data);
+                continue;
             }
+            let item = &mut self.thrown_items[item_index];
             let delta = item.body.integrate(DT, Fix::from_int(-40));
             item.position += delta;
             let entity = item.entity.expect("active thrown item collider");
@@ -3772,6 +4108,43 @@ impl RolloutWorld {
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
             row.inverse_mass = data.grenade.item_body.inverse_mass.raw();
+        }
+    }
+
+    fn detonate_grenade(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
+        if !self.thrown_items[item_index].active {
+            return;
+        }
+        let item = self.thrown_items[item_index];
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.grenade.explosion_updatable_count;
+        let explosion = GrenadeExplosion {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            position: item.position,
+            owner: item.owner,
+            ..GrenadeExplosion::default()
+        };
+        if let Some(free) = self
+            .grenade_explosions
+            .iter()
+            .position(|explosion| !explosion.active)
+        {
+            let entity = self.grenade_explosions[free].entity;
+            self.grenade_explosions[free] = GrenadeExplosion {
+                entity,
+                ..explosion
+            };
+        } else {
+            self.grenade_explosions.push(explosion);
+        }
+        let item = &mut self.thrown_items[item_index];
+        item.active = false;
+        if let Some(entity) = item.entity {
+            let row = &mut self.entities[entity];
+            row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+            row.owner = 0;
         }
     }
 
@@ -3923,6 +4296,174 @@ impl RolloutWorld {
                 self.kill(victim, arrow.owner, cause, true);
                 if arrow.owner != victim_id && arrow.owner >= 1 {
                     self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
+                }
+            }
+        }
+    }
+
+    /// Item circles participate in ordinary rigid-body contacts, then their
+    /// queued GrenadeExplode callback observes Player-layer overlaps.
+    fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].entity.is_none()
+            {
+                continue;
+            }
+            let item = self.thrown_items[item_index];
+            let circle = Circle {
+                center: item.position,
+                radius: data.grenade.item_radius,
+            };
+            let mut contacts = [(0usize, Contact::default()); 64];
+            let mut contact_count = 0;
+            for (platform_index, platform) in self.platforms.iter().enumerate() {
+                if contact_count == contacts.len() {
+                    break;
+                }
+                if let Some(contact) =
+                    crate::physics::contact::circle_rounded(circle, platform.collider)
+                {
+                    contacts[contact_count] = (platform_index, contact);
+                    contact_count += 1;
+                }
+            }
+            if contact_count > 0 {
+                let mut body = item.body;
+                let mut center = item.position;
+                for &(platform_index, contact) in &contacts[..contact_count] {
+                    let platform_center = self.platforms[platform_index].surface.center;
+                    let platform_body = &mut self.platform_dynamics[platform_index].body;
+                    resolve(contact, &mut body, platform_body, center, platform_center);
+                    let correction = positional_correction(
+                        contact,
+                        body.inverse_mass,
+                        platform_body.inverse_mass,
+                        false,
+                    );
+                    center += correction[0];
+                    self.platforms[platform_index].surface.center += correction[1];
+                    self.platforms[platform_index].collider.inner.center += correction[1];
+                }
+                self.platforms_changed();
+                let thrown = &mut self.thrown_items[item_index];
+                thrown.body = body;
+                thrown.position = center;
+                let entity = thrown.entity.expect("contacting grenade collider");
+                let row = &mut self.entities[entity];
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.vx = body.velocity.x.raw();
+                row.vy = body.velocity.y.raw();
+                row.rotation = body.orientation.raw();
+                row.angular_velocity = body.angular_velocity.raw();
+            }
+
+            let owner_id = item.owner as u32 + 1;
+            let mut detonate = false;
+            for player_index in 0..self.players.len() {
+                if !self.playable(player_index) {
+                    continue;
+                }
+                let player = &self.players[player_index];
+                if player.base.id == owner_id && !item.detonates_on_owner {
+                    continue;
+                }
+                let hit = if player.active == ActiveAbility::Platform
+                    && player.platform.phase == PLATFORM_ANTICIPATION
+                {
+                    crate::physics::contact::circle_circle(
+                        circle,
+                        Circle {
+                            center: player.base.position,
+                            radius: data.platform.hurtbox_radius,
+                        },
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
+                    false
+                } else {
+                    let hurtbox = match player.active {
+                        ActiveAbility::Bow => {
+                            let extents = data.bow.hurtbox_extents;
+                            let up = if player.bow.aim == Vec2::ZERO {
+                                Vec2::UP
+                            } else {
+                                player.bow.aim
+                            };
+                            OrientedBox {
+                                center: player.base.position,
+                                right: up.perp_cw() * extents.x,
+                                up: up * extents.y,
+                                inverse_extents: Vec2::new(
+                                    Fix::ONE / extents.x,
+                                    Fix::ONE / extents.y,
+                                ),
+                            }
+                        }
+                        ActiveAbility::Grenade => OrientedBox::from_basis(
+                            player.base.position,
+                            Vec2::angle(player.base.rotation),
+                            data.grenade.hurtbox_extents,
+                        ),
+                        _ => player.base.collider,
+                    };
+                    crate::physics::contact::circle_box(circle, hurtbox).is_some()
+                };
+                detonate |= hit;
+            }
+            if detonate {
+                self.detonate_grenade(item_index, true, data);
+            }
+        }
+    }
+
+    /// Explosion's box is lethal only on its first registered frame. The two
+    /// Shockwaves have already run in Init; this is the later DetPhysics
+    /// callback phase.
+    fn grenade_explosion_contacts(&mut self, data: &data::RolloutData) {
+        for explosion_index in 0..self.grenade_explosions.len() {
+            let explosion = self.grenade_explosions[explosion_index];
+            if !explosion.active || !explosion.registered || explosion.age != 1 {
+                continue;
+            }
+            let hitbox = OrientedBox::from_basis(
+                explosion.position,
+                Vec2::RIGHT,
+                data.grenade.explosion_extents,
+            );
+            let mut victims = [false; MAX_PLAYERS];
+            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
+                if !self.playable(player_index) {
+                    continue;
+                }
+                let player = &self.players[player_index];
+                *victim = if player.active == ActiveAbility::Platform
+                    && player.platform.phase == PLATFORM_ANTICIPATION
+                {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: player.base.position,
+                            radius: data.platform.hurtbox_radius,
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
+                    false
+                } else {
+                    crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
+                };
+            }
+            let killer = explosion.owner as u32 + 1;
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim && self.playable(player_index) {
+                    let cause = if self.players[player_index].base.id == killer {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    self.kill(player_index, killer, cause, true);
                 }
             }
         }
@@ -4362,7 +4903,7 @@ impl RolloutWorld {
         // instance. The independent indicator survives, but a replacement
         // slime receives a fresh ability with no route back to that marker.
         slot.teleport_markers = [None; 3];
-        if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
+        if killer >= 1 && killer <= players as u32 {
             self.players[killer as usize - 1].kills += 1;
         }
         let slot = &mut self.players[index];
@@ -4417,7 +4958,30 @@ impl RolloutWorld {
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
         if slot.stocks > 0 && !self.sudden_death {
+            if by_callback {
+                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            }
+            for entity in [
+                slot.body_entity,
+                slot.dash_entity,
+                slot.circle_entity,
+                slot.bow_entity,
+                slot.throw_entity,
+                slot.gust_entity,
+                slot.revival_entity,
+            ] {
+                if entity != usize::MAX {
+                    let row = &mut self.entities[entity];
+                    row.flags = if by_callback {
+                        (row.flags & E_TRIGGER) | E_DESTROYED
+                    } else {
+                        E_REMOVED
+                    };
+                    row.owner = 0;
+                }
+            }
             slot.stocks -= 1;
+            slot.stock_clone_pending = true;
             slot.respawn_ticks = 360;
             slot.respawn_spawn_ticks = 0;
             slot.respawn_selected = 1;
@@ -4531,6 +5095,12 @@ impl RolloutWorld {
             slot.respawn_ticks -= 1;
             if slot.respawn_ticks == 0 || jump_pressed {
                 slot.respawn_ticks = 0;
+                for entity in &mut slot.stock_indicator_entities {
+                    if *entity != usize::MAX {
+                        self.entities[*entity].flags = E_REMOVED;
+                        *entity = usize::MAX;
+                    }
+                }
                 slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
                 slot.base.position = data.maps[self.map].respawn_points[slot.respawn_selected];
                 // The chooser is ordered before its replacement slime. Its
@@ -4740,7 +5310,7 @@ impl RolloutWorld {
             let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
-            if slot.out || slot.revival_clone_pending {
+            if slot.out || slot.revival_clone_pending || slot.stock_clone_pending {
                 continue; // rows were settled by `kill`
             }
             let body = &mut self.entities[body_e];
@@ -5080,7 +5650,11 @@ impl RolloutWorld {
         let mut order = [usize::MAX; MAX_PLAYERS];
         let mut count = 0;
         for (index, slot) in self.players.iter().enumerate() {
-            if slot.base.alive && slot.unspawned == 0 && !slot.revival_clone_pending {
+            if slot.base.alive
+                && slot.unspawned == 0
+                && !slot.revival_clone_pending
+                && !slot.stock_clone_pending
+            {
                 order[count] = index;
                 count += 1;
             }

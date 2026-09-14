@@ -968,14 +968,21 @@ uses the extracted one-third inverse mass, gravity -40 and 0.999 air drag with
 the same force-to-impulse conversion. Storage is a reusable item pool, so the
 per-tick ballistic pass allocates nothing.
 
-`grenade_throw_ab.c` compares every public header, player, slime, telemetry and
-entity field between NativeAOT and Q32 Rust for 130 ticks. It covers readiness,
-15-tick grounded entry, a seven-frame hold, charged release, 12-tick exit and
-the complete free trajectory through the last tick before the grenade first
-touches its owner. The next reference tick invokes the item collision callback;
-terrain/player resolution, delayed owner damage, timed detonation, grenade
-duplication, explosion shockwaves/damage and the aerial/forced-exit paths remain
-outside this checkpoint.
+`grenade_ability_ab.c` compares every public header, player, slime, telemetry and
+entity field between NativeAOT and Q32 Rust for 700 ticks. It covers readiness,
+15-tick grounded entry, a seven-frame hold, charged release, 12-tick exit, the
+free trajectory, delayed owner contact and callback destruction. The explosion
+registers on the next updater pass with its two extracted startup shockwaves,
+one-frame lethal box and exact 90-frame collider lifetime. The self-kill also
+exercises the shared death path: kill credit, old collider removal, new player
+and copied-ability hierarchy, DetPhysics circle-before-box IDs, three stock
+choice indicators, their 360-tick timeout, fast spawn and subsequent landing
+all match.
+
+The two shockwaves use the authored masks, radii and forces, apply their impulses
+before map home springs, and reuse existing fixed arrays/entity pools. Grenade
+terrain bounce, non-owner hits, timed detonation, grenade duplication and the
+aerial/forced-exit paths still require separate goldens before id 3 is complete.
 
 ### Executable Gust (2026-09-14)
 

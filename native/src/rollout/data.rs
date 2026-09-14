@@ -261,6 +261,15 @@ struct RawGrenadeExplosion {
     collider_hierarchy: u32,
     extents: RawVec2,
     animation_ticks: u32,
+    shockwaves: [RawExplosionShockwave; 2],
+}
+#[derive(Clone, Copy, Deserialize)]
+struct RawExplosionShockwave {
+    platform_force: i64,
+    default_force: i64,
+    grounded_player_multiplier: i64,
+    radius: i64,
+    collision_mask: u32,
 }
 
 #[derive(Deserialize)]
@@ -539,6 +548,15 @@ pub struct GrenadeData {
     pub explosion_collider_hierarchy: u32,
     pub explosion_extents: Vec2,
     pub explosion_animation_ticks: u32,
+    pub explosion_shockwaves: [ExplosionShockwaveData; 2],
+}
+#[derive(Clone, Copy)]
+pub struct ExplosionShockwaveData {
+    pub platform_force: Fix,
+    pub default_force: Fix,
+    pub grounded_player_multiplier: Fix,
+    pub radius: Fix,
+    pub collision_mask: u32,
 }
 pub struct AbilityData {
     pub id: u32,
@@ -929,6 +947,17 @@ pub fn get() -> &'static RolloutData {
                     explosion_collider_hierarchy: grenade.explosion.collider_hierarchy,
                     explosion_extents: grenade.explosion.extents.get(),
                     explosion_animation_ticks: grenade.explosion.animation_ticks,
+                    explosion_shockwaves: grenade.explosion.shockwaves.map(|wave| {
+                        ExplosionShockwaveData {
+                            platform_force: Fix::from_raw(wave.platform_force),
+                            default_force: Fix::from_raw(wave.default_force),
+                            grounded_player_multiplier: Fix::from_raw(
+                                wave.grounded_player_multiplier,
+                            ),
+                            radius: Fix::from_raw(wave.radius),
+                            collision_mask: wave.collision_mask,
+                        }
+                    }),
                 }
             },
             abilities: raw

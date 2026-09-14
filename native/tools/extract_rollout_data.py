@@ -467,6 +467,9 @@ def main():
     grenade_explosion = ASSETS[guid_of(grenade_explode["explosion"])]
     explosion = component(grenade_explosion, "Explosion")
     explosion_box = component(grenade_explosion, "DPhysicsBox")
+    explosion_waves = [c["properties"]
+                       for c in component(grenade_explosion, "Shockwave", all_matches=True)]
+    assert len(explosion_waves) == 2
     explosion_anims = animations(guid_of(explosion["explosionAnimation"]))
     out["prefabs"]["grenade"] = {
         "hurtbox_extents": vec2(grenade_box, "startExtents"),
@@ -504,6 +507,13 @@ def main():
             "collider_hierarchy": explosion_box["hierarchyNumber"],
             "extents": vec2(explosion_box, "startExtents"),
             "animation_ticks": sum(abs(d) for d in explosion_anims[next(iter(explosion_anims))]),
+            "shockwaves": [{
+                "platform_force": fix(wave, "platformForce"),
+                "default_force": fix(wave, "defaultForce"),
+                "grounded_player_multiplier": fix(wave, "groundedPlayerForceMultiplier"),
+                "radius": fix(wave, "radius"),
+                "collision_mask": wave["collisionMask.m_Bits"],
+            } for wave in explosion_waves],
         },
     }
 

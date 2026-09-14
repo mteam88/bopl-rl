@@ -1,8 +1,8 @@
-/* Grenade throw golden: grounded ThrowItem2 entry, charged release, player-form
- * exit, and exact item ballistic motion through the last pre-contact tick.
+/* Grenade golden: grounded ThrowItem2 entry, charged release, owner impact,
+ * deferred explosion, stock clone/choice, and complete respawn recovery.
  *
- * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grenade_throw_ab \
- *   research/rust_ab/grenade_throw_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grenade_ability_ab \
+ *   research/rust_ab/grenade_ability_ab.c bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>
@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
     BoplRl *world[2];
     for (int backend = 0; backend < 2; backend++) {
         world[backend] = bopl_rl_open(argv[backend + 1], "/tmp/gate_bootstrap.rep",
-                                      "/tmp/grenade_throw_ab.log", 120000,
+                                      "/tmp/grenade_ability_ab.log", 120000,
                                       error, sizeof error);
         if (!world[backend]) {
             fprintf(stderr, "open failed: %s\n", error);
@@ -169,8 +169,10 @@ int main(int argc, char **argv) {
     if (compare(bopl_rl_state(world[0]), bopl_rl_state(world[1]), 0)) return 1;
 
     unsigned cast_tick = 0;
-    int saw_item = 0, saw_form_exit = 0;
-    for (unsigned tick = 1; tick <= 130; tick++) {
+    int saw_item = 0, saw_form_exit = 0, saw_destroyed_item = 0;
+    int saw_explosion = 0, saw_disabled_explosion = 0, saw_explosion_end = 0;
+    int saw_death = 0, saw_choice = 0, saw_respawn = 0;
+    for (unsigned tick = 1; tick <= 700; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
         if (!cast_tick &&
@@ -192,22 +194,46 @@ int main(int argc, char **argv) {
         if (compare(reference, bopl_rl_state(world[1]), tick)) return 1;
         for (unsigned i = 0; i < reference->header.entity_count; i++) {
             const BoplRlEntity *entity = &reference->entities[i];
-            if (entity->kind == 0 && entity->layer == 10 &&
-                (entity->flags & 1)) {
-                saw_item = 1;
+            if (entity->kind == 0 && entity->layer == 10) {
+                if (entity->flags & 1) saw_item = 1;
+                if (entity->flags == 4) saw_destroyed_item = 1;
             }
+            if (entity->kind == 1 && entity->layer == 18) {
+                saw_explosion = 1;
+                if (entity->flags == 9) saw_disabled_explosion = 1;
+            }
+            if (entity->kind == 0 && entity->layer == 27) saw_choice = 1;
         }
         if (cast_tick && tick > cast_tick + 25 &&
+            reference->players[0].deaths == 0 &&
             reference->slimes[0].ability_flags[0] == 1) {
             saw_form_exit = 1;
         }
+        if (reference->players[0].deaths == 1) saw_death = 1;
+        if (saw_explosion) {
+            int live_explosion = 0;
+            for (unsigned i = 0; i < reference->header.entity_count; i++)
+                live_explosion |= reference->entities[i].layer == 18;
+            if (!live_explosion) saw_explosion_end = 1;
+        }
+        if (saw_choice && tick > 550) {
+            for (unsigned i = 0; i < reference->header.slime_count; i++)
+                if (reference->slimes[i].owner == 1 &&
+                    (reference->slimes[i].flags & 2)) saw_respawn = 1;
+        }
     }
     for (int backend = 0; backend < 2; backend++) bopl_rl_close(world[backend]);
-    if (!cast_tick || !saw_item || !saw_form_exit) {
-        fprintf(stderr, "incomplete scenario cast=%u item=%d exit=%d\n",
-                cast_tick, saw_item, saw_form_exit);
+    if (!cast_tick || !saw_item || !saw_form_exit || !saw_destroyed_item ||
+        !saw_explosion || !saw_disabled_explosion || !saw_explosion_end ||
+        !saw_death || !saw_choice || !saw_respawn) {
+        fprintf(stderr,
+                "incomplete cast=%u item=%d exit=%d destroyed=%d explosion=%d "
+                "disabled=%d ended=%d death=%d choice=%d respawn=%d\n",
+                cast_tick, saw_item, saw_form_exit, saw_destroyed_item,
+                saw_explosion, saw_disabled_explosion, saw_explosion_end,
+                saw_death, saw_choice, saw_respawn);
         return 1;
     }
-    printf("GRENADE_THROW_GOLDEN_OK ticks=130\n");
+    printf("GRENADE_ABILITY_GOLDEN_OK ticks=700\n");
     return 0;
 }
