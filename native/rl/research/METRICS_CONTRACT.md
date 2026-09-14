@@ -216,10 +216,13 @@ labels each such curve (`pool v5 IQM3`, `pool v6 IQM3`, …) and will not mix
 pools.
 
 **Joint Elo** is one Bradley-Terry over every pool round-robin `matches[]`,
-every on-disk candidate `records` dict, and human games (excluded rounds
-dropped). Identity is checkpoint sha256 / bot name / `random` / `human`.
+every on-disk band-rated candidate `records` dict, and human games (excluded
+rounds dropped). Identity is checkpoint sha256 / bot name / `random` / `human`.
 Regularizer is one virtual draw per played pair so 480-game matches keep
-their weight. `GET /api/ladder` is this fit; `GET /api/index` lists every
+their weight. In-run evaluation fits (`source: evaluation`, ~144 games, no
+band matching, mostly against the scripted training roster) are excluded:
+in a joint fit they rated mid-run checkpoints 900+ through exploited bots
+alone. They still draw the run page's dashed in-run curve. `GET /api/ladder` is this fit; `GET /api/index` lists every
 discovered run. A run payload (`GET /api/run/<name>`) carries both `joint`
 and labelled `pools[]`. There is no `<run>/ladder/ladder.json`.
 

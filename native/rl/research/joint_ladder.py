@@ -272,9 +272,17 @@ def rating_files(run_dir):
                 continue
             games = payload.get('games') or payload.get('budget') or 0
             source = payload.get('source') or ''
+            if source == 'evaluation':
+                # In-run evaluation fits: ~144 games with no band matching, mostly
+                # against the scripted training roster the learner exploits. In a
+                # joint fit they rate a mid-run checkpoint 900+ through the bots
+                # alone (the pool-v5 Goodhart, again). Only band ratings and pool
+                # round-robins carry transitive information; leave these to the
+                # run page's dashed in-run curve.
+                continue
             key = (sha, pool_sha)
             previous = grouped.get(key)
-            rank = (0 if source == 'evaluation' else 1, games if isinstance(games, (int, float)) else 0)
+            rank = (1, games if isinstance(games, (int, float)) else 0)
             if previous and previous[0] > rank:
                 continue
             grouped[key] = (rank, path, payload)

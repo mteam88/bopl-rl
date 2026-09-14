@@ -177,11 +177,19 @@ class Identity(unittest.TestCase):
                     'mixed-hard': dict(wins=1, losses=5, draws=0, games=6),
                 },
             )))
+            eval_only = '22' * 32
+            (Path(run) / 'reference' / 'policy-2.json').write_text(json.dumps(dict(
+                schema=rp.SCHEMA, source='evaluation', checkpoint='policy-2.bin',
+                checkpoint_identity=dict(sha256=eval_only), pool_sha256=pool['pool_sha256'],
+                games=12, records={'mixed-hard': dict(wins=6, losses=0, draws=0, games=6)},
+            )))
             runs = jl.discover_runs(tmp)
             collection = jl.collect(tmp, runs, [pool], None)
             pair = collection['records'].get((sha, 'random')) or collection['records'].get(('random', sha))
-            # band 200-40, not evaluation 1-5 on top
+            # band 200-40; the in-run evaluation fit (1-5, no band matching) is not merged in
             self.assertEqual(sum(pair), 240)
+            # a checkpoint with only an in-run evaluation fit stays out of the joint fit
+            self.assertFalse(any(eval_only in key for key in collection['records']))
 
     def test_discover_skips_venv_and_anchors(self):
         with tempfile.TemporaryDirectory() as tmp:
