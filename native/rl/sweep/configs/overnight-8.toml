@@ -22,9 +22,11 @@
 # evaluations (100 at 40M would double the per-trial disk: 19 MB of mind logs per
 # evaluation is the post-archive floor). last_k 3 -> the last 240M steps.
 #
-# Disk: finished runs are archived by research/compact_evaluations.py (visual JSON
-# -> .json.gz, 12x); the hourly bopl-compact-evaluations timer keeps sweeps/* at
-# ~1 GB per 1B steps. metrics.jsonl is ~320 MB per 1B and is left alone.
+# Disk: /home is btrfs with compress=zstd:1, so a 1B trial's 2 GB apparent is
+# ~0.7 GB on disk (compsize: the JSON/metrics compress 12x; the 19 MB-per-evaluation
+# mind logs, checkpoints and pool are the incompressible 540 MB). 40 trials at ~2.5B
+# ~ 70 GB real against 167 GB free at queue time. research/compact_evaluations.py
+# (json -> json.gz) exists for plain filesystems and gains nothing here.
 #
 # Budget: 1B ~17 min train + 4.5 min score (overnight-7), 4B ~70 min; bot-heavy
 # trials up to 2.4x. Expect ~45 min per trial on average -> 40 trials ~30 h.

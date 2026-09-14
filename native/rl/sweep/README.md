@@ -337,10 +337,10 @@ without restarting.
 - gamma has no `train.py` flag (native default); add a flag before sweeping it.
 - Validation-scale trials (a few million steps) are noisy; treat smoke sweeps
   as plumbing checks, not science.
-- Disk: a 1B-step trial writes ~2 GB, 70% of it evaluation replays
-  (`evaluations/*/<game>.json`). `research/compact_evaluations.py` archives
-  finished runs' replays to `.json.gz` (12x) and every reader goes through
-  `research/visuals.py`, which resolves either name; the user timer
-  `bopl-compact-evaluations.timer` runs it hourly over `sweeps/*` with a 1 h
-  idle guard, so the live trial is never touched. `metrics.jsonl` (~320 MB per
-  1B) is not archived.
+- Disk: a 1B-step trial writes ~2 GB apparent, but `/home` is btrfs with
+  `compress=zstd:1`, so measure with `compsize`, not `du`: ~0.7 GB real, of
+  which the incompressible part (`*.mind.json.gz`, checkpoints, pool) is 540 MB
+  and the JSON replays + `metrics.jsonl` compress 12x. On a plain filesystem
+  `research/compact_evaluations.py` archives finished runs' replays to
+  `.json.gz`; every reader goes through `research/visuals.py`, which resolves
+  either name (some `aim-ar-fourier` and `overnight-1` runs are archived).
