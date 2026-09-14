@@ -1002,6 +1002,30 @@ before map home springs, and reuse existing fixed arrays/entity pools. Grenade
 terrain bounce, non-owner hits, grenade duplication and grounded-form forced
 exits still require separate goldens before id 3 is complete.
 
+### Executable Tack throw and trap (2026-09-14)
+
+Catalog id 35 now shares the same allocation-reusing `ThrowItem2` form while
+loading every form, body and trap constant from the Tack and BananaPeel prefabs.
+The item receives its Projectile owner on the first updater pass after release,
+sets angular velocity to four, and follows the normal circle-body integration.
+A wall callback settles it only on a top-side contact after the 0.1-second launch
+grace and with non-upward velocity. Each later updater resets the body to the
+captured contact position before physics, matching the source's stable pin.
+
+After the strict 0.8-second arm threshold, the trap scans live vulnerable
+players in source order with its scaled-radius test. The owner remains immune
+until leaving that radius once. A subsequent overlap creates the ordinary death
+effect, kills with the Tack owner as attacker, and removes the trap before that
+pass's DetPhysics contacts. The strict 20-second lifetime uses the player time
+scale clock and removes an unused trap without a pop sound.
+
+`tack_ability_ab.c` compares 1,450 exact NativeAOT/Q32 ticks covering airborne
+entry, charged release, deferred owner binding, ballistic flight, settling,
+stable pinning and lifetime expiry. `tack_kill_ab.c` compares 400 exact ticks and
+drives the thrower away and back across the armed trap, covering owner-clear
+immunity, the one-use kill, updater-phase removal and the stock-choice prefix.
+The shared `Item.Duplicate` behavior remains for the Duplicator integration.
+
 ### Executable Gust (2026-09-14)
 
 Catalog id 7 now executes the shipped Gust `Ability`, `QuickSpell`, and

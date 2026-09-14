@@ -47,6 +47,7 @@ pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
+pub const ABILITY_TACK: u32 = 35;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
@@ -320,6 +321,7 @@ pub struct ThrownItem {
     pub active: bool,
     pub id: u32,
     pub owner: usize,
+    pub ability: u32,
     pub born_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
@@ -328,6 +330,11 @@ pub struct ThrownItem {
     pub fuse: Fix,
     pub hurt_owner_delay: Fix,
     pub detonates_on_owner: bool,
+    pub age: Fix,
+    pub launched: bool,
+    pub settled: bool,
+    pub owner_clear: bool,
+    pub settle_position: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -354,6 +361,85 @@ pub struct ThrowItemState {
     pub fire_input_time: Fix,
     pub direction: Vec2,
     pub item: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct ThrowConfig<'a> {
+    hurtbox_extents: Vec2,
+    air_position: Vec2,
+    ground_position: Vec2,
+    ground_dummy: &'a [Vec2],
+    air_dummy: &'a [Vec2],
+    hurt_owner_delay: Fix,
+    max_force: Fix,
+    min_force: Fix,
+    force_gain_speed: Fix,
+    max_slow_mo_speed: Fix,
+    knockback: Fix,
+    constants: &'a crate::world::MovementConstants,
+    ground_enter_ticks: u32,
+    ground_exit_ticks: u32,
+    air_enter_ticks: u32,
+    air_exit_ticks: u32,
+    item_layer: u32,
+    item_updatable_count: u32,
+    item_collider_hierarchy: u32,
+    item_radius: Fix,
+    item_body: Body,
+}
+
+fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
+    if ability == ABILITY_TACK {
+        let d = &data.tack;
+        ThrowConfig {
+            hurtbox_extents: d.hurtbox_extents,
+            air_position: d.air_position,
+            ground_position: d.ground_position,
+            ground_dummy: &d.ground_dummy,
+            air_dummy: &d.air_dummy,
+            hurt_owner_delay: d.hurt_owner_delay,
+            max_force: d.max_force,
+            min_force: d.min_force,
+            force_gain_speed: d.force_gain_speed,
+            max_slow_mo_speed: d.max_slow_mo_speed,
+            knockback: d.knockback,
+            constants: &d.constants,
+            ground_enter_ticks: d.ground_enter_ticks,
+            ground_exit_ticks: d.ground_exit_ticks,
+            air_enter_ticks: d.air_enter_ticks,
+            air_exit_ticks: d.air_exit_ticks,
+            item_layer: d.item_layer,
+            item_updatable_count: d.item_updatable_count,
+            item_collider_hierarchy: d.item_collider_hierarchy,
+            item_radius: d.item_radius,
+            item_body: d.item_body,
+        }
+    } else {
+        let d = &data.grenade;
+        ThrowConfig {
+            hurtbox_extents: d.hurtbox_extents,
+            air_position: d.air_position,
+            ground_position: d.ground_position,
+            ground_dummy: &d.ground_dummy,
+            air_dummy: &d.air_dummy,
+            hurt_owner_delay: d.hurt_owner_delay,
+            max_force: d.max_force,
+            min_force: d.min_force,
+            force_gain_speed: d.force_gain_speed,
+            max_slow_mo_speed: d.max_slow_mo_speed,
+            knockback: d.knockback,
+            constants: &d.constants,
+            ground_enter_ticks: d.ground_enter_ticks,
+            ground_exit_ticks: d.ground_exit_ticks,
+            air_enter_ticks: d.air_enter_ticks,
+            air_exit_ticks: d.air_exit_ticks,
+            item_layer: d.item_layer,
+            item_updatable_count: d.item_updatable_count,
+            item_collider_hierarchy: d.item_collider_hierarchy,
+            item_radius: d.item_radius,
+            item_body: d.item_body,
+        }
+    }
 }
 
 const REWIND_CAPACITY: usize = 188;
@@ -677,6 +763,7 @@ pub enum ActiveAbility {
     Dash,
     Bow,
     Grenade,
+    Tack,
     Gust,
     Revival,
     Platform,
@@ -1257,8 +1344,8 @@ impl RolloutWorld {
                             &mut bow_entity[i],
                             false,
                         ),
-                        ABILITY_GRENADE => (
-                            data.grenade.hurtbox_extents,
+                        ability @ (ABILITY_GRENADE | ABILITY_TACK) => (
+                            throw_config(data, ability).hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i],
                             false,
@@ -1860,6 +1947,7 @@ impl RolloutWorld {
                     | ActiveAbility::Dash
                     | ActiveAbility::Bow
                     | ActiveAbility::Grenade
+                    | ActiveAbility::Tack
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
@@ -2175,10 +2263,14 @@ impl RolloutWorld {
                         self.dash_move(index, masked, movement_input);
                         return;
                     }
-                    ABILITY_GRENADE => {
+                    ABILITY_GRENADE | ABILITY_TACK => {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Grenade;
+                        slot.active = if ability == ABILITY_TACK {
+                            ActiveAbility::Tack
+                        } else {
+                            ActiveAbility::Grenade
+                        };
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -2374,7 +2466,10 @@ impl RolloutWorld {
             self.bow_tick(index, action, data);
             return;
         }
-        if self.players[index].active == ActiveAbility::Grenade {
+        if matches!(
+            self.players[index].active,
+            ActiveAbility::Grenade | ActiveAbility::Tack
+        ) {
             self.throw_item_tick(index, action, data);
             return;
         }
@@ -3066,7 +3161,11 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ABILITY_GRENADE => (data.grenade.hurtbox_extents, 8, &mut throw_entity),
+                    ability @ (ABILITY_GRENADE | ABILITY_TACK) => (
+                        throw_config(data, ability).hurtbox_extents,
+                        8,
+                        &mut throw_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -3237,7 +3336,11 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ABILITY_GRENADE => (data.grenade.hurtbox_extents, 8, &mut throw_entity),
+                    ability @ (ABILITY_GRENADE | ABILITY_TACK) => (
+                        throw_config(data, ability).hurtbox_extents,
+                        8,
+                        &mut throw_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -3514,11 +3617,15 @@ impl RolloutWorld {
         }
     }
 
-    /// `ThrowItem2` player-form lifecycle for the Grenade prefab. The item
+    /// Shared `ThrowItem2` player-form lifecycle. The item
     /// collider is manually initialized by `Fire`, so it joins DetPhysics in
     /// the cast pass even though its MonoUpdatables initialize next pass.
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
-        let gd = &data.grenade;
+        let ability = match self.players[index].active {
+            ActiveAbility::Tack => ABILITY_TACK,
+            _ => ABILITY_GRENADE,
+        };
+        let gd = throw_config(data, ability);
         let aim = action.direction();
         // Ability.UpdateSim publishes Player.Position before ThrowItem2 and
         // PlayerBody advance the live ability body later in this pass.
@@ -3559,12 +3666,12 @@ impl RolloutWorld {
             };
             if state.ticks > enter_ticks {
                 if state.has_inputted_fire {
-                    self.fire_grenade(index, data);
+                    self.fire_thrown_item(index, data);
                 } else if state.item.is_none() {
                     // The held grenade has no registered collider because its
                     // DPhysicsCircle uses manuallyCallInit. Keep only the
                     // payload state until release calls `Fire`.
-                    let item = self.spawn_held_grenade(index, data);
+                    let item = self.spawn_held_item(index, data);
                     self.players[index].throw_item.item = Some(item);
                 }
             }
@@ -3574,7 +3681,7 @@ impl RolloutWorld {
             && self.players[index].throw_item.item.is_some()
             && self.players[index].throw_item.has_inputted_fire
         {
-            self.fire_grenade(index, data);
+            self.fire_thrown_item(index, data);
         }
 
         if self.players[index].throw_item.phase == 0
@@ -3689,23 +3796,38 @@ impl RolloutWorld {
         }
     }
 
-    fn spawn_held_grenade(&mut self, index: usize, data: &data::RolloutData) -> usize {
+    fn spawn_held_item(&mut self, index: usize, data: &data::RolloutData) -> usize {
+        let ability = match self.players[index].active {
+            ActiveAbility::Tack => ABILITY_TACK,
+            _ => ABILITY_GRENADE,
+        };
+        let config = throw_config(data, ability);
         let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.grenade.item_updatable_count;
+        self.next_spawn_hierarchy += config.item_updatable_count;
         let item = ThrownItem {
             active: true,
             // Stable collider IDs are assigned when ManualInit joins
             // DetPhysics. A held grenade can explode without consuming one.
             id: 0,
             owner: index,
+            ability,
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
             position: self.players[index].base.position,
-            body: data.grenade.item_body,
-            fuse: data.grenade.detonation_time,
+            body: config.item_body,
+            fuse: if ability == ABILITY_GRENADE {
+                data.grenade.detonation_time
+            } else {
+                Fix::MAX
+            },
             hurt_owner_delay: Fix::ZERO,
             detonates_on_owner: false,
+            age: Fix::ZERO,
+            launched: false,
+            settled: false,
+            owner_clear: false,
+            settle_position: Vec2::ZERO,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -3717,12 +3839,16 @@ impl RolloutWorld {
         }
     }
 
-    fn fire_grenade(&mut self, index: usize, data: &data::RolloutData) {
-        let gd = &data.grenade;
+    fn fire_thrown_item(&mut self, index: usize, data: &data::RolloutData) {
+        let ability = match self.players[index].active {
+            ActiveAbility::Tack => ABILITY_TACK,
+            _ => ABILITY_GRENADE,
+        };
+        let gd = throw_config(data, ability);
         let item_index = self.players[index]
             .throw_item
             .item
-            .unwrap_or_else(|| self.spawn_held_grenade(index, data));
+            .unwrap_or_else(|| self.spawn_held_item(index, data));
         let new_collider_id = (self.thrown_items[item_index].active
             && self.thrown_items[item_index].entity.is_none())
         .then(|| self.next_id());
@@ -4527,13 +4653,86 @@ impl RolloutWorld {
     }
 
     fn thrown_items_integrate(&mut self, data: &data::RolloutData) {
+        // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
+        // updater pass after Fire, pins a settled tack before each integration,
+        // and performs the armed proximity query without allocating.
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].ability != ABILITY_TACK
+                || self.thrown_items[item_index].born_tick >= self.tick
+            {
+                continue;
+            }
+            {
+                let item = &mut self.thrown_items[item_index];
+                if !item.launched {
+                    item.launched = true;
+                    item.body.angular_velocity = Fix::from_int(4);
+                    if let Some(entity) = item.entity {
+                        self.entities[entity].owner = item.owner as u32 + 1;
+                    }
+                }
+                if item.settled {
+                    item.position = item.settle_position;
+                    item.body.velocity = Vec2::ZERO;
+                    item.body.angular_velocity = Fix::ZERO;
+                }
+                item.age += DT;
+            }
+            if self.thrown_items[item_index].age > data.tack.lifetime_seconds {
+                self.remove_thrown_item(item_index, false);
+                continue;
+            }
+            if self.thrown_items[item_index].age <= data.tack.arm_seconds {
+                continue;
+            }
+            let position = self.thrown_items[item_index].position;
+            let owner = self.thrown_items[item_index].owner;
+            let radius = data.tack.item_radius + Fix::from_f32(0.75);
+            let mut victim = None;
+            for player_index in 0..self.players.len() {
+                if !self.playable(player_index) {
+                    continue;
+                }
+                let in_range = (self.players[player_index].base.position - position)
+                    .length_squared()
+                    < radius * radius;
+                if player_index == owner && !self.thrown_items[item_index].owner_clear {
+                    if !in_range {
+                        self.thrown_items[item_index].owner_clear = true;
+                    }
+                    continue;
+                }
+                if in_range {
+                    victim = Some(player_index);
+                    break;
+                }
+            }
+            if let Some(victim) = victim {
+                let killer = owner as u32 + 1;
+                let cause = if victim == owner {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
+                // BananaPeel invokes PlayerCollision.killPlayer from its
+                // updater: it creates the normal death effect, while
+                // DetPhysics removes all killed colliders before contacts.
+                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+                self.kill(victim, killer, cause, false);
+                self.remove_thrown_item(item_index, false);
+            }
+        }
+
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active {
                 continue;
             }
+            let ability = self.thrown_items[item_index].ability;
+            let config = throw_config(data, ability);
             let timed_out = {
                 let item = &mut self.thrown_items[item_index];
-                if item.born_tick < self.tick {
+                if ability == ABILITY_GRENADE && item.born_tick < self.tick {
                     item.fuse -= DT;
                     if item.hurt_owner_delay > Fix::ZERO {
                         item.hurt_owner_delay -= DT;
@@ -4542,7 +4741,7 @@ impl RolloutWorld {
                         }
                     }
                 }
-                item.fuse <= Fix::ZERO
+                ability == ABILITY_GRENADE && item.fuse <= Fix::ZERO
             };
             if timed_out {
                 self.detonate_grenade(item_index, false, data);
@@ -4563,7 +4762,17 @@ impl RolloutWorld {
             row.vy = item.body.velocity.y.raw();
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
-            row.inverse_mass = data.grenade.item_body.inverse_mass.raw();
+            row.inverse_mass = config.item_body.inverse_mass.raw();
+        }
+    }
+
+    fn remove_thrown_item(&mut self, item_index: usize, by_callback: bool) {
+        let item = &mut self.thrown_items[item_index];
+        item.active = false;
+        if let Some(entity) = item.entity {
+            let row = &mut self.entities[entity];
+            row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+            row.owner = 0;
         }
     }
 
@@ -4595,13 +4804,7 @@ impl RolloutWorld {
         } else {
             self.grenade_explosions.push(explosion);
         }
-        let item = &mut self.thrown_items[item_index];
-        item.active = false;
-        if let Some(entity) = item.entity {
-            let row = &mut self.entities[entity];
-            row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
-            row.owner = 0;
-        }
+        self.remove_thrown_item(item_index, by_callback);
     }
 
     /// DetPhysics contact group order for Arrow's circle is Circle/RR,
@@ -4727,10 +4930,18 @@ impl RolloutWorld {
                             inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                         }
                     }
-                    ActiveAbility::Grenade => OrientedBox::from_basis(
+                    ActiveAbility::Grenade | ActiveAbility::Tack => OrientedBox::from_basis(
                         player.base.position,
                         Vec2::angle(player.base.rotation),
-                        data.grenade.hurtbox_extents,
+                        throw_config(
+                            data,
+                            if player.active == ActiveAbility::Tack {
+                                ABILITY_TACK
+                            } else {
+                                ABILITY_GRENADE
+                            },
+                        )
+                        .hurtbox_extents,
                     ),
                     _ => player.base.collider,
                 };
@@ -4767,9 +4978,10 @@ impl RolloutWorld {
                 continue;
             }
             let item = self.thrown_items[item_index];
+            let config = throw_config(data, item.ability);
             let circle = Circle {
                 center: item.position,
-                radius: data.grenade.item_radius,
+                radius: config.item_radius,
             };
             let mut contacts = [(0usize, Contact::default()); 64];
             let mut contact_count = 0;
@@ -4813,6 +5025,29 @@ impl RolloutWorld {
                 row.vy = body.velocity.y.raw();
                 row.rotation = body.orientation.raw();
                 row.angular_velocity = body.angular_velocity.raw();
+
+                if item.ability == ABILITY_TACK
+                    && !item.settled
+                    && item.launched
+                    && item.age > Fix::from_f32(0.1)
+                    && item.body.velocity.y <= Fix::from_f32(0.5)
+                    && contacts[..contact_count]
+                        .iter()
+                        .any(|(_, contact)| contact.normal.y < Fix::from_f32(-0.5))
+                {
+                    let thrown = &mut self.thrown_items[item_index];
+                    thrown.settled = true;
+                    thrown.settle_position = center;
+                    thrown.body.velocity = Vec2::ZERO;
+                    thrown.body.angular_velocity = Fix::ZERO;
+                    row.vx = 0;
+                    row.vy = 0;
+                    row.angular_velocity = 0;
+                }
+            }
+
+            if item.ability == ABILITY_TACK {
+                continue;
             }
 
             let owner_id = item.owner as u32 + 1;
@@ -4857,10 +5092,18 @@ impl RolloutWorld {
                                 ),
                             }
                         }
-                        ActiveAbility::Grenade => OrientedBox::from_basis(
+                        ActiveAbility::Grenade | ActiveAbility::Tack => OrientedBox::from_basis(
                             player.base.position,
                             Vec2::angle(player.base.rotation),
-                            data.grenade.hurtbox_extents,
+                            throw_config(
+                                data,
+                                if player.active == ActiveAbility::Tack {
+                                    ABILITY_TACK
+                                } else {
+                                    ABILITY_GRENADE
+                                },
+                            )
+                            .hurtbox_extents,
                         ),
                         _ => player.base.collider,
                     };
@@ -5758,7 +6001,15 @@ impl RolloutWorld {
             let teleporting = slot.teleport_effect_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
-            let throwing = slot.active == ActiveAbility::Grenade;
+            let throwing = matches!(slot.active, ActiveAbility::Grenade | ActiveAbility::Tack);
+            let throw_config = throw_config(
+                data::get(),
+                if slot.active == ActiveAbility::Tack {
+                    ABILITY_TACK
+                } else {
+                    ABILITY_GRENADE
+                },
+            );
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
@@ -5929,7 +6180,7 @@ impl RolloutWorld {
                         // advances once by that velocity while the original
                         // slime body remains frozen at its pre-cast pose.
                         let center = if slot.throw_item.grounded && slot.throw_item.has_fired {
-                            synced - slot.throw_item.direction * data.grenade.knockback * DT
+                            synced - slot.throw_item.direction * throw_config.knockback * DT
                         } else {
                             synced
                         };
@@ -5940,7 +6191,7 @@ impl RolloutWorld {
                     let hurtbox = OrientedBox::from_basis(
                         center,
                         Vec2::angle(rotation),
-                        data.grenade.hurtbox_extents,
+                        throw_config.hurtbox_extents,
                     );
                     throw_box.x = center.x.raw();
                     throw_box.y = center.y.raw();

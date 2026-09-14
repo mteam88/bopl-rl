@@ -206,6 +206,7 @@ struct RawPrefabs {
     revival: RawRevival,
     teleport: RawTeleport,
     grenade: RawGrenade,
+    tack: RawTack,
 }
 
 #[derive(Deserialize)]
@@ -254,6 +255,27 @@ struct RawGrenadeItem {
     duplicate_pattern: u32,
     duplicate_spacing: i64,
     duplicate_angle: i64,
+}
+#[derive(Deserialize)]
+struct RawTack {
+    hurtbox_extents: RawVec2,
+    #[serde(rename = "throw")]
+    throw_data: RawThrowItem,
+    item: RawTackItem,
+}
+#[derive(Deserialize)]
+struct RawTackItem {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    body: RawBody,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+    arm_seconds: i64,
+    lifetime_seconds: i64,
 }
 #[derive(Deserialize)]
 struct RawGrenadeExplosion {
@@ -552,6 +574,35 @@ pub struct GrenadeData {
     pub explosion_animation_ticks: u32,
     pub explosion_shockwaves: [ExplosionShockwaveData; 2],
 }
+pub struct TackData {
+    pub hurtbox_extents: Vec2,
+    pub air_position: Vec2,
+    pub ground_position: Vec2,
+    pub ground_dummy: Vec<Vec2>,
+    pub air_dummy: Vec<Vec2>,
+    pub hurt_owner_delay: Fix,
+    pub max_force: Fix,
+    pub min_force: Fix,
+    pub force_gain_speed: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub knockback: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub ground_enter_ticks: u32,
+    pub ground_exit_ticks: u32,
+    pub air_enter_ticks: u32,
+    pub air_exit_ticks: u32,
+    pub item_layer: u32,
+    pub item_updatable_count: u32,
+    pub item_collider_hierarchy: u32,
+    pub item_radius: Fix,
+    pub item_body: crate::physics::Body,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub arm_seconds: Fix,
+    pub lifetime_seconds: Fix,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -589,6 +640,7 @@ pub struct RolloutData {
     pub revival: RevivalData,
     pub teleport: TeleportData,
     pub grenade: GrenadeData,
+    pub tack: TackData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -961,6 +1013,39 @@ pub fn get() -> &'static RolloutData {
                             collision_mask: wave.collision_mask,
                         }
                     }),
+                }
+            },
+            tack: {
+                let tack = &raw.prefabs.tack;
+                let throw = &tack.throw_data;
+                TackData {
+                    hurtbox_extents: tack.hurtbox_extents.get(),
+                    air_position: throw.air_position.get(),
+                    ground_position: throw.ground_position.get(),
+                    ground_dummy: throw.ground_dummy.iter().map(RawVec2::get).collect(),
+                    air_dummy: throw.air_dummy.iter().map(RawVec2::get).collect(),
+                    hurt_owner_delay: Fix::from_raw(throw.hurt_owner_delay),
+                    max_force: Fix::from_raw(throw.max_force),
+                    min_force: Fix::from_raw(throw.min_force),
+                    force_gain_speed: Fix::from_raw(throw.force_gain_speed),
+                    max_slow_mo_speed: Fix::from_raw(throw.max_slow_mo_speed),
+                    knockback: Fix::from_raw(throw.knockback),
+                    constants: constants(&throw.physics),
+                    ground_enter_ticks: ticks(&throw.animations.ground_enter),
+                    ground_exit_ticks: ticks(&throw.animations.ground_exit),
+                    air_enter_ticks: ticks(&throw.animations.air_enter),
+                    air_exit_ticks: ticks(&throw.animations.air_exit),
+                    item_layer: tack.item.layer,
+                    item_updatable_count: tack.item.updatable_count,
+                    item_collider_hierarchy: tack.item.collider_hierarchy,
+                    item_radius: Fix::from_raw(tack.item.radius),
+                    item_body: body(&tack.item.body, Fix::ZERO),
+                    clone_count: tack.item.clone_count,
+                    duplicate_pattern: tack.item.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(tack.item.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(tack.item.duplicate_angle),
+                    arm_seconds: Fix::from_raw(tack.item.arm_seconds),
+                    lifetime_seconds: Fix::from_raw(tack.item.lifetime_seconds),
                 }
             },
             abilities: raw

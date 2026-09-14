@@ -260,7 +260,8 @@
       "name": "Tack",
       "prefab": "Assets/GameObject/Banana peel.prefab",
       "prefab_guid": "924cddb182e642829c914ae7aa5f57e2",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "tack_ability_ab matches 1,450 NativeAOT/Rust Q32 ticks through aerial ThrowItem2 entry, charged release, deferred Projectile owner binding, ballistic landing, stable pinning and strict 20-second expiry. tack_kill_ab matches 400 ticks through the 0.8-second arm delay, owner-clear immunity, re-entry kill, updater-phase removal and stock-choice prefix. Item.Duplicate remains open."
     },
     {
       "id": 36,

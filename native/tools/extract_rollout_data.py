@@ -532,6 +532,64 @@ def main():
         },
     }
 
+    # ---- Tack / shared ThrowItem2 item path ----
+    _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
+    tack_throw = component(tack_ability, "ThrowItem2")
+    tack_box = component(tack_ability, "DPhysicsBox")
+    tack_phys = component(tack_ability, "PlayerPhysics")
+    tack_anims = animations(guid_of(tack_throw["animData"]))
+    tack_item = ASSETS[guid_of(tack_throw["ItemPrefab"])]
+    tack_item_data = component(tack_item, "Item")
+    tack_circle = component(tack_item, "DPhysicsCircle")
+    tack_body = component(tack_item, "BoplBody")
+    tack_trap = component(tack_item, "BananaPeel")
+    out["prefabs"]["tack"] = {
+        "hurtbox_extents": vec2(tack_box, "startExtents"),
+        "throw": {
+            "air_position": vec2(tack_throw, "aThrowPosition"),
+            "ground_position": vec2(tack_throw, "gThrowPosition"),
+            "ground_dummy": [vec2(tack_throw, f"groundedDummyPositions.Array.data[{i}]")
+                             for i in range(tack_throw["groundedDummyPositions.Array.size"])],
+            "air_dummy": [vec2(tack_throw, f"airealDummyPositions.Array.data[{i}]")
+                          for i in range(tack_throw["airealDummyPositions.Array.size"])],
+            "hurt_owner_delay": fix(tack_throw, "DisableGrenadeHitBoxTime"),
+            "max_force": fix(tack_throw, "maxThrowForce"),
+            "min_force": fix(tack_throw, "minThrowForce"),
+            "force_gain_speed": fix(tack_throw, "ThrowForceGainSpeed"),
+            "max_slow_mo_speed": fix(tack_throw, "maxSlowMoSpeed"),
+            "knockback": fix(tack_throw, "knockback"),
+            "physics": {
+                "max_speed": fix(tack_phys, "maxSpeed"),
+                "jump_strength": fix(tack_phys, "jumpStrength"),
+                "accel": fix(tack_phys, "accel"),
+                "radius": fix(tack_phys, "radius"),
+                "gravity_accel": fix(tack_phys, "gravity_accel"),
+                "gravity_max_fall_speed": fix(tack_phys, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(tack_phys, "gravity_modifier"),
+                "jump_extra_x": fix(tack_phys, "jumpExtraXStrength"),
+                "jump_momentum": fix(tack_phys, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(tack_phys, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(tack_phys, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(tack_phys, "airAccel"),
+            },
+            "animations": {name: tack_anims[name]
+                           for name in ("gEnter", "gExit", "aEnter", "aExit")},
+        },
+        "item": {
+            "layer": tack_item["data"].get("layer"),
+            "updatable_count": updater_count(tack_item),
+            "collider_hierarchy": tack_circle["hierarchyNumber"],
+            "radius": fix(tack_circle, "startRadius"),
+            "body": physics_body(tack_body),
+            "clone_count": tack_item_data["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": tack_item_data["duplicatePattern"],
+            "duplicate_spacing": fix(tack_item_data, "duplicate_spacing"),
+            "duplicate_angle": fix(tack_item_data, "duplicate_angle"),
+            "arm_seconds": fix(tack_trap, "armSeconds"),
+            "lifetime_seconds": fix(tack_trap, "lifetimeSeconds"),
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written
