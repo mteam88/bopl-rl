@@ -3,8 +3,18 @@
 # itself swept, 1B..4B learner steps. overnight-7's Elo curves were still climbing
 # at 1B, so 1B is a box edge we chose, not a plateau; the fixed point of every
 # earlier sweep becomes a Protein axis with a real cost model.
-# Score: Bradley-Terry Elo vs pool v5, IQM over the last 3 evaluations, 480 games per
-# checkpoint (unchanged since overnight-5; game_mismatch=true is informational).
+# Score: Bradley-Terry Elo vs pool v6, IQM over the last 3 evaluations, 480 games per
+# checkpoint. Pool v6 (2026-09-14) replaces v5 because v5 was confounded with the
+# curriculum: 12 of its 19 references were scripted bots, four of them the v2 kinds
+# that ARE the Elo-matchmade training roster, and its strongest learned anchor was
+# ~430 Elo. overnight-7's share-1 trials beat the roster bots 90%+ and every learned
+# anchor 75-95%, so ~100 of their Elo was "beats what it trained on" (041: 744 on v5,
+# 648 refit without the v2 bots, 610 on checkpoints + search bots only) and the pool
+# had no resolution above ~600 except through bots. v6 = v5 minus the four v2 bots
+# plus six overnight-7 finals (041/035/033/007/016/000) as strong, stylistically
+# varied anchors; a candidate is never rated against a member that is itself.
+# Scores are not comparable to overnight-5..7's v5 numbers; overnight-7 is rescored
+# on v6 into <trial>/reference/<v6 sha8>/.
 #
 # fixed_cost = false: Protein sees each trial as three (steps, score, cost) points
 # (the last 3 rated checkpoints) and suggests steps like any other hyper, trading
@@ -65,7 +75,7 @@ poll_seconds = 60
 
 [scoring]
 scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v6/pool.json"   # v5 minus the v2 training-roster bots + six overnight-7 anchors
 last_k = 3                         # eval_every 80M -> the last 240M steps
 games = 480
 first_pass_games = 6

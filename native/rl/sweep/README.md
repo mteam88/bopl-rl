@@ -180,13 +180,14 @@ instead:
 # build: full round robin (both sides, evaluation maps, fixed seeds,
 # 48 games per pair), BT-MLE fit, pool.json with every checkpoint hash.
 # Games involving rollout-search bots (bopl_rl_fork) run in their own, wider
-# thread pool and are timed separately (pool.json `timing`). Pool v5 (the
-# current one; v1-v4 are deleted):
+# thread pool and are timed separately (pool.json `timing`). Pool v6 (the
+# current one, 2026-09-14; v5 scored overnight-5..7, v1-v4 are deleted):
 BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
-  --out native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
-  --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
+  --out native/artifacts/rl/sweeps/anchors/pool-v6/pool.json \
+  --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,search-hard,search-medium \
   --checkpoint o3-019-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/o3-019-final.bin ... \
-  --games-per-pair 48 --workers 10 --slow-workers 12
+  --checkpoint o7-041-final=native/artifacts/rl/sweeps/anchors/pool-v6/o7-041-final.bin ... \
+  --games-per-pair 48 --workers 8 --slow-workers 8
 # verify: re-hash every checkpoint and the pool itself
 native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py verify .../pool.json
 # rate one checkpoint (writes <run>/reference/<pool_sha8>/<stem>.json when the
@@ -219,6 +220,19 @@ against, and why `verify` runs on every load. If a member turns out to be a
 bad reference (exploitable, redundant), leave it in and let the band
 allocation starve it of games: a member far outside 15–85% only ever gets the
 first-pass games.
+
+**Never score on what you train against** (pool v5 → v6, 2026-09-14). v5 held
+the four v2 bots that became the Elo-matchmade training roster in overnight-7,
+and the sweep put the curriculum knobs in Protein's hands: the trials it
+converged on (one bank, share 1.0) beat those bots 90%+ and were rated ~100
+Elo above a refit without them (041: 744 → 648; 610 on checkpoints + search
+bots alone). v5's strongest learned anchor was also only ~430, so every 600+
+candidate beat all of them 75–95% and the pool had no resolution at the top
+except through bots. v6 drops the roster bots and adds six overnight-7 finals
+(041/035/033 from the share-1 cell, 007 banks-3, 016 share-0.36, 000
+share-0.15). `rate_checkpoint` skips a member whose sha256 is the candidate's.
+Rule going forward: the scored pool must not contain the training roster's
+kinds, and it needs anchors within ~200 Elo of the candidates.
 
 **Sim identity**: `pool.json` stores the sim library's SHA-256 and every
 rating file records the sim it ran on plus `game_mismatch`. Ratings played on

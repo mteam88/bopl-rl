@@ -492,7 +492,11 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
     game = game_library(game)
     game_sha256 = sha256_file(game)
     configure_games(out, game)
-    ratings = {m['name']: float(m['rating']) for m in pool['members']}
+    # A pool member that is this very checkpoint (pool v6 anchors overnight-7
+    # finals) would only contribute 50% games pulling the candidate toward its
+    # own frozen rating; rate against the others.
+    ratings = {m['name']: float(m['rating']) for m in pool['members']
+               if m.get('sha256') is None or m['sha256'] != identity.get('sha256')}
     by_name = participants(pool, library=library)
     by_name[name] = elo_ladder.Model(name, checkpoint, 'candidate', library=library)
     limit = int(pool['episode_ticks'])
