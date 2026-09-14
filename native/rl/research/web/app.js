@@ -22,6 +22,8 @@
     return `${elo(interval[0])}–${elo(interval[1])}`;
   }
   const mem = new Map();
+  const inflight = new Map();
+  let loadToken = 0, replayLoading = false;
   function apply(url, payload) {
     const r = route();
     if (url === "/api/ladder" && r.view === "ladder") {
@@ -35,22 +37,71 @@
       renderSweep();
     }
   }
-  async function json(url) {
+  async function readNdjson(response, onPartial) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let replay = null;
+    const frames = [];
+    const consume = (line) => {
+      if (!line) return;
+      const obj = JSON.parse(line);
+      if (replay == null) {
+        replay = obj;
+        replay.frames = frames;
+      } else {
+        frames.push(obj);
+      }
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      buf += decoder.decode(value || new Uint8Array(), { stream: !done });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        consume(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (replay && frames.length === 1) onPartial?.(replay);
+        else if (replay && frames.length % 48 === 0) onPartial?.(replay);
+      }
+      if (done) break;
+    }
+    if (buf.trim()) consume(buf.trim());
+    onPartial?.(replay);
+    return replay;
+  }
+  async function json(url, { onUpdate } = {}) {
     const hit = mem.get(url);
-    const headers = { Accept: "application/json" };
+    if (onUpdate && hit?.data) onUpdate(hit.data);
+    const flight = inflight.get(url);
+    if (flight) {
+      if (onUpdate) flight.listeners.push(onUpdate);
+      if (hit?.data) return hit.data;
+      return flight.promise;
+    }
+    const headers = { Accept: "application/json, application/x-ndjson" };
     if (hit?.etag) headers["If-None-Match"] = hit.etag;
-    const pending = fetch(url, { headers }).then(async (r) => {
+    const listeners = onUpdate ? [onUpdate] : [];
+    const promise = fetch(url, { headers }).then(async (r) => {
       if (r.status === 304 && hit) return hit.data;
       if (!r.ok) throw Error(`${url} ${r.status}`);
-      const payload = await r.json();
-      mem.set(url, { data: payload, etag: r.headers.get("ETag") });
+      const ctype = r.headers.get("content-type") || "";
+      const etag = r.headers.get("ETag");
+      const emit = (partial) => {
+        mem.set(url, { data: partial, etag });
+        for (const fn of listeners) fn(partial);
+      };
+      let payload;
+      if (ctype.includes("ndjson")) payload = await readNdjson(r, emit);
+      else payload = await r.json();
+      mem.set(url, { data: payload, etag });
       return payload;
-    });
+    }).finally(() => inflight.delete(url));
+    inflight.set(url, { promise, listeners });
     if (hit?.data) {
-      pending.then((payload) => { if (payload !== hit.data) apply(url, payload); }).catch(() => {});
+      promise.then((payload) => { if (payload !== hit.data) apply(url, payload); }).catch(() => {});
       return hit.data;
     }
-    return pending;
+    return promise;
   }
   function fileUrl(evaluation, file) {
     return `/runs/${encodeURIComponent(data.name)}/evaluations/${evaluation.directory}/${encodeURIComponent(file)}`;
@@ -374,6 +425,10 @@
     }));
     selectMatch();
   }
+  function prefetchVisual(evaluation, game) {
+    if (!data || !evaluation || !game?.visual) return;
+    json(fileUrl(evaluation, game.visual)).catch(() => {});
+  }
   async function selectMatch() {
     selectedGame = selectedEvaluation?.games.find((g) => g.name === $("match").value);
     playing = false;
@@ -383,31 +438,49 @@
       $("emptyReplay").style.display = "";
       return;
     }
+    const token = ++loadToken;
+    const url = fileUrl(selectedEvaluation, selectedGame.visual);
+    const games = (selectedEvaluation.games || []).filter((g) => g.visual);
+    const i = games.findIndex((g) => g.name === selectedGame.name);
+    if (i >= 0 && games[i + 1]) prefetchVisual(selectedEvaluation, games[i + 1]);
     $("replayTag").textContent = "Loading…";
-    let value = null;
+    let drawn = false;
+    const adopt = (value) => {
+      if (token !== loadToken || !value?.frames) return;
+      replay = value;
+      $("emptyReplay").style.display = "none";
+      $("play").disabled = false;
+      $("scrub").max = Math.max(0, replay.frames.length - 1);
+      $("replayTag").textContent = selectedGame.timeout ? "Time limit" : selectedGame.win ? "Policy wins" : "Policy loses";
+      $("download").hidden = !selectedGame.replay;
+      if (selectedGame.replay) {
+        $("download").href = fileUrl(selectedEvaluation, selectedGame.replay);
+        $("download").download = selectedGame.replay;
+      }
+      if (!drawn && replay.frames.length) {
+        drawn = true;
+        frameIndex = 0;
+        $("play").textContent = "▶";
+        drawFrame();
+      }
+    };
+    replayLoading = true;
     try {
-      const response = await fetch(fileUrl(selectedEvaluation, selectedGame.visual));
-      if (response.ok) value = await response.json();
-    } catch { value = null; }
-    if (!value) { $("replayTag").textContent = "Replay unavailable"; return; }
-    replay = value;
-    frameIndex = 0;
-    $("emptyReplay").style.display = "none";
-    $("play").disabled = false;
-    $("play").textContent = "▶";
-    $("scrub").max = replay.frames.length - 1;
-    $("scrub").value = "0";
-    $("replayTag").textContent = selectedGame.timeout ? "Time limit" : selectedGame.win ? "Policy wins" : "Policy loses";
-    $("download").hidden = !selectedGame.replay;
-    if (selectedGame.replay) {
-      $("download").href = fileUrl(selectedEvaluation, selectedGame.replay);
-      $("download").download = selectedGame.replay;
+      const value = await json(url, { onUpdate: adopt });
+      if (token === loadToken) {
+        if (value) adopt(value);
+        else $("replayTag").textContent = "Replay unavailable";
+      }
+    } catch {
+      if (token === loadToken) $("replayTag").textContent = "Replay unavailable";
+    } finally {
+      if (token === loadToken) replayLoading = false;
     }
-    drawFrame();
   }
   function drawFrame() {
     if (!replay) return;
     const frame = replay.frames[Math.floor(frameIndex)];
+    if (!frame) return;
     window.drawBoplArena($("arena"), frame, replay.frames[0]);
     $("scrub").value = Math.floor(frameIndex);
     $("replayTime").textContent = `${duration(frame.t / 60)} / ${duration(replay.frames.at(-1).t / 60)}`;
@@ -423,7 +496,7 @@
     if (playing && replay) {
       const dt = Math.min(0.05, (now - lastTick) / 1000);
       frameIndex = Math.min(replay.frames.length - 1, frameIndex + dt * 60 * Number($("speed").value));
-      if (frameIndex >= replay.frames.length - 1) playing = false;
+      if (frameIndex >= replay.frames.length - 1 && !replayLoading) playing = false;
       drawFrame();
     }
     lastTick = now;

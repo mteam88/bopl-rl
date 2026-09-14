@@ -4,6 +4,7 @@ from collections import OrderedDict
 import glob
 import gzip
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -51,6 +52,111 @@ def stamp(path):
 def encode_json(data):
     raw = json.dumps(data, allow_nan=False, separators=(',', ':')).encode()
     return raw, gzip.compress(raw, 1), '"' + hashlib.sha256(raw).hexdigest() + '"'
+
+
+def round_json(value, ndigits=3):
+    if isinstance(value, float):
+        return round(value, ndigits)
+    if isinstance(value, dict):
+        return {key: round_json(item, ndigits) for key, item in value.items()}
+    if isinstance(value, list):
+        return [round_json(item, ndigits) for item in value]
+    return value
+
+
+def visual_ndjson(data):
+    frames = data.pop('frames', [])
+    chunks = [json.dumps(round_json(data), allow_nan=False, separators=(',', ':')).encode()]
+    for frame in frames:
+        chunks.append(json.dumps(round_json(frame), allow_nan=False, separators=(',', ':')).encode())
+    return b'\n'.join(chunks) + b'\n'
+
+
+def is_evaluation_visual(path):
+    return (path.suffix == '.json' and path.name != 'result.json'
+            and any(part.endswith('evaluations') for part in path.parts))
+
+
+def gzip_header_name(blob):
+    if len(blob) < 10 or blob[:2] != b'\x1f\x8b':
+        return ''
+    flags = blob[3]
+    pos = 10
+    if flags & 4:
+        if len(blob) < 12:
+            return ''
+        pos = 12 + int.from_bytes(blob[10:12], 'little')
+    if flags & 8:
+        end = blob.find(b'\x00', pos)
+        if end < 0:
+            return ''
+        return blob[pos:end].decode('latin-1')
+    return ''
+
+
+def gzip_named(raw, name, level=4):
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename=name, mode='wb', fileobj=buf, compresslevel=level, mtime=0) as handle:
+        handle.write(raw)
+    return buf.getvalue()
+
+
+def source_stamp_name(stat):
+    return f'{stat.st_ino}-{stat.st_mtime_ns}-{stat.st_size}'
+
+
+_visual_mem = OrderedDict()
+_visual_mem_lock = threading.Lock()
+_visual_path_locks = {}
+_VISUAL_MEM = 16
+
+
+def _visual_path_lock(path):
+    key = str(path)
+    with _visual_mem_lock:
+        lock = _visual_path_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _visual_path_locks[key] = lock
+        return lock
+
+
+def encoded_visual(path):
+    path = Path(path)
+    stat = path.stat()
+    key = source_stamp_name(stat)
+    with _visual_mem_lock:
+        hit = _visual_mem.get(str(path))
+        if hit and hit[0] == key:
+            _visual_mem.move_to_end(str(path))
+            return hit[1], hit[2]
+    sidecar = path.with_name(path.name + '.dash.gz')
+    encoded = None
+    with _visual_path_lock(path):
+        stat = path.stat()
+        key = source_stamp_name(stat)
+        if sidecar.is_file():
+            blob = sidecar.read_bytes()
+            if gzip_header_name(blob) == key:
+                encoded = blob
+        if encoded is None:
+            encoded = gzip_named(visual_ndjson(json.loads(path.read_bytes())), key)
+            tmp = sidecar.with_name(sidecar.name + f'.{os.getpid()}.tmp')
+            try:
+                tmp.write_bytes(encoded)
+                os.replace(tmp, sidecar)
+            except OSError:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    etag = '"' + hashlib.sha256(encoded).hexdigest()[:32] + '"'
+    with _visual_mem_lock:
+        _visual_mem[str(path)] = (key, encoded, etag)
+        _visual_mem.move_to_end(str(path))
+        while len(_visual_mem) > _VISUAL_MEM:
+            _visual_mem.popitem(last=False)
+    return encoded, etag
 
 
 def compact_report(path):
@@ -631,6 +737,32 @@ def main():
                 return self.send_error(404)
             if not file.is_file():
                 return self.send_error(404)
+            if (is_evaluation_visual(file) and not self.headers.get('Range')):
+                encoded, etag = encoded_visual(file)
+                if self.headers.get('If-None-Match') == etag:
+                    self.send_response(304)
+                    self.send_header('ETag', etag)
+                    self.end_headers()
+                    return
+                payload = encoded
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-ndjson')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('ETag', etag)
+                self.send_header('Vary', 'Accept-Encoding')
+                if 'gzip' in self.headers.get('Accept-Encoding', ''):
+                    self.send_header('Content-Encoding', 'gzip')
+                else:
+                    payload = gzip.decompress(encoded)
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                if self.command == 'HEAD':
+                    return
+                try:
+                    self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             size = file.stat().st_size
             start, end = 0, size - 1
             requested = self.headers.get('Range')
