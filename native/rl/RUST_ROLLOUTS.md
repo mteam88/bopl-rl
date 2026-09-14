@@ -49,7 +49,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **Random, Dash, Bow, Platform, Invisibility** (catalog ids 1/2/4/14/19): Random loadouts are
+- **NullAbility, Random, Dash, Bow, Platform, Invisibility** (catalog ids
+  0/1/2/4/14/19): NullAbility is the menu placeholder and is rejected as a
+  match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
   Platform are ported from `sim/Gameplay`
@@ -102,7 +104,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 1/2/4/14/19 have real behavior. Random is a spawn-time replacement,
+- Only ids 0/1/2/4/14/19 have complete catalog behavior. NullAbility is an
+  intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Bow/Platform execute casts. Every slot now uses its exact authored
   cooldown and common ground/castability metadata from the exported prefab;
   unported catalog ids never activate. Closing this scope requires the remaining

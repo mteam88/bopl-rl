@@ -6,8 +6,8 @@
       "name": "NullAbility",
       "prefab": "Assets/GameObject/NullAbility.prefab",
       "prefab_guid": "c6184b2da376bc0418d15724e93d435f",
-      "native_status": "partial",
-      "verification": "The shipped prefab lacks FixTransform: 18 exact clone-instantiation failure prefixes retain allocated registered objects. Empty-callback InstantAbility methods are separately verified on supplied graphs with a transform; this does not make the shipped placeholder usable."
+      "native_status": "ported",
+      "verification": "Faithfully unusable: the public ABI rejects id 0 like NativeAOT, while 18 retained clone-instantiation goldens preserve the shipped prefab failure caused by its missing FixTransform; supplied empty-callback InstantAbility graphs are separately covered."
     },
     {
       "id": 1,

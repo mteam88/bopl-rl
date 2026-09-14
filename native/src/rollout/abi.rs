@@ -101,7 +101,10 @@ pub unsafe extern "C" fn bopl_rl_reset_begin(world: *mut Handle, config: *const 
         Err(message) => {
             handle.world.valid = false;
             handle.world.set_error(&message);
-            GAME_ERROR
+            // RolloutWorld::reset completes infallibly after validating the
+            // caller-owned configuration; every error from it is therefore
+            // the public ABI's invalid-argument class, as in NativeApi.
+            ARGUMENT
         }
     };
     handle.reset_pending = true;

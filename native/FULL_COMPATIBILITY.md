@@ -1578,6 +1578,12 @@ empty-callback InstantAbility with a bound transform, audio requests and a
 missing transform link: 2,700 ticks, 18 complete cases, 6 exact failures and 378 casts.
 The empty callback never makes a player invisible.
 
+The public match ABI also rejects catalog id 0 before scene construction. The
+`null_ability_ab.c` cross-backend check confirms both NativeAOT and Rust return
+the invalid-argument status while reporting the same 39-entry catalog. Together
+with the retained instantiation failure prefixes above, this covers every
+reachable behavior of the shipped placeholder.
+
 Complete fixtures are `clone-abilities.jsonl.xz`,
 `clone-abilities-long.jsonl.xz`, `clone-revival.jsonl.xz`,
 `clone-revival-casts.jsonl.xz`,
