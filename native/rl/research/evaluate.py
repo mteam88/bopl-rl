@@ -97,6 +97,7 @@ def main():
         with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay, reward=config.get('reward')) as env:
             for task in bucket:
                 env.reset(task['seed'],task['map'])
+                overflow_before=env.observation_overflow
                 state=policy.initial(2,'cpu')
                 opponent=models.get(task['opponent'])
                 other_state=opponent.initial(2,'cpu') if opponent is not None else None
@@ -141,6 +142,7 @@ def main():
                 final=env.frame(); me=final['players'][task['side']]
                 timeout=bool(final['flags']&2); win=bool(me['flags']&2) and not timeout
                 result={**task,'win':win,'timeout':timeout,'kills':me['kills'],'deaths':me['deaths'],
+                        'observation_overflow':env.observation_overflow-overflow_before,
                         'ticks':final['t'],'final_players':final['players'],'behavior':summarize(np.asarray(events)),
                         'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist())),
                         # Hold head: share of free (unlatched) decisions choosing each hold length, as the trainer's hold_* log.

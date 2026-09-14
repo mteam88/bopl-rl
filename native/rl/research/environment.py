@@ -34,6 +34,7 @@ LIB.research_telemetry_size.restype = C.c_int
 LIB.research_num_atns.restype = C.c_int
 LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
 LIB.research_check.argtypes = [C.c_void_p]; LIB.research_check.restype = C.c_int
+LIB.research_overflow.argtypes = [C.c_void_p]; LIB.research_overflow.restype = C.c_ulong
 if LIB.research_telemetry_size()!=len(FIELDS): raise RuntimeError('Rebuild the research telemetry binding')
 # The compiled layout (bopl_layout.h) must match the Python mirror (layout.py) field for field.
 _fields = (C.c_int*len(layout.LAYOUT_FIELDS))()
@@ -123,7 +124,11 @@ class Environment:
         except BaseException:
             self.close();raise
     def check(self):
-        if LIB.research_check(self.handle): raise RuntimeError('Game error or observation overflow during evaluation')
+        if LIB.research_check(self.handle): raise RuntimeError('Game error during evaluation')
+    @property
+    def observation_overflow(self):
+        """Cumulative sampled states truncated by the policy layout; non-fatal."""
+        return int(LIB.research_overflow(self.handle))
     @property
     def state(self): return LIB.research_state(self.handle).contents
     @property

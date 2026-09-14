@@ -8,7 +8,7 @@ import subprocess
 
 ROOT=Path(__file__).resolve().parents[3]
 RL=ROOT/'native/rl'
-PUFFER=ROOT/'native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9'
+PUFFER=ROOT/'native/artifacts/rl/puffer-overlay'
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
     out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     commands=[['cc','-O2','-std=c11','-I'+str(RL),str(RL/'research/check_map_sampling.c'),'-lm','-o',str(out/'sampling')],
               ['cc','-O2','-DPRECISION_FLOAT','-fopenmp','-ffunction-sections','-fdata-sections','-Wl,--gc-sections',
-               '-I'+str(PUFFER/'src'),'-I'+str(RL),str(RL/'research/check_map_logs.c'),str(RL/'bopl_rl.c'),
+               '-I'+str(PUFFER),'-I'+str(RL),str(RL/'research/check_map_logs.c'),str(RL/'bopl_rl.c'),
                '-lm','-lpthread','-o',str(out/'logs')]]
     for command in commands: subprocess.run(command,check=True)
     for name in ('sampling','logs'): subprocess.run([str(out/name)],check=True)

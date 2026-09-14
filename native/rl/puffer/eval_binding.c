@@ -42,6 +42,7 @@ int research_layout(int *out, int capacity) {
 }
 int research_num_atns(void) { return BOPL_NUM_ATNS; }
 int research_check(BoplPuffer *env) { return env->log.game_errors; } /* observation overflow is a logged, non-fatal truncation */
+unsigned long research_overflow(BoplPuffer *env) { return env->log.observation_overflow; }
 /* The research environment carries the state of a decision split into ticks
  * (research_step_begin/tick/finish). BoplPuffer is the first member, so every
  * BoplPuffer* handed out by research_open is also a ResearchEnv*. */

@@ -85,6 +85,7 @@ int main(int argc, char **argv) {
 
     compute_observations(&env);
     float *obs=env.observations;
+    assert(env.log.observation_overflow==2);
     float *fixture_rows=calloc(2*BOPL_OBS_SIZE, sizeof(float));
     assert(fixture_rows); memcpy(fixture_rows, obs, BOPL_OBS_SIZE*sizeof(float));
     assert(BOPL_OBS_SIZE==3690 && BOPL_OBS_ENTITY_OFFSET==542);
@@ -112,6 +113,7 @@ int main(int argc, char **argv) {
      * slime/slot/body rows while keeping the independently owned smoke. */
     state.players[1].ability_time=Q(1);
     compute_observations(&env); obs=env.observations;
+    assert(env.log.observation_overflow==4);
     memcpy(fixture_rows+BOPL_OBS_SIZE, obs, BOPL_OBS_SIZE*sizeof(float));
     assert(obs[BOPL_OBS_PLAYER_OFFSET+BOPL_PLAYER_FEATURES+16]==0);
     assert(entity_with_source(obs,3)==NULL && entity_with_source(obs,12)!=NULL);
