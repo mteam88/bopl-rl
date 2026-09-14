@@ -219,6 +219,7 @@ struct RawAbility {
     instant: bool,
     rope: bool,
     offensive: bool,
+    effect_cooldown: Option<i64>,
 }
 
 /// A platform's authored geometry plus the behaviours that move it.
@@ -344,6 +345,7 @@ pub struct AbilityData {
     pub instant: bool,
     pub rope: bool,
     pub offensive: bool,
+    pub effect_cooldown: Option<Fix>,
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
@@ -645,6 +647,7 @@ pub fn get() -> &'static RolloutData {
                         instant: ability.instant,
                         rope: ability.rope,
                         offensive: ability.offensive,
+                        effect_cooldown: ability.effect_cooldown.map(Fix::from_raw),
                     }
                 })
                 .collect(),

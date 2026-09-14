@@ -49,7 +49,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **Random, Dash, Bow, Platform** (catalog ids 1/2/4/14): Random loadouts are
+- **Random, Dash, Bow, Platform, Invisibility** (catalog ids 1/2/4/14/19): Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
   Platform are ported from `sim/Gameplay`
@@ -68,6 +68,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   same-pass exit reattachment, one-platform-per-player, curve-driven old-body
   removal, transform following, and squish deaths. Resizing preserves the
   scalar body orientation exactly, as `ResizablePlatform.ResizePlatform` does.
+  Invisibility is an instant cast: its five-second player clocks, castability
+  gate, 10,000-second live sentinel, six-second restored cooldown, strict
+  expiry, duplicate-slot chaining, player flags, and telemetry follow the
+  original Player/SlimeController update order.
 - **Observation**: `bopl_layout.h` layout with the .NET entity id
   assignment order (circles, boxes, rounded rects by first-seen), matching
   kinds/layers/owner/flags, slime ability slots, cooldowns and timers
@@ -98,7 +102,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 1/2/4/14 have real behavior. Random is a spawn-time replacement,
+- Only ids 1/2/4/14/19 have real behavior. Random is a spawn-time replacement,
   while Dash/Bow/Platform execute casts. Every slot now uses its exact authored
   cooldown and common ground/castability metadata from the exported prefab;
   unported catalog ids never activate. Closing this scope requires the remaining

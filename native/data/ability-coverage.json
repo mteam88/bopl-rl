@@ -143,8 +143,8 @@
       "name": "Invisibility",
       "prefab": "Assets/GameObject/Invisibility.prefab",
       "prefab_guid": "98dc74d37d856a44794621d205de7e72",
-      "native_status": "partial",
-      "verification": "Original casts, cooldown restoration, fresh equipped-clone allocation, indicator copying and pooled cleanup have source differential coverage. Complete match lifecycle and public C integration remain required."
+      "native_status": "ported",
+      "verification": "Public rollout plus composed actor runtime reproduce the instant cast, strict five-second expiry, player clocks/flags, 10,000-second live sentinel, six-second restoration, duplicate-slot chaining and telemetry. invisibility_ab matches NativeAOT for 637 ticks."
     },
     {
       "id": 20,

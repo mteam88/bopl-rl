@@ -40,6 +40,7 @@ pub const ABILITY_RANDOM: u32 = 1;
 pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_PLATFORM: u32 = 14;
+pub const ABILITY_INVISIBILITY: u32 = 19;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
@@ -380,6 +381,11 @@ pub struct PlayerSlot {
     pub ability_origin_rotation: Fix,
     pub ability_origin_state: u32,
     pub ability_entry_action: Action,
+    /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
+    /// currently active SlimeController and drives cooldown restoration.
+    pub invisible: bool,
+    pub invisible_time: Fix,
+    pub was_invisible: bool,
     pub ability_time: Fix,
     /// SlimeController/Ability publishes Player.Position before the live body
     /// advances later in the same updater pass.
@@ -928,6 +934,9 @@ impl RolloutWorld {
                 ability_origin_rotation: Fix::ZERO,
                 ability_origin_state: STATE_FALL,
                 ability_entry_action: Action::default(),
+                invisible: false,
+                invisible_time: Fix::ZERO,
+                was_invisible: false,
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
@@ -1203,6 +1212,25 @@ impl RolloutWorld {
         // component or DetPhysics is therefore visible to the match result
         // check on the following tick, not later in the tick that killed it.
         self.session_result_tick();
+        // Updater runs Player.UpdatePlayer for the full player list before
+        // any MonoUpdatable. Invisibility therefore expires before the owning
+        // SlimeController gets its cooldown/cast pass.
+        for slot in &mut self.players {
+            if slot.invisible {
+                // Time-stop protection is added with the Time Stop port. In
+                // the ordinary clock state FixedDeltaTime is exactly DT.
+                slot.invisible_time += DT;
+                slot.ability_time += DT;
+                if slot.invisible_time > Fix::from_int(5) {
+                    slot.invisible = false;
+                    slot.invisible_time = Fix::ZERO;
+                    slot.ability_time = Fix::ZERO;
+                }
+            } else {
+                slot.invisible_time = Fix::ZERO;
+                slot.ability_time = Fix::ZERO;
+            }
+        }
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
@@ -1373,22 +1401,21 @@ impl RolloutWorld {
                 slot.timers[s] += DT;
             }
         }
-        // Player.UpdatePlayer (Player.cs:337-353) accumulates
-        // timeSinceEnteredAbility only while isInvisible and zeroes it on every
-        // other tick; without the Invisibility ability it stays zero.
-        self.players[index].ability_time = Fix::ZERO;
-
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
                 let slot = &self.players[index];
                 let button_down = action.buttons & (2 << s) as u8 != 0;
-                if !button_down || slot.timers[s] < slot.cooldowns[s] {
+                // SlimeController.isAbilityReady uses a strict comparison.
+                if !button_down || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
                 }
                 let ability = slot.abilities[s];
                 let ability_data = &data.abilities[ability as usize];
-                if (ability_data.ground_only && !slot.base.grounded) || !ability_data.castable {
+                if (ability_data.ground_only && !slot.base.grounded)
+                    || !ability_data.castable
+                    || (ability == ABILITY_INVISIBILITY && slot.invisible)
+                {
                     continue;
                 }
                 {
@@ -1414,6 +1441,19 @@ impl RolloutWorld {
                     slot.ability_origin_state = slot.obs_state;
                 }
                 match ability {
+                    ABILITY_INVISIBILITY => {
+                        let slot = &mut self.players[index];
+                        slot.invisible = true;
+                        slot.invisible_time = Fix::ZERO;
+                        slot.ability_time = Fix::ZERO;
+                        // Invisibility.CastInvisibility changes the live
+                        // InstantAbility cooldown until SlimeController sees a
+                        // visible frame and calls OnInvisibiltyEnded.
+                        slot.cooldowns[s] = Fix::from_int(10_000);
+                        slot.timers[s] = Fix::ZERO;
+                        slot.telemetry.ability_activations[s] += 1;
+                        break;
+                    }
                     ABILITY_DASH => {
                         // The movement slice implements the dash; unlock its
                         // internal cooldown gate and let base.step enter it.
@@ -1510,6 +1550,38 @@ impl RolloutWorld {
                     _ => {}
                 }
             }
+
+            // This is after OldUpdate, exactly where SlimeController compares
+            // `player.isInvisible` with its previous-frame copy. A new cast on
+            // the expiry frame keeps the player invisible and deliberately
+            // postpones restoration, permitting chained Invisibility slots.
+            let expired = {
+                let slot = &self.players[index];
+                !slot.invisible && slot.was_invisible
+            };
+            if expired {
+                let slot = &mut self.players[index];
+                let mut youngest = None;
+                let mut minimum = Fix::from_raw(i64::MAX);
+                for s in 0..3 {
+                    if slot.abilities[s] != ABILITY_INVISIBILITY {
+                        continue;
+                    }
+                    if slot.timers[s] < minimum {
+                        minimum = slot.timers[s];
+                        youngest = Some(s);
+                    }
+                    if slot.cooldowns[s] == Fix::from_int(10_000) {
+                        slot.cooldowns[s] = data.abilities[ABILITY_INVISIBILITY as usize]
+                            .effect_cooldown
+                            .expect("Invisibility effect cooldown");
+                    }
+                }
+                if let Some(s) = youngest {
+                    slot.timers[s] = Fix::ZERO;
+                }
+            }
+            self.players[index].was_invisible = self.players[index].invisible;
         }
 
         if self.players[index].active == ActiveAbility::Bow {
@@ -3625,6 +3697,9 @@ impl RolloutWorld {
             if slot.won {
                 player_flags |= 2;
             }
+            if slot.invisible {
+                player_flags |= 4;
+            }
             if slot.active == ActiveAbility::Platform {
                 player_flags |= 32;
             }
@@ -3645,7 +3720,7 @@ impl RolloutWorld {
                 x: position.x.raw(),
                 y: position.y.raw(),
                 scale: 1 << 32,
-                invisible_time: 0,
+                invisible_time: slot.invisible_time.raw(),
                 ability_time: slot.ability_time.raw(),
             };
             state.telemetry[i] = slot.telemetry;

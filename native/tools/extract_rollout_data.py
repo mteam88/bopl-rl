@@ -410,6 +410,8 @@ def main():
             "instant": instant,
             "rope": props.get("isHookshot", False),
             "offensive": icon_props[f"{prefix}.isOffensiveAbility"],
+            "effect_cooldown": next((fix(c["properties"], "cooldown")
+                                     for c in components if c["type"] == "Invisibility"), None),
         })
     out["abilities"] = ability_catalog
 

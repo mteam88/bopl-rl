@@ -921,6 +921,15 @@ can chain casts before the slime observes a visible frame, delaying restoration.
 The reference uses the original InstantAbility/Invisibility methods and UnityEvent
 callback, with values checked against the exported prefab.
 
+The public rollout backend now uses this behavior directly. `Player.UpdatePlayer`
+runs for every player before any slime update, expiry uses the strict `> 5`
+comparison, and the following SlimeController pass performs cooldown restoration.
+The optimized Q32 cross-backend `invisibility_ab.c` scenario matches NativeAOT for
+637 consecutive ticks, including an initial cast, a second-slot cast on the exact
+expiry frame, a later visible frame with restoration, and a recast after the
+restored six-second cooldown. Every player flag, invisibility clock, ability clock,
+slot cooldown, timer, id, and activation counter in that projection matches.
+
 All 24 long scenarios match: four per player count 1..6, 23 complete 1,800-tick
 sequences, 41,400 completed ticks, 339 Invisibility audio requests and 203 observed
 expirations. The remaining case matches a source division-by-zero partial failure.
