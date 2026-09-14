@@ -9,7 +9,11 @@ responsive.
 import json
 import math
 from pathlib import Path
+import sys
 import threading
+
+sys.path[:0]=[str(Path(__file__).resolve().parent)]
+import visuals
 
 SCHEMA=3
 ARROW_BIT=2
@@ -69,8 +73,8 @@ def evaluate_directory(directory):
     for game in report['games']:
         if not game.get('visual'): continue
         path=directory/game['visual']
-        if not path.is_file(): continue
-        visual=json.loads(path.read_text())
+        if not visuals.exists(path): continue
+        visual=visuals.load(path)
         game_holds,game_aim,positions,deaths=game_insights(visual,game['side'])
         holds+=game_holds; aim_changes+=game_aim; games+=1
         cell=maps.setdefault(str(game['map']),dict(occupancy={},deaths=[],games=0,outline=None))

@@ -230,9 +230,10 @@ def summarize_run(run_dir, pool):
         if not insights or insights.get('schema') != run_insights.SCHEMA:
             insights = run_insights.evaluate_directory(directory)
         for game in report['games']:
-            if not game.get('visual') or not (directory / game['visual']).is_file():
+            import visuals
+            if not game.get('visual') or not visuals.exists(directory / game['visual']):
                 continue
-            visual = read_json(directory / game['visual'])
+            visual = visuals.load(directory / game['visual'])
             _, changes, _, _ = run_insights.game_insights(visual, game['side'])
             aim_changes += changes
     rated = [r for _, r in ratings if r is not None]

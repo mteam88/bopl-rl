@@ -1,0 +1,160 @@
+# Overnight sweep 8 (queued 2026-09-13 behind overnight-7): overnight-7's search box
+# with the training budget itself swept, 1B..4B learner steps. overnight-7's Elo
+# curves were still climbing at 1B (median tail slope over the last 200M positive
+# on both rating sources), so 1B is a box edge we chose, not a plateau; the fixed
+# point of every earlier sweep becomes a Protein axis with a real cost model.
+# Score: Bradley-Terry Elo vs pool v5, IQM over the last 3 evaluations, 480 games per
+# checkpoint (unchanged since overnight-5; game_mismatch=true is informational).
+#
+# fixed_cost = false: Protein sees each trial as three (steps, score, cost) points
+# (the last 3 rated checkpoints) and suggests steps like any other hyper, trading
+# cost against expected score along the pareto front. Cost = learner steps, so a
+# bot-heavy trial (slower sps, overnight-7 013 took 2.4x wall) is not penalised for
+# wall time; max_seconds only guards a hang. Trials end on their own steps target.
+#
+# Fixed by evidence, not by hand (see overnight-7.toml): aim_fourier 4, w128 b4
+# hidden 128, the 12-entry v2 roster. Boxes are overnight-7's, with two edges moved
+# because a 4B run can want them: entropy_half_life up to 1e10 (was 3e9, ~ the
+# 1B..3B run length; a 4B run may want a slower schedule than a 1B run), and steps
+# 1e9..4e9 itself. Trial 000 = overnight-7's 000 at 1B (613): the fixed point.
+#
+# Cadence: eval_every 80M / checkpoint_every 20M. A 4B trial gets 50 in-run
+# evaluations (100 at 40M would double the per-trial disk: 19 MB of mind logs per
+# evaluation is the post-archive floor). last_k 3 -> the last 240M steps.
+#
+# Disk: finished runs are archived by research/compact_evaluations.py (visual JSON
+# -> .json.gz, 12x); the hourly bopl-compact-evaluations timer keeps sweeps/* at
+# ~1 GB per 1B steps. metrics.jsonl is ~320 MB per 1B and is left alone.
+#
+# Budget: 1B ~17 min train + 4.5 min score (overnight-7), 4B ~70 min; bot-heavy
+# trials up to 2.4x. Expect ~45 min per trial on average -> 40 trials ~30 h.
+# 9 params: 1 default + 12 Sobol + 27 GP.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"     # Elo, not a rate
+downsample = 3                     # = [scoring].last_k points per trial
+fixed_cost = false                 # steps is a swept axis; see [params.steps]
+max_suggestion_cost = 4.05e9       # = params.steps.max (learner steps)
+max_runs = 40                      # 9 params: 1 default + 12 Sobol + 27 GP, ~30 h
+num_random_samples = 12
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "6G"
+nice = 10
+max_seconds = 12000                # 4B at overnight-7 013's pace is ~2.5 h; this only guards a hang
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"
+last_k = 3                         # eval_every 80M -> the last 240M steps
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+steps = 1000000000                 # trial-000 value; swept 1B..4B below
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 4
+aim_fourier = 4                    # the aim-head study's pick; 0 = absolute bins (overnight-1..6)
+learning_rate = 5e-4
+entropy = 2.48e-2
+entropy_floor = 0.001
+entropy_half_life = 447000000
+entropy_head_scale = "0.41,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.52
+reward_timeout = -1
+scripted_roster = "default"        # 12 v2 kind-levels; search bots opt-in (84% sps hit)
+scripted_banks = 1                 # trial-000 value; swept 1..4 below
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.steps]
+distribution = "log_normal"
+min = 1000000000
+max = 4000000000
+scale = 0.5
+integer = true
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+
+[params.entropy]
+distribution = "log_normal"
+min = 4e-3
+max = 1e-1
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 1e8
+max = 1e10
+scale = 0.5
+integer = true
+
+[params.reward_kill]
+distribution = "log_normal"
+min = 0.1
+max = 3.0
+scale = 0.5
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 1
+max = 4
+
+[params.scripted_share_max]
+distribution = "log_normal"
+min = 0.02
+max = 1.0
+scale = 0.5
+default = 0.15
+
+[params.scripted_share_min]
+distribution = "log_normal"
+min = 0.02
+max = 1.0
+scale = 0.5
+default = 0.02
+
+[params.head_scale_aim]
+distribution = "log_normal"
+min = 0.05
+max = 3.0
+scale = 0.5
+default = 0.41

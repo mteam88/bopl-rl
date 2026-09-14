@@ -153,6 +153,17 @@ class Driver:
                 hypers, info = self.sweeper.suggest(fill, fixed_total_timesteps=fill['steps'])
             else:
                 hypers, info = self.sweeper.suggest(fill)
+                if 'steps' in self.spec.params and index <= self.spec.num_random_samples:
+                    # Protein's Sobol phase pins the cost axis near its minimum
+                    # (cost_random_suggestion = -0.8) and the GP then expands the
+                    # budget ~4%/suggestion from the observed maximum: on a 40-trial
+                    # sweep a 1B..4B steps box would never see 4B. Stratify the
+                    # random phase over the box (log-spaced, cheap first) so the GP
+                    # starts with cost-axis coverage; the GP phase is untouched.
+                    box = self.spec.params['steps']
+                    fraction = (index - 0.5) / self.spec.num_random_samples
+                    hypers['steps'] = box['min'] * (box['max'] / box['min']) ** fraction
+                    info = dict(info or {}, steps_stratified=True)
             # Plain Python numbers: numpy scalars subclass float/int but print
             # as np.float64(...) and would look odd in sweep.json.
             hypers = {name: (int(hypers[name]) if self.spec.is_integer(name)

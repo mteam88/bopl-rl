@@ -22,6 +22,14 @@ scrambled Sobol sequence, then the GP takes over. Because whole curves are
 observed, one lucky seed at a huge budget cannot dominate: the front must be
 consistent across costs.
 
+When `steps` is itself a swept parameter (`fixed_cost = false`, overnight-8),
+the driver overrides Protein's Sobol phase on that one axis: upstream pins the
+random trials near the cheapest budget and lets the GP grow the budget ~4% per
+suggestion from the observed maximum, which on a 40-trial sweep never reaches
+the top of a 1B..4B box. The driver instead log-stratifies the random trials
+over the box (cheap first) so the GP starts with cost-axis coverage; the GP
+phase is upstream's.
+
 Protein can also early-stop lagging trials against a quantile regression of
 score vs log cost (`early_stop_quantile`); the driver does not use it, because
 the reference scorer plays its games after a trial ends, so only the wall cap
@@ -329,3 +337,10 @@ without restarting.
 - gamma has no `train.py` flag (native default); add a flag before sweeping it.
 - Validation-scale trials (a few million steps) are noisy; treat smoke sweeps
   as plumbing checks, not science.
+- Disk: a 1B-step trial writes ~2 GB, 70% of it evaluation replays
+  (`evaluations/*/<game>.json`). `research/compact_evaluations.py` archives
+  finished runs' replays to `.json.gz` (12x) and every reader goes through
+  `research/visuals.py`, which resolves either name; the user timer
+  `bopl-compact-evaluations.timer` runs it hourly over `sweeps/*` with a 1 h
+  idle guard, so the live trial is never touched. `metrics.jsonl` (~320 MB per
+  1B) is not archived.

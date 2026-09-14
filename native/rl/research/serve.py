@@ -23,6 +23,7 @@ from metrics_store import store
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
 import reference_pool
+import visuals
 
 CHART_KEYS = (
     'step', 'learner_steps', 'elapsed', 'sps', 'learner_sps', 'policy_loss',
@@ -123,7 +124,12 @@ def _visual_path_lock(path):
 
 def encoded_visual(path):
     path = Path(path)
-    stat = path.stat()
+    # Finished runs are archived to name.json.gz (compact_evaluations.py); the
+    # sidecar keeps the .json name so the report's reference stays valid.
+    origin = visuals.source(path)
+    if origin is None:
+        raise FileNotFoundError(path)
+    stat = origin.stat()
     key = source_stamp_name(stat)
     with _visual_mem_lock:
         hit = _visual_mem.get(str(path))
@@ -133,14 +139,14 @@ def encoded_visual(path):
     sidecar = path.with_name(path.name + '.dash.gz')
     encoded = None
     with _visual_path_lock(path):
-        stat = path.stat()
+        stat = origin.stat()
         key = source_stamp_name(stat)
         if sidecar.is_file():
             blob = sidecar.read_bytes()
             if gzip_header_name(blob) == key:
                 encoded = blob
         if encoded is None:
-            encoded = gzip_named(visual_ndjson(json.loads(path.read_bytes())), key)
+            encoded = gzip_named(visual_ndjson(visuals.load(path)), key)
             tmp = sidecar.with_name(sidecar.name + f'.{os.getpid()}.tmp')
             try:
                 tmp.write_bytes(encoded)
@@ -735,9 +741,10 @@ def main():
                 file = HERE / 'web' / ('index.html' if path in ('/', '/index.html') or path.startswith(('/run/', '/sweep/')) else path[1:])
             else:
                 return self.send_error(404)
-            if not file.is_file():
+            archived_visual = is_evaluation_visual(file) and not file.is_file() and visuals.exists(file)
+            if not file.is_file() and not archived_visual:
                 return self.send_error(404)
-            if (is_evaluation_visual(file) and not self.headers.get('Range')):
+            if is_evaluation_visual(file) and (archived_visual or not self.headers.get('Range')):
                 encoded, etag = encoded_visual(file)
                 if self.headers.get('If-None-Match') == etag:
                     self.send_response(304)
