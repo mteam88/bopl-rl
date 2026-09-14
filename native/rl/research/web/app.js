@@ -138,9 +138,11 @@
     ctx.scale(dpr, dpr);
     const w = r.width, h = r.height, left = 44, right = 8, top = 8, bottom = 18;
     const pts = series.filter((p) => p.y != null);
-    if (!pts.length) return;
+    const secondary = (opts.secondary || []).filter((p) => p.y != null);
+    if (!pts.length && !secondary.length) return;
     const marks = (opts.mark || []).filter((p) => p.y != null);
-    const xs = pts.map((p) => p.x), ys = [...pts, ...marks].flatMap((p) => [p.y, p.lo, p.hi].filter((v) => v != null));
+    const xs = [...pts, ...secondary].map((p) => p.x);
+    const ys = [...pts, ...secondary, ...marks].flatMap((p) => [p.y, p.lo, p.hi].filter((v) => v != null));
     const x0 = Math.min(...xs), x1 = Math.max(...xs) || 1;
     const y0 = Math.min(...ys), y1 = Math.max(...ys);
     const x = (v) => left + ((w - left - right) * (v - x0)) / (x1 - x0 || 1);
@@ -154,6 +156,19 @@
       ctx.beginPath(); ctx.moveTo(left, y(t)); ctx.lineTo(w - right, y(t)); ctx.stroke();
       ctx.fillText(t.toFixed(0), left - 6, y(t));
     }
+    if (secondary.length) {
+      // A cheaper, differently-sourced estimate (in-run bots-only fits): dashed and dim,
+      // so a source switch along the curve is not read as a jump in strength.
+      ctx.strokeStyle = "#8b9283";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      secondary.forEach((p, i) => (i ? ctx.lineTo(x(p.x), y(p.y)) : ctx.moveTo(x(p.x), y(p.y))));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#8b9283";
+      for (const p of secondary) { ctx.beginPath(); ctx.arc(x(p.x), y(p.y), 2, 0, 6.3); ctx.fill(); }
+    }
     if (pts.some((p) => p.lo != null)) {
       ctx.fillStyle = "#d6ff3222";
       ctx.beginPath();
@@ -166,6 +181,9 @@
     ctx.beginPath();
     pts.forEach((p, i) => (i ? ctx.lineTo(x(p.x), y(p.y)) : ctx.moveTo(x(p.x), y(p.y))));
     ctx.stroke();
+    if (pts.length === 1) { ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.arc(x(pts[0].x), y(pts[0].y), 3, 0, 6.3); ctx.fill(); }
+    ctx.fillStyle = opts.color || "#d6ff32";
+    for (const p of pts) { ctx.beginPath(); ctx.arc(x(p.x), y(p.y), 2.5, 0, 6.3); ctx.fill(); }
     if (marks.length) {
       ctx.fillStyle = "#3ee0c5";
       for (const p of marks) {
@@ -343,12 +361,16 @@
       ["evals", String((data.evaluations || []).length)],
       ["rated", String((data.ratings || []).length)],
     ].map(([k, v]) => `<article><p>${k}</p><strong>${v}</strong></article>`).join("");
-    chart($("eloChart"), (data.ratings || []).map((r) => ({
-      x: r.learner_steps, y: r.rating, lo: r.interval[0], hi: r.interval[1],
-    })));
+    const point = (r) => ({ x: r.learner_steps, y: r.rating, lo: r.interval[0], hi: r.interval[1] });
+    const ratings = data.ratings || [];
+    const full = ratings.filter((r) => (r.source || "band") !== "evaluation");
+    const cheap = ratings.filter((r) => r.source === "evaluation");
+    chart($("eloChart"), full.map(point), { secondary: cheap.map(point) });
     $("eloCaption").textContent = data.unrated
       ? "No rating files for this pool yet."
-      : "Band is the 95% bootstrap interval of each checkpoint's fixed-pool fit.";
+      : `Solid: ${full.length} checkpoint${full.length === 1 ? "" : "s"} rated by 480 pool games (band = 95% bootstrap CI). `
+        + `Dashed grey: ${cheap.length} in-run fits from the diagnostic games vs the 5 scripted pool members only; `
+        + "these run 100-300 Elo high for bot-heavy curricula and are not comparable to the solid points.";
     $("ratingRows").replaceChildren(...(data.ratings || []).map((r) => {
       const tr = document.createElement("tr");
       if (r.game_mismatch) tr.className = "mismatch";
