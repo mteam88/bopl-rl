@@ -414,8 +414,8 @@ def main():
                         help='Read a live training run directory from an isolated workspace')
     parser.add_argument('--run-root-glob', action='append', default=[], metavar='NAME=GLOB',
                         help='Register every run directory matching GLOB as NAME-<dirname>')
-    parser.add_argument('--pool', type=Path, default=reference_pool.DEFAULT_POOL,
-                        help='Primary frozen pool.json for sweep-objective labels (not the joint scale)')
+    parser.add_argument('--pool', type=Path, default=None,
+                        help='Primary frozen pool.json for labels (not the joint scale). Default: pool v6 if present, else the last discovered pool')
     parser.add_argument('--human', type=Path, default=reference_pool.DEFAULT_HUMAN,
                         help='human/mac directory (games.jsonl + excluded.json)')
     args = parser.parse_args()
@@ -836,7 +836,7 @@ def main():
         return sweep_rebuild(name, directory)
 
     def sweep_rebuild(name, directory):
-        sig = (stamp(directory / 'sweep.json'),
+        sig = (stamp(directory / 'sweep.json'), joint_state.get('sig'),
                tuple((trial['id'], summary_sig(directory / trial['id']))
                      for trial in (read_json(directory / 'sweep.json', {}).get('trials') or [])
                      if (directory / trial['id']).is_dir()))
@@ -907,10 +907,9 @@ def main():
             path = unquote(urlparse(self.path).path)
             if path == '/api/ladder':
                 return self.send_snapshot(joint_rebuild())
-            if path == '/api/index':
-                return self.send_snapshot(index_current())
-            if path == '/api/runs':
-                return self.send_snapshot(index_current())
+            if path == '/api/index' or path == '/api/runs':
+                joint_rebuild()
+                return self.send_snapshot(index_rebuild())
             if path == '/api/sweeps':
                 return self.json([{'name': name, 'path': str(directory)}
                                   for name, directory in sorted(discover_sweeps(root, extra_runs, run_globs).items())])
@@ -919,7 +918,8 @@ def main():
                 directory = discover_sweeps(root, extra_runs, run_globs).get(name)
                 if directory is None:
                     return self.send_error(404)
-                return self.send_snapshot(sweep_current(name, directory))
+                joint_rebuild()
+                return self.send_snapshot(sweep_rebuild(name, directory))
             if path.startswith('/api/run/'):
                 rest = path[len('/api/run/'):]
                 name, slash, tail = rest.partition('/')
@@ -941,6 +941,7 @@ def main():
                     return self.send_snapshot(encoded)
                 if tail:
                     return self.send_error(404)
+                joint_rebuild()
                 return self.send_snapshot(run_snapshot(directory, name))
             if path.startswith('/runs/'):
                 parts = path[len('/runs/'):].split('/')
