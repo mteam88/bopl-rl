@@ -3152,6 +3152,10 @@ impl RolloutWorld {
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let gd = &data.grenade;
         let aim = action.direction();
+        // Ability.UpdateSim publishes Player.Position before ThrowItem2 and
+        // PlayerBody advance the live ability body later in this pass.
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
         if aim != Vec2::ZERO && !self.players[index].throw_item.has_inputted_fire {
             let slot = &mut self.players[index];
             slot.throw_item.direction = aim;
@@ -3255,12 +3259,66 @@ impl RolloutWorld {
         }
         if self.players[index].throw_item.grounded {
             // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
-            // attached to the authored surface; the grounded exit therefore
-            // hands a stationary body back to SlimeController.
-            self.players[index].base.velocity = Vec2::ZERO;
+            // attached to the authored surface. PlayerBody still integrates
+            // external velocity afterward, which is observable when a moving
+            // platform carried the caster immediately before entry.
+            let this = &mut *self;
+            let slot = &mut this.players[index];
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.position += slot.base.external_velocity * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        } else {
+            // ThrowItem2 keeps its own PlayerBody live throughout the aerial
+            // form. Before release it uses the authored 0.03 gravity modifier
+            // and clamps the resulting vector to maxSlowMoSpeed. Fire restores
+            // gravity and blends 60% of normal horizontal air movement into
+            // the recoil velocity. PlayerBody integrates later in the same
+            // updater pass and damps only external velocity.
+            let this = &mut *self;
+            let slot = &mut this.players[index];
+            let terrain = Terrain {
+                platforms: &this.platforms,
+                bounds: &this.bounds,
+            };
+            let modifier = if slot.throw_item.has_fired {
+                Fix::ONE
+            } else {
+                Fix::from_f32(0.03)
+            };
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                gd.constants.gravity_accel,
+                modifier,
+                gd.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Grenade gravity constants");
+            if slot.throw_item.has_fired {
+                let before = slot.base.velocity;
+                crate::player_physics::air_movement(
+                    &mut slot.base.velocity,
+                    aim.x,
+                    gd.constants.air_accel,
+                    gd.constants.max_speed,
+                )
+                .expect("valid Grenade air constants");
+                let blend = Fix::from_f32(0.6);
+                slot.base.velocity = before * (Fix::ONE - blend) + slot.base.velocity * blend;
+            } else if slot.base.velocity.length() > gd.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * gd.max_slow_mo_speed;
+            }
+            slot.base.collision_rays(terrain);
+            if slot.base.grounded {
+                // VelocityBasedRaycasts immediately exits the aerial ability.
+                slot.active = ActiveAbility::None;
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS + 2;
+                slot.reported_position = slot.base.position;
+            } else {
+                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+            }
         }
-        self.players[index].reported_position = self.players[index].base.position;
-        self.players[index].reported_tick = self.tick;
     }
 
     fn spawn_held_grenade(&mut self, index: usize, data: &data::RolloutData) -> usize {
@@ -4927,6 +4985,10 @@ impl RolloutWorld {
         // an ability first moves that body to the ability object's position
         // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
         let drop_position = slot.base.position;
+        if slot.active != ActiveAbility::None {
+            slot.reported_position = drop_position;
+            slot.reported_tick = self.tick;
+        }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         // Teleport's marker reference belongs to the destroyed ability

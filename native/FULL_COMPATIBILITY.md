@@ -986,10 +986,21 @@ initialized DetPhysics circle can consume an entity ID, and the same lethal
 explosion/stock recovery path. Held grenades remain payload state rather than
 registered colliders, and their fuse pass reuses the existing item pool.
 
+`grenade_air_ab.c` jumps four ticks before readiness and compares 100 ticks
+through the airborne form, held charge, release, free flight and raycast
+landing. Grenade's ability prefab has a distinct serialized `PlayerPhysics`
+from the ordinary slime: gravity acceleration 1.60000002, maximum fall speed
+27, air acceleration 10 and maximum speed 19. Those values are now extracted
+rather than borrowed from the player. The implementation preserves the 0.03
+pre-fire modifier, magnitude-nine clamp, full gravity after release, exact
+`Fix.Lerp` evaluation with its serialized 0.6 float, and `PlayerBody`'s later
+position integration/external-velocity damping. Moving ability-body deaths
+also publish the source death position before parking a stock replacement.
+
 The two shockwaves use the authored masks, radii and forces, apply their impulses
 before map home springs, and reuse existing fixed arrays/entity pools. Grenade
-terrain bounce, non-owner hits, grenade duplication and the aerial/forced-exit
-paths still require separate goldens before id 3 is complete.
+terrain bounce, non-owner hits, grenade duplication and grounded-form forced
+exits still require separate goldens before id 3 is complete.
 
 ### Executable Gust (2026-09-14)
 

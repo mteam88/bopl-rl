@@ -76,8 +76,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   complete respawn interval are exact. A second exact golden holds the grenade
   through its three-second fuse, including child-local held positioning,
   detonation before manual collider initialization, stable ID allocation and
-  the resulting death/respawn path. Aerial/forced exits and duplication remain
-  open.
+  the resulting death/respawn path. The aerial form also uses its own extracted
+  `PlayerPhysics`: 0.03-gravity aiming, speed clamp, full-gravity release,
+  60%-blended horizontal control, body integration and raycast landing are
+  exact. Forced exits and duplication remain open.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
   the authored translational and rotational home springs, ejection and

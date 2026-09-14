@@ -457,6 +457,7 @@ def main():
     _, grenade_ability = find_prefab("Assets/GameObject/Grenade_0.prefab")
     grenade_throw = component(grenade_ability, "ThrowItem2")
     grenade_box = component(grenade_ability, "DPhysicsBox")
+    grenade_phys = component(grenade_ability, "PlayerPhysics")
     grenade_anims = animations(guid_of(grenade_throw["animData"]))
     grenade_item = ASSETS[guid_of(grenade_throw["ItemPrefab"])]
     grenade = component(grenade_item, "Grenade")
@@ -486,6 +487,20 @@ def main():
             "force_gain_speed": fix(grenade_throw, "ThrowForceGainSpeed"),
             "max_slow_mo_speed": fix(grenade_throw, "maxSlowMoSpeed"),
             "knockback": fix(grenade_throw, "knockback"),
+            "physics": {
+                "max_speed": fix(grenade_phys, "maxSpeed"),
+                "jump_strength": fix(grenade_phys, "jumpStrength"),
+                "accel": fix(grenade_phys, "accel"),
+                "radius": fix(grenade_phys, "radius"),
+                "gravity_accel": fix(grenade_phys, "gravity_accel"),
+                "gravity_max_fall_speed": fix(grenade_phys, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(grenade_phys, "gravity_modifier"),
+                "jump_extra_x": fix(grenade_phys, "jumpExtraXStrength"),
+                "jump_momentum": fix(grenade_phys, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(grenade_phys, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(grenade_phys, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(grenade_phys, "airAccel"),
+            },
             "animations": {name: grenade_anims[name]
                            for name in ("gEnter", "gExit", "aEnter", "aExit")},
         },

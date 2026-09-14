@@ -228,6 +228,7 @@ struct RawThrowItem {
     force_gain_speed: i64,
     max_slow_mo_speed: i64,
     knockback: i64,
+    physics: RawPhysics,
     animations: RawThrowAnimations,
 }
 #[derive(Deserialize)]
@@ -529,6 +530,7 @@ pub struct GrenadeData {
     pub force_gain_speed: Fix,
     pub max_slow_mo_speed: Fix,
     pub knockback: Fix,
+    pub constants: crate::world::MovementConstants,
     pub ground_enter_ticks: u32,
     pub ground_exit_ticks: u32,
     pub air_enter_ticks: u32,
@@ -928,6 +930,7 @@ pub fn get() -> &'static RolloutData {
                     force_gain_speed: Fix::from_raw(throw.force_gain_speed),
                     max_slow_mo_speed: Fix::from_raw(throw.max_slow_mo_speed),
                     knockback: Fix::from_raw(throw.knockback),
+                    constants: constants(&throw.physics),
                     ground_enter_ticks: ticks(&throw.animations.ground_enter),
                     ground_exit_ticks: ticks(&throw.animations.ground_exit),
                     air_enter_ticks: ticks(&throw.animations.air_enter),
