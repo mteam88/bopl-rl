@@ -6,7 +6,7 @@ Each thread and batch size owns a C context; recurrent state belongs to the
 caller, so independent games cannot leak memory into one another.
 
 Checkpoint sidecar: <weights.bin>.json, schema 1, backend=pufferlib-native,
-architecture=puffernet-mingru or layout.ARCHITECTURE (bopl-set-mingru-v2),
+architecture=puffernet-mingru or layout.ARCHITECTURE (bopl-set-mingru-v3),
 precision=float32, obs_size, hidden, num_layers, action_sizes=layout.ACTION_SIZES
 ([256,16,5]: aim, buttons, hold length), weights_sha256, and step (physical
 player decisions, matching dashboard metrics and evaluation reports). Record

@@ -33,6 +33,8 @@ class NativeCheckpointTests(unittest.TestCase):
                     self.assertTrue(torch.isfinite(output).all())
                 with self.assertRaises(ValueError):
                     write_checkpoint(Path(directory) / "v1.bin", weights.tofile, **dict(kwargs, architecture="bopl-set-mingru-v1"))
+                with self.assertRaises(ValueError):
+                    write_checkpoint(Path(directory) / "v2.bin", weights.tofile, **dict(kwargs, architecture="bopl-set-mingru-v2"))
                 with self.assertRaises(FileExistsError):
                     write_checkpoint(path, weights.tofile, **kwargs)
                 self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [path.name, path.name + ".json"])

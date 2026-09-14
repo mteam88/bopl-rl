@@ -496,7 +496,7 @@ def main():
                   entropy_free_rows=a.entropy_free_rows,
                   aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
-                  layout=dict(version=2, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
+                  layout=dict(version=3, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
                               hold_lengths=layout.HOLD_LENGTHS),
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   selfplay=pool_config,

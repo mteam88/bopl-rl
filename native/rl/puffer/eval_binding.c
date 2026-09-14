@@ -29,8 +29,13 @@ void research_previous(float *observations, const BoplRlAction *actions, const i
         bopl_previous_action(observations+(size_t)(i+1)*BOPL_OBS_SIZE-BOPL_PREVIOUS_FEATURES, actions[i], 0, hold_run?hold_run+4*i:NULL);
 }
 int research_layout(int *out, int capacity) {
-    int values[]={BOPL_OBS_SIZE, BOPL_PLAYER_FEATURES, BOPL_ABILITY_FEATURES, BOPL_ENTITY_FEATURES, BOPL_SLIME_FEATURES,
-                  BOPL_PREVIOUS_FEATURES, BOPL_OBS_ENTITIES, BOPL_OBS_SLIMES, BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, BOPL_HOLD_MAX};
+    int values[]={BOPL_OBS_SIZE, BOPL_OBS_PREFIX, BOPL_SELF_FEATURES,
+                  BOPL_OBS_PLAYERS, BOPL_PLAYER_FEATURES, BOPL_OBS_SLOTS, BOPL_SLOT_FEATURES,
+                  BOPL_OBS_ENTITIES, BOPL_ENTITY_FEATURES, BOPL_OBS_SLIMES, BOPL_SLIME_FEATURES,
+                  BOPL_PREVIOUS_FEATURES, BOPL_OBS_SELF_OFFSET, BOPL_OBS_PLAYER_OFFSET,
+                  BOPL_OBS_SLOT_OFFSET, BOPL_OBS_ENTITY_OFFSET, BOPL_OBS_SLIME_OFFSET,
+                  BOPL_OBS_PREVIOUS_OFFSET, BOPL_SLOT_ABILITY_ID, BOPL_ENTITY_ABILITY_ID,
+                  BOPL_EMBEDDING_IDS, BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, BOPL_HOLD_MAX};
     int count=(int)(sizeof(values)/sizeof(values[0]));
     if (capacity<count) return -count;
     memcpy(out, values, sizeof(values)); return count;

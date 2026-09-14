@@ -16,10 +16,15 @@ import layout
 from layout import ACTION_SIZES, ARCHITECTURE, DECODER, LOGITS, OBS_SIZE, SET_FLAT
 from native_policy import NativePolicy, ROOT, REVISION, decide, load, masked
 
-# Set-encoder slices of one observation row: (start, stop, rows, width).
-ENTITY_SLICE = (layout.OBS_ENTITY_OFFSET, layout.OBS_SLIME_OFFSET, layout.OBS_ENTITIES, layout.ENTITY_FEATURES)
-SLIME_SLICE = (layout.OBS_SLIME_OFFSET, layout.OBS_PREVIOUS_OFFSET, layout.OBS_SLIMES, layout.SLIME_FEATURES)
-SET_SLICES = (ENTITY_SLICE, SLIME_SLICE)
+# Set-encoder slices of one observation row: (start, stop, rows, width, id column).
+PLAYER_SLICE = (layout.OBS_PLAYER_OFFSET, layout.OBS_SLOT_OFFSET, layout.OBS_PLAYERS, layout.PLAYER_FEATURES, None)
+SLOT_SLICE = (layout.OBS_SLOT_OFFSET, layout.OBS_ENTITY_OFFSET, layout.OBS_SLOTS, layout.SLOT_FEATURES,
+              layout.SLOT_ABILITY_ID)
+ENTITY_SLICE = (layout.OBS_ENTITY_OFFSET, layout.OBS_SLIME_OFFSET, layout.OBS_ENTITIES,
+                layout.ENTITY_FEATURES, layout.ENTITY_ABILITY_ID)
+SLIME_SLICE = (layout.OBS_SLIME_OFFSET, layout.OBS_PREVIOUS_OFFSET, layout.OBS_SLIMES,
+               layout.SLIME_FEATURES, None)
+SET_SLICES = (PLAYER_SLICE, SLOT_SLICE, ENTITY_SLICE, SLIME_SLICE)
 
 
 class NativePolicyTests(unittest.TestCase):
@@ -140,15 +145,19 @@ class NativePolicyTests(unittest.TestCase):
         # independent full encoder oracle is kept outside the shipped code.
         hidden, batch = 16, 4
         rng = np.random.default_rng(91)
-        shapes = ((hidden, SET_FLAT), (64, layout.ENTITY_FEATURES), (64, layout.SLIME_FEATURES), (hidden, hidden + 128),
+        shapes = ((hidden, SET_FLAT), (64, layout.PLAYER_FEATURES),
+                  (64, layout.SLOT_FEATURES - 1), (64, layout.ENTITY_FEATURES - 1),
+                  (64, layout.SLIME_FEATURES), (layout.EMBEDDING_IDS, 64), (hidden, hidden + 256),
                   (DECODER, hidden), (3 * hidden, hidden))
         weights = np.concatenate([(rng.standard_normal(shape) * .025).astype(np.float32).ravel()
                                   for shape in shapes])
         policy = NativePolicy(weights, OBS_SIZE, hidden, architecture=ARCHITECTURE)
         obs = rng.standard_normal((batch, OBS_SIZE)).astype(np.float32)
-        for lo, hi, rows, width in SET_SLICES:
+        for lo, hi, rows, width, id_column in SET_SLICES:
             slots = obs[:, lo:hi].reshape(batch, rows, width)
             slots[:, :, 0] = rng.integers(2, size=(batch, rows))
+            if id_column is not None:
+                slots[:, :, id_column] = rng.integers(layout.EMBEDDING_IDS, size=(batch, rows))
             slots[0, :, 0] = 0
             slots[1, :, 0] = 1
 
@@ -157,7 +166,7 @@ class NativePolicyTests(unittest.TestCase):
 
         expected = step(obs)
         permuted, poisoned, empty = (obs.copy() for _ in range(3))
-        for lo, hi, rows, width in SET_SLICES:
+        for lo, hi, rows, width, id_column in SET_SLICES:
             slots = obs[:, lo:hi].reshape(batch, rows, width)
             for row in range(batch):
                 permuted[row, lo:hi] = slots[row, rng.permutation(rows)].ravel()
@@ -182,27 +191,36 @@ class NativePolicyTests(unittest.TestCase):
             with self.subTest(hidden=hidden, layers=layers):
                 batch = 3
                 rng = np.random.default_rng(193)
-                shapes = [(hidden, SET_FLAT), (64, layout.ENTITY_FEATURES), (64, layout.SLIME_FEATURES),
-                          (hidden, hidden + 128), (DECODER, hidden)]
+                shapes = [(hidden, SET_FLAT), (64, layout.PLAYER_FEATURES),
+                          (64, layout.SLOT_FEATURES - 1), (64, layout.ENTITY_FEATURES - 1),
+                          (64, layout.SLIME_FEATURES), (layout.EMBEDDING_IDS, 64),
+                          (hidden, hidden + 256), (DECODER, hidden)]
                 shapes += [(3 * hidden, hidden)] * layers
                 matrices = [(rng.standard_normal(shape) * .03).astype(np.float32)
                             for shape in shapes]
                 weights = np.concatenate([matrix.ravel() for matrix in matrices])
                 self.assertEqual(weights.size, layout.policy_weights(hidden, layers, ARCHITECTURE))
                 policy = NativePolicy(weights, OBS_SIZE, hidden, layers, architecture=ARCHITECTURE)
-                flat, entity, slime, fusion, decoder = map(torch.from_numpy, matrices[:5])
+                flat, player, slot, entity, slime, embedding, fusion, decoder = map(torch.from_numpy, matrices[:8])
                 recurrent = self.upstream.MinGRU(hidden, layers).eval()
                 with torch.no_grad():
-                    for layer, matrix in zip(recurrent.layers, matrices[5:]):
+                    for layer, matrix in zip(recurrent.layers, matrices[8:]):
                         layer.weight.copy_(torch.from_numpy(matrix))
                 state = torch.from_numpy(rng.standard_normal((layers, batch, hidden)).astype(np.float32))
                 reference = recurrent.initial_state(batch, "cpu")
                 reference[0].copy_(state)
 
-                def pooled(rows, projection):
+                def pooled(rows, projection, id_column=None):
                     present = rows[:, :, 0] != 0
                     safe = rows.masked_fill(~present[:, :, None], 0)
-                    projected = F.linear(safe, projection).relu()
+                    if id_column is None:
+                        projected = F.linear(safe, projection)
+                    else:
+                        ids = safe[:, :, id_column]
+                        valid = (ids >= 0) & (ids < layout.EMBEDDING_IDS) & (ids == ids.trunc())
+                        ids = torch.where(valid, ids, 0).long()
+                        projected = F.linear(safe[:, :, :id_column], projection) + embedding[ids]
+                    projected = projected.relu()
                     projected = projected.masked_fill(~present[:, :, None], -float("inf"))
                     return torch.where(present.any(1, keepdim=True),
                                        projected.max(1).values, 0)
@@ -213,18 +231,22 @@ class NativePolicyTests(unittest.TestCase):
                         state[:, row] = 0
                         reference[0][:, row] = 0
                     obs = rng.standard_normal((batch, OBS_SIZE)).astype(np.float32)
-                    for lo, hi, count, width in SET_SLICES:
+                    for lo, hi, count, width, id_column in SET_SLICES:
                         rows = obs[:, lo:hi].reshape(batch, count, width)
                         rows[:, :, 0] = 0 if tick == 10 else rng.integers(2, size=(batch, count))
+                        if id_column is not None:
+                            rows[:, :, id_column] = rng.integers(layout.EMBEDDING_IDS, size=(batch, count))
                         rows[:, :, 1:][rows[:, :, 0] == 0] = 1e9
                     observations = torch.from_numpy(obs)
                     logits, values, state = policy.step(observations, state)
                     with torch.no_grad():
-                        (e_lo, e_hi, e_rows, e_width), (s_lo, s_hi, s_rows, s_width) = SET_SLICES
-                        flat_input = torch.cat((observations[:, :e_lo], observations[:, s_hi:]), 1)
+                        flat_input = torch.cat((observations[:, :layout.OBS_PLAYER_OFFSET],
+                                                observations[:, layout.OBS_PREVIOUS_OFFSET:]), 1)
                         joined = torch.cat((F.linear(flat_input, flat).relu(),
-                                            pooled(observations[:, e_lo:e_hi].reshape(batch, e_rows, e_width), entity),
-                                            pooled(observations[:, s_lo:s_hi].reshape(batch, s_rows, s_width), slime)), 1)
+                                            pooled(observations[:, PLAYER_SLICE[0]:PLAYER_SLICE[1]].reshape(batch, PLAYER_SLICE[2], PLAYER_SLICE[3]), player),
+                                            pooled(observations[:, SLOT_SLICE[0]:SLOT_SLICE[1]].reshape(batch, SLOT_SLICE[2], SLOT_SLICE[3]), slot, SLOT_SLICE[4]),
+                                            pooled(observations[:, ENTITY_SLICE[0]:ENTITY_SLICE[1]].reshape(batch, ENTITY_SLICE[2], ENTITY_SLICE[3]), entity, ENTITY_SLICE[4]),
+                                            pooled(observations[:, SLIME_SLICE[0]:SLIME_SLICE[1]].reshape(batch, SLIME_SLICE[2], SLIME_SLICE[3]), slime)), 1)
                         encoded = F.linear(joined, fusion).relu()
                         out, reference = recurrent.forward_eval(encoded, reference)
                         decoded = F.linear(out, decoder)

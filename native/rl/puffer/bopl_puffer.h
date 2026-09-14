@@ -170,7 +170,7 @@ typedef struct {
      * them were zeroed then and stay zero, so the next encode zeroes only the
      * slots it uncovers. bopl_written_forget drops the record when the row
      * memory may have been written by anything else (a routing change). */
-    struct { float *row; int players, entities, slimes; } written[BOPL_MAX_SLOTS];
+    struct { float *row; int players, slots, entities, slimes; } written[BOPL_MAX_SLOTS];
     int written_count;
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
@@ -247,11 +247,81 @@ static void bopl_nearest(uint32_t *indices, double *distances, int *count, int c
     }
     distances[position]=distance; indices[position]=index;
 }
-static int bopl_hidden(const BoplRlState *state, uint32_t owner, uint32_t self) {
-    if (owner==self) return 0;
+static const BoplRlPlayer *bopl_player_by_id(const BoplRlState *state, uint32_t id) {
     for (uint32_t i=0; i<state->header.player_count; i++)
-        if (state->players[i].id==owner) return (state->players[i].flags&4)!=0;
-    return 0;
+        if (state->players[i].id==id) return &state->players[i];
+    return NULL;
+}
+/* Unity's Invisibility fade is EaseInOut(0,1,1,0): a smoothstep from opaque
+ * to transparent. During the final invisible second it fades back in using
+ * 5-timeSpentInvisible, exactly like SetAlphaBasedOnPlayerInvisibiltyTime. */
+static double bopl_invisibility_alpha(const BoplRlPlayer *player) {
+    double remaining=5.0-bopl_fix(player->invisible_time);
+    double t=remaining<=1.0?remaining:bopl_fix(player->ability_time);
+    if (t<0.0) t=0.0; else if (t>1.0) t=1.0;
+    return 1.0-3.0*t*t+2.0*t*t*t;
+}
+static int bopl_spatial_hidden(const BoplRlState *state, uint32_t owner, uint32_t self) {
+    if (!owner || owner==self) return 0;
+    const BoplRlPlayer *player=bopl_player_by_id(state, owner);
+    return player && (player->flags&4) && bopl_invisibility_alpha(player)<0.2;
+}
+static int bopl_entity_visible(const BoplRlState *state, const BoplRlEntity *entity, uint32_t self) {
+    if (!(entity->flags&BOPL_ENTITY_ACTIVE) || (entity->flags&BOPL_ENTITY_DESTROYED)) return 0;
+    /* Only the invisible player's Player-layer body/hurtbox hierarchy hides.
+     * Independent owned objects remain visible, including disabled smoke. */
+    if (entity->layer==8 && bopl_spatial_hidden(state, entity->owner, self)
+        && !(entity->flags&(BOPL_ENTITY_PICKUP|BOPL_ENTITY_PROJECTILE|BOPL_ENTITY_SPARK_NODE
+                            |BOPL_ENTITY_FLAMMABLE_SMOKE|BOPL_ENTITY_EXPLOSIVE))) return 0;
+    return 1;
+}
+static int bopl_slime_inventory(const BoplRlSlime *slime) {
+    int count=0;
+    for (int slot=0; slot<3; slot++)
+        if ((slime->ability_flags[slot]&1) && slime->abilities[slot]>0
+            && slime->abilities[slot]<=BOPL_ABILITY_COUNT) count++;
+    return count;
+}
+static const BoplRlSlime *bopl_controlling_slime(const BoplRlState *state,
+                                                  uint32_t owner, double x, double y) {
+    const BoplRlSlime *best=NULL; double best_distance=0.0; int preferred=0;
+    for (uint32_t i=0; i<state->header.slime_count; i++) {
+        const BoplRlSlime *slime=&state->slimes[i];
+        if (slime->owner!=owner || !bopl_slime_inventory(slime)) continue;
+        int candidate_preferred=(slime->flags&BOPL_SLIME_SUPPRESS_INPUT)==0;
+        double dx=bopl_fix(slime->x)-x, dy=bopl_fix(slime->y)-y, distance=dx*dx+dy*dy;
+        if (!best || candidate_preferred>preferred
+            || (candidate_preferred==preferred && distance<best_distance)) {
+            best=slime; best_distance=distance; preferred=candidate_preferred;
+        }
+    }
+    return best;
+}
+static int bopl_rope_group_end(const BoplRlState *state, uint32_t begin) {
+    const BoplRlEntity *first=&state->entities[begin];
+    uint32_t end=begin+1, hierarchy=first->hierarchy;
+    while (end<state->header.entity_count) {
+        const BoplRlEntity *next=&state->entities[end];
+        if (next->kind!=3 || next->owner!=first->owner || next->hierarchy<=hierarchy) break;
+        hierarchy=next->hierarchy; end++;
+    }
+    return (int)end;
+}
+static int bopl_rope_span_kept(int ordinal, int count) {
+    if (count<=3) return 1;
+    return ordinal==0 || ordinal==(count-1)/2 || ordinal==count-1;
+}
+static double bopl_surface_distance(const BoplRlEntity *entity, double x, double y) {
+    double px=bopl_fix(entity->x), py=bopl_fix(entity->y), radius=bopl_fix(entity->radius);
+    if (entity->kind==3 || entity->kind==4) {
+        double sx=bopl_fix(entity->right_x), sy=bopl_fix(entity->right_y);
+        double length=sx*sx+sy*sy, t=length>0?((x-px)*sx+(y-py)*sy)/length:0.0;
+        if (t<0.0) t=0.0; else if (t>1.0) t=1.0;
+        double dx=x-(px+t*sx), dy=y-(py+t*sy);
+        return sqrt(dx*dx+dy*dy)-radius;
+    }
+    double dx=px-x, dy=py-y;
+    return sqrt(dx*dx+dy*dy)-radius;
 }
 /* The vector slot player p is routed through this match. */
 static int bopl_slot(const BoplPuffer *env, int player) {
@@ -269,10 +339,12 @@ static float *bopl_obs_row(BoplPuffer *env, int player) {
  * keep training. Counted when a state is sampled (bopl_step_sample) or
  * encoded undelayed, once per state, as before the delayed states were
  * encoded at publish time. */
-static void bopl_note_overflow(BoplPuffer *env, int active_count, int count, int visible_slimes) {
-    if (active_count>count || visible_slimes>BOPL_OBS_SLIMES) {
+static void bopl_note_overflow(BoplPuffer *env, int active_count, int count,
+                               int visible_slimes, int visible_slots) {
+    if (active_count>count || visible_slimes>BOPL_OBS_SLIMES || visible_slots>BOPL_OBS_SLOTS) {
         if (env->log.observation_overflow==0)
-            fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes (truncated to nearest)\n", active_count, visible_slimes);
+            fprintf(stderr, "Bopl policy observation overflow: %d entities, %d slimes, %d slots (truncated)\n",
+                    active_count, visible_slimes, visible_slots);
         env->log.observation_overflow++;
     }
 }
@@ -282,15 +354,28 @@ static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
     if (!state) return;
     for (int a=0; a<env->players; a++) {
         const BoplRlPlayer *self=&state->players[a];
-        int active_count=0, visible_slimes=0;
-        for (uint32_t i=0; i<state->header.entity_count; i++) {
+        int active_count=0, visible_slimes=0, visible_slots=0;
+        for (uint32_t i=0; i<state->header.entity_count;) {
             const BoplRlEntity *entity=&state->entities[i];
-            if (!(entity->flags&1) || (entity->flags&4) || bopl_hidden(state, entity->owner, self->id)) continue;
-            active_count++;
+            if (entity->kind==3) {
+                int end=bopl_rope_group_end(state, i), count=end-(int)i;
+                for (int j=0; j<count; j++)
+                    if (bopl_rope_span_kept(j, count)
+                        && bopl_entity_visible(state, &state->entities[i+j], self->id)) active_count++;
+                i=(uint32_t)end;
+            } else {
+                if (bopl_entity_visible(state, entity, self->id)) active_count++;
+                i++;
+            }
         }
-        for (uint32_t i=0; i<state->header.slime_count; i++)
-            if (!bopl_hidden(state, state->slimes[i].owner, self->id)) visible_slimes++;
-        bopl_note_overflow(env, active_count, active_count<BOPL_OBS_ENTITIES?active_count:BOPL_OBS_ENTITIES, visible_slimes);
+        for (uint32_t i=0; i<state->header.slime_count; i++) {
+            const BoplRlSlime *slime=&state->slimes[i];
+            if (bopl_spatial_hidden(state, slime->owner, self->id)) continue;
+            visible_slimes++; visible_slots+=bopl_slime_inventory(slime);
+        }
+        bopl_note_overflow(env, active_count,
+                           active_count<BOPL_OBS_ENTITIES?active_count:BOPL_OBS_ENTITIES,
+                           visible_slimes, visible_slots);
     }
 }
 /* The row counts the last encode left in observation row `row`, or NULL when
@@ -306,6 +391,29 @@ static void bopl_zero_tail(float *block, int features, int count, int previous, 
     int end=previous<0?capacity:previous;
     if (count<end) memset(block+(size_t)count*features, 0, (size_t)(end-count)*features*sizeof(float));
 }
+static void bopl_player_features(float *out, const BoplRlState *state,
+                                 const BoplRlPlayer *player, const BoplRlPlayer *self,
+                                 double self_x, double self_y) {
+    memset(out, 0, BOPL_PLAYER_FEATURES*sizeof(float));
+    int hidden=bopl_spatial_hidden(state, player->id, self->id), bodies=0;
+    for (uint32_t i=0; i<state->header.slime_count; i++)
+        if (state->slimes[i].owner==player->id) bodies++;
+    out[0]=1; out[1]=player->id==self->id; out[2]=player->team==self->team;
+    out[3]=(player->flags&1)!=0; out[4]=(player->flags&2)!=0;
+    out[5]=bopl_clip(player->alive_bodies/6.0); out[6]=bopl_clip(player->stocks/10.0);
+    out[7]=bopl_clip(player->kills/10.0); out[8]=bopl_clip(player->deaths/10.0);
+    if (!hidden) {
+        out[9]=bopl_clip((bopl_fix(player->x)-self_x)/64.0);
+        out[10]=bopl_clip((bopl_fix(player->y)-self_y)/64.0);
+        out[11]=bopl_clip(bopl_fix(player->scale)/3.0);
+        out[16]=1;
+    }
+    out[12]=(player->flags&4)!=0; out[13]=(player->flags&8)!=0;
+    out[14]=(player->flags&16)!=0; out[15]=(player->flags&(32|64))!=0;
+    out[17]=bopl_clip(bopl_fix(player->invisible_time)/5.0);
+    out[18]=bopl_clip(bopl_fix(player->ability_time)/5.0);
+    out[19]=bopl_clip(bodies/(double)BOPL_OBS_SLIMES);
+}
 /* Encode `state` into every player's row (bopl_obs_row), writing each row
  * exactly once: every feature is stored, the unused entity/slime slots and
  * the own-action tail are zeroed. A NULL state encodes as all zeros. */
@@ -315,111 +423,181 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
         if (!state) { memset(obs, 0, BOPL_OBS_SIZE*sizeof(float)); bopl_written_forget_row(env, obs); continue; }
         int w=-1;
         for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) { w=i; break; }
-        int prev_players=w<0?-1:env->written[w].players, prev_entities=w<0?-1:env->written[w].entities, prev_slimes=w<0?-1:env->written[w].slimes;
+        int prev_players=w<0?-1:env->written[w].players;
+        int prev_slots=w<0?-1:env->written[w].slots;
+        int prev_entities=w<0?-1:env->written[w].entities;
+        int prev_slimes=w<0?-1:env->written[w].slimes;
         const BoplRlPlayer *self=&state->players[a];
         double self_x=bopl_fix(self->x), self_y=bopl_fix(self->y);
+        const BoplRlSlime *controller=bopl_controlling_slime(state, self->id, self_x, self_y);
+
         uint32_t nearest[BOPL_OBS_ENTITIES]; double distances[BOPL_OBS_ENTITIES];
-        int count=0, active_count=0;
-        for (uint32_t i=0; i<state->header.entity_count; i++) {
-            const BoplRlEntity *entity=&state->entities[i];
-            if (!(entity->flags&1) || (entity->flags&4) || bopl_hidden(state, entity->owner, self->id)) continue;
-            double dx=bopl_fix(entity->x)-self_x, dy=bopl_fix(entity->y)-self_y;
-            bopl_nearest(nearest, distances, &count, BOPL_OBS_ENTITIES, i, dx*dx+dy*dy);
-            active_count++;
+        int count=0, active_count=0, n_nonstatic=0, n_pickup=0, sectors[8]={0}, source_counts[BOPL_ABILITY_COUNT]={0};
+        uint32_t time_stop_remaining=0; int time_stop_known=0;
+        for (uint32_t i=0; i<state->header.entity_count;) {
+            int end=(state->entities[i].kind==3)?bopl_rope_group_end(state, i):(int)i+1;
+            int group=end-(int)i;
+            for (int j=0; j<group; j++) {
+                const BoplRlEntity *entity=&state->entities[i+j];
+                if (entity->kind==3 && !bopl_rope_span_kept(j, group)) continue;
+                if (!bopl_entity_visible(state, entity, self->id)) continue;
+                double distance=bopl_surface_distance(entity, self_x, self_y);
+                if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
+                bopl_nearest(nearest, distances, &count, BOPL_OBS_ENTITIES, i+(uint32_t)j, distance);
+                active_count++;
+                uint32_t source=entity->reserved[0];
+                if (source>0 && source<=BOPL_ABILITY_COUNT) source_counts[source-1]++;
+                int nonstatic=entity->inverse_mass>0;
+                if (nonstatic) {
+                    n_nonstatic++;
+                    double dx=bopl_fix(entity->x)-self_x, dy=bopl_fix(entity->y)-self_y;
+                    double angle=atan2(dy, dx)+3.14159265358979323846;
+                    int sector=(int)(angle*(8.0/6.28318530717958647692));
+                    if (sector<0) sector=0; else if (sector>7) sector=7;
+                    sectors[sector]++;
+                }
+                if (entity->flags&BOPL_ENTITY_PICKUP) n_pickup++;
+                if (!time_stop_known && state->header.player_time_scale==0
+                    && (entity->flags&BOPL_ENTITY_TIMER_KNOWN) && entity->clock_rate>0) {
+                    time_stop_remaining=entity->reserved[1]; time_stop_known=1;
+                }
+            }
+            i=(uint32_t)end;
         }
+
+        uint32_t nearby_slimes[BOPL_OBS_SLIMES]; double slime_distances[BOPL_OBS_SLIMES];
+        int slime_count=0, visible_slimes=0;
+        uint32_t slot_indices[BOPL_OBS_SLOTS]; double slot_distances[BOPL_OBS_SLOTS];
+        int slot_count=0, visible_slots=0;
+        for (uint32_t i=0; i<state->header.slime_count; i++) {
+            const BoplRlSlime *slime=&state->slimes[i];
+            if (bopl_spatial_hidden(state, slime->owner, self->id)) continue;
+            double dx=bopl_fix(slime->x)-self_x, dy=bopl_fix(slime->y)-self_y;
+            double distance=dx*dx+dy*dy;
+            bopl_nearest(nearby_slimes, slime_distances, &slime_count,
+                         BOPL_OBS_SLIMES, i, distance);
+            visible_slimes++;
+            for (int slot=0; slot<3; slot++) {
+                uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
+                if (!(flags&1) || id==0 || id>BOPL_ABILITY_COUNT) continue;
+                double priority=distance+slot*1.0e-9;
+                if (slime==controller) priority-=1.0e12;
+                bopl_nearest(slot_indices, slot_distances, &slot_count,
+                             BOPL_OBS_SLOTS, i*3u+(uint32_t)slot, priority);
+                visible_slots++;
+            }
+        }
+
         obs[0]=bopl_clip(bopl_fix(state->header.simulation_time)/120.0);
         obs[1]=bopl_clip(bopl_fix(state->header.player_time_scale));
         obs[2]=bopl_clip((double)state->header.episode_ticks/env->config.max_episode_ticks);
         obs[3]=state->header.player_count/6.0f;
         obs[4]=bopl_clip((double)active_count/BOPL_OBS_ENTITIES);
         obs[5]=bopl_clip((double)(active_count-count)/BOPL_OBS_ENTITIES);
-        int visible_slimes=0;
-        for (uint32_t i=0; i<state->header.slime_count; i++)
-            if (!bopl_hidden(state, state->slimes[i].owner, self->id)) visible_slimes++;
         obs[6]=bopl_clip((double)visible_slimes/BOPL_OBS_SLIMES);
         obs[7]=bopl_clip((double)(visible_slimes>BOPL_OBS_SLIMES?visible_slimes-BOPL_OBS_SLIMES:0)/BOPL_OBS_SLIMES);
-        if (count_overflow) bopl_note_overflow(env, active_count, count, visible_slimes);
         obs[8]=bopl_clip(self_x/64.0); obs[9]=bopl_clip(self_y/64.0);
-        uint32_t player_count=state->header.player_count<6?state->header.player_count:6;
+        double level_time=bopl_fix(state->header.simulation_time_since_level_loaded);
+        obs[10]=bopl_clip(fmax(0.0, 120.0-level_time)/120.0);
+        obs[11]=state->header.sudden_death!=0;
+        obs[12]=state->header.sudden_death?bopl_clip(fmax(0.0, level_time-120.0)/30.0):0.0f;
+        obs[13]=bopl_clip((env->config.max_episode_ticks-(double)state->header.episode_ticks)
+                          /env->config.max_episode_ticks);
+        for (int id=0; id<BOPL_ABILITY_COUNT; id++) obs[14+id]=bopl_clip(source_counts[id]/(double)BOPL_COUNT_SCALE);
+        obs[53]=bopl_clip(n_nonstatic/(double)BOPL_OBS_ENTITIES);
+        obs[54]=bopl_clip(n_pickup/(double)BOPL_COUNT_SCALE);
+        for (int sector=0; sector<8; sector++) obs[55+sector]=bopl_clip(sectors[sector]/(double)BOPL_COUNT_SCALE);
+        obs[63]=time_stop_known?bopl_clip(time_stop_remaining/300.0):0.0f;
+        obs[64]=time_stop_known;
+        obs[65]=controller?((controller->flags>>BOPL_SLIME_PICKUP_SLOT_SHIFT)&BOPL_SLIME_PICKUP_SLOT_MASK)/2.0f:0.0f;
+        if (count_overflow) bopl_note_overflow(env, active_count, count, visible_slimes, visible_slots);
+
+        bopl_player_features(obs+BOPL_OBS_SELF_OFFSET, state, self, self, self_x, self_y);
+        uint32_t player_count=state->header.player_count<BOPL_OBS_PLAYERS?state->header.player_count:BOPL_OBS_PLAYERS;
         for (uint32_t i=0; i<player_count; i++) {
             uint32_t index=i==0?(uint32_t)a:(i<=(uint32_t)a?i-1:i);
-            const BoplRlPlayer *player=&state->players[index];
-            float *out=obs+10+i*BOPL_PLAYER_FEATURES;
-            memset(out, 0, BOPL_PLAYER_FEATURES*sizeof(float));
-            out[0]=1; out[1]=player->id==self->id; out[2]=player->team==self->team;
-            out[3]=(player->flags&1)!=0; out[4]=(player->flags&2)!=0;
-            out[5]=bopl_clip(player->alive_bodies/6.0); out[6]=bopl_clip(player->stocks/10.0);
-            out[7]=bopl_clip(player->kills/10.0); out[8]=bopl_clip(player->deaths/10.0);
-            if (!bopl_hidden(state, player->id, self->id)) {
-            out[9]=bopl_clip((bopl_fix(player->x)-self_x)/64.0); out[10]=bopl_clip((bopl_fix(player->y)-self_y)/64.0);
-            out[11]=bopl_clip(bopl_fix(player->scale)/3.0); } out[12]=(player->flags&4)!=0;
-            out[13]=(player->flags&8)!=0; out[14]=(player->flags&16)!=0; out[15]=(player->flags&(32|64))!=0;
-            const BoplRlSlime *slime=NULL;
-            for (uint32_t j=0; j<state->header.slime_count; j++)
-                if (state->slimes[j].owner==player->id) { slime=&state->slimes[j]; break; }
-            if (slime) {
-            for (int slot=0; slot<3; slot++) {
-                float *ability=out+16+slot*BOPL_ABILITY_FEATURES;
-                uint32_t id=slime->abilities[slot], flags=slime->ability_flags[slot];
-                ability[id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT]=1;
-                double cooldown=bopl_fix(slime->cooldowns[slot]), timer=bopl_fix(slime->timers[slot]);
-                ability[40]=bopl_clip(cooldown>0?timer/cooldown:0);
-                ability[41]=bopl_clip(cooldown/60.0);
-                ability[42]=(flags&2)!=0; ability[43]=(flags&4)!=0;
-                /* v2: in use right now, and the bow's charge (loadingFrame 0..4;
-                 * a full charge fires a 5x arrow). Visible for every player, as
-                 * the bow sprite is on screen for a human. */
-                ability[44]=(flags&BOPL_ABILITY_ACTIVE)!=0;
-                ability[45]=(flags&BOPL_ABILITY_ACTIVE)?((flags>>BOPL_ABILITY_CHARGE_SHIFT)&BOPL_ABILITY_CHARGE_MASK)/4.0f:0.0f;
-            }
-            } else for (int slot=0; slot<3; slot++) {
-                uint32_t id=env->config.player[index].abilities[slot];
-                out[16+slot*BOPL_ABILITY_FEATURES+(id<BOPL_ABILITY_COUNT?id:BOPL_ABILITY_COUNT)]=1;
-            }
+            bopl_player_features(obs+BOPL_OBS_PLAYER_OFFSET+(size_t)i*BOPL_PLAYER_FEATURES,
+                                 state, &state->players[index], self, self_x, self_y);
         }
-        bopl_zero_tail(obs+10, BOPL_PLAYER_FEATURES, (int)player_count, prev_players, 6);
+        bopl_zero_tail(obs+BOPL_OBS_PLAYER_OFFSET, BOPL_PLAYER_FEATURES,
+                       (int)player_count, prev_players, BOPL_OBS_PLAYERS);
+
+        for (int i=0; i<slot_count; i++) {
+            uint32_t packed=slot_indices[i], slime_index=packed/3, slot=packed%3;
+            const BoplRlSlime *slime=&state->slimes[slime_index];
+            uint32_t flags=slime->ability_flags[slot], id=slime->abilities[slot];
+            double cooldown=bopl_fix(slime->cooldowns[slot]), timer=bopl_fix(slime->timers[slot]);
+            float row[BOPL_SLOT_FEATURES]={0};
+            row[0]=1; row[1]=slime->owner==self->id; row[2]=bopl_ally(state, slime->owner, self);
+            row[3]=slot/2.0f; row[4]=bopl_clip(cooldown>0?timer/cooldown:0.0);
+            row[5]=bopl_clip(cooldown/60.0); row[6]=(flags&2)!=0; row[7]=(flags&4)!=0;
+            row[8]=(flags&BOPL_ABILITY_ACTIVE)!=0;
+            row[10]=id==4;
+            row[9]=row[10]?((flags>>BOPL_ABILITY_CHARGE_SHIFT)&BOPL_ABILITY_CHARGE_MASK)/4.0f:0.0f;
+            row[11]=bopl_clip((bopl_fix(slime->x)-self_x)/64.0);
+            row[12]=bopl_clip((bopl_fix(slime->y)-self_y)/64.0);
+            row[BOPL_SLOT_ABILITY_ID]=(float)id;
+            memcpy(obs+BOPL_OBS_SLOT_OFFSET+(size_t)i*BOPL_SLOT_FEATURES, row, sizeof(row));
+        }
+        bopl_zero_tail(obs+BOPL_OBS_SLOT_OFFSET, BOPL_SLOT_FEATURES,
+                       slot_count, prev_slots, BOPL_OBS_SLOTS);
+
         for (int i=0; i<count; i++) {
             const BoplRlEntity *entity=&state->entities[nearest[i]];
             float row[BOPL_ENTITY_FEATURES]={0};
             row[0]=1; if (entity->kind<5) row[1+entity->kind]=1;
             row[6]=entity->owner==self->id; row[7]=bopl_ally(state, entity->owner, self);
-            row[8]=bopl_clip((bopl_fix(entity->x)-self_x)/64.0); row[9]=bopl_clip((bopl_fix(entity->y)-self_y)/64.0);
-            row[10]=bopl_clip(bopl_fix(entity->vx)/256.0); row[11]=bopl_clip(bopl_fix(entity->vy)/256.0);
-            row[12]=bopl_clip(bopl_fix(entity->right_x)/64.0); row[13]=bopl_clip(bopl_fix(entity->right_y)/64.0);
-            row[14]=bopl_clip(bopl_fix(entity->up_x)/64.0); row[15]=bopl_clip(bopl_fix(entity->up_y)/64.0);
-            row[16]=bopl_clip(bopl_fix(entity->radius)/16.0); row[17]=(entity->flags&2)!=0;
-            row[18]=(entity->flags&8)!=0; row[19]=(entity->flags&16)!=0; row[20]=entity->layer/32.0f;
+            row[8]=entity->owner!=0 && !row[6] && !row[7];
+            row[9]=bopl_clip((bopl_fix(entity->x)-self_x)/64.0);
+            row[10]=bopl_clip((bopl_fix(entity->y)-self_y)/64.0);
+            row[11]=bopl_clip(bopl_fix(entity->vx)/256.0); row[12]=bopl_clip(bopl_fix(entity->vy)/256.0);
+            row[13]=bopl_clip(bopl_fix(entity->right_x)/64.0); row[14]=bopl_clip(bopl_fix(entity->right_y)/64.0);
+            row[15]=bopl_clip(bopl_fix(entity->up_x)/64.0); row[16]=bopl_clip(bopl_fix(entity->up_y)/64.0);
+            row[17]=bopl_clip(bopl_fix(entity->radius)/16.0);
+            row[18]=(entity->flags&BOPL_ENTITY_ENABLED)!=0;
+            row[19]=(entity->flags&BOPL_ENTITY_TRIGGER)!=0;
+            row[20]=(entity->flags&BOPL_ENTITY_COMPOSITE)!=0;
+            row[21]=entity->layer/32.0f;
+            row[22]=(entity->flags&BOPL_ENTITY_TIMER_KNOWN)?bopl_clip(entity->reserved[1]/(double)BOPL_TIMER_TICKS):0.0f;
+            row[23]=(entity->flags&BOPL_ENTITY_TIMER_KNOWN)!=0;
+            row[24]=bopl_clip(bopl_fix(entity->clock_rate));
+            row[25]=(entity->flags&BOPL_ENTITY_PICKUP)!=0;
+            row[26]=(entity->flags&BOPL_ENTITY_PROJECTILE)!=0;
+            row[27]=(entity->flags&BOPL_ENTITY_SPARK_NODE)!=0;
+            row[28]=(entity->flags&BOPL_ENTITY_FLAMMABLE_SMOKE)!=0;
+            row[29]=(entity->flags&BOPL_ENTITY_EXPLOSIVE)!=0;
+            row[30]=(entity->flags&BOPL_ENTITY_HITBOX)!=0;
+            row[31]=(entity->flags&BOPL_ENTITY_CONTACT_DAMAGE)!=0;
+            row[32]=(entity->flags&BOPL_ENTITY_CONTACT_DAMAGE_KNOWN)!=0;
+            row[BOPL_ENTITY_ABILITY_ID]=entity->reserved[0]<=BOPL_ABILITY_COUNT?(float)entity->reserved[0]:0.0f;
             memcpy(obs+BOPL_OBS_ENTITY_OFFSET+(size_t)i*BOPL_ENTITY_FEATURES, row, sizeof(row));
         }
-        bopl_zero_tail(obs+BOPL_OBS_ENTITY_OFFSET, BOPL_ENTITY_FEATURES, count, prev_entities, BOPL_OBS_ENTITIES);
-        uint32_t nearby_slimes[BOPL_OBS_SLIMES]; double slime_distances[BOPL_OBS_SLIMES]; int slime_count=0;
-        for (uint32_t i=0; i<state->header.slime_count; i++) {
-            const BoplRlSlime *slime=&state->slimes[i];
-            if (bopl_hidden(state, slime->owner, self->id)) continue;
-            double dx=bopl_fix(slime->x)-self_x, dy=bopl_fix(slime->y)-self_y;
-            bopl_nearest(nearby_slimes, slime_distances, &slime_count, BOPL_OBS_SLIMES, i, dx*dx+dy*dy);
-        }
+        bopl_zero_tail(obs+BOPL_OBS_ENTITY_OFFSET, BOPL_ENTITY_FEATURES,
+                       count, prev_entities, BOPL_OBS_ENTITIES);
+
         for (int i=0; i<slime_count; i++) {
             const BoplRlSlime *slime=&state->slimes[nearby_slimes[i]];
             float row[BOPL_SLIME_FEATURES]={0};
             row[0]=1; row[1]=slime->owner==self->id; row[2]=bopl_ally(state, slime->owner, self);
-            row[3]=(slime->flags&1)!=0; row[4]=(slime->flags&2)!=0; row[5]=(slime->flags&4)!=0; row[6]=(slime->flags&8)!=0;
+            row[3]=(slime->flags&BOPL_SLIME_ACTIVE)!=0; row[4]=(slime->flags&BOPL_SLIME_SPAWNED)!=0;
+            row[5]=(slime->flags&BOPL_SLIME_IN_ABILITY)!=0; row[6]=(slime->flags&BOPL_SLIME_SUPPRESS_INPUT)!=0;
             row[7]=bopl_clip((bopl_fix(slime->x)-self_x)/64.0); row[8]=bopl_clip((bopl_fix(slime->y)-self_y)/64.0);
             row[9]=bopl_clip(bopl_fix(slime->vx)/256.0); row[10]=bopl_clip(bopl_fix(slime->vy)/256.0);
             row[11]=bopl_clip(bopl_fix(slime->scale)/3.0);
             if (slime->state<11) row[12+slime->state]=1;
-            row[23]=sinf((float)bopl_fix(slime->rotation));
-            row[24]=cosf((float)bopl_fix(slime->rotation));
+            row[23]=sinf((float)bopl_fix(slime->rotation)); row[24]=cosf((float)bopl_fix(slime->rotation));
+            row[28]=(slime->flags&BOPL_SLIME_ABILITYLESS)!=0; row[29]=1;
             memcpy(obs+BOPL_OBS_SLIME_OFFSET+(size_t)i*BOPL_SLIME_FEATURES, row, sizeof(row));
         }
-        bopl_zero_tail(obs+BOPL_OBS_SLIME_OFFSET, BOPL_SLIME_FEATURES, slime_count, prev_slimes, BOPL_OBS_SLIMES);
+        bopl_zero_tail(obs+BOPL_OBS_SLIME_OFFSET, BOPL_SLIME_FEATURES,
+                       slime_count, prev_slimes, BOPL_OBS_SLIMES);
         memset(obs+BOPL_OBS_PREVIOUS_OFFSET, 0, BOPL_PREVIOUS_FEATURES*sizeof(float));
         if (w<0) {
             if (env->written_count==BOPL_MAX_SLOTS) env->written[0]=env->written[--env->written_count];
-            w=env->written_count++;
-            env->written[w].row=obs;
+            w=env->written_count++; env->written[w].row=obs;
         }
-        env->written[w].players=(int)player_count; env->written[w].entities=count; env->written[w].slimes=slime_count;
+        env->written[w].players=(int)player_count; env->written[w].slots=slot_count;
+        env->written[w].entities=count; env->written[w].slimes=slime_count;
     }
 }
 /* The undelayed encoder: the state as observed now, overflow counted. */
@@ -455,6 +633,17 @@ static uint16_t bopl_latch(BoplPuffer *env, int player, uint16_t buttons, int ho
     for (int bit=0; bit<4; bit++) env->hold_run[player][bit]=(applied&(1<<bit))?env->hold_run[player][bit]+1:0;
     return applied;
 }
+static int bopl_bow_button(const BoplPuffer *env, int player) {
+    const BoplRlState *state=bopl_rl_state(env->world);
+    if (!state || player<0 || player>=(int)state->header.player_count) return -1;
+    const BoplRlPlayer *self=&state->players[player];
+    const BoplRlSlime *controller=bopl_controlling_slime(
+        state, self->id, bopl_fix(self->x), bopl_fix(self->y));
+    if (!controller) return -1;
+    for (int slot=0; slot<3; slot++)
+        if ((controller->ability_flags[slot]&1) && controller->abilities[slot]==4) return slot+1;
+    return -1;
+}
 /* Publish the action mask for player i's next decision from its latch state. */
 static void bopl_write_mask(BoplPuffer *env, int player) {
     unsigned char *mask=env->mask_ptr[bopl_slot(env, player)];
@@ -464,13 +653,11 @@ static void bopl_write_mask(BoplPuffer *env, int player) {
         memset(mask+BOPL_ACT_AIM, 0, BOPL_ACT_BUTTONS+BOPL_ACT_HOLD);
         mask[BOPL_ACT_AIM+env->held[player]]=1;
         mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS]=1;
-    } else if (env->hold_run[player][BOPL_BUTTON_ARROW]>0) {
-        /* The arrow was down through the decision just applied, so this free
-         * decision must let go of it: a latch with the arrow is a charge that
-         * fires when it expires, never an indefinite hold (run 005 collapsed
-         * to holding the arrow for the whole episode and never firing). The
-         * head still picks the other three buttons and the next hold length. */
-        for (int b=0; b<BOPL_ACT_BUTTONS; b++) if (b&(1<<BOPL_BUTTON_ARROW)) mask[BOPL_ACT_AIM+b]=0;
+    } else {
+        int bow=bopl_bow_button(env, player);
+        if (bow>=0 && env->hold_run[player][bow]>0)
+            for (int b=0; b<BOPL_ACT_BUTTONS; b++)
+                if (b&(1<<bow)) mask[BOPL_ACT_AIM+b]=0;
     }
 }
 static uint32_t bopl_side_random(BoplPuffer *env) {
