@@ -427,6 +427,32 @@ def main():
         "particle_speed": fix(particle_config, "speed"),
     }
 
+    # ---- Teleport / persistent portal indicator ----
+    _, teleport = find_prefab("Assets/GameObject/Teleport.prefab")
+    teleport_spell = component(teleport, "Teleport")
+    teleport_marker = ASSETS[guid_of(teleport_spell["tpiPrefab"])]
+    teleport_indicator = component(teleport_marker, "TeleportIndicator")
+    teleport_circle = component(teleport_marker, "DPhysicsCircle")
+    teleport_fix = component(teleport_marker, "FixTransform")
+    teleport_body = component(teleport_marker, "BoplBody")
+    teleport_effect = ASSETS[guid_of(teleport_indicator["teleportingSpriteEffectPrefab"])]
+    teleport_effect_config = component(teleport_effect, "TeleportedObjectEffect")
+    out["prefabs"]["teleport"] = {
+        "up_cast_offset": fix(teleport_spell, "upCastOffset"),
+        "player_radius": fix(teleport_spell, "radius"),
+        "marker": {
+            "layer": teleport_marker["data"].get("layer"),
+            "updatable_count": updater_count(teleport_marker),
+            "collider_hierarchy": teleport_circle["hierarchyNumber"],
+            "offset": vec2(teleport_fix, "offset"),
+            "radius": fix(teleport_circle, "startRadius"),
+            "teleport_radius": fix(teleport_indicator, "teleportRadius"),
+            "body": physics_body(teleport_body),
+        },
+        "effect_updatable_count": updater_count(teleport_effect),
+        "effect_duration": fix(teleport_effect_config, "duration"),
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

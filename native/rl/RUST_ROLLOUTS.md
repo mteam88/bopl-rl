@@ -44,13 +44,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and sudden-death platform sinking on the extracted curve. Blast-boundary
   deaths are always routed through match bookkeeping, including while an
   ability body is active.
+  Sorted team ids map onto authored spawn slots and teammates fan out with the
+  shipped alternating offsets, including wrapped team slots.
 - **Movement**: the verified movement slice (`world.rs`). Registered input is
   consumed by the live body in the current tick, as in Unity. The public
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Bow, Gust, Platform, Revival, Invisibility, Gold mushroom**
-  (catalog ids 0/1/2/4/7/14/15/19/34): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Bow, Gust, Platform, Revival, Invisibility, Teleport, Gold mushroom**
+  (catalog ids 0/1/2/4/7/14/15/19/25/34): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -84,6 +86,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   clone, waits through the measured wisp and doubly-registered particle
   travel, removes the marker, and plays the ordinary spawn animation before
   restoring input.
+  Teleport is an instant two-stage cast. Its first cast creates the extracted
+  portal body on the next updater pass; releasing the button keeps the slot at
+  exact cooldown so the next press can cross the strict ready boundary. The
+  second cast performs both source and marker circle queries, swaps all matched
+  players once, ungrounds and zeros their imposed velocity, removes the marker,
+  and disables each moved GameObject for the strict 0.6-second visual-effect
+  interval. Each effect consumes the same four RNG samples per active tick,
+  including its removal pass.
   Invisibility is an instant cast: its five-second player clocks, castability
   gate, 10,000-second live sentinel, six-second restored cooldown, strict
   expiry, duplicate-slot chaining, player flags, and telemetry follow the
@@ -121,12 +131,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/4/7/14/15/19/34 have executable catalog behavior in the public
+- Only ids 0/1/2/4/7/14/15/19/25/34 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
-  while Dash/Bow/Gust/Platform/Revival execute casts. Revival's public death
+  while Dash/Bow/Gust/Platform/Revival/Teleport execute casts. Revival's public death
   path currently supports one live marker; multiple simultaneous markers
-  require the general multi-clone rollout representation. Every slot uses its exact authored
+  require the general multi-clone rollout representation. Teleport's player
+  swaps are complete, but its projectile/item/boulder targets await the dynamic
+  entity types supplied by those ability ports. Every slot uses its exact authored
   cooldown and common ground/castability metadata from the exported prefab;
   unported catalog ids never activate. Closing this scope requires the remaining
   catalog abilities and their dynamic bodies/collision pairs.

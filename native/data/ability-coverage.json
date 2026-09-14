@@ -186,7 +186,8 @@
       "name": "Teleport",
       "prefab": "Assets/GameObject/Teleport.prefab",
       "prefab_guid": "96597c44420b8d146b7e554c170e3564",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Exact public Q32 goldens cover the first-cast marker, release-to-ready second cast, single-caster transfer, two-way three-player area swap, disabled-object interval, four RNG samples per effect tick, reactivation, entity ordering and teammate spawn offsets for 300/450 ticks. Projectile/item/boulder targets remain pending on those entity ports."
     },
     {
       "id": 26,

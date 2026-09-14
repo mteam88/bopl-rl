@@ -65,6 +65,7 @@ struct RawWater {
 #[derive(Deserialize)]
 struct RawSession {
     team_spawns: Vec<RawVec2>,
+    teammate_spacing: i64,
     time_before_sudden_death: i64,
 }
 #[derive(Deserialize)]
@@ -203,6 +204,7 @@ struct RawPrefabs {
     resizable_platform: RawResizable,
     gust: RawGust,
     revival: RawRevival,
+    teleport: RawTeleport,
 }
 
 #[derive(Deserialize)]
@@ -216,6 +218,26 @@ struct RawGust {
     grounded_multiplier: i64,
     radius: i64,
     curve: Curve,
+}
+
+#[derive(Deserialize)]
+struct RawTeleport {
+    up_cast_offset: i64,
+    player_radius: i64,
+    marker: RawTeleportMarker,
+    effect_updatable_count: u32,
+    effect_duration: i64,
+}
+
+#[derive(Deserialize)]
+struct RawTeleportMarker {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    offset: RawVec2,
+    radius: i64,
+    teleport_radius: i64,
+    body: RawBody,
 }
 
 #[derive(Deserialize)]
@@ -308,6 +330,7 @@ pub struct MapDef {
     pub water_position: Vec2,
     pub water_extents: Vec2,
     pub team_spawns: Vec<Vec2>,
+    pub teammate_spacing: Fix,
     pub respawn_points: [Vec2; 3],
     pub sudden_death_time: Fix,
 }
@@ -416,6 +439,19 @@ pub struct RevivalData {
     pub effect_wisp_ticks: u32,
     pub particle_speed: Fix,
 }
+pub struct TeleportData {
+    pub up_cast_offset: Fix,
+    pub player_radius: Fix,
+    pub marker_layer: u32,
+    pub marker_updatable_count: u32,
+    pub marker_collider_hierarchy: u32,
+    pub marker_offset: Vec2,
+    pub marker_radius: Fix,
+    pub marker_teleport_radius: Fix,
+    pub marker_body: crate::physics::Body,
+    pub effect_updatable_count: u32,
+    pub effect_duration: Fix,
+}
 pub struct AbilityData {
     pub id: u32,
     pub name: String,
@@ -443,6 +479,7 @@ pub struct RolloutData {
     pub platform: PlatformAbilityData,
     pub gust: GustData,
     pub revival: RevivalData,
+    pub teleport: TeleportData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -586,6 +623,7 @@ fn map_def(raw: &RawMap) -> MapDef {
         water_position: raw.water.position.get(),
         water_extents: raw.water.extents.get(),
         team_spawns,
+        teammate_spacing: Fix::from_raw(raw.session.teammate_spacing),
         respawn_points,
         sudden_death_time: Fix::from_raw(raw.session.time_before_sudden_death),
     }
@@ -750,6 +788,22 @@ pub fn get() -> &'static RolloutData {
                     particle_updatable_count: revival.particle_updatable_count,
                     effect_wisp_ticks: revival.effect_wisp_ticks,
                     particle_speed: Fix::from_raw(revival.particle_speed),
+                }
+            },
+            teleport: {
+                let teleport = &raw.prefabs.teleport;
+                TeleportData {
+                    up_cast_offset: Fix::from_raw(teleport.up_cast_offset),
+                    player_radius: Fix::from_raw(teleport.player_radius),
+                    marker_layer: teleport.marker.layer,
+                    marker_updatable_count: teleport.marker.updatable_count,
+                    marker_collider_hierarchy: teleport.marker.collider_hierarchy,
+                    marker_offset: teleport.marker.offset.get(),
+                    marker_radius: Fix::from_raw(teleport.marker.radius),
+                    marker_teleport_radius: Fix::from_raw(teleport.marker.teleport_radius),
+                    marker_body: body(&teleport.marker.body, Fix::ZERO),
+                    effect_updatable_count: teleport.effect_updatable_count,
+                    effect_duration: Fix::from_raw(teleport.effect_duration),
                 }
             },
             abilities: raw

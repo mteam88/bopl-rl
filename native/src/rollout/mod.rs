@@ -43,6 +43,7 @@ pub const ABILITY_GUST: u32 = 7;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_INVISIBILITY: u32 = 19;
+pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
@@ -434,6 +435,21 @@ pub struct RevivalMarker {
     pub velocity: Vec2,
 }
 
+/// The portal indicator retained by one Teleport ability instance between
+/// its first and second instant casts.
+#[derive(Clone, Copy, Default)]
+pub struct TeleportMarker {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub entity: Option<usize>,
+    pub hierarchy_base: u32,
+    pub position: Vec2,
+    pub velocity: Vec2,
+}
+
 /// AirWave_Shockwave has no collider of its own. It captures rigid targets on
 /// initialization and keeps applying its curve to that fixed set.
 #[derive(Clone, Copy)]
@@ -522,6 +538,16 @@ pub struct PlayerSlot {
     pub revival_target_marker: Option<usize>,
     pub revival_effect_ticks: u32,
     pub revival_particle_ticks: u32,
+    /// Marker owned by each equipped Teleport instance. The first cast fills
+    /// it; the second consumes it and queues the two-way area swap.
+    pub teleport_markers: [Option<usize>; 3],
+    pub teleport_pending_marker: Option<usize>,
+    pub teleport_pending_position: Vec2,
+    /// TeleportedObjectEffect disables the moved GameObject while its visual
+    /// copy shakes. The visual has no observation row, but its RNG and strict
+    /// duration boundary are simulation-visible.
+    pub teleport_effect_active: bool,
+    pub teleport_effect_time: Fix,
     pub gold_mushroom: [GoldMushroomState; 3],
     /// SlimeController.currentState as the policy observes it. The .NET enum
     /// never takes the `ability` value (nothing assigns it), so the state
@@ -620,6 +646,7 @@ pub struct RolloutWorld {
     pub spawned: Vec<SpawnedPlatform>,
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
+    pub teleport_marker_pool: Vec<TeleportMarker>,
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
@@ -688,6 +715,7 @@ impl RolloutWorld {
             spawned: Vec::with_capacity(64),
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
+            teleport_marker_pool: Vec::with_capacity(64),
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
@@ -743,6 +771,8 @@ impl RolloutWorld {
         self.gust_waves = src.gust_waves;
         self.revival_marker_pool
             .clone_from(&src.revival_marker_pool);
+        self.teleport_marker_pool
+            .clone_from(&src.teleport_marker_pool);
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
@@ -791,6 +821,7 @@ impl RolloutWorld {
             spawned: _,
             gust_waves: _,
             revival_marker_pool: _,
+            teleport_marker_pool: _,
             sudden_death: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
@@ -868,6 +899,7 @@ impl RolloutWorld {
         self.spawned.clear();
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.revival_marker_pool.clear();
+        self.teleport_marker_pool.clear();
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
@@ -1078,11 +1110,41 @@ impl RolloutWorld {
             }
         }
 
-        // Players at their team spawns (GameSessionHandler.SpawnPlayers: one
-        // authored spawn per team slot, wrapped for extra teams).
+        // GameSessionHandler maps sorted distinct team ids onto authored
+        // spawn slots, then fans teammates (and wrapped extra teams) out in
+        // alternating down-left/down-right offsets.
+        let mut distinct_teams = [u32::MAX; MAX_PLAYERS];
+        let mut distinct_count = 0usize;
+        for player in &config.player[..players] {
+            let team = player.team;
+            if !distinct_teams[..distinct_count].contains(&team) {
+                distinct_teams[distinct_count] = team;
+                distinct_count += 1;
+            }
+        }
+        distinct_teams[..distinct_count].sort_unstable();
+        let mut spawn_counts = [0u32; MAX_PLAYERS];
+
+        // Players at their resolved team spawns.
         for i in 0..players {
             let team = config.player[i].team;
-            let spawn = def.team_spawns[team as usize % def.team_spawns.len()];
+            let team_rank = distinct_teams[..distinct_count]
+                .iter()
+                .position(|&candidate| candidate == team)
+                .expect("configured team was collected");
+            let spawn_index = team_rank % def.team_spawns.len();
+            let teammate_index = spawn_counts[spawn_index];
+            spawn_counts[spawn_index] += 1;
+            let mut spawn = def.team_spawns[spawn_index];
+            if teammate_index > 0 {
+                let step = teammate_index.div_ceil(2);
+                let distance = def.teammate_spacing * Fix::from_int(i64::from(step));
+                spawn += if teammate_index % 2 == 1 {
+                    Vec2::new(-distance, -distance * Fix::from_f32(0.5))
+                } else {
+                    Vec2::new(distance, -distance * Fix::from_f32(0.5))
+                };
+            }
             let abilities = resolved_abilities[i];
             let mut cooldowns = [Fix::ZERO; 3];
             for s in 0..slots {
@@ -1157,6 +1219,11 @@ impl RolloutWorld {
                 revival_target_marker: None,
                 revival_effect_ticks: 0,
                 revival_particle_ticks: 0,
+                teleport_markers: [None; 3],
+                teleport_pending_marker: None,
+                teleport_pending_position: Vec2::ZERO,
+                teleport_effect_active: false,
+                teleport_effect_time: Fix::ZERO,
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 obs_state: STATE_FALL,
                 state_ticks: 0,
@@ -1425,6 +1492,7 @@ impl RolloutWorld {
         let data = data::get();
         self.register_pending_arrows();
         self.register_pending_revival_markers(data);
+        self.register_pending_teleport_markers(data);
         self.register_pending_revival_clones(data);
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
@@ -1465,8 +1533,15 @@ impl RolloutWorld {
         }
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
-            self.players[index].reported_position = self.players[index].base.position;
-            self.players[index].reported_tick = self.tick;
+            // Player.UpdatePlayer is on the disabled slime GameObject during
+            // TeleportedObjectEffect, so Player.Position remains at its
+            // pre-teleport publication until reactivation.
+            if !self.players[index].teleport_effect_active {
+                self.players[index].reported_position = self.players[index].base.position;
+                self.players[index].reported_tick = self.tick;
+            } else {
+                self.players[index].reported_tick = self.tick;
+            }
             let action = packet.aim_action();
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
@@ -1519,6 +1594,8 @@ impl RolloutWorld {
         }
         self.gust_waves_update(data);
         self.revival_effects_tick(data);
+        self.teleport_effects_tick(data);
+        self.teleport_pending_tick(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -1607,6 +1684,7 @@ impl RolloutWorld {
             && slot.respawn_spawn_ticks == 0
             && !slot.revival_clone_pending
             && slot.revival_effect_ticks == 0
+            && !slot.teleport_effect_active
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -1623,6 +1701,9 @@ impl RolloutWorld {
             slot.active != ActiveAbility::None || slot.base.dash.active
         };
         if !self.playable(index) {
+            if self.players[index].teleport_effect_active {
+                return;
+            }
             self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
         }
@@ -1655,6 +1736,17 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             for s in 0..3 {
                 slot.timers[s] += DT;
+                if slot.abilities[s] == ABILITY_TELEPORT
+                    && slot.teleport_markers[s]
+                        .is_some_and(|marker| self.teleport_marker_pool[marker].active)
+                    && action.buttons & (2 << s) as u8 == 0
+                {
+                    // SlimeController resets an IgnoreNextCooldown slot on
+                    // every released frame. Holding the second press skips
+                    // this reset, allowing the just-incremented timer to pass
+                    // the strict readiness comparison.
+                    slot.timers[s] = slot.cooldowns[s];
+                }
             }
         }
         // Ability entry (held button, ready, castable, not already in one).
@@ -1720,6 +1812,39 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
+                        break;
+                    }
+                    ABILITY_TELEPORT => {
+                        let marker = self.players[index].teleport_markers[s]
+                            .filter(|&marker| self.teleport_marker_pool[marker].active);
+                        {
+                            let slot = &mut self.players[index];
+                            slot.timers[s] = Fix::ZERO;
+                            slot.telemetry.ability_activations[s] += 1;
+                        }
+                        if let Some(marker) = marker {
+                            let slot = &mut self.players[index];
+                            slot.teleport_pending_marker = Some(marker);
+                            slot.teleport_pending_position = slot.base.position;
+                            slot.teleport_markers[s] = None;
+                        } else {
+                            let hierarchy_base = self.next_spawn_hierarchy;
+                            self.next_spawn_hierarchy += data.teleport.marker_updatable_count;
+                            let marker_index = self.teleport_marker_pool.len();
+                            self.teleport_marker_pool.push(TeleportMarker {
+                                active: true,
+                                registered: false,
+                                born_tick: self.tick,
+                                owner: index,
+                                ability_slot: s,
+                                entity: None,
+                                hierarchy_base,
+                                position: self.players[index].base.position
+                                    + Vec2::UP * data.teleport.up_cast_offset,
+                                velocity: Vec2::ZERO,
+                            });
+                            self.players[index].teleport_markers[s] = Some(marker_index);
+                        }
                         break;
                     }
                     ABILITY_DASH => {
@@ -2136,6 +2261,115 @@ impl RolloutWorld {
             });
             self.revival_marker_pool[marker_index].registered = true;
             self.revival_marker_pool[marker_index].entity = Some(entity);
+        }
+    }
+
+    fn register_pending_teleport_markers(&mut self, data: &data::RolloutData) {
+        for marker_index in 0..self.teleport_marker_pool.len() {
+            let marker = self.teleport_marker_pool[marker_index];
+            if !marker.active || marker.registered || marker.born_tick >= self.tick {
+                continue;
+            }
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: data.teleport.marker_layer,
+                owner: 0,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000
+                    + marker.hierarchy_base
+                    + data.teleport.marker_collider_hierarchy,
+                x: (marker.position + data.teleport.marker_offset).x.raw(),
+                y: (marker.position + data.teleport.marker_offset).y.raw(),
+                radius: data.teleport.marker_radius.raw(),
+                inverse_mass: data.teleport.marker_body.inverse_mass.raw(),
+                ..CEntity::default()
+            });
+            self.teleport_marker_pool[marker_index].registered = true;
+            self.teleport_marker_pool[marker_index].entity = Some(entity);
+        }
+    }
+
+    fn teleport_effects_tick(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if !self.players[index].teleport_effect_active {
+                continue;
+            }
+            self.players[index].teleport_effect_time += DT;
+            if self.players[index].teleport_effect_time > data.teleport.effect_duration {
+                self.players[index].teleport_effect_active = false;
+                self.players[index].teleport_effect_time = Fix::ZERO;
+            }
+            // TeleportedObjectEffect still shakes its visual copy on the
+            // destruction pass. RandomInsideUnitCircle performs two
+            // RandomFix calls; each spans integer floors and consumes two
+            // Unity.Mathematics.Random samples.
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        }
+    }
+
+    fn teleport_pending_tick(&mut self, data: &data::RolloutData) {
+        for owner in 0..self.players.len() {
+            let Some(marker_index) = self.players[owner].teleport_pending_marker.take() else {
+                continue;
+            };
+            let marker = self.teleport_marker_pool[marker_index];
+            if !marker.active {
+                continue;
+            }
+            let from = self.players[owner].teleport_pending_position;
+            let diff = marker.position - from;
+            let player_query = Circle {
+                center: from,
+                radius: data.teleport.player_radius,
+            };
+            let marker_query = Circle {
+                center: marker.position,
+                radius: data.teleport.marker_teleport_radius,
+            };
+            let mut at_player = [false; MAX_PLAYERS];
+            let mut at_marker = [false; MAX_PLAYERS];
+            for target in 0..self.players.len() {
+                if !self.players[target].base.alive || self.players[target].teleport_effect_active {
+                    continue;
+                }
+                let collider = self.players[target].base.collider;
+                at_player[target] =
+                    crate::physics::contact::circle_box_overlaps(player_query, collider);
+                at_marker[target] =
+                    crate::physics::contact::circle_box_overlaps(marker_query, collider);
+            }
+            for target in 0..self.players.len() {
+                let offset = if at_player[target] {
+                    Some(diff)
+                } else if at_marker[target] {
+                    Some(-diff)
+                } else {
+                    None
+                };
+                let Some(offset) = offset else { continue };
+                let slot = &mut self.players[target];
+                slot.base.force_unground(&self.platforms);
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
+                slot.base.velocity = Vec2::ZERO;
+                slot.base.position += offset;
+                slot.base.sync_collider();
+                slot.obs_state = STATE_FALL;
+                slot.state_ticks = 0;
+                slot.teleport_effect_active = true;
+                slot.teleport_effect_time = Fix::ZERO;
+                self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
+            }
+            let marker = &mut self.teleport_marker_pool[marker_index];
+            marker.active = false;
+            marker.registered = false;
+            if let Some(entity) = marker.entity {
+                self.entities[entity].flags = E_REMOVED;
+            }
         }
     }
 
@@ -3834,6 +4068,10 @@ impl RolloutWorld {
         let drop_position = slot.base.position;
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
+        // Teleport's marker reference belongs to the destroyed ability
+        // instance. The independent indicator survives, but a replacement
+        // slime receives a fresh ability with no route back to that marker.
+        slot.teleport_markers = [None; 3];
         if killer >= 1 && killer <= players as u32 && killer != slot.base.id {
             self.players[killer as usize - 1].kills += 1;
         }
@@ -4193,6 +4431,7 @@ impl RolloutWorld {
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
             let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
+            let teleporting = slot.teleport_effect_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
             let in_ability = slot.active != ActiveAbility::None;
@@ -4214,6 +4453,8 @@ impl RolloutWorld {
             let body_was_active = body.flags & E_ACTIVE != 0;
             if !alive {
                 body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
+            } else if teleporting {
+                body.flags = E_ENABLED | E_TRIGGER;
             } else if choosing_respawn {
                 body.flags = E_ACTIVE | E_TRIGGER;
             } else if dashing || in_ability {
@@ -4230,7 +4471,7 @@ impl RolloutWorld {
             // onEnterAbility deactivates the slime after this pass's Move
             // (SlimeController.cs:1084); its frozen FixTransform is what the
             // hurtbox shows for the rest of the ability.
-            let (center, angle) = if body_active {
+            let (center, angle) = if body_active || teleporting {
                 (synced, rotation)
             } else {
                 (slot.ability_origin, slot.ability_origin_rotation)
@@ -4454,6 +4695,17 @@ impl RolloutWorld {
             e.vx = marker.velocity.x.raw();
             e.vy = marker.velocity.y.raw();
         }
+        for marker in &self.teleport_marker_pool {
+            if !marker.active || !marker.registered {
+                continue;
+            }
+            let e = &mut self.entities[marker.entity.expect("registered Teleport marker")];
+            let position = marker.position + data.teleport.marker_offset;
+            e.x = position.x.raw();
+            e.y = position.y.raw();
+            e.vx = marker.velocity.x.raw();
+            e.vy = marker.velocity.y.raw();
+        }
     }
 
     fn refresh_platform_entities(&mut self) {
@@ -4512,7 +4764,9 @@ impl RolloutWorld {
                 || slot.respawn_spawn_ticks > 0
                 || slot.revival_effect_ticks > 0;
             let mut flags = S_ACTIVE;
-            if respawning {
+            if slot.teleport_effect_active {
+                flags = S_SPAWNED | S_SIMULATED;
+            } else if respawning {
                 flags |= S_SUPPRESS_INPUT;
             } else if in_ability {
                 // onEnterAbility disables the original slime GameObject but

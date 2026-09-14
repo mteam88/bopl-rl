@@ -921,6 +921,35 @@ does no per-tick allocation. Form-specific jump speed and the rope exclusion are
 retained in extracted metadata for the later form and rope integrations; neither
 path is reachable in this isolated verified loadout yet.
 
+### Executable Teleport (2026-09-14)
+
+Catalog id 25 now executes the two-stage `Teleport`/`TeleportIndicator` path in
+the public rollout backend. The first instant cast allocates the indicator with
+its extracted zero-gravity body and 1.32-radius layer-27 circle; registration is
+deferred to the next updater pass and consumes the original three hierarchy
+numbers. While the marker exists, every released tick resets the slot timer to
+the exact three-second cooldown. A held second press first increments past that
+strict threshold, then queues the indicator update later in the same pass.
+
+The indicator performs the original two circle queries, de-duplicates the
+marker-side results against the caster-side list, ungrounds matched players,
+zeros their imposed velocity and applies opposite offsets. Each moved object is
+inactive for the strict 0.6-second `TeleportedObjectEffect` interval. Its visual
+has no policy row, but `RandomInsideUnitCircle` consumes four RNG state advances
+on every update, including the removal pass; Rust preserves those advances and
+the stale `Player.Position` publication while the player object is inactive.
+The implementation uses fixed six-player query arrays and allocation-reusing
+marker/entity pools, with no hot-path allocation.
+
+`teleport_ability_ab.c` matches all NativeAOT public fields for 300 ticks through
+the stationary caster transfer. `teleport_multi_ab.c` uses three players and
+moves the caster away from a teammate left at the marker; both directions of
+the swap, both inactive effects and reactivation match exactly for 450 ticks.
+That test also exposed the source's sorted-team spawn mapping and alternating
+teammate offsets, now reproduced at reset. Projectile, item and tagged-boulder
+targets are part of Teleport's mask but cannot be certified until their dynamic
+entity types are present in the rollout backend; the player mechanic is exact.
+
 ### Executable Gust (2026-09-14)
 
 Catalog id 7 now executes the shipped Gust `Ability`, `QuickSpell`, and
