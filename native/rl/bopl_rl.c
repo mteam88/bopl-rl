@@ -46,9 +46,9 @@ static int accept_cloexec_nonblock(int listener) { return accept4(listener, NULL
 #endif
 _Static_assert(sizeof(BoplRlConfig)==176, "config layout");
 _Static_assert(sizeof(BoplRlAction)==4, "action layout");
-_Static_assert(sizeof(BoplRlHeader)==48, "header layout");
+_Static_assert(sizeof(BoplRlHeader)==64, "header layout");
 _Static_assert(sizeof(BoplRlPlayer)==72, "player layout");
-_Static_assert(sizeof(BoplRlEntity)==128, "entity layout");
+_Static_assert(sizeof(BoplRlEntity)==136, "entity layout");
 _Static_assert(sizeof(BoplRlSlime)==136, "slime layout");
 _Static_assert(sizeof(BoplRlTelemetry)==36, "telemetry layout");
 
@@ -220,7 +220,7 @@ static int decode_snapshot(BoplRl *w, Snapshot *s, const unsigned char *bytes, u
     size_t slime_bytes=(size_t)header.slime_count*sizeof(BoplRlSlime);
     size_t telemetry_bytes=(size_t)header.player_count*sizeof(BoplRlTelemetry);
     size_t total=sizeof(header)+player_bytes+entity_bytes+slime_bytes+telemetry_bytes;
-    if (header.version!=2 || header.player_count<1 || header.player_count>6 || total>available) {
+    if (header.version!=3 || header.player_count<1 || header.player_count>6 || total>available) {
         errno=EPROTO; return fail(w, "Invalid RL state layout");
     }
     if (header.slime_count>s->slime_capacity) {
@@ -273,7 +273,7 @@ static int copy_snapshot(BoplRl *w, Snapshot *to, const Snapshot *from) {
     return BOPL_RL_OK;
 }
 
-uint32_t bopl_rl_abi_version(void) { return 2; }
+uint32_t bopl_rl_abi_version(void) { return 3; }
 void bopl_rl_default_config(BoplRlConfig *config, uint32_t players) {
     if (!config) return;
     memset(config, 0, sizeof(*config));
@@ -356,7 +356,7 @@ static InprocLib *load_inproc_lib(BoplRl *w, const char *library, bool first,
     RESOLVE(step) RESOLVE(step_sampled) RESOLVE(state) RESOLVE(sample) RESOLVE(replay) RESOLVE(error)
     RESOLVE(source_hash) RESOLVE(catalog_hash) RESOLVE(map_count) RESOLVE(ability_count) RESOLVE(close)
 #undef RESOLVE
-    if (lib->abi_version()!=2) { snprintf(w->error, sizeof(w->error), "RL library ABI version %u", lib->abi_version()); free(lib); return NULL; }
+    if (lib->abi_version()!=3) { snprintf(w->error, sizeof(w->error), "RL library ABI version %u", lib->abi_version()); free(lib); return NULL; }
     /* Optional: builds before many-worlds host one world per runtime. */
     lib->world_capacity=(uint32_t (*)(void))dlsym(handle, "bopl_rl_world_capacity");
     lib->fork=(BoplRl *(*)(const BoplRl *, BoplRl *))dlsym(handle, "bopl_rl_fork");
@@ -485,7 +485,7 @@ BoplRl *bopl_rl_open(const char *executable, const char *replay, const char *log
     uint32_t version;
     if (length!=140) { errno=EPROTO; fail(w, "Invalid RL handshake length"); goto cleanup; }
     memcpy(&version, w->buffer, 4);
-    if (version!=2) { errno=EPROTO; fail(w, "Unsupported RL protocol"); goto cleanup; }
+    if (version!=3) { errno=EPROTO; fail(w, "Unsupported RL protocol"); goto cleanup; }
     memcpy(w->source, w->buffer+4, 64); memcpy(w->catalog, w->buffer+68, 64);
     memcpy(&w->maps, w->buffer+132, 4); memcpy(&w->abilities, w->buffer+136, 4);
     error_text(error, capacity, ""); return w;

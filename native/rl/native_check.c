@@ -74,7 +74,7 @@ int main(int argc, char **argv)
     RESOLVE(close_fn, close)
 #undef RESOLVE
 
-    if (abi_version() != 2) { fprintf(stderr, "unexpected ABI version %u\n", abi_version()); return 1; }
+    if (abi_version() != 3) { fprintf(stderr, "unexpected ABI version %u\n", abi_version()); return 1; }
 
     /* Paths satisfy the shared argument contract; the in-process library only
      * uses the log path (its -logFile equivalent). */

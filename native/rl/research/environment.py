@@ -16,11 +16,13 @@ from reference import resolve_game
 class Player(C.Structure):
     _fields_ = [(name, C.c_uint32) for name in ('id','team','flags','alive_bodies','stocks','kills','deaths','cause_of_death')] + [(name,C.c_int64) for name in ('x','y','scale','invisible_time','ability_time')]
 class Entity(C.Structure):
-    _fields_ = [(name, C.c_uint32) for name in ('id','kind','layer','owner','flags','hierarchy','reserved0','reserved1')] + [(name,C.c_int64) for name in ('x','y','vx','vy','right_x','right_y','up_x','up_y','radius','rotation','angular_velocity','inverse_mass')]
+    _fields_ = [(name, C.c_uint32) for name in ('id','kind','layer','owner','flags','hierarchy','reserved0','reserved1')] + [(name,C.c_int64) for name in ('x','y','vx','vy','right_x','right_y','up_x','up_y','radius','rotation','angular_velocity','inverse_mass','clock_rate')]
 class Slime(C.Structure):
     _fields_ = [(name,C.c_uint32) for name in ('id','owner','flags','state')] + [(name,C.c_int64) for name in ('x','y','vx','vy','rotation','scale')] + [('abilities',C.c_uint32*3),('ability_flags',C.c_uint32*3),('cooldowns',C.c_int64*3),('timers',C.c_int64*3)]
 class Header(C.Structure):
-    _fields_ = [(name,C.c_uint32) for name in ('version','tick','episode_ticks','flags','player_count','entity_count','warmup_ticks','slime_count')] + [('simulation_time',C.c_int64),('player_time_scale',C.c_int64)]
+    _fields_ = ([(name,C.c_uint32) for name in ('version','tick','episode_ticks','flags','player_count','entity_count','warmup_ticks','slime_count')]
+                + [(name,C.c_int64) for name in ('simulation_time','player_time_scale','simulation_time_since_level_loaded')]
+                + [(name,C.c_uint32) for name in ('sudden_death','reserved')])
 class Telemetry(C.Structure):
     _fields_ = [(name,C.c_uint32) for name in EVENT_FIELDS]
 class State(C.Structure):

@@ -30,7 +30,7 @@ macro_rules! terrain {
 pub mod abi;
 pub mod data;
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 pub const MAP_COUNT: u32 = 5;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
 pub const ABILITY_COUNT: u32 = 39;
@@ -126,6 +126,8 @@ pub struct CEntity {
     pub rotation: i64,
     pub angular_velocity: i64,
     pub inverse_mass: i64,
+    /// Q32.32 nominal timer ticks consumed per simulation tick.
+    pub clock_rate: i64,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -158,6 +160,9 @@ pub struct CHeader {
     pub slime_count: u32,
     pub simulation_time: i64,
     pub player_time_scale: i64,
+    pub simulation_time_since_level_loaded: i64,
+    pub sudden_death: u32,
+    pub reserved: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -189,6 +194,10 @@ const E_ACTIVE: u32 = 1;
 const E_ENABLED: u32 = 2;
 const E_DESTROYED: u32 = 4;
 const E_TRIGGER: u32 = 8;
+const E_TIMER_KNOWN: u32 = 1 << 6;
+const E_PICKUP: u32 = 1 << 7;
+const E_PROJECTILE: u32 = 1 << 8;
+const E_CONTACT_DAMAGE_KNOWN: u32 = 1 << 14;
 /// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
 /// updatable are removed before the same pass's contacts and never observed;
 /// one destroyed by a collision callback is observed once, flagged
@@ -743,6 +752,7 @@ impl RolloutWorld {
                 // its trigger body in DetPhysics, but neither activeInHierarchy
                 // nor enabled is set; Ability receives its owner on first use.
                 flags: E_TRIGGER,
+                reserved: [ABILITY_PLATFORM, 0],
                 hierarchy: 100_000_030 + 30 * i as u32,
                 radius: data.platform.hurtbox_radius.raw(),
                 inverse_mass: -(1 << 32),
@@ -784,8 +794,18 @@ impl RolloutWorld {
                     flags: if body {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
                     } else {
-                        E_TRIGGER
+                        E_TRIGGER | E_CONTACT_DAMAGE_KNOWN
                     },
+                    reserved: [
+                        if offset == 1 {
+                            ABILITY_DASH
+                        } else if offset == 2 {
+                            ABILITY_BOW
+                        } else {
+                            0
+                        },
+                        0,
+                    ],
                     hierarchy: hier + 30 * i as u32,
                     right_x: extents.x.raw(),
                     up_y: extents.y.raw(),
@@ -2086,6 +2106,7 @@ impl RolloutWorld {
             layer: LAYER_WALL,
             owner: 0,
             flags: E_ACTIVE | E_ENABLED,
+            reserved: [ABILITY_PLATFORM, 0],
             hierarchy: 300_000_000 + id,
             inverse_mass: pd.spawn_body.inverse_mass.raw(),
             ..CEntity::default()
@@ -2336,7 +2357,8 @@ impl RolloutWorld {
                 kind: 0,
                 layer: LAYER_PROJECTILE,
                 owner: arrow.owner,
-                flags: E_ACTIVE | E_ENABLED,
+                flags: E_ACTIVE | E_ENABLED | E_PROJECTILE,
+                reserved: [ABILITY_BOW, 0],
                 hierarchy: 200_000_000 + arrow.id,
                 radius: radius.raw(),
                 inverse_mass: Fix::from_f64(0.2).raw(),
@@ -3019,6 +3041,13 @@ impl RolloutWorld {
             // and the RandomFix launch draw are not simulated: with two
             // players the drop ends the match.
             let pickup = &data::get().pickup;
+            let granted = slot
+                .abilities
+                .iter()
+                .rev()
+                .copied()
+                .find(|&ability| ability != 0)
+                .unwrap_or(0);
             let id = self.next_id();
             let position = drop_position + pickup.offset;
             self.entities.push(CEntity {
@@ -3026,12 +3055,14 @@ impl RolloutWorld {
                 kind: 0,
                 layer: pickup.layer,
                 owner: 0,
-                flags: E_ACTIVE,
+                flags: E_ACTIVE | E_TIMER_KNOWN | E_PICKUP,
+                reserved: [granted, 600],
                 hierarchy: 300_000_000 + id,
                 x: position.x.raw(),
                 y: position.y.raw(),
                 radius: pickup.radius.raw(),
                 inverse_mass: pickup.inverse_mass.raw(),
+                clock_rate: 1 << 32,
                 ..CEntity::default()
             });
         }
@@ -3192,6 +3223,7 @@ impl RolloutWorld {
             self.episode_ticks,
             self.warmup,
             flags,
+            self.sudden_death,
         );
         self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
@@ -3213,6 +3245,7 @@ impl RolloutWorld {
             self.episode_ticks,
             self.warmup,
             flags,
+            self.sudden_death,
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
@@ -3342,10 +3375,10 @@ impl RolloutWorld {
             let dash_box = &mut self.entities[dash_e];
             let dash_was_active = dash_box.flags & E_ACTIVE != 0;
             if alive && dashing {
-                dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN;
                 dash_box.owner = slot.base.id;
             } else {
-                dash_box.flags = E_ENABLED | E_TRIGGER;
+                dash_box.flags = E_ENABLED | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN;
             }
             // Ability.ExitAbility deactivates the body where it ended
             // (Ability.cs:151-152); that pass still syncs it.
@@ -3387,10 +3420,10 @@ impl RolloutWorld {
             let bow_box = &mut self.entities[bow_e];
             let bow_was_active = bow_box.flags & E_ACTIVE != 0;
             if alive && bowing {
-                bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN;
                 bow_box.owner = slot.base.id;
             } else {
-                bow_box.flags = E_ENABLED | E_TRIGGER;
+                bow_box.flags = E_ENABLED | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN;
             }
             if (alive && bowing) || bow_was_active {
                 let extents = data.bow.hurtbox_extents;
@@ -3418,16 +3451,16 @@ impl RolloutWorld {
             let circle_was_active = circle.flags & E_ACTIVE != 0;
             let transforming = alive && slot.active == ActiveAbility::Platform;
             if alive && anticipating {
-                circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN;
                 circle.owner = slot.base.id;
             } else if transforming {
-                circle.flags = E_ACTIVE | E_TRIGGER;
+                circle.flags = E_ACTIVE | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN;
                 circle.owner = slot.base.id;
             } else {
                 circle.flags = if slot.platform.hurtbox_disabled {
-                    E_TRIGGER
+                    E_TRIGGER | E_CONTACT_DAMAGE_KNOWN
                 } else {
-                    E_ENABLED | E_TRIGGER
+                    E_ENABLED | E_TRIGGER | E_CONTACT_DAMAGE_KNOWN
                 };
             }
             if transforming || circle_was_active {
@@ -3589,6 +3622,7 @@ impl RolloutWorld {
         episode_ticks: u32,
         warmup: u32,
         flags: u32,
+        sudden_death: bool,
     ) {
         state.header = CHeader {
             version: ABI_VERSION,
@@ -3601,6 +3635,9 @@ impl RolloutWorld {
             slime_count: slimes.len() as u32,
             simulation_time: (Fix::from_int(i64::from(tick)) * DT).raw(),
             player_time_scale: 1 << 32,
+            simulation_time_since_level_loaded: (Fix::from_int(i64::from(tick)) * DT).raw(),
+            sudden_death: u32::from(sudden_death),
+            reserved: 0,
         };
         for (i, slot) in players.iter().enumerate() {
             let mut player_flags = 0;

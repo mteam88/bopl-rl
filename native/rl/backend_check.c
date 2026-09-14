@@ -234,7 +234,7 @@ static int load_inproc(Backend *api, const char *path)
     RESOLVE(reset, reset) RESOLVE(step, step) RESOLVE(step_sampled, step_sampled) RESOLVE(state, state) RESOLVE(error, error)
     RESOLVE(map_count, map_count) RESOLVE(close, close)
 #undef RESOLVE
-    if (api->abi_version() != 2) { fprintf(stderr, "%s: ABI version %u\n", path, api->abi_version()); return -1; }
+    if (api->abi_version() != 3) { fprintf(stderr, "%s: ABI version %u\n", path, api->abi_version()); return -1; }
     return 0;
 }
 

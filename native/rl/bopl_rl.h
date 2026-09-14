@@ -6,12 +6,25 @@
 extern "C" {
 #endif
 
-/* Version 2, Linux little-endian hosts. Owns an isolated, persistent headless
+/* Version 3, Linux little-endian hosts. Owns an isolated, persistent headless
  * game process. All fixed-point values are signed Q32.32. Serialize calls for
  * one handle; separate handles can run concurrently. */
 typedef struct BoplRl BoplRl;
 enum BoplRlStatus { BOPL_RL_OK=0, BOPL_RL_ARGUMENT=1, BOPL_RL_IO=2, BOPL_RL_GAME_ERROR=3, BOPL_RL_ENDED=4 };
 enum BoplRlFlags { BOPL_RL_TERMINAL=1, BOPL_RL_TRUNCATED=2, BOPL_RL_STARTED=4, BOPL_RL_FAILED=8 };
+enum BoplRlEntityFlags {
+    BOPL_ENTITY_ACTIVE=1, BOPL_ENTITY_ENABLED=2, BOPL_ENTITY_DESTROYED=4,
+    BOPL_ENTITY_TRIGGER=8, BOPL_ENTITY_COMPOSITE=16, BOPL_ENTITY_DETACHED=32,
+    BOPL_ENTITY_TIMER_KNOWN=64, BOPL_ENTITY_PICKUP=128, BOPL_ENTITY_PROJECTILE=256,
+    BOPL_ENTITY_SPARK_NODE=512, BOPL_ENTITY_FLAMMABLE_SMOKE=1024,
+    BOPL_ENTITY_EXPLOSIVE=2048, BOPL_ENTITY_HITBOX=4096,
+    BOPL_ENTITY_CONTACT_DAMAGE=8192, BOPL_ENTITY_CONTACT_DAMAGE_KNOWN=16384
+};
+enum BoplRlSlimeFlags {
+    BOPL_SLIME_ACTIVE=1, BOPL_SLIME_SPAWNED=2, BOPL_SLIME_IN_ABILITY=4,
+    BOPL_SLIME_SUPPRESS_INPUT=8, BOPL_SLIME_SIMULATED=16, BOPL_SLIME_ABILITYLESS=32,
+    BOPL_SLIME_PICKUP_SLOT_SHIFT=6, BOPL_SLIME_PICKUP_SLOT_MASK=3
+};
 typedef struct { uint8_t angle, reserved; uint16_t buttons; } BoplRlAction;
 /* angle: 0 neutral, 1..255 directional. buttons: jump=1, abilities=2/4/8,
  * start=16, select=32, W/A/S/D=64/128/256/512. reserved must be zero. */
@@ -26,8 +39,10 @@ typedef struct {
     int64_t x, y, scale, invisible_time, ability_time;
 } BoplRlPlayer;
 typedef struct {
+    /* reserved[0]: source/granted ability id. reserved[1]: nominal ticks to
+     * the next event when BOPL_ENTITY_TIMER_KNOWN is set. */
     uint32_t id, kind, layer, owner, flags, hierarchy, reserved[2];
-    int64_t x, y, vx, vy, right_x, right_y, up_x, up_y, radius, rotation, angular_velocity, inverse_mass;
+    int64_t x, y, vx, vy, right_x, right_y, up_x, up_y, radius, rotation, angular_velocity, inverse_mass, clock_rate;
 } BoplRlEntity;
 typedef struct {
     uint32_t id, owner, flags, state;
@@ -38,6 +53,8 @@ typedef struct {
 typedef struct {
     uint32_t version, tick, episode_ticks, flags, player_count, entity_count, warmup_ticks, slime_count;
     int64_t simulation_time, player_time_scale;
+    int64_t simulation_time_since_level_loaded;
+    uint32_t sudden_death, reserved;
 } BoplRlHeader;
 /* Episode-cumulative event counters, excluding warmup. Research telemetry only;
  * not policy observations. Deaths follow the game's credited killer. */
