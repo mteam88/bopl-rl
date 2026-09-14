@@ -11,7 +11,9 @@ static void checked(cudaError_t result);
 
 // BOPL_CHECK_SMS=<n>: run the harness stream in a CUDA green context of n SMs
 // (the trainer's 16-SM training partition) so timings match the trainer.
+static cudaStream_t g_check_stream=nullptr;
 static cudaStream_t check_make_stream() {
+    if(g_check_stream) return g_check_stream;
     const char* sms=getenv("BOPL_CHECK_SMS");
     if(sms && atoi(sms)>0) {
         CUdevice dev; CUdevResource all, part, rest; unsigned groups=1; CUdevResourceDesc desc; CUgreenCtx green;
@@ -23,12 +25,12 @@ static cudaStream_t check_make_stream() {
             CUstream s;
             if(cuGreenCtxStreamCreate(&s,green,CU_STREAM_NON_BLOCKING,0)==CUDA_SUCCESS) {
                 fprintf(stderr,"check_set_encoder: %u-SM green context\n",part.sm.smCount);
-                return (cudaStream_t)s;
+                return g_check_stream=(cudaStream_t)s;
             }
         }
         throw std::runtime_error("BOPL_CHECK_SMS: green context creation failed");
     }
-    cudaStream_t s; checked(cudaStreamCreateWithFlags(&s,cudaStreamNonBlocking)); return s;
+    checked(cudaStreamCreateWithFlags(&g_check_stream,cudaStreamNonBlocking)); return g_check_stream;
 }
 
 static void checked(cudaError_t result) {
@@ -51,7 +53,9 @@ struct SetCheck {
         if(graph) cudaGraphDestroy(graph);
         alloc_free(&params); alloc_free(&activations); alloc_free(&gradients);
         if(obs_tb) cudaFree(obs_tb); if(idx) cudaFree(idx);
-        if(stream) cudaStreamDestroy(stream);
+        // cublas_get_handle caches handles by stream. All short-lived check
+        // contexts therefore share one process-lifetime stream rather than
+        // leaving a cached handle pointing at a destroyed stream.
     }
     void pass() {
         bs_forward(&weights,&acts,obs,stream);
@@ -74,6 +78,10 @@ extern "C" void* bopl_set_check_create(int batch, int hidden) {
         check->obs={.shape={batch,BS_OBS}}; check->incoming={.shape={batch,hidden}};
         alloc_register(&check->activations,&check->obs); alloc_register(&check->activations,&check->incoming);
         checked(alloc_create(&check->params)); checked(alloc_create(&check->activations)); checked(alloc_create(&check->gradients));
+        // alloc_create zeroes through the default stream. The check stream is
+        // non-blocking, so make allocation initialization visible before its
+        // first H2D copies and kernels.
+        checked(cudaDeviceSynchronize());
         if(check->params.total_bytes!=check->gradients.total_bytes)
             throw std::runtime_error("Weight and gradient layout differ");
         check->stream=check_make_stream();
