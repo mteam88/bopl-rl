@@ -111,6 +111,116 @@ def bradley_terry(names,records,anchor):
     return {name:ratings[i]*ELO_SCALE for name,i in index.items()}
 
 
+def bradley_terry_fit(names, records, anchor, virtual_draw=.5, ridge=1e-6):
+    """Vectorized MLE + Wald 95% CI, same model as bradley_terry.
+
+    One virtual draw (virtual_draw wins each way) per played pair, independent
+    of the real game count: a 480-game pair is barely moved, a 6-game pair
+    stays finite. Sparse Newton (scipy) converges the joint MLE; Wald intervals
+    use the diagonal of the observed information so a few-thousand-player fit
+    stays off the dense n^3 inverse. Full dense inversion is used only when
+    n is small enough that the off-diagonal terms are cheap.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import spsolve
+
+    names = list(names)
+    index = {name: i for i, name in enumerate(names)}
+    empty = {name: 0.0 for name in names}
+    empty_ci = {name: [0.0, 0.0] for name in names}
+    if anchor not in index:
+        return dict(ratings=empty, intervals=empty_ci, iterations=0, ci='none')
+    rows = []
+    for (a, b), (wa, wb, d) in records.items():
+        if a not in index or b not in index or a == b:
+            continue
+        if wa + wb + d <= 0:
+            continue
+        rows.append((index[a], index[b], wa + d / 2 + virtual_draw, wb + d / 2 + virtual_draw))
+    n = len(names)
+    if not rows:
+        return dict(ratings=empty, intervals=empty_ci, iterations=0, ci='none')
+    a_idx = np.array([row[0] for row in rows], dtype=np.int32)
+    b_idx = np.array([row[1] for row in rows], dtype=np.int32)
+    score_a = np.array([row[2] for row in rows], dtype=np.float64)
+    score_b = np.array([row[3] for row in rows], dtype=np.float64)
+    games = score_a + score_b
+    ratings = np.zeros(n)
+    ai = index[anchor]
+    keep = np.array([i for i in range(n) if i != ai], dtype=np.int32)
+    remap = np.full(n, -1, dtype=np.int32)
+    remap[keep] = np.arange(len(keep), dtype=np.int32)
+    m = len(keep)
+
+    def expected_and_gradient(values):
+        expected = 1 / (1 + np.exp(np.clip(values[b_idx] - values[a_idx], -40, 40)))
+        ga = score_a - games * expected
+        gb = score_b - games * (1 - expected)
+        gradient = np.bincount(a_idx, ga, minlength=n) + np.bincount(b_idx, gb, minlength=n)
+        gradient[ai] = 0.0
+        return expected, gradient
+
+    def information(expected):
+        weight = games * expected * (1 - expected)
+        rows_i = np.concatenate([a_idx, b_idx, a_idx, b_idx, keep])
+        cols_i = np.concatenate([a_idx, b_idx, b_idx, a_idx, keep])
+        data = np.concatenate([weight, weight, -weight, -weight, np.full(m, ridge)])
+        ok = (remap[rows_i] >= 0) & (remap[cols_i] >= 0)
+        return coo_matrix(
+            (data[ok], (remap[rows_i[ok]], remap[cols_i[ok]])), shape=(m, m)
+        ).tocsr(), weight
+
+    iterations = 0
+    expected, gradient = expected_and_gradient(ratings)
+    for iterations in range(1, 41):
+        info, _ = information(expected)
+        try:
+            step = spsolve(info, gradient[keep])
+        except Exception:
+            player_games = np.bincount(a_idx, games, minlength=n) + np.bincount(b_idx, games, minlength=n)
+            step = gradient[keep] * (2 / max(1.0, float(player_games.max())))
+        if np.max(np.abs(step)) < 1e-10:
+            ratings[keep] += step
+            ratings -= ratings[ai]
+            break
+        # Damped if a Newton step would explode (first steps on a flat start).
+        scale = 1.0
+        peak = float(np.max(np.abs(step)))
+        if peak > 8:
+            scale = 8 / peak
+        ratings[keep] += step * scale
+        ratings -= ratings[ai]
+        expected, gradient = expected_and_gradient(ratings)
+        if np.max(np.abs(gradient)) < 1e-8:
+            break
+    expected, gradient = expected_and_gradient(ratings)
+    info, weight = information(expected)
+    se = np.zeros(n)
+    ci_method = 'wald-diag'
+    diag = np.bincount(a_idx, weight, minlength=n) + np.bincount(b_idx, weight, minlength=n)
+    se[keep] = 1 / np.sqrt(np.maximum(diag[keep] + ridge, 1e-18))
+    if m <= 400:
+        try:
+            dense = info.toarray()
+            cov = np.linalg.inv(dense)
+            se[keep] = np.sqrt(np.maximum(np.diag(cov), 0.0))
+            ci_method = 'wald'
+        except np.linalg.LinAlgError:
+            pass
+    z = 1.959963984540054
+    elo = ratings * ELO_SCALE
+    lo = (ratings - z * se) * ELO_SCALE
+    hi = (ratings + z * se) * ELO_SCALE
+    lo[ai] = 0.0
+    hi[ai] = 0.0
+    return dict(
+        ratings={name: float(elo[i]) for name, i in index.items()},
+        intervals={name: [float(lo[i]), float(hi[i])] for name, i in index.items()},
+        iterations=iterations,
+        ci=ci_method,
+    )
+
+
 def bradley_terry_fixed(records,ratings,virtual_draw=.5):
     """MLE Elo of one candidate against opponents whose ratings stay fixed.
 
