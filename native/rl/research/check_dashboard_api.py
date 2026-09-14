@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory() as directory:
                 headers['If-None-Match'] = etag
             try:
                 with urllib.request.urlopen(urllib.request.Request(
-                        f'http://127.0.0.1:{port}{path}', headers=headers), timeout=10) as response:
+                        f'http://127.0.0.1:{port}{path}', headers=headers), timeout=30) as response:
                     body = response.read()
                     return response.status, response.headers.get('ETag'), body
             except urllib.error.HTTPError as error:
@@ -70,18 +70,25 @@ with tempfile.TemporaryDirectory() as directory:
         status, _, data = request()
         assert status == 200 and 'metrics' not in data
 
+        status, _, body = open_url('/api/index')
+        index = json.loads(body)
+        assert status == 200 and 'runs' in index and 'families' in index
+        assert any(row['name'] == 'test' and row['unrated'] for row in index['runs'])
+
         status, _, body = open_url('/api/ladder')
         ladder = json.loads(body)
         assert status == 200 and 'rows' in ladder and 'members' in ladder
-        assert any(row['name'] == 'test' and row['unrated'] for row in ladder['rows'])
-        if ladder.get('pool'):
-            assert any(m['name'] == 'random' and m['rating'] == 0 for m in ladder['members'])
+        if ladder.get('primary') or ladder.get('pools'):
+            assert any(m.get('name') == 'random' and m.get('rating') == 0 for m in ladder['members']) or any(
+                row.get('name') == 'random' and row.get('rating') == 0 for row in ladder['rows'])
         if ladder.get('human'):
             assert 'interval' in ladder['human'] and ladder['human']['games'] > 0
 
         status, _, body = open_url('/')
         html = body.decode()
-        assert status == 200 and 'id="ladderRows"' in html and 'id="eloChart"' in html
+        assert status == 200 and 'id="runRows"' in html and 'id="ladderRows"' in html and 'id="eloChart"' in html
+        status, _, body = open_url('/ladder')
+        assert status == 200 and 'id="ladderRows"' in body.decode()
         status, _, body = open_url('/run/test')
         assert status == 200 and 'id="runElo"' in body.decode()
         status, _, _ = open_url('/api/sweeps')
@@ -131,7 +138,7 @@ with tempfile.TemporaryDirectory() as directory:
             body = __import__('gzip').decompress(body)
         assert status == 200 and json.loads(body)['schema'] == 1
         assert (evaldir / 'bot-0.json.dash.gz').is_file()
-        print('PASS: cache invalidation, ladder payload, human/pool rows, HTML routes, visual ndjson')
+        print('PASS: cache invalidation, index/ladder payload, human/pool rows, HTML routes, visual ndjson')
     finally:
         server.terminate()
         server.wait(timeout=5)

@@ -71,20 +71,34 @@ await call("browsingContext.navigate", { context, url, wait: "complete" });
 consoleErrors.length = 0;
 for (let i = 0; i < 40; i++) {
   await sleep(250);
-  if (await evaluate("document.querySelectorAll('#ladderRows tr').length > 0")) break;
+  if (await evaluate("document.querySelectorAll('#runRows tr').length > 0")) break;
 }
 const loaded = await evaluate(`({
+  rows: document.querySelectorAll('#runRows tr').length,
+  families: document.querySelectorAll('#families .family').length,
+  wide: document.documentElement.scrollWidth > innerWidth,
+  tag: document.querySelector('#indexTag')?.textContent ?? null
+})`);
+if (!loaded.rows || loaded.wide) throw Error("Index load failed: " + JSON.stringify(loaded));
+await screenshot(out + "/dashboard-index.png");
+
+const ladderUrl = new URL("/ladder", url).href;
+await call("browsingContext.navigate", { context, url: ladderUrl, wait: "complete" });
+for (let i = 0; i < 40; i++) {
+  await sleep(250);
+  if (await evaluate("document.querySelectorAll('#ladderRows tr').length > 0")) break;
+}
+const ladderLoaded = await evaluate(`({
   rows: document.querySelectorAll('#ladderRows tr').length,
   human: [...document.querySelectorAll('#ladderRows tr')].some(r => r.classList.contains('human')),
-  pool: [...document.querySelectorAll('#ladderRows tr')].some(r => r.classList.contains('pool')),
   wide: document.documentElement.scrollWidth > innerWidth,
   tag: document.querySelector('#ladderTag')?.textContent ?? null
 })`);
-if (!loaded.rows || loaded.wide) throw Error("Ladder load failed: " + JSON.stringify(loaded));
+if (!ladderLoaded.rows || ladderLoaded.wide) throw Error("Ladder load failed: " + JSON.stringify(ladderLoaded));
 
 const runHref = await evaluate(`[...document.querySelectorAll('#ladderRows a')].map(a => a.getAttribute('href')).find(h => h && h.startsWith('/run/')) ?? null`);
 await run("document.querySelector('#sort').value='name'; document.querySelector('#sort').dispatchEvent(new Event('change'));");
-const names = await evaluate("[...document.querySelectorAll('#ladderRows tr:not(.group)')].slice(0,5).map(r => r.children[0].textContent)");
+const names = await evaluate("[...document.querySelectorAll('#ladderRows tr')].slice(0,5).map(r => r.children[1]?.textContent)");
 await screenshot(out + "/dashboard-ladder.png");
 let runView = null;
 if (runHref) {
@@ -129,7 +143,7 @@ await viewport(390, 844);
 await call("browsingContext.navigate", { context, url, wait: "complete" });
 for (let i = 0; i < 40; i++) {
   await sleep(250);
-  if (await evaluate("document.querySelectorAll('#ladderRows tr').length > 0")) break;
+  if (await evaluate("document.querySelectorAll('#runRows tr').length > 0")) break;
 }
 const overflow = await evaluate("document.documentElement.scrollWidth > innerWidth");
 if (overflow) throw Error("Mobile horizontal overflow");
@@ -140,6 +154,7 @@ if (pageErrors.length) throw Error("Browser errors: " + JSON.stringify(pageError
 console.log(JSON.stringify({
   status: "DASHBOARD_OK",
   loaded,
+  ladderLoaded,
   names,
   runView,
   sweepView,

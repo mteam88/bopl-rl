@@ -2,16 +2,17 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const colors = ["#d6ff32", "#3ee0c5", "#ff7a45", "#9ec0ff", "#ff5d73", "#b6e05a"];
-  const openSweeps = new Set();
-  let ladder = null, data = null, sweep = null;
+  let ladder = null, index = null, data = null, sweep = null;
   let selectedEvaluation = null, selectedGame = null, replay = null;
-  let playing = false, frameIndex = 0, lastTick = 0, view = "ladder";
+  let playing = false, frameIndex = 0, lastTick = 0, view = "index";
+  let familyFilter = "";
 
   function route() {
     const path = location.pathname;
     if (path.startsWith("/run/")) return { view: "run", name: decodeURIComponent(path.slice(5)) };
     if (path.startsWith("/sweep/")) return { view: "sweep", name: decodeURIComponent(path.slice(7)) };
-    return { view: "ladder" };
+    if (path.startsWith("/ladder")) return { view: "ladder" };
+    return { view: "index" };
   }
   function fmt(n, d = 0) {
     return n == null || Number.isNaN(n) ? "—" : Number(n).toFixed(d);
@@ -21,12 +22,22 @@
     if (!interval) return "—";
     return `${elo(interval[0])}–${elo(interval[1])}`;
   }
+  function wld(row) {
+    if (row.wins == null) return "—";
+    return `${row.wins}–${row.losses}–${row.draws}`;
+  }
+  function poolScore(row, label) {
+    return (row.pools || []).find((p) => p.label === label);
+  }
   const mem = new Map();
   const inflight = new Map();
   let loadToken = 0, replayLoading = false;
   function apply(url, payload) {
     const r = route();
-    if (url === "/api/ladder" && r.view === "ladder") {
+    if (url === "/api/index" && r.view === "index") {
+      index = payload;
+      renderIndex();
+    } else if (url === "/api/ladder" && r.view === "ladder") {
       ladder = payload;
       renderLadder();
     } else if (r.view === "run" && url === `/api/run/${encodeURIComponent(r.name)}`) {
@@ -110,26 +121,6 @@
     const s = Math.max(0, Math.floor(seconds));
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
-  function spark(canvas, points) {
-    const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(r.width * dpr));
-    canvas.height = Math.max(1, Math.round(r.height * dpr));
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    const w = r.width, h = r.height;
-    if (!points || points.length < 2) return;
-    const xs = points.map((p) => p.steps), ys = points.map((p) => p.rating);
-    const x0 = Math.min(...xs), x1 = Math.max(...xs) || 1;
-    const y0 = Math.min(...ys), y1 = Math.max(...ys);
-    const pad = 2;
-    const x = (v) => pad + ((w - 2 * pad) * (v - x0)) / (x1 - x0 || 1);
-    const y = (v) => h - pad - ((h - 2 * pad) * (v - y0)) / (y1 - y0 || 1);
-    ctx.strokeStyle = "#d6ff32";
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    points.forEach((p, i) => (i ? ctx.lineTo(x(p.steps), y(p.rating)) : ctx.moveTo(x(p.steps), y(p.rating))));
-    ctx.stroke();
-  }
   function chart(canvas, series, opts = {}) {
     const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
     canvas.width = Math.max(1, Math.round(r.width * dpr));
@@ -149,7 +140,7 @@
     const y = (v) => top + ((h - top - bottom) * (1 - (v - y0) / (y1 - y0 || 1)));
     ctx.strokeStyle = "#262b33";
     ctx.fillStyle = "#8b9283";
-    ctx.font = '10px ui-monospace, monospace';
+    ctx.font = "10px ui-monospace, monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     for (const t of [y0, (y0 + y1) / 2, y1]) {
@@ -157,8 +148,6 @@
       ctx.fillText(t.toFixed(0), left - 6, y(t));
     }
     if (secondary.length) {
-      // A cheaper, differently-sourced estimate (in-run bots-only fits): dashed and dim,
-      // so a source switch along the curve is not read as a jump in strength.
       ctx.strokeStyle = "#8b9283";
       ctx.lineWidth = 1.2;
       ctx.setLineDash([4, 4]);
@@ -194,15 +183,143 @@
 
   function show(name) {
     view = name;
+    $("indexView").hidden = name !== "index";
     $("ladderView").hidden = name !== "ladder";
     $("runView").hidden = name !== "run";
     $("sweepView").hidden = name !== "sweep";
-    document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === (name === "run" ? "ladder" : name)));
+    document.querySelectorAll("nav a").forEach((a) => {
+      const nav = a.dataset.nav;
+      a.classList.toggle("active", nav === name || (name === "run" && nav === "index"));
+    });
+  }
+
+  function live() {
+    $("connectionBox").classList.add("online");
+    $("connection").textContent = "Live";
+    $("updated").textContent = new Date().toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  function setSweepNav(name) {
+    if (!name) {
+      const first = (index?.families || []).find((f) => f.sweep) || (index?.runs || []).find((r) => r.sweep);
+      name = first?.sweep || first?.name;
+    }
+    $("sweepNav").hidden = !name;
+    if (name) $("sweepNav").href = `/sweep/${encodeURIComponent(name)}`;
+  }
+
+  function renderIndex() {
+    show("index");
+    if (!index) return;
+    const runs = index.runs || [];
+    const families = index.families || [];
+    const stats = index.joint?.stats;
+    $("indexIdentity").innerHTML = [
+      `<b>runs</b> ${runs.length}`,
+      `<b>families</b> ${families.length}`,
+      stats ? `<b>joint</b> ${stats.participants} players · ${stats.games} games · ${fmt(stats.elapsed, 2)}s` : "<b>joint</b> fitting…",
+      (index.pools || []).map((p) => `<b>pool ${p.label}</b> ${p.sha8}`).join("<br>"),
+    ].filter(Boolean).join("<br>");
+    const famSel = $("filterFamily");
+    const keep = famSel.value;
+    famSel.replaceChildren(new Option("All", ""));
+    for (const f of families) famSel.append(new Option(`${f.name} (${f.count})`, f.name));
+    famSel.value = keep || familyFilter;
+    $("families").replaceChildren(...families.map((f) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "family" + ((familyFilter === f.name) ? " active" : "");
+      b.innerHTML = `<span class="kind">${f.kind}</span><b>${f.name}</b><span>${f.count} runs · ${f.rated} rated${f.running ? ` · ${f.running} live` : ""}</span>`;
+      b.onclick = () => {
+        familyFilter = familyFilter === f.name ? "" : f.name;
+        $("filterFamily").value = familyFilter;
+        renderIndex();
+      };
+      return b;
+    }));
+    const q = ($("runSearch").value || "").trim().toLowerCase();
+    const status = $("filterStatus").value;
+    const rating = $("filterRating").value;
+    const fam = $("filterFamily").value || familyFilter;
+    const sort = $("runSort").value;
+    const items = runs.filter((row) => {
+      if (fam && row.family !== fam && row.sweep !== fam && row.name !== fam) return false;
+      if (status === "other" && ["running", "complete", "interrupted"].includes(row.status)) return false;
+      if (status && status !== "other" && row.status !== status) return false;
+      if (rating === "joint" && !row.joint) return false;
+      if (rating === "v6" && !poolScore(row, "v6")) return false;
+      if (rating === "v5" && !poolScore(row, "v5")) return false;
+      if (rating === "none" && row.has_rating) return false;
+      if (q) {
+        const blob = [row.name, row.family, row.sweep, row.status, ...(row.flags || [])].join(" ").toLowerCase();
+        if (!blob.includes(q)) return false;
+      }
+      return true;
+    });
+    const val = (row) => {
+      if (sort === "name") return row.name;
+      if (sort === "steps") return row.steps ?? -1;
+      if (sort === "updated") return row.updated ?? 0;
+      if (sort === "v6") return poolScore(row, "v6")?.rating ?? -1e9;
+      if (sort === "v5") return poolScore(row, "v5")?.rating ?? -1e9;
+      return row.joint?.rating ?? -1e9;
+    };
+    items.sort((a, b) => sort === "name" ? String(a.name).localeCompare(b.name) : val(b) - val(a));
+    $("indexTag").textContent = `${items.length} / ${runs.length} runs`;
+    const body = $("runRows");
+    body.replaceChildren();
+    for (const row of items) {
+      const tr = document.createElement("tr");
+      if (row.unrated) tr.className = "unrated";
+      const name = document.createElement("td");
+      const a = document.createElement("a");
+      a.href = `/run/${encodeURIComponent(row.name)}`;
+      a.textContent = row.name;
+      name.append(a);
+      const family = document.createElement("td");
+      family.className = "wide";
+      if (row.sweep) {
+        const s = document.createElement("a");
+        s.href = `/sweep/${encodeURIComponent(row.sweep)}`;
+        s.textContent = row.sweep;
+        family.append(s);
+      } else family.textContent = row.family || "—";
+      const st = document.createElement("td");
+      st.textContent = row.status || "—";
+      const steps = document.createElement("td");
+      steps.className = "num";
+      steps.textContent = row.steps == null ? "—" : Number(row.steps).toLocaleString();
+      const joint = document.createElement("td");
+      joint.className = "num";
+      joint.textContent = row.joint ? elo(row.joint.rating) : "—";
+      const v6 = document.createElement("td");
+      v6.className = "num wide";
+      v6.textContent = poolScore(row, "v6") ? elo(poolScore(row, "v6").rating) : "—";
+      const v5 = document.createElement("td");
+      v5.className = "num wide";
+      v5.textContent = poolScore(row, "v5") ? elo(poolScore(row, "v5").rating) : "—";
+      const banks = document.createElement("td");
+      banks.className = "wide";
+      const share = (row.share_min != null || row.share_max != null)
+        ? `${fmt(row.share_min, 2)}–${fmt(row.share_max, 2)}`
+        : "—";
+      banks.textContent = `${row.scripted_banks ?? "—"} / ${share}`;
+      const flags = document.createElement("td");
+      flags.className = "flags";
+      for (const f of row.flags || []) {
+        const s = document.createElement("span"); s.textContent = f; s.className = "warn"; flags.append(s);
+      }
+      tr.append(name, family, st, steps, joint, v6, v5, banks, flags);
+      body.append(tr);
+    }
+    $("indexNote").textContent = "Joint Elo is the last well-played checkpoint on the joint fit (random = 0). Pool v5 / v6 columns are IQM3 on that frozen pool and are not comparable to each other or to joint Elo.";
+    setSweepNav();
+    live();
   }
 
   function kindClass(row) {
-    if (row.kind === "pool") return "pool";
     if (row.kind === "human") return "human";
+    if (row.kind === "scripted" || row.kind === "random") return row.kind;
     if (row.unrated) return "unrated";
     return "";
   }
@@ -210,111 +327,96 @@
   function renderLadder() {
     show("ladder");
     if (!ladder) return;
-    const pool = ladder.pool || {};
-    $("poolIdentity").innerHTML = pool.sha8
-      ? `<b>pool</b> ${pool.sha8}<br><b>sim</b> ${(pool.sim_sha256 || "").slice(0, 8)}<br><b>maps</b> ${(pool.maps || []).join(",")}${
-          (ladder.human && ladder.human.caveats)
-            ? "<br><b>human</b> " + ladder.human.caveats.join(" ")
-            : ""}`
-      : "No pool registered (--pool)";
-    $("ladderTag").textContent = `${(ladder.rows || []).length} runs · ${(ladder.members || []).length} members`;
-    const hidePool = $("hidePool").checked;
+    const stats = ladder.stats || {};
+    $("poolIdentity").innerHTML = [
+      stats.participants != null ? `<b>players</b> ${stats.participants}` : "",
+      stats.games != null ? `<b>games</b> ${stats.games}` : "",
+      stats.pairs != null ? `<b>pairs</b> ${stats.pairs}` : "",
+      stats.elapsed != null ? `<b>fit</b> ${fmt(stats.elapsed, 2)}s · ${stats.iterations} iter · ${stats.ci}` : "",
+      `<b>anchor</b> random = 0`,
+      `<b>prior</b> 1 virtual draw / pair`,
+      (ladder.pools || []).map((p) => `<b>pool ${p.label}</b> ${p.sha8}`).join("<br>"),
+      ladder.building ? "<b>status</b> fitting…" : "",
+      ladder.error ? `<b>error</b> ${ladder.error}` : "",
+    ].filter(Boolean).join("<br>");
+    const hideBots = $("hideBots").checked;
+    const allCkpt = $("allCheckpoints").checked;
     const sort = $("sort").value;
-    const items = [];
-    for (const m of ladder.members || []) {
-      if (hidePool && m.kind === "pool") continue;
-      items.push(m);
+    let items = (ladder.rows || []).slice();
+    if (!allCkpt) {
+      const best = new Map();
+      const kept = [];
+      for (const row of items) {
+        if (row.kind !== "checkpoint" || !row.run) {
+          kept.push(row);
+          continue;
+        }
+        const prev = best.get(row.run);
+        if (!prev || (row.games || 0) > (prev.games || 0) ||
+            ((row.games || 0) === (prev.games || 0) && (row.steps || 0) > (prev.steps || 0))) {
+          best.set(row.run, row);
+        }
+      }
+      items = [...kept, ...best.values()];
     }
-    const bySweep = {};
-    for (const row of ladder.rows || []) {
-      if (row.sweep) (bySweep[row.sweep] ||= []).push(row);
-      else items.push(row);
-    }
-    const cmp = (a, b) => {
+    if (hideBots) items = items.filter((row) => row.kind !== "scripted");
+    items.sort((a, b) => {
       if (sort === "name") return String(a.name).localeCompare(String(b.name));
       if (sort === "kind") return String(a.kind).localeCompare(String(b.kind)) || (b.rating || -1e9) - (a.rating || -1e9);
+      if (sort === "games") return (b.games || 0) - (a.games || 0);
       return (b.rating ?? -1e9) - (a.rating ?? -1e9);
-    };
-    items.sort(cmp);
+    });
+    $("ladderTag").textContent = `${items.length} shown · ${(ladder.rows || []).length} fitted`;
     const body = $("ladderRows");
     body.replaceChildren();
-    const addRow = (row, href) => {
+    items.forEach((row, i) => {
       const tr = document.createElement("tr");
-      tr.className = [kindClass(row), row.game_mismatch ? "mismatch" : ""].join(" ");
+      tr.className = kindClass(row);
+      const rank = document.createElement("td");
+      rank.className = "num";
+      rank.textContent = String(row.rank ?? i + 1);
       const name = document.createElement("td");
-      if (href) {
+      if (row.run) {
         const a = document.createElement("a");
-        a.href = href; a.textContent = row.name;
+        a.href = `/run/${encodeURIComponent(row.run)}`;
+        a.textContent = row.name;
         name.append(a);
       } else name.textContent = row.name;
       const kind = document.createElement("td");
-      kind.textContent = row.member_kind || row.kind;
+      kind.className = "wide";
+      kind.textContent = row.kind || "";
       const rating = document.createElement("td");
       rating.className = "num";
-      rating.textContent = row.unrated ? "unrated" : elo(row.rating);
+      rating.textContent = elo(row.rating);
       const interval = document.createElement("td");
-      interval.className = "num";
-      if (row.unrated) {
-        interval.className = "num cmd-cell";
-        interval.textContent = row.rate_command || "unrated on v5";
-      } else interval.textContent = ci(row.interval);
-      const sparkTd = document.createElement("td");
-      if (row.spark && row.spark.length > 1) {
-        const c = document.createElement("canvas");
-        c.className = "spark";
-        sparkTd.append(c);
-        requestAnimationFrame(() => spark(c, row.spark));
-      }
-      const flags = document.createElement("td");
-      flags.className = "flags";
-      for (const f of row.flags || []) {
-        const s = document.createElement("span"); s.textContent = f; s.className = "warn"; flags.append(s);
-      }
-      tr.append(name, kind, rating, interval, sparkTd, flags);
+      interval.className = "num wide";
+      interval.textContent = ci(row.interval);
+      const rec = document.createElement("td");
+      rec.className = "num";
+      rec.textContent = wld(row);
+      const games = document.createElement("td");
+      games.className = "num wide";
+      games.textContent = row.games == null ? "—" : String(row.games);
+      tr.append(rank, name, kind, rating, interval, rec, games);
       body.append(tr);
-    };
-    for (const row of items) {
-      const href = row.kind === "run" || row.kind === "sweep-trial" ? `/run/${encodeURIComponent(row.name)}` : null;
-      addRow(row, href);
+    });
+    const human = ladder.human;
+    $("humanPanel").hidden = !human;
+    if (human) {
+      $("humanLede").textContent = `Matthew  ${elo(human.rating)}  ${ci(human.interval)}  ·  ${wld(human)} in ${human.games} games (excluded rounds dropped).`;
+      $("humanRows").replaceChildren(...(human.records || []).map((rec) => {
+        const tr = document.createElement("tr");
+        const href = rec.id && rec.id.length === 64
+          ? (ladder.rows || []).find((r) => r.id === rec.id)?.run
+          : null;
+        tr.innerHTML = `<td>${href ? `<a href="/run/${encodeURIComponent(href)}">${rec.name}</a>` : rec.name}</td><td class="num">${rec.wins}–${rec.losses}–${rec.draws}</td><td class="num">${rec.games}</td>`;
+        return tr;
+      }));
     }
-    for (const [sweepName, rows] of Object.entries(bySweep).sort()) {
-      const group = document.createElement("tr");
-      group.className = "group";
-      const cell = document.createElement("td");
-      cell.colSpan = 6;
-      cell.textContent = `sweep ${sweepName} · ${rows.length} trials`;
-      group.append(cell);
-      body.append(group);
-      const kids = rows.slice().sort(cmp);
-      group.onclick = () => {
-        const open = !group.classList.contains("open");
-        group.classList.toggle("open", open);
-        if (open) openSweeps.add(sweepName); else openSweeps.delete(sweepName);
-        if (!open) {
-          kids.forEach((row) => { if (row._tr) row._tr.hidden = true; });
-          return;
-        }
-        if (kids[0]._tr) {
-          kids.forEach((row) => { row._tr.hidden = false; });
-          return;
-        }
-        let after = group;
-        for (const row of kids) {
-          addRow(row, `/run/${encodeURIComponent(row.name)}`);
-          row._tr = body.lastElementChild;
-          after.after(row._tr);
-          after = row._tr;
-        }
-      };
-      if (openSweeps.has(sweepName)) group.click();
-    }
-    $("ladderNote").textContent = "Pool members are frozen. Runs show IQM of the last 3 rated evaluation checkpoints. Unrated rows need the one-line rate-runs command (hover the CI). ≠sim means the games were not played on the pool's sim.";
-    $("connectionBox").classList.add("online");
-    $("connection").textContent = "Live";
-    $("updated").textContent = new Date().toISOString().replace("T", " ").slice(0, 19);
-    const firstSweep = (ladder.rows || []).find((r) => r.sweep);
-    $("sweepNav").hidden = !firstSweep;
-    if (firstSweep) $("sweepNav").href = `/sweep/${encodeURIComponent(firstSweep.sweep)}`;
+    $("ladderNote").textContent = "Joint MLE, random pinned at 0, one virtual draw per played pair. 95% CI is a diagonal Wald interval on the observed information — not a pool-v5 or pool-v6 number.";
+    const firstSweep = (index?.families || []).find((f) => f.sweep)?.sweep;
+    setSweepNav(firstSweep);
+    live();
   }
 
   function renderWinTable() {
@@ -336,47 +438,72 @@
     }
   }
 
+  function selectedPool() {
+    const sha8 = $("poolPick").value;
+    return (data?.pools || []).find((p) => p.sha8 === sha8) || (data?.pools || [])[0];
+  }
+
   function renderRun() {
     show("run");
     if (!data) return;
     $("runTitle").textContent = data.name;
-    $("runEyebrow").textContent = data.sweep ? `SWEEP ${data.sweep} · ${data.trial}` : "RUN";
-    const iqm = data.iqm;
-    $("runElo").textContent = data.unrated ? "—" : elo(iqm?.score);
-    $("runInterval").textContent = data.unrated
-      ? "unrated on this pool"
-      : `IQM3  ${ci(iqm?.interval)}${data.game_mismatch ? "  ·  sim mismatch" : ""}`;
+    $("runEyebrow").textContent = data.sweep ? `SWEEP ${data.sweep} · ${data.trial}` : (data.family ? `FAMILY ${data.family}` : "RUN");
+    $("runLede").textContent = "Hero number is joint Elo (random = 0). Side cards are frozen-pool IQM3 and are not on that axis.";
+    const joint = data.joint;
+    $("runElo").textContent = joint ? elo(joint.rating) : "—";
+    $("runInterval").textContent = joint
+      ? `joint  ${ci(joint.interval)}`
+      : "no joint games yet";
+    $("runFlags").replaceChildren(...(data.flags || []).map((f) => {
+      const s = document.createElement("span"); s.textContent = f; s.className = "warn"; return s;
+    }));
+    $("runHero").replaceChildren(...(data.pools || []).map((p) => {
+      const art = document.createElement("article");
+      art.innerHTML = `<p>pool ${p.label} IQM3</p><strong>${p.unrated ? "—" : elo(p.rating)}</strong>`;
+      return art;
+    }));
     const cmd = $("rateCommand");
+    const picked = selectedPool() || (data.pools || []).find((p) => !p.unrated);
     if (data.unrated && data.rate_command) {
       cmd.hidden = false;
       cmd.textContent = data.rate_command;
     } else cmd.hidden = true;
-    $("runFlags").replaceChildren(...(data.flags || []).map((f) => {
-      const s = document.createElement("span"); s.textContent = f; s.className = "warn"; return s;
-    }));
     const status = data.status || {};
     $("runStats").innerHTML = [
       ["status", status.status || "—"],
       ["steps", (status.learner_steps || 0).toLocaleString()],
       ["evals", String((data.evaluations || []).length)],
-      ["rated", String((data.ratings || []).length)],
+      ["joint ckpts", String((joint?.ratings || []).length)],
     ].map(([k, v]) => `<article><p>${k}</p><strong>${v}</strong></article>`).join("");
-    const point = (r) => ({ x: r.learner_steps, y: r.rating, lo: r.interval[0], hi: r.interval[1] });
-    const ratings = data.ratings || [];
-    const full = ratings.filter((r) => (r.source || "band") !== "evaluation");
-    const cheap = ratings.filter((r) => r.source === "evaluation");
-    chart($("eloChart"), full.map(point), { secondary: cheap.map(point) });
-    $("eloCaption").textContent = data.unrated
-      ? "No rating files for this pool yet."
-      : `Solid: ${full.length} checkpoint${full.length === 1 ? "" : "s"} rated by 480 pool games (band = 95% bootstrap CI). `
-        + `Dashed grey: ${cheap.length} in-run fits from the diagnostic games vs the 5 scripted pool members only; `
-        + "these run 100-300 Elo high for bot-heavy curricula and are not comparable to the solid points.";
-    $("ratingRows").replaceChildren(...(data.ratings || []).map((r) => {
-      const tr = document.createElement("tr");
-      if (r.game_mismatch) tr.className = "mismatch";
-      tr.innerHTML = `<td>${r.checkpoint}</td><td class="num">${(r.learner_steps || 0).toLocaleString()}</td><td class="num">${elo(r.rating)}</td><td class="num">${ci(r.interval)}</td><td>${r.source || "band"}</td>`;
-      return tr;
+    const human = data.human;
+    $("humanRunPanel").hidden = !human;
+    if (human) {
+      $("humanRunLede").textContent = `Matthew is ${elo(human.rating)} joint (${ci(human.interval)}). Record vs this run:`;
+      $("humanRunRows").replaceChildren(...(human.records || []).map((rec) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${rec.name}</td><td class="num">${rec.wins}–${rec.losses}–${rec.draws}</td><td class="num">${rec.games}</td>`;
+        return tr;
+      }));
+    }
+    const jpts = (joint?.ratings || []).map((r) => ({
+      x: r.learner_steps, y: r.rating,
+      lo: (r.interval || [])[0], hi: (r.interval || [])[1],
     }));
+    chart($("jointChart"), jpts, { color: "#d6ff32" });
+    $("jointCaption").textContent = jpts.length
+      ? `${jpts.length} checkpoint${jpts.length === 1 ? "" : "s"} on the joint fit (every pool match + candidate record + human game, random = 0).`
+      : "This run has no games in the joint fit yet.";
+    const pick = $("poolPick");
+    const keep = pick.value;
+    pick.replaceChildren(...(data.pools || []).map((p) => {
+      const o = document.createElement("option");
+      o.value = p.sha8;
+      o.textContent = `pool ${p.label}`;
+      return o;
+    }));
+    if ([...pick.options].some((o) => o.value === keep)) pick.value = keep;
+    else if (data.primary?.sha8) pick.value = data.primary.sha8;
+    renderPoolChart();
     const maps = [...new Set((data.evaluations.at(-1)?.groups || []).map((g) => g.map))];
     $("winMap").replaceChildren(...maps.map((m) => {
       const o = document.createElement("option"); o.value = m; o.textContent = `map ${m}`; return o;
@@ -391,8 +518,28 @@
     }
     renderWinTable();
     selectEvaluation();
-    $("connectionBox").classList.add("online");
-    $("connection").textContent = "Live";
+    live();
+  }
+
+  function renderPoolChart() {
+    if (!data) return;
+    const pool = selectedPool();
+    $("poolChartEyebrow").textContent = pool ? `FROZEN POOL ${String(pool.label).toUpperCase()}` : "FROZEN POOL";
+    const ratings = pool?.ratings || [];
+    const point = (r) => ({ x: r.learner_steps, y: r.rating, lo: (r.interval || [])[0], hi: (r.interval || [])[1] });
+    const full = ratings.filter((r) => (r.source || "band") !== "evaluation");
+    const cheap = ratings.filter((r) => r.source === "evaluation");
+    chart($("eloChart"), full.map(point), { secondary: cheap.map(point), color: "#3ee0c5" });
+    $("eloCaption").textContent = !pool
+      ? "No frozen-pool ratings on this run."
+      : `Solid: ${full.length} checkpoint${full.length === 1 ? "" : "s"} on pool ${pool.label} (${pool.sha8}). `
+        + `Dashed grey: ${cheap.length} in-run bots-only fits. These numbers are not on the joint axis.`;
+    $("ratingRows").replaceChildren(...ratings.map((r) => {
+      const tr = document.createElement("tr");
+      if (r.game_mismatch) tr.className = "mismatch";
+      tr.innerHTML = `<td>${r.checkpoint}</td><td class="num">${(r.learner_steps || 0).toLocaleString()}</td><td class="num">${elo(r.rating)}</td><td class="num">${ci(r.interval)}</td><td>${r.source || "band"} · pool ${pool.label}</td>`;
+      return tr;
+    }));
   }
 
   function renderSweep() {
@@ -402,8 +549,12 @@
     const scored = (sweep.trials || []).filter((t) => t.score != null);
     const best = scored.reduce((b, t) => (b == null || t.score > b.score ? t : b), null);
     $("sweepLede").textContent = `${(sweep.trials || []).length} trials · ${scored.length} scored${best ? ` · best ${best.id} at ${fmt(best.score, 0)}` : ""}`;
+    $("sweepIdentity").innerHTML = sweep.score_label
+      ? `<b>objective</b> ${sweep.score_label}`
+      : "No scoring pool in sweep.json";
     const params = Object.keys(((sweep.trials || []).find((t) => t.hypers) || {}).hypers || {});
-    $("sweepHead").innerHTML = ["trial", ...params, "cost", "score", "IQM3", "flags"]
+    const iqmLabel = sweep.score_label || "IQM3";
+    $("sweepHead").innerHTML = ["trial", ...params, "cost", "score", iqmLabel, "joint", "flags"]
       .map((h) => `<th>${h}</th>`).join("");
     $("sweepRows").replaceChildren(...(sweep.trials || []).map((t) => {
       const tr = document.createElement("tr");
@@ -415,23 +566,24 @@
       cells.push(`<td class="num">${t.cost == null ? "—" : Number(t.cost).toExponential(2)}</td>`);
       cells.push(`<td class="num">${fmt(t.score, 1)}</td>`);
       cells.push(`<td class="num">${t.unrated ? "unrated" : elo(t.rating)}</td>`);
+      cells.push(`<td class="num">${t.joint ? elo(t.joint.rating) : "—"}</td>`);
       cells.push(`<td>${(t.flags || []).join(" ")}</td>`);
       tr.innerHTML = cells.join("");
       return tr;
     }));
-    // x = position in launch order (sweep.json order), line = best score so far, dots = each trial.
     let running = null;
     const points = scored.map((t, i) => ({ x: i, y: t.score }));
     const bestSoFar = scored.map((t, i) => ({ x: i, y: (running = running == null ? t.score : Math.max(running, t.score)) }));
     chart($("scoreChart"), bestSoFar, { color: "#9ec0ff", mark: points });
-    $("connectionBox").classList.add("online");
-    $("connection").textContent = "Live";
+    $("sweepNav").hidden = false;
+    $("sweepNav").href = `/sweep/${encodeURIComponent(sweep.name)}`;
+    live();
   }
 
   async function selectEvaluation() {
     const dir = $("checkpoint").value;
     let report = (data?.evaluations || []).find((e) => e.directory === dir);
-    if (data && dir && report && !('games' in report)) {
+    if (data && dir && report && !("games" in report)) {
       report = await json(`/api/run/${encodeURIComponent(data.name)}/evaluation/${encodeURIComponent(dir)}`);
       const i = data.evaluations.findIndex((e) => e.directory === dir);
       if (i >= 0) data.evaluations[i] = report;
@@ -530,8 +682,16 @@
     $("notice").textContent = "";
     const r = route();
     try {
-      if (r.view === "ladder") {
-        ladder = await json("/api/ladder");
+      if (r.view === "index") {
+        index = await json("/api/index");
+        renderIndex();
+      } else if (r.view === "ladder") {
+        const [ladderPayload, indexPayload] = await Promise.all([
+          json("/api/ladder"),
+          index ? Promise.resolve(index) : json("/api/index"),
+        ]);
+        ladder = ladderPayload;
+        index = indexPayload;
         renderLadder();
       } else if (r.view === "run") {
         data = await json(`/api/run/${encodeURIComponent(r.name)}`);
@@ -548,7 +708,12 @@
     }
   }
 
-  $("sort").onchange = $("hidePool").onchange = () => { if (ladder) renderLadder(); };
+  $("sort").onchange = $("hideBots").onchange = $("allCheckpoints").onchange = () => { if (ladder) renderLadder(); };
+  $("runSearch").oninput = $("filterFamily").onchange = $("filterStatus").onchange = $("filterRating").onchange = $("runSort").onchange = () => {
+    familyFilter = $("filterFamily").value;
+    if (index) renderIndex();
+  };
+  $("poolPick").onchange = renderPoolChart;
   $("winMap").onchange = renderWinTable;
   $("checkpoint").onchange = selectEvaluation;
   $("match").onchange = selectMatch;

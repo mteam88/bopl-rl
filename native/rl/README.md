@@ -156,15 +156,13 @@ training command.
 native/artifacts/rl/venv/bin/python native/rl/research/serve.py \
   --host 127.0.0.1 --port 8876 \
   --root native/artifacts/rl \
-  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
-  --run-root-glob 'overnight-3=native/artifacts/rl/sweeps/overnight-3/[0-9]*'
+  --pool native/artifacts/rl/sweeps/anchors/pool-v6/pool.json \
+  --human native/artifacts/rl/human/mac
 native/artifacts/rl/venv/bin/python native/rl/research/watch_videos.py \
   --run native/artifacts/rl/native-smoke
 ```
 
-Kept: `--root`, `--host`, `--port`, `--run-root NAME=PATH`, `--run-root-glob NAME=GLOB`.
-Added: `--pool` (default pool-v5), `--human` (default `human/mac`).
-Removed: `--ladder`, `--study-root`. Views: `/` ladder, `/run/<name>`, `/sweep/<name>`.
+`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/run/<name>`, `/sweep/<name>`. Copy `research/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
 
 A short smoke verifies execution and artifact compatibility. It does not establish
 learning strength or whole-game competence. Report measured learner decisions,
@@ -182,9 +180,10 @@ rate. Trials are ordinary run directories
 under `native/artifacts/rl/sweeps/<name>/`, launched in their own systemd
 scopes with a memory cap and a wall cap; the driver's `sweep.json` makes the
 whole sweep kill-and-resume safe, and `summary.md`/`launch-best.sh` are
-regenerated after every trial. The dashboard lists trials via
-`serve.py --run-root-glob 'name=native/artifacts/rl/sweeps/name/[0-9]*'`
-on the pool-v5 Elo scale. See `sweep/README.md`.
+regenerated after every trial. The dashboard discovers those trial directories
+under `--root` and shows each trial's labelled frozen-pool IQM plus its joint
+Elo; the sweep page's score column stays the objective written in `sweep.json`.
+See `sweep/README.md`.
 
 ```sh
 native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \

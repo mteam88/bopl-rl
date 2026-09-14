@@ -1,4 +1,4 @@
-"""Quality dashboard: one pool-v5 Elo scale, three views (ladder / run / sweep)."""
+"""Quality dashboard: every run under --root, joint-fit Elo plus labelled pool scores."""
 import argparse
 from collections import OrderedDict
 import glob
@@ -23,6 +23,7 @@ from metrics_store import store
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
 import reference_pool
+import joint_ladder
 import visuals
 
 CHART_KEYS = (
@@ -209,16 +210,48 @@ def named_runs(extra_runs, run_globs):
 
 
 def discover_sweeps(root, extra_runs, run_globs):
-    found = {}
+    found = dict(joint_ladder.discover_sweeps(root))
     for prefix, pattern in run_globs.items():
         for match in glob.glob(pattern):
             parent = Path(match).resolve().parent
             if (parent / 'sweep.json').is_file():
-                found[prefix] = parent
+                found.setdefault(prefix, parent)
                 break
-    for file in root.glob('sweeps/*/sweep.json'):
-        found.setdefault(file.parent.name, file.parent)
+    for path in extra_runs.values():
+        parent = Path(path).resolve().parent
+        if (parent / 'sweep.json').is_file():
+            found.setdefault(parent.name, parent)
     return found
+
+
+def pool_brief(pool, members=False):
+    if not pool:
+        return None
+    brief = dict(
+        path=pool.get('path'), sha256=pool.get('pool_sha256'),
+        sha8=pool.get('sha8') or reference_pool.pool_sha8(pool),
+        label=pool.get('label') or joint_ladder.pool_label(pool.get('path') or ''),
+        sim_sha256=(pool.get('game') or {}).get('sha256'),
+        maps=pool.get('maps'),
+    )
+    if members:
+        brief['members'] = pool.get('members') or []
+    return brief
+
+
+def config_bits(config):
+    config = config or {}
+    return dict(
+        banks=config.get('banks'),
+        scripted_banks=config.get('scripted_banks'),
+        share_min=config.get('scripted_share_min'),
+        share_max=config.get('scripted_share_max'),
+    )
+
+
+def sweep_pool_path(state):
+    scoring = ((state or {}).get('config') or {}).get('scoring') or {}
+    return scoring.get('pool')
 
 
 def evaluation_results(directory):
@@ -230,15 +263,13 @@ def evaluation_results(directory):
     return found
 
 
-def rating_signature(directory, pool):
-    if not pool:
-        return None
+def rating_signature(directory, pool=None):
     files = []
-    for folder in (Path(directory) / 'reference', reference_pool.rating_dir(directory, pool)):
-        if not folder.is_dir():
-            continue
-        for path in folder.glob('*.json'):
-            files.append((path.name, stamp(path)))
+    root = Path(directory) / 'reference'
+    if not root.is_dir():
+        return tuple()
+    for path in root.rglob('*.json'):
+        files.append((str(path), stamp(path)))
     files.sort()
     return tuple(files)
 
@@ -278,6 +309,67 @@ def run_summary(directory, pool, name, last_k=LAST_K):
                  rating=row['rating'], interval=row['interval'], games=row.get('games'))
             for row in summary['last_k']],
     )
+
+
+def spark_points(curve):
+    return [{'steps': row['learner_steps'], 'rating': row['rating'],
+             'lo': (row['interval'] or [None, None])[0],
+             'hi': (row['interval'] or [None, None])[1]} for row in curve]
+
+
+def pool_summaries(directory, name, pools, last_k=LAST_K):
+    """One labelled frozen-pool curve per pool that has ratings on this run."""
+    found = []
+    for pool in pools or ():
+        row = run_summary(directory, pool, name, last_k=last_k)
+        if row['unrated'] and not row.get('ratings'):
+            continue
+        found.append(dict(
+            label=pool.get('label') or joint_ladder.pool_label(pool.get('path') or ''),
+            sha8=pool.get('sha8') or reference_pool.pool_sha8(pool),
+            sha256=pool.get('pool_sha256'),
+            rating=row['rating'], interval=row['interval'], spark=row['spark'],
+            ratings=row['ratings'], unrated=row['unrated'],
+            game_mismatch=row['game_mismatch'], last_k=row['last_k'],
+            rate_command=row['rate_command'], flags=row['flags'],
+        ))
+    return found
+
+
+def joint_for_run(fit, name):
+    if not fit:
+        return None
+    rows = [row for row in fit.get('rows') or () if row.get('run') == name]
+    if not rows:
+        return None
+    best = max(rows, key=lambda row: (row.get('games') or 0, row.get('steps') or 0))
+    curve = [row for row in rows if row.get('steps') is not None]
+    curve.sort(key=lambda row: row['steps'])
+    return dict(
+        rating=best['rating'], interval=best['interval'], games=best.get('games'),
+        steps=best.get('steps'), id=best['id'],
+        spark=[{'steps': row['steps'], 'rating': row['rating'],
+                'lo': (row['interval'] or [None, None])[0],
+                'hi': (row['interval'] or [None, None])[1]} for row in curve],
+        ratings=[dict(checkpoint=row.get('name'), learner_steps=row.get('steps'),
+                      rating=row['rating'], interval=row['interval'],
+                      games=row.get('games'), source='joint', sha256=row.get('sha256'))
+                 for row in curve],
+    )
+
+
+def human_for_run(fit, name):
+    if not fit or not fit.get('human'):
+        return None
+    ids = {row['id'] for row in fit.get('rows') or () if row.get('run') == name}
+    records = [row for row in (fit['human'].get('records') or ()) if row['id'] in ids]
+    if not records:
+        return None
+    human = fit['human']
+    return dict(rating=human['rating'], interval=human['interval'],
+                games=human.get('games'), wins=human.get('wins'),
+                losses=human.get('losses'), draws=human.get('draws'),
+                records=records)
 
 
 def attach_media(report, folder):
@@ -322,8 +414,8 @@ def main():
                         help='Read a live training run directory from an isolated workspace')
     parser.add_argument('--run-root-glob', action='append', default=[], metavar='NAME=GLOB',
                         help='Register every run directory matching GLOB as NAME-<dirname>')
-    parser.add_argument('--pool', type=Path, default=reference_pool.DEFAULT_POOL,
-                        help='Current reference pool.json (ladder scale)')
+    parser.add_argument('--pool', type=Path, default=None,
+                        help='Primary frozen pool.json for labels (not the joint scale). Default: pool v6 if present, else the last discovered pool')
     parser.add_argument('--human', type=Path, default=reference_pool.DEFAULT_HUMAN,
                         help='human/mac directory (games.jsonl + excluded.json)')
     args = parser.parse_args()
@@ -340,160 +432,232 @@ def main():
             parser.error('run_root_glob requires NAME=GLOB')
         run_globs[name] = path
 
-    pool = None
-    if args.pool and args.pool.is_file():
-        pool = reference_pool.load_pool(args.pool)
-
-    cache_lock = threading.Lock()
-    named_state = [None, None]
+    cache_lock = threading.RLock()
+    catalog_state = [None, None]
+    pools_state = [None, None, None]
     summary_state = {}
-    human_state = [None, None]
-    ladder_state = [None, None]
+    index_state = [None, None]
+    joint_state = dict(sig=None, encoded=None, fit=None, building=False, error=None)
     sweep_state = {}
     run_state = OrderedDict()
     eval_state = OrderedDict()
     metrics_state = OrderedDict()
 
-    def named():
-        sig = (tuple((name, str(path), stamp(path)) for name, path in extra_runs.items()),
-               tuple((name, pattern, stamp(Path(pattern).parent)) for name, pattern in run_globs.items()))
+    def load_pools():
+        extra = [args.pool] if args.pool and args.pool.is_file() else []
+        sig = tuple((str(path), stamp(path)) for path in extra)
+        anchors = root / 'sweeps' / 'anchors'
+        if anchors.is_dir():
+            sig += tuple((str(child / 'pool.json'), stamp(child / 'pool.json'))
+                         for child in sorted(anchors.iterdir()) if child.is_dir())
         with cache_lock:
-            if named_state[0] == sig:
-                return named_state[1]
-        found = named_runs(extra_runs, run_globs)
+            if pools_state[0] == sig:
+                return pools_state[1], pools_state[2]
+        pools, issues = joint_ladder.discover_pools(root, extra=extra)
+        primary = None
+        if args.pool and args.pool.is_file():
+            want = str(args.pool.resolve())
+            primary = next((item for item in pools if item.get('path') == want), None)
+        if primary is None:
+            primary = next((item for item in pools if item.get('label') == 'v6'), None)
+        if primary is None and pools:
+            primary = pools[-1]
         with cache_lock:
-            named_state[0], named_state[1] = sig, found
+            pools_state[0], pools_state[1], pools_state[2] = sig, pools, primary
+        return pools, primary
+
+    def catalog(force=False):
+        extras = dict(named_runs(extra_runs, run_globs))
+        extra_sig = (tuple((name, str(path), stamp(path)) for name, path in extras.items()),
+                     tuple((name, pattern, stamp(Path(pattern).parent)) for name, pattern in run_globs.items()))
+        with cache_lock:
+            if not force and catalog_state[0] == extra_sig and catalog_state[1] is not None:
+                return catalog_state[1]
+        found = joint_ladder.discover_runs(root, extra=extras)
+        with cache_lock:
+            catalog_state[0], catalog_state[1] = extra_sig, found
         return found
 
-    def runs():
-        candidates = []
-        known = named()
-        for file in [*root.glob('*/config.json'), *(path / 'config.json' for path in known.values())]:
-            try:
-                config = read_json(file, {})
-            except (OSError, ValueError):
-                continue
-            if not (config and config.get('schema') in (1, 2) and config.get('algorithm') == 'recurrent PPO'):
-                continue
-            name = next((n for n, p in known.items() if p == file.parent), file.parent.name)
-            candidates.append(dict(name=name, created=file.stat().st_mtime,
-                                   workspace=str(file.parent) if name in known else None,
-                                   status=read_json(file.parent / 'status.json', {})))
-        return sorted(candidates, key=lambda r: r['created'], reverse=True)
-
     def run_directory(name):
-        known = named()
+        known = catalog()
         if name in known:
-            return known[name]
+            return known[name]['path']
         if re.fullmatch(r'[A-Za-z0-9_.-]+', name) and (root / name / 'config.json').is_file():
             return root / name
         return None
 
-    def split_sweep(name):
-        for prefix in sorted(run_globs, key=len, reverse=True):
-            token = prefix + '-'
-            if name.startswith(token):
-                return prefix, name[len(token):]
-        return None, None
-
-    def human_rating():
-        if not pool or not args.human.is_dir() or not (args.human / 'games.jsonl').is_file():
-            return None
-        sig = (stamp(args.human / 'games.jsonl'), stamp(args.human / 'excluded.json'), pool['pool_sha256'])
-        with cache_lock:
-            if human_state[0] == sig:
-                return human_state[1]
-        try:
-            value = reference_pool.rate_human(pool, args.human)
-        except ValueError:
-            value = None
-        with cache_lock:
-            human_state[0], human_state[1] = sig, value
-        return value
+    def split_sweep(name, info=None):
+        if info and info.get('sweep'):
+            return info.get('sweep'), info.get('trial')
+        known = catalog().get(name) or {}
+        return known.get('sweep'), known.get('trial')
 
     def summary_sig(directory):
         reports = evaluation_results(directory)
         return (stamp(directory / 'status.json'), stamp(directory / 'result.json'),
-                stamp(reports[-1]) if reports else None, rating_signature(directory, pool))
+                stamp(directory / 'config.json'), stamp(reports[-1]) if reports else None,
+                rating_signature(directory))
 
-    def cached_summary(directory, name):
+    def cached_pools(directory, name):
         key = str(directory)
         sig = summary_sig(directory)
         with cache_lock:
             hit = summary_state.get(key)
             if hit and hit[0] == sig:
                 return hit[1]
-        row = run_summary(directory, pool, name)
+        pools, _ = load_pools()
+        rows = pool_summaries(directory, name, pools)
         with cache_lock:
-            summary_state[key] = (sig, row)
-            if len(summary_state) > 256:
+            summary_state[key] = (sig, rows)
+            if len(summary_state) > 512:
                 summary_state.pop(next(iter(summary_state)))
-        return row
+        return rows
 
-    def ladder_payload():
-        members = []
-        if pool:
-            for member in pool['members']:
-                members.append(dict(
-                    name=member['name'], kind='pool', member_kind=member['kind'],
-                    rating=member['rating'], interval=member.get('interval'),
-                    games=member.get('games'), wins=member.get('wins'),
-                    losses=member.get('losses'), draws=member.get('draws'),
-                    spark=[], flags=[], game_mismatch=False, unrated=False,
-                    sweep=None, trial=None))
-        human = human_rating()
-        if human:
-            members.append(dict(
-                name='human', kind='human', member_kind='human',
-                rating=human['rating'], interval=human['interval'],
-                games=human['games'], spark=[], flags=[],
-                game_mismatch=True, unrated=False, sweep=None, trial=None,
-                caveats=human.get('caveats'), records=human.get('records')))
-        rows = []
-        for entry in runs():
-            directory = run_directory(entry['name'])
-            if directory is None:
-                continue
-            row = dict(cached_summary(directory, entry['name']))
-            row.pop('ratings', None)
-            sweep, trial = split_sweep(entry['name'])
-            row.update(sweep=sweep, trial=trial, kind='sweep-trial' if sweep else 'run',
-                       status=(entry.get('status') or {}).get('status'),
-                       created=entry.get('created'))
-            rows.append(row)
+    def pick_pool_summary(rows, primary):
+        if not rows:
+            return None
+        if primary:
+            sha8 = primary.get('sha8') or reference_pool.pool_sha8(primary)
+            for row in rows:
+                if row.get('sha8') == sha8:
+                    return row
+        return rows[-1]
+
+    def joint_fit():
+        with cache_lock:
+            return joint_state.get('fit')
+
+    def joint_payload(fit, building=False, error=None):
+        pools, primary = load_pools()
+        rows = [] if not fit else [dict(row) for row in fit.get('rows') or ()]
+        members = [row for row in rows if row.get('kind') in ('scripted', 'random', 'human')]
         return dict(
-            pool=None if not pool else dict(
-                path=pool['path'], sha256=pool['pool_sha256'], sha8=reference_pool.pool_sha8(pool),
-                sim_sha256=(pool.get('game') or {}).get('sha256'),
-                maps=pool.get('maps'), members=pool['members']),
-            human=None if not human else dict(rating=human['rating'], interval=human['interval'],
-                                              games=human['games'], caveats=human.get('caveats'),
-                                              records=human.get('records')),
+            building=building, error=error,
             rows=rows, members=members,
+            human=None if not fit else fit.get('human'),
+            stats=None if not fit else fit.get('stats'),
+            issues=[] if not fit else fit.get('issues') or [],
+            pools=[pool_brief(item) for item in pools],
+            primary=pool_brief(primary),
         )
 
-    def ladder_sig():
-        parts = [stamp(args.pool), stamp(args.human / 'games.jsonl'), stamp(args.human / 'excluded.json')]
-        for entry in runs():
-            directory = run_directory(entry['name'])
-            parts.append((entry['name'], None if directory is None else summary_sig(directory)))
-        return tuple(parts)
+    def joint_encoded_building():
+        return encode_json(joint_payload(joint_fit(), building=True, error=joint_state.get('error')))
 
-    def ladder_current():
+    def joint_rebuild():
+        pools, _ = load_pools()
+        known = catalog()
+        sig = joint_ladder.source_signature(root, known, pools, args.human)
         with cache_lock:
-            if ladder_state[1] is not None:
-                return ladder_state[1]
-        return ladder_rebuild()
+            if joint_state['encoded'] is not None and joint_state['sig'] == sig:
+                return joint_state['encoded']
+            if joint_state['building']:
+                wait = True
+            else:
+                joint_state['building'] = True
+                wait = False
+        if wait:
+            for _ in range(600):
+                time.sleep(0.1)
+                with cache_lock:
+                    if joint_state['sig'] == sig and joint_state['encoded'] is not None and not joint_state['building']:
+                        return joint_state['encoded']
+            return joint_state['encoded'] or joint_encoded_building()
+        try:
+            fit = joint_ladder.build(root, known, pools, args.human)
+            encoded = encode_json(joint_payload(fit))
+            with cache_lock:
+                joint_state.update(sig=sig, encoded=encoded, fit=fit, building=False, error=None)
+            return encoded
+        except Exception as error:
+            traceback.print_exc()
+            with cache_lock:
+                joint_state['building'] = False
+                joint_state['error'] = str(error)
+            return joint_state['encoded'] or encode_json(joint_payload(None, error=str(error)))
 
-    def ladder_rebuild():
-        sig = ladder_sig()
+    def joint_current():
         with cache_lock:
-            if ladder_state[1] is not None and ladder_state[0] == sig:
-                return ladder_state[1]
-        encoded = encode_json(ladder_payload())
+            if joint_state['encoded'] is not None:
+                return joint_state['encoded']
+        return joint_encoded_building()
+
+    def index_row(info, fit):
+        directory = info['path']
+        status = read_json(directory / 'status.json', {})
+        config = read_json(directory / 'config.json', {})
+        pool_rows = cached_pools(directory, info['name'])
+        joint = joint_for_run(fit, info['name'])
+        updated = None
+        for path in (directory / 'status.json', directory / 'metrics.jsonl', directory / 'result.json'):
+            try:
+                value = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            updated = value if updated is None else max(updated, value)
+        flags = run_flags(directory)
+        return dict(
+            name=info['name'], family=info.get('family'), sweep=info.get('sweep'),
+            trial=info.get('trial'), rel=info.get('rel'), extra=info.get('extra', False),
+            status=status.get('status'), steps=status.get('learner_steps'),
+            updated=updated, flags=flags,
+            **config_bits(config),
+            pools=[{k: row[k] for k in
+                    ('label', 'sha8', 'rating', 'interval', 'unrated', 'game_mismatch') if k in row}
+                   for row in pool_rows],
+            joint=None if not joint else dict(rating=joint['rating'], interval=joint['interval'],
+                                              games=joint.get('games'), steps=joint.get('steps')),
+            spark=None if not joint else joint.get('spark') or [],
+            unrated=joint is None and all(row.get('unrated', True) for row in pool_rows),
+            has_rating=joint is not None or any(not row.get('unrated') for row in pool_rows),
+        )
+
+    def index_payload():
+        known = catalog()
+        fit = joint_fit()
+        pools, primary = load_pools()
+        sweep_names = set(discover_sweeps(root, extra_runs, run_globs))
+        rows = [index_row(info, fit) for info in known.values()]
+        families = {}
+        for row in rows:
+            key = row['sweep'] or row['family'] or row['name']
+            bucket = families.setdefault(key, dict(
+                name=key, kind='sweep' if row['sweep'] or key in sweep_names else 'family',
+                count=0, rated=0, running=0,
+                sweep=row['sweep'] or (key if key in sweep_names else None)))
+            bucket['count'] += 1
+            if row.get('has_rating'):
+                bucket['rated'] += 1
+            if row.get('status') == 'running':
+                bucket['running'] += 1
+        return dict(
+            runs=rows,
+            families=sorted(families.values(), key=lambda item: (0 if item['kind'] == 'sweep' else 1, item['name'])),
+            pools=[pool_brief(item) for item in pools],
+            primary=pool_brief(primary),
+            joint=None if not fit else dict(stats=fit.get('stats'), building=bool(joint_state.get('building'))),
+        )
+
+    def index_current():
         with cache_lock:
-            ladder_state[0], ladder_state[1] = sig, encoded
+            if index_state[1] is not None:
+                return index_state[1]
+        return index_rebuild()
+
+    def index_rebuild():
+        sig = (tuple(sorted(catalog())), joint_state.get('sig'),
+               tuple(summary_sig(info['path']) for info in catalog().values()))
+        with cache_lock:
+            if index_state[1] is not None and index_state[0] == sig:
+                return index_state[1]
+        encoded = encode_json(index_payload())
+        with cache_lock:
+            index_state[0], index_state[1] = sig, encoded
         return encoded
+
+    def runs():
+        payload = index_payload()
+        return payload['runs']
 
     def run_payload(directory, name):
         status = dict(read_json(directory / 'status.json', {'status': 'starting'}))
@@ -502,27 +666,41 @@ def main():
                 os.kill(status['pid'], 0)
             except (ProcessLookupError, KeyError):
                 status['status'] = 'interrupted'
-        summary = cached_summary(directory, name)
+        pools, primary = load_pools()
+        pool_rows = cached_pools(directory, name)
+        picked = pick_pool_summary(pool_rows, primary)
         reports = evaluation_results(directory)
         evaluations = [{'directory': path.parent.name} for path in reports]
         if reports:
             latest = evaluation_payload(reports[-1])
             if latest:
                 evaluations[-1] = latest
-        sweep, trial = split_sweep(name)
+        info = catalog().get(name) or {}
+        sweep, trial = split_sweep(name, info)
+        fit = joint_fit()
+        joint = joint_for_run(fit, name)
+        flags = (picked or {}).get('flags') or run_flags(directory)
         return dict(
             name=name, config=read_json(directory / 'config.json'), status=status,
-            evaluations=evaluations, ratings=summary.get('ratings') or [],
-            iqm=None if summary['unrated'] else dict(
-                score=summary['rating'], interval=summary['interval'], last_k=summary['last_k'],
-                game_mismatch=summary['game_mismatch']),
-            flags=summary.get('flags') or [],
-            game_mismatch=summary.get('game_mismatch', False),
-            unrated=summary.get('unrated', True), sweep=sweep, trial=trial,
-            rate_command=summary.get('rate_command'),
+            evaluations=evaluations,
+            ratings=[] if not picked else picked.get('ratings') or [],
+            pools=[{k: row[k] for k in row if k != 'ratings'} | dict(
+                ratings=row.get('ratings') or []) for row in pool_rows],
+            iqm=None if not picked or picked.get('unrated') else dict(
+                score=picked['rating'], interval=picked['interval'], last_k=picked.get('last_k'),
+                game_mismatch=picked.get('game_mismatch'), label=picked.get('label'),
+                sha8=picked.get('sha8')),
+            joint=joint,
+            human=human_for_run(fit, name),
+            flags=flags,
+            game_mismatch=bool(picked and picked.get('game_mismatch')),
+            unrated=picked is None or picked.get('unrated', True),
+            sweep=sweep, trial=trial, family=info.get('family'),
+            rate_command=None if not picked else picked.get('rate_command'),
             final_evaluation=latest_report(directory, 'final-evaluations/*/result.json'),
-            pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
-                                            sha256=pool['pool_sha256']))
+            pool=pool_brief(primary),
+            primary=pool_brief(primary),
+        )
 
     def run_alive(directory):
         status = read_json(directory / 'status.json', {})
@@ -539,7 +717,8 @@ def main():
         return (run_alive(directory), stamp(directory / 'config.json'), stamp(directory / 'status.json'),
                 tuple(path.parent.name for path in reports),
                 stamp(reports[-1]) if reports else None,
-                rating_signature(directory, pool))
+                rating_signature(directory),
+                None if not joint_fit() else joint_fit().get('stats'))
 
     def run_snapshot(directory, name):
         sig = run_sig(directory)
@@ -551,7 +730,7 @@ def main():
         encoded = encode_json(run_payload(directory, name))
         with cache_lock:
             run_state[name] = (sig, encoded)
-            while len(run_state) > 8:
+            while len(run_state) > 16:
                 run_state.popitem(last=False)
         return encoded
 
@@ -601,25 +780,53 @@ def main():
 
     def sweep_payload(name, directory):
         state = read_json(directory / 'sweep.json', {})
+        pools, primary = load_pools()
+        fit = joint_fit()
+        configured = sweep_pool_path(state)
+        configured_pool = None
+        if configured:
+            want = Path(configured)
+            if not want.is_absolute():
+                want = (HERE.parents[2] / configured).resolve()
+            configured_pool = next((item for item in pools if Path(item['path']).resolve() == want), None)
+            if configured_pool is None:
+                label = joint_ladder.pool_label(want)
+                configured_pool = next((item for item in pools if item.get('label') == label), None)
+        objective = configured_pool or primary
+        objective_sha8 = None if not objective else (objective.get('sha8') or reference_pool.pool_sha8(objective))
         trials = []
         for trial in state.get('trials') or []:
+            run_name = f'{name}-{trial["id"]}'
             run_dir = directory / trial['id']
-            summary = cached_summary(run_dir, f'{name}-{trial["id"]}') if pool and run_dir.is_dir() else {}
+            pool_rows = cached_pools(run_dir, run_name) if run_dir.is_dir() else []
+            picked = next((row for row in pool_rows if row.get('sha8') == objective_sha8), None)
+            if picked is None:
+                picked = pick_pool_summary(pool_rows, objective)
+            joint = joint_for_run(fit, run_name)
             point = (trial.get('observations') or [None])[-1]
             trials.append(dict(
                 id=trial['id'], status=trial.get('status'), hypers=trial.get('hypers'),
-                flags=trial.get('flags') or summary.get('flags') or [],
+                flags=trial.get('flags') or (picked or {}).get('flags') or [],
                 score=None if not point else point.get('score'),
                 cost=None if not point else point.get('cost'),
                 steps=None if not point else point.get('steps'),
-                rating=summary.get('rating'), interval=summary.get('interval'),
-                spark=summary.get('spark') or [], unrated=summary.get('unrated', True),
-                game_mismatch=summary.get('game_mismatch', False),
+                rating=None if not picked else picked.get('rating'),
+                interval=None if not picked else picked.get('interval'),
+                spark=None if not picked else picked.get('spark') or [],
+                unrated=True if not picked else picked.get('unrated', True),
+                game_mismatch=bool(picked and picked.get('game_mismatch')),
+                pools=[{k: row[k] for k in ('label', 'sha8', 'rating', 'interval', 'unrated') if k in row}
+                       for row in pool_rows],
+                joint=None if not joint else dict(rating=joint['rating'], interval=joint['interval'],
+                                                  games=joint.get('games')),
                 is_failure=trial.get('is_failure'), early_stop=trial.get('early_stop')))
-        return dict(name=name, path=str(directory), config=state.get('config'),
-                    created=state.get('created'), trials=trials,
-                    pool=None if not pool else dict(sha8=reference_pool.pool_sha8(pool),
-                                                    sha256=pool['pool_sha256']))
+        return dict(
+            name=name, path=str(directory), config=state.get('config'),
+            created=state.get('created'), trials=trials,
+            pool=pool_brief(objective),
+            score_label=None if not objective else f"pool {objective.get('label') or objective_sha8} IQM3",
+            pools=[pool_brief(item) for item in pools],
+        )
 
     def sweep_current(name, directory):
         with cache_lock:
@@ -629,7 +836,7 @@ def main():
         return sweep_rebuild(name, directory)
 
     def sweep_rebuild(name, directory):
-        sig = (stamp(directory / 'sweep.json'),
+        sig = (stamp(directory / 'sweep.json'), joint_state.get('sig'),
                tuple((trial['id'], summary_sig(directory / trial['id']))
                      for trial in (read_json(directory / 'sweep.json', {}).get('trials') or [])
                      if (directory / trial['id']).is_dir()))
@@ -644,7 +851,10 @@ def main():
 
     def refresh():
         try:
-            ladder_rebuild()
+            catalog(force=True)
+            load_pools()
+            joint_rebuild()
+            index_rebuild()
             for name, directory in discover_sweeps(root, extra_runs, run_globs).items():
                 sweep_rebuild(name, directory)
         except Exception:
@@ -655,7 +865,9 @@ def main():
             time.sleep(2)
             refresh()
 
-    refresh()
+    catalog(force=True)
+    load_pools()
+    threading.Thread(target=refresh, daemon=True).start()
     threading.Thread(target=refresh_loop, daemon=True).start()
 
     class Handler(SimpleHTTPRequestHandler):
@@ -694,9 +906,10 @@ def main():
         def do_GET(self):
             path = unquote(urlparse(self.path).path)
             if path == '/api/ladder':
-                return self.send_snapshot(ladder_current())
-            if path == '/api/runs':
-                return self.json(runs())
+                return self.send_snapshot(joint_rebuild())
+            if path == '/api/index' or path == '/api/runs':
+                joint_rebuild()
+                return self.send_snapshot(index_rebuild())
             if path == '/api/sweeps':
                 return self.json([{'name': name, 'path': str(directory)}
                                   for name, directory in sorted(discover_sweeps(root, extra_runs, run_globs).items())])
@@ -705,7 +918,8 @@ def main():
                 directory = discover_sweeps(root, extra_runs, run_globs).get(name)
                 if directory is None:
                     return self.send_error(404)
-                return self.send_snapshot(sweep_current(name, directory))
+                joint_rebuild()
+                return self.send_snapshot(sweep_rebuild(name, directory))
             if path.startswith('/api/run/'):
                 rest = path[len('/api/run/'):]
                 name, slash, tail = rest.partition('/')
@@ -727,6 +941,7 @@ def main():
                     return self.send_snapshot(encoded)
                 if tail:
                     return self.send_error(404)
+                joint_rebuild()
                 return self.send_snapshot(run_snapshot(directory, name))
             if path.startswith('/runs/'):
                 parts = path[len('/runs/'):].split('/')
@@ -737,8 +952,8 @@ def main():
                 if not file.is_relative_to(directory) or file.suffix not in (
                         '.json', '.jsonl', '.rep', '.mp4', '.bin', '.pt', '.jpg', '.gz'):
                     return self.send_error(403)
-            elif path in ('/', '/index.html', '/app.js', '/style.css', '/arena.js') or path.startswith(('/run/', '/sweep/')):
-                file = HERE / 'web' / ('index.html' if path in ('/', '/index.html') or path.startswith(('/run/', '/sweep/')) else path[1:])
+            elif path in ('/', '/index.html', '/app.js', '/style.css', '/arena.js') or path.startswith(('/run/', '/sweep/', '/ladder')):
+                file = HERE / 'web' / ('index.html' if path in ('/', '/index.html', '/ladder') or path.startswith(('/run/', '/sweep/', '/ladder')) else path[1:])
             else:
                 return self.send_error(404)
             archived_visual = is_evaluation_visual(file) and not file.is_file() and visuals.exists(file)
