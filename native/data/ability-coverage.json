@@ -115,7 +115,7 @@
       "prefab": "Assets/GameObject/Revival.prefab",
       "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
       "native_status": "partial",
-      "verification": "Composed markers, effects, duplicate particle updates, arrival and respawn have source differential coverage, including empty and Invisibility-equipped clones. Copying other concrete ability graphs, full match lifecycle and public C integration remain required."
+      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred RevivePositionIndicator registration, exact shape-group observation order, marker replacement, and camera/water clamp; revival_ability_ab compares 650 complete NativeAOT/Rust ticks exactly. Composed effects, duplicate particle updates, arrival and respawn have source differential coverage, but the public death-to-respawn path is still being connected."
     },
     {
       "id": 16,

@@ -388,6 +388,30 @@ def main():
         "curve": curve(gust_wave, "forceCurve01"),
     }
 
+    # ---- Revival / QuickSpell ----
+    _, revival = find_prefab("Assets/GameObject/Revival.prefab")
+    revival_quick = component(revival, "QuickSpell")
+    revival_circle = component(revival, "DPhysicsCircle")
+    revival_fix = component(revival, "FixTransform")
+    revival_marker = ASSETS[guid_of(revival_quick["spell"])]
+    marker_circle = component(revival_marker, "DPhysicsCircle")
+    marker_fix = component(revival_marker, "FixTransform")
+    marker_body = component(revival_marker, "BoplBody")
+    out["prefabs"]["revival"] = {
+        "anims": animations(guid_of(revival_quick["animData"])),
+        "shockwave_offset": vec2(revival_quick, "shockwaveOffset"),
+        "collider_offset": vec2(revival_fix, "offset"),
+        "hurtbox_radius": fix(revival_circle, "startRadius"),
+        "marker": {
+            "layer": revival_marker["data"].get("layer"),
+            "updatable_count": 3,
+            "collider_hierarchy": marker_circle["hierarchyNumber"],
+            "offset": vec2(marker_fix, "offset"),
+            "radius": fix(marker_circle, "startRadius"),
+            "body": physics_body(marker_body),
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

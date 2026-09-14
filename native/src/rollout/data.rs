@@ -202,6 +202,7 @@ struct RawPrefabs {
     platform_ability: RawPlatformAbility,
     resizable_platform: RawResizable,
     gust: RawGust,
+    revival: RawRevival,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +223,25 @@ struct RawGustAnimations {
     #[serde(rename = "castAir")]
     cast_air: Vec<i32>,
     exit: Vec<i32>,
+}
+
+#[derive(Deserialize)]
+struct RawRevival {
+    anims: RawGustAnimations,
+    shockwave_offset: RawVec2,
+    collider_offset: RawVec2,
+    hurtbox_radius: i64,
+    marker: RawRevivalMarker,
+}
+
+#[derive(Deserialize)]
+struct RawRevivalMarker {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    offset: RawVec2,
+    radius: i64,
+    body: RawBody,
 }
 #[derive(Deserialize)]
 struct RawRollout {
@@ -373,6 +393,19 @@ pub struct GustData {
     pub radius: Fix,
     pub curve: Curve,
 }
+pub struct RevivalData {
+    pub cast_ticks: u32,
+    pub exit_ticks: u32,
+    pub shockwave_offset: Vec2,
+    pub collider_offset: Vec2,
+    pub hurtbox_radius: Fix,
+    pub marker_layer: u32,
+    pub marker_updatable_count: u32,
+    pub marker_collider_hierarchy: u32,
+    pub marker_offset: Vec2,
+    pub marker_radius: Fix,
+    pub marker_body: crate::physics::Body,
+}
 pub struct AbilityData {
     pub id: u32,
     pub name: String,
@@ -399,6 +432,7 @@ pub struct RolloutData {
     pub pickup: PickupData,
     pub platform: PlatformAbilityData,
     pub gust: GustData,
+    pub revival: RevivalData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -686,6 +720,22 @@ pub fn get() -> &'static RolloutData {
                 grounded_multiplier: Fix::from_raw(raw.prefabs.gust.grounded_multiplier),
                 radius: Fix::from_raw(raw.prefabs.gust.radius),
                 curve: raw.prefabs.gust.curve.clone(),
+            },
+            revival: {
+                let revival = &raw.prefabs.revival;
+                RevivalData {
+                    cast_ticks: ticks(&revival.anims.cast_air),
+                    exit_ticks: ticks(&revival.anims.exit),
+                    shockwave_offset: revival.shockwave_offset.get(),
+                    collider_offset: revival.collider_offset.get(),
+                    hurtbox_radius: Fix::from_raw(revival.hurtbox_radius),
+                    marker_layer: revival.marker.layer,
+                    marker_updatable_count: revival.marker.updatable_count,
+                    marker_collider_hierarchy: revival.marker.collider_hierarchy,
+                    marker_offset: revival.marker.offset.get(),
+                    marker_radius: Fix::from_raw(revival.marker.radius),
+                    marker_body: body(&revival.marker.body, Fix::ZERO),
+                }
             },
             abilities: raw
                 .abilities

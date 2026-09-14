@@ -49,8 +49,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Bow, Gust, Platform, Invisibility, Gold mushroom**
-  (catalog ids 0/1/2/4/7/14/19/34): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Bow, Gust, Platform, Revival, Invisibility, Gold mushroom**
+  (catalog ids 0/1/2/4/7/14/15/19/34): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -75,6 +75,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   one-time grounded-player push, and the shipped 0.25-second force curve. Its
   first time-zero platform impulse runs in prefab initialization before map
   home springs and its second runs later in the same updater pass.
+  Revival executes the measured QuickSpell cast and exit, registers the
+  `RevivePositionIndicator` on the following updater pass, clamps it with the
+  authored camera/water bounds, and replaces the marker owned by the same
+  ability slot on recast. Dynamic colliders are published in DetPhysics shape
+  group order, so the new circle precedes the static water box.
   Invisibility is an instant cast: its five-second player clocks, castability
   gate, 10,000-second live sentinel, six-second restored cooldown, strict
   expiry, duplicate-slot chaining, player flags, and telemetry follow the
@@ -112,10 +117,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/4/7/14/19/34 have executable catalog behavior in the public
+- Only ids 0/1/2/4/7/14/15/19/34 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
-  while Dash/Bow/Platform execute casts. Every slot now uses its exact authored
+  while Dash/Bow/Gust/Platform/Revival execute casts. Revival death-to-marker
+  respawn is still being connected to the public match lifecycle. Every slot uses its exact authored
   cooldown and common ground/castability metadata from the exported prefab;
   unported catalog ids never activate. Closing this scope requires the remaining
   catalog abilities and their dynamic bodies/collision pairs.

@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
 pub const ABILITY_PLATFORM: u32 = 14;
+pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 
@@ -236,6 +237,46 @@ const ENVIRONMENT: u32 = 0xFFFF_FFFF;
 /// PlatformTransform.cursorSensitivity.
 const CURSOR_SENSITIVITY: Fix = Fix::from_raw(107_374_182_400); // 25.0
 
+fn clamp_revival_position(mut position: Vec2) -> Vec2 {
+    // SceneBounds.cs constants are authored through single-precision casts.
+    let margin = Fix::from_int(2);
+    position.x = position.x.clamp(
+        Fix::from_raw(-417_771_454_464) + margin,
+        Fix::from_raw(419_188_801_536) - margin,
+    );
+    position.y = position.y.clamp(
+        Fix::from_raw(-111_669_149_696) + margin,
+        Fix::from_raw(171_798_691_840) - margin,
+    );
+    position.y = position.y.max(Fix::from_raw(-48_533_131_264));
+    position
+}
+
+fn retained_ground(player: &PlayerSlot, platforms: &[Platform]) -> Option<u32> {
+    if let Some(ground) = player.base.ground {
+        return Some(ground);
+    }
+    // The ordinary controller can finish a landing animation with its public
+    // Idle state one pass before this slice restores `ground`. PlayerInfo in
+    // the game still carries the attached platform into the ability prefab.
+    if player.obs_state == STATE_FALL || player.obs_state == STATE_NOTHING {
+        return None;
+    }
+    let mut best = None;
+    let mut best_error = Fix::from_f32(0.1);
+    for platform in platforms {
+        let Ok(surface_point) = platform.surface.closest_point(player.base.position) else {
+            continue;
+        };
+        let error = ((player.base.position - surface_point).length() - player.base.radius).abs();
+        if error < best_error {
+            best_error = error;
+            best = Some(platform.id);
+        }
+    }
+    best
+}
+
 /// Slime controllers wake this many ticks into the warmup (measured against
 /// the .NET reset: ability cooldown timers read -1.5s + (240-62)/60 = 1.4667s
 /// after a 240-tick warmup).
@@ -371,6 +412,28 @@ pub struct GustState {
     pub attached_ground: Option<u32>,
 }
 
+/// Revival uses the same QuickSpell animation/body handoff as Gust.
+#[derive(Clone, Copy, Default)]
+pub struct RevivalState {
+    pub phase: u32,
+    pub ticks: u32,
+    pub attached_ground: Option<u32>,
+}
+
+/// A RevivePositionIndicator spawned by one Revival ability instance.
+#[derive(Clone, Copy, Default)]
+pub struct RevivalMarker {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub entity: Option<usize>,
+    pub hierarchy_base: u32,
+    pub position: Vec2,
+    pub velocity: Vec2,
+}
+
 /// AirWave_Shockwave has no collider of its own. It captures rigid targets on
 /// initialization and keeps applying its curve to that fixed set.
 #[derive(Clone, Copy)]
@@ -403,6 +466,7 @@ pub enum ActiveAbility {
     Dash,
     Bow,
     Gust,
+    Revival,
     Platform,
 }
 
@@ -448,6 +512,10 @@ pub struct PlayerSlot {
     pub bow: BowState,
     pub platform: PlatformState,
     pub gust: GustState,
+    pub revival: RevivalState,
+    /// Marker owned by each equipped Revival instance. Recasting the same
+    /// instance ends its previous marker before creating another.
+    pub revival_markers: [Option<usize>; 3],
     pub gold_mushroom: [GoldMushroomState; 3],
     /// SlimeController.currentState as the policy observes it. The .NET enum
     /// never takes the `ability` value (nothing assigns it), so the state
@@ -471,6 +539,7 @@ pub struct PlayerSlot {
     // Fixed entity table indices.
     pub circle_entity: usize,
     pub gust_entity: usize,
+    pub revival_entity: usize,
     pub body_entity: usize,
     pub dash_entity: usize,
     pub bow_entity: usize,
@@ -544,6 +613,7 @@ pub struct RolloutWorld {
     pub arrows: Vec<Arrow>,
     pub spawned: Vec<SpawnedPlatform>,
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
+    pub revival_marker_pool: Vec<RevivalMarker>,
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
@@ -551,6 +621,8 @@ pub struct RolloutWorld {
     pub orbits: Vec<(usize, usize)>,
     pub next_platform_id: u32,
     pub next_entity_id: u32,
+    /// Base hierarchy for the next prefab instantiated after player spawn.
+    pub next_spawn_hierarchy: u32,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
     pub entities: Vec<CEntity>,
     pub slimes: Vec<CSlime>,
@@ -609,12 +681,14 @@ impl RolloutWorld {
             arrows: Vec::with_capacity(64),
             spawned: Vec::with_capacity(64),
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
+            revival_marker_pool: Vec::with_capacity(64),
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
             orbits: Vec::with_capacity(4),
             next_platform_id: 0,
             next_entity_id: 0,
+            next_spawn_hierarchy: 0,
             entities: Vec::with_capacity(192),
             slimes: Vec::with_capacity(MAX_PLAYERS),
             state: empty_state(),
@@ -661,6 +735,8 @@ impl RolloutWorld {
         self.arrows.clone_from(&src.arrows);
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
+        self.revival_marker_pool
+            .clone_from(&src.revival_marker_pool);
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
@@ -668,6 +744,7 @@ impl RolloutWorld {
         self.orbits.clone_from(&src.orbits);
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
+        self.next_spawn_hierarchy = src.next_spawn_hierarchy;
         self.entities.clone_from(&src.entities);
         self.state_entities.clone_from(&src.state_entities);
         self.slimes.clone_from(&src.slimes);
@@ -707,12 +784,14 @@ impl RolloutWorld {
             arrows: _,
             spawned: _,
             gust_waves: _,
+            revival_marker_pool: _,
             sudden_death: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
             orbits: _,
             next_platform_id: _,
             next_entity_id: _,
+            next_spawn_hierarchy: _,
             entities: _,
             slimes: _,
             state: _,
@@ -782,6 +861,7 @@ impl RolloutWorld {
         self.arrows.clear();
         self.spawned.clear();
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
+        self.revival_marker_pool.clear();
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
@@ -806,8 +886,8 @@ impl RolloutWorld {
                 .iter()
                 .all(|&ability| ability == ABILITY_RANDOM);
             let mut has_offensive = false;
-            for s in 0..slots {
-                if abilities[s] != ABILITY_RANDOM {
+            for (s, ability) in abilities.iter_mut().enumerate().take(slots) {
+                if *ability != ABILITY_RANDOM {
                     continue;
                 }
                 let mut resolved = self.rng.uint_range(2, ABILITY_COUNT);
@@ -815,7 +895,7 @@ impl RolloutWorld {
                 if all_random && !has_offensive && s + 1 == slots {
                     resolved = self.rng.uint_range(2, ABILITY_COUNT);
                 }
-                abilities[s] = resolved;
+                *ability = resolved;
             }
         }
         // Entity table, in the .NET DetPhysics shape-group order. Within a
@@ -834,8 +914,10 @@ impl RolloutWorld {
                 hierarchy_cursor += data.abilities[ability].updatable_count;
             }
         }
+        self.next_spawn_hierarchy = hierarchy_cursor;
         let mut circle_entity = [usize::MAX; MAX_PLAYERS];
         let mut gust_entity = [usize::MAX; MAX_PLAYERS];
+        let mut revival_entity = [usize::MAX; MAX_PLAYERS];
         let mut body_entity = [usize::MAX; MAX_PLAYERS];
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
@@ -848,6 +930,12 @@ impl RolloutWorld {
                         data.gust.collider_offset,
                         8,
                         &mut gust_entity[i],
+                    ),
+                    ABILITY_REVIVAL => (
+                        data.revival.hurtbox_radius,
+                        data.revival.collider_offset,
+                        8,
+                        &mut revival_entity[i],
                     ),
                     ABILITY_PLATFORM => (
                         data.platform.hurtbox_radius,
@@ -1057,6 +1145,8 @@ impl RolloutWorld {
                 bow: BowState::default(),
                 platform: PlatformState::default(),
                 gust: GustState::default(),
+                revival: RevivalState::default(),
+                revival_markers: [None; 3],
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 obs_state: STATE_FALL,
                 state_ticks: 0,
@@ -1069,6 +1159,7 @@ impl RolloutWorld {
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
                 gust_entity: gust_entity[i],
+                revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
@@ -1321,6 +1412,7 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        self.register_pending_revival_markers(data);
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
@@ -1429,7 +1521,8 @@ impl RolloutWorld {
                     ActiveAbility::None
                     | ActiveAbility::Dash
                     | ActiveAbility::Bow
-                    | ActiveAbility::Gust => true,
+                    | ActiveAbility::Gust
+                    | ActiveAbility::Revival => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -1467,6 +1560,7 @@ impl RolloutWorld {
                     slot.circle_entity,
                     slot.bow_entity,
                     slot.gust_entity,
+                    slot.revival_entity,
                 ] {
                     if e != usize::MAX {
                         self.entities[e].flags = E_REMOVED;
@@ -1715,6 +1809,36 @@ impl RolloutWorld {
                         self.gust_tick(index, data);
                         return;
                     }
+                    ABILITY_REVIVAL => {
+                        let attached_ground =
+                            retained_ground(&self.players[index], &self.platforms);
+                        let detach_normal = attached_ground
+                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+                            .map(|platform| {
+                                platform.surface.normal(self.players[index].base.position)
+                            });
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Revival;
+                        slot.active_slot = s;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.revival = RevivalState {
+                            attached_ground,
+                            ..RevivalState::default()
+                        };
+                        if let Some(normal) = detach_normal {
+                            slot.base.position += normal * Fix::from_f32(0.05);
+                        }
+                        slot.base.rotation = Fix::ZERO;
+                        slot.base.up = Vec2::UP;
+                        slot.base.grounded = false;
+                        slot.base.ground = None;
+                        slot.base.grounded_speed = Fix::ZERO;
+                        slot.base.velocity = Vec2::ZERO;
+                        slot.base.external_velocity = Vec2::ZERO;
+                        self.revival_tick(index, data);
+                        return;
+                    }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
@@ -1782,6 +1906,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Gust {
             self.gust_tick(index, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Revival {
+            self.revival_tick(index, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
@@ -1907,6 +2035,92 @@ impl RolloutWorld {
         // the live collider position on entry and every active pass.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
+    }
+
+    fn revival_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        slot.revival.ticks += 1;
+        if slot.revival.phase == 0 && slot.revival.ticks > data.revival.cast_ticks {
+            let ability_slot = slot.active_slot;
+            let spawn = clamp_revival_position(slot.base.position + data.revival.shockwave_offset);
+            if let Some(old) = slot.revival_markers[ability_slot].take() {
+                self.end_revival_marker(old);
+            }
+            let marker_index = self.revival_marker_pool.len();
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.revival.marker_updatable_count;
+            self.revival_marker_pool.push(RevivalMarker {
+                active: true,
+                registered: false,
+                born_tick: self.tick,
+                owner: index,
+                ability_slot,
+                entity: None,
+                hierarchy_base,
+                position: spawn,
+                velocity: Vec2::ZERO,
+            });
+            self.players[index].revival_markers[ability_slot] = Some(marker_index);
+            self.players[index].revival.phase = 1;
+            self.players[index].revival.ticks = 0;
+        } else if slot.revival.phase == 1 && slot.revival.ticks > data.revival.exit_ticks {
+            let exit_normal = slot.revival.attached_ground.and_then(|id| {
+                self.platforms
+                    .iter()
+                    .find(|platform| platform.id == id)
+                    .map(|platform| platform.surface.normal(slot.base.position))
+            });
+            if let Some(normal) = exit_normal {
+                slot.base.position += normal * Fix::from_f32(0.05);
+            }
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = self.tick;
+            slot.exit_to_fall();
+            slot.active = ActiveAbility::None;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.collision_rays(terrain!(self));
+            return;
+        }
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+    }
+
+    fn end_revival_marker(&mut self, marker_index: usize) {
+        let marker = &mut self.revival_marker_pool[marker_index];
+        marker.active = false;
+        marker.registered = false;
+        if let Some(entity) = marker.entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+    }
+
+    fn register_pending_revival_markers(&mut self, data: &data::RolloutData) {
+        for marker_index in 0..self.revival_marker_pool.len() {
+            let marker = self.revival_marker_pool[marker_index];
+            if !marker.active || marker.registered || marker.born_tick >= self.tick {
+                continue;
+            }
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: data.revival.marker_layer,
+                owner: marker.owner as u32 + 1,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000
+                    + marker.hierarchy_base
+                    + data.revival.marker_collider_hierarchy,
+                x: (marker.position + data.revival.marker_offset).x.raw(),
+                y: (marker.position + data.revival.marker_offset).y.raw(),
+                radius: data.revival.marker_radius.raw(),
+                inverse_mass: data.revival.marker_body.inverse_mass.raw(),
+                ..CEntity::default()
+            });
+            self.revival_marker_pool[marker_index].registered = true;
+            self.revival_marker_pool[marker_index].entity = Some(entity);
+        }
     }
 
     /// Updater initializes a prefab registered during the preceding pass
@@ -3478,6 +3692,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.bow_entity,
                 slot.gust_entity,
+                slot.revival_entity,
             ];
             for e in rows {
                 if e == usize::MAX {
@@ -3699,16 +3914,17 @@ impl RolloutWorld {
         self.sample.slimes = self.sample_slimes.as_ptr();
     }
 
-    /// The live rows minus the removed ones. A plain slice copy when nothing
-    /// was removed (the common case): the element-wise filtered copy goes
-    /// through a stack temporary whose 64-byte vector reload stalls on store
-    /// forwarding and dominated this function.
+    /// DetPhysics stores one list per shape and observations enumerate
+    /// circles, boxes, then rounded rectangles. Reuse the output allocation
+    /// while preserving registration order inside each shape group.
     fn publish_entities(out: &mut Vec<CEntity>, entities: &[CEntity]) {
         out.clear();
-        if entities.iter().any(|e| e.flags & E_REMOVED != 0) {
-            out.extend(entities.iter().filter(|e| e.flags & E_REMOVED == 0));
-        } else {
-            out.extend_from_slice(entities);
+        for kind in 0..=2 {
+            out.extend(
+                entities
+                    .iter()
+                    .filter(|e| e.kind == kind && e.flags & E_REMOVED == 0),
+            );
         }
     }
 
@@ -3737,8 +3953,9 @@ impl RolloutWorld {
     /// into the collider every pass (DetPhysics.cs:2498-2530), so inactive
     /// rows keep the position of their last active pass.
     fn refresh_actor_entities(&mut self) {
+        let data = data::get();
         for index in 0..self.players.len() {
-            let (body_e, dash_e, circle_e, bow_e, gust_e) = {
+            let (body_e, dash_e, circle_e, bow_e, gust_e, revival_e) = {
                 let s = &self.players[index];
                 (
                     s.body_entity,
@@ -3746,6 +3963,7 @@ impl RolloutWorld {
                     s.circle_entity,
                     s.bow_entity,
                     s.gust_entity,
+                    s.revival_entity,
                 )
             };
             let slot = &self.players[index];
@@ -3965,6 +4183,30 @@ impl RolloutWorld {
                     circle.rotation = rotation.raw();
                 }
             }
+            if revival_e != usize::MAX {
+                let circle = &mut self.entities[revival_e];
+                let was_active = circle.flags & E_ACTIVE != 0;
+                let reviving = alive && slot.active == ActiveAbility::Revival;
+                circle.flags = if reviving {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if reviving {
+                    circle.owner = slot.base.id;
+                }
+                if reviving || was_active {
+                    let (position, rotation) = if reviving {
+                        (slot.base.position, slot.base.rotation)
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    let offset = Vec2::angle(rotation).complex_mul(data.revival.collider_offset);
+                    circle.x = (position + offset).x.raw();
+                    circle.y = (position + offset).y.raw();
+                    circle.rotation = rotation.raw();
+                }
+            }
         }
         for arrow in &self.arrows {
             if !arrow.active || !arrow.registered {
@@ -3976,6 +4218,17 @@ impl RolloutWorld {
             e.vx = arrow.velocity.x.raw();
             e.vy = arrow.velocity.y.raw();
             e.rotation = arrow.rotation.raw();
+        }
+        for marker in &self.revival_marker_pool {
+            if !marker.active || !marker.registered {
+                continue;
+            }
+            let e = &mut self.entities[marker.entity.expect("registered Revival marker")];
+            let position = marker.position + data.revival.marker_offset;
+            e.x = position.x.raw();
+            e.y = position.y.raw();
+            e.vx = marker.velocity.x.raw();
+            e.vy = marker.velocity.y.raw();
         }
     }
 

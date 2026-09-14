@@ -1517,8 +1517,8 @@ records are in `fixtures/bopl-body.jsonl.gz`; hashes and raw captures are in
 `artifacts/bopl-body-verified`. Run `verify_bopl_body.py --golden` to replay them.
 
 These are component-method checks against seeded registered physics state.
-Fresh collider initialization and dynamic Revival marker integration remain
-separate work; this corpus does not establish a complete Revival ability.
+The public rollout integration described below now covers fresh collider
+initialization and dynamic marker registration; death-to-respawn remains open.
 
 ### Revival marker allocation and lifetime
 
@@ -1552,6 +1552,18 @@ removal, the expected extra-life flag/reference counts, and the exact errors.
 Marker creation now connects to the death and respawn path described below.
 Copying all equipped ability types remains open; this is not a complete Revival ability
 or full public C match implementation.
+
+The public Q32 rollout now executes Revival's cast-side path as well. It uses
+the exported QuickSpell animations and offsets, active 2.3-radius ability
+circle, one-pass-deferred marker registration, exact layer/owner/body fields,
+and global spawned-prefab hierarchy numbering. `revival_ability_ab.c` compares
+650 complete NativeAOT/Rust ticks, including the cast, active body, marker row,
+exit, landing, and stationary marker lifetime. The comparison is exact. It
+also exposed the source observation order for dynamic shapes: DetPhysics
+enumerates all circles before boxes and rounded rectangles, independent of
+when a circle was registered. The Rust observation writer now performs those
+three allocation-free linear passes while preserving registration order within
+each group.
 
 ### Revival death, effects and particles
 
