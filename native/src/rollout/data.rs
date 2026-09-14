@@ -205,6 +205,62 @@ struct RawPrefabs {
     gust: RawGust,
     revival: RawRevival,
     teleport: RawTeleport,
+    grenade: RawGrenade,
+}
+
+#[derive(Deserialize)]
+struct RawGrenade {
+    hurtbox_extents: RawVec2,
+    #[serde(rename = "throw")]
+    throw_data: RawThrowItem,
+    item: RawGrenadeItem,
+    explosion: RawGrenadeExplosion,
+}
+#[derive(Deserialize)]
+struct RawThrowItem {
+    air_position: RawVec2,
+    ground_position: RawVec2,
+    ground_dummy: Vec<RawVec2>,
+    air_dummy: Vec<RawVec2>,
+    hurt_owner_delay: i64,
+    max_force: i64,
+    min_force: i64,
+    force_gain_speed: i64,
+    max_slow_mo_speed: i64,
+    knockback: i64,
+    animations: RawThrowAnimations,
+}
+#[derive(Deserialize)]
+struct RawThrowAnimations {
+    #[serde(rename = "gEnter")]
+    ground_enter: Vec<i32>,
+    #[serde(rename = "gExit")]
+    ground_exit: Vec<i32>,
+    #[serde(rename = "aEnter")]
+    air_enter: Vec<i32>,
+    #[serde(rename = "aExit")]
+    air_exit: Vec<i32>,
+}
+#[derive(Deserialize)]
+struct RawGrenadeItem {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    body: RawBody,
+    detonation_time: i64,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+}
+#[derive(Deserialize)]
+struct RawGrenadeExplosion {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    animation_ticks: u32,
 }
 
 #[derive(Deserialize)]
@@ -452,6 +508,38 @@ pub struct TeleportData {
     pub effect_updatable_count: u32,
     pub effect_duration: Fix,
 }
+pub struct GrenadeData {
+    pub hurtbox_extents: Vec2,
+    pub air_position: Vec2,
+    pub ground_position: Vec2,
+    pub ground_dummy: Vec<Vec2>,
+    pub air_dummy: Vec<Vec2>,
+    pub hurt_owner_delay: Fix,
+    pub max_force: Fix,
+    pub min_force: Fix,
+    pub force_gain_speed: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub knockback: Fix,
+    pub ground_enter_ticks: u32,
+    pub ground_exit_ticks: u32,
+    pub air_enter_ticks: u32,
+    pub air_exit_ticks: u32,
+    pub item_layer: u32,
+    pub item_updatable_count: u32,
+    pub item_collider_hierarchy: u32,
+    pub item_radius: Fix,
+    pub item_body: crate::physics::Body,
+    pub detonation_time: Fix,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub explosion_layer: u32,
+    pub explosion_updatable_count: u32,
+    pub explosion_collider_hierarchy: u32,
+    pub explosion_extents: Vec2,
+    pub explosion_animation_ticks: u32,
+}
 pub struct AbilityData {
     pub id: u32,
     pub name: String,
@@ -480,6 +568,7 @@ pub struct RolloutData {
     pub gust: GustData,
     pub revival: RevivalData,
     pub teleport: TeleportData,
+    pub grenade: GrenadeData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -804,6 +893,42 @@ pub fn get() -> &'static RolloutData {
                     marker_body: body(&teleport.marker.body, Fix::ZERO),
                     effect_updatable_count: teleport.effect_updatable_count,
                     effect_duration: Fix::from_raw(teleport.effect_duration),
+                }
+            },
+            grenade: {
+                let grenade = &raw.prefabs.grenade;
+                let throw = &grenade.throw_data;
+                GrenadeData {
+                    hurtbox_extents: grenade.hurtbox_extents.get(),
+                    air_position: throw.air_position.get(),
+                    ground_position: throw.ground_position.get(),
+                    ground_dummy: throw.ground_dummy.iter().map(RawVec2::get).collect(),
+                    air_dummy: throw.air_dummy.iter().map(RawVec2::get).collect(),
+                    hurt_owner_delay: Fix::from_raw(throw.hurt_owner_delay),
+                    max_force: Fix::from_raw(throw.max_force),
+                    min_force: Fix::from_raw(throw.min_force),
+                    force_gain_speed: Fix::from_raw(throw.force_gain_speed),
+                    max_slow_mo_speed: Fix::from_raw(throw.max_slow_mo_speed),
+                    knockback: Fix::from_raw(throw.knockback),
+                    ground_enter_ticks: ticks(&throw.animations.ground_enter),
+                    ground_exit_ticks: ticks(&throw.animations.ground_exit),
+                    air_enter_ticks: ticks(&throw.animations.air_enter),
+                    air_exit_ticks: ticks(&throw.animations.air_exit),
+                    item_layer: grenade.item.layer,
+                    item_updatable_count: grenade.item.updatable_count,
+                    item_collider_hierarchy: grenade.item.collider_hierarchy,
+                    item_radius: Fix::from_raw(grenade.item.radius),
+                    item_body: body(&grenade.item.body, Fix::ZERO),
+                    detonation_time: Fix::from_raw(grenade.item.detonation_time),
+                    clone_count: grenade.item.clone_count,
+                    duplicate_pattern: grenade.item.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(grenade.item.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(grenade.item.duplicate_angle),
+                    explosion_layer: grenade.explosion.layer,
+                    explosion_updatable_count: grenade.explosion.updatable_count,
+                    explosion_collider_hierarchy: grenade.explosion.collider_hierarchy,
+                    explosion_extents: grenade.explosion.extents.get(),
+                    explosion_animation_ticks: grenade.explosion.animation_ticks,
                 }
             },
             abilities: raw

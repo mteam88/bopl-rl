@@ -453,6 +453,60 @@ def main():
         "effect_duration": fix(teleport_effect_config, "duration"),
     }
 
+    # ---- Grenade / shared ThrowItem2 item path ----
+    _, grenade_ability = find_prefab("Assets/GameObject/Grenade_0.prefab")
+    grenade_throw = component(grenade_ability, "ThrowItem2")
+    grenade_box = component(grenade_ability, "DPhysicsBox")
+    grenade_anims = animations(guid_of(grenade_throw["animData"]))
+    grenade_item = ASSETS[guid_of(grenade_throw["ItemPrefab"])]
+    grenade = component(grenade_item, "Grenade")
+    grenade_item_data = component(grenade_item, "Item")
+    grenade_circle = component(grenade_item, "DPhysicsCircle")
+    grenade_body = component(grenade_item, "BoplBody")
+    grenade_explode = component(grenade_item, "GrenadeExplode")
+    grenade_explosion = ASSETS[guid_of(grenade_explode["explosion"])]
+    explosion = component(grenade_explosion, "Explosion")
+    explosion_box = component(grenade_explosion, "DPhysicsBox")
+    explosion_anims = animations(guid_of(explosion["explosionAnimation"]))
+    out["prefabs"]["grenade"] = {
+        "hurtbox_extents": vec2(grenade_box, "startExtents"),
+        "throw": {
+            "air_position": vec2(grenade_throw, "aThrowPosition"),
+            "ground_position": vec2(grenade_throw, "gThrowPosition"),
+            "ground_dummy": [vec2(grenade_throw, f"groundedDummyPositions.Array.data[{i}]")
+                             for i in range(grenade_throw["groundedDummyPositions.Array.size"])],
+            "air_dummy": [vec2(grenade_throw, f"airealDummyPositions.Array.data[{i}]")
+                          for i in range(grenade_throw["airealDummyPositions.Array.size"])],
+            "hurt_owner_delay": fix(grenade_throw, "DisableGrenadeHitBoxTime"),
+            "max_force": fix(grenade_throw, "maxThrowForce"),
+            "min_force": fix(grenade_throw, "minThrowForce"),
+            "force_gain_speed": fix(grenade_throw, "ThrowForceGainSpeed"),
+            "max_slow_mo_speed": fix(grenade_throw, "maxSlowMoSpeed"),
+            "knockback": fix(grenade_throw, "knockback"),
+            "animations": {name: grenade_anims[name]
+                           for name in ("gEnter", "gExit", "aEnter", "aExit")},
+        },
+        "item": {
+            "layer": grenade_item["data"].get("layer"),
+            "updatable_count": updater_count(grenade_item),
+            "collider_hierarchy": grenade_circle["hierarchyNumber"],
+            "radius": fix(grenade_circle, "startRadius"),
+            "body": physics_body(grenade_body),
+            "detonation_time": fix(grenade, "detonationTime"),
+            "clone_count": grenade_item_data["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": grenade_item_data["duplicatePattern"],
+            "duplicate_spacing": fix(grenade_item_data, "duplicate_spacing"),
+            "duplicate_angle": fix(grenade_item_data, "duplicate_angle"),
+        },
+        "explosion": {
+            "layer": grenade_explosion["data"].get("layer"),
+            "updatable_count": updater_count(grenade_explosion),
+            "collider_hierarchy": explosion_box["hierarchyNumber"],
+            "extents": vec2(explosion_box, "startExtents"),
+            "animation_ticks": sum(abs(d) for d in explosion_anims[next(iter(explosion_anims))]),
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

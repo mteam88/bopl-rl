@@ -950,6 +950,33 @@ teammate offsets, now reproduced at reset. Projectile, item and tagged-boulder
 targets are part of Teleport's mask but cannot be certified until their dynamic
 entity types are present in the rollout backend; the player mechanic is exact.
 
+### Executable Grenade throw and flight (2026-09-14)
+
+Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned
+Grenade item. Extraction retains both grounded and aerial animation lengths and
+throw offsets, charge-force bounds, recoil, owner-hurt delay, item hierarchy,
+circle radius, mass, bounce/friction, gravity and drag, and the downstream
+explosion metadata. The held object consumes its prefab hierarchy at the
+original enter callback but has no DetPhysics row until `Fire` calls the
+manually initialized circle in the release pass.
+
+The grounded path preserves the source's split bodies: release advances the
+active ability hurtbox once by the ten-unit recoil while the deactivated slime
+body remains at its platform pose; exit snaps the slime back and starts the
+`justlanded` animation at the measured callback phase. The thrown circle then
+uses the extracted one-third inverse mass, gravity -40 and 0.999 air drag with
+the same force-to-impulse conversion. Storage is a reusable item pool, so the
+per-tick ballistic pass allocates nothing.
+
+`grenade_throw_ab.c` compares every public header, player, slime, telemetry and
+entity field between NativeAOT and Q32 Rust for 130 ticks. It covers readiness,
+15-tick grounded entry, a seven-frame hold, charged release, 12-tick exit and
+the complete free trajectory through the last tick before the grenade first
+touches its owner. The next reference tick invokes the item collision callback;
+terrain/player resolution, delayed owner damage, timed detonation, grenade
+duplication, explosion shockwaves/damage and the aerial/forced-exit paths remain
+outside this checkpoint.
+
 ### Executable Gust (2026-09-14)
 
 Catalog id 7 now executes the shipped Gust `Ability`, `QuickSpell`, and

@@ -38,6 +38,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// Catalog indices with real behaviour in this backend.
 pub const ABILITY_RANDOM: u32 = 1;
 pub const ABILITY_DASH: u32 = 2;
+pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
 pub const ABILITY_PLATFORM: u32 = 14;
@@ -311,6 +312,37 @@ pub struct Arrow {
     pub can_hurt_owner: bool,
 }
 
+/// Shared `ThrowItem2` payload state. Grenade is the first consumer; Smoke,
+/// Poke Ball, Tack, and Mjolnir use the same held-item/throw lifecycle.
+#[derive(Clone, Copy, Default)]
+pub struct ThrownItem {
+    pub active: bool,
+    pub id: u32,
+    pub owner: usize,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub position: Vec2,
+    pub body: Body,
+    pub fuse: Fix,
+    pub hurt_owner_delay: Fix,
+    pub detonates_on_owner: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ThrowItemState {
+    /// 0: enter animation, 1: exit animation.
+    pub phase: u32,
+    pub ticks: u32,
+    pub grounded: bool,
+    pub has_inputted_fire: bool,
+    pub has_fired: bool,
+    pub time_passed: Fix,
+    pub fire_input_time: Fix,
+    pub direction: Vec2,
+    pub item: Option<usize>,
+}
+
 /// A platform spawned by the Platform ability (ResizablePlatform prefab).
 /// Each player keeps at most one (PlatformTransform's one-slot srrBuffer);
 /// a re-cast removes the previous platform.
@@ -481,6 +513,7 @@ pub enum ActiveAbility {
     None,
     Dash,
     Bow,
+    Grenade,
     Gust,
     Revival,
     Platform,
@@ -526,6 +559,7 @@ pub struct PlayerSlot {
     /// the destroyed StickyRoundedRectangle's last surface normal.
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
+    pub throw_item: ThrowItemState,
     pub platform: PlatformState,
     pub gust: GustState,
     pub revival: RevivalState,
@@ -575,6 +609,7 @@ pub struct PlayerSlot {
     pub body_entity: usize,
     pub dash_entity: usize,
     pub bow_entity: usize,
+    pub throw_entity: usize,
 }
 
 impl PlayerSlot {
@@ -643,6 +678,7 @@ pub struct RolloutWorld {
     /// Parallel to `platforms`: index into the entity table.
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
+    pub thrown_items: Vec<ThrownItem>,
     pub spawned: Vec<SpawnedPlatform>,
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
@@ -712,6 +748,7 @@ impl RolloutWorld {
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
+            thrown_items: Vec::with_capacity(64),
             spawned: Vec::with_capacity(64),
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
@@ -767,6 +804,7 @@ impl RolloutWorld {
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
+        self.thrown_items.clone_from(&src.thrown_items);
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
         self.revival_marker_pool
@@ -818,6 +856,7 @@ impl RolloutWorld {
             platform_defs: _,
             platform_entities: _,
             arrows: _,
+            thrown_items: _,
             spawned: _,
             gust_waves: _,
             revival_marker_pool: _,
@@ -896,6 +935,7 @@ impl RolloutWorld {
         self.rng = Random::new(config.seed.max(1));
         self.sudden_death = false;
         self.arrows.clear();
+        self.thrown_items.clear();
         self.spawned.clear();
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.revival_marker_pool.clear();
@@ -959,6 +999,7 @@ impl RolloutWorld {
         let mut body_entity = [usize::MAX; MAX_PLAYERS];
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
+        let mut throw_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -1041,6 +1082,12 @@ impl RolloutWorld {
                             data.bow.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut bow_entity[i],
+                            false,
+                        ),
+                        ABILITY_GRENADE => (
+                            data.grenade.hurtbox_extents,
+                            100_000_000 + ability_hierarchy[i][slot_index] + 8,
+                            &mut throw_entity[i],
                             false,
                         ),
                         _ => continue,
@@ -1211,6 +1258,7 @@ impl RolloutWorld {
                 reported_tick: u32::MAX,
                 removed_ground_normal: None,
                 bow: BowState::default(),
+                throw_item: ThrowItemState::default(),
                 platform: PlatformState::default(),
                 gust: GustState::default(),
                 revival: RevivalState::default(),
@@ -1240,6 +1288,7 @@ impl RolloutWorld {
                 body_entity: body_entity[i],
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
+                throw_entity: throw_entity[i],
             });
         }
 
@@ -1612,6 +1661,7 @@ impl RolloutWorld {
                     ActiveAbility::None
                     | ActiveAbility::Dash
                     | ActiveAbility::Bow
+                    | ActiveAbility::Grenade
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
@@ -1641,6 +1691,7 @@ impl RolloutWorld {
             self.update_obs_state(index, input);
         }
         self.arrows_integrate(data);
+        self.thrown_items_integrate(data);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -1650,6 +1701,7 @@ impl RolloutWorld {
                     slot.dash_entity,
                     slot.circle_entity,
                     slot.bow_entity,
+                    slot.throw_entity,
                     slot.gust_entity,
                     slot.revival_entity,
                 ] {
@@ -1867,6 +1919,27 @@ impl RolloutWorld {
                         self.dash_move(index, masked, movement_input);
                         return;
                     }
+                    ABILITY_GRENADE => {
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Grenade;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        let grounded = slot.base.grounded;
+                        slot.throw_item = ThrowItemState {
+                            grounded,
+                            direction: Vec2::UP,
+                            ..ThrowItemState::default()
+                        };
+                        if grounded {
+                            slot.base.velocity = Vec2::ZERO;
+                        } else {
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                        }
+                        self.throw_item_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -2043,6 +2116,10 @@ impl RolloutWorld {
 
         if self.players[index].active == ActiveAbility::Bow {
             self.bow_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Grenade {
+            self.throw_item_tick(index, action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
@@ -2452,10 +2529,12 @@ impl RolloutWorld {
             });
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
+            let mut throw_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
-                let (extents, target) = match abilities[slot] {
-                    ABILITY_DASH => (data.dash.hurtbox_extents, &mut dash_entity),
-                    ABILITY_BOW => (data.bow.hurtbox_extents, &mut bow_entity),
+                let (extents, relative_hierarchy, target) = match abilities[slot] {
+                    ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
+                    ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
+                    ABILITY_GRENADE => (data.grenade.hurtbox_extents, 8, &mut throw_entity),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -2465,7 +2544,7 @@ impl RolloutWorld {
                     kind: 1,
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER,
-                    hierarchy: 100_000_000 + hierarchy + 7,
+                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     right_x: extents.x.raw(),
                     up_y: extents.y.raw(),
                     inverse_mass: -Fix::ONE.raw(),
@@ -2491,9 +2570,11 @@ impl RolloutWorld {
             slot.obs_state = STATE_NOTHING;
             slot.timers.fill(Fix::from_f32(-1.5));
             slot.active = ActiveAbility::None;
+            slot.throw_item = ThrowItemState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
+            slot.throw_entity = throw_entity;
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
@@ -2738,6 +2819,181 @@ impl RolloutWorld {
         if !self.players[index].base.dash.active {
             self.players[index].active = ActiveAbility::None;
         }
+    }
+
+    /// `ThrowItem2` player-form lifecycle for the Grenade prefab. The item
+    /// collider is manually initialized by `Fire`, so it joins DetPhysics in
+    /// the cast pass even though its MonoUpdatables initialize next pass.
+    fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let gd = &data.grenade;
+        let aim = action.direction();
+        if aim != Vec2::ZERO && !self.players[index].throw_item.has_inputted_fire {
+            let slot = &mut self.players[index];
+            slot.throw_item.direction = aim;
+            if slot.throw_item.grounded {
+                let normal = slot
+                    .base
+                    .ground
+                    .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                    .map_or(slot.base.up, |platform| {
+                        platform.surface.normal(slot.base.position)
+                    });
+                slot.facing_right = normal.cross(aim.normalized_safe()) < Fix::ZERO;
+            } else {
+                slot.facing_right = aim.x > Fix::ZERO;
+            }
+        }
+
+        let button = 2u8 << self.players[index].active_slot;
+        if !self.players[index].throw_item.has_inputted_fire && action.buttons & button == 0 {
+            let state = &mut self.players[index].throw_item;
+            state.has_inputted_fire = true;
+            state.fire_input_time = state.time_passed;
+        }
+
+        let state = &mut self.players[index].throw_item;
+        state.ticks += 1;
+        state.time_passed += DT;
+        if state.phase == 0 {
+            let enter_ticks = if state.grounded {
+                gd.ground_enter_ticks
+            } else {
+                gd.air_enter_ticks
+            };
+            if state.ticks > enter_ticks {
+                if state.has_inputted_fire {
+                    self.fire_grenade(index, data);
+                } else if state.item.is_none() {
+                    // The held grenade has no registered collider because its
+                    // DPhysicsCircle uses manuallyCallInit. Keep only the
+                    // payload state until release calls `Fire`.
+                    let item = self.spawn_held_grenade(index, data);
+                    self.players[index].throw_item.item = Some(item);
+                }
+            }
+        }
+
+        if self.players[index].throw_item.phase == 0
+            && self.players[index].throw_item.item.is_some()
+            && self.players[index].throw_item.has_inputted_fire
+        {
+            self.fire_grenade(index, data);
+        }
+
+        if self.players[index].throw_item.phase == 1 {
+            let exit_ticks = if self.players[index].throw_item.grounded {
+                gd.ground_exit_ticks
+            } else {
+                gd.air_exit_ticks
+            };
+            if self.players[index].throw_item.ticks > exit_ticks {
+                let slot = &mut self.players[index];
+                slot.active = ActiveAbility::None;
+                if slot.base.grounded {
+                    // ThrowItem2 marks a grounded exit as `justlanded`.
+                    // SlimeController starts `land` after the slime's own
+                    // animator has already updated in this pass.
+                    slot.obs_state = STATE_LAND;
+                    slot.state_ticks = LAND_TICKS + 2;
+                } else {
+                    slot.exit_to_fall();
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.base.collision_rays(terrain!(self));
+                }
+                slot.reported_position = slot.base.position;
+                slot.reported_tick = self.tick;
+                return;
+            }
+        }
+        if self.players[index].throw_item.grounded {
+            // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
+            // attached to the authored surface; the grounded exit therefore
+            // hands a stationary body back to SlimeController.
+            self.players[index].base.velocity = Vec2::ZERO;
+        }
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+    }
+
+    fn spawn_held_grenade(&mut self, index: usize, data: &data::RolloutData) -> usize {
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.grenade.item_updatable_count;
+        let id = self.next_id();
+        let item = ThrownItem {
+            active: true,
+            id,
+            owner: index,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: None,
+            position: self.players[index].base.position,
+            body: data.grenade.item_body,
+            fuse: data.grenade.detonation_time,
+            hurt_owner_delay: Fix::ZERO,
+            detonates_on_owner: false,
+        };
+        if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
+            let entity = self.thrown_items[free].entity;
+            self.thrown_items[free] = ThrownItem { entity, ..item };
+            free
+        } else {
+            self.thrown_items.push(item);
+            self.thrown_items.len() - 1
+        }
+    }
+
+    fn fire_grenade(&mut self, index: usize, data: &data::RolloutData) {
+        let gd = &data.grenade;
+        let item_index = self.players[index]
+            .throw_item
+            .item
+            .unwrap_or_else(|| self.spawn_held_grenade(index, data));
+        let slot = &mut self.players[index];
+        let state = &mut slot.throw_item;
+        let direction = state.direction;
+        let local_sign = if slot.facing_right {
+            -Fix::ONE
+        } else {
+            Fix::ONE
+        };
+        let local = if state.grounded {
+            gd.ground_position
+        } else {
+            gd.air_position
+        } * local_sign;
+        let basis = Vec2::angle(slot.base.rotation);
+        let position = slot.base.position + local.complex_mul(basis);
+        let charge = (state.fire_input_time * gd.force_gain_speed)
+            .max(Fix::ZERO)
+            .min(Fix::ONE);
+        let force = gd.min_force + (gd.max_force - gd.min_force) * charge;
+        let impulse_force = direction * force * Fix::from_int(60);
+        let item = &mut self.thrown_items[item_index];
+        item.position = position;
+        item.body.orientation = slot.base.rotation;
+        item.body.force += impulse_force;
+        item.hurt_owner_delay = gd.hurt_owner_delay;
+        if item.entity.is_none() {
+            self.entities.push(CEntity::default());
+            item.entity = Some(self.entities.len() - 1);
+        }
+        let entity = item.entity.expect("grenade collider allocated");
+        self.entities[entity] = CEntity {
+            id: item.id,
+            kind: 0,
+            layer: gd.item_layer,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
+            radius: gd.item_radius.raw(),
+            inverse_mass: item.body.inverse_mass.raw(),
+            ..CEntity::default()
+        };
+        slot.base.velocity -= gd.knockback * direction;
+        state.has_fired = true;
+        state.item = Some(item_index);
+        state.phase = 1;
+        state.ticks = 0;
     }
 
     /// BowTransform.OldUpdate + UpdateSim for one tick: aim tracking, the
@@ -3490,6 +3746,35 @@ impl RolloutWorld {
         }
     }
 
+    fn thrown_items_integrate(&mut self, data: &data::RolloutData) {
+        for item in &mut self.thrown_items {
+            if !item.active || item.entity.is_none() {
+                continue;
+            }
+            if item.born_tick < self.tick {
+                item.fuse -= DT;
+                if item.hurt_owner_delay > Fix::ZERO {
+                    item.hurt_owner_delay -= DT;
+                    if item.hurt_owner_delay <= Fix::ZERO {
+                        item.detonates_on_owner = true;
+                    }
+                }
+            }
+            let delta = item.body.integrate(DT, Fix::from_int(-40));
+            item.position += delta;
+            let entity = item.entity.expect("active thrown item collider");
+            let row = &mut self.entities[entity];
+            row.flags = E_ACTIVE | E_ENABLED;
+            row.x = item.position.x.raw();
+            row.y = item.position.y.raw();
+            row.vx = item.body.velocity.x.raw();
+            row.vy = item.body.velocity.y.raw();
+            row.rotation = item.body.orientation.raw();
+            row.angular_velocity = item.body.angular_velocity.raw();
+            row.inverse_mass = data.grenade.item_body.inverse_mass.raw();
+        }
+    }
+
     /// DetPhysics contact group order for Arrow's circle is Circle/RR,
     /// Circle/Circle, then Circle/Box. Arrow.OnCollide consumes wall contacts,
     /// but intentionally returns without destroying itself for PlayerBody
@@ -3613,6 +3898,11 @@ impl RolloutWorld {
                             inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                         }
                     }
+                    ActiveAbility::Grenade => OrientedBox::from_basis(
+                        player.base.position,
+                        Vec2::angle(player.base.rotation),
+                        data.grenade.hurtbox_extents,
+                    ),
                     _ => player.base.collider,
                 };
                 if crate::physics::contact::circle_box(circle, hurtbox).is_some() {
@@ -4085,6 +4375,7 @@ impl RolloutWorld {
                 slot.dash_entity,
                 slot.circle_entity,
                 slot.bow_entity,
+                slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
             ];
@@ -4153,6 +4444,7 @@ impl RolloutWorld {
                 slot.dash_entity,
                 slot.circle_entity,
                 slot.bow_entity,
+                slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
             ];
@@ -4417,13 +4709,14 @@ impl RolloutWorld {
     fn refresh_actor_entities(&mut self) {
         let data = data::get();
         for index in 0..self.players.len() {
-            let (body_e, dash_e, circle_e, bow_e, gust_e, revival_e) = {
+            let (body_e, dash_e, circle_e, bow_e, throw_e, gust_e, revival_e) = {
                 let s = &self.players[index];
                 (
                     s.body_entity,
                     s.dash_entity,
                     s.circle_entity,
                     s.bow_entity,
+                    s.throw_entity,
                     s.gust_entity,
                     s.revival_entity,
                 )
@@ -4434,6 +4727,7 @@ impl RolloutWorld {
             let teleporting = slot.teleport_effect_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
+            let throwing = slot.active == ActiveAbility::Grenade;
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
@@ -4586,6 +4880,46 @@ impl RolloutWorld {
                     bow_box.up_x = hurtbox.up.x.raw();
                     bow_box.up_y = hurtbox.up.y.raw();
                     bow_box.rotation = rotation.raw();
+                }
+            }
+            if throw_e != usize::MAX {
+                let throw_box = &mut self.entities[throw_e];
+                let was_active = throw_box.flags & E_ACTIVE != 0;
+                if alive && throwing {
+                    throw_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    throw_box.owner = slot.base.id;
+                } else {
+                    throw_box.flags = E_ENABLED | E_TRIGGER;
+                }
+                if (alive && throwing) || was_active {
+                    let (center, rotation) = if throwing {
+                        // `Fire` applies the recoil before this pass's
+                        // grounded `PlayerPhysics.Move`. The ability body
+                        // advances once by that velocity while the original
+                        // slime body remains frozen at its pre-cast pose.
+                        let center = if slot.throw_item.grounded && slot.throw_item.has_fired {
+                            synced - slot.throw_item.direction * data.grenade.knockback * DT
+                        } else {
+                            synced
+                        };
+                        (center, slot.base.rotation)
+                    } else {
+                        (exit_position, slot.base.rotation)
+                    };
+                    let hurtbox = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(rotation),
+                        data.grenade.hurtbox_extents,
+                    );
+                    throw_box.x = center.x.raw();
+                    throw_box.y = center.y.raw();
+                    throw_box.vx = 0;
+                    throw_box.vy = 0;
+                    throw_box.right_x = hurtbox.right.x.raw();
+                    throw_box.right_y = hurtbox.right.y.raw();
+                    throw_box.up_x = hurtbox.up.x.raw();
+                    throw_box.up_y = hurtbox.up.y.raw();
+                    throw_box.rotation = rotation.raw();
                 }
             }
             // The Platform ability's hurtbox circle is live during
