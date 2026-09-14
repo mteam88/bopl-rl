@@ -1,22 +1,33 @@
-# Overnight sweep 8 (queued 2026-09-13 behind overnight-7): overnight-7's search box
-# with the training budget itself swept, 1B..4B learner steps. overnight-7's Elo
-# curves were still climbing at 1B (median tail slope over the last 200M positive
-# on both rating sources), so 1B is a box edge we chose, not a plateau; the fixed
-# point of every earlier sweep becomes a Protein axis with a real cost model.
+# Overnight sweep 8 (queued 2026-09-13 behind overnight-7, retuned 2026-09-14 11:00
+# from overnight-7's first 45 trials): overnight-7's search with the training budget
+# itself swept, 1B..4B learner steps. overnight-7's Elo curves were still climbing
+# at 1B, so 1B is a box edge we chose, not a plateau; the fixed point of every
+# earlier sweep becomes a Protein axis with a real cost model.
 # Score: Bradley-Terry Elo vs pool v5, IQM over the last 3 evaluations, 480 games per
 # checkpoint (unchanged since overnight-5; game_mismatch=true is informational).
 #
 # fixed_cost = false: Protein sees each trial as three (steps, score, cost) points
 # (the last 3 rated checkpoints) and suggests steps like any other hyper, trading
 # cost against expected score along the pareto front. Cost = learner steps, so a
-# bot-heavy trial (slower sps, overnight-7 013 took 2.4x wall) is not penalised for
-# wall time; max_seconds only guards a hang. Trials end on their own steps target.
+# bot-heavy trial (slower sps) is not penalised for wall time; max_seconds only
+# guards a hang. The driver log-stratifies the 12 Sobol trials over the steps box
+# (cheap first) so the GP starts with cost-axis coverage (see driver.py).
 #
-# Fixed by evidence, not by hand (see overnight-7.toml): aim_fourier 4, w128 b4
-# hidden 128, the 12-entry v2 roster. Boxes are overnight-7's, with two edges moved
-# because a 4B run can want them: entropy_half_life up to 1e10 (was 3e9, ~ the
-# 1B..3B run length; a 4B run may want a slower schedule than a 1B run), and steps
-# 1e9..4e9 itself. Trial 000 = overnight-7's 000 at 1B (613): the fixed point.
+# What overnight-7 taught (45 trials, best 733 = trial 041, previous ceiling ~600):
+#   - banks 1 / share_max 1.0 / share_min at its floor wins: one bank always
+#     matchmade against a roster bot (12.5% of games), never more banks (corr
+#     banks -0.52, share_max +0.63, share_min -0.53). Two of those sit on box
+#     edges: share_max 1.0 is a hard ceiling by definition; share_min 0.02 was
+#     our floor, so it is opened to 0.002 here.
+#   - head_scale_aim wants the floor (0.05, corr -0.46, the last 8 trials all at
+#     0.05): opened to 0.005. Do not narrow the top; the GP already left it.
+#   - entropy_half_life short (150..320M at 1B, corr -0.50), near our 1e8 floor:
+#     opened to 3e7. The top stays 1e10 because a 4B run may want a slower
+#     schedule than a 1B run; the optimizer decides.
+#   - lr ~1e-3, reward_kill ~0.9, entropy ~0.02: mid-box, boxes unchanged.
+# Trial 000 = overnight-7's 041 (733) at 1B: the fixed point, and a same-seed
+# replicate of the best trial (the banks-1/share-1 cell spans 551..733 at
+# near-identical hypers, so that replicate is also the noise-floor measurement).
 #
 # Cadence: eval_every 80M / checkpoint_every 20M. A 4B trial gets 50 in-run
 # evaluations (100 at 40M would double the per-trial disk: 19 MB of mind logs per
@@ -25,12 +36,11 @@
 # Disk: /home is btrfs with compress=zstd:1, so a 1B trial's 2 GB apparent is
 # ~0.7 GB on disk (compsize: the JSON/metrics compress 12x; the 19 MB-per-evaluation
 # mind logs, checkpoints and pool are the incompressible 540 MB). 40 trials at ~2.5B
-# ~ 70 GB real against 167 GB free at queue time. research/compact_evaluations.py
+# ~ 70 GB real against 140 GB free at queue time. research/compact_evaluations.py
 # (json -> json.gz) exists for plain filesystems and gains nothing here.
 #
-# Budget: 1B ~17 min train + 4.5 min score (overnight-7), 4B ~70 min; bot-heavy
-# trials up to 2.4x. Expect ~45 min per trial on average -> 40 trials ~30 h.
-# 9 params: 1 default + 12 Sobol + 27 GP.
+# Budget: 1B ~18.5 min train+score (overnight-7), 4B ~70 min; expect ~45 min per
+# trial on average -> 40 trials ~30 h. 9 params: 1 default + 12 Sobol + 27 GP.
 
 [sweep]
 method = "Protein"
@@ -81,13 +91,13 @@ layers = 1
 horizon = 128
 learner_passes = 4
 aim_fourier = 4                    # the aim-head study's pick; 0 = absolute bins (overnight-1..6)
-learning_rate = 5e-4
-entropy = 2.48e-2
+learning_rate = 9.06e-4                # trial-000 = overnight-7 041
+entropy = 2.01e-2
 entropy_floor = 0.001
-entropy_half_life = 447000000
-entropy_head_scale = "0.41,1.5,1"
+entropy_half_life = 166334326
+entropy_head_scale = "0.05,1.5,1"
 entropy_free_rows = 1
-reward_kill = 0.52
+reward_kill = 0.909
 reward_timeout = -1
 scripted_roster = "default"        # 12 v2 kind-levels; search bots opt-in (84% sps hit)
 scripted_banks = 1                 # trial-000 value; swept 1..4 below
@@ -124,7 +134,7 @@ scale = 0.5
 
 [params.entropy_half_life]
 distribution = "log_normal"
-min = 1e8
+min = 3e7                          # overnight-7 sat at 150..320M against a 1e8 floor
 max = 1e10
 scale = 0.5
 integer = true
@@ -143,20 +153,20 @@ max = 4
 [params.scripted_share_max]
 distribution = "log_normal"
 min = 0.02
-max = 1.0
+max = 1.0                          # hard ceiling: a share is a probability
 scale = 0.5
-default = 0.15
+default = 1.0
 
 [params.scripted_share_min]
 distribution = "log_normal"
-min = 0.02
+min = 0.002                        # overnight-7 pinned our 0.02 floor
 max = 1.0
 scale = 0.5
-default = 0.02
+default = 0.0205
 
 [params.head_scale_aim]
 distribution = "log_normal"
-min = 0.05
+min = 0.005                        # overnight-7 pinned our 0.05 floor
 max = 3.0
 scale = 0.5
-default = 0.41
+default = 0.05
