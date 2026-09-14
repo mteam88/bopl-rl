@@ -22,31 +22,34 @@ Earlier trainer implementations and removed reports remain in Git history.
   The reset observation fills the delay buffer until history exists.
 - The previous action is provided immediately: a player knows what they pressed.
 - All players' loadouts and cooldowns are public, including during invisibility.
-- Other invisible players' coordinates are omitted from player, body and entity
-  features before distance sorting and counting. The current filter conservatively
-  omits all their owned physics entities. This requires further visibility review
-  before an experiment including invisibility or smoke.
+- An invisible opponent's coordinates and body hierarchy are omitted only while
+  its effective sprite alpha is below 0.2. Independently owned grenades, smoke,
+  spark nodes and pickups remain visible, including disabled-but-alive colliders.
 - Features describe players, collider geometry and motion, slime movement states,
   public cooldowns, arena-relative positions, round time and previous input. Exact
   structured state is more precise than human vision; reaction delay alone does
   not establish human-equivalent play.
-- The policy has space for 96 nearby visible entities and 12 visible slimes. The
-  raw C state is unbounded by these policy capacities. Overflow is counted and
-  stops the research runner rather than silently producing a successful run.
+- The policy has space for 64 nearby visible entities, 32 visible slimes and 24
+  body-associated ability slots. The raw C state is unbounded by these policy
+  capacities. Overflow truncates deterministically and is counted in both
+  training and evaluation metrics.
 
-The observation vector currently has 3,257 floats. Player order starts with self;
-entity and slime observations use nearest-first ordering. Positions scale by 64,
-velocities by 256, and extreme values clip. No Unity instance IDs enter the policy.
+The layout-v3 observation vector has 3,690 floats. Player order starts with self;
+entity and slime observations use nearest-first ordering, except pickups are
+force-inserted and ropes collapse to at most three rows. Runtime ability ids gather
+from the shared `E[40,64]` table and never enter a projection as ordinal scalars.
+Positions scale by 64, velocities by 256, and extreme values clip. Wire object ids
+remain exact integers but do not enter the policy.
 
 ## Native trainer
 
 `puffer/train.py` drives native recurrent PPO. Rollout collection, the minGRU
 policy, loss, backward pass and optimizer run in native code. Python configures
 the run, publishes checkpoints and metrics, and invokes evaluation between
-updates. The linear encoder and entity/slime set encoder share the native minGRU
+updates. The linear encoder and layout-v3 set encoder share the native minGRU
 and action/value heads. `--encoder linear|set` selects the encoder explicitly.
-The set encoder pools visible entity and slime features with shared weights;
-it does not depend on their slot order.
+The set encoder independently max-pools player, ability-slot, entity and slime
+rows, then fuses those four 64-wide pools with the flat prefix/self/action path.
 
 Half the games use current-policy self-play. The other half pair a learner with
 a frozen opponent from PufferLib's Elo-rated self-play pool

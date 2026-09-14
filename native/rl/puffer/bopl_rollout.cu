@@ -50,10 +50,11 @@ __device__ __forceinline__ int br_group_of(const BrGroups& groups, int row) {
     return group;
 }
 
-// Layout-v3 rollout encoder. One 256-thread block owns a row; one warp-sized
-// channel group owns each of player, slot, entity and slime. Projection,
-// E[id], ReLU and max all happen before the single pooled value is stored.
-static constexpr int BR_ENCODE_THREADS=256;
+// Layout-v3 rollout encoder. The copy/flat path and the three small sets share
+// one row-sized staging block. The entity set runs in its own 64-thread block:
+// keeping its much longer 64x33 loop in the 256-thread block left six warps
+// idle and limited each SM to only six useful entity warps.
+static constexpr int BR_ENCODE_THREADS=192;
 
 struct BrEncodeArgs {
     const float* obs;
@@ -112,9 +113,6 @@ __global__ void __launch_bounds__(BR_ENCODE_THREADS, 3) br_encode(BrEncodeArgs a
     } else if(pool==1) {
         block=row_data+BS_SLOT_OFFSET; weights=a.w_slot.w[group]; embedding=a.w_embedding.w[group];
         count=BS_N_SLOT; width=BS_W_SLOT; projected=BS_K_SLOT; id_column=BOPL_SLOT_ABILITY_ID;
-    } else if(pool==2) {
-        block=row_data+BS_ENTITY_OFFSET; weights=a.w_entity.w[group]; embedding=a.w_embedding.w[group];
-        count=BS_N_ENT; width=BS_W_ENT; projected=BS_K_ENT; id_column=BOPL_ENTITY_ABILITY_ID;
     } else {
         block=row_data+BS_SLIME_OFFSET; weights=a.w_slime.w[group];
         count=BS_N_SLIME; width=BS_W_SLIME; projected=BS_K_SLIME;
@@ -128,7 +126,30 @@ __global__ void __launch_bounds__(BR_ENCODE_THREADS, 3) br_encode(BrEncodeArgs a
         for(int k=0;k<projected;k++) sum=fmaf(x[k],weights[channel*projected+k],sum);
         best=fmaxf(best,sum);
     }
-    a.joined[(long)row*(a.H+BS_JOINED_POOLS)+a.H+pool*BS_E+channel]=best;
+    int joined_pool=pool<2 ? pool : 3;
+    a.joined[(long)row*(a.H+BS_JOINED_POOLS)+a.H+joined_pool*BS_E+channel]=best;
+}
+
+__global__ void __launch_bounds__(BS_E, 12) br_encode_entity(BrEncodeArgs a) {
+    int row=blockIdx.x, channel=threadIdx.x;
+    if(row>=a.rows || channel>=BS_E) return;
+    const float* source=a.obs+(long)row*BS_OBS;
+    int count=BS_N_ENT;
+    if(a.sparse) count=max(0,min(BS_N_ENT,__float2int_rn(source[4]*BS_N_ENT)));
+    int group=br_group_of(a.g,row);
+    const float* weights=a.w_entity.w[group];
+    const float* embedding=a.w_embedding.w[group];
+    const float* block=source+BS_ENTITY_OFFSET;
+    float best=0.0f;
+    for(int slot=0;slot<count;slot++) {
+        const float* x=block+slot*BS_W_ENT;
+        if(x[0]==0.0f) break;
+        float sum=embedding[bs_embedding_id(x[BOPL_ENTITY_ABILITY_ID])*BS_E+channel];
+        #pragma unroll
+        for(int k=0;k<BS_K_ENT;k++) sum=fmaf(x[k],weights[channel*BS_K_ENT+k],sum);
+        best=fmaxf(best,sum);
+    }
+    a.joined[(long)row*(a.H+BS_JOINED_POOLS)+a.H+2*BS_E+channel]=best;
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +863,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     enc.w_player = w_player; enc.w_slot = w_slot; enc.w_entity = w_entity;
     enc.w_slime = w_slime; enc.w_embedding = w_embedding;
     br_encode<<<rows, BR_ENCODE_THREADS, 0, stream>>>(enc);
+    br_encode_entity<<<rows, BS_E, 0, stream>>>(enc);
 
     br_gemm_launch(p, A.flat, BS_FLAT, A.joined, JW, BS_FLAT, H, H, 1, w_flat, stream);
     br_gemm_launch(p, A.joined, JW, A.enc, H, JW, H, H, 1, w_fusion, stream);

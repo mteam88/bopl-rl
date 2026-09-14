@@ -78,7 +78,7 @@ ordinal scalar into a projection. Both reviewers agreed after round 1.
 | Slimes (set) | 32 × 30 | v2's 28 + abilityless + spatial-known |
 | Previous | 1 × 12 | unchanged |
 
-About 3,300 floats at these caps (24 slot rows), the same order as v2's 3,298,
+Exactly 3,690 floats at these caps (24 slot rows), the same order as v2's 3,298,
 with 828 floats of one-hot ids replaced by rows that carry information.
 Fusion input becomes H + 4×64 (player, slot, entity, slime max-pools).
 
@@ -92,8 +92,9 @@ owner with abilities and without `suppressInput`, else any with abilities;
 never first-match.
 
 Entity ordering: surface distance (center distance minus radius; segment
-distance for ropes and beams), pickups force-inserted, each rope collapsed in
-the encoder to at most 8 evenly spaced spans. Overflow counted, never fatal.
+distance for ropes and beams), pickups force-inserted, each rope collapsed to
+its endpoints plus at most two interior spans (three rows). Overflow counted,
+never fatal.
 
 Visibility: an invisible opponent loses coordinates and slime rows and the
 entities that are its body/hurtbox hierarchy; independent owned objects
@@ -171,3 +172,51 @@ dropping disabled colliders, hiding all owned entities of an invisible player.
   MagnetGun holds) need more than remaining+rate. Chosen: remaining is the
   next event; phase is visible through presence bits and `enabled`; extend
   per component when a fixture shows a gap.
+
+## Implementation notes
+
+Implemented on `layout-v3` in migration-order commits beginning at `3721f8a`.
+
+- The exact row arithmetic is 3,690 floats: prefix 66, self 20, players
+  6x20, slots 24x14, entities 64x34, slimes 32x30, previous action 12. The
+  plan's earlier "about 3,300" estimate was corrected above.
+- Counts use a fixed scale of 64. General object timers use 600 ticks; the
+  prefix time-stop timer uses 300 ticks. Player feature 5 retains v2's
+  saturated `alive_bodies / 6`, while feature 19 carries the actual visible
+  slime-row count divided by 32.
+- The wire had no pickup-target field. The writer records the target slot in
+  otherwise unused slime flag bits 6-7, with a dedicated known bit. Bow
+  charge-known follows the known Bow ability id even while inactive; charge
+  and fired state remain zero unless its runtime object is active.
+- The final three-row rope rule in Matthew's review overrides the earlier
+  eight-span sentence. The fixture feeds three four-span hooks and verifies
+  that exactly nine rope rows survive.
+- The crowded fixture starts at the shared `BoplRlState` ABI boundary. It has
+  20 duplicated grenades, 16 mixed inventory/ability-less clones, 27 slot
+  rows, three hooks, an invisible opponent in and out of ability use, live
+  disabled smoke, and a far pickup which must survive truncation. It verifies
+  controller selection, pre-truncation counts, visibility, timer fields,
+  pickup insertion and overflow telemetry. Existing C#/NativeAOT-versus-Rust
+  observation comparison remained exact over 1,304 compared ticks on five
+  maps for the fields those shared gameplay fixtures exercise.
+- CUDA qualification uses both those exact fixture rows and random rows.
+  Largest fixture CPU/CUDA forward difference was 1.304e-8 and largest weight
+  gradient difference was 8.941e-8. Packed/unpacked rows, permutation,
+  gathered training rows, CUDA graph replay and finite differences over all
+  seven weight blocks also passed. A full CUDA build succeeded.
+- Evaluation reports observation overflow as a cumulative result field and
+  continues; game errors remain fatal. The standalone contract and crowded
+  fixture both verify truncation and counting.
+- The matched smoke used Rust rollouts, seed 314159, maps 0/1/2, 128 games,
+  four buffers, H=128, one layer, independent Fourier K=4 aim, and 1,000,000
+  requested learner decisions. v2 at `39ca452` completed 1,007,616 decisions
+  in 3.115 measured seconds (323,479 learner/s overall; 316,506 median full
+  update), 6,199 matches, pool Elo +10.40 and 50.49% pool win rate. Final v3
+  completed 1,007,616 in 3.065 seconds (328,777 learner/s overall; 323,964
+  median full update), 6,509 matches, pool Elo -1.88 and 49.94% pool win rate.
+  Throughput was +1.6% overall and +2.4% by median versus v2. An initial v3
+  rollout put four unequal pools in one block and measured only 220,196
+  learner/s; splitting the long entity pool into its own 64-thread block
+  removed the idle-warp bottleneck. The -12.28 internal-Elo difference and
+  -0.55 percentage-point win-rate difference are a short-run observation,
+  not evidence of equivalent or regressed learning strength.

@@ -138,7 +138,7 @@ int  bopl_agent_decisions(const BoplAgent *);  int bopl_agent_obs_size(void);  i
 ```
 
 `spec` is a checkpoint path ending in `.bin` (sidecar `<path>.json` required:
-architecture `bopl-set-mingru-v2` or `puffernet-mingru`, `obs_size`, `hidden`,
+architecture `bopl-set-mingru-v3` or `puffernet-mingru`, `obs_size`, `hidden`,
 `num_layers`, `action_sizes`, `precision float32`, `weights_sha256` — verified
 against the file — plus `observation_delay_ticks`, `action_repeat`,
 `warmup_ticks`, `max_episode_ticks`/`episode_ticks`, `ability1..3`) or a bot
