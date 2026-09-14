@@ -249,7 +249,8 @@
       "name": "Gold mushroom",
       "prefab": "Assets/GameObject/Super star.prefab",
       "prefab_guid": "bcb43516390546c3a28f827b2bdd0254",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Public rollout reproduces SuperStar's instant cast, next-pass effect initialization, four-second lifetime, airborne 0.85-strength jump override, 10,000-second live sentinel and five-second restored cooldown. gold_mushroom_ab matches NativeAOT exactly for 636 ticks."
     },
     {
       "id": 35,

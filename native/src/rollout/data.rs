@@ -220,6 +220,9 @@ struct RawAbility {
     rope: bool,
     offensive: bool,
     effect_cooldown: Option<i64>,
+    effect_duration: Option<i64>,
+    air_jump_strength: Option<i64>,
+    form_jump_speed: Option<i64>,
 }
 
 /// A platform's authored geometry plus the behaviours that move it.
@@ -346,6 +349,9 @@ pub struct AbilityData {
     pub rope: bool,
     pub offensive: bool,
     pub effect_cooldown: Option<Fix>,
+    pub effect_duration: Option<Fix>,
+    pub air_jump_strength: Option<Fix>,
+    pub form_jump_speed: Option<Fix>,
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
@@ -648,6 +654,9 @@ pub fn get() -> &'static RolloutData {
                         rope: ability.rope,
                         offensive: ability.offensive,
                         effect_cooldown: ability.effect_cooldown.map(Fix::from_raw),
+                        effect_duration: ability.effect_duration.map(Fix::from_raw),
+                        air_jump_strength: ability.air_jump_strength.map(Fix::from_raw),
+                        form_jump_speed: ability.form_jump_speed.map(Fix::from_raw),
                     }
                 })
                 .collect(),

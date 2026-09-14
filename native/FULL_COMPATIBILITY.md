@@ -900,6 +900,27 @@ slot ids and cooldowns match exactly. This certifies the complete behavior of th
 Random catalog entry; behavior of the concrete ability selected by it remains
 covered only when that selected ability itself is listed as ported.
 
+### Executable Gold mushroom (2026-09-14)
+
+Catalog id 34 now executes the shipped `SuperStar` and `SuperStarEffect`
+components in the public rollout backend. The prefab starts on a seven-second
+cooldown. Casting installs one effect for the selected slot, changes that slot
+to the common 10,000-second live sentinel and begins updating it on the following
+updater pass. The exported effect lasts exactly four seconds; its stale source
+comment is not used as behavioral evidence. On each airborne jump edge it
+overwrites the player body's self-imposed vertical velocity with the normal
+38.25 jump strength multiplied by the prefab's exact 0.85 factor. Expiry restores
+the separate five-second `SuperStar.cooldown` value.
+
+`gold_mushroom_ab.c` compares NativeAOT and optimized Q32 Rust for 636 consecutive
+ticks from loadout initialization through the initial cooldown, cast, next-pass
+effect initialization, an air jump, exact expiry/restoration and a second cast.
+Player position and velocity, slot cooldown and timer, observation flags and
+activation telemetry match exactly. The state uses a fixed three-slot array and
+does no per-tick allocation. Form-specific jump speed and the rope exclusion are
+retained in extracted metadata for the later form and rope integrations; neither
+path is reachable in this isolated verified loadout yet.
+
 
 ## Executable Invisibility and streamed actor verification
 

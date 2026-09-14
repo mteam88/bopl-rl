@@ -49,8 +49,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Bow, Platform, Invisibility** (catalog ids
-  0/1/2/4/14/19): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Bow, Platform, Invisibility, Gold mushroom**
+  (catalog ids 0/1/2/4/14/19/34): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -73,7 +73,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Invisibility is an instant cast: its five-second player clocks, castability
   gate, 10,000-second live sentinel, six-second restored cooldown, strict
   expiry, duplicate-slot chaining, player flags, and telemetry follow the
-  original Player/SlimeController update order.
+  original Player/SlimeController update order. Gold mushroom is also instant:
+  it installs a four-second air-jump effect, applies the prefab's 0.85 strength
+  multiplier after ordinary movement on each jump edge, and restores its
+  authored five-second cooldown after the 10,000-second live sentinel.
 - **Observation**: `bopl_layout.h` layout with the .NET entity id
   assignment order (circles, boxes, rounded rects by first-seen), matching
   kinds/layers/owner/flags, slime ability slots, cooldowns and timers
@@ -104,7 +107,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/4/14/19 have complete catalog behavior. NullAbility is an
+- Only ids 0/1/2/4/14/19/34 have complete catalog behavior. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Bow/Platform execute casts. Every slot now uses its exact authored
   cooldown and common ground/castability metadata from the exported prefab;

@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_INVISIBILITY: u32 = 19;
+pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
@@ -348,6 +349,16 @@ pub struct PlatformState {
     pub hurtbox_disabled: bool,
 }
 
+/// One SuperStarEffect spawned by a Gold Mushroom slot. The source cannot
+/// overlap two effects from the same slot because its cooldown is held at the
+/// 10,000-second sentinel until this state ends.
+#[derive(Clone, Copy, Default)]
+pub struct GoldMushroomState {
+    pub active: bool,
+    pub pending_init: bool,
+    pub time: Fix,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ActiveAbility {
     None,
@@ -397,6 +408,7 @@ pub struct PlayerSlot {
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
     pub platform: PlatformState,
+    pub gold_mushroom: [GoldMushroomState; 3],
     /// SlimeController.currentState as the policy observes it. The .NET enum
     /// never takes the `ability` value (nothing assigns it), so the state
     /// freezes at its pre-ability value while an ability runs.
@@ -943,6 +955,7 @@ impl RolloutWorld {
                 removed_ground_normal: None,
                 bow: BowState::default(),
                 platform: PlatformState::default(),
+                gold_mushroom: [GoldMushroomState::default(); 3],
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
@@ -1231,6 +1244,7 @@ impl RolloutWorld {
                 slot.ability_time = Fix::ZERO;
             }
         }
+        let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             self.players[index].reported_position = self.players[index].base.position;
             self.players[index].reported_tick = self.tick;
@@ -1241,6 +1255,7 @@ impl RolloutWorld {
             let movement_input = packet.input_direction(self.players[index].keyboard);
             let jump_down = action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
+            jump_pressed_by_player[index] = jump_pressed;
             // SlimeController.Jump reads that same edge
             // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
             // movement slice's copy must not go stale while an ability runs.
@@ -1272,6 +1287,16 @@ impl RolloutWorld {
                 };
                 self.kill(index, ENVIRONMENT, cause, false);
             }
+        }
+        // SuperStarEffect prefabs spawned during a slime update join the
+        // updater list on the following tick. Once live they run after player
+        // forms and can overwrite the tick's vertical self-imposed velocity.
+        for (index, &jump_pressed) in jump_pressed_by_player
+            .iter()
+            .enumerate()
+            .take(self.players.len())
+        {
+            self.gold_mushroom_tick(index, jump_pressed, data);
         }
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
@@ -1454,6 +1479,18 @@ impl RolloutWorld {
                         slot.telemetry.ability_activations[s] += 1;
                         break;
                     }
+                    ABILITY_GOLD_MUSHROOM => {
+                        let slot = &mut self.players[index];
+                        slot.gold_mushroom[s] = GoldMushroomState {
+                            active: true,
+                            pending_init: true,
+                            time: Fix::ZERO,
+                        };
+                        slot.cooldowns[s] = Fix::from_int(10_000);
+                        slot.timers[s] = Fix::ZERO;
+                        slot.telemetry.ability_activations[s] += 1;
+                        break;
+                    }
                     ABILITY_DASH => {
                         // The movement slice implements the dash; unlock its
                         // internal cooldown gate and let base.step enter it.
@@ -1629,6 +1666,43 @@ impl RolloutWorld {
         self.players[index]
             .base
             .move_step(masked, movement_input, terrain!(self));
+    }
+
+    fn gold_mushroom_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+        let ability = &data.abilities[ABILITY_GOLD_MUSHROOM as usize];
+        let duration = ability.effect_duration.expect("Gold Mushroom duration");
+        let air_jump = ability
+            .air_jump_strength
+            .expect("Gold Mushroom air jump strength");
+        let restored_cooldown = ability
+            .effect_cooldown
+            .expect("Gold Mushroom restored cooldown");
+        let slot = &mut self.players[index];
+        for effect_slot in 0..slot.gold_mushroom.len() {
+            let effect = &mut slot.gold_mushroom[effect_slot];
+            if !effect.active {
+                continue;
+            }
+            if effect.pending_init {
+                effect.pending_init = false;
+                continue;
+            }
+            // Player.IsAlive remains true while a stock replacement exists;
+            // final elimination ends the effect on its next updater pass.
+            if slot.out {
+                effect.active = false;
+                slot.cooldowns[effect_slot] = restored_cooldown;
+                continue;
+            }
+            effect.time += DT;
+            if jump_pressed && !slot.base.grounded {
+                slot.base.velocity.y = slot.base.constants.jump_strength * air_jump;
+            }
+            if effect.time >= duration {
+                effect.active = false;
+                slot.cooldowns[effect_slot] = restored_cooldown;
+            }
+        }
     }
 
     /// base.step with the dash shove check from World::step.

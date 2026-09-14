@@ -399,6 +399,19 @@ def main():
             instant = True
             castable = True
         prefix = f"sprites.Array.data[{expected_id}]"
+        effect_cooldown = next((fix(c["properties"], "cooldown")
+                                for c in components
+                                if c["type"] in ("Invisibility", "SuperStar")), None)
+        effect_duration = None
+        air_jump_strength = None
+        form_jump_speed = None
+        if item["name"] == "Gold mushroom":
+            star = next(c for c in components if c["type"] == "SuperStar")
+            effect = ASSETS[guid_of(star["properties"]["effectPrefab"])]
+            effect_props = component(effect, "SuperStarEffect")
+            effect_duration = fix(effect_props, "duration")
+            air_jump_strength = fix(effect_props, "airJumpStrength")
+            form_jump_speed = fix(effect_props, "formJumpSpeed")
         ability_catalog.append({
             "id": expected_id,
             "name": item["name"],
@@ -410,8 +423,10 @@ def main():
             "instant": instant,
             "rope": props.get("isHookshot", False),
             "offensive": icon_props[f"{prefix}.isOffensiveAbility"],
-            "effect_cooldown": next((fix(c["properties"], "cooldown")
-                                     for c in components if c["type"] == "Invisibility"), None),
+            "effect_cooldown": effect_cooldown,
+            "effect_duration": effect_duration,
+            "air_jump_strength": air_jump_strength,
+            "form_jump_speed": form_jump_speed,
         })
     out["abilities"] = ability_catalog
 
