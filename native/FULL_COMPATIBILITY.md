@@ -2567,5 +2567,42 @@ and 51 stress graph scenarios, 250 curves, 196 hitbox sequences, 214 endpoint
 effect scenarios, and 73 combined physics scenes with no mismatches. Live
 `Orb.ApplyBeam` has no producer in the five shipped maps or the 39-ability
 catalog; its type/charge/firing/color behavior remains verified in the endpoint
-component corpus. The four remaining unimplemented catalog entries are
-Grappling hook, Duplicator, Magnet gun and Web swing.
+component corpus. The three remaining unimplemented catalog entries are
+Grappling hook, Duplicator and Magnet gun.
+
+### Executable Web Swing and observed rope rows (2026-09-15)
+
+Catalog id 32 now executes the shipped instant Web Swing. The cast uses the
+source's fixed up-forward direction and DetPhysics rounded-rectangle ray. A hit
+allocates one body from the fixed 128-rope pool, initializes all 12 authored
+points with the original division order, shortens their separation by the
+prefab's exact serialized factor, and attaches the platform and ordinary
+PlayerBody endpoints. A grounded cast performs the source 0.05-unit unground,
+zeros rotation, and adds the 3.5 upward impulse before PlayerBody integration.
+The rope and attachment enter the Updater on the following pass, while the
+already-authored PlayerBody pins its endpoint on the cast pass. This ordering is
+needed for exact first-frame segment state and subsequent moving-platform force.
+
+The existing verified `physics::rope` solver now runs in rollout DetPhysics with
+preallocated 40-point and 32-contact arrays per body. Platform attachment,
+player endpoint mass interpolation, air correction, grounded pull, stretch
+breaks, jump release and held-button cooldown routing use the source phase
+order. Releasing after the six-tick guard copies endpoint Verlet velocity with
+the exact 1.12 serialized multiplier, detaches the player, starts the 1.25-second
+cooldown, and removes the dangling strand after the 0.9-second cleanup clock.
+Observations insert `segmentCount - 1` kind-3 rows between rounded rectangles and
+beams with stable ids, owner, hierarchy, radius, direction, and detached flag.
+Rope bodies, broad-phase rectangles, rows, and fork state reuse capacity; there
+is no per-tick or per-cast allocation.
+
+`web_swing_ability_ab.c` compares 1,310 optimized-Q32 NativeAOT/Rust stages. Four
+maps exercise the miss and exact 0.45-second retry cooldown. Map 3 exercises the
+hit at tick 181, all 11 rope rows, sustained dynamic-platform swing, tick-360
+release velocity, detached observation lifetime, landing, and tick-413 cleanup.
+Every compared header, player record, slime record, telemetry value, rope row,
+and lifecycle boundary matches exactly. The source-prefab extraction now records
+all rope, attachment, DetPhysics, and Web Swing constants in `rollout.json`; the
+hot loop uses compile-time values and asserts them against that generated data
+when the fixed pool is created. Grappling Hook reuses this runtime but still
+requires its projectile/reeling state machine, and Duplicator/Magnet interactions
+with ropes remain outside this golden.

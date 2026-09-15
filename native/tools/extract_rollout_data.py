@@ -1693,6 +1693,41 @@ def main():
         "minimum_extent": fix(beam_object_box, "minimumExtents"),
     }
 
+    # ---- Shared rope physics and Web Swing ----
+    _, web_prefab = find_prefab("Assets/GameObject/Web swing.prefab")
+    web = component(web_prefab, "WebSwing")
+    rope_prefab = ASSETS[guid_of(web["ropePrefab"])]
+    rope = component(rope_prefab, "Rope")
+    attachment_prefab = ASSETS[guid_of(web["attachmentPrefab"])]
+    attachment = component(attachment_prefab, "RopeAttachment")
+    out["prefabs"]["ropes"] = {
+        # RopeBodyList/RopeBody fixed arrays in the pinned source. They are
+        # structural capacities rather than authored Unity properties.
+        "pool_capacity": 128,
+        "max_segments": 40,
+        "max_contacts": 32,
+        "segments": rope["nrOfSegments"],
+        "max_ropes_per_player": rope["maxRopesPerPlayer"],
+        "gravity": fix(det, "ropeGravity"),
+        "iterations": det["ropeRelaxationIterations"],
+        "stretchiness": fix(det, "platformStretchiness"),
+        "max_stretch": fix(det, "maxStretchLength"),
+        "grounded_strength": fix(det, "groundedPlayerRopeStr"),
+        "segment_radius": fix(det, "ropeSegmentRadius"),
+        "player_gravity": fix(det, "playerGravity"),
+        "platform_mass": fix(attachment, "platformMass01"),
+        "platform_heaviness": fix(attachment, "platformHeavinessScaling"),
+        "platform_pull": fix(attachment, "platformPullStr"),
+        "platform_break_stretch": fix(attachment, "stretchBeforeBreak_platform"),
+        "non_platform_mass": fix(attachment, "nonPlatformMass"),
+        "web_max_length": fix(web, "maxWebLength"),
+        "web_shorten": fix(web, "ropeShorten"),
+        "web_cooldown": fix(web, "cooldown"),
+        "web_miss_cooldown": fix(web, "missCooldown"),
+        "web_release_boost": fix(web, "releaseBoost"),
+        "web_grounded_pop": fix(web, "groundedPop"),
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

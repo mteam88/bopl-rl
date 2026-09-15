@@ -29,6 +29,7 @@ macro_rules! terrain {
 
 pub mod abi;
 pub mod data;
+mod rope_abilities;
 
 pub const ABI_VERSION: u32 = 2;
 pub const MAP_COUNT: u32 = 5;
@@ -63,8 +64,10 @@ pub const ABILITY_TESLA: u32 = 23;
 pub const ABILITY_MINE: u32 = 24;
 pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_DRILL: u32 = 26;
+pub const ABILITY_GRAPPLING_HOOK: u32 = 27;
 pub const ABILITY_BEAM: u32 = 28;
 pub const ABILITY_REWIND: u32 = 31;
+pub const ABILITY_WEB_SWING: u32 = 32;
 pub const ABILITY_POKE_BALL: u32 = 33;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 pub const ABILITY_TACK: u32 = 35;
@@ -1490,6 +1493,13 @@ pub struct PlayerSlot {
     pub pending_ability_hierarchy: [u32; 3],
     pub timers: [Fix; 3],
     pub cooldowns: [Fix; 3],
+    /// PlayerBody's live rope binding. Rope abilities are instant and leave
+    /// the ordinary slime active, so this state advances with normal motion.
+    pub rope: Option<usize>,
+    pub rope_top: bool,
+    pub rope_prev_imposed: Vec2,
+    pub rope_prev_external: Vec2,
+    pub(crate) web_swing: [rope_abilities::WebSwingState; 3],
     pub active: ActiveAbility,
     pub active_slot: usize,
     /// The original SlimeController stays at the ability entry point while
@@ -1760,6 +1770,11 @@ pub struct RolloutWorld {
     pub portals: Vec<PortalEndpoint>,
     pub beam_orbs: Vec<BeamOrbState>,
     pub beam_pool: Vec<BeamPoolSlot>,
+    /// Fixed-capacity DetPhysics RopeBody pool and its ability-owned
+    /// attachments. Every slot owns its 40 segments and 32 contacts up front.
+    pub(crate) ropes: Vec<rope_abilities::RolloutRope>,
+    pub(crate) next_rope_number: u32,
+    rope_rectangles: Vec<RoundedRect>,
     beam_graph: crate::beam::graph::Graph,
     beam_snapshot: crate::beam::graph::Snapshot,
     beam_inputs: Vec<crate::beam::graph::Beam>,
@@ -1876,6 +1891,9 @@ impl RolloutWorld {
             portal_body_ids: Vec::with_capacity(192),
             beam_orbs: Vec::with_capacity(32),
             beam_pool: Vec::with_capacity(16),
+            ropes: rope_abilities::rope_pool(),
+            next_rope_number: 0,
+            rope_rectangles: Vec::with_capacity(64),
             beam_graph: new_beam_graph(data::get()),
             beam_snapshot: crate::beam::graph::Snapshot::default(),
             beam_inputs: Vec::with_capacity(MAX_PLAYERS),
@@ -1966,6 +1984,9 @@ impl RolloutWorld {
         self.portal_body_ids.clone_from(&src.portal_body_ids);
         self.beam_orbs.clone_from(&src.beam_orbs);
         self.beam_pool.clone_from(&src.beam_pool);
+        self.ropes.clone_from(&src.ropes);
+        self.next_rope_number = src.next_rope_number;
+        self.rope_rectangles.clear();
         self.beam_graph.clone_from(&src.beam_graph);
         self.beam_snapshot.clone_from(&src.beam_snapshot);
         self.beam_inputs.clone_from(&src.beam_inputs);
@@ -2047,6 +2068,9 @@ impl RolloutWorld {
             portal_body_ids: _,
             beam_orbs: _,
             beam_pool: _,
+            ropes: _,
+            next_rope_number: _,
+            rope_rectangles: _,
             beam_graph: _,
             beam_snapshot: _,
             beam_inputs: _,
@@ -2159,6 +2183,9 @@ impl RolloutWorld {
         self.portal_body_ids.clear();
         self.beam_orbs.clear();
         self.beam_pool.clear();
+        rope_abilities::reset_rope_pool(&mut self.ropes);
+        self.next_rope_number = 0;
+        self.rope_rectangles.clear();
         self.beam_graph = new_beam_graph(data);
         self.beam_snapshot = crate::beam::graph::Snapshot::default();
         self.beam_inputs.clear();
@@ -2721,6 +2748,11 @@ impl RolloutWorld {
                 pending_ability_hierarchy: [u32::MAX; 3],
                 timers: [timer0; 3],
                 cooldowns,
+                rope: None,
+                rope_top: false,
+                rope_prev_imposed: Vec2::ZERO,
+                rope_prev_external: Vec2::ZERO,
+                web_swing: [rope_abilities::WebSwingState::default(); 3],
                 active: ActiveAbility::None,
                 active_slot: 0,
                 ability_origin: spawn,
@@ -3731,6 +3763,7 @@ impl RolloutWorld {
                 self.kill(index, ENVIRONMENT, cause, false, false);
             }
         }
+        self.ropes_update();
         self.beam_orbs_tick(data);
         // Spawned BlackHole prefabs are registered after every authored
         // player prefab. A hole fired by BlackHoleClap therefore receives its
@@ -3907,6 +3940,7 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
+        self.ropes_physics(physics_dt);
         let beam_contact_count = self
             .beam_pool
             .iter()
@@ -3960,6 +3994,7 @@ impl RolloutWorld {
                 self.players[index].base.late_step(&self.platforms);
             }
         }
+        self.ropes_late();
         self.macho_late_tick(data);
         self.mines_late_tick(data);
         self.rocks_late_tick(data);
@@ -4797,6 +4832,7 @@ impl RolloutWorld {
                 }
             }
         }
+        self.web_cooldowns_tick(index, action);
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
@@ -4842,6 +4878,10 @@ impl RolloutWorld {
                     slot.base.scale = slot.player_scale;
                 }
                 match ability {
+                    ABILITY_WEB_SWING => {
+                        self.fire_web(index, s);
+                        break;
+                    }
                     ABILITY_INVISIBILITY => {
                         let slot = &mut self.players[index];
                         slot.invisible = true;
@@ -5957,9 +5997,13 @@ impl RolloutWorld {
             angle: action.angle,
             buttons: action.buttons & 1,
         };
-        self.players[index]
-            .base
-            .move_step(masked, movement_input, terrain!(self));
+        if self.players[index].rope.is_some() {
+            self.rope_player_move(index, masked, movement_input, jump_pressed);
+        } else {
+            self.players[index]
+                .base
+                .move_step(masked, movement_input, terrain!(self));
+        }
         // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
         // PlayerPhysics observes this FixTransform scale on the next pass.
         let scale = self.players[index].player_scale;
@@ -17762,7 +17806,9 @@ impl RolloutWorld {
 
     fn observe_main(&mut self) {
         self.refresh_entities();
-        Self::publish_entities(&mut self.state_entities, &self.entities);
+        let mut entities = std::mem::take(&mut self.state_entities);
+        self.publish_entities(&mut entities);
+        self.state_entities = entities;
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
         self.slimes = slimes;
@@ -17785,7 +17831,9 @@ impl RolloutWorld {
 
     fn observe_sample(&mut self) {
         self.refresh_entities();
-        Self::publish_entities(&mut self.sample_entities, &self.entities);
+        let mut entities = std::mem::take(&mut self.sample_entities);
+        self.publish_entities(&mut entities);
+        self.sample_entities = entities;
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
         self.sample_slimes = slimes;
@@ -17809,15 +17857,21 @@ impl RolloutWorld {
     /// DetPhysics stores one list per shape and observations enumerate
     /// circles, boxes, then rounded rectangles. Reuse the output allocation
     /// while preserving registration order inside each shape group.
-    fn publish_entities(out: &mut Vec<CEntity>, entities: &[CEntity]) {
+    fn publish_entities(&self, out: &mut Vec<CEntity>) {
         out.clear();
-        for kind in [0, 1, 2, 4] {
+        for kind in [0, 1, 2] {
             out.extend(
-                entities
+                self.entities
                     .iter()
                     .filter(|e| e.kind == kind && e.flags & E_REMOVED == 0),
             );
         }
+        self.append_rope_entities(out);
+        out.extend(
+            self.entities
+                .iter()
+                .filter(|e| e.kind == 4 && e.flags & E_REMOVED == 0),
+        );
     }
 
     fn flags(&self) -> u32 {

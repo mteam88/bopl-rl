@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Shrink ray, Black Hole, Invisibility, Meteor, Throw, Push, Tesla coil, Mine, Teleport, Drill, Beam, Rewind, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir, Portal Gun**
-  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/28/31/33/34/35/36/37/38): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Shrink ray, Black Hole, Invisibility, Meteor, Throw, Push, Tesla coil, Mine, Teleport, Drill, Beam, Rewind, Web swing, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir, Portal Gun**
+  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/28/31/32/33/34/35/36/37/38): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   collection, third-slot replacement and deferred acquired-ability
   registration. Dedicated collection and final-death goldens cover both
   origins.
-- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/28/31/33/34/35/36/37/38 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/28/31/32/33/34/35/36/37/38 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -244,6 +244,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   axes, overlaps, lifecycle branches and later fixed-point state remain the
   same. Live Orb.ApplyBeam target charging has no producer in the five shipped
   maps and remains covered by the standalone component golden.
+  Web Swing fires its fixed up-forward ray, creates a 12-point pooled rope, attaches both endpoints with the source PlayerBody/RopeAttachment schedule, and exports 11 stable kind-3 segment rows. Its four-map miss path and the complete map-3 latch, dynamic-platform swing, release boost, detached-strand linger and cleanup are exact across 1,310 NativeAOT/Rust stages. Rope arrays, collision scratch, observation storage and fork copies are preallocated; no tick or cast allocates. Grappling Hook and cross-ability rope transfer remain open.
   Portal Gun is an instant cast with retained PortalShot bodies and portal
   mouths. It matches same-pass ManualInit motion, wall-callback versus timeout
   destruction, dominant-axis capture planes, pair replacement, strict

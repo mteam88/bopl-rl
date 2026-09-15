@@ -257,7 +257,7 @@
       "name": "Web swing",
       "prefab": "Assets/GameObject/Web swing.prefab",
       "prefab_guid": "6508c9ccd4a0464a8445e0ee0eb6e26d",
-      "native_status": "unimplemented"
+      "native_status": "ported"
     },
     {
       "id": 33,
