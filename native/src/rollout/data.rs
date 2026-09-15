@@ -222,6 +222,7 @@ struct RawPrefabs {
     tesla: RawTesla,
     tack: RawTack,
     mjolnir: RawMjolnir,
+    poke_ball: RawPokeBall,
 }
 
 #[derive(Deserialize)]
@@ -291,6 +292,28 @@ struct RawTackItem {
     duplicate_angle: i64,
     arm_seconds: i64,
     lifetime_seconds: i64,
+}
+#[derive(Deserialize)]
+struct RawPokeBall {
+    hurtbox_extents: RawVec2,
+    #[serde(rename = "throw")]
+    throw_data: RawThrowItem,
+    item: RawPokeBallItem,
+}
+#[derive(Deserialize)]
+struct RawPokeBallItem {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    body: RawBody,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+    capture_seconds: i64,
+    fizzle_seconds: i64,
+    pop_up_speed: i64,
 }
 #[derive(Deserialize)]
 struct RawMjolnir {
@@ -1298,6 +1321,36 @@ pub struct MjolnirData {
     pub clang_grace_seconds: Fix,
     pub platform_push_force: Fix,
 }
+pub struct PokeBallData {
+    pub hurtbox_extents: Vec2,
+    pub air_position: Vec2,
+    pub ground_position: Vec2,
+    pub ground_dummy: Vec<Vec2>,
+    pub air_dummy: Vec<Vec2>,
+    pub hurt_owner_delay: Fix,
+    pub max_force: Fix,
+    pub min_force: Fix,
+    pub force_gain_speed: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub knockback: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub ground_enter_ticks: u32,
+    pub ground_exit_ticks: u32,
+    pub air_enter_ticks: u32,
+    pub air_exit_ticks: u32,
+    pub item_layer: u32,
+    pub item_updatable_count: u32,
+    pub item_collider_hierarchy: u32,
+    pub item_radius: Fix,
+    pub item_body: crate::physics::Body,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub capture_seconds: Fix,
+    pub fizzle_seconds: Fix,
+    pub pop_up_speed: Fix,
+}
 pub struct SmokeData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -1479,6 +1532,7 @@ pub struct RolloutData {
     pub tesla: TeslaData,
     pub tack: TackData,
     pub mjolnir: MjolnirData,
+    pub poke_ball: PokeBallData,
     pub abilities: Vec<AbilityData>,
 }
 
@@ -2333,6 +2387,40 @@ pub fn get() -> &'static RolloutData {
                     recall_max_speed: Fix::from_raw(mjolnir.item.recall_max_speed),
                     clang_grace_seconds: Fix::from_raw(mjolnir.item.clang_grace_seconds),
                     platform_push_force: Fix::from_raw(mjolnir.item.platform_push_force),
+                }
+            },
+            poke_ball: {
+                let poke = &raw.prefabs.poke_ball;
+                let throw = &poke.throw_data;
+                PokeBallData {
+                    hurtbox_extents: poke.hurtbox_extents.get(),
+                    air_position: throw.air_position.get(),
+                    ground_position: throw.ground_position.get(),
+                    ground_dummy: throw.ground_dummy.iter().map(RawVec2::get).collect(),
+                    air_dummy: throw.air_dummy.iter().map(RawVec2::get).collect(),
+                    hurt_owner_delay: Fix::from_raw(throw.hurt_owner_delay),
+                    max_force: Fix::from_raw(throw.max_force),
+                    min_force: Fix::from_raw(throw.min_force),
+                    force_gain_speed: Fix::from_raw(throw.force_gain_speed),
+                    max_slow_mo_speed: Fix::from_raw(throw.max_slow_mo_speed),
+                    knockback: Fix::from_raw(throw.knockback),
+                    constants: constants(&throw.physics),
+                    ground_enter_ticks: ticks(&throw.animations.ground_enter),
+                    ground_exit_ticks: ticks(&throw.animations.ground_exit),
+                    air_enter_ticks: ticks(&throw.animations.air_enter),
+                    air_exit_ticks: ticks(&throw.animations.air_exit),
+                    item_layer: poke.item.layer,
+                    item_updatable_count: poke.item.updatable_count,
+                    item_collider_hierarchy: poke.item.collider_hierarchy,
+                    item_radius: Fix::from_raw(poke.item.radius),
+                    item_body: body(&poke.item.body, Fix::ZERO),
+                    clone_count: poke.item.clone_count,
+                    duplicate_pattern: poke.item.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(poke.item.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(poke.item.duplicate_angle),
+                    capture_seconds: Fix::from_raw(poke.item.capture_seconds),
+                    fizzle_seconds: Fix::from_raw(poke.item.fizzle_seconds),
+                    pop_up_speed: Fix::from_raw(poke.item.pop_up_speed),
                 }
             },
             abilities: raw

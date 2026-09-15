@@ -258,7 +258,8 @@
       "name": "Poke ball",
       "prefab": "Assets/GameObject/Poke ball.prefab",
       "prefab_guid": "c752170c9d694ab78a0f23c34fee8cea",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Public rollout reproduces Poke Ball's shared grounded/aerial ThrowItem2 form, pooled bouncy item, owner binding, strict five-second fizzle, nearest eligible opponent selection, invulnerable invisible pinned ragdoll, prefab-overridden 1.92-second capture, and fast upward ejection. poke_ball_ability_ab is exact for the no-hit path; poke_ball_capture_ab preserves exact capture/release ticks and scalar state across 500 NativeAOT/Rust ticks with bounded movement-history drift. Item.Duplicate and isolated boundary/time-stop interactions remain open."
     },
     {
       "id": 34,

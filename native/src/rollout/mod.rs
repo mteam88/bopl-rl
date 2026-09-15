@@ -60,6 +60,7 @@ pub const ABILITY_TESLA: u32 = 23;
 pub const ABILITY_MINE: u32 = 24;
 pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_REWIND: u32 = 31;
+pub const ABILITY_POKE_BALL: u32 = 33;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 pub const ABILITY_TACK: u32 = 35;
 pub const ABILITY_FREEZE: u32 = 36;
@@ -366,6 +367,9 @@ pub struct ThrownItem {
     pub prev_chase_dir: Vec2,
     pub prev_rand_vector: Vec2,
     pub prev_velocity_change: Vec2,
+    /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
+    pub capture_victim: Option<usize>,
+    pub capture_left: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -617,6 +621,31 @@ struct ThrowConfig<'a> {
 fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
     if ability == ABILITY_SMOKE {
         let d = &data.smoke;
+        ThrowConfig {
+            hurtbox_extents: d.hurtbox_extents,
+            air_position: d.air_position,
+            ground_position: d.ground_position,
+            ground_dummy: &d.ground_dummy,
+            air_dummy: &d.air_dummy,
+            hurt_owner_delay: d.hurt_owner_delay,
+            max_force: d.max_force,
+            min_force: d.min_force,
+            force_gain_speed: d.force_gain_speed,
+            max_slow_mo_speed: d.max_slow_mo_speed,
+            knockback: d.knockback,
+            constants: &d.constants,
+            ground_enter_ticks: d.ground_enter_ticks,
+            ground_exit_ticks: d.ground_exit_ticks,
+            air_enter_ticks: d.air_enter_ticks,
+            air_exit_ticks: d.air_exit_ticks,
+            item_layer: d.item_layer,
+            item_updatable_count: d.item_updatable_count,
+            item_collider_hierarchy: d.item_collider_hierarchy,
+            item_radius: d.item_radius,
+            item_body: d.item_body,
+        }
+    } else if ability == ABILITY_POKE_BALL {
+        let d = &data.poke_ball;
         ThrowConfig {
             hurtbox_extents: d.hurtbox_extents,
             air_position: d.air_position,
@@ -1200,6 +1229,7 @@ pub enum ActiveAbility {
     Grenade,
     Tack,
     Mjolnir,
+    PokeBall,
     Smoke,
     Rock,
     Roll,
@@ -1224,6 +1254,7 @@ fn active_throw_ability(active: ActiveAbility) -> u32 {
     match active {
         ActiveAbility::Tack => ABILITY_TACK,
         ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
+        ActiveAbility::PokeBall => ABILITY_POKE_BALL,
         ActiveAbility::Smoke => ABILITY_SMOKE,
         _ => ABILITY_GRENADE,
     }
@@ -1296,6 +1327,15 @@ pub struct PlayerSlot {
     pub push: PushState,
     pub gun: GunState,
     pub ragdoll: RagdollState,
+    /// Index of the Poke Ball that owns this pinned victim.
+    pub captured_by_ball: Option<usize>,
+    /// PokeBall mutates a victim after RlObservation has sampled the slime's
+    /// controller fields. Preserve that pre-callback row for the current pass.
+    pub late_obs_tick: u32,
+    pub late_obs_position: Vec2,
+    pub late_obs_velocity: Vec2,
+    pub late_obs_rotation: Fix,
+    pub late_obs_state: u32,
     pub missile: MissileFormState,
     pub throw_item: ThrowItemState,
     pub cast_spell: CastSpellState,
@@ -2031,7 +2071,7 @@ impl RolloutWorld {
                             )
                         }
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
-                        | ABILITY_MJOLNIR) => (
+                        | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
                             throw_config(data, ability).hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i],
@@ -2331,6 +2371,12 @@ impl RolloutWorld {
                 push: PushState::default(),
                 gun: GunState::default(),
                 ragdoll: RagdollState::default(),
+                captured_by_ball: None,
+                late_obs_tick: u32::MAX,
+                late_obs_position: spawn,
+                late_obs_velocity: Vec2::ZERO,
+                late_obs_rotation: Fix::ZERO,
+                late_obs_state: STATE_FALL,
                 missile: MissileFormState::default(),
                 throw_item: ThrowItemState::default(),
                 cast_spell: CastSpellState::default(),
@@ -2859,6 +2905,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile
                     | ActiveAbility::Mine
                     | ActiveAbility::Rock
@@ -3248,12 +3295,14 @@ impl RolloutWorld {
                         self.dash_move(index, masked, movement_input);
                         return;
                     }
-                    ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR => {
+                    ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
+                    | ABILITY_POKE_BALL => {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.active = match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
                             ABILITY_MJOLNIR => ActiveAbility::Mjolnir,
+                            ABILITY_POKE_BALL => ActiveAbility::PokeBall,
                             ABILITY_SMOKE => ActiveAbility::Smoke,
                             _ => ActiveAbility::Grenade,
                         };
@@ -3927,6 +3976,7 @@ impl RolloutWorld {
                 | ActiveAbility::Smoke
                 | ActiveAbility::Tack
                 | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
         ) {
             self.throw_item_tick(index, action, data);
             return;
@@ -6010,6 +6060,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
@@ -6144,6 +6195,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
@@ -6814,8 +6866,8 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ability
-                    @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR) => (
+                    ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
+                    | ABILITY_POKE_BALL) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
@@ -6975,6 +7027,8 @@ impl RolloutWorld {
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
+            slot.captured_by_ball = None;
+            slot.late_obs_tick = u32::MAX;
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
@@ -7169,8 +7223,8 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ability
-                    @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR) => (
+                    ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
+                    | ABILITY_POKE_BALL) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
@@ -7318,6 +7372,8 @@ impl RolloutWorld {
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
+            slot.captured_by_ball = None;
+            slot.late_obs_tick = u32::MAX;
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
@@ -7990,6 +8046,8 @@ impl RolloutWorld {
             prev_chase_dir: Vec2::RIGHT,
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
+            capture_victim: None,
+            capture_left: Fix::ZERO,
         };
         let item_index = if let Some(free) = self.thrown_items.iter().position(|item| !item.active)
         {
@@ -8219,6 +8277,8 @@ impl RolloutWorld {
             prev_chase_dir: Vec2::RIGHT,
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
+            capture_victim: None,
+            capture_left: Fix::ZERO,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -8773,6 +8833,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
@@ -8917,6 +8978,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
@@ -9189,6 +9251,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
@@ -10624,6 +10687,121 @@ impl RolloutWorld {
         updater_dt: Fix,
         physics_dt: Fix,
     ) {
+        // PokeBall.UpdateSim starts on the first pass after ThrowItem2 releases
+        // the manually initialized circle. Its victim search and capture state
+        // are fixed-size scans over the player slots.
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].ability != ABILITY_POKE_BALL
+                || self.thrown_items[item_index].entity.is_none()
+                || self.thrown_items[item_index].born_tick >= self.tick
+            {
+                continue;
+            }
+            if !self.thrown_items[item_index].launched {
+                let item = &mut self.thrown_items[item_index];
+                item.launched = true;
+                let speed = item.body.velocity.length().max(Fix::ONE);
+                item.body.angular_velocity = Fix::from_int(-6) * item.body.velocity.x / speed;
+                if let Some(entity) = item.entity {
+                    self.entities[entity].owner = item.owner as u32 + 1;
+                }
+            }
+            self.thrown_items[item_index].age += updater_dt;
+
+            if let Some(victim) = self.thrown_items[item_index].capture_victim {
+                let valid = victim < self.players.len()
+                    && self.playable(victim)
+                    && self.players[victim].captured_by_ball == Some(item_index);
+                if !valid {
+                    self.release_poke_victim(item_index, victim, data);
+                    self.remove_thrown_item(item_index, false);
+                    continue;
+                }
+                let position = self.thrown_items[item_index].position;
+                {
+                    let slot = &mut self.players[victim];
+                    slot.base.position = position;
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.base.sync_collider();
+                    slot.obs_state = STATE_RAGDOLL;
+                    slot.ragdoll = RagdollState {
+                        active: true,
+                        skip_physics: true,
+                        time: Fix::ZERO,
+                        duration: Fix::ONE,
+                    };
+                }
+                self.thrown_items[item_index].capture_left -= updater_dt;
+                if self.thrown_items[item_index].capture_left <= Fix::ZERO {
+                    self.release_poke_victim(item_index, victim, data);
+                    self.remove_thrown_item(item_index, false);
+                }
+                continue;
+            }
+
+            if self.thrown_items[item_index].age > data.poke_ball.fizzle_seconds {
+                self.remove_thrown_item(item_index, false);
+                continue;
+            }
+
+            let position = self.thrown_items[item_index].position;
+            let radius = data.poke_ball.item_radius;
+            let owner = self.thrown_items[item_index].owner;
+            let mut nearest = Fix::MAX;
+            let mut victim = None;
+            for player_index in 0..self.players.len() {
+                let player = &self.players[player_index];
+                if player_index == owner
+                    || !self.playable_slot(player)
+                    || player.active != ActiveAbility::None
+                    || player.base.dash.active
+                    || player.captured_by_ball.is_some()
+                {
+                    continue;
+                }
+                let distance = (player.base.position - position).length_squared();
+                if distance < nearest
+                    || (distance == nearest && victim.is_some_and(|old| player_index < old))
+                {
+                    nearest = distance;
+                    let capture_radius = radius + Fix::from_f32(0.8) * player.player_scale;
+                    victim = (distance < capture_radius * capture_radius).then_some(player_index);
+                }
+            }
+            if let Some(victim) = victim {
+                let capture_position = self.thrown_items[item_index].position;
+                {
+                    let slot = &mut self.players[victim];
+                    slot.late_obs_tick = self.tick;
+                    slot.late_obs_position = slot.base.position;
+                    slot.late_obs_velocity = slot.base.velocity + slot.base.external_velocity;
+                    slot.late_obs_rotation = slot.base.rotation;
+                    slot.late_obs_state = slot.obs_state;
+                    slot.captured_by_ball = Some(item_index);
+                    slot.invisible = true;
+                    slot.base.force_unground(&self.platforms);
+                    slot.base.position = capture_position;
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.base.sync_collider();
+                    slot.late_obs_position = capture_position;
+                    slot.late_obs_state = STATE_FALL;
+                    slot.obs_state = STATE_RAGDOLL;
+                    slot.ragdoll = RagdollState {
+                        active: true,
+                        skip_physics: true,
+                        time: Fix::ZERO,
+                        duration: data.poke_ball.capture_seconds + Fix::ONE,
+                    };
+                }
+                let item = &mut self.thrown_items[item_index];
+                item.capture_victim = Some(victim);
+                item.capture_left = data.poke_ball.capture_seconds;
+                item.body.velocity =
+                    Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
+            }
+        }
+
         // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
         // updater pass after Fire, pins a settled tack before each integration,
         // and performs the armed proximity query without allocating.
@@ -10662,7 +10840,9 @@ impl RolloutWorld {
             let radius = data.tack.item_radius + Fix::from_f32(0.75);
             let mut victim = None;
             for player_index in 0..self.players.len() {
-                if !self.playable(player_index) {
+                if !self.playable(player_index)
+                    || self.players[player_index].captured_by_ball.is_some()
+                {
                     continue;
                 }
                 let in_range = (self.players[player_index].base.position - position)
@@ -10731,6 +10911,7 @@ impl RolloutWorld {
             for player_index in 0..self.players.len() {
                 if player_index == owner
                     || !self.playable(player_index)
+                    || self.players[player_index].captured_by_ball.is_some()
                     || self.thrown_items[item_index].killed_players & (1 << player_index) != 0
                 {
                     continue;
@@ -10843,6 +11024,43 @@ impl RolloutWorld {
             row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
             row.owner = 0;
         }
+    }
+
+    fn release_poke_victim(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
+        if victim >= self.players.len()
+            || !self.players[victim].base.alive
+            || self.players[victim].captured_by_ball != Some(item_index)
+        {
+            return;
+        }
+        let item = self.thrown_items[item_index];
+        let slot = &mut self.players[victim];
+        slot.captured_by_ball = None;
+        slot.invisible = false;
+        slot.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
+        slot.base.velocity = Vec2::new(
+            item.body.velocity.x / Fix::from_f32(4.5),
+            data.poke_ball.pop_up_speed,
+        );
+        let eject_direction = Vec2::new(
+            item.body.velocity.x / Fix::from_int(3),
+            data.poke_ball.pop_up_speed,
+        )
+        .normalized_safe();
+        if eject_direction != Vec2::ZERO {
+            slot.base.rotation = eject_direction.normalized_angle();
+            slot.base.up = eject_direction.perp();
+        }
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.sync_collider();
+        slot.obs_state = STATE_RAGDOLL;
+        slot.ragdoll = RagdollState {
+            active: true,
+            skip_physics: true,
+            time: Fix::ZERO,
+            duration: Fix::from_f32(0.45),
+        };
     }
 
     fn detonate_grenade(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
@@ -11105,7 +11323,8 @@ impl RolloutWorld {
                     ActiveAbility::Grenade
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir => OrientedBox::from_basis(
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall => OrientedBox::from_basis(
                         player.base.position,
                         Vec2::angle(player.base.rotation),
                         throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
@@ -11210,6 +11429,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => player.throw_entity,
                     ActiveAbility::Mine => player.mine_entity,
                     ActiveAbility::Rock => player.rock_entity,
@@ -11424,7 +11644,10 @@ impl RolloutWorld {
                 }
             }
 
-            if matches!(item.ability, ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_MINE) {
+            if matches!(
+                item.ability,
+                ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_MINE | ABILITY_POKE_BALL
+            ) {
                 continue;
             }
 
@@ -11473,7 +11696,8 @@ impl RolloutWorld {
                         ActiveAbility::Grenade
                         | ActiveAbility::Smoke
                         | ActiveAbility::Tack
-                        | ActiveAbility::Mjolnir => OrientedBox::from_basis(
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall => OrientedBox::from_basis(
                             player.base.position,
                             Vec2::angle(player.base.rotation),
                             throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
@@ -12170,6 +12394,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
                     | ActiveAbility::Missile => other.throw_entity,
                     ActiveAbility::Mine => other.mine_entity,
                     ActiveAbility::Rock => other.rock_entity,
@@ -12680,6 +12905,14 @@ impl RolloutWorld {
     /// `by_callback`: the death came from a DetPhysics collision callback
     /// (after this pass's contacts) rather than an updatable.
     pub fn kill(&mut self, index: usize, killer: u32, cause: u32, by_callback: bool) {
+        // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
+        // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
+        // ordinary collision callbacks do not.
+        if self.players[index].captured_by_ball.is_some()
+            && !(killer == ENVIRONMENT && cause == CAUSE_ACCIDENT)
+        {
+            return;
+        }
         let players = self.players.len();
         let revival_marker = self.players[index]
             .revival_markers
@@ -13335,6 +13568,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
             );
             let casting_time_stop = slot.active == ActiveAbility::TimeStop;
             let spiking = slot.active == ActiveAbility::Spike;
@@ -14197,21 +14431,29 @@ impl RolloutWorld {
                 }
                 *flags = f;
             }
-            let (slime_position, velocity, rotation, state) = if in_ability {
-                (
-                    slot.ability_origin,
-                    slot.ability_origin_velocity,
-                    slot.ability_origin_rotation,
-                    slot.ability_origin_state,
-                )
-            } else {
-                (
-                    slot.base.position,
-                    slot.base.velocity + slot.base.external_velocity,
-                    slot.base.rotation,
-                    slot.obs_state,
-                )
-            };
+            let (slime_position, velocity, rotation, state) =
+                if slot.late_obs_tick.checked_add(1) == Some(self.tick) {
+                    (
+                        slot.late_obs_position,
+                        slot.late_obs_velocity,
+                        slot.late_obs_rotation,
+                        slot.late_obs_state,
+                    )
+                } else if in_ability {
+                    (
+                        slot.ability_origin,
+                        slot.ability_origin_velocity,
+                        slot.ability_origin_rotation,
+                        slot.ability_origin_state,
+                    )
+                } else {
+                    (
+                        slot.base.position,
+                        slot.base.velocity + slot.base.external_velocity,
+                        slot.base.rotation,
+                        slot.obs_state,
+                    )
+                };
             slimes.push(CSlime {
                 id: self.entities[slot.body_entity].id,
                 owner: slot.base.id,

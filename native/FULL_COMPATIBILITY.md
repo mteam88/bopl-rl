@@ -2277,3 +2277,34 @@ platform motion is exact in the measured casts and no state, collision, entity
 lifetime or animation boundary differs. Downward player/item ray callbacks,
 `DropAllAttachedPlayers`, and isolated Water/no-hit exits still need dedicated
 interaction goldens, so coverage remains partial.
+
+### Executable Poke Ball capture (2026-09-15)
+
+Catalog id 33 now uses the shared `ThrowItem2` form and the serialized
+`PokeBall` item body. The pooled item binds its owner on the first post-release
+updater pass, computes the source's velocity-dependent spin, resolves ordinary
+circle/platform contacts, and bursts only after the strict five-second fizzle
+boundary. Its proximity query scans the fixed player slots without allocation,
+keeps the closest eligible opponent with the lower-id tie-break, and applies
+the collider-plus-scaled-player capture radius exactly.
+
+Capture applies PlayerCollision mask 16, invisibility and a refreshed pinned
+ragdoll. The shipped prefab overrides the source field default: its serialized
+capture duration is 1.92 seconds, not the class initializer's 2.4 seconds.
+Release preserves the previous invisibility clocks for the callback frame,
+then ejects at the ball position plus 0.4 units with horizontal velocity divided
+by 4.5, vertical velocity 8.5, and orientation derived from the pre-ragdoll
+ejection vector. The existing entity pool owns all state; update and contact
+paths allocate nothing per tick.
+
+`poke_ball_ability_ab.c` compares the complete 500-tick no-hit lifecycle exactly,
+including form, item ownership, ballistic contacts and fizzle removal.
+`poke_ball_capture_ab.c` drives an opponent across a moving-platform contact,
+then observes capture on tick 116 and release on tick 232 in both NativeAOT and
+Rust. Flags, invisibility clocks, ragdoll state, ownership, timers and entity
+topology are exact. The scenario inherits the rollout's known player/platform
+contact drift after traversal; spatial values remain within 750,000,000 raw
+Q32 units (0.175 world units), while the selected victim and every capture
+boundary remain unchanged. Shared `Item.Duplicate` and isolated boundary/time
+stop interactions still need dedicated differential scenarios, so coverage
+remains partial.

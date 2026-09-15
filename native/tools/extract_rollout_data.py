@@ -1046,6 +1046,65 @@ def main():
         },
     }
 
+    # ---- Poke Ball / shared ThrowItem2 item path ----
+    _, poke_ability = find_prefab("Assets/GameObject/Poke ball.prefab")
+    poke_throw = component(poke_ability, "ThrowItem2")
+    poke_box = component(poke_ability, "DPhysicsBox")
+    poke_phys = component(poke_ability, "PlayerPhysics")
+    poke_anims = animations(guid_of(poke_throw["animData"]))
+    poke_item = ASSETS[guid_of(poke_throw["ItemPrefab"])]
+    poke_item_data = component(poke_item, "Item")
+    poke_circle = component(poke_item, "DPhysicsCircle")
+    poke_body = component(poke_item, "BoplBody")
+    poke_payload = component(poke_item, "PokeBall")
+    out["prefabs"]["poke_ball"] = {
+        "hurtbox_extents": vec2(poke_box, "startExtents"),
+        "throw": {
+            "air_position": vec2(poke_throw, "aThrowPosition"),
+            "ground_position": vec2(poke_throw, "gThrowPosition"),
+            "ground_dummy": [vec2(poke_throw, f"groundedDummyPositions.Array.data[{i}]")
+                             for i in range(poke_throw["groundedDummyPositions.Array.size"])],
+            "air_dummy": [vec2(poke_throw, f"airealDummyPositions.Array.data[{i}]")
+                          for i in range(poke_throw["airealDummyPositions.Array.size"])],
+            "hurt_owner_delay": fix(poke_throw, "DisableGrenadeHitBoxTime"),
+            "max_force": fix(poke_throw, "maxThrowForce"),
+            "min_force": fix(poke_throw, "minThrowForce"),
+            "force_gain_speed": fix(poke_throw, "ThrowForceGainSpeed"),
+            "max_slow_mo_speed": fix(poke_throw, "maxSlowMoSpeed"),
+            "knockback": fix(poke_throw, "knockback"),
+            "physics": {
+                "max_speed": fix(poke_phys, "maxSpeed"),
+                "jump_strength": fix(poke_phys, "jumpStrength"),
+                "accel": fix(poke_phys, "accel"),
+                "radius": fix(poke_phys, "radius"),
+                "gravity_accel": fix(poke_phys, "gravity_accel"),
+                "gravity_max_fall_speed": fix(poke_phys, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(poke_phys, "gravity_modifier"),
+                "jump_extra_x": fix(poke_phys, "jumpExtraXStrength"),
+                "jump_momentum": fix(poke_phys, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(poke_phys, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(poke_phys, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(poke_phys, "airAccel"),
+            },
+            "animations": {name: poke_anims[name]
+                           for name in ("gEnter", "gExit", "aEnter", "aExit")},
+        },
+        "item": {
+            "layer": poke_item["data"].get("layer"),
+            "updatable_count": updater_count(poke_item),
+            "collider_hierarchy": poke_circle["hierarchyNumber"],
+            "radius": fix(poke_circle, "startRadius"),
+            "body": physics_body(poke_body),
+            "clone_count": poke_item_data["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": poke_item_data["duplicatePattern"],
+            "duplicate_spacing": fix(poke_item_data, "duplicate_spacing"),
+            "duplicate_angle": fix(poke_item_data, "duplicate_angle"),
+            "capture_seconds": fix(poke_payload, "captureSeconds"),
+            "fizzle_seconds": fix(poke_payload, "fizzleSeconds"),
+            "pop_up_speed": fix(poke_payload, "popUpSpeed"),
+        },
+    }
+
     # ---- Mjolnir / shared ThrowItem2 item path ----
     _, mjolnir_ability = find_prefab("Assets/GameObject/Mjolnir.prefab")
     mjolnir_throw = component(mjolnir_ability, "ThrowItem2")
