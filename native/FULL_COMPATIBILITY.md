@@ -1215,6 +1215,15 @@ ticks. Rock and Gust enter on ticks 214 and 224; the wave initializes on tick
 The trace stays exact through rigid flight, lower-boundary detection on tick 284,
 ability-body cause `Other`, effect allocation, stock loss and collider removal.
 
+`gust_roll_ab.c` covers Gust's other pushable Player-layer branch for 300 ticks.
+An airborne charging Roll and Gust enter on ticks 214 and 224; wave activation
+on tick 231 finds Roll's `PlayerPhysics` and adds the distance-scaled force
+through its authored inverse-mass factor of 35. Roll's later boundary component
+runs after `Roll.UpdateSim` but before `PlayerBody.UpdateSim`, so it observes the
+preceding movement pose rather than the pose PlayerBody publishes later in that
+pass. The trace is exact through that phase distinction, lower-boundary death on
+tick 292, effect allocation, stock loss and collider removal.
+
 
 ## Executable Invisibility and streamed actor verification
 
@@ -2303,7 +2312,9 @@ match, including the reconstructed hierarchy after a charged release.
 `dash_roll_ab.c` additionally covers the released form's lethal callback against
 another transformed player. `time_stop_roll_ab.c` covers the charging form
 through frozen clocks, restored release and motion up to the first platform-hop
-boundary. Repeated surface local-to-world transforms
+boundary. `gust_roll_ab.c` adds 300 exact ticks through Gust's one-shot
+PlayerPhysics force on an airborne charging form, subsequent flight and the
+correctly phased lower-boundary death. Repeated surface local-to-world transforms
 accumulate at most 2,048 raw Q32 units (less than 0.0000005 world units) in the
 comparator; velocity is exact through the measured jump and fall. The
 difference comes from reconstructing the curved surface position in Rust

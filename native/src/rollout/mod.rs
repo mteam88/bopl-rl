@@ -6157,7 +6157,24 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Roll {
+            let boundary_position = self.players[index].base.position;
+            let outside_before_player_body = self.players[index].base.outside_bounds();
             self.roll_tick(index, action, data);
+            // Roll.UpdateSim runs before DestroyIfOutsideSceneBounds, but the
+            // PlayerBody component that advances the transform is later than
+            // both. The boundary therefore observes the position from the
+            // preceding pass. If Roll exited during its own update the ability
+            // object is already inactive and the boundary component does not
+            // run.
+            if self.players[index].active == ActiveAbility::Roll
+                && self.players[index].base.alive
+                && outside_before_player_body
+            {
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.players[index].base.position = boundary_position;
+                self.players[index].reported_position = boundary_position;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+            }
             return;
         }
         if self.players[index].active == ActiveAbility::Meteor {
@@ -12405,6 +12422,30 @@ impl RolloutWorld {
             // deliberately excluded from the persistent target set.
             for player_index in 0..self.players.len() {
                 if player_index == wave_index / 3 || !self.playable(player_index) {
+                    continue;
+                }
+                if self.players[player_index].active == ActiveAbility::Roll {
+                    let target = &self.players[player_index];
+                    let roll = Circle {
+                        center: target.base.position,
+                        radius: data.roll.radius,
+                    };
+                    if crate::physics::contact::circle_circle(query, roll).is_some() {
+                        // Roll is a pushable Player-layer Ability with its own
+                        // PlayerPhysics, so activation takes the same
+                        // inverseMass01=35 force path as an ordinary slime.
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        let force = data.gust.default_force / distance;
+                        let force = if target.base.grounded {
+                            data.gust.grounded_multiplier * delta * force
+                        } else {
+                            delta * force
+                        };
+                        self.players[player_index].base.external_velocity +=
+                            force * Fix::from_int(35);
+                    }
                     continue;
                 }
                 if self.players[player_index].active == ActiveAbility::Rock {

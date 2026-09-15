@@ -136,7 +136,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   spawned prefab identities exact. A pushable active Rock takes Gust's distinct
   one-shot Player-layer fallback: the unnormalized center force is multiplied
   by 9,000 and queued on its BoplBody, then normal Rock physics carries it to an
-  exact ability-body boundary death.
+  exact ability-body boundary death. An airborne charging Roll takes the other
+  pushable-form path through `PlayerPhysics.AddForce`; its later boundary check
+  observes the pose before the lower-hierarchy `PlayerBody` movement pass.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same
@@ -253,9 +255,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   handoff. Its circle and movement radii remain distinct as authored. A Dash
   composition exactly covers the released Roll's contact-kill callback and
   stock reconstruction, and a Time Stop composition covers frozen charge plus
-  restored release and motion. Platform hopping, early airborne release,
-  moving-platform turns, wall squish and other transformed-form contacts still
-  need dedicated differential scenarios.
+  restored release and motion. Gust's PlayerPhysics force on an airborne
+  charging Roll, subsequent flight and lower-boundary death are also exact.
+  Platform hopping, early airborne release, moving-platform turns, wall squish
+  and other transformed-form contacts still need dedicated differential scenarios.
   Black Hole executes its grounded and airborne form animations, persistent
   layer-23 circle, Hermite growth, all-wall gravity, controlled-platform
   multiplier, player attraction, center-only wall consumption, hole merging,
