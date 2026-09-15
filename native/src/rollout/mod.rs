@@ -1559,6 +1559,7 @@ pub struct PlayerSlot {
     /// the ordinary slime active, so this state advances with normal motion.
     pub rope: Option<usize>,
     pub rope_top: bool,
+    pub rope_attach_tick: u32,
     pub rope_prev_imposed: Vec2,
     pub rope_prev_external: Vec2,
     pub(crate) web_swing: [rope_abilities::WebSwingState; 3],
@@ -2849,6 +2850,7 @@ impl RolloutWorld {
                 cooldowns,
                 rope: None,
                 rope_top: false,
+                rope_attach_tick: 0,
                 rope_prev_imposed: Vec2::ZERO,
                 rope_prev_external: Vec2::ZERO,
                 web_swing: [rope_abilities::WebSwingState::default(); 3],

@@ -244,6 +244,9 @@ impl RolloutWorld {
         slot.rope_prev_external = slot.base.external_velocity;
         slot.rope = rope;
         slot.rope_top = top;
+        if rope.is_some() {
+            slot.rope_attach_tick = self.tick;
+        }
     }
 
     pub(super) fn web_cooldowns_tick(&mut self, player: usize, action: Action) {
@@ -961,7 +964,10 @@ impl RolloutWorld {
             // HookshotInstant attaches after this pass's PlayerBody updater;
             // a newly spawned grounded rope therefore keeps Initialize's
             // final point until the next pass.
-            if self.players[player].base.grounded && self.ropes[rope_index].born_tick != self.tick {
+            if self.players[player].base.grounded
+                && self.ropes[rope_index].born_tick != self.tick
+                && self.players[player].rope_attach_tick != self.tick
+            {
                 let delta = self.ropes[rope_index].physics.segment[endpoint]
                     - self.players[player].base.position;
                 if delta.length_squared() >= Fix::from_raw(300_647_711) {

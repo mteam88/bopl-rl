@@ -2817,6 +2817,14 @@ immediately retains the full cooldown. The resulting strand persists after the
 hook lands because the caster has no reel ownership. Rope, hook and contact
 state stay in the existing fixed pools and fixed-capacity scratch arrays.
 
+The same flight then hits the grounded third player at its top endpoint on tick
+197. Because that collision occurs after `PlayerPhysics.UpdateSim`, Unity does
+not run the grounded rope correction during the contact pass. Rust records the
+attachment tick and defers that correction too; this removes a spurious
+25.65-unit/s horizontal velocity that previously appeared on the victim.
+`grapple_player_attach_ab.c` compares every public field exactly through the
+contact and the first eligible correction pass at tick 198.
+
 `grappling_hook_ability_ab.c` compares 1,870 optimized-Q32 NativeAOT/Rust stages:
 horizontal casts on all five maps, one upward timeout, and the close-player team
 cast. All hook/segment ids, hierarchy, counts, cooldown and reel/delete
