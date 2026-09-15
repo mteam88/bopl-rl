@@ -211,6 +211,7 @@ struct RawPrefabs {
     rock: RawRock,
     push: RawPush,
     freeze: RawFreeze,
+    blink: RawBlink,
     scale_rays: RawScaleRays,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
@@ -421,6 +422,27 @@ struct RawFreeze {
     collision_mask_no_water: u32,
     freeze_seconds: i64,
     frozen_updatable_count: u32,
+}
+#[derive(Deserialize)]
+struct RawBlink {
+    hurtbox_extents: RawVec2,
+    collider_hierarchy: u32,
+    collider_offset: RawVec2,
+    radius: i64,
+    physics: RawPhysics,
+    air_control_blend: i64,
+    firepoint_offset: RawVec2,
+    knockback: i64,
+    max_slow_mo_speed: i64,
+    transform_ticks: u32,
+    fire_ticks: u32,
+    collision_mask: u32,
+    min_player_duration: i64,
+    wall_duration: i64,
+    wall_delay: i64,
+    on_player_hit_cooldown: i64,
+    tunnel_release_duration: i64,
+    tunnel_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawScaleRays {
@@ -1052,6 +1074,26 @@ pub struct FreezeData {
     pub freeze_seconds: Fix,
     pub frozen_updatable_count: u32,
 }
+pub struct BlinkData {
+    pub hurtbox_extents: Vec2,
+    pub collider_hierarchy: u32,
+    pub collider_offset: Vec2,
+    pub radius: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub air_control_blend: Fix,
+    pub firepoint_offset: Vec2,
+    pub knockback: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub transform_ticks: u32,
+    pub fire_ticks: u32,
+    pub collision_mask: u32,
+    pub player_duration: Fix,
+    pub wall_duration: Fix,
+    pub wall_delay: Fix,
+    pub on_player_hit_cooldown: Fix,
+    pub tunnel_release_duration: Fix,
+    pub tunnel_updatable_count: u32,
+}
 pub struct ScaleRaysData {
     pub growth: ScaleRayData,
     pub shrink: ScaleRayData,
@@ -1310,6 +1352,7 @@ pub struct RolloutData {
     pub rock: RockData,
     pub push: PushData,
     pub freeze: FreezeData,
+    pub blink: BlinkData,
     pub scale_rays: ScaleRaysData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
@@ -1853,6 +1896,30 @@ pub fn get() -> &'static RolloutData {
                 collision_mask_no_water: raw.prefabs.freeze.collision_mask_no_water,
                 freeze_seconds: Fix::from_raw(raw.prefabs.freeze.freeze_seconds),
                 frozen_updatable_count: raw.prefabs.freeze.frozen_updatable_count,
+            },
+            blink: BlinkData {
+                hurtbox_extents: {
+                    let extents = raw.prefabs.blink.hurtbox_extents.get();
+                    Vec2::new(extents.x.abs(), extents.y.abs())
+                },
+                collider_hierarchy: raw.prefabs.blink.collider_hierarchy,
+                collider_offset: raw.prefabs.blink.collider_offset.get(),
+                radius: Fix::from_raw(raw.prefabs.blink.radius),
+                constants: constants(&raw.prefabs.blink.physics),
+                air_control_blend: Fix::from_raw(raw.prefabs.blink.air_control_blend),
+                firepoint_offset: raw.prefabs.blink.firepoint_offset.get(),
+                knockback: Fix::from_raw(raw.prefabs.blink.knockback),
+                max_slow_mo_speed: Fix::from_raw(raw.prefabs.blink.max_slow_mo_speed),
+                transform_ticks: raw.prefabs.blink.transform_ticks,
+                fire_ticks: raw.prefabs.blink.fire_ticks,
+                collision_mask: raw.prefabs.blink.collision_mask,
+                player_duration: Fix::from_raw(raw.prefabs.blink.min_player_duration)
+                    .max(Fix::from_f32(0.3) * Fix::from_raw(raw.prefabs.blink.wall_duration)),
+                wall_duration: Fix::from_raw(raw.prefabs.blink.wall_duration),
+                wall_delay: Fix::from_raw(raw.prefabs.blink.wall_delay),
+                on_player_hit_cooldown: Fix::from_raw(raw.prefabs.blink.on_player_hit_cooldown),
+                tunnel_release_duration: Fix::from_raw(raw.prefabs.blink.tunnel_release_duration),
+                tunnel_updatable_count: raw.prefabs.blink.tunnel_updatable_count,
             },
             scale_rays: ScaleRaysData {
                 growth: scale_ray(&raw.prefabs.scale_rays.growth),

@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Engine, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Shrink ray, Invisibility, Push, Tesla coil, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
-  (catalog ids 0/1/2/3/4/5/7/8/9/10/11/12/13/14/15/17/19/22/23/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Shrink ray, Invisibility, Push, Tesla coil, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
+  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/17/19/22/23/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -235,6 +235,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   non-unit scale continues to round them each tick in Q32. Grounded ordinary-
   player hits match through the complete resize and later movement; water,
   non-player, active-form, BlackHole and orb targets remain open.
+  Blink gun uses the same exact GunTransform form and hitscan ordering. A
+  player hit immediately disables the victim, changes the cast cooldown to
+  five seconds, and advances a collider-free QuantumTunnel using player time.
+  Grounded release uses the reference RNG to select an eligible rounded
+  platform and sample its perimeter without allocating in the tick path.
+  Relocation, inactive collider synchronization, strict 1.2-second lifetime,
+  reactivation and the one-pass Player.Position publication lag all match the
+  oracle. Wall/rigid/item/orb targets, water reflection, active forms, rope and
+  magnet detachment, and airborne placement remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

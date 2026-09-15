@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_ENGINE: u32 = 5;
+pub const ABILITY_BLINK: u32 = 6;
 pub const ABILITY_GUST: u32 = 7;
 pub const ABILITY_GROWTH_RAY: u32 = 8;
 pub const ABILITY_ROCK: u32 = 9;
@@ -1113,6 +1114,7 @@ pub enum ActiveAbility {
     Rock,
     Push,
     Freeze,
+    Blink,
     GrowthRay,
     ShrinkRay,
     Missile,
@@ -1234,6 +1236,12 @@ pub struct PlayerSlot {
     /// duration boundary are simulation-visible.
     pub teleport_effect_active: bool,
     pub teleport_effect_time: Fix,
+    /// QuantumTunnel disables a Blink victim immediately, relocates it near
+    /// the end of the visual lifetime, then reenables it on a later pass.
+    pub blink_tunnel_active: bool,
+    pub blink_tunnel_born_tick: u32,
+    pub blink_tunnel_age: Fix,
+    pub blink_tunnel_released: bool,
     pub gold_mushroom: [GoldMushroomState; 3],
     pub rewind: RewindState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -1265,6 +1273,7 @@ pub struct PlayerSlot {
     pub rock_hierarchy: u32,
     pub push_entity: usize,
     pub freeze_entity: usize,
+    pub blink_entity: usize,
     pub growth_ray_entity: usize,
     pub shrink_ray_entity: usize,
     pub gust_entity: usize,
@@ -1758,6 +1767,7 @@ impl RolloutWorld {
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut push_entity = [usize::MAX; MAX_PLAYERS];
         let mut freeze_entity = [usize::MAX; MAX_PLAYERS];
+        let mut blink_entity = [usize::MAX; MAX_PLAYERS];
         let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
@@ -1885,6 +1895,14 @@ impl RolloutWorld {
                             &mut freeze_entity[i],
                             false,
                         ),
+                        ABILITY_BLINK => (
+                            data::surface_extents(data.blink.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.blink.collider_hierarchy,
+                            &mut blink_entity[i],
+                            false,
+                        ),
                         ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                             let ray = scale_ray_data(data, ability);
                             (
@@ -1949,6 +1967,7 @@ impl RolloutWorld {
                             | ABILITY_ENGINE
                             | ABILITY_TESLA
                             | ABILITY_FREEZE
+                            | ABILITY_BLINK
                             | ABILITY_GROWTH_RAY
                             | ABILITY_SHRINK_RAY
                     ) {
@@ -1969,6 +1988,8 @@ impl RolloutWorld {
                         data.push.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_FREEZE {
                         data.freeze.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLINK {
+                        data.blink.collider_offset.x.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -1994,6 +2015,8 @@ impl RolloutWorld {
                         data.push.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_FREEZE {
                         data.freeze.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLINK {
+                        data.blink.collider_offset.y.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2196,6 +2219,10 @@ impl RolloutWorld {
                 teleport_pending_position: Vec2::ZERO,
                 teleport_effect_active: false,
                 teleport_effect_time: Fix::ZERO,
+                blink_tunnel_active: false,
+                blink_tunnel_born_tick: 0,
+                blink_tunnel_age: Fix::ZERO,
+                blink_tunnel_released: false,
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 rewind: RewindState::default(),
                 obs_state: STATE_FALL,
@@ -2214,6 +2241,7 @@ impl RolloutWorld {
                 rock_hierarchy: rock_hierarchy[i],
                 push_entity: push_entity[i],
                 freeze_entity: freeze_entity[i],
+                blink_entity: blink_entity[i],
                 growth_ray_entity: growth_ray_entity[i],
                 shrink_ray_entity: shrink_ray_entity[i],
                 gust_entity: gust_entity[i],
@@ -2597,7 +2625,9 @@ impl RolloutWorld {
             // Player.UpdatePlayer is on the disabled slime GameObject during
             // TeleportedObjectEffect, so Player.Position remains at its
             // pre-teleport publication until reactivation.
-            if !self.players[index].teleport_effect_active {
+            if !self.players[index].teleport_effect_active
+                && !self.players[index].blink_tunnel_active
+            {
                 self.players[index].reported_position = self.players[index].base.position;
                 self.players[index].reported_tick = self.tick;
             } else {
@@ -2659,6 +2689,7 @@ impl RolloutWorld {
         self.revival_effects_tick(data);
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
+        self.blink_tunnels_tick(data, updater_dt);
         self.grenade_explosions_tick(data, updater_dt);
         self.missile_explosions_tick(data, updater_dt);
         self.smoke_tick(data, updater_dt);
@@ -2693,6 +2724,7 @@ impl RolloutWorld {
                     | ActiveAbility::Rock
                     | ActiveAbility::Push
                     | ActiveAbility::Freeze
+                    | ActiveAbility::Blink
                     | ActiveAbility::GrowthRay
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Spike
@@ -2726,7 +2758,10 @@ impl RolloutWorld {
                     self.players[index].push.collider_up = self.players[index].base.up;
                 } else if matches!(
                     self.players[index].active,
-                    ActiveAbility::Freeze | ActiveAbility::GrowthRay | ActiveAbility::ShrinkRay
+                    ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
                 ) {
                     self.players[index].gun.collider_up = self.players[index].base.up;
                 }
@@ -2810,6 +2845,7 @@ impl RolloutWorld {
             && !slot.stock_clone_pending
             && slot.revival_effect_ticks == 0
             && !slot.teleport_effect_active
+            && !slot.blink_tunnel_active
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -2826,7 +2862,8 @@ impl RolloutWorld {
             slot.active != ActiveAbility::None || slot.base.dash.active
         };
         if !self.playable(index) {
-            if self.players[index].teleport_effect_active {
+            if self.players[index].teleport_effect_active || self.players[index].blink_tunnel_active
+            {
                 return;
             }
             self.respawn_tick(index, movement_input, jump_pressed, data);
@@ -3347,6 +3384,46 @@ impl RolloutWorld {
                         self.freeze_tick(index, action, data);
                         return;
                     }
+                    ABILITY_BLINK => {
+                        let grounded = self.players[index].base.grounded;
+                        let aim = {
+                            let slot = &self.players[index];
+                            let forward = if grounded {
+                                slot.base.up.perp_cw()
+                            } else {
+                                Vec2::RIGHT
+                            };
+                            if slot.facing_right { forward } else { -forward }
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Blink;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.gun = GunState {
+                            aim,
+                            ..GunState::default()
+                        };
+                        slot.base.rotation = Fix::ZERO;
+                        if grounded {
+                            if let Some(platform) = slot.base.platform(&self.platforms) {
+                                slot.base.position = platform
+                                    .surface
+                                    .position(slot.base.local, data.blink.radius);
+                            }
+                            slot.base.radius = data.blink.radius;
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        } else {
+                            slot.base.radius = data.blink.radius;
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                            slot.base.external_velocity *= Fix::from_f32(0.1);
+                            slot.base.ground = None;
+                        }
+                        self.blink_tick(index, action, data);
+                        return;
+                    }
                     ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                         let ray = scale_ray_data(data, ability);
                         let grounded = self.players[index].base.grounded;
@@ -3582,6 +3659,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Freeze {
             self.freeze_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Blink {
+            self.blink_tick(index, action, data);
             return;
         }
         if matches!(
@@ -5197,6 +5278,7 @@ impl RolloutWorld {
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
@@ -5328,6 +5410,7 @@ impl RolloutWorld {
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
@@ -5972,6 +6055,7 @@ impl RolloutWorld {
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entity = usize::MAX;
+            let mut blink_entity = usize::MAX;
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
@@ -6002,6 +6086,11 @@ impl RolloutWorld {
                         data::surface_extents(data.freeze.hurtbox_extents),
                         data.freeze.collider_hierarchy,
                         &mut freeze_entity,
+                    ),
+                    ABILITY_BLINK => (
+                        data::surface_extents(data.blink.hurtbox_extents),
+                        data.blink.collider_hierarchy,
+                        &mut blink_entity,
                     ),
                     ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                         let ray = scale_ray_data(data, ability);
@@ -6052,6 +6141,8 @@ impl RolloutWorld {
                         data.push.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_BLINK {
+                        data.blink.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6072,6 +6163,8 @@ impl RolloutWorld {
                         data.push.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_BLINK {
+                        data.blink.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6118,6 +6211,9 @@ impl RolloutWorld {
             slot.rock = RockState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
+            slot.blink_tunnel_active = false;
+            slot.blink_tunnel_age = Fix::ZERO;
+            slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
@@ -6137,6 +6233,7 @@ impl RolloutWorld {
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
             slot.freeze_entity = freeze_entity;
+            slot.blink_entity = blink_entity;
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
             slot.gust_entity = gust_entity;
@@ -6291,6 +6388,7 @@ impl RolloutWorld {
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entity = usize::MAX;
+            let mut blink_entity = usize::MAX;
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
@@ -6321,6 +6419,11 @@ impl RolloutWorld {
                         data::surface_extents(data.freeze.hurtbox_extents),
                         data.freeze.collider_hierarchy,
                         &mut freeze_entity,
+                    ),
+                    ABILITY_BLINK => (
+                        data::surface_extents(data.blink.hurtbox_extents),
+                        data.blink.collider_hierarchy,
+                        &mut blink_entity,
                     ),
                     ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                         let ray = scale_ray_data(data, ability);
@@ -6372,6 +6475,8 @@ impl RolloutWorld {
                         data.push.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_BLINK {
+                        data.blink.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6392,6 +6497,8 @@ impl RolloutWorld {
                         data.push.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_BLINK {
+                        data.blink.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6425,6 +6532,9 @@ impl RolloutWorld {
             slot.rock = RockState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
+            slot.blink_tunnel_active = false;
+            slot.blink_tunnel_age = Fix::ZERO;
+            slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
@@ -6444,6 +6554,7 @@ impl RolloutWorld {
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
             slot.freeze_entity = freeze_entity;
+            slot.blink_entity = blink_entity;
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
             slot.gust_entity = gust_entity;
@@ -7429,6 +7540,144 @@ impl RolloutWorld {
         }
     }
 
+    /// GunTransform.UpdateSim for Blink. The form physics are shared with Freeze:
+    /// aim while nearly frozen in air, fire on button release, then fly under
+    /// full gravity until the firing animation ends or the recoil lands.
+    fn blink_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let gun = &data.blink;
+        // SpriteAnimator precedes GunTransform. The callback therefore exits
+        // on the pass after all authored fire-frame durations have elapsed.
+        if self.players[index].gun.has_fired {
+            if self.players[index].gun.fire_ticks == 0 {
+                self.exit_freeze_animation(index);
+                return;
+            }
+            self.players[index].gun.fire_ticks -= 1;
+        }
+
+        let direction = action.direction();
+        if direction != Vec2::ZERO {
+            self.players[index].gun.aim = direction.normalized();
+        }
+        let slot_button = 2u8 << self.players[index].active_slot;
+
+        // PlayerPhysics.Move(zero) runs before the release test.
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
+            self.fire_blink(index, data);
+            if self.players[index].active != ActiveAbility::Blink {
+                return;
+            }
+        }
+
+        let invalid_ground = self.players[index].base.grounded
+            && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
+                || self.players[index].base.ground.is_none()
+                || self.players[index]
+                    .base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .is_none());
+        if invalid_ground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+
+        if !self.players[index].base.grounded {
+            let gravity_modifier = if self.players[index].gun.has_fired {
+                Fix::ONE
+            } else {
+                Fix::from_f32(0.03)
+            };
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                gun.constants.gravity_accel,
+                gravity_modifier,
+                gun.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Blink gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded && slot.gun.has_fired {
+                bow_exit(slot, terrain!(self));
+                return;
+            }
+        }
+
+        let slot = &mut self.players[index];
+        if !slot.gun.has_fired {
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
+            if slot.base.velocity.length() > gun.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * gun.max_slow_mo_speed;
+            }
+        } else {
+            let before = slot.base.velocity;
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                direction.x,
+                gun.constants.air_accel,
+                gun.constants.max_speed,
+            )
+            .expect("valid Blink air constants");
+            let after = slot.base.velocity;
+            slot.base.velocity =
+                before * (Fix::ONE - gun.air_control_blend) + after * gun.air_control_blend;
+        }
+        if slot.base.velocity.length() > gun.constants.max_speed {
+            slot.base.velocity = slot.base.velocity.normalized() * gun.constants.max_speed;
+        }
+        if !slot.base.grounded {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+    }
+
+    fn fire_blink(&mut self, index: usize, data: &data::RolloutData) {
+        let (aim, grounded, normal) = {
+            let slot = &self.players[index];
+            (
+                slot.gun.aim.normalized_safe(),
+                slot.base.grounded,
+                slot.base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .map(|p| p.surface.normal(slot.base.position)),
+            )
+        };
+        {
+            let slot = &mut self.players[index];
+            slot.gun.has_fired = true;
+            slot.gun.fire_ticks = data.blink.fire_ticks;
+            slot.base.up = aim.perp();
+            slot.base.rotation = aim.normalized_angle();
+        }
+        let firepoint = {
+            let slot = &self.players[index];
+            slot.base.position
+                + slot.base.up * data.blink.firepoint_offset.y
+                + aim * data.blink.firepoint_offset.x
+        };
+        self.shoot_blink_ray(firepoint, aim, index, data);
+        if self.players[index].active != ActiveAbility::Blink {
+            return;
+        }
+
+        let slot = &mut self.players[index];
+        if grounded {
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.blink.knockback);
+            slot.base.force_unground(&self.platforms);
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+        } else {
+            slot.base.velocity = -(aim * data.blink.knockback);
+        }
+    }
+
     /// GunTransform with ShootScaleChange. Growth and Shrink share every
     /// authored form constant and animation; only the spawned ScaleChanger's
     /// signed multipliers differ.
@@ -7638,6 +7887,7 @@ impl RolloutWorld {
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
@@ -7714,6 +7964,279 @@ impl RolloutWorld {
         }
     }
 
+    fn shoot_blink_ray(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+    ) {
+        self.shoot_blink_ray_pass(origin, direction, caster, data, false);
+    }
+
+    fn shoot_blink_ray_pass(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+        already_hit_water: bool,
+    ) {
+        let max_distance = Fix::from_int(100);
+        let mask = data.blink.collision_mask;
+        let terrain = terrain!(self);
+        let mut nearest = if mask & (1 << LAYER_WALL) != 0 {
+            crate::world::closest(terrain, origin, direction, max_distance, None)
+                .map_or(max_distance, |(_, distance, _)| distance)
+        } else {
+            max_distance
+        };
+        let mut victim = None;
+        let mut water_hit = false;
+        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
+            let map = &data.maps[self.map];
+            let water = OrientedBox::from_basis(
+                map.water_position,
+                Vec2::RIGHT,
+                data::surface_extents(map.water_extents),
+            );
+            if let Some(hit) = water.raycast(origin, direction)
+                && hit.near < nearest
+                && hit.near <= max_distance
+            {
+                nearest = hit.near;
+                water_hit = true;
+            }
+        }
+        if mask & (1 << LAYER_PLAYER) != 0 {
+            // Registered collider order is player/prefab order. Strictly
+            // closer hits replace the current one, preserving that tie-break.
+            for target in 0..self.players.len() {
+                if !self.playable(target) {
+                    continue;
+                }
+                let slot = &self.players[target];
+                let entity = match slot.active {
+                    ActiveAbility::None => slot.body_entity,
+                    ActiveAbility::Dash => slot.dash_entity,
+                    ActiveAbility::Bow => slot.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => slot.throw_entity,
+                    ActiveAbility::Mine => slot.mine_entity,
+                    ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Push => slot.push_entity,
+                    ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::Blink => slot.blink_entity,
+                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::Engine => slot.engine_entity,
+                    ActiveAbility::Tesla => slot.tesla_entity,
+                    ActiveAbility::TimeStop => slot.time_stop_entity,
+                    ActiveAbility::Gust => slot.gust_entity,
+                    ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::Platform => slot.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let hit = if row.kind == 0 {
+                    Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near)
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    OrientedBox {
+                        center,
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near)
+                };
+                if let Some(distance) = hit
+                    && distance < nearest
+                    && distance <= max_distance
+                {
+                    nearest = distance;
+                    victim = Some(target);
+                    water_hit = false;
+                }
+            }
+        }
+        if water_hit {
+            self.shoot_blink_ray_pass(
+                origin + direction * nearest,
+                Vec2::new(direction.x, -direction.y),
+                caster,
+                data,
+                true,
+            );
+            return;
+        }
+        if let Some(victim) = victim {
+            self.begin_blink_tunnel(caster, victim, data);
+        }
+    }
+
+    fn begin_blink_tunnel(&mut self, caster: usize, victim: usize, data: &data::RolloutData) {
+        let caster_slot = self.players[caster].active_slot;
+        self.players[caster].cooldowns[caster_slot] = data.blink.on_player_hit_cooldown;
+        if !self.players[victim].blink_tunnel_active {
+            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+        }
+        let slot = &mut self.players[victim];
+        slot.blink_tunnel_active = true;
+        slot.blink_tunnel_born_tick = self.tick;
+        slot.blink_tunnel_age = Fix::ZERO;
+        slot.blink_tunnel_released = false;
+    }
+
+    /// QuantumTunnel.UpdateSim for player victims. The visual copy has no
+    /// collider row, so its clock, RNG, relocation and active state suffice.
+    fn blink_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for victim in 0..self.players.len() {
+            if !self.players[victim].blink_tunnel_active
+                || self.players[victim].blink_tunnel_born_tick == self.tick
+            {
+                continue;
+            }
+            if self.players[victim].blink_tunnel_age > data.blink.player_duration {
+                let slot = &mut self.players[victim];
+                slot.blink_tunnel_active = false;
+            }
+            self.players[victim].blink_tunnel_age += updater_dt;
+            if !self.players[victim].blink_tunnel_released
+                && self.players[victim].blink_tunnel_age
+                    >= data.blink.player_duration - data.blink.tunnel_release_duration
+            {
+                if self.players[victim].base.grounded {
+                    self.release_grounded_blink_player(victim);
+                } else {
+                    self.release_airborne_blink_player(victim);
+                }
+                self.players[victim].base.sync_collider();
+                self.players[victim].blink_tunnel_released = true;
+            }
+        }
+    }
+
+    fn release_grounded_blink_player(&mut self, victim: usize) {
+        let old_position = self.players[victim].base.position;
+        let water_limit = Fix::from_f32(-11.3) + Fix::from_f32(0.5);
+        let probe = Vec2::new(Fix::ZERO, Fix::from_int(1000));
+        let mut candidates = [0usize; 64];
+        let mut count = 0usize;
+        for (index, platform) in self.platforms.iter().enumerate() {
+            if count == candidates.len()
+                || platform.surface.center.x < Fix::from_f32(-97.27)
+                || platform.surface.center.x > Fix::from_f32(97.6)
+                || platform.surface.center.y < Fix::from_int(-26)
+                || platform.surface.center.y > Fix::from_int(40)
+                || (platform.surface.center.x - old_position.x).abs() > Fix::from_f32(72.5)
+            {
+                continue;
+            }
+            let Ok(top) = platform.collider.closest_point(probe) else {
+                continue;
+            };
+            if top.y > water_limit {
+                candidates[count] = index;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return;
+        }
+        let selected = candidates[self.rng.int_range(0, count as i32) as usize];
+        let radius = self.players[victim].base.radius;
+        for _ in 0..20 {
+            let local = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            let surface_point = self.platforms[selected].surface.position(local, Fix::ZERO);
+            let player_point =
+                surface_point + self.platforms[selected].surface.normal(surface_point) * radius;
+            let blocked = self.platforms.iter().enumerate().any(|(index, platform)| {
+                index != selected && platform.collider.overlaps(player_point)
+            });
+            let in_bounds = surface_point.x >= Fix::from_f32(-97.27)
+                && surface_point.x <= Fix::from_f32(97.6)
+                && surface_point.y >= Fix::from_int(-26)
+                && surface_point.y <= Fix::from_int(40);
+            if surface_point.y > water_limit && in_bounds && !blocked {
+                let platform = &self.platforms[selected];
+                self.players[victim].base.attach(platform, surface_point);
+                return;
+            }
+        }
+        if let Ok(surface_point) = self.platforms[selected].collider.closest_point(probe) {
+            let platform = &self.platforms[selected];
+            self.players[victim].base.attach(platform, surface_point);
+        }
+    }
+
+    fn release_airborne_blink_player(&mut self, victim: usize) {
+        let old_position = self.players[victim].base.position;
+        let mut center = Vec2::ZERO;
+        for platform in &self.platforms {
+            center += platform.collider.inner.center;
+        }
+        if !self.platforms.is_empty() {
+            center = center / Fix::from_int(self.platforms.len() as i64);
+        }
+        let mut right = Fix::from_f32(-131.25);
+        let mut left = Fix::from_f32(131.25);
+        let mut count = 0;
+        for platform in &self.platforms {
+            if (platform.collider.inner.center.x - old_position.x).abs() > Fix::from_f32(72.5) {
+                continue;
+            }
+            count += 1;
+            let bounds = platform.collider.bounds();
+            right = right.max(bounds.max.x);
+            left = left.min(bounds.min.x);
+        }
+        if count == 0 || right < left {
+            right = old_position.x + Fix::from_int(30);
+            left = old_position.x - Fix::from_int(30);
+        }
+        let min = Vec2::new(
+            left,
+            (center.y - Fix::from_int(4)).max(Fix::from_f32(-11.3) + Fix::ONE),
+        );
+        let max = Vec2::new(right, Fix::from_int(40) - Fix::from_f32(1.7));
+        let min = Vec2::new(min.x.min(max.x), min.y.min(max.y));
+        let mut position = old_position;
+        for _ in 0..20 {
+            position = Vec2::new(
+                self.rng.fix_range(min.x, max.x),
+                self.rng.fix_range(min.y, max.y),
+            );
+            if !self
+                .platforms
+                .iter()
+                .any(|platform| platform.collider.overlaps(position))
+            {
+                break;
+            }
+        }
+        let slot = &mut self.players[victim];
+        slot.base.position = position;
+        slot.base.velocity = Vec2::ZERO;
+    }
+
     fn shoot_freeze_ray(&mut self, origin: Vec2, direction: Vec2, data: &data::RolloutData) {
         self.shoot_freeze_ray_pass(origin, direction, data, false);
     }
@@ -7776,6 +8299,7 @@ impl RolloutWorld {
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
@@ -9789,6 +10313,7 @@ impl RolloutWorld {
                     ActiveAbility::Rock => player.rock_entity,
                     ActiveAbility::Push => player.push_entity,
                     ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::Blink => player.blink_entity,
                     ActiveAbility::GrowthRay => player.growth_ray_entity,
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
                     ActiveAbility::Spike => player.spike_entity,
@@ -11125,6 +11650,7 @@ impl RolloutWorld {
             .find(|&marker| self.revival_marker_pool[marker].active);
         let slot = &mut self.players[index];
         slot.base.alive = false;
+        slot.blink_tunnel_active = false;
         slot.deaths += 1;
         slot.cause_of_death = cause;
         // Telemetry mirrors RlTelemetry.Death.
@@ -11706,6 +12232,7 @@ impl RolloutWorld {
                 rock_e,
                 push_e,
                 freeze_e,
+                blink_e,
                 growth_ray_e,
                 shrink_ray_e,
                 gust_e,
@@ -11726,6 +12253,7 @@ impl RolloutWorld {
                     s.rock_entity,
                     s.push_entity,
                     s.freeze_entity,
+                    s.blink_entity,
                     s.growth_ray_entity,
                     s.shrink_ray_entity,
                     s.gust_entity,
@@ -11739,7 +12267,7 @@ impl RolloutWorld {
             let slot = &self.players[index];
             let alive = slot.base.alive && slot.unspawned == 0;
             let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
-            let teleporting = slot.teleport_effect_active;
+            let teleporting = slot.teleport_effect_active || slot.blink_tunnel_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
             let missile_form = slot.active == ActiveAbility::Missile;
@@ -11747,6 +12275,7 @@ impl RolloutWorld {
             let rocking = slot.active == ActiveAbility::Rock;
             let pushing = slot.active == ActiveAbility::Push;
             let freezing = slot.active == ActiveAbility::Freeze;
+            let blinking = slot.active == ActiveAbility::Blink;
             let growing = slot.active == ActiveAbility::GrowthRay;
             let shrinking = slot.active == ActiveAbility::ShrinkRay;
             let throwing = matches!(
@@ -11803,7 +12332,7 @@ impl RolloutWorld {
             } else {
                 (slot.ability_origin, slot.ability_origin_rotation)
             };
-            if body_active || body_was_active {
+            if body_active || body_was_active || teleporting {
                 body.x = center.x.raw();
                 body.y = center.y.raw();
                 // The hurtbox has PlayerBody movement on the same GameObject
@@ -12095,6 +12624,47 @@ impl RolloutWorld {
                     freeze_box.up_x = collider.up.x.raw();
                     freeze_box.up_y = collider.up.y.raw();
                     freeze_box.rotation = rotation.raw();
+                }
+            }
+            if blink_e != usize::MAX {
+                let blink_box = &mut self.entities[blink_e];
+                let was_active = blink_box.flags & E_ACTIVE != 0;
+                blink_box.flags = if alive && blinking {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if blinking {
+                    blink_box.owner = slot.base.id;
+                }
+                if (alive && blinking) || was_active {
+                    let (root, rotation, scale) = if blinking {
+                        (synced, slot.gun.aim.normalized_angle(), slot.base.scale)
+                    } else {
+                        (exit_position, Fix::ZERO, slot.base.scale)
+                    };
+                    let basis = Vec2::angle(rotation);
+                    let offset_basis = if blinking {
+                        slot.gun.collider_up.perp_cw()
+                    } else {
+                        basis
+                    };
+                    let center =
+                        root + offset_basis.complex_mul(data.blink.collider_offset * scale);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(data.blink.hurtbox_extents) * scale,
+                    );
+                    blink_box.x = center.x.raw();
+                    blink_box.y = center.y.raw();
+                    blink_box.vx = 0;
+                    blink_box.vy = 0;
+                    blink_box.right_x = collider.right.x.raw();
+                    blink_box.right_y = collider.right.y.raw();
+                    blink_box.up_x = collider.up.x.raw();
+                    blink_box.up_y = collider.up.y.raw();
+                    blink_box.rotation = rotation.raw();
                 }
             }
             for (ray_e, active, ray) in [
@@ -12478,7 +13048,7 @@ impl RolloutWorld {
                 || slot.respawn_spawn_ticks > 0
                 || slot.revival_effect_ticks > 0;
             let mut flags = S_ACTIVE;
-            if slot.teleport_effect_active {
+            if slot.teleport_effect_active || slot.blink_tunnel_active {
                 flags = S_SPAWNED | S_SIMULATED;
             } else if respawning {
                 flags |= S_SUPPRESS_INPUT;

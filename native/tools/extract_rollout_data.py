@@ -784,6 +784,50 @@ def main():
         "frozen_updatable_count": updater_count(frozen_prefab),
     }
 
+    # ---- Blink gun / shared GunTransform form and QuantumTunnel ----
+    _, blink_ability = find_prefab("Assets/GameObject/Blink gun.prefab")
+    blink_gun = component(blink_ability, "GunTransform")
+    blink_box = component(blink_ability, "DPhysicsBox")
+    blink_physics = component(blink_ability, "PlayerPhysics")
+    blink_fix_transform = component(blink_ability, "FixTransform")
+    blink_payload = component(blink_ability, "ShootQuantum")
+    blink_anims = animations(guid_of(blink_gun["animData"]))
+    blink_tunnel_prefab = ASSETS[guid_of(blink_payload["QuantumTunnelPrefab"])]
+    blink_tunnel = component(blink_tunnel_prefab, "QuantumTunnel")
+    out["prefabs"]["blink"] = {
+        "hurtbox_extents": vec2(blink_box, "startExtents"),
+        "collider_hierarchy": blink_box["hierarchyNumber"],
+        "collider_offset": vec2(blink_fix_transform, "offset"),
+        "radius": fix(blink_physics, "radius"),
+        "physics": {
+            "max_speed": fix(blink_physics, "maxSpeed"),
+            "jump_strength": fix(blink_physics, "jumpStrength"),
+            "accel": fix(blink_physics, "accel"),
+            "radius": fix(blink_physics, "radius"),
+            "gravity_accel": fix(blink_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(blink_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(blink_physics, "gravity_modifier"),
+            "jump_extra_x": fix(blink_physics, "jumpExtraXStrength"),
+            "jump_momentum": fix(blink_physics, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(blink_physics, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(blink_physics, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(blink_physics, "airAccel"),
+        },
+        "air_control_blend": fix(blink_gun, "airealControlBlend"),
+        "firepoint_offset": vec2(blink_gun, "FirepointOffset"),
+        "knockback": fix(blink_gun, "KnockBack"),
+        "max_slow_mo_speed": fix(blink_gun, "maxSlowMoSpeed"),
+        "transform_ticks": sum(abs(d) for d in blink_anims["gunTransform"]),
+        "fire_ticks": sum(abs(d) for d in blink_anims["gunTransformFire"]),
+        "collision_mask": blink_payload["collisionMask.m_Bits"],
+        "min_player_duration": fix(blink_payload, "minPlayerDuration"),
+        "wall_duration": fix(blink_payload, "WallDuration"),
+        "wall_delay": fix(blink_payload, "WallDelay"),
+        "on_player_hit_cooldown": fix(blink_payload, "onPlayerHitCD"),
+        "tunnel_release_duration": blink_tunnel["ScaleAnim"]["keys"][-1]["time"],
+        "tunnel_updatable_count": updater_count(blink_tunnel_prefab),
+    }
+
     # ---- Growth/Shrink rays / ScaleChanger ----
     scale_rays = {}
     for name, ability_path, effect_path in (

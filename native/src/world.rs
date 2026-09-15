@@ -522,7 +522,7 @@ impl Player {
         self.local = motion.local;
         self.grounded_speed = motion.grounded_speed;
     }
-    fn attach(&mut self, platform: &Platform, position: Vec2) {
+    pub(crate) fn attach(&mut self, platform: &Platform, position: Vec2) {
         let mut motion = self.ground_state();
         motion
             .attach(platform.id, &platform.surface, position)

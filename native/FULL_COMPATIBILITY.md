@@ -2099,6 +2099,40 @@ non-player targets, active transformed-player targets, BlackHole growth and
 orb conversion still require their concrete entity implementations and
 differential scenarios, so both abilities remain partial.
 
+### Executable Blink gun and player QuantumTunnel (2026-09-15)
+
+Catalog id 6 now executes its serialized `GunTransform`: grounded and airborne
+entry, aim tracking, release-to-fire, the authored firepoint, 50-unit recoil,
+slow aiming gravity, half-strength aerial control, landing exit and the 20-tick
+fire animation. `ShootQuantum` uses the registered Player, wall and Water shape
+order. A player hit replaces the normal 2.5-second cooldown with the prefab's
+five-second cooldown and immediately initializes a collider-free
+`QuantumTunnel` on the victim.
+
+The tunnel disables the victim in the shot pass and advances by player-scaled
+fixed delta time starting on its deferred registration pass. At
+`LifeSpan - last(ScaleAnim.keys).time`, it reproduces the source's platform
+candidate order, seeded `RandomInt` choice and `RandomFix(0, 1)` perimeter
+sample. It checks the sampled player center against every other rounded
+rectangle, attaches through the same surface-local conversion, and updates the
+inactive FixTransform. The slime and DetPhysics collider therefore expose the
+new location immediately while `Player.Position` remains at its last published
+location until the GameObject is active and `Player.UpdatePlayer` runs again.
+The strict `age > LifeSpan` comparison is retained. Candidate collection uses
+a fixed 64-entry stack buffer, so neither the tunnel clock nor placement path
+allocates per tick.
+
+`blink_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks across the complete
+measured sequence. The cast starts on tick 181, release hits player two and the
+grounded recoil exits the form on tick 241, the seeded tunnel move occurs on
+tick 295 at raw position `(125472406545, -43290835442)`, the victim remains
+inactive through tick 314, reactivates on tick 315, and publishes the moved
+`Player.Position` on tick 316. Header, player, slime, telemetry and every entity
+row match, with the comparator allowing 64 raw Q32 units for dynamic vectors
+but observing the exact measured landing. Wall, rigid-body, item and orb
+tunnels, water reflection, transformed victims, rope/magnet detachment and a
+dedicated airborne-release differential remain open, so coverage is partial.
+
 ### Executable Engine and attached thrust body (2026-09-15)
 
 Catalog id 5 now executes the grounded `PlantObjectOnPlatform` form and its
