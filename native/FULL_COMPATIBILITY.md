@@ -1854,3 +1854,35 @@ charged throw, ballistic item flight, timed removal, exact randomized placement,
 radius animation, and persistence of all four cloud entities. Ignition chaining,
 scale changes, ring eviction, and `Item.Duplicate` remain to be exercised by
 dedicated goldens, so the catalog entry remains partial.
+
+### Executable Time Stop and global simulation clock (2026-09-14)
+
+Catalog id 12 now executes the shipped `CastSpell` form and `TimeStop` effect.
+The grounded entry preserves the source's updater phases: `Ability.UpdateSim`
+publishes the pre-callback root while `SpriteAnimator` can unground and resync
+the circle later in the same pass. The collider retains the exact Slerp basis
+rather than reconstructing it from its derived angle. Channel time uses the
+caster-protected clock, release before the strict nine-second boundary cancels,
+and a completed cast runs the authored cast and ease-out animations before
+returning the slime at its 1.8-unit exit offset.
+
+The spawned effect registers on the following pass, protects all members of the
+caster's team, sets the global player time scale to zero, and restores it after
+the exact float32 10-second duration plus the final 1.501036167-second alpha key.
+Unprotected players retain their last accepted input and continue the source's
+unscaled gravity, air damping, and external-velocity damping while their
+position, raycasts, input changes, and cooldown clocks receive a zero delta.
+Protected players keep their normal player clock, except abilities whose prefab
+explicitly opts into `cooldownStoppedDuringTimeStop`. DetPhysics integration now
+uses the post-effect zero delta for arrows, thrown items, and dynamic platforms;
+their earlier updatables use the scale visible at the start of the pass. Timed
+projectile, smoke, and explosion animation clocks follow the same split without
+adding per-tick allocation.
+
+`time_stop_ability_ab.c` compares 1,600 NativeAOT/Q32 ticks exactly. It covers a
+grounded cast, effect registration and removal, team protection bits, 690 frozen
+ticks, an airborne opponent with nonzero velocity, frozen opponent position and
+cooldowns, protected-caster movement and cooldown exceptions, and final global
+clock restoration. Interactions with ability entity types that have not yet
+been ported remain part of those abilities' open scope, so coverage is marked
+partial until the catalog is complete.

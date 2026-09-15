@@ -207,6 +207,7 @@ struct RawPrefabs {
     teleport: RawTeleport,
     grenade: RawGrenade,
     smoke: RawSmoke,
+    time_stop: RawTimeStop,
     tack: RawTack,
     mjolnir: RawMjolnir,
 }
@@ -360,6 +361,28 @@ struct RawSmokeExplosion {
     collider_hierarchy: u32,
     extents: RawVec2,
     animation_ticks: u32,
+}
+#[derive(Deserialize)]
+struct RawTimeStop {
+    cast_time: i64,
+    center_offset: RawVec2,
+    exit_offset: RawVec2,
+    collider_offset: RawVec2,
+    hurtbox_radius: i64,
+    collider_hierarchy: u32,
+    animations: RawTimeStopAnimations,
+    effect_updatable_count: u32,
+    duration_f32: f32,
+    exit_seconds_f32: f32,
+}
+#[derive(Deserialize)]
+struct RawTimeStopAnimations {
+    #[serde(rename = "idleToFall")]
+    idle_to_fall: Vec<i32>,
+    #[serde(rename = "castSpell")]
+    cast_spell: Vec<i32>,
+    #[serde(rename = "easeOutSpellCast")]
+    ease_out: Vec<i32>,
 }
 #[derive(Clone, Copy, Deserialize)]
 struct RawExplosionShockwave {
@@ -758,6 +781,20 @@ pub struct SmokeData {
     pub explosion_extents: Vec2,
     pub explosion_animation_ticks: u32,
 }
+pub struct TimeStopData {
+    pub cast_time: Fix,
+    pub center_offset: Vec2,
+    pub exit_offset: Vec2,
+    pub collider_offset: Vec2,
+    pub hurtbox_radius: Fix,
+    pub collider_hierarchy: u32,
+    pub idle_to_fall_ticks: u32,
+    pub cast_spell_ticks: u32,
+    pub ease_out_ticks: u32,
+    pub effect_updatable_count: u32,
+    pub duration_f32: f32,
+    pub exit_seconds_f32: f32,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -796,6 +833,7 @@ pub struct RolloutData {
     pub teleport: TeleportData,
     pub grenade: GrenadeData,
     pub smoke: SmokeData,
+    pub time_stop: TimeStopData,
     pub tack: TackData,
     pub mjolnir: MjolnirData,
     pub abilities: Vec<AbilityData>,
@@ -1233,6 +1271,23 @@ pub fn get() -> &'static RolloutData {
                     explosion_collider_hierarchy: smoke.explosion.collider_hierarchy,
                     explosion_extents: smoke.explosion.extents.get(),
                     explosion_animation_ticks: smoke.explosion.animation_ticks,
+                }
+            },
+            time_stop: {
+                let time_stop = &raw.prefabs.time_stop;
+                TimeStopData {
+                    cast_time: Fix::from_raw(time_stop.cast_time),
+                    center_offset: time_stop.center_offset.get(),
+                    exit_offset: time_stop.exit_offset.get(),
+                    collider_offset: time_stop.collider_offset.get(),
+                    hurtbox_radius: Fix::from_raw(time_stop.hurtbox_radius),
+                    collider_hierarchy: time_stop.collider_hierarchy,
+                    idle_to_fall_ticks: ticks(&time_stop.animations.idle_to_fall),
+                    cast_spell_ticks: ticks(&time_stop.animations.cast_spell),
+                    ease_out_ticks: ticks(&time_stop.animations.ease_out),
+                    effect_updatable_count: time_stop.effect_updatable_count,
+                    duration_f32: time_stop.duration_f32,
+                    exit_seconds_f32: time_stop.exit_seconds_f32,
                 }
             },
             tack: {

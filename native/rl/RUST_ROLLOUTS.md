@@ -160,10 +160,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/13/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/7/12/13/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
-  while Dash/Grenade/Bow/Gust/Platform/Revival/Teleport/Rewind execute casts. Grenade is
+  while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
   exact through grounded and aerial release, owner-impact or timed-fuse
   detonation, and stock recovery; duplication and forced-exit paths remain absent.
   Tack is exact through throw, settling, arming, owner-clear re-entry, kill and
@@ -174,6 +174,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain
   without dedicated differential goldens.
+  Time Stop is exact through grounded channeling, casting, team protection,
+  the 10-second hold plus exit-alpha lifetime, restoration, protected-caster
+  cooldowns/motion, and global DetPhysics freezing for the currently ported
+  projectile, item, smoke, explosion and platform bodies. Cross-ability
+  interactions with catalog entries that remain absent inherit those entries'
+  open scope.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

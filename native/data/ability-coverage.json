@@ -94,7 +94,7 @@
       "name": "Time stop",
       "prefab": "Assets/GameObject/Time stop.prefab",
       "prefab_guid": "13b1168b7f11655458dddcfce3f9b0ce",
-      "native_status": "unimplemented"
+      "native_status": "partial"
     },
     {
       "id": 13,

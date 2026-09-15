@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
+pub const ABILITY_TIME_STOP: u32 = 12;
 pub const ABILITY_SMOKE: u32 = 13;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
@@ -383,6 +384,27 @@ pub struct SmokeExplosion {
     pub scale: Fix,
     pub owner: usize,
     pub age: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct TimeStopEffect {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub caster: usize,
+    pub seconds_elapsed: f32,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct CastSpellState {
+    /// 0: grounded intro, 1: channel, 2: cast animation, 3: ease-out.
+    pub phase: u8,
+    pub ticks: u32,
+    pub time: Fix,
+    /// Pose synced by DetPhysics before the updatable callbacks in this pass.
+    pub collider_position: Vec2,
+    pub collider_right: Vec2,
+    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -852,6 +874,7 @@ pub enum ActiveAbility {
     Tack,
     Mjolnir,
     Smoke,
+    TimeStop,
     Gust,
     Revival,
     Platform,
@@ -907,6 +930,7 @@ pub struct PlayerSlot {
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
     pub throw_item: ThrowItemState,
+    pub cast_spell: CastSpellState,
     pub platform: PlatformState,
     pub gust: GustState,
     pub revival: RevivalState,
@@ -953,6 +977,9 @@ pub struct PlayerSlot {
     /// Player.InputProfile's frame-edge state is updated even without a live
     /// controllable slime and is what the stock chooser reads.
     pub input_jump_was_down: bool,
+    /// Last movement input accepted by Player.ForceSetInputProfile. New
+    /// packets are ignored for an unprotected player during Time Stop.
+    pub last_movement_input: Vec2,
     pub telemetry: CTelemetry,
     // Fixed entity table indices.
     pub circle_entity: usize,
@@ -962,6 +989,7 @@ pub struct PlayerSlot {
     pub dash_entity: usize,
     pub bow_entity: usize,
     pub throw_entity: usize,
+    pub time_stop_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1034,6 +1062,9 @@ pub struct RolloutWorld {
     pub grenade_explosions: Vec<GrenadeExplosion>,
     pub smoke_clouds: Vec<SmokeCloud>,
     pub smoke_explosions: Vec<SmokeExplosion>,
+    pub time_stop_effects: Vec<TimeStopEffect>,
+    pub player_time_scale: Fix,
+    pub time_stop_protected: [bool; MAX_PLAYERS],
     pub spawned: Vec<SpawnedPlatform>,
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
@@ -1107,6 +1138,9 @@ impl RolloutWorld {
             grenade_explosions: Vec::with_capacity(64),
             smoke_clouds: Vec::with_capacity(64),
             smoke_explosions: Vec::with_capacity(64),
+            time_stop_effects: Vec::with_capacity(8),
+            player_time_scale: Fix::ONE,
+            time_stop_protected: [false; MAX_PLAYERS],
             spawned: Vec::with_capacity(64),
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
@@ -1166,6 +1200,9 @@ impl RolloutWorld {
         self.grenade_explosions.clone_from(&src.grenade_explosions);
         self.smoke_clouds.clone_from(&src.smoke_clouds);
         self.smoke_explosions.clone_from(&src.smoke_explosions);
+        self.time_stop_effects.clone_from(&src.time_stop_effects);
+        self.player_time_scale = src.player_time_scale;
+        self.time_stop_protected = src.time_stop_protected;
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
         self.revival_marker_pool
@@ -1221,6 +1258,9 @@ impl RolloutWorld {
             grenade_explosions: _,
             smoke_clouds: _,
             smoke_explosions: _,
+            time_stop_effects: _,
+            player_time_scale: _,
+            time_stop_protected: _,
             spawned: _,
             gust_waves: _,
             revival_marker_pool: _,
@@ -1303,6 +1343,9 @@ impl RolloutWorld {
         self.grenade_explosions.clear();
         self.smoke_clouds.clear();
         self.smoke_explosions.clear();
+        self.time_stop_effects.clear();
+        self.player_time_scale = Fix::ONE;
+        self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.revival_marker_pool.clear();
@@ -1363,6 +1406,7 @@ impl RolloutWorld {
         let mut circle_entity = [usize::MAX; MAX_PLAYERS];
         let mut gust_entity = [usize::MAX; MAX_PLAYERS];
         let mut revival_entity = [usize::MAX; MAX_PLAYERS];
+        let mut time_stop_entity = [usize::MAX; MAX_PLAYERS];
         let mut body_entity = [usize::MAX; MAX_PLAYERS];
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
@@ -1388,6 +1432,12 @@ impl RolloutWorld {
                         Vec2::ZERO,
                         7,
                         &mut circle_entity[i],
+                    ),
+                    ABILITY_TIME_STOP => (
+                        data.time_stop.hurtbox_radius,
+                        data.time_stop.collider_offset,
+                        data.time_stop.collider_hierarchy,
+                        &mut time_stop_entity[i],
                     ),
                     _ => continue,
                 };
@@ -1627,6 +1677,7 @@ impl RolloutWorld {
                 removed_ground_normal: None,
                 bow: BowState::default(),
                 throw_item: ThrowItemState::default(),
+                cast_spell: CastSpellState::default(),
                 platform: PlatformState::default(),
                 gust: GustState::default(),
                 revival: RevivalState::default(),
@@ -1652,6 +1703,7 @@ impl RolloutWorld {
                 respawn_selected: 1,
                 stock_indicator_entities: [usize::MAX; 3],
                 input_jump_was_down: false,
+                last_movement_input: Vec2::ZERO,
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
                 gust_entity: gust_entity[i],
@@ -1660,6 +1712,7 @@ impl RolloutWorld {
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
                 throw_entity: throw_entity[i],
+                time_stop_entity: time_stop_entity[i],
             });
         }
 
@@ -1935,6 +1988,11 @@ impl RolloutWorld {
         self.register_pending_stock_clones(data);
         self.register_pending_grenade_explosions(data);
         self.register_pending_smoke(data);
+        self.register_pending_time_stops();
+        // Updatables earlier than a TimeStop effect observe the scale from
+        // the start of the pass. DetPhysics observes any scale written by the
+        // effect later in this same pass.
+        let updater_dt = DT * self.player_time_scale;
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
@@ -1952,16 +2010,23 @@ impl RolloutWorld {
         // 100,000,000. Compute their home springs before a later ability such
         // as Gust changes a platform body's velocity. DetPhysics integrates
         // both the queued spring force and those later direct impulses below.
-        self.platform_updaters_tick(data);
+        self.platform_updaters_tick(data, updater_dt);
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
-        for slot in &mut self.players {
+        for (index, slot) in self.players.iter_mut().enumerate() {
             if slot.invisible {
                 // Time-stop protection is added with the Time Stop port. In
                 // the ordinary clock state FixedDeltaTime is exactly DT.
-                slot.invisible_time += DT;
-                slot.ability_time += DT;
+                let dt = if self.player_time_scale < Fix::from_f32(0.01)
+                    && !self.time_stop_protected[index]
+                {
+                    Fix::ZERO
+                } else {
+                    DT
+                };
+                slot.invisible_time += dt;
+                slot.ability_time += dt;
                 if slot.invisible_time > Fix::from_int(5) {
                     slot.invisible = false;
                     slot.invisible_time = Fix::ZERO;
@@ -1974,6 +2039,36 @@ impl RolloutWorld {
         }
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
+            if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+                // PlayerPhysics and SlimeController still run. Their motion
+                // helpers apply unscaled gravity and air damping, but every
+                // position/raycast delta receives GameTime.FixedDeltaTime=0.
+                let input = self.players[index].last_movement_input;
+                let base = &mut self.players[index].base;
+                if !base.grounded {
+                    crate::player_physics::apply_gravity(
+                        &mut base.velocity,
+                        base.constants.gravity_accel,
+                        base.constants.gravity_modifier,
+                        base.constants.gravity_max_fall_speed,
+                        false,
+                    )
+                    .expect("valid movement gravity constants");
+                    crate::player_physics::air_movement(
+                        &mut base.velocity,
+                        input.x,
+                        base.constants.air_accel,
+                        base.constants.max_speed,
+                    )
+                    .expect("valid movement air constants");
+                } else if input == Vec2::ZERO {
+                    base.grounded_speed *= base.constants.friction;
+                }
+                base.external_velocity *= Fix::from_f64(0.95);
+                self.players[index].reported_position = self.players[index].base.position;
+                self.players[index].reported_tick = self.tick;
+                continue;
+            }
             // Player.UpdatePlayer is on the disabled slime GameObject during
             // TeleportedObjectEffect, so Player.Position remains at its
             // pre-teleport publication until reactivation.
@@ -1988,6 +2083,7 @@ impl RolloutWorld {
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
             let movement_input = packet.input_direction(self.players[index].keyboard);
+            self.players[index].last_movement_input = movement_input;
             let jump_down = action.buttons & 1 != 0;
             let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
             jump_pressed_by_player[index] = jump_pressed;
@@ -2038,8 +2134,9 @@ impl RolloutWorld {
         self.revival_effects_tick(data);
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
-        self.grenade_explosions_tick(data);
-        self.smoke_tick(data);
+        self.grenade_explosions_tick(data, updater_dt);
+        self.smoke_tick(data, updater_dt);
+        self.time_stop_effects_tick(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -2060,6 +2157,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
@@ -2088,8 +2186,9 @@ impl RolloutWorld {
             let input = action.input_direction(self.players[index].keyboard);
             self.update_obs_state(index, input);
         }
-        self.arrows_integrate(data);
-        self.thrown_items_integrate(data);
+        let physics_dt = DT * self.player_time_scale;
+        self.arrows_integrate(data, updater_dt, physics_dt);
+        self.thrown_items_integrate(data, updater_dt, physics_dt);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -2102,6 +2201,7 @@ impl RolloutWorld {
                     slot.throw_entity,
                     slot.gust_entity,
                     slot.revival_entity,
+                    slot.time_stop_entity,
                 ] {
                     if e != usize::MAX {
                         self.entities[e].flags = E_REMOVED;
@@ -2110,7 +2210,7 @@ impl RolloutWorld {
             }
         }
         self.refresh_actor_entities();
-        self.platforms_tick(data);
+        self.platforms_tick(data, updater_dt, physics_dt);
         self.arrows_contacts(data);
         self.thrown_items_contacts(data);
         self.grenade_explosion_contacts(data);
@@ -2207,7 +2307,14 @@ impl RolloutWorld {
             }
             slot.reported_position = slot.base.position;
             for s in 0..3 {
-                slot.timers[s] += DT;
+                // A protected player otherwise receives an unscaled delta,
+                // but abilities opting into CooldownStoppedDuringTimeStop
+                // still keep their timer fixed (SlimeController.cs:727-731).
+                if self.player_time_scale >= Fix::from_f32(0.01)
+                    || !data.abilities[slot.abilities[s] as usize].stopped_during_time_stop
+                {
+                    slot.timers[s] += DT;
+                }
                 if slot.abilities[s] == ABILITY_REWIND
                     && !slot.rewind.rewinding
                     && slot.rewind.finish_next_tick
@@ -2402,6 +2509,30 @@ impl RolloutWorld {
                         self.throw_item_tick(index, action, data);
                         return;
                     }
+                    ABILITY_TIME_STOP => {
+                        let grounded = self.players[index].base.grounded;
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::TimeStop;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.base.velocity = Vec2::ZERO;
+                        slot.base.external_velocity = Vec2::ZERO;
+                        slot.cast_spell = CastSpellState {
+                            phase: if grounded { 0 } else { 1 },
+                            ..CastSpellState::default()
+                        };
+                        if !grounded {
+                            slot.base.rotation = Fix::ZERO;
+                            slot.base.up = Vec2::UP;
+                            slot.base.grounded = false;
+                            slot.base.ground = None;
+                            slot.base.grounded_speed = Fix::ZERO;
+                        }
+                        self.time_stop_cast_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -2588,6 +2719,10 @@ impl RolloutWorld {
                 | ActiveAbility::Mjolnir
         ) {
             self.throw_item_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::TimeStop {
+            self.time_stop_cast_tick(index, action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
@@ -2860,6 +2995,161 @@ impl RolloutWorld {
         // the live collider position on entry and every active pass.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
+    }
+
+    fn time_stop_cast_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let published_position = self.players[index].base.position;
+        {
+            let slot = &mut self.players[index];
+            slot.cast_spell.collider_position = published_position;
+            slot.cast_spell.collider_right = slot.base.up.perp_cw();
+            slot.cast_spell.collider_rotation = slot.base.rotation;
+        }
+        let button = 2u8 << self.players[index].active_slot;
+        let phase = self.players[index].cast_spell.phase;
+        if phase <= 1 {
+            self.players[index].cast_spell.time += DT;
+        }
+
+        match phase {
+            0 => {
+                self.players[index].cast_spell.ticks += 1;
+                if self.players[index].cast_spell.ticks > data.time_stop.idle_to_fall_ticks {
+                    let normal = self.players[index].base.ground.and_then(|ground| {
+                        self.platforms
+                            .iter()
+                            .find(|platform| platform.id == ground)
+                            .map(|platform| {
+                                platform.surface.normal(self.players[index].base.position)
+                            })
+                    });
+                    let slot = &mut self.players[index];
+                    if let Some(normal) = normal {
+                        slot.base.position += normal * Fix::from_f32(0.05);
+                    }
+                    slot.base.grounded = false;
+                    slot.base.grounded_speed = Fix::ZERO;
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.cast_spell.phase = 1;
+                    slot.cast_spell.ticks = 0;
+                }
+            }
+            1 => {
+                let released = action.buttons & button == 0;
+                if released && self.players[index].cast_spell.time <= data.time_stop.cast_time {
+                    self.exit_time_stop_cast(index, data);
+                    return;
+                }
+                if self.players[index].cast_spell.time > data.time_stop.cast_time {
+                    self.players[index].cast_spell.phase = 2;
+                    // CastSpell precedes SpriteAnimator in this prefab, so
+                    // the newly selected cast animation advances once in the
+                    // same updater pass.
+                    self.players[index].cast_spell.ticks = 1;
+                }
+            }
+            2 => {
+                self.players[index].cast_spell.ticks += 1;
+                if self.players[index].cast_spell.ticks > data.time_stop.cast_spell_ticks {
+                    self.next_spawn_hierarchy += data.time_stop.effect_updatable_count;
+                    let effect = TimeStopEffect {
+                        active: true,
+                        born_tick: self.tick,
+                        caster: index,
+                        ..TimeStopEffect::default()
+                    };
+                    if let Some(free) = self
+                        .time_stop_effects
+                        .iter()
+                        .position(|candidate| !candidate.active)
+                    {
+                        self.time_stop_effects[free] = effect;
+                    } else {
+                        self.time_stop_effects.push(effect);
+                    }
+                    self.players[index].cast_spell.phase = 3;
+                    self.players[index].cast_spell.ticks = 0;
+                }
+            }
+            _ => {
+                self.players[index].cast_spell.ticks += 1;
+                if self.players[index].cast_spell.ticks > data.time_stop.ease_out_ticks {
+                    self.exit_time_stop_cast(index, data);
+                    return;
+                }
+            }
+        }
+        self.players[index].reported_position = published_position;
+        self.players[index].reported_tick = self.tick;
+    }
+
+    fn exit_time_stop_cast(&mut self, index: usize, data: &data::RolloutData) {
+        let normal = self.players[index].base.ground.and_then(|ground| {
+            self.platforms
+                .iter()
+                .find(|platform| platform.id == ground)
+                .map(|platform| platform.surface.normal(self.players[index].base.position))
+        });
+        let slot = &mut self.players[index];
+        if let Some(normal) = normal {
+            slot.base.position += normal * Fix::from_f32(0.05);
+        }
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        let published_position = slot.base.position;
+        // Ability.ExitAbility publishes and freezes the ability collider at
+        // this pose, while the returned slime is placed at ExitAbilityOffset.
+        slot.cast_spell.collider_position = published_position;
+        slot.cast_spell.collider_right = Vec2::RIGHT;
+        slot.cast_spell.collider_rotation = Fix::ZERO;
+        slot.base.position += data.time_stop.exit_offset;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.grounded = false;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.active = ActiveAbility::None;
+        slot.exit_to_fall();
+        slot.base.collision_rays(terrain!(self));
+        slot.reported_position = published_position;
+        slot.reported_tick = self.tick;
+    }
+
+    fn register_pending_time_stops(&mut self) {
+        for effect in &mut self.time_stop_effects {
+            if !effect.active || effect.registered || effect.born_tick >= self.tick {
+                continue;
+            }
+            effect.registered = true;
+            effect.seconds_elapsed = 0.0;
+            let team = self.players[effect.caster].team;
+            for index in 0..self.players.len() {
+                self.time_stop_protected[index] = self.players[index].team == team;
+            }
+        }
+    }
+
+    fn time_stop_effects_tick(&mut self, data: &data::RolloutData) {
+        for effect in &mut self.time_stop_effects {
+            if !effect.active || !effect.registered {
+                continue;
+            }
+            effect.seconds_elapsed += 1.0 / 60.0;
+            self.player_time_scale = Fix::ZERO;
+            if effect.seconds_elapsed
+                > data.time_stop.duration_f32 + data.time_stop.exit_seconds_f32
+            {
+                effect.active = false;
+                effect.registered = false;
+                self.player_time_scale = Fix::ONE;
+                self.time_stop_protected = [false; MAX_PLAYERS];
+            } else {
+                let team = self.players[effect.caster].team;
+                for index in 0..self.players.len() {
+                    self.time_stop_protected[index] = self.players[index].team == team;
+                }
+            }
+        }
     }
 
     fn revival_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -3170,7 +3460,7 @@ impl RolloutWorld {
         }
     }
 
-    fn grenade_explosions_tick(&mut self, data: &data::RolloutData) {
+    fn grenade_explosions_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for explosion in &mut self.grenade_explosions {
             if !explosion.active || !explosion.registered {
                 continue;
@@ -3187,11 +3477,15 @@ impl RolloutWorld {
             } else {
                 E_ACTIVE | E_TRIGGER
             };
-            explosion.age += 1;
+            // Explosion.UpdateSim disables the one-frame hitbox even while
+            // stopped, while its ownerless SpriteAnimator does not advance.
+            if updater_dt > Fix::ZERO || explosion.age == 0 {
+                explosion.age += 1;
+            }
         }
     }
 
-    fn smoke_tick(&mut self, data: &data::RolloutData) {
+    fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut detonations = [usize::MAX; 64];
         let mut detonation_count = 0;
         for cloud_index in 0..self.smoke_clouds.len() {
@@ -3207,9 +3501,11 @@ impl RolloutWorld {
             if let Some(entity) = cloud.entity {
                 self.entities[entity].radius = (data.smoke.cloud_radii[frame] * cloud.scale).raw();
             }
-            cloud.age_ticks = cloud.age_ticks.saturating_add(1);
+            if updater_dt > Fix::ZERO {
+                cloud.age_ticks = cloud.age_ticks.saturating_add(1);
+            }
             if cloud.ignition_time >= Fix::ZERO {
-                cloud.ignition_time += DT;
+                cloud.ignition_time += updater_dt;
                 if cloud.ignition_time > cloud.ignition_delay
                     && detonation_count < detonations.len()
                 {
@@ -3238,7 +3534,9 @@ impl RolloutWorld {
             } else {
                 E_ACTIVE | E_TRIGGER
             };
-            explosion.age += 1;
+            if updater_dt > Fix::ZERO || explosion.age == 0 {
+                explosion.age += 1;
+            }
         }
     }
 
@@ -3346,6 +3644,7 @@ impl RolloutWorld {
             let mut platform_entity = usize::MAX;
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
+            let mut time_stop_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_GUST => (
@@ -3365,6 +3664,12 @@ impl RolloutWorld {
                         data.revival.collider_offset,
                         8,
                         &mut revival_entity,
+                    ),
+                    ABILITY_TIME_STOP => (
+                        data.time_stop.hurtbox_radius,
+                        data.time_stop.collider_offset,
+                        data.time_stop.collider_hierarchy,
+                        &mut time_stop_entity,
                     ),
                     _ => continue,
                 };
@@ -3449,6 +3754,7 @@ impl RolloutWorld {
             slot.timers.fill(Fix::from_f32(-1.5));
             slot.active = ActiveAbility::None;
             slot.throw_item = ThrowItemState::default();
+            slot.cast_spell = CastSpellState::default();
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
@@ -3457,6 +3763,7 @@ impl RolloutWorld {
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
+            slot.time_stop_entity = time_stop_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -3474,6 +3781,7 @@ impl RolloutWorld {
                 self.players[index].throw_entity,
                 self.players[index].gust_entity,
                 self.players[index].revival_entity,
+                self.players[index].time_stop_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -3494,6 +3802,7 @@ impl RolloutWorld {
             let mut platform_entity = usize::MAX;
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
+            let mut time_stop_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_GUST => (
@@ -3513,6 +3822,12 @@ impl RolloutWorld {
                         data.revival.collider_offset,
                         8,
                         &mut revival_entity,
+                    ),
+                    ABILITY_TIME_STOP => (
+                        data.time_stop.hurtbox_radius,
+                        data.time_stop.collider_offset,
+                        data.time_stop.collider_hierarchy,
+                        &mut time_stop_entity,
                     ),
                     _ => continue,
                 };
@@ -3613,6 +3928,7 @@ impl RolloutWorld {
             slot.base.sync_collider();
             slot.active = ActiveAbility::None;
             slot.throw_item = ThrowItemState::default();
+            slot.cast_spell = CastSpellState::default();
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
@@ -3621,6 +3937,7 @@ impl RolloutWorld {
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
+            slot.time_stop_entity = time_stop_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -4844,7 +5161,7 @@ impl RolloutWorld {
     /// DetPhysics integrates every BoplBody before constructing contact
     /// manifolds. Keep projectile time/gravity in that body phase; contacts
     /// run after platform integration below.
-    fn arrows_integrate(&mut self, data: &data::RolloutData) {
+    fn arrows_integrate(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
         // Scene DetPhysics overrides gravityAccel to -40 on every map (the
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
@@ -4864,7 +5181,7 @@ impl RolloutWorld {
                 continue;
             }
             let arrow = &mut self.arrows[i];
-            arrow.time_passed += DT;
+            arrow.time_passed += updater_dt;
             if !arrow.can_hurt_owner
                 && arrow.hurt_owner_after > Fix::ZERO
                 && arrow.time_passed > arrow.hurt_owner_after
@@ -4888,12 +5205,17 @@ impl RolloutWorld {
                 .normalized_angle()
                 .checked_rem(Fix::TAU, true)
                 .expect("finite angle");
-            arrow.velocity.y += gravity * DT;
-            arrow.position += arrow.velocity * DT;
+            arrow.velocity.y += gravity * physics_dt;
+            arrow.position += arrow.velocity * physics_dt;
         }
     }
 
-    fn thrown_items_integrate(&mut self, data: &data::RolloutData) {
+    fn thrown_items_integrate(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        physics_dt: Fix,
+    ) {
         // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
         // updater pass after Fire, pins a settled tack before each integration,
         // and performs the armed proximity query without allocating.
@@ -4918,7 +5240,7 @@ impl RolloutWorld {
                     item.body.velocity = Vec2::ZERO;
                     item.body.angular_velocity = Fix::ZERO;
                 }
-                item.age += DT;
+                item.age += updater_dt;
             }
             if self.thrown_items[item_index].age > data.tack.lifetime_seconds {
                 self.remove_thrown_item(item_index, false);
@@ -4987,7 +5309,7 @@ impl RolloutWorld {
                         self.entities[entity].owner = item.owner as u32 + 1;
                     }
                 }
-                item.age += DT;
+                item.age += updater_dt;
             }
             if self.thrown_items[item_index].age > data.mjolnir.max_flight_seconds {
                 self.remove_thrown_item(item_index, false);
@@ -5021,7 +5343,7 @@ impl RolloutWorld {
             }
 
             if self.thrown_items[item_index].phase == 0 {
-                let damping = (Fix::ONE - data.mjolnir.outbound_drag * DT).max(Fix::ZERO);
+                let damping = (Fix::ONE - data.mjolnir.outbound_drag * updater_dt).max(Fix::ZERO);
                 let item = &mut self.thrown_items[item_index];
                 item.body.velocity *= damping;
                 if item.age > data.mjolnir.clang_grace_seconds
@@ -5042,7 +5364,7 @@ impl RolloutWorld {
                 {
                     let item = &mut self.thrown_items[item_index];
                     item.body.velocity +=
-                        to_owner.normalized_safe() * data.mjolnir.recall_accel * DT;
+                        to_owner.normalized_safe() * data.mjolnir.recall_accel * updater_dt;
                     let speed = item.body.velocity.length();
                     if speed > data.mjolnir.recall_max_speed {
                         item.body.velocity *= data.mjolnir.recall_max_speed / speed;
@@ -5064,9 +5386,9 @@ impl RolloutWorld {
                 let item = &mut self.thrown_items[item_index];
                 if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
                 {
-                    item.fuse -= DT;
+                    item.fuse -= updater_dt;
                     if item.hurt_owner_delay > Fix::ZERO {
-                        item.hurt_owner_delay -= DT;
+                        item.hurt_owner_delay -= updater_dt;
                         if item.hurt_owner_delay <= Fix::ZERO {
                             item.detonates_on_owner = true;
                         }
@@ -5086,7 +5408,7 @@ impl RolloutWorld {
                 continue;
             }
             let item = &mut self.thrown_items[item_index];
-            let delta = item.body.integrate(DT, Fix::from_int(-40));
+            let delta = item.body.integrate(physics_dt, Fix::from_int(-40));
             item.position += delta;
             let entity = item.entity.expect("active thrown item collider");
             let row = &mut self.entities[entity];
@@ -5809,7 +6131,7 @@ impl RolloutWorld {
     /// components run before the dynamically registered player prefabs, so
     /// their damping must observe the velocity from the start of the tick,
     /// before Gust or another later ability applies a direct impulse.
-    fn platform_updaters_tick(&mut self, data: &data::RolloutData) {
+    fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
@@ -5845,7 +6167,7 @@ impl RolloutWorld {
                 let steps = (elapsed * accel).to_int().clamp(0, 5);
                 let scale = speed_scale * Fix::from_int(2 << steps);
                 let speed = curve.evaluate(elapsed - delay);
-                let drop = speed * scale * DT;
+                let drop = speed * scale * updater_dt;
                 self.platform_dynamics[i].home_position.y -= drop;
             }
         }
@@ -5877,21 +6199,21 @@ impl RolloutWorld {
             let dynamics = &mut self.platform_dynamics[i];
             let spring = (dynamics.home_position - position) * dynamics.speed
                 - dynamics.body.velocity * dynamics.mu;
-            let impulse = spring * DT / dynamics.body.inverse_mass;
+            let impulse = spring * updater_dt / dynamics.body.inverse_mass;
             dynamics.body.force += impulse * Fix::from_int(60);
             let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
             if angle_delta.abs() > Fix::PI {
                 angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
             }
             dynamics.body.angular_velocity = (dynamics.body.angular_velocity
-                + angle_delta * dynamics.rotation_speed * DT)
+                + angle_delta * dynamics.rotation_speed * updater_dt)
                 * (Fix::ONE - dynamics.rotation_mu);
         }
 
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
         // and re-home at the pre-integration position, preserving the existing
         // one-tick-lagged home behavior.
-        if !self.sudden_death {
+        if !self.sudden_death && updater_dt > Fix::ZERO {
             let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
             let map = &data.maps[self.map];
             for orbit in &mut self.orbits {
@@ -5922,7 +6244,7 @@ impl RolloutWorld {
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
     /// the updater pass: resize, integration, broad phase, narrow phase,
     /// collision impulse, positional correction, and transform sync.
-    fn platforms_tick(&mut self, data: &data::RolloutData) {
+    fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
         // ResizablePlatform.UpdateSim runs every tick while an evicted platform
         // remains a normal collidable body. It evaluates before incrementing
         // time and destroys at the final key without applying another resize.
@@ -5945,7 +6267,7 @@ impl RolloutWorld {
                 continue;
             }
             let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
-            spawn.removal_time += DT;
+            spawn.removal_time += updater_dt;
             // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
             // so the curve's overshoot past 1 scales the original size.
             let minimum = Fix::from_f32(0.1);
@@ -6015,7 +6337,7 @@ impl RolloutWorld {
             if let Some(rotation) = dynamics.transform_rotation.take() {
                 dynamics.body.orientation = rotation;
             }
-            let shift = dynamics.body.integrate(DT, Fix::from_int(-40));
+            let shift = dynamics.body.integrate(physics_dt, Fix::from_int(-40));
             let orientation = dynamics.body.orientation;
             let basis = match dynamics.basis {
                 Some((rotation, basis)) if rotation == orientation => basis,
@@ -6169,6 +6491,7 @@ impl RolloutWorld {
                 slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
+                slot.time_stop_entity,
             ];
             for entity in rows {
                 if entity == usize::MAX {
@@ -6219,6 +6542,7 @@ impl RolloutWorld {
                 slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
+                slot.time_stop_entity,
             ] {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
@@ -6261,6 +6585,7 @@ impl RolloutWorld {
                 slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
+                slot.time_stop_entity,
             ];
             for e in rows {
                 if e == usize::MAX {
@@ -6456,12 +6781,14 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.state,
             &self.players,
+            &self.time_stop_protected,
             &self.state_entities,
             &self.slimes,
             self.tick,
             self.episode_ticks,
             self.warmup,
             flags,
+            self.player_time_scale,
         );
         self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
@@ -6477,12 +6804,14 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.sample,
             &self.players,
+            &self.time_stop_protected,
             &self.sample_entities,
             &self.sample_slimes,
             self.tick,
             self.episode_ticks,
             self.warmup,
             flags,
+            self.player_time_scale,
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
@@ -6529,7 +6858,7 @@ impl RolloutWorld {
     fn refresh_actor_entities(&mut self) {
         let data = data::get();
         for index in 0..self.players.len() {
-            let (body_e, dash_e, circle_e, bow_e, throw_e, gust_e, revival_e) = {
+            let (body_e, dash_e, circle_e, bow_e, throw_e, gust_e, revival_e, time_stop_e) = {
                 let s = &self.players[index];
                 (
                     s.body_entity,
@@ -6539,6 +6868,7 @@ impl RolloutWorld {
                     s.throw_entity,
                     s.gust_entity,
                     s.revival_entity,
+                    s.time_stop_entity,
                 )
             };
             let slot = &self.players[index];
@@ -6554,6 +6884,7 @@ impl RolloutWorld {
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
             );
+            let casting_time_stop = slot.active == ActiveAbility::TimeStop;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -6833,6 +7164,41 @@ impl RolloutWorld {
                     circle.rotation = rotation.raw();
                 }
             }
+            if time_stop_e != usize::MAX {
+                let circle = &mut self.entities[time_stop_e];
+                let was_active = circle.flags & E_ACTIVE != 0;
+                circle.flags = if alive && casting_time_stop {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if casting_time_stop {
+                    circle.owner = slot.base.id;
+                }
+                if casting_time_stop || was_active {
+                    let (position, rotation, basis) = if casting_time_stop {
+                        (
+                            slot.base.position,
+                            slot.base.rotation,
+                            slot.base.up.perp_cw(),
+                        )
+                    } else {
+                        (
+                            slot.cast_spell.collider_position,
+                            slot.cast_spell.collider_rotation,
+                            slot.cast_spell.collider_right,
+                        )
+                    };
+                    // The ability body's FixTransform keeps the exact Slerp
+                    // basis copied from PlayerPhysics. Its published angle is
+                    // derived from that vector and rebuilding the basis from
+                    // the angle loses the source vector's last few Q32 bits.
+                    let offset = basis.complex_mul(data.time_stop.collider_offset);
+                    circle.x = (position + offset).x.raw();
+                    circle.y = (position + offset).y.raw();
+                    circle.rotation = rotation.raw();
+                }
+            }
         }
         for arrow in &self.arrows {
             if !arrow.active || !arrow.registered {
@@ -7016,12 +7382,14 @@ impl RolloutWorld {
     fn write_state(
         state: &mut CState,
         players: &[PlayerSlot],
+        time_stop_protected: &[bool; MAX_PLAYERS],
         entities: &[CEntity],
         slimes: &[CSlime],
         tick: u32,
         episode_ticks: u32,
         warmup: u32,
         flags: u32,
+        player_time_scale: Fix,
     ) {
         state.header = CHeader {
             version: ABI_VERSION,
@@ -7033,7 +7401,7 @@ impl RolloutWorld {
             warmup_ticks: warmup,
             slime_count: slimes.len() as u32,
             simulation_time: (Fix::from_int(i64::from(tick)) * DT).raw(),
-            player_time_scale: 1 << 32,
+            player_time_scale: player_time_scale.raw(),
         };
         for (i, slot) in players.iter().enumerate() {
             let mut player_flags = 0;
@@ -7045,6 +7413,9 @@ impl RolloutWorld {
             }
             if slot.invisible {
                 player_flags |= 4;
+            }
+            if time_stop_protected[i] {
+                player_flags |= 8;
             }
             if slot.active == ActiveAbility::Platform {
                 player_flags |= 32;

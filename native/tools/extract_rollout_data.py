@@ -750,6 +750,30 @@ def main():
         },
     }
 
+    # ---- Time Stop / CastSpell ----
+    _, time_stop_ability = find_prefab("Assets/GameObject/Time stop.prefab")
+    time_stop_cast = component(time_stop_ability, "CastSpell")
+    time_stop_circle = component(time_stop_ability, "DPhysicsCircle")
+    time_stop_fix = component(time_stop_ability, "FixTransform")
+    time_stop_anims = animations(guid_of(time_stop_cast["animData"]))
+    time_stop_effect = ASSETS[guid_of(time_stop_cast["spell"])]
+    time_stop = component(time_stop_effect, "TimeStop")
+    exit_keys = time_stop["ExitAlpha.m_Curve.Array.size"]
+    out["prefabs"]["time_stop"] = {
+        "cast_time": fix(time_stop_cast, "castTime"),
+        "center_offset": vec2(time_stop_cast, "centerOffset"),
+        "exit_offset": vec2(time_stop_cast, "ExitAbilityOffset"),
+        "collider_offset": vec2(time_stop_fix, "offset"),
+        "hurtbox_radius": fix(time_stop_circle, "startRadius"),
+        "collider_hierarchy": time_stop_circle["hierarchyNumber"],
+        "animations": {name: time_stop_anims[name]
+                       for name in ("idleToFall", "castSpell", "easeOutSpellCast")},
+        "effect_updatable_count": updater_count(time_stop_effect),
+        "duration_f32": f32(time_stop["duration"]),
+        "exit_seconds_f32": f32(time_stop[
+            f"ExitAlpha.m_Curve.Array.data[{exit_keys - 1}].time"]),
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written
