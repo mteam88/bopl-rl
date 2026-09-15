@@ -2315,8 +2315,10 @@ The existing `BOPL_RL_ABILITY_SPAWNS=1` diagnostic now enables the map's
 `AbilitySpawner` in Rust as well as NativeAOT. Each map retains the authored
 spawn position and hierarchy. The strict 40-second clock creates at most three
 `DynamicAbilityPickup` instances, consumes `RandomUnitVector` and the
-current-sprite-excluding catalog draw in source order, and reserves the exact
-three updater hierarchy entries per prefab.
+catalog draw in source order, and reserves the exact three updater hierarchy
+entries per prefab. Although the serialized sprite is Bow, the spawner calls
+`InitPickup(null, null, ...)`, clearing that sprite before the excluding draw;
+Rust preserves the resulting no-exclusion selection.
 
 The live pickup keeps its collider disabled for the serialized 0.1 seconds.
 During that phase its direct gravity changes velocity while the launch impulse
@@ -2335,5 +2337,15 @@ phase boundaries. Maximum spatial and velocity differences are 3,180 and
 13,737 raw Q32 units (7.5e-7 and 3.2e-6 world units). They begin at the strict
 half-unit damping boundary because Rust reconstructs the rounded platform ray
 from its separately rounded exported basis; no measured behavior boundary
-changes. Player collision/replacement and live death-dropped pickup flight are
-the remaining pickup-path work.
+changes.
+
+`ability_pickup_collect_ab.c` steers a keyboard player through the same first
+pickup. NativeAOT and Rust are observation-identical through collection at
+level tick 2506: collider id 16 becomes a destroyed row for one pass, the
+pickup's selected Revival id 15 replaces slot three, and its timer becomes
+exactly 100,000 seconds. On tick 2507 both remove the pickup row and register
+the acquired Revival collider as id 17, hierarchy 100000071, inactive and
+unowned. The registration range is reserved in the collision callback and the
+bounded player state carries only a pending hierarchy scalar; no hot-path
+allocation or global lookup was added. Live death-dropped pickup flight is the
+remaining pickup-path work.

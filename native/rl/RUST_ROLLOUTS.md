@@ -156,8 +156,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 - Fixed-loadout RL sessions disable `AbilitySpawner` on both backends by
   default. `BOPL_RL_ABILITY_SPAWNS=1` enables the authored 40-second, three-item
   spawner in NativeAOT and Rust. Rust currently matches pickup registration,
-  delayed activation, launch, hover physics, reroll RNG and entity rows;
-  pickup/player replacement and death-drop flight remain open.
+  delayed activation, launch, hover physics, reroll RNG, player collection,
+  third-slot replacement, deferred acquired-ability registration and entity
+  rows. Live death-drop flight remains open.
 - Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
@@ -317,7 +318,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | An end-of-tick Rust boundary pass killed ordinary/Bow bodies one tick before Unity's pre-`PlayerBody` boundary component | fixed with component-specific boundary phases |
 | behavior-changing | Match termination consumed deaths after physics in the same tick, while Unity's earlier `GameSessionHandler` sees them next tick | fixed: result consumption now runs at the beginning of the following updater pass |
 | behavior-changing | Keyboard-configured players discarded the high S/D bits and used joystick aim for movement | fixed: W/A/S/D drive motion while the angle byte remains independent ability aim |
-| configured scope | Ability pickups | disabled on both RL backends by default; the shared diagnostic opt-in executes live spawner/flight, with pickup replacement still open |
+| configured scope | Ability pickups | disabled on both RL backends by default; the shared diagnostic opt-in executes live spawner, flight, collection and slot replacement; death-drop flight remains open |
 | exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
 | cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | fixed: the terminal pickup row is emitted (flight unsimulated, see above) |

@@ -36,6 +36,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass
   collider delay, launch and hover flight in NativeAOT and Rust.
+- `ability_pickup_collect_ab.c`: keyboard pursuit of that first live pickup,
+  exact trigger callback at level tick 2506, third-slot replacement, the
+  one-pass destroyed row, and the newly instantiated ability collider that
+  joins DetPhysics on tick 2507.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

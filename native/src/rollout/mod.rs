@@ -36,6 +36,7 @@ pub const MAP_COUNT: u32 = 5;
 pub const ABILITY_COUNT: u32 = 39;
 pub const MAX_PLAYERS: usize = 6;
 /// Catalog indices with real behaviour in this backend.
+pub const ABILITY_NULL: u32 = 0;
 pub const ABILITY_RANDOM: u32 = 1;
 pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
@@ -1303,6 +1304,12 @@ pub struct PlayerSlot {
     pub abilities: [u32; 3],
     /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
     pub ability_generation: u32,
+    /// Pickup-created ability prefabs are serialized inactive, but their
+    /// Awake registrations become visible on the scheduler's following pass.
+    pub ability_instantiated: [bool; 3],
+    /// Hierarchy range reserved when a pickup callback instantiates its
+    /// inactive ability prefab; the collider joins DetPhysics next pass.
+    pub pending_ability_hierarchy: [u32; 3],
     pub timers: [Fix; 3],
     pub cooldowns: [Fix; 3],
     pub active: ActiveAbility,
@@ -2380,6 +2387,8 @@ impl RolloutWorld {
                 out: false,
                 abilities,
                 ability_generation: 0,
+                ability_instantiated: [true; 3],
+                pending_ability_hierarchy: [u32::MAX; 3],
                 timers: [timer0; 3],
                 cooldowns,
                 active: ActiveAbility::None,
@@ -2608,10 +2617,12 @@ impl RolloutWorld {
             self.ability_spawner_time = Fix::ZERO;
             self.ability_spawner_spawns += 1;
             // The prefab's initial sprite is Bow. Spawn immediately registers
-            // the disabled manual collider; its updater begins next pass.
+            // the disabled manual collider, but InitPickup is passed a null
+            // icon and clears that sprite before RandomAbility excludes it.
+            // Its updater begins next pass.
             self.spawn_ability_pickup(
                 data.maps[self.map].ability_spawner_position,
-                ABILITY_BOW,
+                ABILITY_NULL,
                 data,
             );
         }
@@ -2620,9 +2631,15 @@ impl RolloutWorld {
     fn ability_pickups_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let pickup = &data.pickup;
         for index in 0..self.ability_pickups.len() {
-            if !self.ability_pickups[index].active
-                || self.ability_pickups[index].born_tick >= self.tick
-            {
+            if !self.ability_pickups[index].active {
+                if let Some(entity) = self.ability_pickups[index].entity
+                    && self.entities[entity].flags & E_DESTROYED != 0
+                {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+                continue;
+            }
+            if self.ability_pickups[index].born_tick >= self.tick {
                 continue;
             }
             let stopped = self.player_time_scale < Fix::from_f32(0.01);
@@ -2699,6 +2716,255 @@ impl RolloutWorld {
                 row.vx = state.body.velocity.x.raw();
                 row.vy = state.body.velocity.y.raw();
             }
+        }
+    }
+
+    /// DynamicAbilityPickup.OnCollide only accepts the FixTransform carrying
+    /// SlimeController itself. Ability-form hurtboxes are also on the player
+    /// layer, but do not have that component and therefore cannot collect.
+    fn ability_pickups_contacts(&mut self, data: &data::RolloutData) {
+        for pickup_index in 0..self.ability_pickups.len() {
+            let pickup = self.ability_pickups[pickup_index];
+            if !pickup.active || !pickup.enabled {
+                continue;
+            }
+            let circle = Circle {
+                center: pickup.position + data.pickup.offset,
+                radius: data.pickup.radius,
+            };
+            let mut collector = None;
+            for player_index in 0..self.players.len() {
+                let slot = &self.players[player_index];
+                if !self.playable(player_index)
+                    || slot.active != ActiveAbility::None
+                    || self.entities[slot.body_entity].flags & E_ACTIVE == 0
+                {
+                    continue;
+                }
+                let row = self.entities[slot.body_entity];
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                let body = OrientedBox {
+                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                    right,
+                    up,
+                    inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                };
+                if crate::physics::contact::circle_box(circle, body).is_some() {
+                    collector = Some(player_index);
+                    break;
+                }
+            }
+            let Some(player_index) = collector else {
+                continue;
+            };
+
+            // AddAdditionalAbility replaces the third reference, changes the
+            // loadout used by future clones, and makes the new slot ready far
+            // beyond every authored cooldown. The old inactive ability object
+            // is not destroyed and its registered collider row stays behind.
+            let ability = pickup.ability;
+            let slot = &mut self.players[player_index];
+            slot.abilities[2] = ability;
+            slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
+            slot.timers[2] = Fix::from_int(100_000);
+            slot.ability_instantiated[2] = false;
+            slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+
+            let state = &mut self.ability_pickups[pickup_index];
+            state.active = false;
+            if let Some(entity) = state.entity {
+                self.entities[entity].flags = E_DESTROYED;
+            }
+        }
+    }
+
+    fn register_pending_picked_abilities(&mut self, data: &data::RolloutData) {
+        for player_index in 0..self.players.len() {
+            for ability_slot in 0..3 {
+                if !self.players[player_index].ability_instantiated[ability_slot] {
+                    self.ensure_equipped_ability_registered(player_index, ability_slot, data);
+                }
+            }
+        }
+    }
+
+    /// Register the Awake work of an inactive ability prefab created by a
+    /// pickup. Updater/DetPhysics expose it on the pass after the callback.
+    fn ensure_equipped_ability_registered(
+        &mut self,
+        player_index: usize,
+        ability_slot: usize,
+        data: &data::RolloutData,
+    ) {
+        if self.players[player_index].ability_instantiated[ability_slot] {
+            return;
+        }
+        let ability = self.players[player_index].abilities[ability_slot];
+        let hierarchy_base = self.players[player_index].pending_ability_hierarchy[ability_slot];
+        debug_assert_ne!(hierarchy_base, u32::MAX);
+        self.players[player_index].ability_instantiated[ability_slot] = true;
+        self.players[player_index].pending_ability_hierarchy[ability_slot] = u32::MAX;
+
+        if ability == ABILITY_ROCK {
+            self.players[player_index].rock_hierarchy =
+                100_000_000 + hierarchy_base + data.rock.collider_hierarchy;
+            return;
+        }
+
+        let circle = match ability {
+            ABILITY_ROLL => Some((
+                data.roll.radius,
+                Vec2::ZERO,
+                data.roll.collider_hierarchy,
+                0,
+            )),
+            ABILITY_GUST => Some((data.gust.hurtbox_radius, data.gust.collider_offset, 8, 1)),
+            ABILITY_REVIVAL => Some((
+                data.revival.hurtbox_radius,
+                data.revival.collider_offset,
+                8,
+                2,
+            )),
+            ABILITY_PLATFORM => Some((data.platform.hurtbox_radius, Vec2::ZERO, 7, 3)),
+            ABILITY_TIME_STOP => Some((
+                data.time_stop.hurtbox_radius,
+                data.time_stop.collider_offset,
+                data.time_stop.collider_hierarchy,
+                4,
+            )),
+            _ => None,
+        };
+        if let Some((radius, offset, relative_hierarchy, target)) = circle {
+            let id = self.next_id();
+            let entity = self.entities.len();
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: LAYER_PLAYER,
+                flags: E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000 + hierarchy_base + relative_hierarchy,
+                x: offset.x.raw(),
+                y: offset.y.raw(),
+                radius: radius.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+            let slot = &mut self.players[player_index];
+            match target {
+                0 => slot.roll_entity = entity,
+                1 => slot.gust_entity = entity,
+                2 => slot.revival_entity = entity,
+                3 => slot.circle_entity = entity,
+                _ => slot.time_stop_entity = entity,
+            }
+            return;
+        }
+
+        let box_data = match ability {
+            ABILITY_DASH => Some((data.dash.hurtbox_extents, Vec2::ZERO, 7, 0)),
+            ABILITY_BOW => Some((data.bow.hurtbox_extents, Vec2::ZERO, 7, 1)),
+            ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
+            | ABILITY_POKE_BALL) => Some((
+                throw_config(data, ability).hurtbox_extents,
+                Vec2::ZERO,
+                8,
+                2,
+            )),
+            ABILITY_MISSILE => Some((data.missile.hurtbox_extents, Vec2::ZERO, 7, 2)),
+            ABILITY_MINE => Some((
+                data::surface_extents(data.mine.hurtbox_extents),
+                data.mine.collider_offset,
+                7,
+                3,
+            )),
+            ABILITY_PUSH => Some((
+                data::surface_extents(data.push.hurtbox_extents),
+                data.push.collider_offset,
+                data.push.collider_hierarchy,
+                4,
+            )),
+            ABILITY_FREEZE => Some((
+                data::surface_extents(data.freeze.hurtbox_extents),
+                data.freeze.collider_offset,
+                data.freeze.collider_hierarchy,
+                5,
+            )),
+            ABILITY_BLINK => Some((
+                data::surface_extents(data.blink.hurtbox_extents),
+                data.blink.collider_offset,
+                data.blink.collider_hierarchy,
+                6,
+            )),
+            ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
+                let ray = scale_ray_data(data, ability);
+                Some((
+                    data::surface_extents(ray.hurtbox_extents),
+                    ray.collider_offset,
+                    ray.collider_hierarchy,
+                    if ability == ABILITY_GROWTH_RAY { 7 } else { 8 },
+                ))
+            }
+            ABILITY_SPIKE => Some((
+                data.spike.hurtbox_extents,
+                data.spike.collider_offset,
+                data.spike.collider_hierarchy,
+                9,
+            )),
+            ABILITY_ENGINE => Some((
+                data::surface_extents(data.engine.hurtbox_extents),
+                data.engine.collider_offset,
+                data.engine.collider_hierarchy,
+                10,
+            )),
+            ABILITY_TESLA => Some((
+                data::surface_extents(data.tesla.hurtbox_extents),
+                data.tesla.collider_offset,
+                data.tesla.collider_hierarchy,
+                11,
+            )),
+            ABILITY_METEOR => Some((
+                data::surface_extents(data.meteor.hurtbox_extents),
+                data.meteor.collider_offset,
+                data.meteor.collider_hierarchy,
+                12,
+            )),
+            _ => None,
+        };
+        let Some((extents, offset, relative_hierarchy, target)) = box_data else {
+            return;
+        };
+        let id = self.next_id();
+        let entity = self.entities.len();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: LAYER_PLAYER,
+            flags: E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000 + hierarchy_base + relative_hierarchy,
+            x: offset.x.raw(),
+            y: offset.y.raw(),
+            right_x: extents.x.raw(),
+            up_y: extents.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        let slot = &mut self.players[player_index];
+        match target {
+            0 => slot.dash_entity = entity,
+            1 => slot.bow_entity = entity,
+            2 => slot.throw_entity = entity,
+            3 => slot.mine_entity = entity,
+            4 => slot.push_entity = entity,
+            5 => slot.freeze_entity = entity,
+            6 => slot.blink_entity = entity,
+            7 => slot.growth_ray_entity = entity,
+            8 => slot.shrink_ray_entity = entity,
+            9 => slot.spike_entity = entity,
+            10 => slot.engine_entity = entity,
+            11 => slot.tesla_entity = entity,
+            _ => slot.meteor_entity = entity,
         }
     }
 
@@ -2899,6 +3165,7 @@ impl RolloutWorld {
     /// session end checks.
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
+        self.register_pending_picked_abilities(data);
         self.register_pending_arrows();
         self.register_pending_mines(data);
         self.register_pending_guided_missiles(data);
@@ -3195,6 +3462,7 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
+        self.ability_pickups_contacts(data);
         self.rocks_contacts(data);
         self.arrows_contacts(data);
         self.guided_missile_contacts(data);
@@ -7193,6 +7461,8 @@ impl RolloutWorld {
 
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
+            slot.ability_instantiated = [true; 3];
+            slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.position = position;
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
@@ -7550,6 +7820,8 @@ impl RolloutWorld {
 
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
+            slot.ability_instantiated = [true; 3];
+            slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.radius = data.player.radius;
             slot.physics_scale = Fix::ONE;
             slot.body_collider_scale = Fix::ONE;
