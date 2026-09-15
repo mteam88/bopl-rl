@@ -978,6 +978,27 @@ backends. All discrete fields match and the same 64-raw-unit normalization
 bound applies; the target velocity after the callback is exactly 594,545,423
 raw Q32 units per second in both backends.
 
+### Dash handoff through a live Web Swing rope (2026-09-15)
+
+Dash now retains an attached rope through its prefab body and exit callback.
+The Dash prefab registers `Dash` before its own `PlayerBody`: the ability first
+publishes its pose, then the body integrates and constrains the rope endpoint,
+whose result becomes visible on the following pass. The inactive ordinary
+slime keeps its separate previous-velocity history. On exit, Rust applies the
+extracted 60-unit leave speed, writes the authored tenfold endpoint force,
+straightens a bottom-attached strand from its anchor to the Dash position, and
+copies the rebuilt segments into the Verlet history before control returns to
+the ordinary slime.
+
+`dash_rope_ab.c` casts Web Swing on map 3 at tick 181, enters an up-right Dash
+from the live bottom endpoint at tick 182, exits at tick 186 and follows the
+attached rope through tick 300. Every public header, player, slime, telemetry
+and rope-segment field is bit-identical between optimized-Q32 Rust and
+NativeAOT. This also measures the private velocity-history transition because
+the first post-exit solver pass diverges when either body history is shared or
+the Dash exit force is left in place past the ordinary body's late callback.
+Top-endpoint Grappling Hook transfer and detached-rope entry remain open.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned

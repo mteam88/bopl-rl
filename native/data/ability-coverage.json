@@ -23,7 +23,7 @@
       "prefab": "Assets/GameObject/Dash.prefab",
       "prefab_guid": "fb4c4d5ea2fd99d4a91d8ba7efbe0542",
       "native_status": "partial",
-      "verification": "The existing Dash phase, wall/air endpoint, arrow-ray and fidelity-gate coverage is joined by dash_rock_ab: 300 optimized-Q32 NativeAOT/Rust ticks through an active Rock circle ray hit, BounceBall impulse, same-pass Dash death at the exact near point, owner credit and stock-clone reconstruction. dash_player_ab adds 240 ticks through an overlapping ordinary-player callback, one-sided push and pass-through exit. Discrete state is exact and compared vectors stay within 64 raw Q32 units. Other transformed target callbacks, rope transfer and the public horizontal-under-water failure remain open."
+      "verification": "The existing Dash phase, wall/air endpoint, arrow-ray and fidelity-gate coverage is joined by dash_rock_ab: 300 optimized-Q32 NativeAOT/Rust ticks through an active Rock circle ray hit, BounceBall impulse, same-pass Dash death at the exact near point, owner credit and stock-clone reconstruction. dash_player_ab adds 240 ticks through an overlapping ordinary-player callback, one-sided push and pass-through exit. dash_rope_ab adds 300 bit-identical ticks from a live Web Swing bottom endpoint through Dash-prefab PlayerBody constraints, exit straightening/force and resumed ordinary movement. Other transformed target callbacks, top-endpoint Grapple transfer, detached-rope entry and the public horizontal-under-water failure remain open."
     },
     {
       "id": 3,

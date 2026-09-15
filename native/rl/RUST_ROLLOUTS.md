@@ -63,9 +63,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   composition matches that same-pass death, owner credit and stock clone for
   300 ticks without allocating ray-target storage. A second composition drives
   two ordinary players inside the target radius and matches the target's
-  one-sided overlap push before Dash passes through. Other transformed-form
-  callbacks, rope transfer and the public horizontal-under-water failure remain
-  open.
+  one-sided overlap push before Dash passes through. A third composition enters
+  Dash from a live Web Swing endpoint and matches the Dash-prefab `PlayerBody`
+  constraint pass, bottom-endpoint straightening, leave-force handoff and the
+  resumed ordinary slime for 300 exact ticks. Other transformed-form callbacks,
+  top-endpoint Grapple handoff, rope detachment and the public
+  horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,
   fire-on-release (early release fires from transform sprite index 2, tick

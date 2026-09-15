@@ -5136,6 +5136,16 @@ impl RolloutWorld {
                     ABILITY_DASH => {
                         // The movement slice implements the dash; unlock its
                         // internal cooldown gate and let base.step enter it.
+                        if self.players[index].rope.is_some() {
+                            // The ordinary PlayerBody updates before
+                            // SlimeController enters Dash. Its private history
+                            // remains parked on the disabled slime and is used
+                            // again by the first late pass after Dash exits.
+                            self.players[index].rope_prev_imposed =
+                                self.players[index].base.velocity;
+                            self.players[index].rope_prev_external =
+                                self.players[index].base.external_velocity;
+                        }
                         self.players[index].base.cooldown = Fix::from_int(100);
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
@@ -5151,6 +5161,13 @@ impl RolloutWorld {
                         // in the same pass. That performs anticipation setup
                         // now; platform and bow begin updating next tick.
                         self.dash_move(index, masked, movement_input);
+                        if self.players[index].base.dash.active
+                            && self.players[index].rope.is_some()
+                        {
+                            // PlayerBody follows Dash in the prefab and is
+                            // enabled by the same ability-entry pass.
+                            self.rope_body_move(index, jump_pressed);
+                        }
                         return;
                     }
                     ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
@@ -6234,6 +6251,12 @@ impl RolloutWorld {
                 buttons: (source.buttons & 1) | if starting { 2 } else { 0 },
             };
             self.dash_move(index, masked, movement_input);
+            if self.players[index].base.dash.active && self.players[index].rope.is_some() {
+                // PlayerBody follows Dash.UpdateSim in the prefab. Keep the
+                // published Dash pose from before this body integration; its
+                // constrained position becomes visible on the next pass.
+                self.rope_body_move(index, jump_pressed);
+            }
             if !self.players[index].base.dash.active {
                 // Dash finished this tick.
                 self.players[index].active = ActiveAbility::None;
@@ -12472,6 +12495,7 @@ impl RolloutWorld {
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
         if self.players[index].active == ActiveAbility::Dash {
+            let mut exit_input = None;
             let slot = &mut self.players[index];
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
@@ -12481,7 +12505,11 @@ impl RolloutWorld {
                 // runs VelocityBasedRaycasts (SlimeController.cs:249, 263-272)
                 // with the leave velocity. Player::dash_step performs that
                 // shared physical handoff; this updates the rollout state.
-                slot.exit_to_fall();
+                exit_input = Some(slot.base.dash.input);
+            }
+            if let Some(input) = exit_input {
+                self.dash_rope_exit(index, input, data::get().dash.leave_speed);
+                self.players[index].exit_to_fall();
             }
         }
         let dash_cast = {

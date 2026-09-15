@@ -115,6 +115,12 @@ struct RawPlayer {
 struct RawDash {
     cooldown: i64,
     hurtbox_extents: RawVec2,
+    fields: RawDashFields,
+}
+#[derive(Deserialize)]
+struct RawDashFields {
+    #[serde(rename = "leaveSpeed.m_rawValue")]
+    leave_speed: i64,
 }
 #[derive(Deserialize)]
 struct RawBow {
@@ -1363,6 +1369,7 @@ pub struct PlatformAbilityData {
 pub struct DashData {
     pub cooldown: Fix,
     pub hurtbox_extents: Vec2,
+    pub leave_speed: Fix,
 }
 pub struct GustData {
     pub cast_ticks: u32,
@@ -2430,6 +2437,7 @@ pub fn get() -> &'static RolloutData {
             dash: DashData {
                 cooldown: Fix::from_raw(raw.prefabs.dash.cooldown),
                 hurtbox_extents: raw.prefabs.dash.hurtbox_extents.get(),
+                leave_speed: Fix::from_raw(raw.prefabs.dash.fields.leave_speed),
             },
             bow: BowData {
                 cooldown: Fix::from_raw(bow.cooldown),

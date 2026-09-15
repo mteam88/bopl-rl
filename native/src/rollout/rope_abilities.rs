@@ -627,6 +627,13 @@ impl RolloutWorld {
             self.players[player].base.alive = false;
             return;
         }
+        self.rope_body_move(player, jump_pressed);
+    }
+
+    /// PlayerBody.UpdateSim for a body carrying a rope endpoint. Ability
+    /// prefabs such as Dash own a PlayerBody too, so this phase remains live
+    /// after the ordinary SlimeController GameObject has been disabled.
+    pub(super) fn rope_body_move(&mut self, player: usize, jump_pressed: bool) {
         let Some(rope_index) = self.players[player].rope else {
             return;
         };
@@ -715,10 +722,41 @@ impl RolloutWorld {
                     self.players[player].base.position -= direction * correction * amount;
                 }
             }
-            self.players[player].rope_prev_imposed = self.players[player].base.velocity;
-            self.players[player].rope_prev_external = self.players[player].base.external_velocity;
+            if self.players[player].active != ActiveAbility::Dash {
+                // The Dash prefab owns a distinct PlayerBody whose private
+                // previous-velocity fields start at zero. Preserve the
+                // inactive ordinary slime's fields for the exit handoff.
+                self.players[player].rope_prev_imposed = self.players[player].base.velocity;
+                self.players[player].rope_prev_external =
+                    self.players[player].base.external_velocity;
+            }
         }
         self.players[player].base.external_velocity *= Fix::from_f64(0.95);
+    }
+
+    /// Dash.ExitAbility transfers the still-attached RopeBody back to the
+    /// ordinary slime. The bottom endpoint is rebuilt as a straight strand so
+    /// its stored Verlet velocity cannot inject the pre-dash swing on return.
+    pub(super) fn dash_rope_exit(&mut self, player: usize, input: Vec2, leave_speed: Fix) {
+        let Some(rope_index) = self.players[player].rope else {
+            return;
+        };
+        let position = self.players[player].base.position;
+        let top = self.players[player].rope_top;
+        let rope = &mut self.ropes[rope_index].physics;
+        let force = input * leave_speed * Fix::from_int(10);
+        if top {
+            rope.force_start = force;
+            rope.segment[0] = position;
+            return;
+        }
+        rope.force_end = force;
+        let first = rope.segment[0];
+        let step = (position - first) / Fix::from_int(rope.count as i64);
+        for segment in 1..rope.count {
+            rope.segment[segment] = first + step * Fix::from_int(segment as i64);
+        }
+        rope.previous[..rope.count].copy_from_slice(&rope.segment[..rope.count]);
     }
 
     pub(super) fn ropes_update(&mut self) {
@@ -952,11 +990,19 @@ impl RolloutWorld {
                 }
             }
             if self.players[player].rope == Some(rope_index) {
+                let (previous_imposed, previous_external) =
+                    if self.players[player].active == ActiveAbility::Dash {
+                        (Vec2::ZERO, Vec2::ZERO)
+                    } else {
+                        (
+                            self.players[player].rope_prev_imposed,
+                            self.players[player].rope_prev_external,
+                        )
+                    };
                 let imposed = self.players[player].base.velocity
-                    - self.players[player].rope_prev_imposed
+                    - previous_imposed
                     - Vec2::UP * Fix::from_int(10);
-                let external = self.players[player].base.external_velocity
-                    - self.players[player].rope_prev_external;
+                let external = self.players[player].base.external_velocity - previous_external;
                 if top {
                     self.ropes[rope_index].physics.force_start = imposed + external;
                 } else {

@@ -27,6 +27,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_player_ab.c`: an ordinary target overlaps the Dash ray origin, receives
   its one-sided `SlimeController.OnCollide` push, and survives the pass-through
   before the Dash completes its normal endpoint and exit.
+- `dash_rope_ab.c`: a live map-3 Web Swing bottom endpoint is carried into
+  Dash, constrained by Dash's own `PlayerBody`, straightened at exit and handed
+  back to the ordinary slime with exact rope-solver history through tick 300.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
 - `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
   position, charge/release flags, and deferred arrow registration/flight.
