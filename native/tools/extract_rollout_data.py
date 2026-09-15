@@ -1700,6 +1700,12 @@ def main():
     rope = component(rope_prefab, "Rope")
     attachment_prefab = ASSETS[guid_of(web["attachmentPrefab"])]
     attachment = component(attachment_prefab, "RopeAttachment")
+    _, grapple_prefab = find_prefab("Assets/GameObject/Grappling hook.prefab")
+    grapple = component(grapple_prefab, "HookshotInstant")
+    hook_prefab = ASSETS[guid_of(grapple["hookPrefab"])]
+    hook_attachment = component(hook_prefab, "RopeAttachment")
+    hook_circle = component(hook_prefab, "DPhysicsCircle")
+    hook = component(hook_prefab, "RopeHook")
     out["prefabs"]["ropes"] = {
         # RopeBodyList/RopeBody fixed arrays in the pinned source. They are
         # structural capacities rather than authored Unity properties.
@@ -1726,6 +1732,29 @@ def main():
         "web_miss_cooldown": fix(web, "missCooldown"),
         "web_release_boost": fix(web, "releaseBoost"),
         "web_grounded_pop": fix(web, "groundedPop"),
+        "grapple_spawn_offset": fix(grapple, "hookSpawnOffset"),
+        "grapple_speed": fix(grapple, "hookSpeed"),
+        "grapple_reel_frames": grapple["framesBetweenReelIns"],
+        "grapple_start_separation": fix(grapple, "startingSegmentSeparation"),
+        "grapple_reeled_separation": fix(grapple, "reeledInSegmentSeparation"),
+        "grapple_reel_speed": fix(grapple, "ReelInSpeed"),
+        "grapple_delete_separation": fix(grapple, "separationBeforeReelinDeletion"),
+        "grapple_cooldown": fix(grapple, "cooldown"),
+        "grapple_player_cast_radius": fix(slime_ctl, "RopeCircleCastRadius"),
+        "hook_layer": hook_prefab["data"]["layer"],
+        "hook_radius": fix(hook_circle, "startRadius"),
+        "hook_collider_hierarchy": hook_circle["hierarchyNumber"],
+        "hook_updatable_count": hierarchy_span(hook_prefab),
+        "hook_segments_affected": hook["segmentsAffectedBySpeed"],
+        "hook_speed_falloff": fix(hook, "segmentSpeedFalloff01"),
+        "hook_fall_time": fix(hook, "timeUntilFall"),
+        "hook_pull": fix(hook_attachment, "pullStr"),
+        "rope_reel_out_interval": fix(rope, "ReelOutSpeed"),
+        "rope_segments_affected": rope["segmentsAffectedByReelOut"],
+        "rope_segment_wave_length": rope["segmentWaveLength"],
+        "rope_reel_out_segment_speed": fix(rope, "reelOutSegmentSpeed"),
+        "rope_sprinkler_speed": fix(rope, "sprinklerSpeed"),
+        "rope_max_travel_time": fix(rope, "maxTravelTime"),
     }
 
     # ---- Complete ability catalog ----
@@ -1786,7 +1815,10 @@ def main():
             # Child GameObjects register in the same Updater hierarchy. Roll
             # and Beam each contain one child SpriteAnimator after their root
             # components, so the prefab's span is larger than the root max.
-            "updatable_count": hierarchy_span(prefab),
+            # HookshotInstant has no Awake registration; its serialized
+            # hierarchyNumber is therefore absent from Updater's runtime
+            # numbering even though it is a MonoUpdatable subclass.
+            "updatable_count": 1 if expected_id == 27 else hierarchy_span(prefab),
             "effect_cooldown": effect_cooldown,
             "effect_duration": effect_duration,
             "air_jump_strength": air_jump_strength,

@@ -220,7 +220,8 @@
       "name": "Grappling hook",
       "prefab": "Assets/GameObject/Grappling hook.prefab",
       "prefab_guid": "964ae230194fbf1468d5b187d6d4df92",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Seven optimized-Q32 NativeAOT/Rust scenarios cover all-map wall impacts and held reeling, strict flight timeout, stable hook/segment observations, and the close-player teammate transfer over 1,870 ticks; ids and lifecycle boundaries match."
     },
     {
       "id": 28,

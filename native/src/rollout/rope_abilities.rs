@@ -37,6 +37,14 @@ pub(crate) struct WebSwingState {
     pub linger_left: Fix,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GrappleState {
+    pub rope: Option<usize>,
+    pub rope_number: u32,
+    pub cooldown_set: bool,
+    pub reel_frames: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct RolloutRope {
     pub physics: Rope,
@@ -49,6 +57,16 @@ pub(crate) struct RolloutRope {
     pub platform: Option<usize>,
     pub platform_local: Fix,
     pub segment_ids: [u32; MAX_SEGMENTS - 1],
+    pub hook_active: bool,
+    pub hook_remove_next: bool,
+    pub hook_entity: Option<usize>,
+    pub hook_position: Vec2,
+    pub hook_velocity: Vec2,
+    pub hook_end_player: usize,
+    pub hook_time: Fix,
+    pub rope_time: Fix,
+    pub reel_out_time: Fix,
+    pub reel_in: bool,
 }
 
 fn empty_rope() -> RolloutRope {
@@ -77,6 +95,16 @@ fn empty_rope() -> RolloutRope {
         platform: None,
         platform_local: Fix::ZERO,
         segment_ids: [0; MAX_SEGMENTS - 1],
+        hook_active: false,
+        hook_remove_next: false,
+        hook_entity: None,
+        hook_position: Vec2::ZERO,
+        hook_velocity: Vec2::ZERO,
+        hook_end_player: usize::MAX,
+        hook_time: Fix::ZERO,
+        rope_time: Fix::ZERO,
+        reel_out_time: Fix::ZERO,
+        reel_in: false,
     }
 }
 
@@ -115,6 +143,10 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.number = 0;
         rope.segment_ids = [0; MAX_SEGMENTS - 1];
         rope.platform = None;
+        rope.hook_active = false;
+        rope.hook_remove_next = false;
+        rope.hook_entity = None;
+        rope.hook_end_player = usize::MAX;
     }
 }
 
@@ -125,7 +157,7 @@ impl RolloutWorld {
         anchor: Vec2,
         player: Vec2,
         separation: Fix,
-        platform: usize,
+        platform: Option<usize>,
         platform_local: Fix,
     ) -> usize {
         let index = self
@@ -149,7 +181,7 @@ impl RolloutWorld {
         } else {
             Fix::from_int(100)
         };
-        rope.platform = Some(platform);
+        rope.platform = platform;
         rope.platform_local = platform_local;
         rope.segment_ids = segment_ids;
         let body = &mut rope.physics;
@@ -163,6 +195,16 @@ impl RolloutWorld {
         body.time_since_hook_arrived = Fix::ZERO;
         body.detached = false;
         body.collision_count = 0;
+        rope.hook_active = false;
+        rope.hook_remove_next = false;
+        rope.hook_entity = None;
+        rope.hook_position = Vec2::ZERO;
+        rope.hook_velocity = Vec2::ZERO;
+        rope.hook_end_player = usize::MAX;
+        rope.hook_time = Fix::ZERO;
+        rope.rope_time = Fix::ZERO;
+        rope.reel_out_time = Fix::ZERO;
+        rope.reel_in = false;
         for j in 0..SEGMENTS {
             let point = anchor
                 + (player - anchor) * Fix::from_int(j as i64) / Fix::from_int(SEGMENTS as i64);
@@ -251,6 +293,251 @@ impl RolloutWorld {
         }
     }
 
+    pub(super) fn grapple_cooldowns_tick(&mut self, player: usize) {
+        let cooldown = data::get().ropes.grapple_cooldown;
+        for ability_slot in 0..3 {
+            if self.players[player].abilities[ability_slot] != ABILITY_GRAPPLING_HOOK {
+                continue;
+            }
+            let state = self.players[player].grapple[ability_slot];
+            if state.cooldown_set {
+                continue;
+            }
+            let valid = state.rope.is_some_and(|rope| {
+                self.ropes[rope].physics.enabled
+                    && self.ropes[rope].number == state.rope_number
+                    && self.ropes[rope].owner == player
+                    && self.players[player].rope == Some(rope)
+            });
+            if valid {
+                self.players[player].cooldowns[ability_slot] = Fix::ZERO;
+            } else {
+                self.players[player].grapple[ability_slot].cooldown_set = true;
+                self.players[player].cooldowns[ability_slot] = cooldown;
+            }
+        }
+    }
+
+    pub(super) fn use_grapple(&mut self, player: usize, ability_slot: usize, action: Action) {
+        let source = &data::get().ropes;
+        let state = self.players[player].grapple[ability_slot];
+        let valid = state.rope.is_some_and(|rope| {
+            self.ropes[rope].physics.enabled
+                && self.ropes[rope].number == state.rope_number
+                && self.ropes[rope].owner == player
+                && self.players[player].rope == Some(rope)
+        });
+        self.players[player].timers[ability_slot] = Fix::ZERO;
+        self.players[player].telemetry.ability_activations[ability_slot] += 1;
+        if valid {
+            let rope_index = state.rope.unwrap();
+            let frames = state.reel_frames + 1;
+            if frames < source.grapple_reel_frames {
+                self.players[player].grapple[ability_slot].reel_frames = frames;
+                return;
+            }
+            let count = self.ropes[rope_index].physics.count;
+            let separation = self.ropes[rope_index].physics.separation
+                - source.grapple_reel_speed / Fix::from_int(count as i64);
+            self.ropes[rope_index].physics.separation =
+                separation.max(source.grapple_reeled_separation);
+            let mut remains = true;
+            if self.ropes[rope_index].physics.separation < source.grapple_delete_separation {
+                remains = self.ropes[rope_index].physics.reel(8, false);
+            }
+            if !remains {
+                let endpoint = self.ropes[rope_index].physics.count - 1;
+                let delta = self.ropes[rope_index].physics.segment[endpoint]
+                    - self.players[player].base.position;
+                if !self.players[player].base.grounded {
+                    self.players[player].base.position = self.ropes[rope_index].physics.segment
+                        [endpoint]
+                        + delta.normalized_safe() * Fix::from_f32(0.1);
+                }
+                self.disable_rope(rope_index);
+                self.players[player].grapple[ability_slot].rope = None;
+            }
+            self.players[player].grapple[ability_slot].reel_frames = 0;
+            return;
+        }
+        self.fire_grapple(player, ability_slot, action);
+    }
+
+    fn fire_grapple(&mut self, player: usize, ability_slot: usize, action: Action) {
+        let source = &data::get().ropes;
+        let mut direction = action.direction();
+        if direction == Vec2::ZERO {
+            direction = Vec2::RIGHT;
+        }
+        let position = self.players[player].base.position;
+        let player_query = Circle {
+            center: position,
+            radius: source.grapple_player_cast_radius,
+        };
+        let mut nearby_player = None;
+        for candidate in 0..self.players.len() {
+            if candidate != player
+                && self.playable(candidate)
+                && crate::physics::contact::circle_box(
+                    player_query,
+                    self.players[candidate].base.collider,
+                )
+                .is_some()
+            {
+                // CircleCastClosestPlayers retains the final matching box.
+                nearby_player = Some(candidate);
+            }
+        }
+        let rope_end = nearby_player
+            .map(|target| self.players[target].base.position)
+            .unwrap_or(position);
+        let hook_position = rope_end + direction * source.grapple_spawn_offset;
+        let hook_id = self.next_id();
+        let hook_entity = self.entities.len();
+        self.entities.push(CEntity {
+            id: hook_id,
+            kind: 0,
+            layer: source.hook_layer,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000
+                + self.next_spawn_hierarchy
+                + 1 // Rope.Awake registers before the RopeHook prefab.
+                + source.hook_collider_hierarchy,
+            x: hook_position.x.raw(),
+            y: hook_position.y.raw(),
+            radius: source.hook_radius.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        self.next_spawn_hierarchy += source.hook_updatable_count;
+        let rope_index = self.allocate_rope(
+            player,
+            hook_position,
+            rope_end,
+            source.grapple_start_separation,
+            None,
+            Fix::ZERO,
+        );
+        {
+            let rope = &mut self.ropes[rope_index];
+            rope.physics.time_since_hook_arrived = -Fix::ONE;
+            rope.physics.mass_start = source.non_platform_mass;
+            rope.time_air_start = Fix::ONE;
+            rope.hook_active = true;
+            rope.hook_entity = Some(hook_entity);
+            rope.hook_position = hook_position;
+            rope.hook_velocity = direction * source.grapple_speed;
+            rope.hook_end_player = nearby_player.unwrap_or(player);
+        }
+        if let Some(target) = nearby_player {
+            self.players[target].base.velocity = Vec2::ZERO;
+            self.attach_player_rope(target, None, false);
+            self.attach_player_rope(target, Some(rope_index), false);
+            self.players[player].cooldowns[ability_slot] = source.grapple_cooldown;
+            self.players[player].grapple[ability_slot] = GrappleState {
+                cooldown_set: true,
+                ..GrappleState::default()
+            };
+        } else {
+            self.players[player].base.velocity = Vec2::ZERO;
+            self.attach_player_rope(player, None, false);
+            self.attach_player_rope(player, Some(rope_index), false);
+            self.players[player].grapple[ability_slot] = GrappleState {
+                rope: Some(rope_index),
+                rope_number: self.ropes[rope_index].number,
+                cooldown_set: false,
+                reel_frames: 0,
+            };
+        }
+    }
+
+    pub(super) fn grapple_ropes_update(&mut self) {
+        let source = &data::get().ropes;
+        for index in 0..self.ropes.len() {
+            if !self.ropes[index].physics.enabled
+                || self.ropes[index].born_tick == self.tick
+                || self.ropes[index].hook_entity.is_none()
+            {
+                continue;
+            }
+            if self.ropes[index].hook_remove_next {
+                if let Some(entity) = self.ropes[index].hook_entity.take() {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+                self.ropes[index].hook_active = false;
+                self.ropes[index].hook_remove_next = false;
+            }
+            self.ropes[index].reel_out_time += DT;
+            self.ropes[index].rope_time += DT;
+            if self.ropes[index].reel_in {
+                // Arrival leaves the current segment count fixed; player
+                // input performs the later reel-in and deletion.
+            } else if self.ropes[index].rope_time > source.rope_max_travel_time {
+                self.disable_rope(index);
+                continue;
+            } else {
+                let count = self.ropes[index].physics.count;
+                let direction = (self.ropes[index].physics.segment[count - 1]
+                    - self.ropes[index].physics.segment[0])
+                    .normalized_safe();
+                let perpendicular = direction.perp() * source.rope_sprinkler_speed * DT;
+                let mut wave = 0usize;
+                let mut positive = true;
+                for segment in 0..count - 1 {
+                    if wave >= source.rope_segment_wave_length {
+                        positive = !positive;
+                        wave = 0;
+                    }
+                    wave += 1;
+                    if segment >= count - source.rope_segments_affected {
+                        let signed = if positive {
+                            perpendicular
+                        } else {
+                            -perpendicular
+                        };
+                        self.ropes[index].physics.segment[segment] +=
+                            direction * source.rope_reel_out_segment_speed * DT
+                                + signed * source.rope_sprinkler_speed * DT;
+                    }
+                }
+                if self.ropes[index].reel_out_time > source.rope_reel_out_interval {
+                    self.ropes[index].reel_out_time = Fix::ZERO;
+                    let count = self.ropes[index].physics.count;
+                    let spawn = self.ropes[index].physics.segment[count - 1]
+                        + (self.ropes[index].physics.segment[count - 2]
+                            - self.ropes[index].physics.segment[count - 1])
+                            * Fix::from_f32(0.5);
+                    if self.ropes[index].physics.spawn(spawn) {
+                        let segment = self.ropes[index].physics.count - 2;
+                        self.ropes[index].segment_ids[segment] = self.next_id();
+                    } else {
+                        self.ropes[index].reel_in = true;
+                    }
+                }
+            }
+            if self.ropes[index].hook_active {
+                self.ropes[index].time_air_start = Fix::ZERO;
+                let count = self.ropes[index].physics.count;
+                let velocity = self.ropes[index].hook_velocity;
+                let mut falloff = source.hook_speed_falloff;
+                for offset in 2..count.min(source.hook_segments_affected) {
+                    self.ropes[index].physics.segment[count - offset] += velocity * DT * falloff;
+                    falloff *= source.hook_speed_falloff;
+                }
+                self.ropes[index].hook_time += DT;
+                if self.ropes[index].hook_time > source.hook_fall_time {
+                    self.disable_rope(index);
+                    continue;
+                }
+                self.ropes[index].hook_position += velocity * DT;
+                if let Some(entity) = self.ropes[index].hook_entity {
+                    self.entities[entity].x = self.ropes[index].hook_position.x.raw();
+                    self.entities[entity].y = self.ropes[index].hook_position.y.raw();
+                }
+            }
+        }
+    }
+
     fn release_web(&mut self, player: usize, ability_slot: usize) {
         let Some(rope_index) = self.players[player].web_swing[ability_slot].rope else {
             return;
@@ -296,7 +583,7 @@ impl RolloutWorld {
             .surface
             .local_position(near, Fix::ZERO)
             .expect("web ray endpoint lies on platform");
-        let rope = self.allocate_rope(player, near, position, separation, platform, local);
+        let rope = self.allocate_rope(player, near, position, separation, Some(platform), local);
         let number = self.ropes[rope].number;
         self.attach_player_rope(player, None, false);
         self.attach_player_rope(player, Some(rope), false);
@@ -533,6 +820,91 @@ impl RolloutWorld {
         }
     }
 
+    pub(super) fn grapple_hook_contacts(&mut self) {
+        let source = &data::get().ropes;
+        for rope_index in 0..self.ropes.len() {
+            if !self.ropes[rope_index].physics.enabled || !self.ropes[rope_index].hook_active {
+                continue;
+            }
+            let position = self.ropes[rope_index].hook_position;
+            let circle = Circle {
+                center: position,
+                radius: source.hook_radius,
+            };
+            let mut attached = None;
+            for platform in 0..self.platforms.len() {
+                if self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
+                    || crate::physics::contact::circle_rounded(
+                        circle,
+                        self.platforms[platform].collider,
+                    )
+                    .is_none()
+                    || !self.platforms[platform].collider.overlaps(position)
+                {
+                    continue;
+                }
+                attached = Some(platform);
+                break;
+            }
+            if let Some(platform) = attached {
+                let local = self.platforms[platform]
+                    .surface
+                    .local_position(position, Fix::ZERO)
+                    .expect("grapple hook centre overlaps platform");
+                let rope = &mut self.ropes[rope_index];
+                rope.physics.mass_start = Fix::ONE;
+                rope.physics.force_start = Vec2::ZERO;
+                rope.physics.time_since_hook_arrived = Fix::ZERO;
+                rope.platform = Some(platform);
+                rope.platform_local = local;
+                rope.reel_in = true;
+                rope.hook_active = false;
+                rope.hook_remove_next = true;
+                if let Some(entity) = rope.hook_entity {
+                    self.entities[entity].flags =
+                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                }
+                continue;
+            }
+            let owner = self.ropes[rope_index].owner;
+            let end_player = self.ropes[rope_index].hook_end_player;
+            let mut victim = None;
+            for player in 0..self.players.len() {
+                if (player == owner || player == end_player)
+                    || !self.playable(player)
+                    || crate::physics::contact::circle_box(
+                        circle,
+                        self.players[player].base.collider,
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                victim = Some(player);
+                break;
+            }
+            if let Some(victim) = victim {
+                if let Some(old) = self.players[victim].rope
+                    && old != rope_index
+                {
+                    self.ropes[old].physics.detach(true);
+                    self.ropes[old].physics.detach(false);
+                    self.players[victim].rope = None;
+                }
+                self.attach_player_rope(victim, Some(rope_index), true);
+                let rope = &mut self.ropes[rope_index];
+                rope.physics.time_since_hook_arrived = Fix::ZERO;
+                rope.reel_in = true;
+                rope.hook_active = false;
+                rope.hook_remove_next = true;
+                if let Some(entity) = rope.hook_entity {
+                    self.entities[entity].flags =
+                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                }
+            }
+        }
+    }
+
     pub(super) fn ropes_late(&mut self) {
         for player in 0..self.players.len() {
             let Some(rope_index) = self.players[player].rope else {
@@ -548,7 +920,10 @@ impl RolloutWorld {
             } else {
                 self.ropes[rope_index].physics.count - 1
             };
-            if self.players[player].base.grounded {
+            // HookshotInstant attaches after this pass's PlayerBody updater;
+            // a newly spawned grounded rope therefore keeps Initialize's
+            // final point until the next pass.
+            if self.players[player].base.grounded && self.ropes[rope_index].born_tick != self.tick {
                 let delta = self.ropes[rope_index].physics.segment[endpoint]
                     - self.players[player].base.position;
                 if delta.length_squared() >= Fix::from_raw(300_647_711) {
@@ -604,6 +979,9 @@ impl RolloutWorld {
                     .surface
                     .position(rope.platform_local, Fix::ZERO);
             }
+            if rope.hook_active {
+                rope.physics.segment[0] = rope.hook_position;
+            }
             rope.disabled_this_frame = false;
         }
     }
@@ -612,6 +990,10 @@ impl RolloutWorld {
         if self.ropes[rope].physics.enabled {
             self.ropes[rope].physics.enabled = false;
             self.ropes[rope].disabled_this_frame = true;
+            if let Some(entity) = self.ropes[rope].hook_entity.take() {
+                self.entities[entity].flags = E_REMOVED;
+            }
+            self.ropes[rope].hook_active = false;
         }
     }
 

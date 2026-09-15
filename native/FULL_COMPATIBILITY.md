@@ -143,8 +143,8 @@ The rope kernel also matches 2,000 actual Unity cases: 15,808 successful
 actions and 24 matching source arithmetic errors. It includes relaxation,
 platform contact, normal/space gravity, zero timestep, detached endpoints,
 40-segment capacity, spawning and both reeling directions. 197 cases are retained
-as standalone regressions. Rope broad-phase integration is now verified below. The grappling ability
-lifecycle remains separate work.
+as standalone regressions. Rope broad-phase integration and both shipped rope
+abilities are now verified below.
 
 The combined rigid/composite/rope solver matches another 1,000 Unity scenes
 and 12,000 steps, including 45,168 active rope updates. Nine scenes exercised
@@ -156,8 +156,8 @@ A dedicated six-player grappling-hook replay matches all 600 physics stages and
 at the peak. The recorder includes all 128 rope slots, active segment counts,
 current/previous segments, endpoint forces/masses, contact buffers, gravity,
 relaxation settings and the physics subsystem's cached space-level flag.
-The native grappling ability still needs its own independent lifecycle port;
-these comparisons initialize the physics stage from Unity's recorded state.
+The independent Grappling Hook lifecycle golden described below complements
+this supplied-state corpus with actual input, spawning, contacts and reeling.
 
 
 ## Beam geometry and persistent crossing graph
@@ -2567,8 +2567,8 @@ and 51 stress graph scenarios, 250 curves, 196 hitbox sequences, 214 endpoint
 effect scenarios, and 73 combined physics scenes with no mismatches. Live
 `Orb.ApplyBeam` has no producer in the five shipped maps or the 39-ability
 catalog; its type/charge/firing/color behavior remains verified in the endpoint
-component corpus. The three remaining unimplemented catalog entries are
-Grappling hook, Duplicator and Magnet gun.
+component corpus. The two remaining unimplemented catalog entries are
+Duplicator and Magnet gun.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 
@@ -2603,6 +2603,37 @@ Every compared header, player record, slime record, telemetry value, rope row,
 and lifecycle boundary matches exactly. The source-prefab extraction now records
 all rope, attachment, DetPhysics, and Web Swing constants in `rollout.json`; the
 hot loop uses compile-time values and asserts them against that generated data
-when the fixed pool is created. Grappling Hook reuses this runtime but still
-requires its projectile/reeling state machine, and Duplicator/Magnet interactions
-with ropes remain outside this golden.
+when the fixed pool is created. Duplicator/Magnet interactions with ropes remain
+outside this golden.
+
+### Executable Grappling Hook (2026-09-15)
+
+Catalog id 27 now executes `HookshotInstant`, `Rope`, `RopeHook`,
+`RopeAttachment`, and the PlayerBody rope path. A cast publishes the layer-24
+hook before its 11 initial segment rows, advances it at the authored 100-unit
+speed, applies the eight-segment velocity falloff, grows the rope one segment
+per updater pass to the 40-point limit, and times out at the strict 0.8-second
+boundary. Wall callbacks require the hook centre to overlap the rounded
+rectangle before they attach. Player callbacks exclude the rope owner and
+original endpoint. Holding the slot keeps cooldown zero while the owned rope is
+valid, shortens separation by `0.4 / segmentCount`, removes one segment per pass
+below 0.3, stops at eight points, then restores the three-second cooldown.
+
+The SlimeController proximity branch is also preserved. A three-player team
+golden places a teammate inside `CircleCastClosestPlayers`; the rope starts at
+that teammate, attaches its bottom endpoint, leaves the caster unattached and
+immediately retains the full cooldown. The resulting strand persists after the
+hook lands because the caster has no reel ownership. Rope, hook and contact
+state stay in the existing fixed pools and fixed-capacity scratch arrays.
+
+`grappling_hook_ability_ab.c` compares 1,870 optimized-Q32 NativeAOT/Rust stages:
+horizontal casts on all five maps, one upward timeout, and the close-player team
+cast. All hook/segment ids, hierarchy, counts, cooldown and reel/delete
+boundaries match. Free-flight segment positions are exact. On map 1 the attached
+rope and player remain exact through impact; the first player-position split is
+334 raw Q32 units (7.78e-8 world units) four ticks later. Constraint relaxation
+then amplifies that rounding difference on moving platforms, while impact,
+segment deletion and cooldown ticks remain identical on every map. Unity also
+varies the destroyed hook collider's otherwise-irrelevant ACTIVE bit by map
+(retained on two maps, cleared on three); both backends mark it DESTROYED and
+remove it on the next pass, so the golden masks only that bit on that one frame.

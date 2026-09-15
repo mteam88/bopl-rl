@@ -1500,6 +1500,7 @@ pub struct PlayerSlot {
     pub rope_prev_imposed: Vec2,
     pub rope_prev_external: Vec2,
     pub(crate) web_swing: [rope_abilities::WebSwingState; 3],
+    pub(crate) grapple: [rope_abilities::GrappleState; 3],
     pub active: ActiveAbility,
     pub active_slot: usize,
     /// The original SlimeController stays at the ability entry point while
@@ -2753,6 +2754,7 @@ impl RolloutWorld {
                 rope_prev_imposed: Vec2::ZERO,
                 rope_prev_external: Vec2::ZERO,
                 web_swing: [rope_abilities::WebSwingState::default(); 3],
+                grapple: [rope_abilities::GrappleState::default(); 3],
                 active: ActiveAbility::None,
                 active_slot: 0,
                 ability_origin: spawn,
@@ -3763,6 +3765,7 @@ impl RolloutWorld {
                 self.kill(index, ENVIRONMENT, cause, false, false);
             }
         }
+        self.grapple_ropes_update();
         self.ropes_update();
         self.beam_orbs_tick(data);
         // Spawned BlackHole prefabs are registered after every authored
@@ -3941,6 +3944,7 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
         self.ropes_physics(physics_dt);
+        self.grapple_hook_contacts();
         let beam_contact_count = self
             .beam_pool
             .iter()
@@ -4833,6 +4837,7 @@ impl RolloutWorld {
             }
         }
         self.web_cooldowns_tick(index, action);
+        self.grapple_cooldowns_tick(index);
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
@@ -4878,6 +4883,10 @@ impl RolloutWorld {
                     slot.base.scale = slot.player_scale;
                 }
                 match ability {
+                    ABILITY_GRAPPLING_HOOK => {
+                        self.use_grapple(index, s, action);
+                        break;
+                    }
                     ABILITY_WEB_SWING => {
                         self.fire_web(index, s);
                         break;

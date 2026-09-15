@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Shrink ray, Black Hole, Invisibility, Meteor, Throw, Push, Tesla coil, Mine, Teleport, Drill, Beam, Rewind, Web swing, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir, Portal Gun**
-  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/28/31/32/33/34/35/36/37/38): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Shrink ray, Black Hole, Invisibility, Meteor, Throw, Push, Tesla coil, Mine, Teleport, Drill, Grappling hook, Beam, Rewind, Web swing, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir, Portal Gun**
+  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/31/32/33/34/35/36/37/38): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -244,7 +244,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   axes, overlaps, lifecycle branches and later fixed-point state remain the
   same. Live Orb.ApplyBeam target charging has no producer in the five shipped
   maps and remains covered by the standalone component golden.
-  Web Swing fires its fixed up-forward ray, creates a 12-point pooled rope, attaches both endpoints with the source PlayerBody/RopeAttachment schedule, and exports 11 stable kind-3 segment rows. Its four-map miss path and the complete map-3 latch, dynamic-platform swing, release boost, detached-strand linger and cleanup are exact across 1,310 NativeAOT/Rust stages. Rope arrays, collision scratch, observation storage and fork copies are preallocated; no tick or cast allocates. Grappling Hook and cross-ability rope transfer remain open.
+  Web Swing fires its fixed up-forward ray, creates a 12-point pooled rope, attaches both endpoints with the source PlayerBody/RopeAttachment schedule, and exports 11 stable kind-3 segment rows. Its four-map miss path and the complete map-3 latch, dynamic-platform swing, release boost, detached-strand linger and cleanup are exact across 1,310 NativeAOT/Rust stages. Rope arrays, collision scratch, observation storage and fork copies are preallocated; no tick or cast allocates.
+  Grappling Hook adds the moving layer-24 hook, falloff/sprinkler flight, one-segment-per-pass growth, strict timeout, wall/player attachment, held reeling to the eight-point floor, dynamic cooldown, and the nearby-teammate transfer path. Seven differential scenarios cover all maps, timeout and teammate attachment over 1,870 stages with identical entity identities and lifecycle ticks. Free flight is exact; moving-platform constraint feedback amplifies a first 334-raw-unit player-position split without changing any contact, reel, deletion or cooldown branch. Unity's destroyed hook ACTIVE bit and cast-pass final-segment mesh sentinel are observation-only destroy/render queue artifacts described in `FULL_COMPATIBILITY.md`.
   Portal Gun is an instant cast with retained PortalShot bodies and portal
   mouths. It matches same-pass ManualInit motion, wall-callback versus timeout
   destruction, dominant-axis capture planes, pair replacement, strict
