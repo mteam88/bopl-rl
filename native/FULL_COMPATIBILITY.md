@@ -2619,8 +2619,42 @@ translational results remain exact.
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
 attached-terrain and orb branches are integrated. Smoke, Tack, Mjolnir, Poke
 Ball and Mine use the same allocation-free circular-item clone path but still
-need their own composed goldens. Magnet gun is the only catalog entry with no
-executable Rust form.
+need their own composed goldens.
+
+### Magnet form, platform pull and player pull (2026-09-15)
+
+Catalog id 30 now executes `MagnetGun`'s authored player form. Prefab extraction
+records its collider and physics constants, all pull/pickup masks and strengths,
+held-object launch values, exact four-key pull curve, and enter/prepull/exit clip
+durations. The runtime switches to the 0.76 radius, applies the 0.03 airborne
+gravity and 0.1 entry velocity factors, tracks aim, releases with the 50-unit
+recoil, restores full gravity, and exits either on a recoil landing or after the
+strict 18th exit-animation update. Landing converts the form position back
+through the ordinary slime radius before platform following resumes.
+
+Pulling is active on the cast pass, matching the modified source's immediate
+`prepulling` state. The ray-shortened oriented box applies the curve-scaled
+off-centre impulse to every intersecting rounded platform, skips the attached
+ground, and pulls ordinary/Macho player bodies in updater order. The apparent
+source bug that tests close distance against the raw prefab firepoint offset is
+preserved, including its strict threshold and doubled ordinary-player pull.
+The query and fixed state use existing buffers and entity pools and allocate
+nothing per tick.
+
+`magnet_ability_ab.c` compares 1,000 optimized-Q32 NativeAOT/Rust ticks. A
+grounded horizontal cast pulls two dynamic platforms and the opposing player
+from its first pass through release and landing; an airborne diagonal cast
+covers slow gravity, recoil flight and the animation exit. Public player/slime
+state, platform impulses and trajectories, collider axes, rotations and every
+lifecycle tick match. The only allowance is 2,048 raw Q32 position units
+(4.77e-7 world units) for the active Magnet collider centre: Unity composes the
+ability FixTransform offset from its live basis, while Rust reconstructs the
+same centre from the exported scalar rotation. This does not affect the
+canonical player body, pull query, collision decisions or later state.
+
+Magnet remains partial while item/projectile/Boulder/Black Hole pickup, held
+motion and launch, player ragdoll holding, spell/weapon handling, lock loss,
+time stop and two-Magnet parry are integrated and goldened.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

@@ -160,8 +160,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   collection, third-slot replacement and deferred acquired-ability
   registration. Dedicated collection and final-death goldens cover both
   origins.
-- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/28/31/32/33/34/35/36/37/38 have executable catalog behavior in the public
-  backend. NullAbility is an
+- All catalog ids 0..38 now have executable behavior in the public backend,
+  although the partial entries below still lack interaction branches. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
   exact through grounded and aerial release, owner-impact or timed-fuse
@@ -325,14 +325,21 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   fields, ordinary rigid contacts, explosion shockwaves and water-boundary
   cleanup. Player/projectile/weapon/Black Hole, attached-terrain and orb
   targets remain open; the non-Grenade item variants need composed goldens.
+  Magnet uses its authored smaller-radius player form, animation clocks,
+  grounded/airborne release and recoil, and strict landing/animation exits.
+  Pulling is live on the cast pass as in the modified source. Its rounded-wall
+  query, off-centre platform impulses, source-buggy close-distance test and
+  ordinary/Macho player pulls are executable without per-tick allocation.
+  Pickup, locked-object launch, non-player bodies and two-Magnet parry remain
+  open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
   swaps are complete, but its projectile/item/boulder targets await the dynamic
   entity types supplied by those ability ports. Every slot uses its exact authored
-  cooldown and common ground/castability metadata from the exported prefab;
-  unported catalog ids never activate. Closing this scope requires the remaining
-  catalog abilities and their dynamic bodies/collision pairs.
+  cooldown and common ground/castability metadata from the exported prefab.
+  Closing this scope requires the remaining partial interaction branches and
+  their dynamic-body collision pairs.
 - Landed arrows are freed from the native entity table instead of remaining
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,

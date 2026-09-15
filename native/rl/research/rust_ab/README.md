@@ -56,6 +56,11 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   impulses around the map spring updater, force-curve platform trajectories,
   and recovery. It compares every public player, slime, telemetry, and entity
   field for 360 ticks; static authored geometry allows one Q32.32 least bit.
+- `magnet_ability_ab.c`: Magnet's first-pass pull, rounded-platform impulses,
+  player pull, grounded and airborne form motion, release recoil, landing and
+  animation exits over 1,000 optimized-Q32 ticks. The active form centre allows
+  2,048 raw Q32 units for the independent FixTransform offset reconstruction;
+  axes, rotations, gameplay bodies and every interaction boundary remain exact.
 - `teleport_ability_ab.c`: first and second instant casts, deferred portal
   marker registration, release-driven readiness, caster transfer, inactive
   effect interval, RNG advancement, and exact reactivation.

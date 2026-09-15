@@ -244,7 +244,7 @@
       "name": "Magnet gun",
       "prefab": "Assets/GameObject/Magnet gun.prefab",
       "prefab_guid": "f4ca9e84a5c630c41af189a13d9a24aa",
-      "native_status": "unimplemented"
+      "native_status": "partial"
     },
     {
       "id": 31,

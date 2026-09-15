@@ -1252,6 +1252,74 @@ def main():
         "platform_effect_updatable_count": updater_count(platform_effect_prefab),
     }
 
+    # ---- Magnet gun player form, pull field and held-object launch ----
+    _, magnet_ability = find_prefab("Assets/GameObject/Magnet gun.prefab")
+    magnet = component(magnet_ability, "MagnetGun")
+    magnet_box = component(magnet_ability, "DPhysicsBox")
+    magnet_physics = component(magnet_ability, "PlayerPhysics")
+    magnet_fix = component(magnet_ability, "FixTransform")
+    magnet_anims = animations(guid_of(magnet["animData"]))
+    out["prefabs"]["magnet"] = {
+        "hurtbox_extents": vec2(magnet_box, "startExtents"),
+        "collider_hierarchy": magnet_box["hierarchyNumber"],
+        "collider_offset": vec2(magnet_fix, "offset"),
+        "radius": fix(magnet_physics, "radius"),
+        "physics": {
+            "max_speed": fix(magnet_physics, "maxSpeed"),
+            "jump_strength": fix(magnet_physics, "jumpStrength"),
+            "accel": fix(magnet_physics, "accel"),
+            "radius": fix(magnet_physics, "radius"),
+            "gravity_accel": fix(magnet_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(magnet_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(magnet_physics, "gravity_modifier"),
+            "jump_extra_x": fix(magnet_physics, "jumpExtraXStrength"),
+            "jump_momentum": fix(magnet_physics, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(magnet_physics, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(magnet_physics, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(magnet_physics, "airAccel"),
+        },
+        "air_control_blend": fix(magnet, "airealControlBlend"),
+        "firepoint_offset": vec2(magnet, "FirepointOffset"),
+        "knockback": fix(magnet, "KnockBack"),
+        "player_rock_extra_offset": vec2(magnet, "playerRockExtraOffset"),
+        "boulder_extra_offset": vec2(magnet, "boulderExtraOffset"),
+        "held_lerp": fix(magnet, "heldPosLerpFactor01"),
+        "fire_force_mines": fix(magnet, "FireForceMines"),
+        "fire_force": fix(magnet, "FireForce"),
+        "fire_ragdoll_force": fix(magnet, "FireRagdollForce"),
+        "fire_black_hole_force": fix(magnet, "FireBlackHoleForce"),
+        "fire_rock_force": fix(magnet, "FireRockForce"),
+        "fire_missile_force": fix(magnet, "FireMissileForce"),
+        "fire_boulder_force": fix(magnet, "FireBoulderForce"),
+        "roped_force_multiplier": fix(magnet, "ropedForceMul"),
+        "max_slow_mo_speed": fix(magnet, "maxSlowMoSpeed"),
+        "only_pull": magnet["onlyPull.m_Bits"],
+        "only_pickup": magnet["onlyPickup.m_Bits"],
+        "pickup_radius": fix(magnet, "pickupRadius"),
+        "max_lock_distance_squared": fix(magnet, "maxLockDist"),
+        "close_pull_multiplier": fix(magnet, "closePullStrMul"),
+        "fast_pull_radius_squared": fix(magnet, "FastPullSqrRadius"),
+        "pull_width": fix(magnet, "pullWidth"),
+        "pull_strength": fix(magnet, "pullStr"),
+        "player_pull_strength": fix(magnet, "playerPullStr"),
+        "projectile_pull_strength": fix(magnet, "projectilePullStr"),
+        "wall_pull_strength": fix(magnet, "wallPullStr"),
+        "black_hole_pull_strength": fix(magnet, "blackHolePullStr"),
+        "macho_pull_strength": fix(magnet, "MachoSlimePullStr"),
+        "player_mass": fix(magnet, "playerMass"),
+        "locked_angular_velocity": fix(magnet, "angVelOnLockedItem"),
+        "small_ragdoll_duration": fix(magnet, "smallRagdollDuration"),
+        "fire_ragdoll_duration": fix(magnet, "fireRagdollDuration"),
+        "wall_mask": magnet["wallmask.m_Bits"],
+        "raycast_offset": vec2(magnet, "raycastOffset"),
+        "max_pull_duration": fix(magnet, "maxPullDuration"),
+        "parry_push_strength": fix(magnet, "parryPushStr"),
+        "pull_curve": curve(magnet, "pullStrMultiplierCurve"),
+        "enter_ticks": sum(abs(d) for d in magnet_anims["enter"]),
+        "prepull_ticks": sum(abs(d) for d in magnet_anims["prepull"]),
+        "exit_ticks": sum(abs(d) for d in magnet_anims["exit"]),
+    }
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")

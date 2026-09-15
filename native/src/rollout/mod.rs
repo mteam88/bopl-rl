@@ -1137,6 +1137,20 @@ pub struct GunState {
     pub collider_up: Vec2,
 }
 
+/// MagnetGun's animation and pull-state clocks. Held-object identity is added
+/// by the interaction slices; the form lifecycle itself has no heap state.
+#[derive(Clone, Copy, Default)]
+pub struct MagnetState {
+    /// MagnetState: 1 prepulling, 2 pulling, 4 paused, 5 exiting.
+    pub phase: u8,
+    /// Active SpriteAnimator clip: 0 enter, 1 prepull, 2 idle, 3 exit.
+    pub animation: u8,
+    pub animation_ticks: u32,
+    pub time_spent_pulling: Fix,
+    pub aim: Vec2,
+    pub has_fired: bool,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct RagdollState {
     pub active: bool,
@@ -1473,6 +1487,7 @@ pub enum ActiveAbility {
     Drill,
     Beam,
     Duplicator,
+    Magnet,
     Platform,
 }
 
@@ -1573,6 +1588,7 @@ pub struct PlayerSlot {
     pub meteor: MeteorState,
     pub push: PushState,
     pub gun: GunState,
+    pub magnet: MagnetState,
     pub ragdoll: RagdollState,
     /// Index of the Poke Ball that owns this pinned victim.
     pub captured_by_ball: Option<usize>,
@@ -1678,6 +1694,7 @@ pub struct PlayerSlot {
     pub growth_ray_entity: usize,
     pub shrink_ray_entity: usize,
     pub duplicator_entity: usize,
+    pub magnet_entity: usize,
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
@@ -2297,6 +2314,7 @@ impl RolloutWorld {
         let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut duplicator_entity = [usize::MAX; MAX_PLAYERS];
+        let mut magnet_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         let mut engine_entity = [usize::MAX; MAX_PLAYERS];
         let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
@@ -2464,6 +2482,14 @@ impl RolloutWorld {
                             &mut duplicator_entity[i],
                             false,
                         ),
+                        ABILITY_MAGNET => (
+                            data::surface_extents(data.magnet.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.magnet.collider_hierarchy,
+                            &mut magnet_entity[i],
+                            false,
+                        ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
                             throw_config(data, ability).hurtbox_extents,
@@ -2557,6 +2583,7 @@ impl RolloutWorld {
                             | ABILITY_GROWTH_RAY
                             | ABILITY_SHRINK_RAY
                             | ABILITY_DUPLICATOR
+                            | ABILITY_MAGNET
                             | ABILITY_METEOR
                             | ABILITY_BLACK_HOLE
                             | ABILITY_THROW
@@ -2584,6 +2611,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_DUPLICATOR {
                         data.duplicator.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_MAGNET {
+                        data.magnet.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
@@ -2623,6 +2652,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_DUPLICATOR {
                         data.duplicator.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_MAGNET {
+                        data.magnet.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
@@ -2835,6 +2866,7 @@ impl RolloutWorld {
                 meteor: MeteorState::default(),
                 push: PushState::default(),
                 gun: GunState::default(),
+                magnet: MagnetState::default(),
                 ragdoll: RagdollState::default(),
                 captured_by_ball: None,
                 late_obs_tick: u32::MAX,
@@ -2898,6 +2930,7 @@ impl RolloutWorld {
                 growth_ray_entity: growth_ray_entity[i],
                 shrink_ray_entity: shrink_ray_entity[i],
                 duplicator_entity: duplicator_entity[i],
+                magnet_entity: magnet_entity[i],
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
@@ -3353,6 +3386,12 @@ impl RolloutWorld {
                 data.duplicator.collider_hierarchy,
                 17,
             )),
+            ABILITY_MAGNET => Some((
+                data::surface_extents(data.magnet.hurtbox_extents),
+                data.magnet.collider_offset,
+                data.magnet.collider_hierarchy,
+                18,
+            )),
             ABILITY_SPIKE => Some((
                 data.spike.hurtbox_extents,
                 data.spike.collider_offset,
@@ -3440,7 +3479,8 @@ impl RolloutWorld {
             14 => slot.macho_throw_entity = entity,
             15 => slot.drill_entity = entity,
             16 => slot.beam_entity = entity,
-            _ => slot.duplicator_entity = entity,
+            17 => slot.duplicator_entity = entity,
+            _ => slot.magnet_entity = entity,
         }
     }
 
@@ -3909,7 +3949,8 @@ impl RolloutWorld {
                     | ActiveAbility::Throw
                     | ActiveAbility::Drill
                     | ActiveAbility::Beam
-                    | ActiveAbility::Duplicator => true,
+                    | ActiveAbility::Duplicator
+                    | ActiveAbility::Magnet => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -3991,6 +4032,7 @@ impl RolloutWorld {
                     slot.growth_ray_entity,
                     slot.shrink_ray_entity,
                     slot.duplicator_entity,
+                    slot.magnet_entity,
                     slot.bow_entity,
                     slot.throw_entity,
                     slot.mine_entity,
@@ -5587,6 +5629,51 @@ impl RolloutWorld {
                         self.duplicator_tick(index, action, data);
                         return;
                     }
+                    ABILITY_MAGNET => {
+                        let grounded = self.players[index].base.grounded;
+                        let aim = {
+                            let slot = &self.players[index];
+                            let forward = if grounded {
+                                slot.base.up.perp_cw()
+                            } else {
+                                Vec2::RIGHT
+                            };
+                            if slot.facing_right { forward } else { -forward }
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Magnet;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.magnet = MagnetState {
+                            phase: 1,
+                            animation: 0,
+                            // The ability SpriteAnimator follows the original
+                            // slime and consumes the first enter frame now.
+                            animation_ticks: 1,
+                            aim,
+                            ..MagnetState::default()
+                        };
+                        slot.base.radius = data.magnet.radius;
+                        slot.base.constants = data.magnet.constants.clone();
+                        slot.base.rotation = Fix::ZERO;
+                        if grounded {
+                            if let Some(platform) = slot.base.platform(&self.platforms) {
+                                slot.base.position = platform
+                                    .surface
+                                    .position(slot.base.local, data.magnet.radius);
+                            }
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        } else {
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                            slot.base.external_velocity *= Fix::from_f32(0.1);
+                            slot.base.ground = None;
+                        }
+                        self.magnet_tick(index, action, movement_input, data, false);
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -6020,6 +6107,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Duplicator {
             self.duplicator_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Magnet {
+            self.magnet_tick(index, action, movement_input, data, true);
             return;
         }
         if self.players[index].active == ActiveAbility::Mine {
@@ -8157,6 +8248,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Duplicator => slot.duplicator_entity,
+                    ActiveAbility::Magnet => slot.magnet_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -8297,6 +8389,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Duplicator => slot.duplicator_entity,
+                    ActiveAbility::Magnet => slot.magnet_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -8802,6 +8895,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => player.growth_ray_entity,
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
                     ActiveAbility::Duplicator => player.duplicator_entity,
+                    ActiveAbility::Magnet => player.magnet_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::Engine => player.engine_entity,
                     ActiveAbility::Tesla => player.tesla_entity,
@@ -9175,6 +9269,7 @@ impl RolloutWorld {
                         ActiveAbility::GrowthRay => other.growth_ray_entity,
                         ActiveAbility::ShrinkRay => other.shrink_ray_entity,
                         ActiveAbility::Duplicator => other.duplicator_entity,
+                        ActiveAbility::Magnet => other.magnet_entity,
                         ActiveAbility::Spike => other.spike_entity,
                         ActiveAbility::Engine => other.engine_entity,
                         ActiveAbility::Tesla => other.tesla_entity,
@@ -10123,6 +10218,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => self.players[victim].growth_ray_entity,
                     ActiveAbility::ShrinkRay => self.players[victim].shrink_ray_entity,
                     ActiveAbility::Duplicator => self.players[victim].duplicator_entity,
+                    ActiveAbility::Magnet => self.players[victim].magnet_entity,
                     ActiveAbility::Spike => self.players[victim].spike_entity,
                     ActiveAbility::Engine => self.players[victim].engine_entity,
                     ActiveAbility::Tesla => self.players[victim].tesla_entity,
@@ -11383,6 +11479,7 @@ impl RolloutWorld {
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
             let mut duplicator_entity = usize::MAX;
+            let mut magnet_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
@@ -11438,6 +11535,11 @@ impl RolloutWorld {
                         data::surface_extents(data.duplicator.hurtbox_extents),
                         data.duplicator.collider_hierarchy,
                         &mut duplicator_entity,
+                    ),
+                    ABILITY_MAGNET => (
+                        data::surface_extents(data.magnet.hurtbox_extents),
+                        data.magnet.collider_hierarchy,
+                        &mut magnet_entity,
                     ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
@@ -11505,6 +11607,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_DUPLICATOR {
                         data.duplicator.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_MAGNET {
+                        data.magnet.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11539,6 +11643,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_DUPLICATOR {
                         data.duplicator.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_MAGNET {
+                        data.magnet.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11599,6 +11705,7 @@ impl RolloutWorld {
             slot.meteor = MeteorState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
+            slot.magnet = MagnetState::default();
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -11637,6 +11744,7 @@ impl RolloutWorld {
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
             slot.duplicator_entity = duplicator_entity;
+            slot.magnet_entity = magnet_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -11668,6 +11776,7 @@ impl RolloutWorld {
                 self.players[index].growth_ray_entity,
                 self.players[index].shrink_ray_entity,
                 self.players[index].duplicator_entity,
+                self.players[index].magnet_entity,
                 self.players[index].bow_entity,
                 self.players[index].throw_entity,
                 self.players[index].mine_entity,
@@ -11813,6 +11922,7 @@ impl RolloutWorld {
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
             let mut duplicator_entity = usize::MAX;
+            let mut magnet_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
@@ -11868,6 +11978,11 @@ impl RolloutWorld {
                         data::surface_extents(data.duplicator.hurtbox_extents),
                         data.duplicator.collider_hierarchy,
                         &mut duplicator_entity,
+                    ),
+                    ABILITY_MAGNET => (
+                        data::surface_extents(data.magnet.hurtbox_extents),
+                        data.magnet.collider_hierarchy,
+                        &mut magnet_entity,
                     ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
@@ -11936,6 +12051,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_DUPLICATOR {
                         data.duplicator.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_MAGNET {
+                        data.magnet.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11970,6 +12087,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_DUPLICATOR {
                         data.duplicator.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_MAGNET {
+                        data.magnet.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -12017,6 +12136,7 @@ impl RolloutWorld {
             slot.meteor = MeteorState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
+            slot.magnet = MagnetState::default();
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -12055,6 +12175,7 @@ impl RolloutWorld {
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
             slot.duplicator_entity = duplicator_entity;
+            slot.magnet_entity = magnet_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -13524,6 +13645,293 @@ impl RolloutWorld {
         }
     }
 
+    /// MagnetGun's player form and release flight. Pull/pickup callbacks are
+    /// layered onto the prepulling/pulling section; this keeps the animation
+    /// and movement handoff exact even when the query contains no target.
+    fn magnet_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        movement_input: Vec2,
+        data: &data::RolloutData,
+        advance_animation: bool,
+    ) {
+        let magnet = &data.magnet;
+        if advance_animation {
+            let state = &mut self.players[index].magnet;
+            state.animation_ticks += 1;
+            match state.animation {
+                0 if state.animation_ticks > magnet.enter_ticks => {
+                    // enterPrePull begins a fresh prepull animation while the
+                    // state is already prepulling from OnEnterAbility.
+                    state.animation = 1;
+                    state.animation_ticks = 0;
+                }
+                1 if state.animation_ticks > magnet.prepull_ticks => {
+                    state.phase = 2;
+                    state.animation = 2;
+                    state.animation_ticks = 0;
+                }
+                3 if state.animation_ticks > magnet.exit_ticks => {
+                    self.exit_magnet(index, false, data);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let direction = action.direction();
+        if direction != Vec2::ZERO {
+            self.players[index].magnet.aim = direction.normalized();
+        }
+        self.players[index].magnet.time_spent_pulling += DT;
+        if matches!(self.players[index].magnet.phase, 1 | 2)
+            && self.players[index].magnet.time_spent_pulling > magnet.max_pull_duration
+        {
+            let state = &mut self.players[index].magnet;
+            state.phase = 4;
+            state.animation = 2;
+            state.animation_ticks = 0;
+        }
+
+        if matches!(self.players[index].magnet.phase, 1 | 2) {
+            self.magnet_pull(index, data);
+        }
+
+        let button = 2u8 << self.players[index].active_slot;
+        if action.buttons & button == 0 && !self.players[index].magnet.has_fired {
+            self.fire_magnet(index, data);
+        }
+
+        let invalid_ground = self.players[index].base.grounded
+            && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
+                || self.players[index].base.ground.is_none()
+                || self.players[index]
+                    .base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .is_none());
+        if invalid_ground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+
+        if !self.players[index].base.grounded {
+            let gravity_modifier = if self.players[index].magnet.has_fired {
+                Fix::ONE
+            } else {
+                Fix::from_f32(0.03)
+            };
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                magnet.constants.gravity_accel,
+                gravity_modifier,
+                magnet.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Magnet gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded && slot.magnet.has_fired {
+                self.exit_magnet(index, true, data);
+                return;
+            }
+        }
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+
+        let slot = &mut self.players[index];
+        if !slot.magnet.has_fired {
+            slot.base.up = slot.magnet.aim.perp();
+            slot.base.rotation = slot.magnet.aim.normalized_angle();
+            if slot.base.velocity.length() > magnet.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * magnet.max_slow_mo_speed;
+            }
+        } else {
+            let before = slot.base.velocity;
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                movement_input.x,
+                magnet.constants.air_accel,
+                magnet.constants.max_speed,
+            )
+            .expect("valid Magnet air constants");
+            let after = slot.base.velocity;
+            slot.base.velocity =
+                before * (Fix::ONE - magnet.air_control_blend) + after * magnet.air_control_blend;
+        }
+        if slot.base.velocity.length() > magnet.constants.max_speed {
+            slot.base.velocity = slot.base.velocity.normalized() * magnet.constants.max_speed;
+        }
+        if !slot.base.grounded {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+    }
+
+    /// MagnetGun.TryPullItems' rounded-platform branch. The source first
+    /// shortens its oriented query box to half of the nearest rounded-wall
+    /// ray distance, then applies an immediate off-centre impulse to every
+    /// wall in that box. Dynamic item/player branches are handled alongside
+    /// their respective pools.
+    fn magnet_pull(&mut self, index: usize, data: &data::RolloutData) {
+        let magnet = &data.magnet;
+        let slot = &self.players[index];
+        let direction = slot.magnet.aim.normalized_safe();
+        if direction == Vec2::ZERO {
+            return;
+        }
+        let firepoint = slot.base.position
+            + slot.base.up * magnet.firepoint_offset.y
+            + direction * magnet.firepoint_offset.x;
+        let mut half_length = Fix::from_int(1000);
+        let mut nearest = Fix::MAX;
+        for platform in &self.platforms {
+            if let Some(hit) = platform
+                .collider
+                .raycast(firepoint, direction)
+                .filter(|hit| hit.near <= Fix::from_int(10_000))
+                && hit.near < nearest
+            {
+                nearest = hit.near;
+            }
+        }
+        if nearest != Fix::MAX {
+            half_length = nearest / Fix::from_int(2);
+        }
+        half_length = half_length.max(Fix::from_f32(0.01));
+        let half_width = magnet.pull_width.max(Fix::from_f32(0.01));
+        let query = OrientedBox::from_basis(
+            firepoint + direction * half_length,
+            direction,
+            Vec2::new(half_length, half_width),
+        );
+        let multiplier = magnet
+            .pull_curve
+            .evaluate(slot.magnet.time_spent_pulling / magnet.max_pull_duration);
+        let ground = slot.base.ground;
+        let body_position = slot.base.position;
+        let mut changed = false;
+        for platform_index in 0..self.platforms.len() {
+            if ground == Some(self.platforms[platform_index].id) {
+                continue;
+            }
+            let rounded = self.platforms[platform_index].collider;
+            let inner_right = rounded.inner.right.length();
+            let inner_up = rounded.inner.up.length();
+            let expanded = OrientedBox::from_basis(
+                rounded.inner.center,
+                rounded.inner.right.normalized_safe(),
+                Vec2::new(inner_right + rounded.radius, inner_up + rounded.radius),
+            );
+            if crate::physics::contact::box_box(query, expanded).is_none() {
+                continue;
+            }
+            let position = self.platforms[platform_index].surface.center;
+            let application = body_position + direction * (position - body_position).dot(direction);
+            let arm = (application - position).normalized_safe();
+            self.platform_dynamics[platform_index]
+                .body
+                .apply_impulse(-direction * magnet.wall_pull_strength * multiplier, arm);
+            changed = true;
+        }
+        for player_index in 0..self.players.len() {
+            if player_index == index || !self.playable(player_index) {
+                continue;
+            }
+            let target = &self.players[player_index];
+            if crate::physics::contact::box_box(query, target.base.collider).is_none() {
+                continue;
+            }
+            // The shipped code accidentally measures closeness from the raw
+            // prefab FirepointOffset rather than from the world firepoint.
+            let mut strength = multiplier;
+            if (target.base.position - magnet.firepoint_offset).length_squared()
+                < magnet.fast_pull_radius_squared
+            {
+                strength *= magnet.close_pull_multiplier;
+            }
+            let pull = if target.active == ActiveAbility::Throw {
+                magnet.macho_pull_strength
+            } else {
+                magnet.player_pull_strength
+            };
+            self.players[player_index].base.external_velocity -= direction * pull * strength;
+        }
+        if changed {
+            self.platforms_changed();
+        }
+    }
+
+    fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
+        let aim = self.players[index].magnet.aim.normalized_safe();
+        let normal = self.players[index]
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+            .map(|platform| platform.surface.normal(self.players[index].base.position));
+        let grounded = self.players[index].base.grounded;
+        let slot = &mut self.players[index];
+        slot.magnet.has_fired = true;
+        slot.magnet.phase = 5;
+        slot.magnet.animation = 3;
+        slot.magnet.animation_ticks = 0;
+        slot.base.up = aim.perp();
+        slot.base.rotation = aim.normalized_angle();
+        if grounded {
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
+            slot.base.force_unground(&self.platforms);
+        } else {
+            slot.base.velocity = -(aim * data.magnet.knockback);
+        }
+    }
+
+    fn exit_magnet(&mut self, index: usize, landed: bool, data: &data::RolloutData) {
+        let terrain = terrain!(self);
+        let landed_surface = landed.then(|| {
+            let ground = self.players[index]
+                .base
+                .ground
+                .expect("landed Magnet has a ground");
+            terrain
+                .platforms
+                .iter()
+                .find(|platform| platform.id == ground)
+                .expect("landed Magnet ground remains registered")
+        });
+        let ordinary_radius = data.player.radius * self.players[index].ability_origin_scale;
+        let landed_local = landed_surface.map(|platform| {
+            platform
+                .surface
+                .local_position(self.players[index].base.position, ordinary_radius)
+                .expect("Magnet landing position lies on its platform")
+        });
+        let slot = &mut self.players[index];
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        if !landed {
+            slot.base.force_unground(terrain.platforms);
+        }
+        slot.active = ActiveAbility::None;
+        slot.exit_to_fall();
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+        if !landed {
+            slot.base.ground = None;
+            slot.base.collision_rays(terrain);
+        } else if let (Some(platform), Some(local)) = (landed_surface, landed_local) {
+            slot.base.local = local;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.align(platform);
+        }
+        slot.physics_scale = slot.ability_origin_scale;
+        slot.base.radius = ordinary_radius;
+        slot.base.constants = data.player.constants.clone();
+        slot.set_ordinary_body_scale(slot.player_scale);
+    }
+
     fn fire_duplicator(&mut self, index: usize, data: &data::RolloutData) {
         let gun = &data.duplicator;
         let (aim, grounded, normal) = {
@@ -14056,6 +14464,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Duplicator => slot.duplicator_entity,
+                    ActiveAbility::Magnet => slot.magnet_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -14206,6 +14615,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Duplicator => slot.duplicator_entity,
+                    ActiveAbility::Magnet => slot.magnet_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -14484,6 +14894,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Duplicator => slot.duplicator_entity,
+                    ActiveAbility::Magnet => slot.magnet_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -16891,6 +17302,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => player.growth_ray_entity,
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
                     ActiveAbility::Duplicator => player.duplicator_entity,
+                    ActiveAbility::Magnet => player.magnet_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::Engine => player.engine_entity,
                     ActiveAbility::Tesla => player.tesla_entity,
@@ -17986,6 +18398,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => other.growth_ray_entity,
                     ActiveAbility::ShrinkRay => other.shrink_ray_entity,
                     ActiveAbility::Duplicator => other.duplicator_entity,
+                    ActiveAbility::Magnet => other.magnet_entity,
                     ActiveAbility::Spike => other.spike_entity,
                     ActiveAbility::Engine => other.engine_entity,
                     ActiveAbility::Tesla => other.tesla_entity,
@@ -18582,6 +18995,7 @@ impl RolloutWorld {
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
                 slot.duplicator_entity,
+                slot.magnet_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -18649,6 +19063,7 @@ impl RolloutWorld {
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
                 slot.duplicator_entity,
+                slot.magnet_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -18708,6 +19123,7 @@ impl RolloutWorld {
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
                 slot.duplicator_entity,
+                slot.magnet_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -19140,6 +19556,7 @@ impl RolloutWorld {
                 growth_ray_e,
                 shrink_ray_e,
                 duplicator_e,
+                magnet_e,
                 gust_e,
                 revival_e,
                 spike_e,
@@ -19168,6 +19585,7 @@ impl RolloutWorld {
                     s.growth_ray_entity,
                     s.shrink_ray_entity,
                     s.duplicator_entity,
+                    s.magnet_entity,
                     s.gust_entity,
                     s.revival_entity,
                     s.spike_entity,
@@ -19197,6 +19615,7 @@ impl RolloutWorld {
             let growing = slot.active == ActiveAbility::GrowthRay;
             let shrinking = slot.active == ActiveAbility::ShrinkRay;
             let duplicating = slot.active == ActiveAbility::Duplicator;
+            let magnetizing = slot.active == ActiveAbility::Magnet;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -19723,6 +20142,41 @@ impl RolloutWorld {
                         center,
                         basis,
                         data::surface_extents(data.duplicator.hurtbox_extents) * scale,
+                    );
+                    row.x = center.x.raw();
+                    row.y = center.y.raw();
+                    row.vx = 0;
+                    row.vy = 0;
+                    row.right_x = collider.right.x.raw();
+                    row.right_y = collider.right.y.raw();
+                    row.up_x = collider.up.x.raw();
+                    row.up_y = collider.up.y.raw();
+                    row.rotation = rotation.raw();
+                }
+            }
+            if magnet_e != usize::MAX {
+                let row = &mut self.entities[magnet_e];
+                let was_active = row.flags & E_ACTIVE != 0;
+                row.flags = if alive && magnetizing {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if magnetizing {
+                    row.owner = slot.base.id;
+                }
+                if (alive && magnetizing) || was_active {
+                    let (root, rotation, scale) = if magnetizing {
+                        (synced, slot.magnet.aim.normalized_angle(), slot.base.scale)
+                    } else {
+                        (exit_position, Fix::ZERO, slot.base.scale)
+                    };
+                    let basis = Vec2::angle(rotation);
+                    let center = root + basis.complex_mul(data.magnet.collider_offset * scale);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(data.magnet.hurtbox_extents) * scale,
                     );
                     row.x = center.x.raw();
                     row.y = center.y.raw();
