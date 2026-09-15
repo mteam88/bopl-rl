@@ -19105,14 +19105,25 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // BounceBall.LateUpdateSim continues to run during Time Stop.
+            // GameTime.FixedDeltaTime freezes an unprotected owner's clocks,
+            // but the entry curve is still evaluated at that frozen time and
+            // added to CollisionCircle.Scale on every LateUpdateSim pass.
+            let dt = if self.player_time_scale < Fix::from_f32(0.01)
+                && !self.time_stop_protected[index]
+            {
+                Fix::ZERO
+            } else {
+                DT
+            };
             let st = &mut self.players[index].rock;
             if st.time > data.rock.max_duration && !st.exiting {
                 st.exiting = true;
                 st.exit_scale = Fix::ONE - st.scale_sum;
             }
-            st.time += DT;
+            st.time += dt;
             if st.exiting {
-                st.exit_time += DT;
+                st.exit_time += dt;
                 if st.exit_time > data.rock.exit_time {
                     let exit_scale = st.exit_scale;
                     let velocity = st.body.velocity;

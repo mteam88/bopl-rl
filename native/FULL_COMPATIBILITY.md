@@ -1976,6 +1976,15 @@ public collider field remain exact and fixed through the 690-pass stop. Bow
 then resumes on the first restored clock, releases, exits and registers its
 Arrow with exact source ordering during the remainder of the 1,600-tick trace.
 
+`time_stop_rock_ab.c` covers an active Rock across the same 690 stopped passes.
+Unity continues calling `BounceBall.LateUpdateSim`: the unprotected owner's
+activation clock receives zero delta, but the entry curve is evaluated at that
+frozen time and its value is added to the circle scale again on every pass.
+Rust now uses the same per-player delta and preserves that source behavior;
+Rock position and timers remain frozen and rigid-body motion resumes on the
+first restored pass. All public state matches, with the existing Rock bound of
+64 raw Q32 units for successive curve and normalization rounding.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback
@@ -2085,6 +2094,9 @@ multiplies them by the exit curve, and restores the slime at the rigid body's
 last position and velocity. The spawned collider row remains as a frozen,
 disabled ability object after exit and is reconstructed with its original
 hierarchy when stock or Revival creates a replacement slime.
+During Time Stop the updater still runs with a zero per-player delta, including
+the source's repeated evaluation and addition of the entry curve at the frozen
+activation time.
 
 `rock_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks through entry, falling,
 terrain bounce, pulse, timed exit, and restored slime movement.
@@ -2092,15 +2104,17 @@ terrain bounce, pulse, timed exit, and restored slime movement.
 shares the spawn point; the first Rock frame kills that target on tick 181 and
 matches owner credit, telemetry, destroyed rows, and stock recovery. IDs,
 ordering, flags, layers, inverse masses and every discrete state transition
-match. Position, velocity, rotation and pulse-scale values differ by at most 64
+match. `time_stop_rock_ab.c` adds 1,600 ticks through the active form's frozen
+clock, repeated zero-delta scale update and restored physics. Position,
+velocity, rotation and pulse-scale values differ by at most 64
 raw Q32 units (1.49e-8 game units) because the two runtimes round successive
 curve interpolation and normalized contact operations at slightly different
 points. That bound is far below every overlap and transition threshold in both
 goldens and does not alter contacts, deaths, timing, or control state.
 
-Dedicated Shockwave, scale-change, arrow-attachment, projectile/item-detonation,
-and mixed transformed-form contact scenarios remain open, so coverage is marked
-partial.
+Dedicated Shockwave, scale-change, arrow-attachment, projectile/item-detonation
+and mixed transformed-form contact scenarios remain open, so coverage is
+marked partial.
 
 
 ### Executable Push platform control (2026-09-14)

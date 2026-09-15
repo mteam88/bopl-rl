@@ -74,6 +74,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   An unprotected active Bow form is also exact across Time Stop: its charge,
   body and cooldown clocks remain fixed for all 690 stopped passes, then its
   release and Arrow spawn resume on the restored clock.
+  Active Rock is exact across the same boundary. Its activation clock freezes,
+  while `BounceBall.LateUpdateSim` retains the source's repeated entry-curve
+  scale addition at zero delta; rigid-body motion resumes on restoration.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
@@ -289,8 +292,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   the 10-second hold plus exit-alpha lifetime, restoration, protected-caster
   cooldowns/motion, and global DetPhysics freezing for the currently ported
   projectile, item, smoke, explosion and platform bodies. Arrow entry, active
-  Bow charge, all 690 frozen passes and the first restored form/projectile
-  passes are exact through the public rows. Cross-ability
+  Bow charge, active Rock scale/clock behavior, all 690 frozen passes and the
+  first restored form/projectile passes are exact through the public rows. Cross-ability
   interactions with catalog entries that remain absent inherit those entries'
   open scope.
   Spike is exact through its grounded cast and recovery, opposite-surface

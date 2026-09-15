@@ -79,7 +79,7 @@
       "prefab": "Assets/GameObject/Rock.prefab",
       "prefab_guid": "44115a8eb36b70448af81e1d922e7e12",
       "native_status": "partial",
-      "verification": "rock_ability_ab matches 500 NativeAOT/Rust Q32 ticks through grounded transformation, rigid circle gravity/bounce/friction, authored pulse scale, strict 2.5-second lifetime, exit shrink, and slime restoration. rock_contact_ab matches 360 ticks and the same-tick lethal player callback, ownership, telemetry, and stock recovery. Dynamic vectors and pulse scale are within 64 raw Q32 units (1.49e-8 game units) from ordered curve/normalization rounding, with identical collision and lifecycle decisions. Shockwave, projectile/item detonation, scale changes, arrows attaching to Rock, and mixed transformed-form contacts remain to be separately goldened."
+      "verification": "rock_ability_ab matches 500 NativeAOT/Rust Q32 ticks through grounded transformation, rigid circle gravity/bounce/friction, authored pulse scale, strict 2.5-second lifetime, exit shrink, and slime restoration. rock_contact_ab matches 360 ticks and the same-tick lethal player callback, ownership, telemetry, and stock recovery. time_stop_rock_ab adds 1,600 ticks through a frozen active Rock, including its zero-delta activation clock, repeated entry-curve scale update and first restored rigid-body motion. Dynamic vectors and pulse scale are within 64 raw Q32 units (1.49e-8 game units) from ordered curve/normalization rounding, with identical collision and lifecycle decisions. Shockwave, projectile/item detonation, scale changes, arrows attaching to Rock, and mixed transformed-form contacts remain to be separately goldened."
     },
     {
       "id": 10,
@@ -103,7 +103,7 @@
       "prefab": "Assets/GameObject/Time stop.prefab",
       "prefab_guid": "13b1168b7f11655458dddcfce3f9b0ce",
       "native_status": "partial",
-      "verification": "Executable CastSpell and TimeStop are covered by time_stop_ability_ab, magnet_time_stop_ab and time_stop_arrow_ab and time_stop_bow_ab. Grounded channel/cancel/cast phases, team protection, the float32-derived 690-pass global stop, protected cooldowns and motion, held Grenade behavior, Bow-arrow freeze/flight and active-Bow charge/release are exact. Other active forms, portals, boulders, ropes, scale effects, attachments, Black Holes and pickup replacement remain uncomposed."
+      "verification": "Executable CastSpell and TimeStop are covered by time_stop_ability_ab, magnet_time_stop_ab, time_stop_arrow_ab, time_stop_bow_ab and time_stop_rock_ab. Grounded channel/cancel/cast phases, team protection, the float32-derived 690-pass global stop, protected cooldowns and motion, held Grenade behavior, Bow-arrow freeze/flight, active-Bow charge/release and active-Rock zero-delta clock/scale behavior are exact. Other active forms, portals, boulders, ropes, scale effects, attachments, Black Holes and pickup replacement remain uncomposed."
     },
     {
       "id": 13,
