@@ -1886,3 +1886,36 @@ cooldowns, protected-caster movement and cooldown exceptions, and final global
 clock restoration. Interactions with ability entity types that have not yet
 been ported remain part of those abilities' open scope, so coverage is marked
 partial until the catalog is complete.
+
+### Executable Spike and platform composites (2026-09-14)
+
+Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback
+uses the attached rounded rectangle's live normal and exact far raycast distance,
+replaces the attack retained by that ability slot, instantiates the manual
+layer-16 box on the opposite surface, and applies the authored force at the
+caster's contact point. Cast and recovery animation callback boundaries, the
+root collider's pre-physics publication, grounded movement, and grounded exit
+pose match the updater hierarchy.
+
+`SpikeAttack` is represented as a child of the platform's DetPhysics composite.
+The implementation preserves the source's summed mass and moment, separate raw
+child bodies for observations, relative child position and orientation, and the
+otherwise surprising split between the rounded-root position and
+`CompositeBody.position` during box/rounded positional correction. The physics
+pass re-anchors that split from the root `FixTransform` on the next tick, just as
+`SynCompositeToFixTransAndRelativeValues` does. The attack evaluates the exact
+fixed down-thrust curve without allocating, remains lethal after the curve ends,
+and follows platform translation and rotation. Box/wall contacts use the source
+manifold order, effective composite body for impulses, raw child inverse masses
+for correction, and the callback's one-self-push-per-frame rule. Player-layer
+contacts invoke the persistent Explosion's default owner-zero lethal callback.
+
+`spike_ability_ab.c` compares 500 NativeAOT/Q32 ticks exactly through a grounded
+cast, attack registration, all curve frames, recovery exit, persistent collider,
+composite platform flags, cast-force motion, collision with a neighboring
+rounded platform, positional correction, bilateral push, and later repeated
+rigid-body contacts. The attack collider's vertical half-extent uses the same
+`One / (One / extent)` round trip as `DPhysicsBox`; this accounts for the three
+raw Q32 units between the serialized extent and observed axis and is not a
+semantic difference. Dedicated recast-replacement and player-lethality goldens
+remain open, so the catalog entry is marked partial.

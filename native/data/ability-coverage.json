@@ -87,7 +87,8 @@
       "name": "Spike",
       "prefab": "Assets/GameObject/Spike.prefab",
       "prefab_guid": "b28199828504fa141b09a7fbc4328c9d",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "spike_ability_ab matches 500 exact NativeAOT/Rust ticks through grounded cast/recovery, far-side raycast placement, manual collider registration, down-thrust curve, persistent lethal box export, composite mass/inertia, cast impulse, neighboring-wall collision resolution and bilateral push. Recast replacement and dedicated player-lethality scenarios remain to be goldened."
     },
     {
       "id": 12,

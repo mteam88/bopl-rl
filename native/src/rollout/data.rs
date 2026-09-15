@@ -208,6 +208,7 @@ struct RawPrefabs {
     grenade: RawGrenade,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
+    spike: RawSpike,
     tack: RawTack,
     mjolnir: RawMjolnir,
 }
@@ -383,6 +384,35 @@ struct RawTimeStopAnimations {
     cast_spell: Vec<i32>,
     #[serde(rename = "easeOutSpellCast")]
     ease_out: Vec<i32>,
+}
+#[derive(Deserialize)]
+struct RawSpike {
+    hurtbox_extents: RawVec2,
+    collider_offset: RawVec2,
+    collider_hierarchy: u32,
+    animations: RawSpikeAnimations,
+    surface_offset: i64,
+    cast_force: i64,
+    attack: RawSpikeAttack,
+}
+#[derive(Deserialize)]
+struct RawSpikeAnimations {
+    cast: Vec<i32>,
+    recover: Vec<i32>,
+}
+#[derive(Deserialize)]
+struct RawSpikeAttack {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    collider_offset: RawVec2,
+    body: RawBody,
+    down_thrust: Curve,
+    knock_player: i64,
+    knock_wall: i64,
+    self_push_multiplier: i64,
+    push_time: i64,
 }
 #[derive(Clone, Copy, Deserialize)]
 struct RawExplosionShockwave {
@@ -795,6 +825,26 @@ pub struct TimeStopData {
     pub duration_f32: f32,
     pub exit_seconds_f32: f32,
 }
+pub struct SpikeData {
+    pub hurtbox_extents: Vec2,
+    pub collider_offset: Vec2,
+    pub collider_hierarchy: u32,
+    pub cast_ticks: u32,
+    pub recover_ticks: u32,
+    pub surface_offset: Fix,
+    pub cast_force: Fix,
+    pub attack_layer: u32,
+    pub attack_updatable_count: u32,
+    pub attack_collider_hierarchy: u32,
+    pub attack_extents: Vec2,
+    pub attack_collider_offset: Vec2,
+    pub attack_body: crate::physics::Body,
+    pub down_thrust: Curve,
+    pub knock_player: Fix,
+    pub knock_wall: Fix,
+    pub self_push_multiplier: Fix,
+    pub push_time: Fix,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -834,6 +884,7 @@ pub struct RolloutData {
     pub grenade: GrenadeData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
+    pub spike: SpikeData,
     pub tack: TackData,
     pub mjolnir: MjolnirData,
     pub abilities: Vec<AbilityData>,
@@ -1288,6 +1339,29 @@ pub fn get() -> &'static RolloutData {
                     effect_updatable_count: time_stop.effect_updatable_count,
                     duration_f32: time_stop.duration_f32,
                     exit_seconds_f32: time_stop.exit_seconds_f32,
+                }
+            },
+            spike: {
+                let spike = &raw.prefabs.spike;
+                SpikeData {
+                    hurtbox_extents: spike.hurtbox_extents.get(),
+                    collider_offset: spike.collider_offset.get(),
+                    collider_hierarchy: spike.collider_hierarchy,
+                    cast_ticks: ticks(&spike.animations.cast),
+                    recover_ticks: ticks(&spike.animations.recover),
+                    surface_offset: Fix::from_raw(spike.surface_offset),
+                    cast_force: Fix::from_raw(spike.cast_force),
+                    attack_layer: spike.attack.layer,
+                    attack_updatable_count: spike.attack.updatable_count,
+                    attack_collider_hierarchy: spike.attack.collider_hierarchy,
+                    attack_extents: spike.attack.extents.get(),
+                    attack_collider_offset: spike.attack.collider_offset.get(),
+                    attack_body: body(&spike.attack.body, Fix::ZERO),
+                    down_thrust: spike.attack.down_thrust.clone(),
+                    knock_player: Fix::from_raw(spike.attack.knock_player),
+                    knock_wall: Fix::from_raw(spike.attack.knock_wall),
+                    self_push_multiplier: Fix::from_raw(spike.attack.self_push_multiplier),
+                    push_time: Fix::from_raw(spike.attack.push_time),
                 }
             },
             tack: {

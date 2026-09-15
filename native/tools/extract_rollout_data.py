@@ -774,6 +774,39 @@ def main():
             f"ExitAlpha.m_Curve.Array.data[{exit_keys - 1}].time"]),
     }
 
+    # ---- Spike / platform-attached SpikeAttack ----
+    _, spike_ability = find_prefab("Assets/GameObject/Spike.prefab")
+    spike = component(spike_ability, "Spike")
+    spike_box = component(spike_ability, "DPhysicsBox")
+    spike_fix = component(spike_ability, "FixTransform")
+    spike_anims = animations(guid_of(spike["animData"]))
+    spike_attack = ASSETS[guid_of(spike["spikePrefab"])]
+    spike_attack_logic = component(spike_attack, "SpikeAttack")
+    spike_attack_box = component(spike_attack, "DPhysicsBox")
+    spike_attack_fix = component(spike_attack, "FixTransform")
+    spike_attack_body = component(spike_attack, "BoplBody")
+    out["prefabs"]["spike"] = {
+        "hurtbox_extents": vec2(spike_box, "startExtents"),
+        "collider_offset": vec2(spike_fix, "offset"),
+        "collider_hierarchy": spike_box["hierarchyNumber"],
+        "animations": {name: spike_anims[name] for name in ("cast", "recover")},
+        "surface_offset": fix(spike, "surfaceOffset"),
+        "cast_force": fix(spike, "castForce"),
+        "attack": {
+            "layer": spike_attack["data"].get("layer"),
+            "updatable_count": updater_count(spike_attack),
+            "collider_hierarchy": spike_attack_box["hierarchyNumber"],
+            "extents": vec2(spike_attack_box, "startExtents"),
+            "collider_offset": vec2(spike_attack_fix, "offset"),
+            "body": physics_body(spike_attack_body),
+            "down_thrust": curve(spike_attack_logic, "DownThrustAnimation"),
+            "knock_player": fix(spike_attack_logic, "knockAwayStr"),
+            "knock_wall": fix(spike_attack_logic, "knockAwayWallStr"),
+            "self_push_multiplier": fix(spike_attack_logic, "selfPushMultiplier"),
+            "push_time": fix(spike_attack_logic, "pushTime"),
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

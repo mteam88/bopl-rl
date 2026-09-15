@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/12/13/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/7/11/12/13/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -180,6 +180,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   projectile, item, smoke, explosion and platform bodies. Cross-ability
   interactions with catalog entries that remain absent inherit those entries'
   open scope.
+  Spike is exact through its grounded cast and recovery, opposite-surface
+  rounded-rectangle raycast, persistent down-thrust attack, platform-composite
+  mass and inertia, cast impulse, and box/wall collision response. Recast
+  replacement and player-lethality paths are implemented but still need
+  dedicated differential scenarios.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
@@ -196,7 +201,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `DynamicAbilityPickup`; Rust emits that terminal row (layer 13, at the dying
   body + (0, 0.04)) but does not simulate pickup flight, swaps or the
   `RandomFix` draw, which only matter with three or more players.
-- The rollout only contains dynamic bodies needed by ids 2/3/4/7/14. Forces from
+- The rollout only contains dynamic bodies needed by ids 2/3/4/7/11/14. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
 - f64 build only (2026-09-12): `Fix::sin` evaluates the quadrant-reduced

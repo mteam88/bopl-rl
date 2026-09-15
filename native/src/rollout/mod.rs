@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
+pub const ABILITY_SPIKE: u32 = 11;
 pub const ABILITY_TIME_STOP: u32 = 12;
 pub const ABILITY_SMOKE: u32 = 13;
 pub const ABILITY_PLATFORM: u32 = 14;
@@ -201,6 +202,9 @@ const E_ACTIVE: u32 = 1;
 const E_ENABLED: u32 = 2;
 const E_DESTROYED: u32 = 4;
 const E_TRIGGER: u32 = 8;
+/// Collider belongs to a DetPhysics CompositeBody. This is exported by the
+/// oracle for both the rounded-rect root and each attached child.
+const E_COMPOSITE: u32 = 16;
 /// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
 /// updatable are removed before the same pass's contacts and never observed;
 /// one destroyed by a collision callback is observed once, flagged
@@ -395,6 +399,24 @@ pub struct TimeStopEffect {
     pub seconds_elapsed: f32,
 }
 
+/// SpikeAttack's manually initialized box, attached to a rounded platform as
+/// a DetPhysics composite child. Positions are stored in the platform body's
+/// frame so platform motion never requires a separate rigid-body integration.
+#[derive(Clone, Copy, Default)]
+pub struct SpawnedSpike {
+    pub active: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub platform_index: usize,
+    pub local: Fix,
+    pub relative_center: Vec2,
+    pub relative_rotation: Fix,
+    pub surface_offset: Fix,
+    pub time: Fix,
+    pub body: Body,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct CastSpellState {
     /// 0: grounded intro, 1: channel, 2: cast animation, 3: ease-out.
@@ -404,6 +426,16 @@ pub struct CastSpellState {
     /// Pose synced by DetPhysics before the updatable callbacks in this pass.
     pub collider_position: Vec2,
     pub collider_right: Vec2,
+    pub collider_rotation: Fix,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct SpikeCastState {
+    /// 0: cast animation, 1: recover animation.
+    pub phase: u8,
+    pub ticks: u32,
+    pub collider_position: Vec2,
+    pub collider_up: Vec2,
     pub collider_rotation: Fix,
 }
 
@@ -722,6 +754,15 @@ pub struct SpawnedPlatform {
 #[derive(Clone, Copy, Default)]
 pub struct PlatformDynamics {
     pub body: Body,
+    /// The rounded rectangle's own serialized body. `body` becomes the
+    /// effective CompositeBody while SpikeAttack children are attached; the
+    /// observation bridge still exports this child body unchanged.
+    pub root_body: Body,
+    pub attached_spikes: u32,
+    /// CompositeBody.position is separate from the rounded-rectangle child
+    /// centre. Box/RR positional correction can move the former without
+    /// moving the latter until a later operation rebuilds the composite.
+    pub composite_position: Vec2,
     /// FixTransform rotation written by a component this tick.
     /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
     /// has computed its torque against the stale orientation
@@ -874,6 +915,7 @@ pub enum ActiveAbility {
     Tack,
     Mjolnir,
     Smoke,
+    Spike,
     TimeStop,
     Gust,
     Revival,
@@ -931,6 +973,11 @@ pub struct PlayerSlot {
     pub bow: BowState,
     pub throw_item: ThrowItemState,
     pub cast_spell: CastSpellState,
+    pub spike_cast: SpikeCastState,
+    /// `Spike.currentSpike` belongs to each equipped ability object. The
+    /// spawned attack survives form exit, while recasting this same slot
+    /// destroys and replaces it.
+    pub spike_attacks: [Option<usize>; 3],
     pub platform: PlatformState,
     pub gust: GustState,
     pub revival: RevivalState,
@@ -989,6 +1036,7 @@ pub struct PlayerSlot {
     pub dash_entity: usize,
     pub bow_entity: usize,
     pub throw_entity: usize,
+    pub spike_entity: usize,
     pub time_stop_entity: usize,
 }
 
@@ -1016,6 +1064,7 @@ struct PlatformScratch {
     pairs: Vec<[usize; 2]>,
     callback_colliders: Vec<RoundedRect>,
     contacts: Vec<(usize, usize, Contact)>,
+    spike_wall_contacts: Vec<(usize, usize, Contact)>,
     squished: Vec<usize>,
 }
 
@@ -1063,6 +1112,7 @@ pub struct RolloutWorld {
     pub smoke_clouds: Vec<SmokeCloud>,
     pub smoke_explosions: Vec<SmokeExplosion>,
     pub time_stop_effects: Vec<TimeStopEffect>,
+    pub spike_attacks: Vec<SpawnedSpike>,
     pub player_time_scale: Fix,
     pub time_stop_protected: [bool; MAX_PLAYERS],
     pub spawned: Vec<SpawnedPlatform>,
@@ -1139,6 +1189,7 @@ impl RolloutWorld {
             smoke_clouds: Vec::with_capacity(64),
             smoke_explosions: Vec::with_capacity(64),
             time_stop_effects: Vec::with_capacity(8),
+            spike_attacks: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
             time_stop_protected: [false; MAX_PLAYERS],
             spawned: Vec::with_capacity(64),
@@ -1201,6 +1252,7 @@ impl RolloutWorld {
         self.smoke_clouds.clone_from(&src.smoke_clouds);
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
+        self.spike_attacks.clone_from(&src.spike_attacks);
         self.player_time_scale = src.player_time_scale;
         self.time_stop_protected = src.time_stop_protected;
         self.spawned.clone_from(&src.spawned);
@@ -1259,6 +1311,7 @@ impl RolloutWorld {
             smoke_clouds: _,
             smoke_explosions: _,
             time_stop_effects: _,
+            spike_attacks: _,
             player_time_scale: _,
             time_stop_protected: _,
             spawned: _,
@@ -1344,6 +1397,7 @@ impl RolloutWorld {
         self.smoke_clouds.clear();
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
+        self.spike_attacks.clear();
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
@@ -1411,6 +1465,7 @@ impl RolloutWorld {
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
         let mut throw_entity = [usize::MAX; MAX_PLAYERS];
+        let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -1508,6 +1563,14 @@ impl RolloutWorld {
                             &mut throw_entity[i],
                             false,
                         ),
+                        ABILITY_SPIKE => (
+                            data.spike.hurtbox_extents,
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.spike.collider_hierarchy,
+                            &mut spike_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -1520,10 +1583,22 @@ impl RolloutWorld {
                     owner: if body { i as u32 + 1 } else { 0 },
                     flags: if body {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
+                    } else if resolved_abilities[i][s - 1] == ABILITY_SPIKE {
+                        E_ENABLED | E_TRIGGER
                     } else {
                         E_TRIGGER
                     },
                     hierarchy,
+                    x: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
+                        data.spike.collider_offset.x.raw()
+                    } else {
+                        0
+                    },
+                    y: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
+                        data.spike.collider_offset.y.raw()
+                    } else {
+                        0
+                    },
                     right_x: extents.x.raw(),
                     up_y: extents.y.raw(),
                     inverse_mass: -(1 << 32),
@@ -1554,6 +1629,9 @@ impl RolloutWorld {
             ));
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
+                root_body: p.body,
+                attached_spikes: 0,
+                composite_position: p.surface.center,
                 home_position: p.surface.center,
                 transform_rotation: None,
                 init_tick: None,
@@ -1678,6 +1756,8 @@ impl RolloutWorld {
                 bow: BowState::default(),
                 throw_item: ThrowItemState::default(),
                 cast_spell: CastSpellState::default(),
+                spike_cast: SpikeCastState::default(),
+                spike_attacks: [None; 3],
                 platform: PlatformState::default(),
                 gust: GustState::default(),
                 revival: RevivalState::default(),
@@ -1712,6 +1792,7 @@ impl RolloutWorld {
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
                 throw_entity: throw_entity[i],
+                spike_entity: spike_entity[i],
                 time_stop_entity: time_stop_entity[i],
             });
         }
@@ -2137,6 +2218,7 @@ impl RolloutWorld {
         self.grenade_explosions_tick(data, updater_dt);
         self.smoke_tick(data, updater_dt);
         self.time_stop_effects_tick(data);
+        self.spike_attacks_tick(data, updater_dt);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -2157,6 +2239,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::Spike
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
@@ -2201,6 +2284,7 @@ impl RolloutWorld {
                     slot.throw_entity,
                     slot.gust_entity,
                     slot.revival_entity,
+                    slot.spike_entity,
                     slot.time_stop_entity,
                 ] {
                     if e != usize::MAX {
@@ -2215,6 +2299,7 @@ impl RolloutWorld {
         self.thrown_items_contacts(data);
         self.grenade_explosion_contacts(data);
         self.smoke_contacts(data);
+        self.spike_contacts(data);
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -2533,6 +2618,21 @@ impl RolloutWorld {
                         self.time_stop_cast_tick(index, action, data);
                         return;
                     }
+                    ABILITY_SPIKE => {
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Spike;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.spike_cast = SpikeCastState {
+                            collider_position: slot.base.position,
+                            collider_up: slot.base.up,
+                            collider_rotation: slot.base.rotation,
+                            ..SpikeCastState::default()
+                        };
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -2723,6 +2823,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::TimeStop {
             self.time_stop_cast_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Spike {
+            self.spike_cast_tick(index, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
@@ -3084,6 +3188,228 @@ impl RolloutWorld {
         self.players[index].reported_tick = self.tick;
     }
 
+    fn spike_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let published_position = self.players[index].base.position;
+        {
+            let slot = &mut self.players[index];
+            slot.spike_cast.collider_position = published_position;
+            slot.spike_cast.collider_up = slot.base.up;
+            slot.spike_cast.collider_rotation = slot.base.rotation;
+        }
+        let cast_now = {
+            let cast = &mut self.players[index].spike_cast;
+            cast.ticks += 1;
+            cast.phase == 0 && cast.ticks >= data.spike.cast_ticks
+        };
+        if cast_now {
+            if self.spawn_spike(index, data) {
+                self.players[index].spike_cast.phase = 1;
+                self.players[index].spike_cast.ticks = 0;
+            } else {
+                self.exit_spike_cast(index);
+                return;
+            }
+        }
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        {
+            let slot = &mut self.players[index];
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+            slot.reported_position = published_position;
+            slot.reported_tick = self.tick;
+        }
+        if self.players[index].spike_cast.phase == 1
+            && self.players[index].spike_cast.ticks > data.spike.recover_ticks
+        {
+            self.exit_spike_cast(index);
+        }
+    }
+
+    fn exit_spike_cast(&mut self, index: usize) {
+        let grounded_pose = self.players[index].base.ground.and_then(|ground| {
+            self.platforms
+                .iter()
+                .find(|platform| platform.id == ground)
+                .map(|platform| platform.surface.normal(self.players[index].base.position))
+        });
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        if slot.base.grounded
+            && let Some(up) = grounded_pose
+        {
+            slot.base.up = up;
+            slot.base.rotation = up.perp_cw().normalized_angle();
+            slot.obs_state = STATE_IDLE;
+            slot.state_ticks = 0;
+        } else {
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.exit_to_fall();
+        }
+    }
+
+    fn spawn_spike(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        let Some(ground_id) = self.players[index].base.ground else {
+            return false;
+        };
+        let Some(platform_index) = self.platforms.iter().position(|p| p.id == ground_id) else {
+            return false;
+        };
+        let body_position = self.players[index].base.position;
+        let normal = self.platforms[platform_index].surface.normal(body_position);
+        let Some(hit) = self.platforms[platform_index]
+            .collider
+            .raycast(body_position, -normal)
+        else {
+            return false;
+        };
+        let surface_position = body_position - normal * hit.far;
+
+        let ability_slot = self.players[index].active_slot;
+        if let Some(old) = self.players[index].spike_attacks[ability_slot].take() {
+            self.remove_spike(old);
+        }
+
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.spike.attack_updatable_count;
+        let local = self.platforms[platform_index]
+            .surface
+            .local_position(surface_position, Fix::ZERO)
+            .expect("spike surface ray hit has a perimeter coordinate");
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let parent_inverse_basis = Vec2::angle(-parent_rotation);
+        let spike_right = normal.perp_cw();
+        let spike_rotation = spike_right.normalized_angle();
+        let surface_offset = data.spike.down_thrust.evaluate(Fix::ZERO) + data.spike.surface_offset;
+        // Initialize calls PositionFromLocalPlayerPos even though CastSpike
+        // already supplied the ray-hit point, then DPhysicsBox folds the
+        // FixTransform offset into its relative child position.
+        let root_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO)
+            + normal * surface_offset;
+        let relative_right = spike_right.complex_mul(parent_inverse_basis);
+        let relative_center = (root_position - parent_position).complex_mul(parent_inverse_basis)
+            + data
+                .spike
+                .attack_collider_offset
+                .complex_mul(relative_right);
+        let relative_rotation = spike_rotation - parent_rotation;
+
+        self.attach_spike_body(platform_index, data.spike.attack_body);
+        let entity_index = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: data.spike.attack_layer,
+            owner: 0,
+            flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+            hierarchy: 100_000_000 + hierarchy_base + data.spike.attack_collider_hierarchy,
+            inverse_mass: data.spike.attack_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let attack = SpawnedSpike {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: Some(entity_index),
+            platform_index,
+            local,
+            relative_center,
+            relative_rotation,
+            surface_offset,
+            time: Fix::ZERO,
+            body: data.spike.attack_body,
+        };
+        let attack_index = if let Some(free) = self.spike_attacks.iter().position(|s| !s.active) {
+            // A pooled collider receives a fresh DetPhysics id on ManualInit;
+            // the old entity row remains removed like the oracle's shape list.
+            self.spike_attacks[free] = attack;
+            free
+        } else {
+            self.spike_attacks.push(attack);
+            self.spike_attacks.len() - 1
+        };
+        self.players[index].spike_attacks[ability_slot] = Some(attack_index);
+
+        // BoplBody.AddForceAtPosition's default Force mode is nevertheless a
+        // direct velocity impulse; only ForceMode2D.Impulse multiplies by 60.
+        let arm = (body_position - parent_position).normalized_safe();
+        self.platform_dynamics[platform_index]
+            .body
+            .apply_impulse(normal * data.spike.cast_force, arm);
+        self.platforms_changed();
+        true
+    }
+
+    fn attach_spike_body(&mut self, platform_index: usize, child: Body) {
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        if dynamics.attached_spikes == 0 {
+            dynamics.composite_position = self.platforms[platform_index].surface.center;
+        }
+        let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
+        let child_mass = Fix::ONE / child.inverse_mass;
+        let parent_moment = Fix::ONE / dynamics.body.inverse_inertia;
+        let child_moment = Fix::ONE / child.inverse_inertia;
+        dynamics.body.inverse_mass = Fix::ONE / (parent_mass + child_mass);
+        dynamics.body.inverse_inertia = Fix::ONE / (parent_moment + child_moment);
+        dynamics.attached_spikes += 1;
+    }
+
+    fn remove_spike(&mut self, spike_index: usize) {
+        if !self.spike_attacks[spike_index].active {
+            return;
+        }
+        let platform_index = self.spike_attacks[spike_index].platform_index;
+        let child = self.spike_attacks[spike_index].body;
+        self.spike_attacks[spike_index].active = false;
+        if let Some(entity) = self.spike_attacks[spike_index].entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+        let remaining = self
+            .spike_attacks
+            .iter()
+            .filter(|spike| spike.active && spike.platform_index == platform_index)
+            .count() as u32;
+        // DestroyFix's composite detach retains the moving parent's effective
+        // velocity/orientation for the replacement created later in the same
+        // callback, while the new root+child mass is recomputed from authored
+        // bodies. Keeping the old effective inverse mass here would make the
+        // cast impulse behave as if both attacks were still attached.
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        let old = dynamics.body;
+        dynamics.body = dynamics.root_body;
+        // CreateMultiComposite's one-root detach restores root mass, but its
+        // subsequent same-callback attach observes the prior composite moment
+        // through the retained parent object. This shipped asymmetry is
+        // visible as root+one-child translation with root+two-child torque.
+        if remaining == 0 {
+            dynamics.body.inverse_inertia = old.inverse_inertia;
+        } else {
+            let count = Fix::from_int(i64::from(remaining));
+            let root_mass = Fix::ONE / dynamics.root_body.inverse_mass;
+            let child_mass = Fix::ONE / child.inverse_mass;
+            let root_moment = Fix::ONE / dynamics.root_body.inverse_inertia;
+            let child_moment = Fix::ONE / child.inverse_inertia;
+            dynamics.body.inverse_mass = Fix::ONE / (root_mass + child_mass * count);
+            dynamics.body.inverse_inertia = Fix::ONE / (root_moment + child_moment * count);
+        }
+        dynamics.body.velocity = old.velocity;
+        dynamics.body.angular_velocity = old.angular_velocity;
+        dynamics.body.orientation = old.orientation;
+        dynamics.body.force = old.force;
+        dynamics.attached_spikes = remaining;
+        dynamics.composite_position = self.platforms[platform_index].surface.center;
+        dynamics.basis = None;
+        self.platforms_changed();
+    }
+
     fn exit_time_stop_cast(&mut self, index: usize, data: &data::RolloutData) {
         let normal = self.players[index].base.ground.and_then(|ground| {
             self.platforms
@@ -3148,6 +3474,127 @@ impl RolloutWorld {
                 for index in 0..self.players.len() {
                     self.time_stop_protected[index] = self.players[index].team == team;
                 }
+            }
+        }
+    }
+
+    fn spike_attacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        let curve_end = data
+            .spike
+            .down_thrust
+            .keys
+            .last()
+            .expect("authored SpikeAttack curve")
+            .time;
+        for attack in &mut self.spike_attacks {
+            if !attack.active || attack.born_tick >= self.tick {
+                continue;
+            }
+            attack.time += updater_dt;
+            if attack.time > curve_end || attack.platform_index >= self.platforms.len() {
+                continue;
+            }
+            attack.surface_offset =
+                data.spike.down_thrust.evaluate(attack.time) + data.spike.surface_offset;
+            let platform = &self.platforms[attack.platform_index];
+            let parent_rotation = self.platform_dynamics[attack.platform_index]
+                .body
+                .orientation;
+            let spike_right = Vec2::angle(parent_rotation + attack.relative_rotation);
+            let root_position = platform.surface.position(attack.local, Fix::ZERO)
+                + spike_right.perp() * attack.surface_offset;
+            let inverse_basis = Vec2::angle(-parent_rotation);
+            let relative_right = spike_right.complex_mul(inverse_basis);
+            attack.relative_center = (root_position - platform.surface.center)
+                .complex_mul(inverse_basis)
+                + data
+                    .spike
+                    .attack_collider_offset
+                    .complex_mul(relative_right);
+        }
+    }
+
+    fn spike_contacts(&mut self, data: &data::RolloutData) {
+        // Circle/Box and Box/Box callbacks run after all rigid-body groups.
+        // Player colliders are triggers, so contact only schedules callbacks:
+        // PlayerCollision sees the persistent LethalTerrain Explosion first.
+        let mut victims = [false; MAX_PLAYERS];
+        for spike in self.spike_attacks.iter().copied() {
+            if !spike.active || spike.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let parent = &self.platform_dynamics[spike.platform_index];
+            let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
+            let center = parent.composite_position
+                + spike
+                    .relative_center
+                    .complex_mul(self.platforms[spike.platform_index].surface.right);
+            let extents = data::surface_extents(data.spike.attack_extents);
+            let attack_box = OrientedBox {
+                center,
+                right: basis * extents.x,
+                up: basis.perp() * extents.y,
+                inverse_extents: Vec2::new(
+                    Fix::ONE / data.spike.attack_extents.x,
+                    Fix::ONE / data.spike.attack_extents.y,
+                ),
+            };
+            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
+                if *victim || !self.playable(player_index) {
+                    continue;
+                }
+                let slot = &self.players[player_index];
+                let entity = match slot.active {
+                    ActiveAbility::None => slot.body_entity,
+                    ActiveAbility::Dash => slot.dash_entity,
+                    ActiveAbility::Bow => slot.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir => slot.throw_entity,
+                    ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::TimeStop => slot.time_stop_entity,
+                    ActiveAbility::Gust => slot.gust_entity,
+                    ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::Platform => slot.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                *victim = if row.kind == 0 {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            radius: Fix::from_raw(row.radius),
+                        },
+                        attack_box,
+                    )
+                    .is_some()
+                } else {
+                    let player_box = OrientedBox {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
+                        up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
+                        inverse_extents: Vec2::new(
+                            Fix::ONE
+                                / Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y))
+                                    .length(),
+                            Fix::ONE
+                                / Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y))
+                                    .length(),
+                        ),
+                    };
+                    crate::physics::contact::box_box(player_box, attack_box).is_some()
+                };
+            }
+        }
+        for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+            if victim && self.playable(player_index) {
+                // Spike's Explosion.PlayerOwnerId is never assigned and
+                // therefore remains zero, which is neither a live player id
+                // nor the game's environmental sentinel.
+                self.kill(player_index, 0, CAUSE_OTHER, true);
             }
         }
     }
@@ -3708,6 +4155,7 @@ impl RolloutWorld {
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
             let mut throw_entity = usize::MAX;
+            let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -3717,6 +4165,11 @@ impl RolloutWorld {
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
+                    ),
+                    ABILITY_SPIKE => (
+                        data.spike.hurtbox_extents,
+                        data.spike.collider_hierarchy,
+                        &mut spike_entity,
                     ),
                     _ => continue,
                 };
@@ -3728,6 +4181,16 @@ impl RolloutWorld {
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER,
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                    x: if abilities[slot] == ABILITY_SPIKE {
+                        data.spike.collider_offset.x.raw()
+                    } else {
+                        0
+                    },
+                    y: if abilities[slot] == ABILITY_SPIKE {
+                        data.spike.collider_offset.y.raw()
+                    } else {
+                        0
+                    },
                     right_x: extents.x.raw(),
                     up_y: extents.y.raw(),
                     inverse_mass: -Fix::ONE.raw(),
@@ -3755,11 +4218,14 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
+            slot.spike_cast = SpikeCastState::default();
+            slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
             slot.throw_entity = throw_entity;
+            slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
@@ -3781,6 +4247,7 @@ impl RolloutWorld {
                 self.players[index].throw_entity,
                 self.players[index].gust_entity,
                 self.players[index].revival_entity,
+                self.players[index].spike_entity,
                 self.players[index].time_stop_entity,
             ] {
                 if entity != usize::MAX {
@@ -3894,6 +4361,7 @@ impl RolloutWorld {
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
             let mut throw_entity = usize::MAX;
+            let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -3903,6 +4371,11 @@ impl RolloutWorld {
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
+                    ),
+                    ABILITY_SPIKE => (
+                        data.spike.hurtbox_extents,
+                        data.spike.collider_hierarchy,
+                        &mut spike_entity,
                     ),
                     _ => continue,
                 };
@@ -3915,6 +4388,16 @@ impl RolloutWorld {
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER,
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                    x: if abilities[slot] == ABILITY_SPIKE {
+                        data.spike.collider_offset.x.raw()
+                    } else {
+                        0
+                    },
+                    y: if abilities[slot] == ABILITY_SPIKE {
+                        data.spike.collider_offset.y.raw()
+                    } else {
+                        0
+                    },
                     right_x: collider.right.x.raw(),
                     right_y: collider.right.y.raw(),
                     up_x: collider.up.x.raw(),
@@ -3929,11 +4412,14 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
+            slot.spike_cast = SpikeCastState::default();
+            slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
             slot.throw_entity = throw_entity;
+            slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
@@ -4917,6 +5403,9 @@ impl RolloutWorld {
         ));
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
+            root_body: pd.spawn_body,
+            attached_spikes: 0,
+            composite_position: position,
             home_position: position,
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
@@ -4982,6 +5471,19 @@ impl RolloutWorld {
         }
         let entity = self.platform_entities[index];
         self.entities[entity].flags = E_REMOVED;
+        for spike in &mut self.spike_attacks {
+            if !spike.active {
+                continue;
+            }
+            if spike.platform_index == index {
+                spike.active = false;
+                if let Some(entity) = spike.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if spike.platform_index > index {
+                spike.platform_index -= 1;
+            }
+        }
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
@@ -6334,6 +6836,12 @@ impl RolloutWorld {
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
+            if dynamics.attached_spikes != 0 {
+                // SyncAllPhysicsObjectsToFixTransformPosition discards any
+                // prior Box/RR correction of CompositeBody.position and
+                // re-anchors the composite on its rounded-root FixTransform.
+                dynamics.composite_position = self.platforms[i].surface.center;
+            }
             if let Some(rotation) = dynamics.transform_rotation.take() {
                 dynamics.body.orientation = rotation;
             }
@@ -6348,6 +6856,12 @@ impl RolloutWorld {
                 }
             };
             let platform = &mut self.platforms[i];
+            if dynamics.attached_spikes != 0 {
+                dynamics.root_body.orientation = orientation;
+                dynamics.composite_position += shift;
+            } else {
+                dynamics.composite_position = platform.surface.center + shift;
+            }
             platform.surface.center += shift;
             platform.surface.right = basis;
             platform.surface.up = platform.surface.right.perp();
@@ -6380,8 +6894,16 @@ impl RolloutWorld {
             }
         }
         for &(a, b, contact) in &scratch.contacts {
-            let pos_a = self.platforms[a].surface.center;
-            let pos_b = self.platforms[b].surface.center;
+            let pos_a = if self.platform_dynamics[a].attached_spikes == 0 {
+                self.platforms[a].surface.center
+            } else {
+                self.platform_dynamics[a].composite_position
+            };
+            let pos_b = if self.platform_dynamics[b].attached_spikes == 0 {
+                self.platforms[b].surface.center
+            } else {
+                self.platform_dynamics[b].composite_position
+            };
             let (body_a, body_b) = if a < b {
                 let (left, right) = self.platform_dynamics.split_at_mut(b);
                 (&mut left[a].body, &mut right[0].body)
@@ -6395,6 +6917,124 @@ impl RolloutWorld {
             for (index, delta) in [(a, correction[0]), (b, correction[1])] {
                 self.platforms[index].surface.center += delta;
                 self.platforms[index].collider.inner.center += delta;
+                if self.platform_dynamics[index].attached_spikes != 0 {
+                    self.platform_dynamics[index].composite_position += delta;
+                }
+            }
+        }
+
+        // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect.
+        // SpikeAttack boxes are composite children, so impulses and
+        // positional correction move their attached platform body.
+        scratch.spike_wall_contacts.clear();
+        let spike_extents = data::surface_extents(data.spike.attack_extents);
+        for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
+            if !spike.active || spike.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let parent_index = spike.platform_index;
+            let parent = &self.platform_dynamics[parent_index].body;
+            let basis = Vec2::angle(parent.orientation + spike.relative_rotation);
+            let center = self.platform_dynamics[parent_index].composite_position
+                + spike
+                    .relative_center
+                    .complex_mul(self.platforms[parent_index].surface.right);
+            let attack_box = OrientedBox {
+                center,
+                right: basis * spike_extents.x,
+                up: basis.perp() * spike_extents.y,
+                inverse_extents: Vec2::new(
+                    Fix::ONE / data.spike.attack_extents.x,
+                    Fix::ONE / data.spike.attack_extents.y,
+                ),
+            };
+            let attack_rr = RoundedRect {
+                inner: attack_box,
+                radius: Fix::ZERO,
+            };
+            for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if wall_index == parent_index {
+                    continue;
+                }
+                if let Some(contact) =
+                    crate::physics::contact::rounded_rounded(attack_rr, platform.collider)
+                {
+                    scratch
+                        .spike_wall_contacts
+                        .push((spike_index, wall_index, contact));
+                }
+            }
+        }
+        for &(spike_index, wall_index, contact) in &scratch.spike_wall_contacts {
+            let parent_index = self.spike_attacks[spike_index].platform_index;
+            let spike_body_position = self.platform_dynamics[parent_index].composite_position;
+            let wall_center = if self.platform_dynamics[wall_index].attached_spikes == 0 {
+                self.platforms[wall_index].surface.center
+            } else {
+                self.platform_dynamics[wall_index].composite_position
+            };
+            let wall_child_inverse_mass = self.platform_dynamics[wall_index].root_body.inverse_mass;
+            let (spike_body, wall_body) = if parent_index < wall_index {
+                let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
+                (&mut left[parent_index].body, &mut right[0].body)
+            } else {
+                let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
+                (&mut right[0].body, &mut left[wall_index].body)
+            };
+            resolve(
+                contact,
+                spike_body,
+                wall_body,
+                spike_body_position,
+                wall_center,
+            );
+            let correction = positional_correction(
+                contact,
+                data.spike.attack_body.inverse_mass,
+                wall_child_inverse_mass,
+                false,
+            );
+            // Box correction moves the box and its CompositeBody.position,
+            // but does not directly move the rounded-rect child collider.
+            self.platform_dynamics[parent_index].composite_position += correction[0];
+            self.platforms[wall_index].surface.center += correction[1];
+            self.platforms[wall_index].collider.inner.center += correction[1];
+            if self.platform_dynamics[wall_index].attached_spikes != 0 {
+                self.platform_dynamics[wall_index].composite_position += correction[1];
+            }
+        }
+
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            let mut pushed_spike = usize::MAX;
+            for &(spike_index, wall_index, contact) in &scratch.spike_wall_contacts {
+                if self.spike_attacks[spike_index].time >= data.spike.push_time {
+                    continue;
+                }
+                let parent_index = self.spike_attacks[spike_index].platform_index;
+                let parent_basis = self.platforms[parent_index].surface.right;
+                let spike_rotation = self.platform_dynamics[parent_index].body.orientation
+                    + self.spike_attacks[spike_index].relative_rotation;
+                let spike_right = Vec2::angle(spike_rotation);
+                let spike_center = self.platform_dynamics[parent_index].composite_position
+                    + self.spike_attacks[spike_index]
+                        .relative_center
+                        .complex_mul(parent_basis);
+                let spike_root =
+                    spike_center - data.spike.attack_collider_offset.complex_mul(spike_right);
+                let direction = (contact.point - spike_root).normalized_safe();
+                let wall_arm =
+                    (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
+                self.platform_dynamics[wall_index]
+                    .body
+                    .apply_impulse(direction * data.spike.knock_wall, wall_arm);
+                if pushed_spike != spike_index {
+                    let self_arm = (contact.point - spike_root).normalized_safe();
+                    self.platform_dynamics[parent_index].body.apply_impulse(
+                        -direction * data.spike.knock_wall * data.spike.self_push_multiplier,
+                        self_arm,
+                    );
+                    pushed_spike = spike_index;
+                }
             }
         }
 
@@ -6475,6 +7115,7 @@ impl RolloutWorld {
         // instance. The independent indicator survives, but a replacement
         // slime receives a fresh ability with no route back to that marker.
         slot.teleport_markers = [None; 3];
+        slot.spike_attacks = [None; 3];
         if killer >= 1 && killer <= players as u32 {
             self.players[killer as usize - 1].kills += 1;
         }
@@ -6491,6 +7132,7 @@ impl RolloutWorld {
                 slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
+                slot.spike_entity,
                 slot.time_stop_entity,
             ];
             for entity in rows {
@@ -6542,6 +7184,7 @@ impl RolloutWorld {
                 slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
+                slot.spike_entity,
                 slot.time_stop_entity,
             ] {
                 if entity != usize::MAX {
@@ -6585,6 +7228,7 @@ impl RolloutWorld {
                 slot.throw_entity,
                 slot.gust_entity,
                 slot.revival_entity,
+                slot.spike_entity,
                 slot.time_stop_entity,
             ];
             for e in rows {
@@ -6848,7 +7492,44 @@ impl RolloutWorld {
     /// Update the entity table from live state (positions, flags).
     fn refresh_entities(&mut self) {
         self.refresh_actor_entities();
+        self.refresh_spike_entities();
         self.refresh_platform_entities();
+    }
+
+    fn refresh_spike_entities(&mut self) {
+        let data = data::get();
+        for spike in &self.spike_attacks {
+            if !spike.active || spike.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let Some(entity) = spike.entity else {
+                continue;
+            };
+            let platform = &self.platforms[spike.platform_index];
+            let parent = &self.platform_dynamics[spike.platform_index].body;
+            let rotation = parent.orientation + spike.relative_rotation;
+            let basis = Vec2::angle(rotation);
+            let center = self.platform_dynamics[spike.platform_index].composite_position
+                + spike.relative_center.complex_mul(platform.surface.right);
+            let extents = data::surface_extents(data.spike.attack_extents);
+            self.entities[entity] = CEntity {
+                id: self.entities[entity].id,
+                kind: 1,
+                layer: data.spike.attack_layer,
+                owner: 0,
+                flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+                hierarchy: self.entities[entity].hierarchy,
+                x: center.x.raw(),
+                y: center.y.raw(),
+                right_x: (basis * extents.x).x.raw(),
+                right_y: (basis * extents.x).y.raw(),
+                up_x: (basis.perp() * extents.y).x.raw(),
+                up_y: (basis.perp() * extents.y).y.raw(),
+                rotation: rotation.raw(),
+                inverse_mass: spike.body.inverse_mass.raw(),
+                ..CEntity::default()
+            };
+        }
     }
 
     /// Player, ability and arrow rows as DetPhysics syncs them. An inactive
@@ -6858,7 +7539,7 @@ impl RolloutWorld {
     fn refresh_actor_entities(&mut self) {
         let data = data::get();
         for index in 0..self.players.len() {
-            let (body_e, dash_e, circle_e, bow_e, throw_e, gust_e, revival_e, time_stop_e) = {
+            let (body_e, dash_e, circle_e, bow_e, throw_e, gust_e, revival_e, spike_e, time_stop_e) = {
                 let s = &self.players[index];
                 (
                     s.body_entity,
@@ -6868,6 +7549,7 @@ impl RolloutWorld {
                     s.throw_entity,
                     s.gust_entity,
                     s.revival_entity,
+                    s.spike_entity,
                     s.time_stop_entity,
                 )
             };
@@ -6885,6 +7567,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mjolnir
             );
             let casting_time_stop = slot.active == ActiveAbility::TimeStop;
+            let spiking = slot.active == ActiveAbility::Spike;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -7164,6 +7847,40 @@ impl RolloutWorld {
                     circle.rotation = rotation.raw();
                 }
             }
+            if spike_e != usize::MAX {
+                let box_row = &mut self.entities[spike_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && spiking {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if spiking {
+                    box_row.owner = slot.base.id;
+                }
+                if spiking || was_active {
+                    let (position, rotation, center_basis, collider_basis) = if spiking {
+                        (
+                            slot.spike_cast.collider_position,
+                            slot.spike_cast.collider_rotation,
+                            slot.spike_cast.collider_up.perp_cw(),
+                            Vec2::angle(slot.spike_cast.collider_rotation),
+                        )
+                    } else {
+                        (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
+                    };
+                    let center = position + center_basis.complex_mul(data.spike.collider_offset);
+                    let collider =
+                        OrientedBox::from_basis(center, collider_basis, data.spike.hurtbox_extents);
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
@@ -7249,8 +7966,20 @@ impl RolloutWorld {
             let dynamics = &self.platform_dynamics[i];
             e.x = s.center.x.raw();
             e.y = s.center.y.raw();
-            e.vx = dynamics.body.velocity.x.raw();
-            e.vy = dynamics.body.velocity.y.raw();
+            let observed_body = if dynamics.attached_spikes == 0 {
+                &dynamics.body
+            } else {
+                &dynamics.root_body
+            };
+            e.flags = E_ACTIVE
+                | E_ENABLED
+                | if dynamics.attached_spikes == 0 {
+                    0
+                } else {
+                    E_COMPOSITE
+                };
+            e.vx = observed_body.velocity.x.raw();
+            e.vy = observed_body.velocity.y.raw();
             // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
             let right = platform.collider.inner.right;
             let up = platform.collider.inner.up;
@@ -7262,9 +7991,9 @@ impl RolloutWorld {
             // RlObservation publishes PhysicsBody.orientation directly. The
             // collider basis is derived output and must not be converted back
             // into an angle (especially around the Q32 sine-table boundary).
-            e.rotation = dynamics.body.orientation.raw();
-            e.angular_velocity = dynamics.body.angular_velocity.raw();
-            e.inverse_mass = dynamics.body.inverse_mass.raw();
+            e.rotation = observed_body.orientation.raw();
+            e.angular_velocity = observed_body.angular_velocity.raw();
+            e.inverse_mass = observed_body.inverse_mass.raw();
         }
     }
 
