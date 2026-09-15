@@ -1198,6 +1198,15 @@ grounded surface motion, held payload placement, release position, inherited
 spawn rotation and launch impulse all match. Rust retains this state in the
 existing fixed player and item pools.
 
+`gust_throw_forms_ab.c` runs the same strict composition for the other four
+ThrowItem2 forms. Smoke and Poke Ball match for 294 ticks from entry through
+release; Mjolnir's longer cooldown enters on tick 274 and is pushed on tick 291;
+Tack matches through its tick-289 release, before its separately covered victim
+contact begins. The Tack payload alone exposes its `Projectile` player id in
+the public collider row, so Rust sets that owner while leaving Smoke, Mjolnir
+and Poke Ball payload roots at the source's zero owner. No comparator bound is
+needed for any of these form traces.
+
 `gust_arrow_ab.c` composes a live Bow Arrow with Gust for 400 ticks. Bow begins
 on tick 214; Arrow registration, Bow exit and Gust entry all occur on tick 255;
 the first observable horizontal Gust impulse occurs on tick 262. The fixed

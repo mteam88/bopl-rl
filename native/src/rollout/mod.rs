@@ -13584,6 +13584,16 @@ impl RolloutWorld {
                 id: item.id,
                 kind: 0,
                 layer: gd.item_layer,
+                // Tack's payload exposes its Projectile id after BananaPeel's
+                // first updater pass. A payload held through that pass is
+                // already bound when Fire registers its collider; an item
+                // created by Fire stays zero until the following pass. Other
+                // ThrowItem2 roots expose no owner here.
+                owner: if ability == ABILITY_TACK && item.launched {
+                    slot.base.id
+                } else {
+                    0
+                },
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
                 radius: gd.item_radius.raw(),
