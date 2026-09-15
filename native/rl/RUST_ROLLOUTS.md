@@ -316,6 +316,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   reactivation and the one-pass Player.Position publication lag all match the
   oracle. Wall/rigid/item/orb targets, water reflection, active forms, rope and
   magnet detachment, and airborne placement remain open.
+  Duplicator uses its exact smaller-radius GunTransform and implements the
+  shipped delayed rounded-platform copy path, including overlap forces,
+  next-pass spring suppression, fresh-body initialization and locally
+  renumbered collider hierarchy. Player/projectile/item/weapon/Black Hole,
+  attached-terrain and orb targets remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
@@ -328,7 +333,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
   so the remaining difference is primarily observation/entity history.
-- The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/18/22/24/26/28/35/37/38. Forces from
+- The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/18/22/24/26/28/29/35/37/38. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
 - f64 build only (2026-09-12): `Fix::sin` evaluates the quadrant-reduced

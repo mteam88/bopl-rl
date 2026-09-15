@@ -236,7 +236,8 @@
       "name": "Duplicator",
       "prefab": "Assets/GameObject/Duplicator.prefab",
       "prefab_guid": "9c1404930ef762b49ad05b1034a4c4d8",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Optimized-Q32 NativeAOT differential covers the exact smaller-radius GunTransform lifecycle on grounded and airborne casts plus the shipped delayed rounded-platform copy branch, including overlap forces, spring suppression, fresh-body initialization, collider hierarchy and later motion over 1,500 ticks. Player, projectile, item, weapon, Black Hole, attached-terrain and orb duplication targets remain open."
     },
     {
       "id": 30,

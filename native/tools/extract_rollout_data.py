@@ -174,6 +174,19 @@ def extract_map(index):
                 "min_scale": fix(rr, "MinScale"),
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
+                "updatable_count": sum(
+                    "hierarchyNumber" in c.get("properties", {})
+                    for descendant in walk([node])
+                    for c in descendant.get("components", [])
+                ),
+                "duplicate_collider_hierarchy": 1 + [
+                    typ for _, typ in sorted(
+                        (c["properties"]["hierarchyNumber"], c["type"])
+                        for descendant in walk([node])
+                        for c in descendant.get("components", [])
+                        if "hierarchyNumber" in c.get("properties", {})
+                    )
+                ].index("DPhysicsRoundedRect"),
                 "animate_velocity": {
                     "speed": fix(av, "speed"),
                     "mu": fix(av, "mu"),
@@ -1194,6 +1207,50 @@ def main():
             "changer_updatable_count": updater_count(effect_prefab),
         }
     out["prefabs"]["scale_rays"] = scale_rays
+
+    # ---- Duplicator / shared GunTransform form ----
+    _, duplicator_ability = find_prefab("Assets/GameObject/Duplicator.prefab")
+    duplicator_gun = component(duplicator_ability, "GunTransform")
+    duplicator_box = component(duplicator_ability, "DPhysicsBox")
+    duplicator_physics = component(duplicator_ability, "PlayerPhysics")
+    duplicator_fix = component(duplicator_ability, "FixTransform")
+    duplicator = component(duplicator_ability, "ShootDuplicator")
+    duplicator_anims = animations(guid_of(duplicator_gun["animData"]))
+    platform_effect_prefab = ASSETS[guid_of(duplicator["platformEffect"])]
+    platform_effect = component(platform_effect_prefab, "DuplicatePlatformEffect")
+    out["prefabs"]["duplicator"] = {
+        "hurtbox_extents": vec2(duplicator_box, "startExtents"),
+        "collider_hierarchy": duplicator_box["hierarchyNumber"],
+        "collider_offset": vec2(duplicator_fix, "offset"),
+        "radius": fix(duplicator_physics, "radius"),
+        "physics": {
+            "max_speed": fix(duplicator_physics, "maxSpeed"),
+            "jump_strength": fix(duplicator_physics, "jumpStrength"),
+            "accel": fix(duplicator_physics, "accel"),
+            "radius": fix(duplicator_physics, "radius"),
+            "gravity_accel": fix(duplicator_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(duplicator_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(duplicator_physics, "gravity_modifier"),
+            "jump_extra_x": fix(duplicator_physics, "jumpExtraXStrength"),
+            "jump_momentum": fix(duplicator_physics, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(duplicator_physics, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(duplicator_physics, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(duplicator_physics, "airAccel"),
+        },
+        "air_control_blend": fix(duplicator_gun, "airealControlBlend"),
+        "firepoint_offset": vec2(duplicator_gun, "FirepointOffset"),
+        "knockback": fix(duplicator_gun, "KnockBack"),
+        "max_slow_mo_speed": fix(duplicator_gun, "maxSlowMoSpeed"),
+        "transform_ticks": sum(abs(d) for d in duplicator_anims["gunTransform"]),
+        "fire_ticks": sum(abs(d) for d in duplicator_anims["gunTransformFire"]),
+        "triple_raycast_radius": fix(duplicator, "tripleRaycastRadius"),
+        "collision_mask": duplicator["collisionMask.m_Bits"],
+        "collision_mask_no_water": duplicator["collisionMaskNoWater.m_Bits"],
+        "platform_shake_duration": fix(duplicator, "PlatformShakeDuration"),
+        "platform_shake": fix(duplicator, "platformShake"),
+        "platform_overlap_force": fix(platform_effect, "platformOverlapForce"),
+        "platform_effect_updatable_count": updater_count(platform_effect_prefab),
+    }
 
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")

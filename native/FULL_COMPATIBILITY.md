@@ -2567,8 +2567,33 @@ and 51 stress graph scenarios, 250 curves, 196 hitbox sequences, 214 endpoint
 effect scenarios, and 73 combined physics scenes with no mismatches. Live
 `Orb.ApplyBeam` has no producer in the five shipped maps or the 39-ability
 catalog; its type/charge/firing/color behavior remains verified in the endpoint
-component corpus. The two remaining unimplemented catalog entries are
-Duplicator and Magnet gun.
+component corpus.
+
+### Duplicator GunTransform and rounded-platform copies (2026-09-15)
+
+Catalog id 29 now executes its independently authored GunTransform lifecycle.
+The form uses Duplicator's 0.70 PlayerPhysics radius, 3.78-unit firepoint,
+36-tick transform clip, 17-tick fire clip and 50-unit recoil. The smaller form
+radius makes grounded entry and landing observably different from Freeze and
+the scale rays: Player.Position moves to the new-radius surface pose while the
+disabled slime row retains its pre-cast pose, and a recoil landing converts the
+form local back through the ordinary slime radius before LateUpdate.
+
+Wall hits reproduce the shipped `useOldPlatformBehaviour` branch. The fixed
+effect pool holds the 1.3-second delay without tick allocations, applies the
+50-unit overlap force to every intersecting rounded platform, carries
+`ActAsFloatingPlatformForAFrame` into the next home-spring pass, and creates a
+geometry-identical platform with the source prefab's locally renumbered
+collider hierarchy. A duplicate receives a fresh zero-velocity PhysicsBody and
+homes at its spawn position, matching Unity initialization rather than copying
+the source collider's live accumulator. `duplicator_ability_ab.c` compares
+1,500 optimized-Q32 NativeAOT/Rust ticks across grounded and airborne miss
+forms and a downward platform hit; all public state, source-platform impulses,
+clone identity, hierarchy, geometry and later motion match exactly.
+
+Duplicator remains partial while its player, projectile, item, weapon,
+Black Hole, attached terrain and orb target branches are integrated. Magnet gun
+is the only catalog entry with no executable Rust form.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

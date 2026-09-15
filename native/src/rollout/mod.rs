@@ -66,6 +66,8 @@ pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_DRILL: u32 = 26;
 pub const ABILITY_GRAPPLING_HOOK: u32 = 27;
 pub const ABILITY_BEAM: u32 = 28;
+pub const ABILITY_DUPLICATOR: u32 = 29;
+pub const ABILITY_MAGNET: u32 = 30;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_WEB_SWING: u32 = 32;
 pub const ABILITY_POKE_BALL: u32 = 33;
@@ -976,6 +978,9 @@ pub struct PlatformDynamics {
     /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
     /// position physics had already corrected on the spawn tick.
     pub init_tick: Option<u32>,
+    /// DuplicatePlatformEffect asks AnimateVelocity to suppress its home
+    /// spring on the next pass and re-home at the displaced body position.
+    pub float_next_frame: bool,
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -1155,6 +1160,19 @@ pub struct ScaleChangerState {
     pub victim: usize,
     pub time: Fix,
     pub growth: bool,
+}
+
+/// DuplicatePlatformEffect keeps the source platform live for its authored
+/// flash interval, then instantiates a geometry-identical platform beside it.
+#[derive(Clone, Copy, Default)]
+pub struct DuplicatePlatformState {
+    pub active: bool,
+    pub born_tick: u32,
+    pub time: Fix,
+    pub source: usize,
+    pub direction: Vec2,
+    pub spawn_position: Vec2,
+    pub spawner_hierarchy: u32,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -1448,6 +1466,7 @@ pub enum ActiveAbility {
     Throw,
     Drill,
     Beam,
+    Duplicator,
     Platform,
 }
 
@@ -1645,6 +1664,7 @@ pub struct PlayerSlot {
     pub blink_entity: usize,
     pub growth_ray_entity: usize,
     pub shrink_ray_entity: usize,
+    pub duplicator_entity: usize,
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
@@ -1783,6 +1803,7 @@ pub struct RolloutWorld {
     /// reused and fit in one word (six players * three slots * two mouths).
     pub portal_body_inside: Vec<u64>,
     pub portal_body_ids: Vec<u32>,
+    duplicate_platform_effects: [DuplicatePlatformState; 32],
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
@@ -1890,6 +1911,7 @@ impl RolloutWorld {
             portals: Vec::with_capacity(32),
             portal_body_inside: Vec::with_capacity(192),
             portal_body_ids: Vec::with_capacity(192),
+            duplicate_platform_effects: [DuplicatePlatformState::default(); 32],
             beam_orbs: Vec::with_capacity(32),
             beam_pool: Vec::with_capacity(16),
             ropes: rope_abilities::rope_pool(),
@@ -1983,6 +2005,7 @@ impl RolloutWorld {
         self.portals.clone_from(&src.portals);
         self.portal_body_inside.clone_from(&src.portal_body_inside);
         self.portal_body_ids.clone_from(&src.portal_body_ids);
+        self.duplicate_platform_effects = src.duplicate_platform_effects;
         self.beam_orbs.clone_from(&src.beam_orbs);
         self.beam_pool.clone_from(&src.beam_pool);
         self.ropes.clone_from(&src.ropes);
@@ -2067,6 +2090,7 @@ impl RolloutWorld {
             portals: _,
             portal_body_inside: _,
             portal_body_ids: _,
+            duplicate_platform_effects: _,
             beam_orbs: _,
             beam_pool: _,
             ropes: _,
@@ -2259,6 +2283,7 @@ impl RolloutWorld {
         let mut blink_entity = [usize::MAX; MAX_PLAYERS];
         let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
+        let mut duplicator_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         let mut engine_entity = [usize::MAX; MAX_PLAYERS];
         let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
@@ -2418,6 +2443,14 @@ impl RolloutWorld {
                                 false,
                             )
                         }
+                        ABILITY_DUPLICATOR => (
+                            data::surface_extents(data.duplicator.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.duplicator.collider_hierarchy,
+                            &mut duplicator_entity[i],
+                            false,
+                        ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
                             throw_config(data, ability).hurtbox_extents,
@@ -2510,6 +2543,7 @@ impl RolloutWorld {
                             | ABILITY_BLINK
                             | ABILITY_GROWTH_RAY
                             | ABILITY_SHRINK_RAY
+                            | ABILITY_DUPLICATOR
                             | ABILITY_METEOR
                             | ABILITY_BLACK_HOLE
                             | ABILITY_THROW
@@ -2535,6 +2569,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLINK {
                         data.blink.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_DUPLICATOR {
+                        data.duplicator.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
@@ -2572,6 +2608,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLINK {
                         data.blink.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_DUPLICATOR {
+                        data.duplicator.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
@@ -2636,6 +2674,7 @@ impl RolloutWorld {
                 home_position: p.surface.center,
                 transform_rotation: None,
                 init_tick: None,
+                float_next_frame: false,
                 home_rotation: p.body.orientation,
                 speed: p.speed,
                 mu: p.mu,
@@ -2845,6 +2884,7 @@ impl RolloutWorld {
                 blink_entity: blink_entity[i],
                 growth_ray_entity: growth_ray_entity[i],
                 shrink_ray_entity: shrink_ray_entity[i],
+                duplicator_entity: duplicator_entity[i],
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
@@ -3294,6 +3334,12 @@ impl RolloutWorld {
                     if ability == ABILITY_GROWTH_RAY { 7 } else { 8 },
                 ))
             }
+            ABILITY_DUPLICATOR => Some((
+                data::surface_extents(data.duplicator.hurtbox_extents),
+                data.duplicator.collider_offset,
+                data.duplicator.collider_hierarchy,
+                17,
+            )),
             ABILITY_SPIKE => Some((
                 data.spike.hurtbox_extents,
                 data.spike.collider_offset,
@@ -3380,7 +3426,8 @@ impl RolloutWorld {
             13 => slot.black_hole_entity = entity,
             14 => slot.macho_throw_entity = entity,
             15 => slot.drill_entity = entity,
-            _ => slot.beam_entity = entity,
+            16 => slot.beam_entity = entity,
+            _ => slot.duplicator_entity = entity,
         }
     }
 
@@ -3801,6 +3848,7 @@ impl RolloutWorld {
         self.tesla_nodes_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
         self.scale_changers_tick(data);
+        self.duplicate_platform_effects_tick(data, updater_dt);
         self.meteor_smears_tick(data);
         // Roll dispatches its extra swept hurtboxes from Roll.UpdateSim,
         // before this pass's DetPhysics collider synchronization.
@@ -3845,7 +3893,8 @@ impl RolloutWorld {
                     | ActiveAbility::BlackHole
                     | ActiveAbility::Throw
                     | ActiveAbility::Drill
-                    | ActiveAbility::Beam => true,
+                    | ActiveAbility::Beam
+                    | ActiveAbility::Duplicator => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -3875,6 +3924,7 @@ impl RolloutWorld {
                         | ActiveAbility::Blink
                         | ActiveAbility::GrowthRay
                         | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
                 ) {
                     self.players[index].gun.collider_up = self.players[index].base.up;
                 }
@@ -3925,6 +3975,7 @@ impl RolloutWorld {
                     slot.freeze_entity,
                     slot.growth_ray_entity,
                     slot.shrink_ray_entity,
+                    slot.duplicator_entity,
                     slot.bow_entity,
                     slot.throw_entity,
                     slot.mine_entity,
@@ -5473,6 +5524,52 @@ impl RolloutWorld {
                         self.scale_ray_tick(index, action, data);
                         return;
                     }
+                    ABILITY_DUPLICATOR => {
+                        let grounded = self.players[index].base.grounded;
+                        let aim = {
+                            let slot = &self.players[index];
+                            let forward = if grounded {
+                                slot.base.up.perp_cw()
+                            } else {
+                                Vec2::RIGHT
+                            };
+                            if slot.facing_right { forward } else { -forward }
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Duplicator;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.gun = GunState {
+                            aim,
+                            ..GunState::default()
+                        };
+                        slot.base.rotation = Fix::ZERO;
+                        if grounded {
+                            if let Some(platform) = slot.base.platform(&self.platforms) {
+                                slot.base.position = platform
+                                    .surface
+                                    .position(slot.base.local, data.duplicator.radius);
+                            }
+                            slot.base.radius = data.duplicator.radius;
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                            // Duplicator's authored PlayerPhysics radius
+                            // differs from the ordinary slime. SyncPhysicsTo
+                            // changes Player.Position immediately while the
+                            // disabled SlimeController retains ability_origin.
+                            slot.reported_position = slot.base.position;
+                            slot.reported_tick = self.tick;
+                        } else {
+                            slot.base.radius = data.duplicator.radius;
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                            slot.base.external_velocity *= Fix::from_f32(0.1);
+                            slot.base.ground = None;
+                        }
+                        self.duplicator_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -5902,6 +5999,10 @@ impl RolloutWorld {
             ActiveAbility::GrowthRay | ActiveAbility::ShrinkRay
         ) {
             self.scale_ray_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Duplicator {
+            self.duplicator_tick(index, action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Mine {
@@ -8038,6 +8139,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Duplicator => slot.duplicator_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -8177,6 +8279,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Duplicator => slot.duplicator_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -8681,6 +8784,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => player.blink_entity,
                     ActiveAbility::GrowthRay => player.growth_ray_entity,
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Duplicator => player.duplicator_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::Engine => player.engine_entity,
                     ActiveAbility::Tesla => player.tesla_entity,
@@ -9053,6 +9157,7 @@ impl RolloutWorld {
                         ActiveAbility::Blink => other.blink_entity,
                         ActiveAbility::GrowthRay => other.growth_ray_entity,
                         ActiveAbility::ShrinkRay => other.shrink_ray_entity,
+                        ActiveAbility::Duplicator => other.duplicator_entity,
                         ActiveAbility::Spike => other.spike_entity,
                         ActiveAbility::Engine => other.engine_entity,
                         ActiveAbility::Tesla => other.tesla_entity,
@@ -10000,6 +10105,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => self.players[victim].blink_entity,
                     ActiveAbility::GrowthRay => self.players[victim].growth_ray_entity,
                     ActiveAbility::ShrinkRay => self.players[victim].shrink_ray_entity,
+                    ActiveAbility::Duplicator => self.players[victim].duplicator_entity,
                     ActiveAbility::Spike => self.players[victim].spike_entity,
                     ActiveAbility::Engine => self.players[victim].engine_entity,
                     ActiveAbility::Tesla => self.players[victim].tesla_entity,
@@ -10214,6 +10320,7 @@ impl RolloutWorld {
             composite_position: position,
             transform_rotation: None,
             init_tick: None,
+            float_next_frame: false,
             home_position: position,
             home_rotation: Fix::ZERO,
             speed: Fix::ZERO,
@@ -11183,6 +11290,7 @@ impl RolloutWorld {
             let mut blink_entity = usize::MAX;
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
+            let mut duplicator_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
@@ -11234,6 +11342,11 @@ impl RolloutWorld {
                             },
                         )
                     }
+                    ABILITY_DUPLICATOR => (
+                        data::surface_extents(data.duplicator.hurtbox_extents),
+                        data.duplicator.collider_hierarchy,
+                        &mut duplicator_entity,
+                    ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -11298,6 +11411,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_DUPLICATOR {
+                        data.duplicator.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11330,6 +11445,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_DUPLICATOR {
+                        data.duplicator.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11427,6 +11544,7 @@ impl RolloutWorld {
             slot.blink_entity = blink_entity;
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
+            slot.duplicator_entity = duplicator_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -11599,6 +11717,7 @@ impl RolloutWorld {
             let mut blink_entity = usize::MAX;
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
+            let mut duplicator_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
@@ -11650,6 +11769,11 @@ impl RolloutWorld {
                             },
                         )
                     }
+                    ABILITY_DUPLICATOR => (
+                        data::surface_extents(data.duplicator.hurtbox_extents),
+                        data.duplicator.collider_hierarchy,
+                        &mut duplicator_entity,
+                    ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -11715,6 +11839,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_DUPLICATOR {
+                        data.duplicator.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11747,6 +11873,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_DUPLICATOR {
+                        data.duplicator.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
@@ -11831,6 +11959,7 @@ impl RolloutWorld {
             slot.blink_entity = blink_entity;
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
+            slot.duplicator_entity = duplicator_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -13205,6 +13334,215 @@ impl RolloutWorld {
         }
     }
 
+    /// GunTransform with ShootDuplicator. The form lifecycle is authored
+    /// independently (its transform and fire clips differ from the other ray
+    /// guns), while the movement rules are GunTransform's shared rules.
+    fn duplicator_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let gun = &data.duplicator;
+        if self.players[index].gun.has_fired {
+            if self.players[index].gun.fire_ticks == 0 {
+                self.exit_scale_ray_animation(index);
+                return;
+            }
+            self.players[index].gun.fire_ticks -= 1;
+        }
+
+        let direction = action.direction();
+        if direction != Vec2::ZERO {
+            self.players[index].gun.aim = direction.normalized();
+        }
+        let slot_button = 2u8 << self.players[index].active_slot;
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
+            self.fire_duplicator(index, data);
+        }
+
+        let invalid_ground = self.players[index].base.grounded
+            && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
+                || self.players[index].base.ground.is_none()
+                || self.players[index]
+                    .base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .is_none());
+        if invalid_ground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+
+        if !self.players[index].base.grounded {
+            let gravity_modifier = if self.players[index].gun.has_fired {
+                Fix::ONE
+            } else {
+                Fix::from_f32(0.03)
+            };
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                gun.constants.gravity_accel,
+                gravity_modifier,
+                gun.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Duplicator gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded && slot.gun.has_fired {
+                self.exit_duplicator_landing(index, data);
+                return;
+            }
+        }
+
+        let slot = &mut self.players[index];
+        if !slot.gun.has_fired {
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
+            if slot.base.velocity.length() > gun.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * gun.max_slow_mo_speed;
+            }
+        } else {
+            let before = slot.base.velocity;
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                direction.x,
+                gun.constants.air_accel,
+                gun.constants.max_speed,
+            )
+            .expect("valid Duplicator air constants");
+            let after = slot.base.velocity;
+            slot.base.velocity =
+                before * (Fix::ONE - gun.air_control_blend) + after * gun.air_control_blend;
+        }
+        if slot.base.velocity.length() > gun.constants.max_speed {
+            slot.base.velocity = slot.base.velocity.normalized() * gun.constants.max_speed;
+        }
+        if !slot.base.grounded {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+    }
+
+    fn fire_duplicator(&mut self, index: usize, data: &data::RolloutData) {
+        let gun = &data.duplicator;
+        let (aim, grounded, normal) = {
+            let slot = &self.players[index];
+            (
+                slot.gun.aim.normalized_safe(),
+                slot.base.grounded,
+                slot.base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .map(|p| p.surface.normal(slot.base.position)),
+            )
+        };
+        {
+            let slot = &mut self.players[index];
+            slot.gun.has_fired = true;
+            slot.gun.fire_ticks = gun.fire_ticks;
+            slot.base.up = aim.perp();
+            slot.base.rotation = aim.normalized_angle();
+        }
+        let firepoint = {
+            let slot = &self.players[index];
+            let offset = gun.firepoint_offset * slot.base.scale;
+            slot.base.position + slot.base.up * offset.y + aim * offset.x
+        };
+        self.shoot_duplicator_ray(firepoint, aim, index, data, false);
+
+        let slot = &mut self.players[index];
+        if grounded {
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * gun.knockback);
+            slot.base.force_unground(&self.platforms);
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+        } else {
+            slot.base.velocity = -(aim * gun.knockback);
+        }
+    }
+
+    fn exit_duplicator_landing(&mut self, index: usize, data: &data::RolloutData) {
+        let platform_index = self.players[index]
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
+            .expect("grounded Duplicator has a platform");
+        let platform = &self.platforms[platform_index];
+        let form_radius = self.players[index].base.radius;
+        let position = platform
+            .surface
+            .position(self.players[index].base.local, form_radius);
+        let ordinary_radius = data.player.radius * self.players[index].ability_origin_scale;
+        let local = platform
+            .surface
+            .local_position(position, ordinary_radius)
+            .expect("Duplicator exit lies on the platform");
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.exit_to_fall();
+        slot.base.local = local;
+        slot.base.position = position;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.radius = ordinary_radius;
+        slot.base.align(platform);
+        slot.reported_position = position;
+        slot.reported_tick = self.tick;
+        slot.physics_scale = slot.ability_origin_scale;
+        slot.set_ordinary_body_scale(slot.player_scale);
+    }
+
+    fn shoot_duplicator_ray(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+        already_hit_water: bool,
+    ) {
+        let gun = &data.duplicator;
+        let mask = if already_hit_water {
+            gun.collision_mask_no_water
+        } else {
+            gun.collision_mask
+        };
+        let max_distance = Fix::from_int(100);
+        let mut platform_hit = if mask & (1 << LAYER_WALL) != 0 {
+            crate::world::closest(terrain!(self), origin, direction, max_distance, None)
+        } else {
+            None
+        };
+        let mut nearest = platform_hit.map_or(max_distance, |hit| hit.1);
+        let mut water_hit = false;
+        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
+            let map = &data.maps[self.map];
+            let water = OrientedBox::from_basis(
+                map.water_position,
+                Vec2::RIGHT,
+                data::surface_extents(map.water_extents),
+            );
+            if let Some(hit) = water.raycast(origin, direction)
+                && hit.near < nearest
+                && hit.near <= max_distance
+            {
+                nearest = hit.near;
+                water_hit = true;
+                platform_hit = None;
+            }
+        }
+        if water_hit {
+            self.shoot_duplicator_ray(
+                origin + direction * nearest,
+                Vec2::new(direction.x, -direction.y),
+                caster,
+                data,
+                true,
+            );
+        } else if let Some((platform_index, _, hit_position)) = platform_hit {
+            self.begin_duplicate_platform(platform_index, hit_position, direction, caster, data);
+        }
+    }
+
     fn shoot_scale_ray(
         &mut self,
         origin: Vec2,
@@ -13283,6 +13621,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Duplicator => slot.duplicator_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -13432,6 +13771,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Duplicator => slot.duplicator_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -13709,6 +14049,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => slot.blink_entity,
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Duplicator => slot.duplicator_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::Tesla => slot.tesla_entity,
@@ -13933,6 +14274,196 @@ impl RolloutWorld {
                 (slot.player_scale + delta).clamp(Fix::from_f32(0.3), Fix::from_int(3));
             self.scale_changers[index].time += DT;
         }
+    }
+
+    fn begin_duplicate_platform(
+        &mut self,
+        source: usize,
+        _hit_position: Vec2,
+        direction: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+    ) {
+        if source >= self.platforms.len() {
+            return;
+        }
+        // StickyRoundedRectangle stores one currentDuplicatePlatformEffect;
+        // a new hit destroys the older visual/effect on that source.
+        for effect in &mut self.duplicate_platform_effects {
+            if effect.active && effect.source == source {
+                effect.active = false;
+            }
+        }
+        let surface = &self.platforms[source].surface;
+        let extents = surface.extents;
+        let scale = self.platform_dynamics[source].scale;
+        let vertical = surface.up.dot(direction);
+        let horizontal = surface.right.dot(direction);
+        let spawn_position = if vertical.abs() > horizontal.abs() {
+            surface.center
+                + surface.up
+                    * Fix::from_int(vertical.sign())
+                    * Fix::from_int(2)
+                    * (surface.radius + extents.y + scale)
+        } else {
+            surface.center
+                + surface.right
+                    * Fix::from_int(horizontal.sign())
+                    * Fix::from_int(2)
+                    * (surface.radius + extents.x + scale)
+        };
+        let entity = self.players[caster].duplicator_entity;
+        let spawner_hierarchy = if entity == usize::MAX {
+            0
+        } else {
+            self.entities[entity]
+                .hierarchy
+                .saturating_sub(100_000_000 + data.duplicator.collider_hierarchy)
+                + 2
+        };
+        let effect = DuplicatePlatformState {
+            active: true,
+            born_tick: self.tick,
+            time: Fix::ZERO,
+            source,
+            direction,
+            spawn_position,
+            spawner_hierarchy,
+        };
+        if let Some(slot) = self
+            .duplicate_platform_effects
+            .iter_mut()
+            .find(|state| !state.active)
+        {
+            *slot = effect;
+        }
+        self.next_spawn_hierarchy += data.duplicator.platform_effect_updatable_count;
+        let dynamics = &mut self.platform_dynamics[source];
+        dynamics.shake_time = Fix::ZERO;
+        dynamics.shake_duration = data.duplicator.platform_shake_duration;
+        dynamics.shake_amount = data.duplicator.platform_shake;
+        dynamics.shake_previous = Vec2::ZERO;
+        dynamics.meteor_shake_curve = false;
+    }
+
+    fn duplicate_platform_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        if updater_dt == Fix::ZERO {
+            return;
+        }
+        let mut spawn = [None; 32];
+        let mut spawn_count = 0;
+        for effect_index in 0..self.duplicate_platform_effects.len() {
+            let snapshot = self.duplicate_platform_effects[effect_index];
+            if !snapshot.active || snapshot.born_tick == self.tick {
+                continue;
+            }
+            if snapshot.source >= self.platforms.len() {
+                self.duplicate_platform_effects[effect_index].active = false;
+                continue;
+            }
+            let source_center = self.platforms[snapshot.source].surface.center;
+            let mut query = self.platforms[snapshot.source].collider;
+            query.inner.center = snapshot.spawn_position;
+            query.radius += Fix::ONE;
+            for platform_index in 0..self.platforms.len() {
+                if crate::physics::contact::rounded_rounded(
+                    query,
+                    self.platforms[platform_index].collider,
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                let direction = (self.platforms[platform_index].surface.center - source_center)
+                    .normalized_safe();
+                let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
+                let divisor = if inverse_mass == Fix::ZERO {
+                    Fix::ONE
+                } else {
+                    inverse_mass
+                };
+                let dynamics = &mut self.platform_dynamics[platform_index];
+                dynamics.body.force += direction * data.duplicator.platform_overlap_force / divisor;
+                dynamics.float_next_frame = true;
+            }
+            self.duplicate_platform_effects[effect_index].time += updater_dt;
+            if self.duplicate_platform_effects[effect_index].time
+                > data.duplicator.platform_shake_duration
+            {
+                spawn[spawn_count] = Some((snapshot.source, snapshot.spawn_position));
+                spawn_count += 1;
+                self.duplicate_platform_effects[effect_index].active = false;
+            }
+        }
+        for request in spawn.into_iter().take(spawn_count).flatten() {
+            self.spawn_duplicate_platform(request.0, request.1, data);
+        }
+    }
+
+    fn spawn_duplicate_platform(
+        &mut self,
+        source: usize,
+        position: Vec2,
+        data: &data::RolloutData,
+    ) {
+        if source >= self.platforms.len() || source >= self.platform_dynamics.len() {
+            return;
+        }
+        let definition = self.platform_defs[source];
+        // The shipped levels all originate from PlatformDef entries. Spawned
+        // resizable platforms are handled by the dynamic-object duplication
+        // path, which supplies their prefab hierarchy separately.
+        let (updatable_count, collider_hierarchy) = if definition != usize::MAX {
+            let def = &data.maps[self.map].platforms[definition];
+            (def.updatable_count, def.duplicate_collider_hierarchy)
+        } else {
+            (7, 5)
+        };
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += updatable_count;
+
+        let mut platform = self.platforms[source].clone();
+        platform.id = self.next_platform_id;
+        platform.surface.center = position;
+        platform.collider.inner.center = position;
+        self.next_platform_id += 1;
+
+        let mut dynamics = self.platform_dynamics[source];
+        // InstantiateFixed builds a fresh PhysicsBody from BoplBody's
+        // StartVelocity fields; it does not copy the source collider's live
+        // velocity/force accumulator.
+        dynamics.body.velocity = Vec2::ZERO;
+        dynamics.body.force = Vec2::ZERO;
+        dynamics.body.angular_velocity = Fix::ZERO;
+        dynamics.root_body.velocity = Vec2::ZERO;
+        dynamics.root_body.force = Vec2::ZERO;
+        dynamics.root_body.angular_velocity = Fix::ZERO;
+        dynamics.composite_position = position;
+        dynamics.home_position = position;
+        dynamics.home_rotation = dynamics.body.orientation;
+        dynamics.shake_time = Fix::ZERO;
+        dynamics.shake_duration = Fix::ZERO;
+        dynamics.shake_amount = Fix::ZERO;
+        dynamics.shake_previous = Vec2::ZERO;
+        dynamics.init_tick = None;
+
+        let source_row = self.entities[self.platform_entities[source]];
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            hierarchy: 100_000_000 + hierarchy_base + collider_hierarchy,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            flags: E_ACTIVE | E_ENABLED,
+            ..source_row
+        });
+        self.platforms.push(platform);
+        self.platform_dynamics.push(dynamics);
+        self.platform_defs.push(definition);
+        self.platform_entities.push(entity);
+        self.sudden_death_delays.push(Fix::ZERO);
+        self.platforms_changed();
     }
 
     fn exit_freeze_animation(&mut self, index: usize) {
@@ -14435,6 +14966,7 @@ impl RolloutWorld {
             home_position: position,
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
+            float_next_frame: false,
             home_rotation: Fix::ZERO,
             speed: pd.spawn_speed,
             mu: pd.spawn_mu,
@@ -15914,6 +16446,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => player.blink_entity,
                     ActiveAbility::GrowthRay => player.growth_ray_entity,
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Duplicator => player.duplicator_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::Engine => player.engine_entity,
                     ActiveAbility::Tesla => player.tesla_entity,
@@ -16583,8 +17116,14 @@ impl RolloutWorld {
                 }
             }
             let dynamics = &mut self.platform_dynamics[i];
-            let spring = (dynamics.home_position - position) * dynamics.speed
-                - dynamics.body.velocity * dynamics.mu;
+            let spring = if dynamics.float_next_frame {
+                dynamics.float_next_frame = false;
+                dynamics.home_position = position;
+                -dynamics.body.velocity * dynamics.mu
+            } else {
+                (dynamics.home_position - position) * dynamics.speed
+                    - dynamics.body.velocity * dynamics.mu
+            };
             let impulse = spring * updater_dt / dynamics.body.inverse_mass;
             dynamics.body.force += impulse * Fix::from_int(60);
             let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
@@ -16909,6 +17448,7 @@ impl RolloutWorld {
                     ActiveAbility::Blink => other.blink_entity,
                     ActiveAbility::GrowthRay => other.growth_ray_entity,
                     ActiveAbility::ShrinkRay => other.shrink_ray_entity,
+                    ActiveAbility::Duplicator => other.duplicator_entity,
                     ActiveAbility::Spike => other.spike_entity,
                     ActiveAbility::Engine => other.engine_entity,
                     ActiveAbility::Tesla => other.tesla_entity,
@@ -17504,6 +18044,7 @@ impl RolloutWorld {
                 slot.freeze_entity,
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
+                slot.duplicator_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -17570,6 +18111,7 @@ impl RolloutWorld {
                 slot.freeze_entity,
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
+                slot.duplicator_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -17628,6 +18170,7 @@ impl RolloutWorld {
                 slot.freeze_entity,
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
+                slot.duplicator_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -18059,6 +18602,7 @@ impl RolloutWorld {
                 blink_e,
                 growth_ray_e,
                 shrink_ray_e,
+                duplicator_e,
                 gust_e,
                 revival_e,
                 spike_e,
@@ -18086,6 +18630,7 @@ impl RolloutWorld {
                     s.blink_entity,
                     s.growth_ray_entity,
                     s.shrink_ray_entity,
+                    s.duplicator_entity,
                     s.gust_entity,
                     s.revival_entity,
                     s.spike_entity,
@@ -18114,6 +18659,7 @@ impl RolloutWorld {
             let blinking = slot.active == ActiveAbility::Blink;
             let growing = slot.active == ActiveAbility::GrowthRay;
             let shrinking = slot.active == ActiveAbility::ShrinkRay;
+            let duplicating = slot.active == ActiveAbility::Duplicator;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -18609,6 +19155,47 @@ impl RolloutWorld {
                     ray_box.up_x = collider.up.x.raw();
                     ray_box.up_y = collider.up.y.raw();
                     ray_box.rotation = rotation.raw();
+                }
+            }
+            if duplicator_e != usize::MAX {
+                let row = &mut self.entities[duplicator_e];
+                let was_active = row.flags & E_ACTIVE != 0;
+                row.flags = if alive && duplicating {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if duplicating {
+                    row.owner = slot.base.id;
+                }
+                if (alive && duplicating) || was_active {
+                    let (root, rotation, scale) = if duplicating {
+                        (synced, slot.gun.aim.normalized_angle(), slot.base.scale)
+                    } else {
+                        (exit_position, Fix::ZERO, slot.base.scale)
+                    };
+                    let basis = Vec2::angle(rotation);
+                    let offset_basis = if duplicating {
+                        slot.gun.collider_up.perp_cw()
+                    } else {
+                        basis
+                    };
+                    let center =
+                        root + offset_basis.complex_mul(data.duplicator.collider_offset * scale);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(data.duplicator.hurtbox_extents) * scale,
+                    );
+                    row.x = center.x.raw();
+                    row.y = center.y.raw();
+                    row.vx = 0;
+                    row.vy = 0;
+                    row.right_x = collider.right.x.raw();
+                    row.right_y = collider.right.y.raw();
+                    row.up_x = collider.up.x.raw();
+                    row.up_y = collider.up.y.raw();
+                    row.rotation = rotation.raw();
                 }
             }
             // The Platform ability's hurtbox circle is live during

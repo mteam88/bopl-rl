@@ -54,6 +54,8 @@ struct RawPlatform {
     radius: i64,
     min_scale: i64,
     hierarchy: u32,
+    updatable_count: u32,
+    duplicate_collider_hierarchy: u32,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
     orbit: Option<RawOrbit>,
@@ -241,6 +243,7 @@ struct RawPrefabs {
     freeze: RawFreeze,
     blink: RawBlink,
     scale_rays: RawScaleRays,
+    duplicator: RawDuplicator,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -766,6 +769,27 @@ struct RawScaleRay {
     changer_updatable_count: u32,
 }
 #[derive(Deserialize)]
+struct RawDuplicator {
+    hurtbox_extents: RawVec2,
+    collider_hierarchy: u32,
+    collider_offset: RawVec2,
+    radius: i64,
+    physics: RawPhysics,
+    air_control_blend: i64,
+    firepoint_offset: RawVec2,
+    knockback: i64,
+    max_slow_mo_speed: i64,
+    transform_ticks: u32,
+    fire_ticks: u32,
+    triple_raycast_radius: i64,
+    collision_mask: u32,
+    collision_mask_no_water: u32,
+    platform_shake_duration: i64,
+    platform_shake: i64,
+    platform_overlap_force: i64,
+    platform_effect_updatable_count: u32,
+}
+#[derive(Deserialize)]
 struct RawMineThrow {
     throw_position: RawVec2,
     throw_strength: i64,
@@ -1139,6 +1163,8 @@ pub struct PlatformDef {
     /// surface carries the perimeter's `One / (One / e)` reading instead.
     pub collider_extents: Vec2,
     pub hierarchy: u32,
+    pub updatable_count: u32,
+    pub duplicate_collider_hierarchy: u32,
     pub min_scale: Fix,
     /// AnimateVelocity home spring (speed * (home - position)) and damping
     /// (-mu * velocity).
@@ -1762,6 +1788,26 @@ pub struct ScaleRayData {
     pub inverse_mass_before_big: Fix,
     pub changer_updatable_count: u32,
 }
+pub struct DuplicatorData {
+    pub hurtbox_extents: Vec2,
+    pub collider_hierarchy: u32,
+    pub collider_offset: Vec2,
+    pub radius: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub air_control_blend: Fix,
+    pub firepoint_offset: Vec2,
+    pub knockback: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub transform_ticks: u32,
+    pub fire_ticks: u32,
+    pub triple_raycast_radius: Fix,
+    pub collision_mask: u32,
+    pub collision_mask_no_water: u32,
+    pub platform_shake_duration: Fix,
+    pub platform_shake: Fix,
+    pub platform_overlap_force: Fix,
+    pub platform_effect_updatable_count: u32,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -2035,6 +2081,7 @@ pub struct RolloutData {
     pub freeze: FreezeData,
     pub blink: BlinkData,
     pub scale_rays: ScaleRaysData,
+    pub duplicator: DuplicatorData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -2164,6 +2211,8 @@ fn map_def(raw: &RawMap) -> MapDef {
                 },
                 collider_extents,
                 hierarchy: p.hierarchy,
+                updatable_count: p.updatable_count,
+                duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
                 min_scale: Fix::from_raw(p.min_scale),
                 speed: Fix::from_raw(p.animate_velocity.speed),
                 mu: Fix::from_raw(p.animate_velocity.mu),
@@ -2942,6 +2991,36 @@ pub fn get() -> &'static RolloutData {
             scale_rays: ScaleRaysData {
                 growth: scale_ray(&raw.prefabs.scale_rays.growth),
                 shrink: scale_ray(&raw.prefabs.scale_rays.shrink),
+            },
+            duplicator: DuplicatorData {
+                hurtbox_extents: {
+                    let extents = raw.prefabs.duplicator.hurtbox_extents.get();
+                    Vec2::new(extents.x.abs(), extents.y.abs())
+                },
+                collider_hierarchy: raw.prefabs.duplicator.collider_hierarchy,
+                collider_offset: raw.prefabs.duplicator.collider_offset.get(),
+                radius: Fix::from_raw(raw.prefabs.duplicator.radius),
+                constants: constants(&raw.prefabs.duplicator.physics),
+                air_control_blend: Fix::from_raw(raw.prefabs.duplicator.air_control_blend),
+                firepoint_offset: raw.prefabs.duplicator.firepoint_offset.get(),
+                knockback: Fix::from_raw(raw.prefabs.duplicator.knockback),
+                max_slow_mo_speed: Fix::from_raw(raw.prefabs.duplicator.max_slow_mo_speed),
+                transform_ticks: raw.prefabs.duplicator.transform_ticks,
+                fire_ticks: raw.prefabs.duplicator.fire_ticks,
+                triple_raycast_radius: Fix::from_raw(raw.prefabs.duplicator.triple_raycast_radius),
+                collision_mask: raw.prefabs.duplicator.collision_mask,
+                collision_mask_no_water: raw.prefabs.duplicator.collision_mask_no_water,
+                platform_shake_duration: Fix::from_raw(
+                    raw.prefabs.duplicator.platform_shake_duration,
+                ),
+                platform_shake: Fix::from_raw(raw.prefabs.duplicator.platform_shake),
+                platform_overlap_force: Fix::from_raw(
+                    raw.prefabs.duplicator.platform_overlap_force,
+                ),
+                platform_effect_updatable_count: raw
+                    .prefabs
+                    .duplicator
+                    .platform_effect_updatable_count,
             },
             smoke: {
                 let smoke = &raw.prefabs.smoke;
