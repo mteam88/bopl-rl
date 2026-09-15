@@ -2668,9 +2668,21 @@ drift does not alter the aim byte, pickup/lock decision, collision manifold,
 lifecycle tick or exact launch velocity. Holding and duplication remain
 allocation-free, and copied items explicitly discard the source holder.
 
+The allocation-free replacement for `MagnetGun.StaticUpdate` retains one
+pickup circle per player slot, scans pairs in slot order after every player's
+ability update, pauses only magnets still prepulling/pulling, and applies the
+authored force through `PlayerBody.AddForce` (the source's factor of 35).
+`magnet_parry_ab.c` drives both players together, casts the higher updater first
+and the lower updater on the following pass, and matches NativeAOT for 240
+ticks through the overlap, pause and symmetric separation. All non-position
+state is exact. The existing grouped grounded-transform difference reaches
+less than 300,000,000 raw Q32 units (0.0699 world units) after the 70-unit
+external pushes; it does not alter the overlap, pair order, pause, force or
+subsequent ability lifecycle.
+
 Magnet remains partial while projectile/Boulder/Black Hole pickup, player
-ragdoll holding, spell/weapon handling, lock loss, time stop and two-Magnet
-parry are integrated and goldened.
+ragdoll holding, spell/weapon handling, lock loss and time stop are integrated
+and goldened.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

@@ -334,8 +334,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   pickup, pause their fuse while held, track the clamped firepoint and launch
   with the authored force; a 450-tick Grenade composition golden bounds the
   grouped grounded-transform drift to 0.0233 world units while lifecycle and
-  item velocities match exactly. Projectile/Boulder/Black Hole bodies,
-  ragdolls, weapon/spell holding and two-Magnet parry remain open.
+  item velocities match exactly. The post-player static parry sweep also uses
+  fixed player-slot storage and matches the source's ordered overlap, pause and
+  symmetric `AddForce` pushes in a two-Magnet golden. Projectile/Boulder/Black
+  Hole bodies, ragdolls, weapon/spell holding, lock loss and time stop remain
+  open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

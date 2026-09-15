@@ -245,7 +245,7 @@
       "prefab": "Assets/GameObject/Magnet gun.prefab",
       "prefab_guid": "f4ca9e84a5c630c41af189a13d9a24aa",
       "native_status": "partial",
-      "verification": "magnet_ability_ab matches 1,000 optimized-Q32 NativeAOT/Rust ticks for grounded and airborne form lifecycle, rounded-platform impulses and ordinary/Macho player pulls. magnet_item_ab adds 450 ticks composed with Grenade, covering circular-item pull, nearest pickup, holder/fuse suppression, locked motion, momentum transfer and launch. Lifecycle and item velocity are exact; grouped grounded transform ordering is bounded to 0.0233 world units and cannot change any observed decision in the fixture. Projectile/Boulder/Black Hole, ragdoll, weapon/spell, time-stop and two-Magnet branches remain open."
+      "verification": "magnet_ability_ab matches 1,000 optimized-Q32 NativeAOT/Rust ticks for grounded and airborne form lifecycle, rounded-platform impulses and ordinary/Macho player pulls. magnet_item_ab adds 450 ticks composed with Grenade, covering circular-item pull, nearest pickup, holder/fuse suppression, locked motion, momentum transfer and launch. magnet_parry_ab adds 240 ticks through ordered pickup-circle registration, two-Magnet overlap, pause and symmetric PlayerBody force. Lifecycle, item velocity and all non-position parry state are exact; grouped grounded transform ordering is bounded to 0.0699 world units and cannot change any observed decision in these fixtures. Projectile/Boulder/Black Hole, ragdoll, weapon/spell, lock-loss and time-stop branches remain open."
     },
     {
       "id": 31,

@@ -1156,6 +1156,10 @@ pub struct MagnetState {
     pub has_fired: bool,
     pub held_item: Option<usize>,
     pub held_position: Vec2,
+    /// TryPickupNearbyItems contributes this cast-pass circle to MagnetGun's
+    /// allocation-free StaticUpdate parry sweep.
+    pub parry_registered: bool,
+    pub parry_circle: Circle,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3736,6 +3740,9 @@ impl RolloutWorld {
         self.ability_spawner_tick(data, updater_dt);
         self.ability_pickups_tick(data, updater_dt);
         self.beam_inputs.clear();
+        for slot in &mut self.players {
+            slot.magnet.parry_registered = false;
+        }
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
@@ -3873,6 +3880,7 @@ impl RolloutWorld {
                 self.kill(index, ENVIRONMENT, cause, false, false);
             }
         }
+        self.magnet_parries_tick(data);
         self.grapple_ropes_update();
         self.ropes_update();
         self.beam_orbs_tick(data);
@@ -13976,6 +13984,11 @@ impl RolloutWorld {
     fn magnet_try_pickup_item(&mut self, index: usize, data: &data::RolloutData) {
         let firepoint = self.magnet_firepoint(index, data);
         let radius = data.magnet.pickup_radius * self.players[index].base.scale;
+        self.players[index].magnet.parry_registered = true;
+        self.players[index].magnet.parry_circle = Circle {
+            center: firepoint,
+            radius,
+        };
         let mut nearest = Fix::MAX;
         let mut selected = None;
         for (item_index, item) in self.thrown_items.iter().enumerate() {
@@ -14039,6 +14052,48 @@ impl RolloutWorld {
         slot.magnet.held_item = Some(item_index);
         slot.magnet.held_position = position;
         slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
+    }
+
+    /// MagnetGun.StaticUpdate runs after all ordinary UpdateSim callbacks and
+    /// before DetPhysics. Every pickup attempt contributes one circle, even
+    /// when its dynamic-object query finds nothing.
+    fn magnet_parries_tick(&mut self, data: &data::RolloutData) {
+        for first in 0..self.players.len() {
+            if !self.players[first].magnet.parry_registered {
+                continue;
+            }
+            for second in first + 1..self.players.len() {
+                if !self.players[second].magnet.parry_registered
+                    || crate::physics::contact::circle_circle(
+                        self.players[first].magnet.parry_circle,
+                        self.players[second].magnet.parry_circle,
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                let direction = (self.players[first].base.position
+                    - self.players[second].base.position)
+                    .normalized_safe();
+                self.parry_magnet(first, direction, data);
+                self.parry_magnet(second, -direction, data);
+            }
+        }
+    }
+
+    fn parry_magnet(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
+        if self.players[index].active != ActiveAbility::Magnet
+            || !matches!(self.players[index].magnet.phase, 1 | 2)
+        {
+            return;
+        }
+        let slot = &mut self.players[index];
+        slot.magnet.phase = 4;
+        slot.magnet.animation = 2;
+        slot.magnet.animation_ticks = 0;
+        slot.magnet.held_item = None;
+        slot.base.external_velocity +=
+            direction * data.magnet.parry_push_strength * Fix::from_int(35);
     }
 
     fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
