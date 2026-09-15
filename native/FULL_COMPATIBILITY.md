@@ -1948,3 +1948,31 @@ lifetime. The observed explosion collider axes differ from the serialized
 extents only by the source's `One / (One / extent)` fixed-point scale round trip.
 Projectile/item/form contacts, time-stop and scale interactions, duplication,
 and a dedicated explosion victim remain open, so coverage is marked partial.
+
+### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
+
+Catalog id 24 now uses the older `ThrowItem` controller rather than the shared
+`ThrowItem2` approximation. Its grounded enter/loop/exit callbacks, forced
+surface-normal throw, aerial throw, deferred prefab registration, ownerless item
+observation, and grounded exit restoration follow the authored component order.
+The pooled item stores the Mine state machine directly, so hover, arming, target
+selection, chase force, anticipation jitter, and detonation add no per-tick heap
+work. Mine and Missile share their actual `MineExplosion` prefab, while Mine
+alone supplies `Explosion.PlayerOwnerId`; the co-located Shockwave observation
+owner remains zero as in Unity.
+
+`mine_ability_ab.c` compares a five-player, 334-tick NativeAOT/Q32 scenario. A
+fifth opposing team wraps onto the owner's map spawn, jumps into scan range, and
+exercises the two-second arm, chase, collision ignition, random anticipation,
+deferred destroyed-item row, credited lethal explosion, hitbox disable, and
+stock recovery. IDs, ordering, layers, flags, radii, axes, inverse masses,
+players, slime state, kill credit, and telemetry match. Dynamic entity vectors
+are within 64 raw Q32 units (1.49e-8 units) after chase-direction normalization
+and the resulting shockwave; the inactive/active Mine form center is within
+5,000 raw units (1.17e-6 units) because `PlayerPhysics.SyncPhysicsTo` repeats a
+grounded surface projection before adding the collider offset. These bounds are
+far below collision or control thresholds and do not change state transitions,
+hits, credit, or timing. `MineExplosion`'s remaining visual lifetime is already
+covered exactly by the Missile golden because both abilities reference the same
+prefab. Duplication, scaling, boundary effects, magnet holding, and dedicated
+Projectile/Explosion igniter scenarios remain open, so coverage is partial.

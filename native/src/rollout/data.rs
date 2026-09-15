@@ -207,6 +207,7 @@ struct RawPrefabs {
     teleport: RawTeleport,
     grenade: RawGrenade,
     missile: RawMissile,
+    mine: RawMine,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -359,6 +360,62 @@ struct RawMissileExplosion {
     extents: RawVec2,
     animation_ticks: u32,
     shockwave: RawExplosionShockwave,
+}
+
+#[derive(Deserialize)]
+struct RawMine {
+    hurtbox_extents: RawVec2,
+    collider_offset: RawVec2,
+    #[serde(rename = "throw")]
+    throw_data: RawMineThrow,
+    item: RawMineItem,
+    explosion: RawMissileExplosion,
+}
+#[derive(Deserialize)]
+struct RawMineThrow {
+    throw_position: RawVec2,
+    throw_strength: i64,
+    aerial_throw_strength: i64,
+    knockback: i64,
+    min_throw_strength: i64,
+    only_throw_up: bool,
+    physics: RawPhysics,
+    animations: RawMineAnimations,
+}
+#[derive(Deserialize)]
+struct RawMineAnimations {
+    #[serde(rename = "gEnter")]
+    ground_enter: Vec<i32>,
+    #[serde(rename = "gLoop")]
+    ground_loop: Vec<i32>,
+    #[serde(rename = "gExit")]
+    ground_exit: Vec<i32>,
+    #[serde(rename = "aEnter")]
+    air_enter: Vec<i32>,
+    #[serde(rename = "aExit")]
+    air_exit: Vec<i32>,
+}
+#[derive(Deserialize)]
+struct RawMineItem {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    body: RawBody,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+    hover_strength: i64,
+    hover_period: i64,
+    time_before_armed: i64,
+    chase_time: i64,
+    igniters: u32,
+    scans_for: u32,
+    chase_strength: i64,
+    scan_radius: i64,
+    shake_force: i64,
+    anticipation_duration: i64,
 }
 
 #[derive(Deserialize)]
@@ -774,6 +831,47 @@ pub struct MissileData {
     pub explosion_animation_ticks: u32,
     pub explosion_shockwave: ExplosionShockwaveData,
 }
+pub struct MineData {
+    pub hurtbox_extents: Vec2,
+    pub collider_offset: Vec2,
+    pub throw_position: Vec2,
+    pub throw_strength: Fix,
+    pub aerial_throw_strength: Fix,
+    pub knockback: Fix,
+    pub min_throw_strength: Fix,
+    pub only_throw_up: bool,
+    pub constants: crate::world::MovementConstants,
+    pub ground_enter_ticks: u32,
+    pub ground_loop_ticks: u32,
+    pub ground_exit_ticks: u32,
+    pub air_enter_ticks: u32,
+    pub air_exit_ticks: u32,
+    pub item_layer: u32,
+    pub item_updatable_count: u32,
+    pub item_collider_hierarchy: u32,
+    pub item_radius: Fix,
+    pub item_body: crate::physics::Body,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub hover_strength: Fix,
+    pub hover_period: Fix,
+    pub time_before_armed: Fix,
+    pub chase_time: Fix,
+    pub igniters: u32,
+    pub scans_for: u32,
+    pub chase_strength: Fix,
+    pub scan_radius: Fix,
+    pub shake_force: Fix,
+    pub anticipation_duration: Fix,
+    pub explosion_layer: u32,
+    pub explosion_updatable_count: u32,
+    pub explosion_collider_hierarchy: u32,
+    pub explosion_extents: Vec2,
+    pub explosion_animation_ticks: u32,
+    pub explosion_shockwave: ExplosionShockwaveData,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -955,6 +1053,7 @@ pub struct RolloutData {
     pub teleport: TeleportData,
     pub grenade: GrenadeData,
     pub missile: MissileData,
+    pub mine: MineData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -1370,6 +1469,59 @@ pub fn get() -> &'static RolloutData {
                         ),
                         radius: Fix::from_raw(missile.explosion.shockwave.radius),
                         collision_mask: missile.explosion.shockwave.collision_mask,
+                    },
+                }
+            },
+            mine: {
+                let mine = &raw.prefabs.mine;
+                let throw = &mine.throw_data;
+                MineData {
+                    hurtbox_extents: mine.hurtbox_extents.get(),
+                    collider_offset: mine.collider_offset.get(),
+                    throw_position: throw.throw_position.get(),
+                    throw_strength: Fix::from_raw(throw.throw_strength),
+                    aerial_throw_strength: Fix::from_raw(throw.aerial_throw_strength),
+                    knockback: Fix::from_raw(throw.knockback),
+                    min_throw_strength: Fix::from_raw(throw.min_throw_strength),
+                    only_throw_up: throw.only_throw_up,
+                    constants: constants(&throw.physics),
+                    ground_enter_ticks: ticks(&throw.animations.ground_enter),
+                    ground_loop_ticks: ticks(&throw.animations.ground_loop),
+                    ground_exit_ticks: ticks(&throw.animations.ground_exit),
+                    air_enter_ticks: ticks(&throw.animations.air_enter),
+                    air_exit_ticks: ticks(&throw.animations.air_exit),
+                    item_layer: mine.item.layer,
+                    item_updatable_count: mine.item.updatable_count,
+                    item_collider_hierarchy: mine.item.collider_hierarchy,
+                    item_radius: Fix::from_raw(mine.item.radius),
+                    item_body: body(&mine.item.body, Fix::ZERO),
+                    clone_count: mine.item.clone_count,
+                    duplicate_pattern: mine.item.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(mine.item.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(mine.item.duplicate_angle),
+                    hover_strength: Fix::from_raw(mine.item.hover_strength),
+                    hover_period: Fix::from_raw(mine.item.hover_period),
+                    time_before_armed: Fix::from_raw(mine.item.time_before_armed),
+                    chase_time: Fix::from_raw(mine.item.chase_time),
+                    igniters: mine.item.igniters,
+                    scans_for: mine.item.scans_for,
+                    chase_strength: Fix::from_raw(mine.item.chase_strength),
+                    scan_radius: Fix::from_raw(mine.item.scan_radius),
+                    shake_force: Fix::from_raw(mine.item.shake_force),
+                    anticipation_duration: Fix::from_raw(mine.item.anticipation_duration),
+                    explosion_layer: mine.explosion.layer,
+                    explosion_updatable_count: mine.explosion.updatable_count,
+                    explosion_collider_hierarchy: mine.explosion.collider_hierarchy,
+                    explosion_extents: mine.explosion.extents.get(),
+                    explosion_animation_ticks: mine.explosion.animation_ticks,
+                    explosion_shockwave: ExplosionShockwaveData {
+                        platform_force: Fix::from_raw(mine.explosion.shockwave.platform_force),
+                        default_force: Fix::from_raw(mine.explosion.shockwave.default_force),
+                        grounded_player_multiplier: Fix::from_raw(
+                            mine.explosion.shockwave.grounded_player_multiplier,
+                        ),
+                        radius: Fix::from_raw(mine.explosion.shockwave.radius),
+                        collision_mask: mine.explosion.shockwave.collision_mask,
                     },
                 }
             },

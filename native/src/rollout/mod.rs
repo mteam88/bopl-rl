@@ -48,6 +48,7 @@ pub const ABILITY_SMOKE: u32 = 13;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_INVISIBILITY: u32 = 19;
+pub const ABILITY_MINE: u32 = 24;
 pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
@@ -347,6 +348,13 @@ pub struct ThrownItem {
     pub phase: u8,
     /// Mjolnir's allocation-free equivalent of `HashSet<int> alreadyKilled`.
     pub killed_players: u8,
+    /// Mine.Init/LateUpdateSim state. Keeping it in the pooled item avoids a
+    /// side allocation for every autonomous mine.
+    pub random_offset: Fix,
+    pub time_since_anticipation: Fix,
+    pub prev_chase_dir: Vec2,
+    pub prev_rand_vector: Vec2,
+    pub prev_velocity_change: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -386,6 +394,7 @@ pub struct MissileExplosion {
     pub entity: Option<usize>,
     pub position: Vec2,
     pub owner: usize,
+    pub credited_owner: bool,
     pub age: u32,
 }
 
@@ -953,6 +962,7 @@ pub enum ActiveAbility {
     Mjolnir,
     Smoke,
     Missile,
+    Mine,
     Spike,
     TimeStop,
     Gust,
@@ -1075,6 +1085,7 @@ pub struct PlayerSlot {
     pub dash_entity: usize,
     pub bow_entity: usize,
     pub throw_entity: usize,
+    pub mine_entity: usize,
     pub spike_entity: usize,
     pub time_stop_entity: usize,
 }
@@ -1514,6 +1525,7 @@ impl RolloutWorld {
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
         let mut throw_entity = [usize::MAX; MAX_PLAYERS];
+        let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
@@ -1611,6 +1623,12 @@ impl RolloutWorld {
                             &mut throw_entity[i],
                             false,
                         ),
+                        ABILITY_MINE => (
+                            data::surface_extents(data.mine.hurtbox_extents),
+                            100_000_000 + ability_hierarchy[i][slot_index] + 7,
+                            &mut mine_entity[i],
+                            false,
+                        ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR) => (
                             throw_config(data, ability).hurtbox_extents,
@@ -1646,11 +1664,15 @@ impl RolloutWorld {
                     hierarchy,
                     x: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_MINE {
+                        data.mine.collider_offset.x.raw()
                     } else {
                         0
                     },
                     y: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
                         data.spike.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_MINE {
+                        data.mine.collider_offset.y.raw()
                     } else {
                         0
                     },
@@ -1848,6 +1870,7 @@ impl RolloutWorld {
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
                 throw_entity: throw_entity[i],
+                mine_entity: mine_entity[i],
                 spike_entity: spike_entity[i],
                 time_stop_entity: time_stop_entity[i],
             });
@@ -2119,6 +2142,7 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        self.register_pending_mines(data);
         self.register_pending_guided_missiles(data);
         self.register_pending_missile_explosions(data);
         self.register_pending_revival_markers(data);
@@ -2299,6 +2323,7 @@ impl RolloutWorld {
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Missile
+                    | ActiveAbility::Mine
                     | ActiveAbility::Spike
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
@@ -2343,6 +2368,7 @@ impl RolloutWorld {
                     slot.circle_entity,
                     slot.bow_entity,
                     slot.throw_entity,
+                    slot.mine_entity,
                     slot.gust_entity,
                     slot.revival_entity,
                     slot.spike_entity,
@@ -2376,6 +2402,7 @@ impl RolloutWorld {
                 slot.base.late_step(&self.platforms);
             }
         }
+        self.mines_late_tick(data);
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -2671,6 +2698,35 @@ impl RolloutWorld {
                         }
                         return;
                     }
+                    ABILITY_MINE => {
+                        let grounded = self.players[index].base.grounded;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform.surface.position(base.local, data.player.radius)
+                                })
+                        } else {
+                            self.players[index].base.position
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Mine;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.throw_item = ThrowItemState {
+                            grounded,
+                            direction: Vec2::UP,
+                            ..ThrowItemState::default()
+                        };
+                        slot.base.position = form_position;
+                        self.mine_throw_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_TIME_STOP => {
                         let grounded = self.players[index].base.grounded;
                         let slot = &mut self.players[index];
@@ -2890,6 +2946,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Missile {
             self.missile_form_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Mine {
+            self.mine_throw_tick(index, action, data);
             return;
         }
         if matches!(
@@ -3634,6 +3694,7 @@ impl RolloutWorld {
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Missile => slot.throw_entity,
+                    ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
@@ -4260,6 +4321,7 @@ impl RolloutWorld {
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
             let mut throw_entity = usize::MAX;
+            let mut mine_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
@@ -4272,6 +4334,11 @@ impl RolloutWorld {
                         &mut throw_entity,
                     ),
                     ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
+                    ABILITY_MINE => (
+                        data::surface_extents(data.mine.hurtbox_extents),
+                        7,
+                        &mut mine_entity,
+                    ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -4289,11 +4356,15 @@ impl RolloutWorld {
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_MINE {
+                        data.mine.collider_offset.x.raw()
                     } else {
                         0
                     },
                     y: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_MINE {
+                        data.mine.collider_offset.y.raw()
                     } else {
                         0
                     },
@@ -4332,6 +4403,7 @@ impl RolloutWorld {
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
             slot.throw_entity = throw_entity;
+            slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
@@ -4352,6 +4424,7 @@ impl RolloutWorld {
                 self.players[index].circle_entity,
                 self.players[index].bow_entity,
                 self.players[index].throw_entity,
+                self.players[index].mine_entity,
                 self.players[index].gust_entity,
                 self.players[index].revival_entity,
                 self.players[index].spike_entity,
@@ -4468,6 +4541,7 @@ impl RolloutWorld {
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
             let mut throw_entity = usize::MAX;
+            let mut mine_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
@@ -4480,6 +4554,11 @@ impl RolloutWorld {
                         &mut throw_entity,
                     ),
                     ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
+                    ABILITY_MINE => (
+                        data::surface_extents(data.mine.hurtbox_extents),
+                        7,
+                        &mut mine_entity,
+                    ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -4498,11 +4577,15 @@ impl RolloutWorld {
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_MINE {
+                        data.mine.collider_offset.x.raw()
                     } else {
                         0
                     },
                     y: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_MINE {
+                        data.mine.collider_offset.y.raw()
                     } else {
                         0
                     },
@@ -4528,6 +4611,7 @@ impl RolloutWorld {
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
             slot.throw_entity = throw_entity;
+            slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
             slot.gust_entity = gust_entity;
@@ -4892,6 +4976,204 @@ impl RolloutWorld {
         }
     }
 
+    /// Original ThrowItem ability used only by Mine. It differs materially
+    /// from ThrowItem2: the payload is instantiated only on the animation
+    /// callback, its circle auto-registers on the following scheduler pass,
+    /// and grounded throws are forced along the attached surface normal.
+    fn mine_throw_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let button = 2u8 << self.players[index].active_slot;
+        let released = action.buttons & button == 0;
+        let aim = action.direction();
+        if released {
+            self.players[index].throw_item.has_inputted_fire = true;
+        }
+
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+        let state = &mut self.players[index].throw_item;
+        state.ticks += 1;
+        state.time_passed += DT;
+
+        let mut fire = false;
+        if state.phase == 0 {
+            let enter_ticks = if state.grounded {
+                data.mine.ground_enter_ticks
+            } else {
+                data.mine.air_enter_ticks
+            };
+            if state.ticks > enter_ticks {
+                if state.grounded {
+                    state.phase = 1;
+                    state.ticks = 0;
+                    fire = state.has_inputted_fire;
+                } else {
+                    fire = true;
+                }
+            }
+        } else if state.phase == 1 {
+            fire = state.has_inputted_fire || state.ticks > data.mine.ground_loop_ticks;
+        }
+        if fire {
+            self.fire_mine(index, data);
+        }
+
+        if self.players[index].throw_item.phase == 2 {
+            let exit_ticks = if self.players[index].throw_item.grounded {
+                data.mine.ground_exit_ticks
+            } else {
+                data.mine.air_exit_ticks
+            };
+            if self.players[index].throw_item.ticks > exit_ticks {
+                let grounded = self.players[index].throw_item.grounded;
+                let slot = &mut self.players[index];
+                slot.active = ActiveAbility::None;
+                if grounded {
+                    // PlayerPhysics.SyncPhysicsTo(AbilityExitInfo) discards
+                    // selfImposedVelocity on a valid grounded attachment.
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.obs_state = STATE_LAND;
+                    slot.state_ticks = LAND_TICKS + 2;
+                } else {
+                    slot.exit_to_fall();
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.base.collision_rays(terrain!(self));
+                }
+                slot.reported_position = slot.base.position;
+                slot.reported_tick = self.tick;
+                return;
+            }
+        }
+
+        if self.players[index].throw_item.grounded {
+            let slot = &mut self.players[index];
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.position += slot.base.external_velocity * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        } else {
+            let this = &mut *self;
+            let slot = &mut this.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                data.mine.constants.gravity_accel,
+                Fix::ONE,
+                data.mine.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Mine gravity constants");
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                aim.x,
+                data.mine.constants.air_accel,
+                data.mine.constants.max_speed,
+            )
+            .expect("valid Mine air constants");
+            slot.base.collision_rays(Terrain {
+                platforms: &this.platforms,
+                bounds: &this.bounds,
+            });
+            if slot.base.grounded {
+                if !slot.throw_item.has_fired {
+                    self.fire_mine(index, data);
+                }
+                let slot = &mut self.players[index];
+                slot.active = ActiveAbility::None;
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS + 2;
+                slot.reported_position = slot.base.position;
+            } else {
+                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+            }
+        }
+    }
+
+    fn fire_mine(&mut self, index: usize, data: &data::RolloutData) {
+        if self.players[index].throw_item.has_fired {
+            return;
+        }
+        let grounded = self.players[index].throw_item.grounded;
+        let up = if grounded {
+            self.players[index]
+                .base
+                .ground
+                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                .map_or(self.players[index].base.up, |platform| {
+                    platform.surface.normal(self.players[index].base.position)
+                })
+        } else {
+            Vec2::UP
+        };
+        let side = up.perp_cw()
+            * if self.players[index].facing_right {
+                -Fix::ONE
+            } else {
+                Fix::ONE
+            };
+        let position = self.players[index].base.position
+            + side * data.mine.throw_position.x
+            + up * data.mine.throw_position.y;
+        let velocity = if grounded {
+            // onlyThrowUp is authored true. Retain the branch so extraction
+            // guards a future source update rather than silently changing it.
+            if data.mine.only_throw_up {
+                up * data.mine.throw_strength
+            } else {
+                up * data.mine.min_throw_strength
+            }
+        } else {
+            Vec2::UP * data.mine.aerial_throw_strength
+        };
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.mine.item_updatable_count;
+        let item = ThrownItem {
+            active: true,
+            id: 0,
+            owner: index,
+            ability: ABILITY_MINE,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: None,
+            position,
+            body: Body {
+                velocity,
+                ..data.mine.item_body
+            },
+            fuse: Fix::MAX,
+            hurt_owner_delay: Fix::ZERO,
+            detonates_on_owner: false,
+            age: Fix::ZERO,
+            launched: true,
+            settled: false,
+            owner_clear: false,
+            settle_position: Vec2::ZERO,
+            phase: 0,
+            killed_players: 0,
+            random_offset: Fix::ZERO,
+            time_since_anticipation: Fix::ZERO,
+            prev_chase_dir: Vec2::RIGHT,
+            prev_rand_vector: Vec2::ZERO,
+            prev_velocity_change: Vec2::ZERO,
+        };
+        let item_index = if let Some(free) = self.thrown_items.iter().position(|item| !item.active)
+        {
+            let entity = self.thrown_items[free].entity;
+            self.thrown_items[free] = ThrownItem { entity, ..item };
+            free
+        } else {
+            self.thrown_items.push(item);
+            self.thrown_items.len() - 1
+        };
+        let slot = &mut self.players[index];
+        slot.throw_item.has_fired = true;
+        slot.throw_item.item = Some(item_index);
+        slot.throw_item.phase = 2;
+        slot.throw_item.ticks = 0;
+        if grounded {
+            slot.base.velocity = Vec2::ZERO;
+        }
+    }
+
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
@@ -5096,6 +5378,11 @@ impl RolloutWorld {
             settle_position: Vec2::ZERO,
             phase: 0,
             killed_players: 0,
+            random_offset: Fix::ZERO,
+            time_since_anticipation: Fix::ZERO,
+            prev_chase_dir: Vec2::RIGHT,
+            prev_rand_vector: Vec2::ZERO,
+            prev_velocity_change: Vec2::ZERO,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -5844,6 +6131,47 @@ impl RolloutWorld {
         }
     }
 
+    fn register_pending_mines(&mut self, data: &data::RolloutData) {
+        for index in 0..self.thrown_items.len() {
+            let item = self.thrown_items[index];
+            if !item.active
+                || item.ability != ABILITY_MINE
+                || item.entity.is_some()
+                || item.born_tick >= self.tick
+            {
+                continue;
+            }
+            let id = self.next_id();
+            self.entities.push(CEntity::default());
+            let entity = self.entities.len() - 1;
+            let random_offset =
+                Fix::ONE - self.rng.fix_range(Fix::ZERO, Fix::from_int(2)) * data.mine.hover_period;
+            let item = &mut self.thrown_items[index];
+            item.id = id;
+            item.entity = Some(entity);
+            item.random_offset = random_offset;
+            self.entities[entity] = CEntity {
+                id,
+                kind: 0,
+                layer: data.mine.item_layer,
+                // Item does not implement IPlayerIdHolder; the owner is used
+                // internally by Mine but its observation owner remains zero.
+                owner: 0,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000 + item.hierarchy_base + data.mine.item_collider_hierarchy,
+                x: item.position.x.raw(),
+                y: item.position.y.raw(),
+                vx: item.body.velocity.x.raw(),
+                vy: item.body.velocity.y.raw(),
+                radius: data.mine.item_radius.raw(),
+                rotation: item.body.orientation.raw(),
+                angular_velocity: item.body.angular_velocity.raw(),
+                inverse_mass: item.body.inverse_mass.raw(),
+                ..CEntity::default()
+            };
+        }
+    }
+
     /// Updater defers objects instantiated during a pass until the next pass.
     /// Register them before player/ability updates so same-tick dash casts can
     /// see the newly live projectile, then let arrows_tick advance them later.
@@ -5978,7 +6306,13 @@ impl RolloutWorld {
         }
     }
 
-    fn spawn_missile_explosion(&mut self, position: Vec2, owner: usize, data: &data::RolloutData) {
+    fn spawn_missile_explosion(
+        &mut self,
+        position: Vec2,
+        owner: usize,
+        credited_owner: bool,
+        data: &data::RolloutData,
+    ) {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.missile.explosion_updatable_count;
         let explosion = MissileExplosion {
@@ -5987,6 +6321,7 @@ impl RolloutWorld {
             hierarchy_base,
             position,
             owner,
+            credited_owner,
             ..MissileExplosion::default()
         };
         if let Some(free) = self
@@ -6032,7 +6367,7 @@ impl RolloutWorld {
             }
             if let Some(explosion_position) = boundary_explosion {
                 let owner = self.guided_missiles[index].owner;
-                self.spawn_missile_explosion(explosion_position, owner, data);
+                self.spawn_missile_explosion(explosion_position, owner, false, data);
                 self.destroy_guided_missile(index, false);
                 continue;
             }
@@ -6125,6 +6460,129 @@ impl RolloutWorld {
             arrow.velocity.y += gravity * physics_dt;
             arrow.position += arrow.velocity * physics_dt;
         }
+    }
+
+    fn mines_late_tick(&mut self, data: &data::RolloutData) {
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].ability != ABILITY_MINE
+                || self.thrown_items[item_index].entity.is_none()
+            {
+                continue;
+            }
+            let owner = self.thrown_items[item_index].owner;
+            if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner] {
+                continue;
+            }
+
+            let phase = self.thrown_items[item_index].phase;
+            {
+                let mine = &mut self.thrown_items[item_index];
+                mine.age += DT;
+                let hover = (mine.age * data.mine.hover_period + mine.random_offset).cos()
+                    * data.mine.hover_strength;
+                mine.body.force += Vec2::UP * hover;
+                if mine.phase == 0 && mine.age >= data.mine.time_before_armed {
+                    mine.phase = 1;
+                }
+            }
+
+            if phase == 0 {
+                continue;
+            }
+            let scan_target = if matches!(phase, 1 | 2) {
+                let position = self.thrown_items[item_index].position;
+                let scan = Circle {
+                    center: position,
+                    radius: data.mine.scan_radius,
+                };
+                self.players
+                    .iter()
+                    .enumerate()
+                    .find(|(player_index, player)| {
+                        *player_index != owner
+                            && self.playable_slot(player)
+                            && !player.invisible
+                            && player.team != self.players[owner].team
+                            && crate::physics::contact::circle_box(scan, player.base.collider)
+                                .is_some()
+                    })
+                    .map(|(_, player)| player.base.position)
+            } else {
+                None
+            };
+
+            if phase == 1 {
+                if let Some(target) = scan_target {
+                    let mine = &mut self.thrown_items[item_index];
+                    mine.phase = 2;
+                    mine.prev_chase_dir = (target - mine.position).normalized_safe();
+                }
+                continue;
+            }
+
+            if phase == 2 {
+                let mut detonate = false;
+                {
+                    let mine = &mut self.thrown_items[item_index];
+                    mine.time_since_anticipation += DT;
+                    if mine.time_since_anticipation > data.mine.chase_time {
+                        mine.time_since_anticipation = Fix::ZERO;
+                        mine.phase = 3;
+                    }
+                    if let Some(target) = scan_target {
+                        let to_target = target - mine.position;
+                        if to_target.length_squared() < Fix::from_int(4) {
+                            detonate = true;
+                        } else {
+                            mine.prev_chase_dir = to_target.normalized_safe();
+                        }
+                    }
+                    if !detonate {
+                        mine.body.force += mine.prev_chase_dir * data.mine.chase_strength;
+                    }
+                }
+                if detonate {
+                    self.detonate_mine(item_index, data);
+                }
+                continue;
+            }
+
+            if phase == 3 {
+                let elapsed = self.thrown_items[item_index].time_since_anticipation + DT;
+                self.thrown_items[item_index].time_since_anticipation = elapsed;
+                if elapsed >= data.mine.anticipation_duration {
+                    self.detonate_mine(item_index, data);
+                    continue;
+                }
+                let shake = data.mine.shake_force * (elapsed / data.mine.anticipation_duration);
+                let random_angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+                let random_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+                let random_vector =
+                    Vec2::angle(random_angle) * random_radius * shake * Fix::from_int(3);
+                let mine = &mut self.thrown_items[item_index];
+                mine.position -= mine.prev_velocity_change;
+                let velocity_change = random_vector - mine.prev_rand_vector;
+                mine.position += velocity_change;
+                mine.prev_rand_vector = random_vector;
+                mine.prev_velocity_change = velocity_change;
+            }
+        }
+    }
+
+    fn detonate_mine(&mut self, item_index: usize, data: &data::RolloutData) {
+        if !self.thrown_items[item_index].active {
+            return;
+        }
+        let item = self.thrown_items[item_index];
+        // Mine and Missile both reference the same MineExplosion prefab. Mine
+        // supplies Explosion.PlayerOwnerId for lethal attribution; the
+        // co-located Shockwave/IPlayerIdHolder remains owner zero.
+        self.spawn_missile_explosion(item.position, item.owner, true, data);
+        // Detonation runs in LateUpdateSim, after DetPhysics has already
+        // built this observation's collider arrays. DestroyFix therefore
+        // leaves one destroyed row until the next Simulate pass removes it.
+        self.remove_thrown_item(item_index, true);
     }
 
     fn thrown_items_integrate(
@@ -6298,7 +6756,11 @@ impl RolloutWorld {
                 continue;
             }
             let ability = self.thrown_items[item_index].ability;
-            let config = throw_config(data, ability);
+            let item_inverse_mass = if ability == ABILITY_MINE {
+                data.mine.item_body.inverse_mass
+            } else {
+                throw_config(data, ability).item_body.inverse_mass
+            };
             let timed_out = {
                 let item = &mut self.thrown_items[item_index];
                 if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
@@ -6336,7 +6798,7 @@ impl RolloutWorld {
             row.vy = item.body.velocity.y.raw();
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
-            row.inverse_mass = config.item_body.inverse_mass.raw();
+            row.inverse_mass = item_inverse_mass.raw();
         }
     }
 
@@ -6689,7 +7151,7 @@ impl RolloutWorld {
                 }
                 self.platforms_changed();
                 let owner = missile.owner;
-                self.spawn_missile_explosion(center, owner, data);
+                self.spawn_missile_explosion(center, owner, false, data);
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
                     let row = &mut self.entities[entity];
@@ -6716,6 +7178,7 @@ impl RolloutWorld {
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Mine => player.mine_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
@@ -6754,7 +7217,7 @@ impl RolloutWorld {
                 }
             });
             if hit_player {
-                self.spawn_missile_explosion(missile.position, missile.owner, data);
+                self.spawn_missile_explosion(missile.position, missile.owner, false, data);
                 self.destroy_guided_missile(missile_index, true);
             }
         }
@@ -6770,10 +7233,14 @@ impl RolloutWorld {
                 continue;
             }
             let item = self.thrown_items[item_index];
-            let config = throw_config(data, item.ability);
+            let item_radius = if item.ability == ABILITY_MINE {
+                data.mine.item_radius
+            } else {
+                throw_config(data, item.ability).item_radius
+            };
             let circle = Circle {
                 center: item.position,
-                radius: config.item_radius,
+                radius: item_radius,
             };
             let mut contacts = [(0usize, Contact::default()); 64];
             let mut contact_count = 0;
@@ -6855,7 +7322,66 @@ impl RolloutWorld {
                 }
             }
 
-            if matches!(item.ability, ABILITY_TACK | ABILITY_MJOLNIR) {
+            if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
+            {
+                let mine_circle = Circle {
+                    center: self.thrown_items[item_index].position,
+                    radius: data.mine.item_radius,
+                };
+                let hit_player = self.players.iter().any(|player| {
+                    self.playable_slot(player)
+                        && crate::physics::contact::circle_box(mine_circle, player.base.collider)
+                            .is_some()
+                });
+                let hit_projectile = self.arrows.iter().any(|arrow| {
+                    arrow.active
+                        && arrow.registered
+                        && crate::physics::contact::circle_circle(
+                            mine_circle,
+                            Circle {
+                                center: arrow.position,
+                                radius: data.arrow.radius,
+                            },
+                        )
+                        .is_some()
+                });
+                let hit_grenade_explosion = self.grenade_explosions.iter().any(|explosion| {
+                    explosion.active
+                        && explosion.registered
+                        && explosion.age == 1
+                        && crate::physics::contact::circle_box(
+                            mine_circle,
+                            OrientedBox::from_basis(
+                                explosion.position,
+                                Vec2::RIGHT,
+                                data.grenade.explosion_extents,
+                            ),
+                        )
+                        .is_some()
+                });
+                let hit_mine_explosion = self.missile_explosions.iter().any(|explosion| {
+                    explosion.active
+                        && explosion.registered
+                        && explosion.age == 1
+                        && crate::physics::contact::circle_box(
+                            mine_circle,
+                            OrientedBox::from_basis(
+                                explosion.position,
+                                Vec2::RIGHT,
+                                data.mine.explosion_extents,
+                            ),
+                        )
+                        .is_some()
+                });
+                if hit_player || hit_projectile || hit_grenade_explosion || hit_mine_explosion {
+                    let mine = &mut self.thrown_items[item_index];
+                    mine.time_since_anticipation =
+                        data.mine.anticipation_duration * Fix::from_f32(0.8);
+                    mine.phase = 3;
+                }
+            }
+
+            if matches!(item.ability, ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_MINE) {
                 continue;
             }
 
@@ -7010,9 +7536,19 @@ impl RolloutWorld {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
                 };
             }
+            let killer = if explosion.credited_owner {
+                explosion.owner as u32 + 1
+            } else {
+                0
+            };
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
                 if victim && self.playable(player_index) {
-                    self.kill(player_index, 0, CAUSE_OTHER, true);
+                    let cause = if killer == self.players[player_index].base.id {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    self.kill(player_index, killer, cause, true);
                 }
             }
         }
@@ -7707,6 +8243,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.bow_entity,
                 slot.throw_entity,
+                slot.mine_entity,
                 slot.gust_entity,
                 slot.revival_entity,
                 slot.spike_entity,
@@ -7759,6 +8296,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.bow_entity,
                 slot.throw_entity,
+                slot.mine_entity,
                 slot.gust_entity,
                 slot.revival_entity,
                 slot.spike_entity,
@@ -7803,6 +8341,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.bow_entity,
                 slot.throw_entity,
+                slot.mine_entity,
                 slot.gust_entity,
                 slot.revival_entity,
                 slot.spike_entity,
@@ -8116,7 +8655,18 @@ impl RolloutWorld {
     fn refresh_actor_entities(&mut self) {
         let data = data::get();
         for index in 0..self.players.len() {
-            let (body_e, dash_e, circle_e, bow_e, throw_e, gust_e, revival_e, spike_e, time_stop_e) = {
+            let (
+                body_e,
+                dash_e,
+                circle_e,
+                bow_e,
+                throw_e,
+                mine_e,
+                gust_e,
+                revival_e,
+                spike_e,
+                time_stop_e,
+            ) = {
                 let s = &self.players[index];
                 (
                     s.body_entity,
@@ -8124,6 +8674,7 @@ impl RolloutWorld {
                     s.circle_entity,
                     s.bow_entity,
                     s.throw_entity,
+                    s.mine_entity,
                     s.gust_entity,
                     s.revival_entity,
                     s.spike_entity,
@@ -8137,6 +8688,7 @@ impl RolloutWorld {
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
             let missile_form = slot.active == ActiveAbility::Missile;
+            let mining = slot.active == ActiveAbility::Mine;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -8346,6 +8898,40 @@ impl RolloutWorld {
                     throw_box.up_x = hurtbox.up.x.raw();
                     throw_box.up_y = hurtbox.up.y.raw();
                     throw_box.rotation = rotation.raw();
+                }
+            }
+            if mine_e != usize::MAX {
+                let mine_box = &mut self.entities[mine_e];
+                let was_active = mine_box.flags & E_ACTIVE != 0;
+                if alive && mining {
+                    mine_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    mine_box.owner = slot.base.id;
+                } else {
+                    mine_box.flags = E_ENABLED | E_TRIGGER;
+                }
+                if (alive && mining) || was_active {
+                    let root = if mining {
+                        slot.base.position
+                    } else {
+                        exit_position
+                    };
+                    let rotation = slot.base.rotation;
+                    let basis = Vec2::angle(rotation);
+                    let center = root + data.mine.collider_offset.complex_mul(basis);
+                    let hurtbox = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(data.mine.hurtbox_extents),
+                    );
+                    mine_box.x = center.x.raw();
+                    mine_box.y = center.y.raw();
+                    mine_box.vx = 0;
+                    mine_box.vy = 0;
+                    mine_box.right_x = hurtbox.right.x.raw();
+                    mine_box.right_y = hurtbox.right.y.raw();
+                    mine_box.up_x = hurtbox.up.x.raw();
+                    mine_box.up_y = hurtbox.up.y.raw();
+                    mine_box.rotation = rotation.raw();
                 }
             }
             // The Platform ability's hurtbox circle is live during

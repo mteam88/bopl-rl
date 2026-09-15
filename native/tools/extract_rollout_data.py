@@ -610,6 +610,94 @@ def main():
         },
     }
 
+    # ---- Mine / original ThrowItem path and autonomous mine ----
+    _, mine_ability = find_prefab("Assets/GameObject/Mine.prefab")
+    mine_throw = component(mine_ability, "ThrowItem")
+    mine_box = component(mine_ability, "DPhysicsBox")
+    mine_fix = component(mine_ability, "FixTransform")
+    mine_phys = component(mine_ability, "PlayerPhysics")
+    mine_anims = animations(guid_of(mine_throw["animData"]))
+    mine_item = ASSETS[guid_of(mine_throw["GrenadePrefab"])]
+    mine_item_data = component(mine_item, "Item")
+    mine = component(mine_item, "Mine")
+    mine_circle = component(mine_item, "DPhysicsCircle")
+    mine_body = component(mine_item, "BoplBody")
+    mine_explosion = ASSETS[guid_of(mine["Explosion"])]
+    mine_explosion_component = component(mine_explosion, "Explosion")
+    mine_explosion_box = component(mine_explosion, "DPhysicsBox")
+    mine_explosion_waves = [c["properties"] for c in
+                            component(mine_explosion, "Shockwave", all_matches=True)]
+    assert len(mine_explosion_waves) == 1
+    mine_explosion_anims = animations(
+        guid_of(mine_explosion_component["explosionAnimation"])
+    )
+    out["prefabs"]["mine"] = {
+        "hurtbox_extents": vec2(mine_box, "startExtents"),
+        "collider_offset": vec2(mine_fix, "offset"),
+        "throw": {
+            "throw_position": vec2(mine_throw, "throwPosition"),
+            "throw_strength": fix(mine_throw, "throwStrength"),
+            "aerial_throw_strength": fix(mine_throw, "airealThrowStrength"),
+            "knockback": fix(mine_throw, "KnockBack"),
+            "min_throw_strength": fix(mine_throw, "minThrowStrength"),
+            "only_throw_up": mine_throw["onlyThrowUp"],
+            "physics": {
+                "max_speed": fix(mine_phys, "maxSpeed"),
+                "jump_strength": fix(mine_phys, "jumpStrength"),
+                "accel": fix(mine_phys, "accel"),
+                "radius": fix(mine_phys, "radius"),
+                "gravity_accel": fix(mine_phys, "gravity_accel"),
+                "gravity_max_fall_speed": fix(mine_phys, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(mine_phys, "gravity_modifier"),
+                "jump_extra_x": fix(mine_phys, "jumpExtraXStrength"),
+                "jump_momentum": fix(mine_phys, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(mine_phys, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(mine_phys, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(mine_phys, "airAccel"),
+            },
+            "animations": {name: mine_anims[name]
+                           for name in ("gEnter", "gLoop", "gExit", "aEnter", "aExit")},
+        },
+        "item": {
+            "layer": mine_item["data"].get("layer"),
+            "updatable_count": updater_count(mine_item),
+            "collider_hierarchy": mine_circle["hierarchyNumber"],
+            "radius": fix(mine_circle, "startRadius"),
+            "body": physics_body(mine_body),
+            "clone_count": mine_item_data["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": mine_item_data["duplicatePattern"],
+            "duplicate_spacing": fix(mine_item_data, "duplicate_spacing"),
+            "duplicate_angle": fix(mine_item_data, "duplicate_angle"),
+            "hover_strength": fix(mine, "HoverStr"),
+            "hover_period": fix(mine, "HoverPeriod"),
+            "time_before_armed": fix(mine, "TimeBeforeArmed"),
+            "chase_time": fix(mine, "chaseTime"),
+            "igniters": mine["Igniters.m_Bits"],
+            "scans_for": mine["ScansFor.m_Bits"],
+            "chase_strength": fix(mine, "chaseStrength"),
+            "scan_radius": fix(mine, "scanRadius"),
+            "shake_force": fix(mine, "shakeForce"),
+            "anticipation_duration": fix(mine, "anticipationDuration"),
+        },
+        "explosion": {
+            "layer": mine_explosion["data"].get("layer"),
+            "updatable_count": updater_count(mine_explosion),
+            "collider_hierarchy": mine_explosion_box["hierarchyNumber"],
+            "extents": vec2(mine_explosion_box, "startExtents"),
+            "animation_ticks": sum(abs(d) for d in
+                                   mine_explosion_anims[next(iter(mine_explosion_anims))]),
+            "shockwave": {
+                "platform_force": fix(mine_explosion_waves[0], "platformForce"),
+                "default_force": fix(mine_explosion_waves[0], "defaultForce"),
+                "grounded_player_multiplier": fix(
+                    mine_explosion_waves[0], "groundedPlayerForceMultiplier"
+                ),
+                "radius": fix(mine_explosion_waves[0], "radius"),
+                "collision_mask": mine_explosion_waves[0]["collisionMask.m_Bits"],
+            },
+        },
+    }
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")

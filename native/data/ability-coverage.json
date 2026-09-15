@@ -183,7 +183,8 @@
       "name": "Mine",
       "prefab": "Assets/GameObject/Mine.prefab",
       "prefab_guid": "aa6bd66183fd339489444ffd04d85fd3",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "mine_ability_ab matches 334 NativeAOT/Rust Q32 ticks through the original grounded ThrowItem form, deferred autonomous circle registration, hover, two-second arming, opponent scan/chase, player ignition, anticipation, jitter, owner-credited MineExplosion kill, first-frame hitbox disable, and stock recovery. Entity vector differences are bounded to 64 raw Q32 units after chase normalization and shockwave response; the form center differs by at most 5,000 raw units from PlayerPhysics ground reprojection. Item.Duplicate, scale changes, boundary effects, held-magnet behavior, and dedicated projectile/explosion ignition cases remain to be goldened."
     },
     {
       "id": 25,
