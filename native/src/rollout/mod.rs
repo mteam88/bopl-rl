@@ -12328,10 +12328,9 @@ impl RolloutWorld {
                 // Dash.ExitAbility hands over an ungrounded body (Dash.cs:234),
                 // so SlimeController.onExitAbility enters Fall and immediately
                 // runs VelocityBasedRaycasts (SlimeController.cs:249, 263-272)
-                // with the leave velocity: the slime can land on the ejection
-                // tick, after the ejected position was published.
+                // with the leave velocity. Player::dash_step performs that
+                // shared physical handoff; this updates the rollout state.
                 slot.exit_to_fall();
-                slot.base.collision_rays(terrain!(self));
             }
         }
         let dash_cast = {

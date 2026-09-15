@@ -129,6 +129,11 @@ impl Player {
                 self.local = self.dash.saved_local;
                 self.velocity = self.dash.input * Fix::from_int(60);
                 self.external_velocity = Vec2::ZERO;
+                // SlimeController.onExitAbility immediately runs the returned
+                // slime's velocity rays with Dash's leave velocity. Keep this
+                // physical handoff here so both the scalar World and batched
+                // rollout paths can land on the ejection tick.
+                self.collision_rays(terrain);
             }
             self.dash.updates += 1;
         }
