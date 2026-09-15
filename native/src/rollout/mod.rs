@@ -69,6 +69,7 @@ pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 pub const ABILITY_TACK: u32 = 35;
 pub const ABILITY_FREEZE: u32 = 36;
 pub const ABILITY_MJOLNIR: u32 = 37;
+pub const ABILITY_PORTAL_GUN: u32 = 38;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
@@ -1304,6 +1305,41 @@ pub struct TeleportMarker {
     pub velocity: Vec2,
 }
 
+/// A PortalShot rigid body. The projectile is registered immediately by
+/// ManualInit, so the retained row exists and moves on its cast pass.
+#[derive(Clone, Copy, Default)]
+pub struct PortalShotState {
+    pub active: bool,
+    pub registered: bool,
+    pub remove_next_tick: bool,
+    pub born_tick: u32,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub ability_generation: u32,
+    pub blue: bool,
+    pub entity: Option<usize>,
+    pub hierarchy_base: u32,
+    pub position: Vec2,
+    pub body: Body,
+    pub time_alive: Fix,
+}
+
+/// One invisible Portal endpoint. Portals have no DetPhysics collider or
+/// observation row; their capture plane is tested by Portal.UpdateSim.
+#[derive(Clone, Copy, Default)]
+pub struct PortalEndpoint {
+    pub active: bool,
+    pub linked: Option<usize>,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub ability_generation: u32,
+    pub position: Vec2,
+    pub normal: Vec2,
+    pub tangent: Vec2,
+    pub time_alive: Fix,
+    pub player_inside: [bool; 8],
+}
+
 /// AirWave_Shockwave has no collider of its own. It captures rigid targets on
 /// initialization and keeps applying its curve to that fixed set.
 #[derive(Clone, Copy)]
@@ -1490,6 +1526,10 @@ pub struct PlayerSlot {
     /// Marker owned by each equipped Teleport instance. The first cast fills
     /// it; the second consumes it and queues the two-way area swap.
     pub teleport_markers: [Option<usize>; 3],
+    /// PortalGun references belong to each equipped ability prefab. Closing
+    /// and replacing a pair does not require searching the global pool.
+    pub portal_blue: [Option<usize>; 3],
+    pub portal_orange: [Option<usize>; 3],
     pub teleport_pending_marker: Option<usize>,
     pub teleport_pending_position: Vec2,
     /// TeleportedObjectEffect disables the moved GameObject while its visual
@@ -1659,6 +1699,12 @@ pub struct RolloutWorld {
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
     pub teleport_marker_pool: Vec<TeleportMarker>,
+    pub portal_shots: Vec<PortalShotState>,
+    pub portals: Vec<PortalEndpoint>,
+    /// Per collider-body portal hysteresis. Active portal pool indices are
+    /// reused and fit in one word (six players * three slots * two mouths).
+    pub portal_body_inside: Vec<u64>,
+    pub portal_body_ids: Vec<u32>,
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
@@ -1751,6 +1797,10 @@ impl RolloutWorld {
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
             teleport_marker_pool: Vec::with_capacity(64),
+            portal_shots: Vec::with_capacity(32),
+            portals: Vec::with_capacity(32),
+            portal_body_inside: Vec::with_capacity(192),
+            portal_body_ids: Vec::with_capacity(192),
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
@@ -1832,6 +1882,10 @@ impl RolloutWorld {
             .clone_from(&src.revival_marker_pool);
         self.teleport_marker_pool
             .clone_from(&src.teleport_marker_pool);
+        self.portal_shots.clone_from(&src.portal_shots);
+        self.portals.clone_from(&src.portals);
+        self.portal_body_inside.clone_from(&src.portal_body_inside);
+        self.portal_body_ids.clone_from(&src.portal_body_ids);
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
@@ -1904,6 +1958,10 @@ impl RolloutWorld {
             gust_waves: _,
             revival_marker_pool: _,
             teleport_marker_pool: _,
+            portal_shots: _,
+            portals: _,
+            portal_body_inside: _,
+            portal_body_ids: _,
             sudden_death: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
@@ -2007,6 +2065,10 @@ impl RolloutWorld {
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.revival_marker_pool.clear();
         self.teleport_marker_pool.clear();
+        self.portal_shots.clear();
+        self.portals.clear();
+        self.portal_body_inside.clear();
+        self.portal_body_ids.clear();
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
@@ -2608,6 +2670,8 @@ impl RolloutWorld {
                 revival_effect_ticks: 0,
                 revival_particle_ticks: 0,
                 teleport_markers: [None; 3],
+                portal_blue: [None; 3],
+                portal_orange: [None; 3],
                 teleport_pending_marker: None,
                 teleport_pending_position: Vec2::ZERO,
                 teleport_effect_active: false,
@@ -2947,6 +3011,8 @@ impl RolloutWorld {
             slot.ability_instantiated[2] = false;
             slot.drill_hitbox_entities[2] = [usize::MAX; 3];
             slot.black_hole_castable[2] = true;
+            slot.portal_blue[2] = None;
+            slot.portal_orange[2] = None;
             slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
 
@@ -3551,6 +3617,8 @@ impl RolloutWorld {
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
         self.black_holes_tick(data, updater_dt);
+        self.portal_shots_tick(data, updater_dt);
+        self.portals_tick(data, updater_dt);
         self.macho_boulders_tick(data);
         self.rewind_recorders_tick();
         // SuperStarEffect prefabs spawned during a slime update join the
@@ -3680,6 +3748,7 @@ impl RolloutWorld {
         self.ability_pickups_integrate(data, physics_dt);
         self.guided_missiles_integrate(data, physics_dt);
         self.thrown_items_integrate(data, updater_dt, physics_dt);
+        self.portal_shots_integrate(physics_dt);
         self.rocks_integrate(physics_dt);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
@@ -3717,6 +3786,7 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
+        self.portal_shots_contacts(data);
         self.black_hole_contacts(data);
         self.drill_contacts();
         self.ability_pickups_contacts(data);
@@ -3763,6 +3833,717 @@ impl RolloutWorld {
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
+    }
+
+    fn spawn_portal_shot(
+        &mut self,
+        owner: usize,
+        ability_slot: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let blue = self.players[owner].portal_blue[ability_slot]
+            .is_none_or(|portal| !self.portals[portal].active)
+            || self.players[owner].portal_orange[ability_slot]
+                .is_some_and(|portal| self.portals[portal].active);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.portal_gun.shot_updatable_count;
+        let position = self.players[owner].base.position + direction * data.portal_gun.spawn_offset;
+        let mut body = data.portal_gun.shot_body;
+        body.velocity = direction * data.portal_gun.shot_speed;
+        let shot = PortalShotState {
+            active: true,
+            registered: true,
+            born_tick: self.tick,
+            owner,
+            ability_slot,
+            ability_generation: self.players[owner].ability_generation,
+            blue,
+            hierarchy_base,
+            position,
+            body,
+            ..PortalShotState::default()
+        };
+        let shot_index = self
+            .portal_shots
+            .iter()
+            .position(|candidate| !candidate.active && !candidate.remove_next_tick);
+        let entity = if let Some(shot_index) = shot_index {
+            self.portal_shots[shot_index].entity.unwrap_or_else(|| {
+                let entity = self.entities.len();
+                self.entities.push(CEntity::default());
+                entity
+            })
+        } else {
+            let entity = self.entities.len();
+            self.entities.push(CEntity::default());
+            entity
+        };
+        let id = self.next_id();
+        self.entities[entity] = CEntity {
+            id,
+            kind: 0,
+            layer: data.portal_gun.shot_layer,
+            owner: self.players[owner].base.id,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + hierarchy_base + data.portal_gun.shot_collider_hierarchy,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            vx: body.velocity.x.raw(),
+            vy: body.velocity.y.raw(),
+            radius: data.portal_gun.shot_radius.raw(),
+            inverse_mass: body.inverse_mass.raw(),
+            ..CEntity::default()
+        };
+        let shot = PortalShotState {
+            entity: Some(entity),
+            ..shot
+        };
+        if let Some(shot_index) = shot_index {
+            self.portal_shots[shot_index] = shot;
+        } else {
+            self.portal_shots.push(shot);
+        }
+    }
+
+    fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for shot_index in 0..self.portal_shots.len() {
+            if self.portal_shots[shot_index].remove_next_tick {
+                if let Some(entity) = self.portal_shots[shot_index].entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+                self.portal_shots[shot_index].remove_next_tick = false;
+                continue;
+            }
+            if !self.portal_shots[shot_index].active {
+                continue;
+            }
+            // Updater snapshots the updatable list for the pass. ManualInit
+            // registers DetPhysics immediately, so a cast-pass shot moves but
+            // PortalShot.UpdateSim does not start its flight clock until the
+            // following pass.
+            if self.portal_shots[shot_index].born_tick == self.tick {
+                continue;
+            }
+            self.portal_shots[shot_index].time_alive += updater_dt * self.player_time_scale;
+            if self.portal_shots[shot_index].time_alive > data.portal_gun.max_flight_seconds {
+                let mut outward = -self.portal_shots[shot_index]
+                    .body
+                    .velocity
+                    .normalized_safe();
+                if outward.length_squared() < Fix::from_f32(0.01) {
+                    outward = Vec2::UP;
+                }
+                self.land_portal_shot(shot_index, outward, false, data);
+            }
+        }
+    }
+
+    fn portal_shots_integrate(&mut self, physics_dt: Fix) {
+        for shot in &mut self.portal_shots {
+            if !shot.active || !shot.registered {
+                continue;
+            }
+            shot.position += shot.body.integrate(physics_dt, Fix::ZERO);
+            let entity = shot.entity.expect("registered PortalShot collider");
+            let row = &mut self.entities[entity];
+            row.x = shot.position.x.raw();
+            row.y = shot.position.y.raw();
+            row.vx = shot.body.velocity.x.raw();
+            row.vy = shot.body.velocity.y.raw();
+            row.rotation = shot.body.orientation.raw();
+            row.angular_velocity = shot.body.angular_velocity.raw();
+        }
+    }
+
+    fn portal_shots_contacts(&mut self, data: &data::RolloutData) {
+        for shot_index in 0..self.portal_shots.len() {
+            if !self.portal_shots[shot_index].active {
+                continue;
+            }
+            let circle = Circle {
+                center: self.portal_shots[shot_index].position,
+                radius: data.portal_gun.shot_radius,
+            };
+            let Some((wall_index, contact)) =
+                self.platforms
+                    .iter()
+                    .enumerate()
+                    .find_map(|(wall_index, wall)| {
+                        crate::physics::contact::circle_rounded(circle, wall.collider)
+                            .map(|contact| (wall_index, contact))
+                    })
+            else {
+                continue;
+            };
+            let shot_position = self.portal_shots[shot_index].position;
+            let wall_position = self.platforms[wall_index].surface.center;
+            let correction = {
+                let shot_body = &mut self.portal_shots[shot_index].body;
+                let wall_body = &mut self.platform_dynamics[wall_index].body;
+                resolve(contact, shot_body, wall_body, shot_position, wall_position);
+                positional_correction(
+                    contact,
+                    shot_body.inverse_mass,
+                    wall_body.inverse_mass,
+                    false,
+                )
+            };
+            self.portal_shots[shot_index].position += correction[0];
+            self.platforms[wall_index].surface.center += correction[1];
+            self.platforms[wall_index].collider.inner.center += correction[1];
+            if correction[1] != Vec2::ZERO {
+                self.platforms_changed();
+            }
+            if let Some(entity) = self.portal_shots[shot_index].entity {
+                let shot = self.portal_shots[shot_index];
+                let row = &mut self.entities[entity];
+                row.x = shot.position.x.raw();
+                row.y = shot.position.y.raw();
+                row.vx = shot.body.velocity.x.raw();
+                row.vy = shot.body.velocity.y.raw();
+                row.rotation = shot.body.orientation.raw();
+                row.angular_velocity = shot.body.angular_velocity.raw();
+            }
+            self.land_portal_shot(shot_index, -contact.normal, true, data);
+        }
+    }
+
+    fn land_portal_shot(
+        &mut self,
+        shot_index: usize,
+        outward_normal: Vec2,
+        by_callback: bool,
+        data: &data::RolloutData,
+    ) {
+        let shot = self.portal_shots[shot_index];
+        let gun_alive = shot.owner < self.players.len()
+            && self.players[shot.owner].base.alive
+            && self.players[shot.owner].ability_generation == shot.ability_generation
+            && self.players[shot.owner].abilities[shot.ability_slot] == ABILITY_PORTAL_GUN;
+        if gun_alive {
+            self.place_portal(shot, outward_normal, data);
+        }
+        let shot = &mut self.portal_shots[shot_index];
+        shot.active = false;
+        shot.registered = false;
+        shot.remove_next_tick = by_callback;
+        if let Some(entity) = shot.entity {
+            let row = &mut self.entities[entity];
+            row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+            row.owner = 0;
+        }
+    }
+
+    fn place_portal(
+        &mut self,
+        shot: PortalShotState,
+        outward_normal: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let owner = shot.owner;
+        let ability_slot = shot.ability_slot;
+        if shot.blue {
+            for old in [
+                self.players[owner].portal_blue[ability_slot],
+                self.players[owner].portal_orange[ability_slot],
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.close_portal(old);
+            }
+            self.players[owner].portal_orange[ability_slot] = None;
+        } else if let Some(old) = self.players[owner].portal_orange[ability_slot] {
+            self.close_portal(old);
+        }
+
+        let mut normalized = outward_normal.normalized_safe();
+        if normalized == Vec2::ZERO {
+            normalized = Vec2::UP;
+        }
+        let normal = if normalized.x.abs() >= normalized.y.abs() {
+            if normalized.x >= Fix::ZERO {
+                Vec2::RIGHT
+            } else {
+                -Vec2::RIGHT
+            }
+        } else if normalized.y >= Fix::ZERO {
+            Vec2::UP
+        } else {
+            -Vec2::UP
+        };
+        let endpoint = PortalEndpoint {
+            active: true,
+            owner,
+            ability_slot,
+            ability_generation: shot.ability_generation,
+            position: shot.position + normalized * Fix::from_f32(0.55),
+            normal,
+            tangent: Vec2::new(-normal.y, normal.x),
+            ..PortalEndpoint::default()
+        };
+        let endpoint_index = self
+            .portals
+            .iter()
+            .position(|candidate| !candidate.active)
+            .unwrap_or(self.portals.len());
+        assert!(endpoint_index < 64, "active Portal endpoint pool exceeded");
+        if endpoint_index == self.portals.len() {
+            self.portals.push(endpoint);
+        } else {
+            // An inactive mouth can still be named by its old gun instance.
+            // Clear those stale references before reusing its bit/index.
+            for slot in &mut self.players {
+                for portal in &mut slot.portal_blue {
+                    if *portal == Some(endpoint_index) {
+                        *portal = None;
+                    }
+                }
+                for portal in &mut slot.portal_orange {
+                    if *portal == Some(endpoint_index) {
+                        *portal = None;
+                    }
+                }
+            }
+            let bit = !(1u64 << endpoint_index);
+            for occupancy in &mut self.portal_body_inside {
+                *occupancy &= bit;
+            }
+            self.portals[endpoint_index] = endpoint;
+        }
+        self.next_spawn_hierarchy += data.portal_gun.portal_updatable_count;
+        if shot.blue {
+            self.players[owner].portal_blue[ability_slot] = Some(endpoint_index);
+        } else {
+            self.players[owner].portal_orange[ability_slot] = Some(endpoint_index);
+            if let Some(blue_index) = self.players[owner].portal_blue[ability_slot]
+                .filter(|&index| self.portals[index].active)
+            {
+                self.portals[blue_index].linked = Some(endpoint_index);
+                self.portals[endpoint_index].linked = Some(blue_index);
+                self.mark_portal_occupants(blue_index, data);
+                self.mark_portal_occupants(endpoint_index, data);
+            }
+        }
+    }
+
+    fn close_portal(&mut self, endpoint: usize) {
+        if endpoint < self.portals.len() {
+            self.portals[endpoint].active = false;
+        }
+    }
+
+    fn portal_inside(endpoint: PortalEndpoint, position: Vec2, data: &data::RolloutData) -> bool {
+        let relative = position - endpoint.position;
+        relative.dot(endpoint.tangent).abs() < data.portal_gun.half_width
+            && relative.dot(endpoint.normal).abs() < data.portal_gun.thickness
+    }
+
+    fn mark_portal_body_bit(
+        occupancy: &mut [u64],
+        ids: &mut [u32],
+        entities: &[CEntity],
+        entity: usize,
+        bit: u64,
+    ) {
+        if ids[entity] != entities[entity].id {
+            ids[entity] = entities[entity].id;
+            occupancy[entity] = 0;
+        }
+        occupancy[entity] |= bit;
+    }
+
+    fn mark_portal_occupants(&mut self, endpoint_index: usize, data: &data::RolloutData) {
+        let endpoint = self.portals[endpoint_index];
+        for player_index in 0..self.players.len() {
+            if self.players[player_index].base.alive
+                && Self::portal_inside(endpoint, self.players[player_index].base.position, data)
+            {
+                let player_id = self.players[player_index].base.id as usize;
+                if player_id < 8 {
+                    self.portals[endpoint_index].player_inside[player_id] = true;
+                }
+            }
+        }
+        if self.portal_body_inside.len() < self.entities.len() {
+            self.portal_body_inside.resize(self.entities.len(), 0);
+            self.portal_body_ids.resize(self.entities.len(), 0);
+        }
+        let bit = 1u64 << endpoint_index;
+        for arrow in &self.arrows {
+            if let Some(entity) = arrow.entity.filter(|_| arrow.active && arrow.registered)
+                && Self::portal_inside(endpoint, arrow.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for pickup in &self.ability_pickups {
+            if let Some(entity) = pickup
+                .entity
+                .filter(|_| pickup.active && pickup.enabled && pickup.body.inverse_mass > Fix::ZERO)
+                && Self::portal_inside(endpoint, pickup.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for item in &self.thrown_items {
+            if let Some(entity) = item
+                .entity
+                .filter(|_| item.active && item.body.inverse_mass > Fix::ZERO)
+                && Self::portal_inside(endpoint, item.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for missile in &self.guided_missiles {
+            if let Some(entity) = missile.entity.filter(|_| {
+                missile.active && missile.registered && missile.body.inverse_mass > Fix::ZERO
+            }) && Self::portal_inside(endpoint, missile.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for marker in &self.revival_marker_pool {
+            if let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered)
+                && Self::portal_inside(endpoint, marker.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for marker in &self.teleport_marker_pool {
+            if let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered)
+                && Self::portal_inside(endpoint, marker.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for slot in &self.players {
+            if slot.active == ActiveAbility::Rock
+                && slot.rock_entity != usize::MAX
+                && Self::portal_inside(endpoint, slot.base.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    slot.rock_entity,
+                    bit,
+                );
+            }
+        }
+        for platform_index in 0..self.platforms.len() {
+            let held = self.macho_boulders.iter().any(|boulder| {
+                boulder.active && boulder.platform_index == platform_index && boulder.held
+            });
+            let entity = self.platform_entities[platform_index];
+            if !held
+                && self.platform_dynamics[platform_index].body.inverse_mass > Fix::ZERO
+                && self.entities[entity].flags & E_ACTIVE != 0
+                && Self::portal_inside(
+                    endpoint,
+                    self.platform_dynamics[platform_index].composite_position,
+                    data,
+                )
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+    }
+
+    fn portal_body_exit(
+        &mut self,
+        endpoint_index: usize,
+        entity: usize,
+        position: Vec2,
+        data: &data::RolloutData,
+    ) -> Option<(PortalEndpoint, Vec2)> {
+        if entity >= self.portal_body_inside.len() {
+            self.portal_body_inside.resize(self.entities.len(), 0);
+            self.portal_body_ids.resize(self.entities.len(), 0);
+        }
+        let entity_id = self.entities[entity].id;
+        if self.portal_body_ids[entity] != entity_id {
+            self.portal_body_ids[entity] = entity_id;
+            self.portal_body_inside[entity] = 0;
+        }
+        let endpoint = self.portals[endpoint_index];
+        let mask = 1u64 << endpoint_index;
+        if !Self::portal_inside(endpoint, position, data) {
+            self.portal_body_inside[entity] &= !mask;
+            return None;
+        }
+        if self.portal_body_inside[entity] & mask != 0 {
+            return None;
+        }
+        self.portal_body_inside[entity] |= mask;
+        let linked = endpoint
+            .linked
+            .filter(|&linked| linked < self.portals.len() && self.portals[linked].active)?;
+        self.portal_body_inside[entity] |= 1u64 << linked;
+        let exit = self.portals[linked];
+        Some((
+            exit,
+            exit.position + exit.normal * data.portal_gun.exit_offset,
+        ))
+    }
+
+    fn portal_velocity(entry: PortalEndpoint, exit: PortalEndpoint, velocity: Vec2) -> Vec2 {
+        let inward = (-velocity.dot(entry.normal)).max(Fix::from_int(2));
+        let sideways = velocity.dot(entry.tangent);
+        exit.normal * inward - exit.tangent * sideways
+    }
+
+    fn portal_objects_tick(&mut self, endpoint_index: usize, data: &data::RolloutData) {
+        let entry = self.portals[endpoint_index];
+        for index in 0..self.arrows.len() {
+            let arrow = self.arrows[index];
+            let Some(entity) = arrow.entity.filter(|_| arrow.active && arrow.registered) else {
+                continue;
+            };
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, arrow.position, data)
+            {
+                self.arrows[index].position = position;
+                self.arrows[index].velocity = Self::portal_velocity(entry, exit, arrow.velocity);
+            }
+        }
+        for index in 0..self.ability_pickups.len() {
+            let pickup = self.ability_pickups[index];
+            let Some(entity) = pickup.entity.filter(|_| {
+                pickup.active && pickup.enabled && pickup.body.inverse_mass > Fix::ZERO
+            }) else {
+                continue;
+            };
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, pickup.position, data)
+            {
+                self.ability_pickups[index].position = position;
+                self.ability_pickups[index].body.velocity =
+                    Self::portal_velocity(entry, exit, pickup.body.velocity);
+            }
+        }
+        for index in 0..self.thrown_items.len() {
+            let item = self.thrown_items[index];
+            let Some(entity) = item
+                .entity
+                .filter(|_| item.active && item.body.inverse_mass > Fix::ZERO)
+            else {
+                continue;
+            };
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, item.position, data)
+            {
+                self.thrown_items[index].position = position;
+                self.thrown_items[index].body.velocity =
+                    Self::portal_velocity(entry, exit, item.body.velocity);
+            }
+        }
+        for index in 0..self.guided_missiles.len() {
+            let missile = self.guided_missiles[index];
+            let Some(entity) = missile.entity.filter(|_| {
+                missile.active && missile.registered && missile.body.inverse_mass > Fix::ZERO
+            }) else {
+                continue;
+            };
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, missile.position, data)
+            {
+                let velocity = Self::portal_velocity(entry, exit, missile.body.velocity);
+                self.guided_missiles[index].position = position;
+                self.guided_missiles[index].body.velocity = velocity;
+                if velocity != Vec2::ZERO {
+                    self.guided_missiles[index].up = velocity.normalized_safe();
+                }
+            }
+        }
+        for index in 0..self.revival_marker_pool.len() {
+            let marker = self.revival_marker_pool[index];
+            let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered) else {
+                continue;
+            };
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, marker.position, data)
+            {
+                self.revival_marker_pool[index].position = position;
+                self.revival_marker_pool[index].velocity =
+                    Self::portal_velocity(entry, exit, marker.velocity);
+            }
+        }
+        for index in 0..self.teleport_marker_pool.len() {
+            let marker = self.teleport_marker_pool[index];
+            let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered) else {
+                continue;
+            };
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, marker.position, data)
+            {
+                self.teleport_marker_pool[index].position = position;
+                self.teleport_marker_pool[index].velocity =
+                    Self::portal_velocity(entry, exit, marker.velocity);
+            }
+        }
+        for index in 0..self.players.len() {
+            if self.players[index].active != ActiveAbility::Rock
+                || self.players[index].rock_entity == usize::MAX
+            {
+                continue;
+            }
+            let entity = self.players[index].rock_entity;
+            let position = self.players[index].base.position;
+            if let Some((exit, destination)) =
+                self.portal_body_exit(endpoint_index, entity, position, data)
+            {
+                let velocity = self.players[index].rock.body.velocity;
+                self.players[index].base.position = destination;
+                self.players[index].rock.body.velocity =
+                    Self::portal_velocity(entry, exit, velocity);
+                self.players[index].base.velocity = self.players[index].rock.body.velocity;
+            }
+        }
+        let mut platforms_changed = false;
+        for platform_index in 0..self.platforms.len() {
+            let held = self.macho_boulders.iter().any(|boulder| {
+                boulder.active && boulder.platform_index == platform_index && boulder.held
+            });
+            let entity = self.platform_entities[platform_index];
+            if held
+                || self.platform_dynamics[platform_index].body.inverse_mass <= Fix::ZERO
+                || self.entities[entity].flags & E_ACTIVE == 0
+            {
+                continue;
+            }
+            let old_position = self.platform_dynamics[platform_index].composite_position;
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, old_position, data)
+            {
+                let velocity = self.platform_dynamics[platform_index].body.velocity;
+                let delta = position - old_position;
+                self.platform_dynamics[platform_index].composite_position = position;
+                self.platform_dynamics[platform_index].body.velocity =
+                    Self::portal_velocity(entry, exit, velocity);
+                self.platforms[platform_index].surface.center += delta;
+                self.platforms[platform_index].collider.inner.center += delta;
+                platforms_changed = true;
+            }
+        }
+        if platforms_changed {
+            self.platforms_changed();
+        }
+    }
+
+    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        if self.portal_body_inside.len() < self.entities.len() {
+            self.portal_body_inside.resize(self.entities.len(), 0);
+            self.portal_body_ids.resize(self.entities.len(), 0);
+        }
+        for endpoint_index in 0..self.portals.len() {
+            if !self.portals[endpoint_index].active {
+                continue;
+            }
+            self.portals[endpoint_index].time_alive += updater_dt * self.player_time_scale;
+            if self.portals[endpoint_index].time_alive > data.portal_gun.lifetime_seconds {
+                if let Some(linked) = self.portals[endpoint_index].linked
+                    && linked < self.portals.len()
+                    && self.portals[linked].active
+                {
+                    self.close_portal(linked);
+                }
+                self.close_portal(endpoint_index);
+                continue;
+            }
+            let endpoint = self.portals[endpoint_index];
+            for player_index in 0..self.players.len() {
+                if !self.players[player_index].base.alive
+                    || self.players[player_index].active != ActiveAbility::None
+                    || self.players[player_index].respawn_ticks != 0
+                    || self.players[player_index].respawn_spawn_ticks != 0
+                    || self.players[player_index].revival_clone_pending
+                    || self.players[player_index].stock_clone_pending
+                    || self.players[player_index].teleport_effect_active
+                    || self.players[player_index].blink_tunnel_active
+                {
+                    continue;
+                }
+                let player_id = self.players[player_index].base.id as usize;
+                if player_id >= 8 {
+                    continue;
+                }
+                let inside =
+                    Self::portal_inside(endpoint, self.players[player_index].base.position, data);
+                if !inside {
+                    self.portals[endpoint_index].player_inside[player_id] = false;
+                    continue;
+                }
+                if self.portals[endpoint_index].player_inside[player_id] {
+                    continue;
+                }
+                self.portals[endpoint_index].player_inside[player_id] = true;
+                let Some(linked) = endpoint
+                    .linked
+                    .filter(|&linked| linked < self.portals.len() && self.portals[linked].active)
+                else {
+                    continue;
+                };
+                self.portals[linked].player_inside[player_id] = true;
+                let vin = self.players[player_index].base.velocity
+                    + self.players[player_index].base.external_velocity;
+                let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
+                let sideways = vin.dot(endpoint.tangent);
+                let exit = self.portals[linked];
+                self.players[player_index]
+                    .base
+                    .force_unground(&self.platforms);
+                let slot = &mut self.players[player_index];
+                slot.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
+                slot.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
+                slot.base.external_velocity = Vec2::ZERO;
+                slot.base.skip_next_gravity = true;
+            }
+            self.portal_objects_tick(endpoint_index, data);
+        }
     }
 
     fn playable(&self, index: usize) -> bool {
@@ -3984,6 +4765,22 @@ impl RolloutWorld {
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
+                        break;
+                    }
+                    ABILITY_PORTAL_GUN => {
+                        let mut direction = action.direction();
+                        if direction.length_squared() < Fix::from_f32(0.04) {
+                            direction = if self.players[index].facing_right {
+                                Vec2::RIGHT
+                            } else {
+                                -Vec2::RIGHT
+                            };
+                        } else {
+                            direction = direction.normalized_safe();
+                        }
+                        self.players[index].timers[s] = Fix::ZERO;
+                        self.players[index].telemetry.ability_activations[s] += 1;
+                        self.spawn_portal_shot(index, s, direction, data);
                         break;
                     }
                     ABILITY_REWIND => {
@@ -9373,6 +10170,8 @@ impl RolloutWorld {
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
+            slot.portal_blue = [None; 3];
+            slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
@@ -9761,6 +10560,8 @@ impl RolloutWorld {
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
+            slot.portal_blue = [None; 3];
+            slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
@@ -15409,6 +16210,8 @@ impl RolloutWorld {
         // instance. The independent indicator survives, but a replacement
         // slime receives a fresh ability with no route back to that marker.
         slot.teleport_markers = [None; 3];
+        slot.portal_blue = [None; 3];
+        slot.portal_orange = [None; 3];
         slot.spike_attacks = [None; 3];
         if killer >= 1 && killer <= players as u32 {
             self.players[killer as usize - 1].kills += 1;

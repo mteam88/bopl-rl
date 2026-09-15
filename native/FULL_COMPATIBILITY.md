@@ -2013,6 +2013,7 @@ Dedicated Shockwave, scale-change, arrow-attachment, projectile/item-detonation,
 and mixed transformed-form contact scenarios remain open, so coverage is marked
 partial.
 
+
 ### Executable Push platform control (2026-09-14)
 
 Catalog id 22 now executes the grounded `ControlPlatform` form. Entry copies the
@@ -2479,3 +2480,43 @@ contact or branch changes. State and hitbox storage are inline or retained and
 the tick path allocates nothing. Rope detachment and direct Shockwave pushing
 remain to be exercised as composed interactions, so catalog coverage remains
 partial.
+
+### Executable Portal Gun, linked planes and rigid-body transit (2026-09-15)
+
+Catalog id 38 now executes the shipped instant `PortalGun`. A neutral aim uses
+the slime's facing direction; a directed aim is normalized before the shot is
+instantiated 1.7 units from the live body with speed 22. `ManualInit` registers
+the 0.3-radius layer-10 collider immediately, so DetPhysics moves it on the cast
+pass even though `PortalShot.UpdateSim` does not start its clock until the next
+updater snapshot. A strict 1.2-second timeout plants a free-floating mouth
+facing the shooter and removes the collider in that updater pass. A wall
+contact first applies ordinary BoplBody resolution and positional correction,
+then plants using the negated contact normal and retains the destroyed row for
+the callback pass.
+
+The first landed shot replaces any old pair with blue; the second replaces
+orange and links both mouths. Each endpoint sits 0.55 units outside the hit
+position and snaps its normalized normal to the dominant axis. Capture uses
+the source's strict 1.6-by-0.6 plane bounds. Per-player flags and retained
+per-body bitsets reproduce link-time marking, exit-mouth marking, and the rule
+that a body must leave before it can traverse again. Player transit combines
+self-imposed and external velocity, ungrounds without resetting rotation,
+zeros external velocity, and skips the next PlayerPhysics pass. Portalable
+arrows, pickups, thrown items, guided missiles, Rock bodies, Revival/Teleport
+markers and movable rounded bodies use the same mirrored momentum map. Pool
+indices and entity generations keep that hysteresis allocation-free during
+ticks and safe when projectile rows are reused. A strict 25-second endpoint
+clock closes both linked mouths.
+
+`portal_gun_ability_ab.c` compares 1,290 NativeAOT/Rust Q32 ticks. The primary
+900-tick scenario is exact across cast readiness, collider identity and
+hierarchy, every projectile position, the tick-254 timeout, the tick-270
+wall-callback row, the tick-275 player transit, pair replacement, and the
+second timeout. A composed Grenade crosses on tick 383 in both backends and
+lands at the same exit. Its mapped velocity differs by less than 0.0024
+units/second because the existing ThrowItem2 port creates that grenade 0.0185
+units away from NativeAOT before portal capture; the portal resets its position
+and preserves the already-different incoming components, so no capture,
+branch, or lifecycle decision differs. Interactions with the five catalog
+abilities that remain unimplemented have not yet been exercised, so coverage
+is marked partial.

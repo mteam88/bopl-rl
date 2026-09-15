@@ -303,7 +303,8 @@
       "name": "Portal gun",
       "prefab": "Assets/GameObject/Portal gun.prefab",
       "prefab_guid": "63655ac5f0ee4fbe8e325a3705bbf15b",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Executable instant cast, PortalShot rigid-body flight and wall/timeout landing, dominant-axis portal planes, pair replacement/linking, strict hysteresis, player and portalable rigid-body momentum mapping, and linked lifetime closure. portal_gun_ability_ab compares 1,290 NativeAOT/Rust Q32 ticks: the 900-tick primary scenario is exact, and a grenade crosses on the same tick with only the documented pre-existing ThrowItem2 launch-pose drift."
     }
   ]
 }

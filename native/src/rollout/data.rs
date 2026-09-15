@@ -226,6 +226,7 @@ struct RawPrefabs {
     gust: RawGust,
     revival: RawRevival,
     teleport: RawTeleport,
+    portal_gun: RawPortalGun,
     grenade: RawGrenade,
     missile: RawMissile,
     mine: RawMine,
@@ -959,6 +960,23 @@ struct RawTeleportMarker {
 }
 
 #[derive(Deserialize)]
+struct RawPortalGun {
+    shot_speed: i64,
+    spawn_offset: i64,
+    shot_layer: u32,
+    shot_updatable_count: u32,
+    shot_collider_hierarchy: u32,
+    shot_radius: i64,
+    shot_body: RawBody,
+    max_flight_seconds: i64,
+    portal_updatable_count: u32,
+    half_width: i64,
+    thickness: i64,
+    exit_offset: i64,
+    lifetime_seconds: i64,
+}
+
+#[derive(Deserialize)]
 struct RawGustAnimations {
     #[serde(rename = "castAir")]
     cast_air: Vec<i32>,
@@ -1212,6 +1230,21 @@ pub struct TeleportData {
     pub marker_body: crate::physics::Body,
     pub effect_updatable_count: u32,
     pub effect_duration: Fix,
+}
+pub struct PortalGunData {
+    pub shot_speed: Fix,
+    pub spawn_offset: Fix,
+    pub shot_layer: u32,
+    pub shot_updatable_count: u32,
+    pub shot_collider_hierarchy: u32,
+    pub shot_radius: Fix,
+    pub shot_body: crate::physics::Body,
+    pub max_flight_seconds: Fix,
+    pub portal_updatable_count: u32,
+    pub half_width: Fix,
+    pub thickness: Fix,
+    pub exit_offset: Fix,
+    pub lifetime_seconds: Fix,
 }
 pub struct GrenadeData {
     pub hurtbox_extents: Vec2,
@@ -1790,6 +1823,7 @@ pub struct RolloutData {
     pub gust: GustData,
     pub revival: RevivalData,
     pub teleport: TeleportData,
+    pub portal_gun: PortalGunData,
     pub grenade: GrenadeData,
     pub missile: MissileData,
     pub mine: MineData,
@@ -2213,6 +2247,24 @@ pub fn get() -> &'static RolloutData {
                     marker_body: body(&teleport.marker.body, Fix::ZERO),
                     effect_updatable_count: teleport.effect_updatable_count,
                     effect_duration: Fix::from_raw(teleport.effect_duration),
+                }
+            },
+            portal_gun: {
+                let portal = &raw.prefabs.portal_gun;
+                PortalGunData {
+                    shot_speed: Fix::from_raw(portal.shot_speed),
+                    spawn_offset: Fix::from_raw(portal.spawn_offset),
+                    shot_layer: portal.shot_layer,
+                    shot_updatable_count: portal.shot_updatable_count,
+                    shot_collider_hierarchy: portal.shot_collider_hierarchy,
+                    shot_radius: Fix::from_raw(portal.shot_radius),
+                    shot_body: body(&portal.shot_body, Fix::ZERO),
+                    max_flight_seconds: Fix::from_raw(portal.max_flight_seconds),
+                    portal_updatable_count: portal.portal_updatable_count,
+                    half_width: Fix::from_raw(portal.half_width),
+                    thickness: Fix::from_raw(portal.thickness),
+                    exit_offset: Fix::from_raw(portal.exit_offset),
+                    lifetime_seconds: Fix::from_raw(portal.lifetime_seconds),
                 }
             },
             grenade: {

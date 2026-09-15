@@ -531,6 +531,31 @@ def main():
         "effect_duration": fix(teleport_effect_config, "duration"),
     }
 
+    # ---- Portal gun, its dynamic shot, and retained linked endpoints ----
+    _, portal_gun_prefab = find_prefab("Assets/GameObject/Portal gun.prefab")
+    portal_gun = component(portal_gun_prefab, "PortalGun")
+    portal_shot_prefab = ASSETS[guid_of(portal_gun["shotPrefab"])]
+    portal_shot = component(portal_shot_prefab, "PortalShot")
+    portal_shot_body = component(portal_shot_prefab, "BoplBody")
+    portal_shot_circle = component(portal_shot_prefab, "DPhysicsCircle")
+    portal_prefab = ASSETS[guid_of(portal_gun["portalPrefab"])]
+    portal = component(portal_prefab, "Portal")
+    out["prefabs"]["portal_gun"] = {
+        "shot_speed": fix(portal_gun, "shotSpeed"),
+        "spawn_offset": fix(portal_gun, "spawnOffset"),
+        "shot_layer": portal_shot_prefab["data"].get("layer"),
+        "shot_updatable_count": updater_count(portal_shot_prefab),
+        "shot_collider_hierarchy": portal_shot_circle["hierarchyNumber"],
+        "shot_radius": fix(portal_shot_circle, "startRadius"),
+        "shot_body": physics_body(portal_shot_body),
+        "max_flight_seconds": fix(portal_shot, "maxFlightSeconds"),
+        "portal_updatable_count": updater_count(portal_prefab),
+        "half_width": fix(portal, "halfWidth"),
+        "thickness": fix(portal, "thickness"),
+        "exit_offset": fix(portal, "exitOffset"),
+        "lifetime_seconds": fix(portal, "lifetimeSeconds"),
+    }
+
     # ---- Grenade / shared ThrowItem2 item path ----
     _, grenade_ability = find_prefab("Assets/GameObject/Grenade_0.prefab")
     grenade_throw = component(grenade_ability, "ThrowItem2")
