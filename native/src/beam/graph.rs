@@ -78,6 +78,7 @@ pub struct Graph {
     pub(super) hits: Vec<Option<u32>>,
     pub(super) crossing: Vec<Crossing>,
     previous: Vec<Record>,
+    #[serde(default, skip_serializing)]
     previous_reflected: Vec<i32>,
     mapping: Vec<(i32, usize)>,
     pub(super) count: usize,
