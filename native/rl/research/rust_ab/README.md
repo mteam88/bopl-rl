@@ -92,6 +92,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   both time-zero impulses, the complete force curve and subsequent item flight.
 - `gust_arrow_ab.c`: a live Bow Arrow captured by Gust, including the split
   init/Arrow-update/wave-update ordering, force curve and projectile flight.
+- `gust_missile_ab.c`: a live guided Missile box captured by Gust, including
+  the full force curve, later right-boundary explosion and prefab hierarchy.
 - `magnet_ability_ab.c`: Magnet's first-pass pull, rounded-platform impulses,
   player pull, grounded and airborne form motion, release recoil, landing and
   animation exits over 1,000 optimized-Q32 ticks. The active form centre allows

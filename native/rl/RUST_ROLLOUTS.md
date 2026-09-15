@@ -130,6 +130,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   both time-zero impulses and the full curve with exact pooled-body motion. A
   composed Arrow receives the same force path while preserving source updater
   order: wave initialization, Arrow orientation, then the wave's normal update.
+  A guided Missile exercises the corresponding oriented-box capture and pooled
+  body impulse path through its later boundary explosion. Shockwave allocation
+  also reserves its source `MonoUpdatable` hierarchy entry, keeping subsequent
+  spawned prefab identities exact.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same

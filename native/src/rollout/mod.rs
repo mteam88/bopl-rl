@@ -1469,6 +1469,8 @@ pub struct GustWave {
     pub item_indices: [usize; 50],
     pub arrow_count: usize,
     pub arrow_indices: [usize; 50],
+    pub missile_count: usize,
+    pub missile_indices: [usize; 50],
 }
 impl Default for GustWave {
     fn default() -> Self {
@@ -1484,6 +1486,8 @@ impl Default for GustWave {
             item_indices: [usize::MAX; 50],
             arrow_count: 0,
             arrow_indices: [usize::MAX; 50],
+            missile_count: 0,
+            missile_indices: [usize::MAX; 50],
         }
     }
 }
@@ -7068,6 +7072,7 @@ impl RolloutWorld {
         slot.gust.ticks += 1;
         if slot.gust.phase == 0 && slot.gust.ticks > data.gust.cast_ticks {
             let wave = index * 3 + slot.active_slot;
+            self.next_spawn_hierarchy += data.gust.shockwave_updatable_count;
             self.gust_waves[wave] = GustWave {
                 active: true,
                 born_tick: self.tick,
@@ -12306,7 +12311,8 @@ impl RolloutWorld {
                 radius: data.gust.radius,
             };
             for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
-                if wave.target_count + wave.item_count + wave.arrow_count == wave.platform_ids.len()
+                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
+                    == wave.platform_ids.len()
                 {
                     break;
                 }
@@ -12323,7 +12329,8 @@ impl RolloutWorld {
             // Thrown items are pooled, so retain stable pool indices rather
             // than allocating a per-wave object set.
             for (item_index, item) in self.thrown_items.iter().enumerate() {
-                if wave.target_count + wave.item_count + wave.arrow_count == wave.platform_ids.len()
+                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
+                    == wave.platform_ids.len()
                     || !item.active
                     || item.entity.is_none()
                 {
@@ -12348,7 +12355,8 @@ impl RolloutWorld {
                 }
             }
             for (arrow_index, arrow) in self.arrows.iter().enumerate() {
-                if wave.target_count + wave.item_count + wave.arrow_count == wave.platform_ids.len()
+                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
+                    == wave.platform_ids.len()
                     || !arrow.active
                     || !arrow.registered
                 {
@@ -12365,6 +12373,24 @@ impl RolloutWorld {
                 {
                     wave.arrow_indices[wave.arrow_count] = arrow_index;
                     wave.arrow_count += 1;
+                }
+            }
+            for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
+                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
+                    == wave.platform_ids.len()
+                    || !missile.active
+                    || !missile.registered
+                {
+                    continue;
+                }
+                let collider = OrientedBox::from_basis(
+                    missile.position,
+                    Vec2::angle(missile.body.orientation),
+                    data.missile.spark_extents,
+                );
+                if crate::physics::contact::circle_box(query, collider).is_some() {
+                    wave.missile_indices[wave.missile_count] = missile_index;
+                    wave.missile_count += 1;
                 }
             }
             // Player-layer colliders are processed during activation and are
@@ -12484,6 +12510,22 @@ impl RolloutWorld {
                 * strength
                 * Fix::from_int(60);
             arrow.velocity += impulse * data.arrow.body.inverse_mass;
+        }
+        for target in 0..wave.missile_count {
+            let missile_index = wave.missile_indices[target];
+            let Some(missile) = self.guided_missiles.get_mut(missile_index) else {
+                continue;
+            };
+            if !missile.active || !missile.registered {
+                continue;
+            }
+            let direction = missile.position - wave.position;
+            let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+            let impulse = direction.normalized_safe()
+                * (data.gust.default_force / distance)
+                * strength
+                * Fix::from_int(60);
+            missile.body.apply_impulse(impulse, Vec2::ZERO);
         }
         self.gust_waves[wave_index] = wave;
         if applied {

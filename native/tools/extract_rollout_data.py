@@ -469,6 +469,7 @@ def main():
         "shockwave_offset": vec2(gust_quick, "shockwaveOffset"),
         "collider_offset": vec2(gust_fix, "offset"),
         "hurtbox_radius": fix(gust_circle, "startRadius"),
+        "shockwave_updatable_count": updater_count(gust_spell),
         "platform_force": fix(gust_wave, "platformForce"),
         "default_force": fix(gust_wave, "defaultForce"),
         "grounded_multiplier": fix(gust_wave, "groundedPlayerForceMultiplier"),

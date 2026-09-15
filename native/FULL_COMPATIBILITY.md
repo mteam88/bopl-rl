@@ -1197,6 +1197,16 @@ target capture, split initialization/Arrow/wave updater order, complete curve,
 later flight and every lifecycle field match NativeAOT within the existing
 64-raw-Q32 grouped transform bound.
 
+`gust_missile_ab.c` composes the layer-10 guided Missile box with Gust for 340
+ticks. Missile entry starts on tick 154, the Spark registers on tick 174, Gust
+enters on tick 225 and its first Missile impulse occurs on tick 232. The exact
+trace continues through instability thrust and the tick-291 right-boundary
+explosion. This exposed a separate identity omission: instantiating
+`AirWave_Shockwave` consumes one updater hierarchy entry even though the wave
+has no public collider. The extractor now records that source-derived count, so
+the later explosion hierarchy matches as well. Every public field is exact
+within 64 raw Q32 units.
+
 
 ## Executable Invisibility and streamed actor verification
 
@@ -2090,8 +2100,11 @@ box/rounded manifold and platform response, callback destruction, deferred
 explosion, first-frame hitbox flags, Shockwave, and the full 82-tick visual
 lifetime. The observed explosion collider axes differ from the serialized
 extents only by the source's `One / (One / extent)` fixed-point scale round trip.
-Projectile/item/form contacts, time-stop and scale interactions, duplication,
-and a dedicated explosion victim remain open, so coverage is marked partial.
+`gust_missile_ab.c` adds exact oriented-box Shockwave capture, the complete Gust
+force curve, right-boundary destruction and the deferred explosion's hierarchy.
+Other projectile/item/form contacts, time-stop and scale interactions,
+duplication, and a dedicated explosion victim remain open, so coverage is
+marked partial.
 
 ### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
 
