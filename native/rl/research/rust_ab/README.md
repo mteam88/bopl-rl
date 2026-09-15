@@ -53,6 +53,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_arrow_ab.c`: a live Bow projectile across Time Stop entry, all
   690 frozen physics passes, and its first restored gravity/flight pass; also
   verifies source-derived Arrow prefab hierarchy allocation.
+- `time_stop_bow_ab.c`: an unprotected Bow form charging across all 690 Time
+  Stop passes, followed by restored release, form exit and Arrow registration.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass

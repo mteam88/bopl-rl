@@ -71,6 +71,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   player/gameplay state and bounded inherited long-strand relaxation. An active
   Bow target now dispatches its own nonlethal `PlayerCollision` callback and
   remains stationary rather than receiving the ordinary slime's overlap push.
+  An unprotected active Bow form is also exact across Time Stop: its charge,
+  body and cooldown clocks remain fixed for all 690 stopped passes, then its
+  release and Arrow spawn resume on the restored clock.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
@@ -283,9 +286,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Time Stop is exact through grounded channeling, casting, team protection,
   the 10-second hold plus exit-alpha lifetime, restoration, protected-caster
   cooldowns/motion, and global DetPhysics freezing for the currently ported
-  projectile, item, smoke, explosion and platform bodies. Arrow entry, all 690
-  frozen passes and the first restored projectile pass are exact through the
-  public entity rows. Cross-ability
+  projectile, item, smoke, explosion and platform bodies. Arrow entry, active
+  Bow charge, all 690 frozen passes and the first restored form/projectile
+  passes are exact through the public rows. Cross-ability
   interactions with catalog entries that remain absent inherit those entries'
   open scope.
   Spike is exact through its grounded cast and recovery, opposite-surface

@@ -1970,6 +1970,12 @@ reserves the five updater hierarchy numbers instantiated by its prefab and uses
 the extracted `DPhysicsCircle` hierarchy, which also keeps later dynamic entity
 ordering equal to the source.
 
+`time_stop_bow_ab.c` starts Time Stop while the opposing player is charging an
+active Bow form. The form position, charge phase, ability clocks and every
+public collider field remain exact and fixed through the 690-pass stop. Bow
+then resumes on the first restored clock, releases, exits and registers its
+Arrow with exact source ordering during the remainder of the 1,600-tick trace.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback

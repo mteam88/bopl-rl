@@ -39,7 +39,7 @@
       "prefab": "Assets/GameObject/Bow.prefab",
       "prefab_guid": "39014498316c3ea4fa825e8bba01c406",
       "native_status": "partial",
-      "verification": "Executable BowTransform and arrows are covered by bow_ab, bow_phase_ab, bow_ground_exit_ab, ability_hitbox_ab, dash_arrow_ab, arrow_bounds_ab, time_stop_arrow_ab and the seeded 300-episode fidelity gate. The Q32 form matches charge flags and launch timing, active hurtbox contacts, grounded/airborne entry and exit order, landing, boundary death, projectile eviction, ownership and stock reconstruction. Time Stop freezing/restoration and source Arrow hierarchy allocation are exact. Remaining gaps are composed projectile interactions and cosmetic retained-arrow child history."
+      "verification": "Executable BowTransform and arrows are covered by bow_ab, bow_phase_ab, bow_ground_exit_ab, ability_hitbox_ab, dash_arrow_ab, arrow_bounds_ab, time_stop_arrow_ab, time_stop_bow_ab and the seeded 300-episode fidelity gate. The Q32 form matches charge flags and launch timing, active hurtbox contacts, grounded/airborne entry and exit order, landing, boundary death, projectile eviction, ownership and stock reconstruction. Time Stop projectile and active-form freezing/restoration and source Arrow hierarchy allocation are exact. Remaining gaps are composed projectile interactions and cosmetic retained-arrow child history."
     },
     {
       "id": 5,
@@ -103,7 +103,7 @@
       "prefab": "Assets/GameObject/Time stop.prefab",
       "prefab_guid": "13b1168b7f11655458dddcfce3f9b0ce",
       "native_status": "partial",
-      "verification": "Executable CastSpell and TimeStop are covered by time_stop_ability_ab, magnet_time_stop_ab and time_stop_arrow_ab. Grounded channel/cancel/cast phases, team protection, the float32-derived 690-pass global stop, protected cooldowns and motion, held Grenade behavior, Bow-arrow freeze and first-restored-pass flight are exact. Other active forms, portals, boulders, ropes, scale effects, attachments, Black Holes and pickup replacement remain uncomposed."
+      "verification": "Executable CastSpell and TimeStop are covered by time_stop_ability_ab, magnet_time_stop_ab and time_stop_arrow_ab and time_stop_bow_ab. Grounded channel/cancel/cast phases, team protection, the float32-derived 690-pass global stop, protected cooldowns and motion, held Grenade behavior, Bow-arrow freeze/flight and active-Bow charge/release are exact. Other active forms, portals, boulders, ropes, scale effects, attachments, Black Holes and pickup replacement remain uncomposed."
     },
     {
       "id": 13,
