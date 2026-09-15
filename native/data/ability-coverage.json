@@ -161,7 +161,8 @@
       "name": "Meteor",
       "prefab": "Assets/GameObject/Meteor.prefab",
       "prefab_guid": "cf66511cb6ed3aa41acdad8d6d7915fe",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "meteor_ability_ab matches 1,500 NativeAOT/Rust Q32 ticks across short grounded release, maximum two-second charge, and airborne entry. It covers anticipation/jump/vibration timing, normalized random shake, downward landing, charge-scaled ground impulse, deferred Shockwave forces, one-second platform shake, two-tick smear export/removal, collider handoff, and post-landing movement. Position/axis comparisons allow 50,000 raw Q32 units (<0.000012 world units) for separately rounded FixTransform and normalized-vector fields; platform dynamics match exactly in the measured casts. Ray hits on players/items, DropAllAttachedPlayers, and isolated water/no-hit exits still need dedicated interaction goldens."
     },
     {
       "id": 21,

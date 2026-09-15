@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Shrink ray, Invisibility, Push, Tesla coil, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
-  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/22/23/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Meteor, Shrink ray, Invisibility, Push, Tesla coil, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
+  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/22/23/24/25/31/34/35/36/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -184,6 +184,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   math differ by at most 64 raw Q32 units without changing any collision or
   state decision. Shockwaves, scale changes, arrow attachment, projectile/item
   detonation, and mixed transformed-form contacts still need dedicated goldens.
+  Meteor executes its grounded anticipation and jump, direct airborne entry,
+  normalized random vibration, short and maximum-charge downward release,
+  charge-scaled platform impact, deferred Shockwave impulses, one-second
+  ShakablePlatform displacement, and the two-tick lethal smear. Ray hits on
+  players/items, DropAllAttachedPlayers, and isolated water/no-hit exits remain
+  without dedicated differential scenarios.
   Roll executes its separate PlayerPhysics form, charged ground release,
   serialized Hermite speed curve, source `n/(n+1)` surface substeps, fixed-size
   swept lethal hurtboxes, jump cancel, airborne gravity/control and exit body

@@ -53,6 +53,7 @@ pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_ROLL: u32 = 16;
 pub const ABILITY_SHRINK_RAY: u32 = 17;
+pub const ABILITY_METEOR: u32 = 20;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_PUSH: u32 = 22;
 pub const ABILITY_TESLA: u32 = 23;
@@ -913,6 +914,14 @@ pub struct PlatformDynamics {
     pub mu: Fix,
     pub rotation_speed: Fix,
     pub rotation_mu: Fix,
+    /// ShakablePlatform's transform-space displacement. Meteor writes the
+    /// request after this map updater has run, so the first sample is taken
+    /// on the following pass.
+    pub shake_time: Fix,
+    pub shake_duration: Fix,
+    pub shake_amount: Fix,
+    pub shake_previous: Vec2,
+    pub meteor_shake_curve: bool,
     /// `(orientation, Vec2::angle(orientation))` from the last integration:
     /// a platform that translates without rotating (sudden death, a spring
     /// settling) keeps its basis instead of consulting the sine table twice.
@@ -971,6 +980,65 @@ pub struct RollState {
     pub swept_len: u8,
     pub lethal: bool,
     pub trail_spawned: bool,
+}
+
+/// MeteorSmash's four source states. `position` is the ability PlayerBody;
+/// the original slime remains frozen in `ability_origin` while this is live.
+#[derive(Clone, Copy, Default)]
+pub struct MeteorState {
+    /// 0 anticipation, 1 jump, 2 vibrate, 3 dash.
+    pub phase: u8,
+    pub ticks: u32,
+    pub time: Fix,
+    pub true_min_hold_time: Fix,
+    pub prev_offset: Vec2,
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub external_velocity: Vec2,
+    pub grounded_entry: bool,
+    pub dash_updates: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct MeteorSmear {
+    pub active: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub age: u32,
+    pub center: Vec2,
+    pub right: Vec2,
+    pub up: Vec2,
+}
+
+#[derive(Clone, Copy)]
+pub struct MeteorWave {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub position: Vec2,
+    pub time: Fix,
+    pub ignored_platform: u32,
+    pub owner: usize,
+    pub force_scale: Fix,
+    pub platform_count: usize,
+    pub platforms: [u32; 50],
+}
+impl Default for MeteorWave {
+    fn default() -> Self {
+        Self {
+            active: false,
+            registered: false,
+            born_tick: 0,
+            position: Vec2::ZERO,
+            time: Fix::ZERO,
+            ignored_platform: 0,
+            owner: 0,
+            force_scale: Fix::ONE,
+            platform_count: 0,
+            platforms: [0; 50],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1135,6 +1203,7 @@ pub enum ActiveAbility {
     Smoke,
     Rock,
     Roll,
+    Meteor,
     Push,
     Freeze,
     Blink,
@@ -1223,6 +1292,7 @@ pub struct PlayerSlot {
     pub bow: BowState,
     pub rock: RockState,
     pub roll: RollState,
+    pub meteor: MeteorState,
     pub push: PushState,
     pub gun: GunState,
     pub ragdoll: RagdollState,
@@ -1312,6 +1382,7 @@ pub struct PlayerSlot {
     pub time_stop_entity: usize,
     pub engine_entity: usize,
     pub tesla_entity: usize,
+    pub meteor_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1405,6 +1476,8 @@ pub struct RolloutWorld {
     pub engines: Vec<SpawnedEngine>,
     pub tesla_nodes: Vec<SpawnedTeslaNode>,
     pub destroyed_tesla_lines: Vec<DestroyedTeslaLine>,
+    pub meteor_smears: Vec<MeteorSmear>,
+    pub meteor_waves: Vec<MeteorWave>,
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
@@ -1489,6 +1562,8 @@ impl RolloutWorld {
             engines: Vec::with_capacity(32),
             tesla_nodes: Vec::with_capacity(32),
             destroyed_tesla_lines: Vec::with_capacity(32),
+            meteor_smears: Vec::with_capacity(16),
+            meteor_waves: Vec::with_capacity(16),
             frozen_solids: Vec::with_capacity(32),
             scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
@@ -1560,6 +1635,8 @@ impl RolloutWorld {
         self.tesla_nodes.clone_from(&src.tesla_nodes);
         self.destroyed_tesla_lines
             .clone_from(&src.destroyed_tesla_lines);
+        self.meteor_smears.clone_from(&src.meteor_smears);
+        self.meteor_waves.clone_from(&src.meteor_waves);
         self.frozen_solids.clone_from(&src.frozen_solids);
         self.scale_changers.clone_from(&src.scale_changers);
         self.player_time_scale = src.player_time_scale;
@@ -1626,6 +1703,8 @@ impl RolloutWorld {
             engines: _,
             tesla_nodes: _,
             destroyed_tesla_lines: _,
+            meteor_smears: _,
+            meteor_waves: _,
             frozen_solids: _,
             scale_changers: _,
             player_time_scale: _,
@@ -1799,6 +1878,7 @@ impl RolloutWorld {
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         let mut engine_entity = [usize::MAX; MAX_PLAYERS];
         let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
+        let mut meteor_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -1981,6 +2061,14 @@ impl RolloutWorld {
                             &mut tesla_entity[i],
                             false,
                         ),
+                        ABILITY_METEOR => (
+                            data::surface_extents(data.meteor.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.meteor.collider_hierarchy,
+                            &mut meteor_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -2002,6 +2090,7 @@ impl RolloutWorld {
                             | ABILITY_BLINK
                             | ABILITY_GROWTH_RAY
                             | ABILITY_SHRINK_RAY
+                            | ABILITY_METEOR
                     ) {
                         E_ENABLED | E_TRIGGER
                     } else {
@@ -2022,6 +2111,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLINK {
                         data.blink.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
+                        data.meteor.collider_offset.x.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2049,6 +2140,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLINK {
                         data.blink.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
+                        data.meteor.collider_offset.y.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2103,6 +2196,11 @@ impl RolloutWorld {
                 mu: p.mu,
                 rotation_speed: p.rotation_speed,
                 rotation_mu: p.rotation_mu,
+                shake_time: Fix::ZERO,
+                shake_duration: Fix::ZERO,
+                shake_amount: Fix::ZERO,
+                shake_previous: Vec2::ZERO,
+                meteor_shake_curve: false,
                 basis: None,
             });
             self.platforms_changed();
@@ -2229,6 +2327,7 @@ impl RolloutWorld {
                 bow: BowState::default(),
                 rock: RockState::default(),
                 roll: RollState::default(),
+                meteor: MeteorState::default(),
                 push: PushState::default(),
                 gun: GunState::default(),
                 ragdoll: RagdollState::default(),
@@ -2289,6 +2388,7 @@ impl RolloutWorld {
                 time_stop_entity: time_stop_entity[i],
                 engine_entity: engine_entity[i],
                 tesla_entity: tesla_entity[i],
+                meteor_entity: meteor_entity[i],
             });
         }
 
@@ -2578,6 +2678,7 @@ impl RolloutWorld {
         // wave therefore applies its first time-zero impulse before map home
         // springs, while its same-tick UpdateSim impulse runs after them.
         self.gust_waves_init(data);
+        self.meteor_waves_init(data);
         // Platforms moved in the previous tick's physics stage.
         self.rebuild_bounds();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
@@ -2720,6 +2821,7 @@ impl RolloutWorld {
             self.gold_mushroom_tick(index, jump_pressed, data);
         }
         self.gust_waves_update(data);
+        self.meteor_waves_update(data);
         self.revival_effects_tick(data);
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
@@ -2733,6 +2835,7 @@ impl RolloutWorld {
         self.tesla_nodes_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
         self.scale_changers_tick(data);
+        self.meteor_smears_tick(data);
         // Roll dispatches its extra swept hurtboxes from Roll.UpdateSim,
         // before this pass's DetPhysics collider synchronization.
         self.roll_contacts(data);
@@ -2760,6 +2863,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mine
                     | ActiveAbility::Rock
                     | ActiveAbility::Roll
+                    | ActiveAbility::Meteor
                     | ActiveAbility::Push
                     | ActiveAbility::Freeze
                     | ActiveAbility::Blink
@@ -2823,6 +2927,7 @@ impl RolloutWorld {
                     slot.circle_entity,
                     slot.rock_entity,
                     slot.roll_entity,
+                    slot.meteor_entity,
                     slot.push_entity,
                     slot.freeze_entity,
                     slot.growth_ray_entity,
@@ -3336,6 +3441,48 @@ impl RolloutWorld {
                         self.roll_tick(index, action, data);
                         return;
                     }
+                    ABILITY_METEOR => {
+                        let grounded = self.players[index].base.grounded;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform
+                                        .surface
+                                        .position(base.local, data.meteor.physics_radius)
+                                })
+                        } else {
+                            self.players[index].base.position
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Meteor;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.base.position = form_position;
+                        slot.base.radius = data.meteor.physics_radius;
+                        slot.base.constants = data.meteor.constants.clone();
+                        slot.base.velocity = Vec2::ZERO;
+                        slot.base.external_velocity = Vec2::ZERO;
+                        slot.base.rotation = Fix::ZERO;
+                        slot.meteor = MeteorState {
+                            phase: if grounded { 0 } else { 2 },
+                            true_min_hold_time: if grounded {
+                                Fix::ZERO
+                            } else {
+                                data.meteor.min_hold_time
+                            },
+                            position: form_position,
+                            grounded_entry: grounded,
+                            ..MeteorState::default()
+                        };
+                        self.meteor_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_MINE => {
                         let grounded = self.players[index].base.grounded;
                         let form_position = if grounded {
@@ -3747,6 +3894,10 @@ impl RolloutWorld {
             self.roll_tick(index, action, data);
             return;
         }
+        if self.players[index].active == ActiveAbility::Meteor {
+            self.meteor_tick(index, action, data);
+            return;
+        }
         if self.players[index].active == ActiveAbility::Push {
             self.push_tick(index, action, data);
             return;
@@ -4070,6 +4221,277 @@ impl RolloutWorld {
         }
         slot.reported_position = exit_position;
         slot.reported_tick = self.tick;
+    }
+
+    fn meteor_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let button = 2u8 << self.players[index].active_slot;
+        let phase = self.players[index].meteor.phase;
+        self.players[index].meteor.time += DT;
+        match phase {
+            0 => {
+                self.players[index].meteor.ticks += 1;
+                if self.players[index].base.grounded
+                    && let Some(platform) = self.players[index].base.platform(&self.platforms)
+                {
+                    self.players[index].base.position = platform
+                        .surface
+                        .position(self.players[index].base.local, data.meteor.physics_radius);
+                }
+                if self.players[index].meteor.ticks > data.meteor.ground_enter_ticks {
+                    let normal = self.players[index]
+                        .base
+                        .platform(&self.platforms)
+                        .map_or(Vec2::UP, |platform| {
+                            platform.surface.normal(self.players[index].base.position)
+                        });
+                    let slot = &mut self.players[index];
+                    slot.base.position += normal * Fix::from_f32(0.05)
+                        + Vec2::UP * data.meteor.constants.jump_teleport * Fix::from_int(2);
+                    slot.base.grounded = false;
+                    slot.base.ground = None;
+                    slot.base.grounded_speed = Fix::ZERO;
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.meteor.phase = 1;
+                    slot.meteor.ticks = 0;
+                    slot.base.velocity = Vec2::UP
+                        * data.meteor.speed_curve.evaluate(slot.meteor.time)
+                        * data.meteor.jump_speed;
+                    slot.base.position += slot.base.velocity * DT;
+                }
+            }
+            1 => {
+                let slot = &mut self.players[index];
+                slot.base.velocity = Vec2::UP
+                    * data.meteor.speed_curve.evaluate(slot.meteor.time)
+                    * data.meteor.jump_speed;
+                slot.base.position += slot.base.velocity * DT;
+                slot.meteor.ticks += 1;
+                if slot.meteor.ticks > data.meteor.air_ticks {
+                    slot.meteor.phase = 2;
+                    slot.meteor.ticks = 0;
+                    slot.meteor.time = Fix::ZERO;
+                }
+            }
+            2 => {
+                let time = self.players[index].meteor.time;
+                let minimum = self.players[index].meteor.true_min_hold_time;
+                if time > data.meteor.max_hold_time
+                    || (time > minimum && action.buttons & button == 0)
+                {
+                    self.meteor_dash(index, data);
+                    return;
+                }
+                let random_angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+                let _random_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+                let offset = Vec2::angle(random_angle)
+                    * data.meteor.vibration_strength
+                    * time.max(Fix::from_f32(0.5));
+                let slot = &mut self.players[index];
+                slot.base.position += offset - slot.meteor.prev_offset;
+                slot.meteor.prev_offset = offset;
+                slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
+                slot.base.external_velocity *= Fix::from_f32(0.8);
+                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+            }
+            _ => {
+                self.players[index].meteor.dash_updates += 1;
+            }
+        }
+        let slot = &mut self.players[index];
+        slot.meteor.position = slot.base.position;
+        slot.meteor.velocity = slot.base.velocity;
+        slot.meteor.external_velocity = slot.base.external_velocity;
+        // Ability.UpdateSim publishes the collider synchronized before this
+        // pass's MeteorSmash/PlayerBody updates.
+        slot.reported_position = slot.base.collider.center;
+        slot.reported_tick = self.tick;
+    }
+
+    fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
+        let start = self.players[index].base.position;
+        let ray_start = start - Vec2::UP * data.meteor.physics_radius;
+        let mut nearest = Fix::MAX;
+        let mut hit = None;
+        for (platform_index, platform) in self.platforms.iter().enumerate() {
+            if data.meteor.raycast_mask & (1 << LAYER_WALL) == 0 {
+                break;
+            }
+            if let Some(ray) =
+                platform
+                    .collider
+                    .raycast_within(ray_start, -Vec2::UP, Fix::from_int(1_000_000))
+                && ray.near < nearest
+            {
+                nearest = ray.near;
+                hit = Some((platform_index, ray_start - Vec2::UP * ray.near));
+            }
+        }
+        let map = &data.maps[self.map];
+        let water = map.water_position.y + map.water_extents.y;
+        let water_distance = ray_start.y - water;
+        if data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
+            && water_distance >= Fix::ZERO
+            && water_distance < nearest
+        {
+            self.spawn_meteor_smear(start, Vec2::new(start.x, water), data);
+            self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(20));
+            self.exit_meteor_air(index, data);
+            return;
+        }
+        let Some((platform_index, near)) = hit else {
+            self.spawn_meteor_smear(start, Vec2::new(start.x, water), data);
+            self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(10));
+            self.exit_meteor_air(index, data);
+            return;
+        };
+        let closest = self.platforms[platform_index]
+            .surface
+            .closest_point(near)
+            .unwrap_or(near);
+        let local = self.platforms[platform_index]
+            .surface
+            .local_position(closest, data.meteor.physics_radius)
+            .unwrap_or(Fix::ZERO);
+        let charge = (self.players[index].meteor.time / data.meteor.max_hold_time).min(Fix::ONE);
+        let force_scale = (charge + Fix::ONE) * Fix::from_f32(0.5);
+        let platform_center = self.platforms[platform_index].surface.center;
+        let arm = (near - platform_center).normalized_safe();
+        self.platform_dynamics[platform_index]
+            .body
+            .apply_impulse(-Vec2::UP * data.meteor.ground_force * force_scale, arm);
+        {
+            let shake = &mut self.platform_dynamics[platform_index];
+            shake.shake_time = Fix::ZERO;
+            shake.shake_duration = data.meteor.shake_duration;
+            shake.shake_amount = if self.players[index].meteor.time > data.meteor.time_before_drop {
+                data.meteor.shake_strength
+            } else {
+                data.meteor.shake_strength / Fix::from_int(3)
+            };
+            shake.meteor_shake_curve = true;
+        }
+        self.platforms_changed();
+
+        self.spawn_meteor_wave(near, platform_index, index, force_scale, data);
+        self.spawn_meteor_smear(start, near, data);
+
+        let landing = self.platforms[platform_index]
+            .surface
+            .position(local, data.meteor.physics_radius);
+        let platform_id = self.platforms[platform_index].id;
+        let slot = &mut self.players[index];
+        slot.meteor.phase = 3;
+        slot.meteor.dash_updates = 0;
+        slot.active = ActiveAbility::None;
+        slot.base.position = landing;
+        slot.base.radius = data.player.radius;
+        slot.base.constants = data.player.constants.clone();
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.grounded = true;
+        slot.base.ground = Some(platform_id);
+        slot.base.local = local;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.base.align(&self.platforms[platform_index]);
+        slot.obs_state = STATE_LAND;
+        // ExitAbilityGrounded begins Land after the ordinary slime animator
+        // has already updated on this pass; its first two displayed ticks
+        // therefore precede the normal countdown path.
+        slot.state_ticks = LAND_TICKS + 2;
+        slot.reported_position = landing;
+        slot.reported_tick = self.tick;
+    }
+
+    fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.base.radius = data.player.radius;
+        slot.base.constants = data.player.constants.clone();
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.exit_to_fall();
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
+    fn spawn_meteor_smear(&mut self, from: Vec2, to: Vec2, data: &data::RolloutData) {
+        let distance = (to - from).length();
+        let extents = Vec2::new(data.meteor.smear_extents.x, distance * Fix::from_f32(0.5));
+        let offset = Vec2::new(
+            data.meteor.smear_offset.x,
+            data.meteor.smear_offset.y * extents.y / data.meteor.smear_extents.y,
+        );
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.meteor.smear_updatable_count;
+        let entity_index = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: data.meteor.smear_layer,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000 + hierarchy_base + data.meteor.smear_collider_hierarchy,
+            x: (to + offset).x.raw(),
+            y: (to + offset).y.raw(),
+            right_x: extents.x.raw(),
+            up_y: extents.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        self.meteor_smears.push(MeteorSmear {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: Some(entity_index),
+            age: 0,
+            center: to + offset,
+            right: Vec2::new(extents.x, Fix::ZERO),
+            up: Vec2::new(Fix::ZERO, extents.y),
+        });
+    }
+
+    fn meteor_smears_tick(&mut self, data: &data::RolloutData) {
+        for smear in &mut self.meteor_smears {
+            if !smear.active || smear.born_tick >= self.tick {
+                continue;
+            }
+            smear.age += 1;
+            if smear.age >= data.meteor.smear_lifespan_ticks {
+                smear.active = false;
+                if let Some(entity) = smear.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            }
+        }
+    }
+
+    fn spawn_meteor_wave(
+        &mut self,
+        position: Vec2,
+        ignored_platform: usize,
+        owner: usize,
+        force_scale: Fix,
+        data: &data::RolloutData,
+    ) {
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.meteor.shockwave_updatable_count;
+        let _ = hierarchy_base;
+        self.meteor_waves.push(MeteorWave {
+            active: true,
+            born_tick: self.tick,
+            position,
+            ignored_platform: self.platforms[ignored_platform].id,
+            owner,
+            force_scale,
+            ..MeteorWave::default()
+        });
     }
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
@@ -5592,6 +6014,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Roll => slot.roll_entity,
+                    ActiveAbility::Meteor => slot.meteor_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -5725,6 +6148,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Roll => slot.roll_entity,
+                    ActiveAbility::Meteor => slot.meteor_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -6385,6 +6809,7 @@ impl RolloutWorld {
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
+            let mut meteor_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -6443,6 +6868,11 @@ impl RolloutWorld {
                         data.tesla.collider_hierarchy,
                         &mut tesla_entity,
                     ),
+                    ABILITY_METEOR => (
+                        data::surface_extents(data.meteor.hurtbox_extents),
+                        data.meteor.collider_hierarchy,
+                        &mut meteor_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -6467,6 +6897,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_METEOR {
+                        data.meteor.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6489,6 +6921,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_METEOR {
+                        data.meteor.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6534,6 +6968,7 @@ impl RolloutWorld {
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
             slot.roll = RollState::default();
+            slot.meteor = MeteorState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.blink_tunnel_active = false;
@@ -6567,6 +7002,7 @@ impl RolloutWorld {
             slot.time_stop_entity = time_stop_entity;
             slot.engine_entity = engine_entity;
             slot.tesla_entity = tesla_entity;
+            slot.meteor_entity = meteor_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -6728,6 +7164,7 @@ impl RolloutWorld {
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
+            let mut meteor_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -6786,6 +7223,11 @@ impl RolloutWorld {
                         data.tesla.collider_hierarchy,
                         &mut tesla_entity,
                     ),
+                    ABILITY_METEOR => (
+                        data::surface_extents(data.meteor.hurtbox_extents),
+                        data.meteor.collider_hierarchy,
+                        &mut meteor_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -6811,6 +7253,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_METEOR {
+                        data.meteor.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6833,6 +7277,8 @@ impl RolloutWorld {
                         data.freeze.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLINK {
                         data.blink.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_METEOR {
+                        data.meteor.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -6865,6 +7311,7 @@ impl RolloutWorld {
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
             slot.roll = RollState::default();
+            slot.meteor = MeteorState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.blink_tunnel_active = false;
@@ -6898,6 +7345,7 @@ impl RolloutWorld {
             slot.time_stop_entity = time_stop_entity;
             slot.engine_entity = engine_entity;
             slot.tesla_entity = tesla_entity;
+            slot.meteor_entity = meteor_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -7033,6 +7481,113 @@ impl RolloutWorld {
             applied = true;
         }
         self.gust_waves[wave_index] = wave;
+        if applied {
+            self.platforms_changed();
+        }
+    }
+
+    fn meteor_waves_init(&mut self, data: &data::RolloutData) {
+        for wave_index in 0..self.meteor_waves.len() {
+            let mut wave = self.meteor_waves[wave_index];
+            if !wave.active || wave.registered || wave.born_tick >= self.tick {
+                continue;
+            }
+            wave.registered = true;
+            let query = Circle {
+                center: wave.position,
+                radius: data.meteor.shockwave.radius,
+            };
+            for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
+                if platform.id == wave.ignored_platform
+                    || wave.platform_count == wave.platforms.len()
+                {
+                    continue;
+                }
+                if crate::physics::contact::circle_rounded(query, platform.collider).is_some()
+                    && dynamics.body.inverse_mass >= Fix::ZERO
+                {
+                    wave.platforms[wave.platform_count] = platform.id;
+                    wave.platform_count += 1;
+                }
+            }
+            // ActivateShockWave applies its player branch once. The landing
+            // platform keeps the caster grounded, and this prefab's grounded
+            // multiplier is zero, so the owner receives no launch impulse.
+            for player_index in 0..self.players.len() {
+                if !self.playable(player_index) || player_index == wave.owner {
+                    continue;
+                }
+                let player = &mut self.players[player_index];
+                if player.active != ActiveAbility::None
+                    || crate::physics::contact::circle_box(query, player.base.collider).is_none()
+                {
+                    continue;
+                }
+                let delta = player.base.position - wave.position;
+                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                let magnitude = wave.force_scale * data.meteor.shockwave.default_force / distance;
+                if !player.base.grounded {
+                    // PlayerPhysics.AddForce uses its serialized inverseMass01;
+                    // the stock player value is one in the shipped prefab.
+                    player.base.external_velocity += delta * magnitude;
+                }
+            }
+            self.meteor_waves[wave_index] = wave;
+            self.meteor_wave_apply(wave_index, Fix::ZERO, data);
+        }
+    }
+
+    fn meteor_waves_update(&mut self, data: &data::RolloutData) {
+        for wave_index in 0..self.meteor_waves.len() {
+            if self.meteor_waves[wave_index].active && self.meteor_waves[wave_index].registered {
+                self.meteor_wave_apply(wave_index, DT, data);
+            }
+        }
+    }
+
+    fn meteor_wave_apply(&mut self, wave_index: usize, dt: Fix, data: &data::RolloutData) {
+        let mut wave = self.meteor_waves[wave_index];
+        let strength = data.meteor.shockwave_curve.evaluate(wave.time);
+        wave.time += dt;
+        let duration = data
+            .meteor
+            .shockwave_curve
+            .keys
+            .last()
+            .expect("Meteor shockwave curve")
+            .time;
+        if wave.time > duration {
+            wave.active = false;
+            self.meteor_waves[wave_index] = wave;
+            return;
+        }
+        let mut applied = false;
+        for target in 0..wave.platform_count {
+            let Some(platform_index) = self
+                .platforms
+                .iter()
+                .position(|platform| platform.id == wave.platforms[target])
+            else {
+                continue;
+            };
+            let platform = &self.platforms[platform_index];
+            let Ok(point) = platform.surface.closest_point(wave.position) else {
+                continue;
+            };
+            let direction = -platform.surface.normal(point);
+            let distance = ((wave.position - point).length_squared() / Fix::from_int(10))
+                .max(Fix::from_f64(1.5));
+            let impulse = direction.normalized_safe()
+                * (data.meteor.shockwave.platform_force * wave.force_scale / distance)
+                * strength
+                * Fix::from_int(60);
+            let arm = (point - platform.surface.center).normalized_safe();
+            self.platform_dynamics[platform_index]
+                .body
+                .apply_impulse(impulse, arm);
+            applied = true;
+        }
+        self.meteor_waves[wave_index] = wave;
         if applied {
             self.platforms_changed();
         }
@@ -8222,6 +8777,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Roll => slot.roll_entity,
+                    ActiveAbility::Meteor => slot.meteor_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -8365,6 +8921,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Roll => slot.roll_entity,
+                    ActiveAbility::Meteor => slot.meteor_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -8636,6 +9193,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Roll => slot.roll_entity,
+                    ActiveAbility::Meteor => slot.meteor_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -9363,6 +9921,11 @@ impl RolloutWorld {
             mu: pd.spawn_mu,
             rotation_speed: pd.spawn_rotation_speed,
             rotation_mu: pd.spawn_rotation_mu,
+            shake_time: Fix::ZERO,
+            shake_duration: Fix::ZERO,
+            shake_amount: Fix::ZERO,
+            shake_previous: Vec2::ZERO,
+            meteor_shake_curve: false,
             basis: None,
         });
         self.next_platform_id += 1;
@@ -10651,6 +11214,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => player.mine_entity,
                     ActiveAbility::Rock => player.rock_entity,
                     ActiveAbility::Roll => player.roll_entity,
+                    ActiveAbility::Meteor => player.meteor_entity,
                     ActiveAbility::Push => player.push_entity,
                     ActiveAbility::Freeze => player.freeze_entity,
                     ActiveAbility::Blink => player.blink_entity,
@@ -11304,6 +11868,45 @@ impl RolloutWorld {
                 * (Fix::ONE - dynamics.rotation_mu);
         }
 
+        // ShakablePlatform follows AnimateVelocity in each authored platform
+        // prefab. It writes a temporary transform displacement directly;
+        // the spring home remains fixed and pulls the rigid body back while
+        // successive samples replace the previous random offset.
+        let mut shook = false;
+        for i in 0..self.platforms.len() {
+            let duration = self.platform_dynamics[i].shake_duration;
+            if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
+                continue;
+            }
+            self.platform_dynamics[i].shake_time += updater_dt;
+            let strength = if self.platform_dynamics[i].meteor_shake_curve {
+                data.meteor
+                    .spin_curve
+                    .evaluate(self.platform_dynamics[i].shake_time)
+                    * self.platform_dynamics[i].shake_amount
+            } else {
+                self.platform_dynamics[i].shake_amount
+            };
+            let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            let offset = Vec2::angle(angle) * radius * strength;
+            let delta = offset - self.platform_dynamics[i].shake_previous;
+            self.platform_dynamics[i].shake_previous = offset;
+            self.platforms[i].surface.center += delta;
+            self.platforms[i].collider.inner.center += delta;
+            self.platform_dynamics[i].composite_position += delta;
+            shook = true;
+            if self.platform_dynamics[i].shake_time >= duration {
+                self.platform_dynamics[i].shake_time = Fix::ZERO;
+                self.platform_dynamics[i].shake_duration = Fix::ZERO;
+                self.platform_dynamics[i].shake_amount = Fix::ZERO;
+                self.platform_dynamics[i].meteor_shake_curve = false;
+            }
+        }
+        if shook {
+            self.platforms_changed();
+        }
+
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
         // and re-home at the pre-integration position, preserving the existing
         // one-tick-lagged home behavior.
@@ -11571,6 +12174,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => other.mine_entity,
                     ActiveAbility::Rock => other.rock_entity,
                     ActiveAbility::Roll => other.roll_entity,
+                    ActiveAbility::Meteor => other.meteor_entity,
                     ActiveAbility::Push => other.push_entity,
                     ActiveAbility::Freeze => other.freeze_entity,
                     ActiveAbility::Blink => other.blink_entity,
@@ -12127,6 +12731,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.roll_entity,
+                slot.meteor_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -12188,6 +12793,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.roll_entity,
+                slot.meteor_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -12241,6 +12847,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.roll_entity,
+                slot.meteor_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -12669,6 +13276,7 @@ impl RolloutWorld {
                 mine_e,
                 rock_e,
                 roll_e,
+                meteor_e,
                 push_e,
                 freeze_e,
                 blink_e,
@@ -12691,6 +13299,7 @@ impl RolloutWorld {
                     s.mine_entity,
                     s.rock_entity,
                     s.roll_entity,
+                    s.meteor_entity,
                     s.push_entity,
                     s.freeze_entity,
                     s.blink_entity,
@@ -12714,6 +13323,7 @@ impl RolloutWorld {
             let mining = slot.active == ActiveAbility::Mine;
             let rocking = slot.active == ActiveAbility::Rock;
             let rolling = slot.active == ActiveAbility::Roll;
+            let meteoring = slot.active == ActiveAbility::Meteor;
             let pushing = slot.active == ActiveAbility::Push;
             let freezing = slot.active == ActiveAbility::Freeze;
             let blinking = slot.active == ActiveAbility::Blink;
@@ -13003,6 +13613,38 @@ impl RolloutWorld {
                     circle.vy = 0;
                     circle.radius = data.roll.radius.raw();
                     circle.rotation = rotation.raw();
+                }
+            }
+            if meteor_e != usize::MAX {
+                let box_row = &mut self.entities[meteor_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && meteoring {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if meteoring {
+                    box_row.owner = slot.base.id;
+                }
+                if (alive && meteoring) || was_active {
+                    let root = synced;
+                    let rotation = slot.base.rotation;
+                    let basis = Vec2::angle(rotation);
+                    let center = root + basis.complex_mul(data.meteor.collider_offset);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(data.meteor.hurtbox_extents),
+                    );
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.vx = 0;
+                    box_row.vy = 0;
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
                 }
             }
             if push_e != usize::MAX {

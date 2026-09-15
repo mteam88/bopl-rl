@@ -2247,3 +2247,33 @@ prefabs publish their `IPlayerIdHolder`, but neither assigns the adjacent
 attribution. Scaling, platform destruction, time stop, smoke/mine ignition and
 mixed attachment types still need complete differential scenarios. Coverage
 therefore remains partial.
+
+### Executable Meteor Smash form (2026-09-15)
+
+Catalog id 20 now executes the source `MeteorSmash` form. Grounded entry holds
+for the five authored anticipation ticks, ungrounds with the two FixTransform
+teleports used by the source, and follows the 21-tick air animation with its
+serialized Hermite velocity curve. Airborne entry skips that jump directly
+into vibration and enforces the authored 0.05-second minimum hold. Vibration
+consumes both `RandomInsideUnitCircle` draws but normalizes the sampled vector,
+matching the source's constant-radius offset and its PlayerBody damping.
+
+Release raycasts down to the nearest rounded platform or Water. Platform
+landing applies the charge-scaled 250-unit impact, attaches the player at the
+surface local, and defers the spawned Shockwave to the next updater pass. The
+wave captures a fixed 50-platform target set, applies both initialization and
+per-frame curve impulses, and ignores the struck platform. The platform's
+one-second `ShakablePlatform` spin curve replaces its previous random offset
+each tick without moving its spring home. The lethal MeteorSmear exports its
+rescaled box immediately and removes it after exactly two registered updates.
+All hot-path target storage is fixed-size and cast updates allocate nothing.
+
+`meteor_ability_ab.c` compares 1,500 NativeAOT/Rust Q32 ticks across short
+grounded release, a held maximum-charge cast, and direct airborne entry. It
+checks full public player, slime, entity, telemetry, platform-shake and
+shockwave outcomes. Separately rounded FixTransform positions and normalized
+vectors differ by at most 50,000 raw Q32 units (less than 0.000012 world units);
+platform motion is exact in the measured casts and no state, collision, entity
+lifetime or animation boundary differs. Downward player/item ray callbacks,
+`DropAllAttachedPlayers`, and isolated Water/no-hit exits still need dedicated
+interaction goldens, so coverage remains partial.

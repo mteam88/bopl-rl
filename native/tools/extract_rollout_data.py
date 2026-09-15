@@ -765,6 +765,74 @@ def main():
         ),
     }
 
+    # ---- Meteor Smash player form ----
+    _, meteor_ability = find_prefab("Assets/GameObject/Meteor.prefab")
+    meteor = component(meteor_ability, "MeteorSmash")
+    meteor_box = component(meteor_ability, "DPhysicsBox")
+    meteor_physics = component(meteor_ability, "PlayerPhysics")
+    meteor_transform = component(meteor_ability, "FixTransform")
+    meteor_anims = animations(guid_of(meteor["animData"]))
+    meteor_shockwave = ASSETS[guid_of(meteor["ShockwavePrefab"])]
+    meteor_smear = ASSETS[guid_of(meteor["SmearFramePrefab"])]
+    shockwave = component(meteor_shockwave, "Shockwave")
+    smear_box = component(meteor_smear, "DPhysicsBox")
+    smear_transform = component(meteor_smear, "FixTransform")
+    smear_lifetime = component(meteor_smear, "MeteorSmear")
+    out["prefabs"]["meteor"] = {
+        "hurtbox_extents": vec2(meteor_box, "startExtents"),
+        "collider_hierarchy": meteor_box["hierarchyNumber"],
+        "collider_offset": vec2(meteor_transform, "offset"),
+        "physics": {
+            "max_speed": fix(meteor_physics, "maxSpeed"),
+            "jump_strength": fix(meteor_physics, "jumpStrength"),
+            "accel": fix(meteor_physics, "accel"),
+            "radius": fix(meteor_physics, "radius"),
+            "gravity_accel": fix(meteor_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(meteor_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(meteor_physics, "gravity_modifier"),
+            "jump_extra_x": fix(meteor_physics, "jumpExtraXStrength"),
+            "jump_momentum": fix(meteor_physics, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(meteor_physics, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(meteor_physics, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(meteor_physics, "airAccel"),
+        },
+        "time_before_drop": fix(meteor, "timeBeforeDrop"),
+        "jump_speed": fix(meteor, "jumpSpeed"),
+        "hold_speed": fix(meteor, "holdSpeed"),
+        "max_hold_time": fix(meteor, "maxHoldTime"),
+        "min_hold_time": fix(meteor, "minHoldTime"),
+        "speed_curve": curve(meteor, "speedCurve"),
+        "vibration_strength": fix(meteor, "vibrationStr"),
+        "fixed_updates_in_dash": meteor["FixedUpdatesInDash"],
+        "ground_force": fix(meteor, "groundForce"),
+        "player_push_force": fix(meteor, "playerPushForce"),
+        "shake_strength": fix(meteor, "shakeStr"),
+        "shake_duration": fix(meteor, "shakeDuration"),
+        "spin_curve": curve(meteor, "spinCurve"),
+        "raycast_mask": meteor["raycastMask.m_Bits"],
+        "ground_enter_ticks": sum(abs(d) for d in meteor_anims["gEnter"]),
+        "air_ticks": sum(abs(d) for d in meteor_anims["air"]),
+        "air_start_hold_ticks": sum(abs(d) for d in meteor_anims["aStartHold"]),
+        "shockwave": {
+            "updatable_count": hierarchy_span(meteor_shockwave),
+            "offset": vec2(component(meteor_shockwave, "FixTransform"), "_position"),
+            "platform_force": fix(shockwave, "platformForce"),
+            "default_force": fix(shockwave, "defaultForce"),
+            "grounded_player_multiplier": fix(shockwave, "groundedPlayerForceMultiplier"),
+            "radius": fix(shockwave, "radius"),
+            "collision_mask": shockwave["collisionMask.m_Bits"],
+            "curve": curve(shockwave, "forceCurve01"),
+        },
+        "smear": {
+            "layer": meteor_smear["data"]["layer"],
+            "updatable_count": hierarchy_span(meteor_smear),
+            "collider_hierarchy": smear_box["hierarchyNumber"],
+            "extents": vec2(smear_box, "startExtents"),
+            "offset": vec2(smear_transform, "offset"),
+            "lifespan_ticks": smear_lifetime["LifespanTicks"],
+        },
+    }
+
     # ---- Push / ControlPlatform player form ----
     _, push_ability = find_prefab("Assets/GameObject/Push.prefab")
     push = component(push_ability, "ControlPlatform")
