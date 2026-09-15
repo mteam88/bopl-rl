@@ -556,14 +556,17 @@ impl Player {
     }
 
     fn jump(&mut self, platforms: &[Platform]) {
+        self.jump_with_strength(platforms, self.constants.jump_strength);
+    }
+    pub(crate) fn jump_with_strength(&mut self, platforms: &[Platform], strength: Fix) {
         let platform = self.platform(platforms).unwrap();
         let normal = platform.surface.normal(self.position);
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
             .max(Fix::ZERO);
         let up = Vec2::UP * amount + Vec2::new(normal.x, Fix::ZERO) * self.constants.jump_extra_x;
-        self.velocity = normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum
-            + up * self.constants.jump_strength;
+        self.velocity =
+            normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum + up * strength;
         self.position += self.velocity * self.constants.jump_teleport;
         self.jumped_this_frame = true;
         let mut motion = self.ground_state();

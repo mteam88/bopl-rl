@@ -51,6 +51,7 @@ pub const ABILITY_TIME_STOP: u32 = 12;
 pub const ABILITY_SMOKE: u32 = 13;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
+pub const ABILITY_ROLL: u32 = 16;
 pub const ABILITY_SHRINK_RAY: u32 = 17;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_PUSH: u32 = 22;
@@ -951,6 +952,27 @@ pub struct RockState {
     pub exiting: bool,
 }
 
+/// Roll.cs state. The swept centres are the source's `extraHurtBoxesPos`;
+/// keeping the fixed-size array preserves fast-roll contact semantics without
+/// allocating in the player update hot path.
+#[derive(Clone, Copy, Default)]
+pub struct RollState {
+    pub moving_right: bool,
+    pub charging: bool,
+    pub waiting_to_release: bool,
+    pub has_charged: bool,
+    pub jump_button_has_been_up: bool,
+    pub short_jumping: bool,
+    pub seconds_charged: Fix,
+    pub time_since_release: Fix,
+    pub top_speed: Fix,
+    pub grounded_speed: Fix,
+    pub swept: [Vec2; 30],
+    pub swept_len: u8,
+    pub lethal: bool,
+    pub trail_spawned: bool,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct PushState {
     pub ticks: u32,
@@ -1112,6 +1134,7 @@ pub enum ActiveAbility {
     Mjolnir,
     Smoke,
     Rock,
+    Roll,
     Push,
     Freeze,
     Blink,
@@ -1199,6 +1222,7 @@ pub struct PlayerSlot {
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
     pub rock: RockState,
+    pub roll: RollState,
     pub push: PushState,
     pub gun: GunState,
     pub ragdoll: RagdollState,
@@ -1270,6 +1294,7 @@ pub struct PlayerSlot {
     // Fixed entity table indices.
     pub circle_entity: usize,
     pub rock_entity: usize,
+    pub roll_entity: usize,
     pub rock_hierarchy: u32,
     pub push_entity: usize,
     pub freeze_entity: usize,
@@ -1756,6 +1781,7 @@ impl RolloutWorld {
         }
         self.next_spawn_hierarchy = hierarchy_cursor;
         let mut circle_entity = [usize::MAX; MAX_PLAYERS];
+        let mut roll_entity = [usize::MAX; MAX_PLAYERS];
         let mut rock_hierarchy = [0u32; MAX_PLAYERS];
         let mut gust_entity = [usize::MAX; MAX_PLAYERS];
         let mut revival_entity = [usize::MAX; MAX_PLAYERS];
@@ -1781,6 +1807,12 @@ impl RolloutWorld {
                     continue;
                 }
                 let (radius, offset, relative_hierarchy, target) = match ability {
+                    ABILITY_ROLL => (
+                        data.roll.radius,
+                        Vec2::ZERO,
+                        data.roll.collider_hierarchy,
+                        &mut roll_entity[i],
+                    ),
                     ABILITY_GUST => (
                         data.gust.hurtbox_radius,
                         data.gust.collider_offset,
@@ -2196,6 +2228,7 @@ impl RolloutWorld {
                 removed_ground_normal: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
+                roll: RollState::default(),
                 push: PushState::default(),
                 gun: GunState::default(),
                 ragdoll: RagdollState::default(),
@@ -2238,6 +2271,7 @@ impl RolloutWorld {
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
                 rock_entity: usize::MAX,
+                roll_entity: roll_entity[i],
                 rock_hierarchy: rock_hierarchy[i],
                 push_entity: push_entity[i],
                 freeze_entity: freeze_entity[i],
@@ -2699,6 +2733,9 @@ impl RolloutWorld {
         self.tesla_nodes_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
         self.scale_changers_tick(data);
+        // Roll dispatches its extra swept hurtboxes from Roll.UpdateSim,
+        // before this pass's DetPhysics collider synchronization.
+        self.roll_contacts(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -2722,6 +2759,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile
                     | ActiveAbility::Mine
                     | ActiveAbility::Rock
+                    | ActiveAbility::Roll
                     | ActiveAbility::Push
                     | ActiveAbility::Freeze
                     | ActiveAbility::Blink
@@ -2784,6 +2822,7 @@ impl RolloutWorld {
                     slot.dash_entity,
                     slot.circle_entity,
                     slot.rock_entity,
+                    slot.roll_entity,
                     slot.push_entity,
                     slot.freeze_entity,
                     slot.growth_ray_entity,
@@ -3246,6 +3285,57 @@ impl RolloutWorld {
                         };
                         return;
                     }
+                    ABILITY_ROLL => {
+                        let grounded = self.players[index].base.grounded;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform
+                                        .surface
+                                        .position(base.local, data.roll.physics_radius)
+                                })
+                        } else {
+                            self.players[index].base.position
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Roll;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.roll = RollState {
+                            moving_right: slot.facing_right,
+                            charging: true,
+                            ..RollState::default()
+                        };
+                        slot.base.position = form_position;
+                        slot.base.radius = data.roll.physics_radius;
+                        slot.base.constants = data.roll.constants.clone();
+                        slot.base.rotation = if grounded {
+                            slot.base.rotation
+                        } else {
+                            Fix::ZERO
+                        };
+                        if !grounded {
+                            slot.base.up = Vec2::UP;
+                            slot.base.ground = None;
+                            slot.base.grounded_speed = Fix::ZERO;
+                            slot.base.velocity.x = Fix::ZERO;
+                        } else {
+                            slot.base.velocity = Vec2::ZERO;
+                        }
+                        slot.base.external_velocity *= Fix::from_f32(0.2);
+                        // Ability.UpdateSim publishes the newly positioned
+                        // Roll collider later in this same updater pass.
+                        slot.reported_position = form_position;
+                        slot.reported_tick = self.tick;
+                        self.roll_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_MINE => {
                         let grounded = self.players[index].base.grounded;
                         let form_position = if grounded {
@@ -3653,6 +3743,10 @@ impl RolloutWorld {
         if self.players[index].active == ActiveAbility::Rock {
             return;
         }
+        if self.players[index].active == ActiveAbility::Roll {
+            self.roll_tick(index, action, data);
+            return;
+        }
         if self.players[index].active == ActiveAbility::Push {
             self.push_tick(index, action, data);
             return;
@@ -3755,6 +3849,227 @@ impl RolloutWorld {
         // PlayerPhysics observes this FixTransform scale on the next pass.
         let scale = self.players[index].player_scale;
         self.players[index].set_ordinary_body_scale(scale);
+    }
+
+    /// Roll.UpdateSim/OldUpdate. Ground travel is split exactly like the
+    /// source so the same intermediate hurtboxes are available to contacts.
+    fn roll_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let jump_down = action.buttons & 1 != 0;
+        if !jump_down {
+            self.players[index].roll.jump_button_has_been_up = true;
+        }
+
+        let ground_live = self.players[index]
+            .base
+            .ground
+            .is_some_and(|id| self.platforms.iter().any(|platform| platform.id == id));
+        if self.players[index].base.grounded && !ground_live {
+            self.exit_roll(index, false, data);
+            return;
+        }
+
+        let button = 2u8 << self.players[index].active_slot;
+        let charged;
+        {
+            let slot = &mut self.players[index];
+            slot.roll.swept_len = 0;
+            if slot.roll.charging {
+                slot.roll.seconds_charged += DT;
+                if slot.roll.jump_button_has_been_up && jump_down {
+                    slot.base
+                        .jump_with_strength(&self.platforms, data.roll.constants.jump_strength);
+                    self.exit_roll(index, false, data);
+                    return;
+                }
+            } else {
+                slot.roll.time_since_release += DT;
+                if slot.roll.jump_button_has_been_up && jump_down {
+                    let right = slot.base.up.perp_cw();
+                    let velocity = right * slot.roll.grounded_speed * Fix::from_f32(0.75);
+                    slot.base.force_unground(&self.platforms);
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.base.velocity = velocity;
+                    self.exit_roll(index, false, data);
+                    return;
+                }
+            }
+            charged = slot.roll.seconds_charged >= data.roll.charge_time;
+        }
+
+        if self.players[index].roll.charging && action.buttons & button == 0 {
+            if charged {
+                self.players[index].roll.waiting_to_release = true;
+            } else if self.players[index].base.grounded {
+                self.exit_roll(index, true, data);
+                return;
+            } else {
+                let slot = &mut self.players[index];
+                slot.roll.charging = false;
+                slot.roll.short_jumping = true;
+                slot.base
+                    .jump_with_strength(&self.platforms, data.roll.short_jump_strength);
+            }
+        }
+        if self.players[index].roll.time_since_release > data.roll.dash_time {
+            self.exit_roll(index, false, data);
+            return;
+        }
+        if !self.players[index].roll.has_charged
+            && charged
+            && !self.players[index].roll.short_jumping
+        {
+            self.players[index].roll.has_charged = true;
+        }
+        if self.players[index].roll.waiting_to_release && self.players[index].base.grounded {
+            if !self.players[index].roll.trail_spawned {
+                self.players[index].roll.trail_spawned = true;
+                self.next_spawn_hierarchy += data.roll.trail_hierarchy_count;
+            }
+            let st = &mut self.players[index].roll;
+            st.waiting_to_release = false;
+            st.charging = false;
+            st.lethal = true;
+            st.top_speed = data.roll.max_speed;
+        }
+        if self.players[index].base.grounded {
+            self.roll_move_grounded(index, data);
+        }
+
+        // UpdateSim continues after OldUpdate and prepares the speed used by
+        // the following pass's Move call.
+        if self.players[index].base.grounded {
+            let st = &mut self.players[index].roll;
+            if st.charging {
+                st.grounded_speed = Fix::ZERO;
+            } else {
+                let normalized = st.time_since_release / data.roll.dash_time;
+                let speed = data
+                    .roll
+                    .speed_curve
+                    .evaluate(normalized)
+                    .clamp(Fix::ZERO, Fix::ONE)
+                    * st.top_speed;
+                st.grounded_speed = if st.moving_right { speed } else { -speed };
+            }
+            return;
+        }
+
+        let short = self.players[index].roll.short_jumping;
+        if !self.players[index].roll.charging && !short {
+            let direction = if self.players[index].roll.moving_right {
+                Fix::ONE
+            } else {
+                -Fix::ONE
+            };
+            crate::player_physics::air_movement(
+                &mut self.players[index].base.velocity,
+                direction,
+                data.roll.constants.air_accel,
+                data.roll.constants.max_speed,
+            )
+            .expect("valid Roll aerial constants");
+        }
+        crate::player_physics::apply_gravity(
+            &mut self.players[index].base.velocity,
+            data.roll.constants.gravity_accel,
+            data.roll.constants.gravity_modifier,
+            data.roll.constants.gravity_max_fall_speed,
+            false,
+        )
+        .expect("valid Roll gravity constants");
+        self.players[index].base.collision_rays(terrain!(self));
+        if self.players[index].base.grounded && short {
+            self.exit_roll(index, true, data);
+            return;
+        }
+        if short && self.players[index].base.velocity.y < Fix::ZERO {
+            self.exit_roll(index, false, data);
+            return;
+        }
+        let slot = &mut self.players[index];
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
+    }
+
+    fn roll_move_grounded(&mut self, index: usize, data: &data::RolloutData) {
+        let speed = self.players[index].roll.grounded_speed;
+        if self.players[index].roll.charging || speed == Fix::ZERO {
+            return;
+        }
+        let count = (speed.abs() * DT * data.roll.move_collision_density / data.roll.radius)
+            .to_int()
+            .max(0) as usize
+            + 1;
+        let step_speed = speed / Fix::from_int((count + 1) as i64);
+        let Some(platform_index) = self.players[index]
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
+        else {
+            return;
+        };
+        let surface = &self.platforms[platform_index].surface;
+        let slot = &mut self.players[index];
+        for substep in 0..count {
+            slot.base.local =
+                surface.move_unblocked(slot.base.local, data.roll.physics_radius, step_speed, DT);
+            slot.base.position = surface.position(slot.base.local, data.roll.physics_radius);
+            if substep < slot.roll.swept.len() {
+                slot.roll.swept[substep] = slot.base.position;
+                slot.roll.swept_len = (substep + 1) as u8;
+            }
+        }
+        slot.base.align(&self.platforms[platform_index]);
+    }
+
+    fn exit_roll(&mut self, index: usize, just_landed: bool, data: &data::RolloutData) {
+        let grounded = self.players[index].base.grounded;
+        let ground = self.players[index].base.ground;
+        let mut exit_position = self.players[index].base.position;
+        if grounded
+            && let Some(platform) =
+                ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+        {
+            exit_position -= platform.surface.normal(exit_position)
+                * (data.roll.physics_radius - data.player.radius);
+        }
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.roll.lethal = false;
+        slot.base.constants = data.player.constants.clone();
+        slot.base.radius = data.player.radius;
+        slot.base.rotation = Fix::ZERO;
+        if grounded {
+            slot.base.position = exit_position;
+            if let Some(platform) =
+                ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+            {
+                if let Ok(local) = platform
+                    .surface
+                    .local_position(exit_position, data.player.radius)
+                {
+                    slot.base.local = local;
+                }
+                slot.base.align(platform);
+            }
+            slot.obs_state = STATE_IDLE;
+            slot.state_ticks = 0;
+            if just_landed {
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS;
+            }
+        } else {
+            slot.base.position = exit_position;
+            slot.base.up = Vec2::UP;
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.exit_to_fall();
+            slot.base.collision_rays(terrain!(self));
+        }
+        slot.reported_position = exit_position;
+        slot.reported_tick = self.tick;
     }
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
@@ -5276,6 +5591,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Roll => slot.roll_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -5408,6 +5724,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Roll => slot.roll_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -5981,6 +6298,7 @@ impl RolloutWorld {
             }
 
             let mut platform_entity = usize::MAX;
+            let mut roll_entity = usize::MAX;
             let mut rock_hierarchy = 0;
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
@@ -5991,6 +6309,12 @@ impl RolloutWorld {
                     continue;
                 }
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
+                    ABILITY_ROLL => (
+                        data.roll.radius,
+                        Vec2::ZERO,
+                        data.roll.collider_hierarchy,
+                        &mut roll_entity,
+                    ),
                     ABILITY_GUST => (
                         data.gust.hurtbox_radius,
                         data.gust.collider_offset,
@@ -6209,6 +6533,7 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
+            slot.roll = RollState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.blink_tunnel_active = false;
@@ -6229,6 +6554,7 @@ impl RolloutWorld {
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
+            slot.roll_entity = roll_entity;
             slot.rock_entity = usize::MAX;
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
@@ -6255,6 +6581,7 @@ impl RolloutWorld {
                 self.players[index].dash_entity,
                 self.players[index].circle_entity,
                 self.players[index].rock_entity,
+                self.players[index].roll_entity,
                 self.players[index].push_entity,
                 self.players[index].freeze_entity,
                 self.players[index].growth_ray_entity,
@@ -6286,6 +6613,7 @@ impl RolloutWorld {
             }
 
             let mut platform_entity = usize::MAX;
+            let mut roll_entity = usize::MAX;
             let mut rock_hierarchy = 0;
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
@@ -6296,6 +6624,12 @@ impl RolloutWorld {
                     continue;
                 }
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
+                    ABILITY_ROLL => (
+                        data.roll.radius,
+                        Vec2::ZERO,
+                        data.roll.collider_hierarchy,
+                        &mut roll_entity,
+                    ),
                     ABILITY_GUST => (
                         data.gust.hurtbox_radius,
                         data.gust.collider_offset,
@@ -6530,6 +6864,7 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
+            slot.roll = RollState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.blink_tunnel_active = false;
@@ -6550,6 +6885,7 @@ impl RolloutWorld {
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
+            slot.roll_entity = roll_entity;
             slot.rock_entity = usize::MAX;
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
@@ -7885,6 +8221,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Roll => slot.roll_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -8027,6 +8364,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Roll => slot.roll_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -8297,6 +8635,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Roll => slot.roll_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Blink => slot.blink_entity,
@@ -10311,6 +10650,7 @@ impl RolloutWorld {
                     | ActiveAbility::Missile => player.throw_entity,
                     ActiveAbility::Mine => player.mine_entity,
                     ActiveAbility::Rock => player.rock_entity,
+                    ActiveAbility::Roll => player.roll_entity,
                     ActiveAbility::Push => player.push_entity,
                     ActiveAbility::Freeze => player.freeze_entity,
                     ActiveAbility::Blink => player.blink_entity,
@@ -11199,6 +11539,101 @@ impl RolloutWorld {
         }
     }
 
+    /// Roll.CollideExtraHurtBoxes plus the live circle/circle-or-box contact.
+    /// The source dispatches every swept centre, but PlayerCollision accepts
+    /// only the first kill in a frame; a fixed victim bitset has that result.
+    fn roll_contacts(&mut self, data: &data::RolloutData) {
+        let mut victims = [false; MAX_PLAYERS];
+        let mut killers = [0u32; MAX_PLAYERS];
+        for roller in 0..self.players.len() {
+            let slot = &self.players[roller];
+            if slot.active != ActiveAbility::Roll || !slot.roll.lethal || !self.playable(roller) {
+                continue;
+            }
+            let mut centers = [Vec2::ZERO; 31];
+            let swept_len = usize::from(slot.roll.swept_len);
+            centers[..swept_len].copy_from_slice(&slot.roll.swept[..swept_len]);
+            centers[swept_len] = slot.base.position;
+            for victim in 0..self.players.len() {
+                if victim == roller || victims[victim] || !self.playable(victim) {
+                    continue;
+                }
+                let other = &self.players[victim];
+                let entity = match other.active {
+                    ActiveAbility::None => other.body_entity,
+                    ActiveAbility::Dash => other.dash_entity,
+                    ActiveAbility::Bow => other.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => other.throw_entity,
+                    ActiveAbility::Mine => other.mine_entity,
+                    ActiveAbility::Rock => other.rock_entity,
+                    ActiveAbility::Roll => other.roll_entity,
+                    ActiveAbility::Push => other.push_entity,
+                    ActiveAbility::Freeze => other.freeze_entity,
+                    ActiveAbility::Blink => other.blink_entity,
+                    ActiveAbility::GrowthRay => other.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => other.shrink_ray_entity,
+                    ActiveAbility::Spike => other.spike_entity,
+                    ActiveAbility::Engine => other.engine_entity,
+                    ActiveAbility::Tesla => other.tesla_entity,
+                    ActiveAbility::TimeStop => other.time_stop_entity,
+                    ActiveAbility::Gust => other.gust_entity,
+                    ActiveAbility::Revival => other.revival_entity,
+                    ActiveAbility::Platform => other.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let hit = centers[..=swept_len].iter().any(|&center| {
+                    let roll = Circle {
+                        center,
+                        radius: data.roll.radius,
+                    };
+                    if row.kind == 0 {
+                        crate::physics::contact::circle_circle(
+                            roll,
+                            Circle {
+                                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                                radius: Fix::from_raw(row.radius),
+                            },
+                        )
+                        .is_some()
+                    } else {
+                        let right =
+                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                        crate::physics::contact::circle_box(
+                            roll,
+                            OrientedBox {
+                                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                                right,
+                                up,
+                                inverse_extents: Vec2::new(
+                                    Fix::ONE / right.length(),
+                                    Fix::ONE / up.length(),
+                                ),
+                            },
+                        )
+                        .is_some()
+                    }
+                });
+                if hit {
+                    victims[victim] = true;
+                    killers[victim] = slot.base.id;
+                }
+            }
+        }
+        for victim in 0..self.players.len() {
+            if victims[victim] && self.playable(victim) {
+                self.kill(victim, killers[victim], CAUSE_OTHER, true);
+            }
+        }
+    }
+
     /// the updater pass: resize, integration, broad phase, narrow phase,
     /// collision impulse, positional correction, and transform sync.
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
@@ -11691,6 +12126,7 @@ impl RolloutWorld {
                 slot.dash_entity,
                 slot.circle_entity,
                 slot.rock_entity,
+                slot.roll_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -11751,6 +12187,7 @@ impl RolloutWorld {
                 slot.dash_entity,
                 slot.circle_entity,
                 slot.rock_entity,
+                slot.roll_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -11803,6 +12240,7 @@ impl RolloutWorld {
                 slot.dash_entity,
                 slot.circle_entity,
                 slot.rock_entity,
+                slot.roll_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -12230,6 +12668,7 @@ impl RolloutWorld {
                 throw_e,
                 mine_e,
                 rock_e,
+                roll_e,
                 push_e,
                 freeze_e,
                 blink_e,
@@ -12251,6 +12690,7 @@ impl RolloutWorld {
                     s.throw_entity,
                     s.mine_entity,
                     s.rock_entity,
+                    s.roll_entity,
                     s.push_entity,
                     s.freeze_entity,
                     s.blink_entity,
@@ -12273,6 +12713,7 @@ impl RolloutWorld {
             let missile_form = slot.active == ActiveAbility::Missile;
             let mining = slot.active == ActiveAbility::Mine;
             let rocking = slot.active == ActiveAbility::Rock;
+            let rolling = slot.active == ActiveAbility::Roll;
             let pushing = slot.active == ActiveAbility::Push;
             let freezing = slot.active == ActiveAbility::Freeze;
             let blinking = slot.active == ActiveAbility::Blink;
@@ -12537,6 +12978,31 @@ impl RolloutWorld {
                     circle.inverse_mass = data.rock.body.inverse_mass.raw();
                 } else {
                     circle.rotation = 0;
+                }
+            }
+            if roll_e != usize::MAX {
+                let circle = &mut self.entities[roll_e];
+                let was_active = circle.flags & E_ACTIVE != 0;
+                circle.flags = if alive && rolling {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if rolling {
+                    circle.owner = slot.base.id;
+                }
+                if (alive && rolling) || was_active {
+                    let (position, rotation) = if rolling {
+                        (slot.base.position, slot.base.rotation)
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    circle.x = position.x.raw();
+                    circle.y = position.y.raw();
+                    circle.vx = 0;
+                    circle.vy = 0;
+                    circle.radius = data.roll.radius.raw();
+                    circle.rotation = rotation.raw();
                 }
             }
             if push_e != usize::MAX {

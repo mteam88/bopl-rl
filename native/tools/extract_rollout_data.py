@@ -724,6 +724,47 @@ def main():
         "shockwave_force": fix(rock, "shockwaveForce"),
     }
 
+    # ---- Roll player form ----
+    _, roll_ability = find_prefab("Assets/GameObject/Roll.prefab")
+    roll = component(roll_ability, "Roll")
+    roll_circle = component(roll_ability, "DPhysicsCircle")
+    roll_physics = component(roll_ability, "PlayerPhysics")
+    roll_trail = ASSETS[guid_of(roll["DashTrailPrefab"])]
+    out["prefabs"]["roll"] = {
+        "radius": fix(roll_circle, "startRadius"),
+        "collider_hierarchy": roll_circle["hierarchyNumber"],
+        "physics": {
+            "max_speed": fix(roll_physics, "maxSpeed"),
+            "jump_strength": fix(roll_physics, "jumpStrength"),
+            "accel": fix(roll_physics, "accel"),
+            "radius": fix(roll_physics, "radius"),
+            "gravity_accel": fix(roll_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(roll_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(roll_physics, "gravity_modifier"),
+            "jump_extra_x": fix(roll_physics, "jumpExtraXStrength"),
+            "jump_momentum": fix(roll_physics, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(roll_physics, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(roll_physics, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(roll_physics, "airAccel"),
+        },
+        "max_speed": fix(roll, "MaxSpeed"),
+        "min_speed": fix(roll, "MinSpeed"),
+        "speed_curve": curve(roll, "speedCurve"),
+        "charge_time": fix(roll, "chargeTime"),
+        "dash_time": fix(roll, "dashTime"),
+        "move_collision_density": fix(roll, "MoveCollisionDensity"),
+        "collision_mask": roll["collidesWith.m_Bits"],
+        "platform_turn_speed": fix(roll, "platformTurnSpeed"),
+        "early_release_jump_strength": fix(roll, "EarlyReleaseJumpStr"),
+        "short_jump_strength": fix(roll, "shortJumpStr"),
+        # The oracle assigns two reference hierarchy entries when this
+        # runtime-instantiated trail wakes: its ParticleSystem and follower.
+        "trail_hierarchy_count": sum(
+            c["type"] in ("UnityEngine.ParticleSystem", "FollowTransform")
+            for c in roll_trail["data"]["components"]
+        ),
+    }
+
     # ---- Push / ControlPlatform player form ----
     _, push_ability = find_prefab("Assets/GameObject/Push.prefab")
     push = component(push_ability, "ControlPlatform")
@@ -1294,8 +1335,10 @@ def main():
             "instant": instant,
             "rope": props.get("isHookshot", False),
             "offensive": icon_props[f"{prefix}.isOffensiveAbility"],
-            "updatable_count": max((c.get("properties", {}).get("hierarchyNumber", 0)
-                                    for c in components), default=0),
+            # Child GameObjects register in the same Updater hierarchy. Roll
+            # and Beam each contain one child SpriteAnimator after their root
+            # components, so the prefab's span is larger than the root max.
+            "updatable_count": hierarchy_span(prefab),
             "effect_cooldown": effect_cooldown,
             "effect_duration": effect_duration,
             "air_jump_strength": air_jump_strength,

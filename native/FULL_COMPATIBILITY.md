@@ -2099,6 +2099,37 @@ non-player targets, active transformed-player targets, BlackHole growth and
 orb conversion still require their concrete entity implementations and
 differential scenarios, so both abilities remain partial.
 
+### Executable Roll form (2026-09-15)
+
+Catalog id 16 now runs the source `Roll` form rather than advancing an inert
+cooldown. Entry copies the ordinary body's grounded attachment or airborne
+channels into the form, uses the authored 1.14-unit `PlayerPhysics` radius, and
+keeps the independent 1.20-unit lethal circle. A short release while airborne
+uses the serialized ten-unit jump; a full one-second charge waits for landing,
+then enables contact kills and drives the ground speed with the exported fixed
+Hermite curve for two seconds. Jumping during the run transfers 75 percent of
+the current surface speed into the ordinary body before the synchronous exit.
+
+Ground motion preserves `Roll.Move`'s unusual collision discretization. It
+computes `n = floor(abs(speed) * dt * density / hurtboxRadius) + 1`, advances
+exactly `n` times by `speed/(n+1)`, and retains all intermediate circle centres
+in a fixed 30-entry state array for `CollideExtraHurtBoxes`. This has no tick
+allocation. The trail's first charged release also consumes the two measured
+runtime hierarchy entries, so a later stock clone has the same entity ordering
+as NativeAOT.
+
+`roll_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks from charge through
+release, repeated curved-platform circuits, jump cancel, high-speed airborne
+motion, boundary death, and stock replacement. All state and entity metadata
+match. Repeated surface local-to-world transforms accumulate at most 2,048 raw
+Q32 units (less than 0.0000005 world units) in the comparator; velocity is exact
+through the measured jump and fall. The difference comes from reconstructing
+the curved surface position in Rust instead of retaining Unity's separately
+rounded transform fields and does not cross a zone, contact, or state boundary
+in the golden. Cross-platform hopping, an isolated early airborne release,
+moving-platform turns, wall squish and mixed transformed-form contacts remain
+open, so coverage is partial.
+
 ### Executable Blink gun and player QuantumTunnel (2026-09-15)
 
 Catalog id 6 now executes its serialized `GunTransform`: grounded and airborne

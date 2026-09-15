@@ -209,6 +209,7 @@ struct RawPrefabs {
     missile: RawMissile,
     mine: RawMine,
     rock: RawRock,
+    roll: RawRoll,
     push: RawPush,
     freeze: RawFreeze,
     blink: RawBlink,
@@ -443,6 +444,23 @@ struct RawBlink {
     on_player_hit_cooldown: i64,
     tunnel_release_duration: i64,
     tunnel_updatable_count: u32,
+}
+#[derive(Deserialize)]
+struct RawRoll {
+    radius: i64,
+    collider_hierarchy: u32,
+    physics: RawPhysics,
+    max_speed: i64,
+    min_speed: i64,
+    speed_curve: Curve,
+    charge_time: i64,
+    dash_time: i64,
+    move_collision_density: i64,
+    collision_mask: u32,
+    platform_turn_speed: i64,
+    early_release_jump_strength: i64,
+    short_jump_strength: i64,
+    trail_hierarchy_count: u32,
 }
 #[derive(Deserialize)]
 struct RawScaleRays {
@@ -1094,6 +1112,23 @@ pub struct BlinkData {
     pub tunnel_release_duration: Fix,
     pub tunnel_updatable_count: u32,
 }
+pub struct RollData {
+    pub physics_radius: Fix,
+    pub radius: Fix,
+    pub collider_hierarchy: u32,
+    pub constants: crate::world::MovementConstants,
+    pub max_speed: Fix,
+    pub min_speed: Fix,
+    pub speed_curve: Curve,
+    pub charge_time: Fix,
+    pub dash_time: Fix,
+    pub move_collision_density: Fix,
+    pub collision_mask: u32,
+    pub platform_turn_speed: Fix,
+    pub early_release_jump_strength: Fix,
+    pub short_jump_strength: Fix,
+    pub trail_hierarchy_count: u32,
+}
 pub struct ScaleRaysData {
     pub growth: ScaleRayData,
     pub shrink: ScaleRayData,
@@ -1350,6 +1385,7 @@ pub struct RolloutData {
     pub missile: MissileData,
     pub mine: MineData,
     pub rock: RockData,
+    pub roll: RollData,
     pub push: PushData,
     pub freeze: FreezeData,
     pub blink: BlinkData,
@@ -1865,6 +1901,25 @@ pub fn get() -> &'static RolloutData {
                 exit_scale: raw.prefabs.rock.exit_scale,
                 player_collision_bounce: Fix::from_raw(raw.prefabs.rock.player_collision_bounce),
                 shockwave_force: Fix::from_raw(raw.prefabs.rock.shockwave_force),
+            },
+            roll: RollData {
+                physics_radius: Fix::from_raw(raw.prefabs.roll.physics.radius),
+                radius: Fix::from_raw(raw.prefabs.roll.radius),
+                collider_hierarchy: raw.prefabs.roll.collider_hierarchy,
+                constants: constants(&raw.prefabs.roll.physics),
+                max_speed: Fix::from_raw(raw.prefabs.roll.max_speed),
+                min_speed: Fix::from_raw(raw.prefabs.roll.min_speed),
+                speed_curve: raw.prefabs.roll.speed_curve,
+                charge_time: Fix::from_raw(raw.prefabs.roll.charge_time),
+                dash_time: Fix::from_raw(raw.prefabs.roll.dash_time),
+                move_collision_density: Fix::from_raw(raw.prefabs.roll.move_collision_density),
+                collision_mask: raw.prefabs.roll.collision_mask,
+                platform_turn_speed: Fix::from_raw(raw.prefabs.roll.platform_turn_speed),
+                early_release_jump_strength: Fix::from_raw(
+                    raw.prefabs.roll.early_release_jump_strength,
+                ),
+                short_jump_strength: Fix::from_raw(raw.prefabs.roll.short_jump_strength),
+                trail_hierarchy_count: raw.prefabs.roll.trail_hierarchy_count,
             },
             push: PushData {
                 hurtbox_extents: raw.prefabs.push.hurtbox_extents.get(),
