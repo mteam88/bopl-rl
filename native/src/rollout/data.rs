@@ -209,6 +209,7 @@ struct RawPrefabs {
     missile: RawMissile,
     mine: RawMine,
     rock: RawRock,
+    push: RawPush,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -385,6 +386,19 @@ struct RawRock {
     exit_scale: Curve,
     player_collision_bounce: i64,
     shockwave_force: i64,
+}
+
+#[derive(Deserialize)]
+struct RawPush {
+    hurtbox_extents: RawVec2,
+    collider_hierarchy: u32,
+    collider_offset: RawVec2,
+    radius: i64,
+    grab_ground_ticks: u32,
+    platform_force: i64,
+    scene_bound_limit_offset: i64,
+    boulder_force_multiplier: i64,
+    home_position_lerp_speed: i64,
 }
 #[derive(Deserialize)]
 struct RawMineThrow {
@@ -900,6 +914,18 @@ pub struct RockData {
     pub player_collision_bounce: Fix,
     pub shockwave_force: Fix,
 }
+
+pub struct PushData {
+    pub hurtbox_extents: Vec2,
+    pub collider_hierarchy: u32,
+    pub collider_offset: Vec2,
+    pub radius: Fix,
+    pub grab_ground_ticks: u32,
+    pub platform_force: Fix,
+    pub scene_bound_limit_offset: Fix,
+    pub boulder_force_multiplier: Fix,
+    pub home_position_lerp_speed: Fix,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -1083,6 +1109,7 @@ pub struct RolloutData {
     pub missile: MissileData,
     pub mine: MineData,
     pub rock: RockData,
+    pub push: PushData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -1565,6 +1592,17 @@ pub fn get() -> &'static RolloutData {
                 exit_scale: raw.prefabs.rock.exit_scale,
                 player_collision_bounce: Fix::from_raw(raw.prefabs.rock.player_collision_bounce),
                 shockwave_force: Fix::from_raw(raw.prefabs.rock.shockwave_force),
+            },
+            push: PushData {
+                hurtbox_extents: raw.prefabs.push.hurtbox_extents.get(),
+                collider_hierarchy: raw.prefabs.push.collider_hierarchy,
+                collider_offset: raw.prefabs.push.collider_offset.get(),
+                radius: Fix::from_raw(raw.prefabs.push.radius),
+                grab_ground_ticks: raw.prefabs.push.grab_ground_ticks,
+                platform_force: Fix::from_raw(raw.prefabs.push.platform_force),
+                scene_bound_limit_offset: Fix::from_raw(raw.prefabs.push.scene_bound_limit_offset),
+                boulder_force_multiplier: Fix::from_raw(raw.prefabs.push.boulder_force_multiplier),
+                home_position_lerp_speed: Fix::from_raw(raw.prefabs.push.home_position_lerp_speed),
             },
             smoke: {
                 let smoke = &raw.prefabs.smoke;

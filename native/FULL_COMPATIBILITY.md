@@ -2012,3 +2012,29 @@ goldens and does not alter contacts, deaths, timing, or control state.
 Dedicated Shockwave, scale-change, arrow-attachment, projectile/item-detonation,
 and mixed transformed-form contact scenarios remain open, so coverage is marked
 partial.
+
+### Executable Push platform control (2026-09-14)
+
+Catalog id 22 now executes the grounded `ControlPlatform` form. Entry copies the
+source `PlayerInfo` pose, clears both velocity channels, disables the attached
+platform's authored ground animation, and advances the exact ten-tick
+`grabGround` callback boundary before channeling. While held, the form applies
+the authored deadzone and 10-unit force at the player's contact point, disables
+the platform's normal ground animation, and retargets `AnimateVelocity.HomePosition`
+with the source's `Lerp(body.position, oldHome, t)` argument order and scene
+bounds. Release restores the ordinary slime on the same surface.
+
+The ability collider keeps Unity's two representations of rotation: its box axes
+come from the scalar-angle lookup, while its local offset uses the exact stored
+ground-normal basis. The rollout records that basis at DetPhysics sync, so the
+later grounded-rider update cannot change the already-published collider. This
+is retained scalar state and adds no allocation to the tick path. The time-stop
+early return also preserves ControlPlatform's preceding 0.8 external-velocity
+damping.
+
+`push_ability_ab.c` compares 420 NativeAOT/Rust Q32 ticks exactly through
+grounded entry, collider activation, 120 controlled frames, platform linear and
+angular motion, spring-home movement, channel timing, button release, inactive
+collider state, and restored slime movement. Platform destruction, sudden death,
+and overlapping-player scenarios remain to be separately goldened, so coverage
+is marked partial.

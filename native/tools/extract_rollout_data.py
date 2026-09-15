@@ -716,6 +716,25 @@ def main():
         "shockwave_force": fix(rock, "shockwaveForce"),
     }
 
+    # ---- Push / ControlPlatform player form ----
+    _, push_ability = find_prefab("Assets/GameObject/Push.prefab")
+    push = component(push_ability, "ControlPlatform")
+    push_box = component(push_ability, "DPhysicsBox")
+    push_physics = component(push_ability, "PlayerPhysics")
+    push_fix_transform = component(push_ability, "FixTransform")
+    push_anims = animations(guid_of(push["animData"]))
+    out["prefabs"]["push"] = {
+        "hurtbox_extents": vec2(push_box, "startExtents"),
+        "collider_hierarchy": push_box["hierarchyNumber"],
+        "collider_offset": vec2(push_fix_transform, "offset"),
+        "radius": fix(push_physics, "radius"),
+        "grab_ground_ticks": sum(abs(d) for d in push_anims["grabGround"]),
+        "platform_force": fix(push, "platformForce"),
+        "scene_bound_limit_offset": fix(push, "SceneBoundLimitOffset"),
+        "boulder_force_multiplier": fix(push, "boulderForceMul01"),
+        "home_position_lerp_speed": fix(push, "homePositionLerpSpeed"),
+    }
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")

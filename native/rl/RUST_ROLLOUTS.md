@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Gust, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Invisibility, Mine, Teleport, Rewind, Gold mushroom, Tack, Mjolnir**
-  (catalog ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/24/25/31/34/35/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Gust, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Invisibility, Push, Mine, Teleport, Rewind, Gold mushroom, Tack, Mjolnir**
+  (catalog ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/22/24/25/31/34/35/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/24/25/31/34/35/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/22/24/25/31/34/35/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -199,6 +199,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   mass and inertia, cast impulse, and box/wall collision response. Recast
   replacement and player-lethality paths are implemented but still need
   dedicated differential scenarios.
+  Push is exact through grounded entry, animation/channel timing, direct
+  control of an `AnimateVelocity` platform, home-spring retargeting, rigid-body
+  force and torque, collider publication, and button-release restoration.
+  Platform removal, sudden death, and overlapping-player cases remain to be
+  exercised by dedicated differential scenarios.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
@@ -215,7 +220,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `DynamicAbilityPickup`; Rust emits that terminal row (layer 13, at the dying
   body + (0, 0.04)) but does not simulate pickup flight, swaps or the
   `RandomFix` draw, which only matter with three or more players.
-- The rollout only contains dynamic bodies needed by ids 2/3/4/7/11/14. Forces from
+- The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/22/24/35/37. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
 - f64 build only (2026-09-12): `Fix::sin` evaluates the quadrant-reduced

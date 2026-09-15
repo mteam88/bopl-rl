@@ -170,7 +170,8 @@
       "name": "Push",
       "prefab": "Assets/GameObject/Push.prefab",
       "prefab_guid": "df77479189541ac49a8b01eb919f04b1",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "push_ability_ab matches 420 NativeAOT/Rust Q32 ticks through grounded entry, exact box activation and offset basis, 120 frames of platform force/torque and AnimateVelocity home retargeting, ten-tick channel animation, release, inactive collider, and restored slime movement. Platform destruction, sudden death, and overlapping-player scenarios remain to be separately goldened."
     },
     {
       "id": 23,
