@@ -216,6 +216,7 @@ struct RawPrefabs {
     time_stop: RawTimeStop,
     spike: RawSpike,
     engine: RawEngine,
+    tesla: RawTesla,
     tack: RawTack,
     mjolnir: RawMjolnir,
 }
@@ -617,6 +618,40 @@ struct RawRocketEngine {
     fire_offset: RawVec2,
     fire_radius: i64,
     smoke_mask: u32,
+}
+#[derive(Deserialize)]
+struct RawTesla {
+    hurtbox_extents: RawVec2,
+    collider_offset: RawVec2,
+    collider_hierarchy: u32,
+    animations: RawSpikeAnimations,
+    plant_offset: RawVec2,
+    cast_force: i64,
+    buffer_size: usize,
+    node: RawTeslaNode,
+    lightning: RawTeslaLightning,
+}
+#[derive(Deserialize)]
+struct RawTeslaNode {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    collider_offset: RawVec2,
+    body: RawBody,
+    line_length: i64,
+    hitbox_offset_y: i64,
+}
+#[derive(Deserialize)]
+struct RawTeslaLightning {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    minimum_extent: i64,
+    flicker_period: i64,
+    enter_ticks: u32,
+    flicker_ticks: u32,
 }
 #[derive(Clone, Copy, Deserialize)]
 struct RawExplosionShockwave {
@@ -1207,6 +1242,32 @@ pub struct EngineData {
     pub fire_radius: Fix,
     pub smoke_mask: u32,
 }
+pub struct TeslaData {
+    pub hurtbox_extents: Vec2,
+    pub collider_offset: Vec2,
+    pub collider_hierarchy: u32,
+    pub cast_ticks: u32,
+    pub recover_ticks: u32,
+    pub plant_offset: Vec2,
+    pub cast_force: Fix,
+    pub buffer_size: usize,
+    pub node_layer: u32,
+    pub node_updatable_count: u32,
+    pub node_collider_hierarchy: u32,
+    pub node_radius: Fix,
+    pub node_collider_offset: Vec2,
+    pub node_body: crate::physics::Body,
+    pub line_length: Fix,
+    pub hitbox_offset_y: Fix,
+    pub lightning_layer: u32,
+    pub lightning_updatable_count: u32,
+    pub lightning_collider_hierarchy: u32,
+    pub lightning_extents: Vec2,
+    pub lightning_minimum_extent: Fix,
+    pub flicker_period: Fix,
+    pub enter_ticks: u32,
+    pub flicker_ticks: u32,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -1254,6 +1315,7 @@ pub struct RolloutData {
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
     pub engine: EngineData,
+    pub tesla: TeslaData,
     pub tack: TackData,
     pub mjolnir: MjolnirData,
     pub abilities: Vec<AbilityData>,
@@ -1922,6 +1984,35 @@ pub fn get() -> &'static RolloutData {
                     fire_offset: engine.rocket.fire_offset.get(),
                     fire_radius: Fix::from_raw(engine.rocket.fire_radius),
                     smoke_mask: engine.rocket.smoke_mask,
+                }
+            },
+            tesla: {
+                let tesla = &raw.prefabs.tesla;
+                TeslaData {
+                    hurtbox_extents: tesla.hurtbox_extents.get(),
+                    collider_offset: tesla.collider_offset.get(),
+                    collider_hierarchy: tesla.collider_hierarchy,
+                    cast_ticks: ticks(&tesla.animations.cast),
+                    recover_ticks: ticks(&tesla.animations.recover),
+                    plant_offset: tesla.plant_offset.get(),
+                    cast_force: Fix::from_raw(tesla.cast_force),
+                    buffer_size: tesla.buffer_size,
+                    node_layer: tesla.node.layer,
+                    node_updatable_count: tesla.node.updatable_count,
+                    node_collider_hierarchy: tesla.node.collider_hierarchy,
+                    node_radius: Fix::from_raw(tesla.node.radius),
+                    node_collider_offset: tesla.node.collider_offset.get(),
+                    node_body: body(&tesla.node.body, Fix::ZERO),
+                    line_length: Fix::from_raw(tesla.node.line_length),
+                    hitbox_offset_y: Fix::from_raw(tesla.node.hitbox_offset_y),
+                    lightning_layer: tesla.lightning.layer,
+                    lightning_updatable_count: tesla.lightning.updatable_count,
+                    lightning_collider_hierarchy: tesla.lightning.collider_hierarchy,
+                    lightning_extents: tesla.lightning.extents.get(),
+                    lightning_minimum_extent: Fix::from_raw(tesla.lightning.minimum_extent),
+                    flicker_period: Fix::from_raw(tesla.lightning.flicker_period),
+                    enter_ticks: tesla.lightning.enter_ticks,
+                    flicker_ticks: tesla.lightning.flicker_ticks,
                 }
             },
             tack: {

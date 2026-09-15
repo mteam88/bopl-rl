@@ -53,6 +53,7 @@ pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_SHRINK_RAY: u32 = 17;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_PUSH: u32 = 22;
+pub const ABILITY_TESLA: u32 = 23;
 pub const ABILITY_MINE: u32 = 24;
 pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_REWIND: u32 = 31;
@@ -517,6 +518,50 @@ pub struct SpawnedEngine {
     pub phase: u32,
     pub ticks: u32,
     pub body: Body,
+}
+
+/// One SimpleSparkNode circle and the optional lightning owned by the newer
+/// endpoint of a connected pair.
+#[derive(Clone, Copy, Default)]
+pub struct SpawnedTeslaNode {
+    pub active: bool,
+    pub born_tick: u32,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub ability_generation: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub platform_index: usize,
+    pub local: Fix,
+    pub relative_center: Vec2,
+    pub relative_rotation: Fix,
+    pub collider_center: Vec2,
+    pub collider_rotation: Fix,
+    pub surface_offset: Fix,
+    pub scale: Fix,
+    pub body: Body,
+    pub child: Option<usize>,
+    pub parent: Option<usize>,
+    pub connected: bool,
+    pub lethal: bool,
+    pub enter_ticks: u32,
+    pub line_hierarchy_base: u32,
+    pub line_born_tick: u32,
+    pub line_entity: Option<usize>,
+    pub line_active: bool,
+    pub line_collider_enabled: bool,
+    pub line_center: Vec2,
+    pub line_right: Vec2,
+    pub line_up: Vec2,
+    pub line_rotation: Fix,
+    pub flicker_time: Fix,
+    pub flicker_ticks: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct DestroyedTeslaLine {
+    pub entity: usize,
+    pub destroy_tick: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1074,6 +1119,7 @@ pub enum ActiveAbility {
     Mine,
     Spike,
     Engine,
+    Tesla,
     TimeStop,
     Gust,
     Revival,
@@ -1231,6 +1277,7 @@ pub struct PlayerSlot {
     pub spike_entity: usize,
     pub time_stop_entity: usize,
     pub engine_entity: usize,
+    pub tesla_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1322,6 +1369,8 @@ pub struct RolloutWorld {
     pub time_stop_effects: Vec<TimeStopEffect>,
     pub spike_attacks: Vec<SpawnedSpike>,
     pub engines: Vec<SpawnedEngine>,
+    pub tesla_nodes: Vec<SpawnedTeslaNode>,
+    pub destroyed_tesla_lines: Vec<DestroyedTeslaLine>,
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
@@ -1404,6 +1453,8 @@ impl RolloutWorld {
             time_stop_effects: Vec::with_capacity(8),
             spike_attacks: Vec::with_capacity(32),
             engines: Vec::with_capacity(32),
+            tesla_nodes: Vec::with_capacity(32),
+            destroyed_tesla_lines: Vec::with_capacity(32),
             frozen_solids: Vec::with_capacity(32),
             scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
@@ -1472,6 +1523,9 @@ impl RolloutWorld {
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
         self.engines.clone_from(&src.engines);
+        self.tesla_nodes.clone_from(&src.tesla_nodes);
+        self.destroyed_tesla_lines
+            .clone_from(&src.destroyed_tesla_lines);
         self.frozen_solids.clone_from(&src.frozen_solids);
         self.scale_changers.clone_from(&src.scale_changers);
         self.player_time_scale = src.player_time_scale;
@@ -1536,6 +1590,8 @@ impl RolloutWorld {
             time_stop_effects: _,
             spike_attacks: _,
             engines: _,
+            tesla_nodes: _,
+            destroyed_tesla_lines: _,
             frozen_solids: _,
             scale_changers: _,
             player_time_scale: _,
@@ -1626,6 +1682,9 @@ impl RolloutWorld {
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
+        self.engines.clear();
+        self.tesla_nodes.clear();
+        self.destroyed_tesla_lines.clear();
         self.frozen_solids.clear();
         self.scale_changers.clear();
         self.player_time_scale = Fix::ONE;
@@ -1703,6 +1762,7 @@ impl RolloutWorld {
         let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         let mut engine_entity = [usize::MAX; MAX_PLAYERS];
+        let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -1863,6 +1923,14 @@ impl RolloutWorld {
                             &mut engine_entity[i],
                             false,
                         ),
+                        ABILITY_TESLA => (
+                            data::surface_extents(data.tesla.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.tesla.collider_hierarchy,
+                            &mut tesla_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -1879,6 +1947,7 @@ impl RolloutWorld {
                         resolved_abilities[i][s - 1],
                         ABILITY_SPIKE
                             | ABILITY_ENGINE
+                            | ABILITY_TESLA
                             | ABILITY_FREEZE
                             | ABILITY_GROWTH_RAY
                             | ABILITY_SHRINK_RAY
@@ -1892,6 +1961,8 @@ impl RolloutWorld {
                         data.spike.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_ENGINE {
                         data.engine.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_TESLA {
+                        data.tesla.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_MINE {
                         data.mine.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_PUSH {
@@ -1915,6 +1986,8 @@ impl RolloutWorld {
                         data.spike.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_ENGINE {
                         data.engine.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_TESLA {
+                        data.tesla.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_MINE {
                         data.mine.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_PUSH {
@@ -2153,6 +2226,7 @@ impl RolloutWorld {
                 spike_entity: spike_entity[i],
                 time_stop_entity: time_stop_entity[i],
                 engine_entity: engine_entity[i],
+                tesla_entity: tesla_entity[i],
             });
         }
 
@@ -2591,6 +2665,7 @@ impl RolloutWorld {
         self.time_stop_effects_tick(data);
         self.spike_attacks_tick(data, updater_dt);
         self.engines_tick(data, updater_dt);
+        self.tesla_nodes_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
         self.scale_changers_tick(data);
         // Slime-vs-slime shove (World::step parity).
@@ -2622,6 +2697,7 @@ impl RolloutWorld {
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Spike
                     | ActiveAbility::Engine
+                    | ActiveAbility::Tesla
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
@@ -2685,6 +2761,7 @@ impl RolloutWorld {
                     slot.spike_entity,
                     slot.time_stop_entity,
                     slot.engine_entity,
+                    slot.tesla_entity,
                 ] {
                     if e != usize::MAX {
                         self.entities[e].flags = E_REMOVED;
@@ -2702,6 +2779,7 @@ impl RolloutWorld {
         self.missile_explosion_contacts(data);
         self.smoke_contacts(data);
         self.spike_contacts(data);
+        self.tesla_contacts(data);
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -3214,6 +3292,21 @@ impl RolloutWorld {
                         };
                         return;
                     }
+                    ABILITY_TESLA => {
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Tesla;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.plant_cast = PlantCastState {
+                            collider_position: slot.base.position,
+                            collider_up: slot.base.up,
+                            collider_rotation: slot.base.rotation,
+                            ..PlantCastState::default()
+                        };
+                        return;
+                    }
                     ABILITY_FREEZE => {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
@@ -3522,6 +3615,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Engine {
             self.engine_cast_tick(index, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Tesla {
+            self.tesla_cast_tick(index, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
@@ -4108,6 +4205,263 @@ impl RolloutWorld {
         }
     }
 
+    fn tesla_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let published_position = self.players[index].base.position;
+        {
+            let slot = &mut self.players[index];
+            slot.plant_cast.collider_position = published_position;
+            slot.plant_cast.collider_up = slot.base.up;
+            slot.plant_cast.collider_rotation = slot.base.rotation;
+            slot.plant_cast.ticks += 1;
+        }
+        let plant_now = self.players[index].plant_cast.phase == 0
+            && self.players[index].plant_cast.ticks >= data.tesla.cast_ticks;
+        if plant_now {
+            if self.spawn_tesla_node(index, data) {
+                self.players[index].plant_cast.phase = 1;
+                self.players[index].plant_cast.ticks = 0;
+            } else {
+                self.exit_engine_cast(index);
+                return;
+            }
+        }
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        {
+            let slot = &mut self.players[index];
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+            slot.reported_position = published_position;
+            slot.reported_tick = self.tick;
+        }
+        if self.players[index].plant_cast.phase == 1
+            && self.players[index].plant_cast.ticks > data.tesla.recover_ticks
+        {
+            self.exit_engine_cast(index);
+        }
+    }
+
+    fn spawn_tesla_node(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        let Some(ground_id) = self.players[index].base.ground else {
+            return false;
+        };
+        let Some(platform_index) = self.platforms.iter().position(|p| p.id == ground_id) else {
+            return false;
+        };
+        let body_position = self.players[index].base.position;
+        let body_right = self.players[index].base.up.perp_cw();
+        let facing_sign = if self.players[index].facing_right {
+            -Fix::ONE
+        } else {
+            Fix::ONE
+        };
+        let target = body_position + body_right * facing_sign * data.tesla.plant_offset.x;
+        let Ok(closest) = self.platforms[platform_index].surface.closest_point(target) else {
+            return false;
+        };
+        let Ok(local) = self.platforms[platform_index]
+            .surface
+            .local_position(closest, Fix::ZERO)
+        else {
+            return false;
+        };
+        let normal = self.platforms[platform_index].surface.normal(closest);
+        let scale = self.players[index]
+            .player_scale
+            .clamp(Fix::from_f32(0.6), Fix::from_int(5));
+        let ability_slot = self.players[index].active_slot;
+        let ability_generation = self.players[index].ability_generation;
+
+        let mut oldest = None;
+        let mut count = 0usize;
+        for (node_index, node) in self.tesla_nodes.iter().enumerate() {
+            if node.active
+                && node.owner == index
+                && node.ability_slot == ability_slot
+                && node.ability_generation == ability_generation
+            {
+                count += 1;
+                if oldest.is_none_or(|old: usize| node.born_tick < self.tesla_nodes[old].born_tick)
+                {
+                    oldest = Some(node_index);
+                }
+            }
+        }
+        if count >= data.tesla.buffer_size && oldest.is_none() {
+            return false;
+        }
+        let evicted = if count >= data.tesla.buffer_size {
+            oldest
+        } else {
+            None
+        };
+
+        let child = self
+            .tesla_nodes
+            .iter()
+            .enumerate()
+            .find(|(node_index, node)| {
+                node.active
+                    && Some(*node_index) != evicted
+                    && node.owner == index
+                    && node.ability_slot == ability_slot
+                    && node.ability_generation == ability_generation
+            })
+            .map(|(node, _)| node);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.tesla.node_updatable_count;
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let node_right = normal.perp_cw();
+        let node_rotation = node_right.normalized_angle();
+        let surface_offset = data.tesla.plant_offset.y * scale;
+        let root_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO)
+            + normal * surface_offset;
+        let relative_right = node_right.complex_mul(inverse_basis);
+        let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
+            + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
+        let relative_rotation = node_rotation - parent_rotation;
+
+        self.attach_engine_body(platform_index, data.tesla.node_body);
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.tesla.node_layer,
+            owner: index as u32 + 1,
+            flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+            hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
+            radius: (data.tesla.node_radius * scale).raw(),
+            inverse_mass: data.tesla.node_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let node = SpawnedTeslaNode {
+            active: true,
+            born_tick: self.tick,
+            owner: index,
+            ability_slot,
+            ability_generation,
+            hierarchy_base,
+            entity: Some(entity),
+            platform_index,
+            local,
+            relative_center,
+            relative_rotation,
+            collider_center: parent_position
+                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_rotation: node_rotation,
+            surface_offset,
+            scale,
+            body: data.tesla.node_body,
+            child,
+            ..SpawnedTeslaNode::default()
+        };
+        let node_index = if let Some(free) = self.tesla_nodes.iter().position(|node| !node.active) {
+            self.tesla_nodes[free] = node;
+            free
+        } else {
+            self.tesla_nodes.push(node);
+            self.tesla_nodes.len() - 1
+        };
+        if let Some(child) = child {
+            self.tesla_nodes[child].parent = Some(node_index);
+        }
+
+        let arm = (body_position - parent_position).normalized_safe();
+        self.platform_dynamics[platform_index]
+            .body
+            .apply_impulse(-normal * data.tesla.cast_force, arm);
+        // RingBuffer.Add marks the evicted node before Initialize attaches the
+        // replacement, but DetPhysics does not remove that circle until the
+        // physics pass. The cast impulse therefore sees root + three nodes;
+        // RemoveCircleFromComposite then rebuilds root + the surviving pair
+        // while preserving that temporary composite's velocity.
+        if let Some(oldest) = evicted {
+            if let Some(parent) = self.tesla_nodes[oldest].parent {
+                self.update_tesla_line_geometry(parent, data);
+            }
+            self.remove_tesla_node(oldest);
+        }
+        self.platforms_changed();
+        true
+    }
+
+    fn disconnect_tesla_node(&mut self, node_index: usize) {
+        if !self.tesla_nodes[node_index].connected {
+            return;
+        }
+        let child = self.tesla_nodes[node_index].child;
+        self.tesla_nodes[node_index].connected = false;
+        self.tesla_nodes[node_index].lethal = false;
+        self.tesla_nodes[node_index].enter_ticks = 0;
+        if let Some(entity) = self.tesla_nodes[node_index].line_entity.take() {
+            let node = self.tesla_nodes[node_index];
+            self.entities[entity].x = node.line_center.x.raw();
+            self.entities[entity].y = node.line_center.y.raw();
+            self.entities[entity].right_x = node.line_right.x.raw();
+            self.entities[entity].right_y = node.line_right.y.raw();
+            self.entities[entity].up_x = node.line_up.x.raw();
+            self.entities[entity].up_y = node.line_up.y.raw();
+            self.entities[entity].rotation = node.line_rotation.raw();
+            self.entities[entity].owner = 0;
+            self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+            self.destroyed_tesla_lines.push(DestroyedTeslaLine {
+                entity,
+                destroy_tick: self.tick,
+            });
+        }
+        self.tesla_nodes[node_index].line_active = false;
+        self.tesla_nodes[node_index].line_collider_enabled = false;
+        if let Some(child) = child
+            && child < self.tesla_nodes.len()
+        {
+            self.tesla_nodes[child].connected = false;
+            self.tesla_nodes[child].lethal = false;
+            self.tesla_nodes[child].enter_ticks = 0;
+        }
+    }
+
+    fn remove_tesla_node(&mut self, node_index: usize) {
+        if !self.tesla_nodes[node_index].active {
+            return;
+        }
+        if self.tesla_nodes[node_index].connected {
+            self.disconnect_tesla_node(node_index);
+        }
+        if let Some(parent) = self.tesla_nodes[node_index].parent
+            && parent < self.tesla_nodes.len()
+            && self.tesla_nodes[parent].connected
+        {
+            self.disconnect_tesla_node(parent);
+        }
+        let child = self.tesla_nodes[node_index].child;
+        let parent = self.tesla_nodes[node_index].parent;
+        if let Some(child) = child
+            && child < self.tesla_nodes.len()
+        {
+            self.tesla_nodes[child].parent = None;
+        }
+        if let Some(parent) = parent
+            && parent < self.tesla_nodes.len()
+        {
+            self.tesla_nodes[parent].child = None;
+        }
+        let platform_index = self.tesla_nodes[node_index].platform_index;
+        self.tesla_nodes[node_index].active = false;
+        if let Some(entity) = self.tesla_nodes[node_index].entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+        self.rebuild_platform_attachment_body(platform_index);
+        self.platforms_changed();
+    }
+
     fn spawn_engine(&mut self, index: usize, data: &data::RolloutData) -> bool {
         let Some(ground_id) = self.players[index].base.ground else {
             return false;
@@ -4226,7 +4580,8 @@ impl RolloutWorld {
 
     fn attach_engine_body(&mut self, platform_index: usize, child: Body) {
         let dynamics = &mut self.platform_dynamics[platform_index];
-        if dynamics.attached_children == 0 {
+        let extending_composite = dynamics.attached_children != 0;
+        if !extending_composite {
             dynamics.composite_position = self.platforms[platform_index].surface.center;
         }
         let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
@@ -4235,6 +4590,12 @@ impl RolloutWorld {
         let child_moment = Fix::ONE / child.inverse_inertia;
         dynamics.body.inverse_mass = Fix::ONE / (parent_mass + child_mass);
         dynamics.body.inverse_inertia = Fix::ONE / (parent_moment + child_moment);
+        // AddCircleToRR/AddBoxToRR extends an existing CompositeBody through
+        // CombinePhysicsBodies(small, combined). The combined body aliases
+        // the "big" input, so clearing big.force also clears the result.
+        if extending_composite {
+            dynamics.body.force = Vec2::ZERO;
+        }
         dynamics.attached_children += 1;
     }
 
@@ -4273,6 +4634,13 @@ impl RolloutWorld {
             if engine.active && engine.platform_index == platform_index {
                 mass += Fix::ONE / engine.body.inverse_mass;
                 moment += Fix::ONE / engine.body.inverse_inertia;
+                count += 1;
+            }
+        }
+        for node in &self.tesla_nodes {
+            if node.active && node.platform_index == platform_index {
+                mass += Fix::ONE / node.body.inverse_mass;
+                moment += Fix::ONE / node.body.inverse_inertia;
                 count += 1;
             }
         }
@@ -4391,7 +4759,8 @@ impl RolloutWorld {
 
     fn attach_spike_body(&mut self, platform_index: usize, child: Body) {
         let dynamics = &mut self.platform_dynamics[platform_index];
-        if dynamics.attached_children == 0 {
+        let extending_composite = dynamics.attached_children != 0;
+        if !extending_composite {
             dynamics.composite_position = self.platforms[platform_index].surface.center;
         }
         let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
@@ -4400,6 +4769,9 @@ impl RolloutWorld {
         let child_moment = Fix::ONE / child.inverse_inertia;
         dynamics.body.inverse_mass = Fix::ONE / (parent_mass + child_mass);
         dynamics.body.inverse_inertia = Fix::ONE / (parent_moment + child_moment);
+        if extending_composite {
+            dynamics.body.force = Vec2::ZERO;
+        }
         dynamics.attached_children += 1;
     }
 
@@ -4621,6 +4993,167 @@ impl RolloutWorld {
         }
     }
 
+    fn connect_tesla_node(
+        &mut self,
+        node_index: usize,
+        child_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.tesla.lightning_updatable_count;
+        self.tesla_nodes[node_index].connected = true;
+        self.tesla_nodes[node_index].enter_ticks = 0;
+        self.tesla_nodes[node_index].line_hierarchy_base = hierarchy_base;
+        self.tesla_nodes[node_index].line_born_tick = self.tick;
+        self.tesla_nodes[node_index].line_entity = None;
+        self.tesla_nodes[node_index].line_active = false;
+        self.tesla_nodes[node_index].line_collider_enabled = true;
+        self.tesla_nodes[node_index].flicker_time = Fix::ZERO;
+        self.tesla_nodes[node_index].flicker_ticks = 0;
+        self.tesla_nodes[child_index].connected = true;
+        self.tesla_nodes[child_index].enter_ticks = 0;
+    }
+
+    fn tesla_nodes_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        self.destroyed_tesla_lines.retain(|line| {
+            if line.destroy_tick < self.tick {
+                self.entities[line.entity].flags = E_REMOVED;
+                false
+            } else {
+                true
+            }
+        });
+
+        for node_index in 0..self.tesla_nodes.len() {
+            if !self.tesla_nodes[node_index].active
+                || self.tesla_nodes[node_index].born_tick >= self.tick
+            {
+                continue;
+            }
+            if self.tesla_nodes[node_index].connected {
+                let child_live = self.tesla_nodes[node_index].child.is_some_and(|child| {
+                    child < self.tesla_nodes.len() && self.tesla_nodes[child].active
+                });
+                let parent_live = self.tesla_nodes[node_index].parent.is_some_and(|parent| {
+                    parent < self.tesla_nodes.len() && self.tesla_nodes[parent].active
+                });
+                if !child_live && !parent_live {
+                    self.disconnect_tesla_node(node_index);
+                }
+            }
+            if !self.tesla_nodes[node_index].connected
+                && let Some(child) = self.tesla_nodes[node_index].child
+                && child < self.tesla_nodes.len()
+                && self.tesla_nodes[child].active
+            {
+                self.connect_tesla_node(node_index, child, data);
+            }
+        }
+
+        for node_index in 0..self.tesla_nodes.len() {
+            if !self.tesla_nodes[node_index].active
+                || !self.tesla_nodes[node_index].connected
+                || self.tesla_nodes[node_index].child.is_none()
+            {
+                continue;
+            }
+            if self.tesla_nodes[node_index].line_entity.is_none()
+                && self.tesla_nodes[node_index].line_born_tick < self.tick
+            {
+                let entity = self.entities.len();
+                let id = self.next_id();
+                self.entities.push(CEntity {
+                    id,
+                    kind: 1,
+                    layer: data.tesla.lightning_layer,
+                    owner: self.tesla_nodes[node_index].owner as u32 + 1,
+                    flags: E_ENABLED | E_TRIGGER,
+                    hierarchy: 100_000_000
+                        + self.tesla_nodes[node_index].line_hierarchy_base
+                        + data.tesla.lightning_collider_hierarchy,
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                });
+                self.tesla_nodes[node_index].line_entity = Some(entity);
+            }
+
+            if self.player_time_scale >= Fix::from_f32(0.01) {
+                self.tesla_nodes[node_index].enter_ticks += 1;
+            }
+            let child = self.tesla_nodes[node_index]
+                .child
+                .expect("connected Tesla parent has child");
+            if !self.tesla_nodes[node_index].lethal
+                && self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks
+            {
+                self.tesla_nodes[node_index].lethal = true;
+                self.tesla_nodes[node_index].line_active = true;
+            }
+            if self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks + 1 {
+                self.tesla_nodes[child].lethal = true;
+            }
+            if !self.tesla_nodes[node_index].lethal {
+                // The line still follows its endpoints during the load-in.
+            } else {
+                if self.tesla_nodes[node_index].flicker_ticks == 0 {
+                    let owner = self.tesla_nodes[node_index].owner;
+                    let dt = if self.time_stop_protected[owner] {
+                        DT
+                    } else {
+                        updater_dt
+                    };
+                    self.tesla_nodes[node_index].flicker_time += dt;
+                    if self.tesla_nodes[node_index].flicker_time > data.tesla.flicker_period {
+                        self.tesla_nodes[node_index].line_collider_enabled = false;
+                        self.tesla_nodes[node_index].flicker_ticks = 1;
+                    }
+                } else if self.player_time_scale >= Fix::from_f32(0.01) {
+                    self.tesla_nodes[node_index].flicker_ticks += 1;
+                    if self.tesla_nodes[node_index].flicker_ticks > data.tesla.flicker_ticks + 1 {
+                        self.tesla_nodes[node_index].line_collider_enabled = true;
+                        self.tesla_nodes[node_index].flicker_time = Fix::ZERO;
+                        self.tesla_nodes[node_index].flicker_ticks = 0;
+                    }
+                }
+            }
+
+            self.update_tesla_line_geometry(node_index, data);
+        }
+    }
+
+    fn update_tesla_line_geometry(&mut self, node_index: usize, data: &data::RolloutData) {
+        let node = self.tesla_nodes[node_index];
+        let Some(child) = node.child else {
+            return;
+        };
+        let child_node = self.tesla_nodes[child];
+        // SimpleSparkNode.UpdateLightningLine runs before DetPhysics, so this
+        // pose uses centers synchronized by the preceding physics pass and
+        // remains one pass behind the node rows.
+        let node_up = Vec2::angle(node.collider_rotation).perp();
+        let child_up = Vec2::angle(child_node.collider_rotation).perp();
+        let from = node.collider_center - node_up * data.tesla.node_collider_offset.y * node.scale
+            + node_up * data.tesla.hitbox_offset_y * node.scale;
+        let to = child_node.collider_center
+            - child_up * data.tesla.node_collider_offset.y * child_node.scale
+            + child_up * data.tesla.hitbox_offset_y * child_node.scale;
+        let delta = to - from;
+        let distance = delta.length();
+        let direction = if distance != Fix::ZERO {
+            delta / distance
+        } else {
+            Vec2::UP
+        };
+        let line_up_basis = Vec2::new(-direction.y, direction.x);
+        let line_right_basis = line_up_basis.perp_cw();
+        let half = Fix::from_f32(0.5);
+        let half_length = (distance * half).max(data.tesla.lightning_minimum_extent);
+        self.tesla_nodes[node_index].line_center = from + delta * half;
+        self.tesla_nodes[node_index].line_right = line_right_basis * half_length;
+        self.tesla_nodes[node_index].line_up = line_up_basis * data.tesla.lightning_extents.y;
+        self.tesla_nodes[node_index].line_rotation = line_right_basis.normalized_angle();
+    }
+
     fn spike_contacts(&mut self, data: &data::RolloutData) {
         // Circle/Box and Box/Box callbacks run after all rigid-body groups.
         // Player colliders are triggers, so contact only schedules callbacks:
@@ -4668,6 +5201,7 @@ impl RolloutWorld {
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
+                    ActiveAbility::Tesla => slot.tesla_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
@@ -4709,6 +5243,143 @@ impl RolloutWorld {
                 // Spike's Explosion.PlayerOwnerId is never assigned and
                 // therefore remains zero, which is neither a live player id
                 // nor the game's environmental sentinel.
+                self.kill(player_index, 0, CAUSE_OTHER, true);
+            }
+        }
+    }
+
+    fn tesla_contacts(&mut self, data: &data::RolloutData) {
+        let mut victims = [false; MAX_PLAYERS];
+        for node in self.tesla_nodes.iter().copied() {
+            if !node.active || !node.lethal {
+                continue;
+            }
+            let node_circle = Circle {
+                center: node.collider_center,
+                radius: data.tesla.node_radius * node.scale,
+            };
+            let line = if node.line_active && node.line_collider_enabled {
+                Some(OrientedBox {
+                    center: node.line_center,
+                    right: node.line_right,
+                    up: node.line_up,
+                    inverse_extents: Vec2::new(
+                        Fix::ONE / node.line_right.length(),
+                        Fix::ONE / node.line_up.length(),
+                    ),
+                })
+            } else {
+                None
+            };
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & E_ENABLED == 0 {
+                    continue;
+                }
+                let smoke = Circle {
+                    center: cloud.position,
+                    radius: Fix::from_raw(self.entities[entity].radius),
+                };
+                if crate::physics::contact::circle_circle(node_circle, smoke).is_some()
+                    || line.is_some_and(|line| {
+                        crate::physics::contact::circle_box(smoke, line).is_some()
+                    })
+                {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
+                }
+            }
+            for mine in &mut self.thrown_items {
+                if !mine.active || mine.ability != ABILITY_MINE || !matches!(mine.phase, 1 | 2) {
+                    continue;
+                }
+                let mine_circle = Circle {
+                    center: mine.position,
+                    radius: data.mine.item_radius,
+                };
+                if crate::physics::contact::circle_circle(node_circle, mine_circle).is_some()
+                    || line.is_some_and(|line| {
+                        crate::physics::contact::circle_box(mine_circle, line).is_some()
+                    })
+                {
+                    mine.time_since_anticipation =
+                        data.mine.anticipation_duration * Fix::from_f32(0.8);
+                    mine.phase = 3;
+                }
+            }
+            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
+                if *victim || !self.playable(player_index) {
+                    continue;
+                }
+                let slot = &self.players[player_index];
+                let entity = match slot.active {
+                    ActiveAbility::None => slot.body_entity,
+                    ActiveAbility::Dash => slot.dash_entity,
+                    ActiveAbility::Bow => slot.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => slot.throw_entity,
+                    ActiveAbility::Mine => slot.mine_entity,
+                    ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Push => slot.push_entity,
+                    ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::Engine => slot.engine_entity,
+                    ActiveAbility::Tesla => slot.tesla_entity,
+                    ActiveAbility::TimeStop => slot.time_stop_entity,
+                    ActiveAbility::Gust => slot.gust_entity,
+                    ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::Platform => slot.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let overlaps = if row.kind == 0 {
+                    let player = Circle {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        radius: Fix::from_raw(row.radius),
+                    };
+                    crate::physics::contact::circle_circle(node_circle, player).is_some()
+                        || line.is_some_and(|line| {
+                            crate::physics::contact::circle_box(player, line).is_some()
+                        })
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    let player = OrientedBox {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    };
+                    crate::physics::contact::circle_box(node_circle, player).is_some()
+                        || line.is_some_and(|line| {
+                            crate::physics::contact::box_box(player, line).is_some()
+                        })
+                };
+                if overlaps {
+                    *victim = true;
+                }
+            }
+        }
+        for (player_index, victim) in victims.into_iter().enumerate().take(self.players.len()) {
+            if victim && self.playable(player_index) {
+                // Both prefabs carry Explosion and an IPlayerIdHolder, but
+                // SimpleSparkNode/StretchableLightning never assign
+                // Explosion.PlayerOwnerId. PlayerCollision therefore uses
+                // its zero default for kill attribution even though the RL
+                // entity row publishes the holder's actual owner.
                 self.kill(player_index, 0, CAUSE_OTHER, true);
             }
         }
@@ -5305,6 +5976,7 @@ impl RolloutWorld {
             let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
+            let mut tesla_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -5353,6 +6025,11 @@ impl RolloutWorld {
                         data.engine.collider_hierarchy,
                         &mut engine_entity,
                     ),
+                    ABILITY_TESLA => (
+                        data::surface_extents(data.tesla.hurtbox_extents),
+                        data.tesla.collider_hierarchy,
+                        &mut tesla_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -5367,6 +6044,8 @@ impl RolloutWorld {
                         data.spike.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_ENGINE {
                         data.engine.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_TESLA {
+                        data.tesla.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -5385,6 +6064,8 @@ impl RolloutWorld {
                         data.spike.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_ENGINE {
                         data.engine.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_TESLA {
+                        data.tesla.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -5462,6 +6143,7 @@ impl RolloutWorld {
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
             slot.engine_entity = engine_entity;
+            slot.tesla_entity = tesla_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -5488,6 +6170,7 @@ impl RolloutWorld {
                 self.players[index].spike_entity,
                 self.players[index].time_stop_entity,
                 self.players[index].engine_entity,
+                self.players[index].tesla_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -5612,6 +6295,7 @@ impl RolloutWorld {
             let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             let mut engine_entity = usize::MAX;
+            let mut tesla_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -5660,6 +6344,11 @@ impl RolloutWorld {
                         data.engine.collider_hierarchy,
                         &mut engine_entity,
                     ),
+                    ABILITY_TESLA => (
+                        data::surface_extents(data.tesla.hurtbox_extents),
+                        data.tesla.collider_hierarchy,
+                        &mut tesla_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -5675,6 +6364,8 @@ impl RolloutWorld {
                         data.spike.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_ENGINE {
                         data.engine.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_TESLA {
+                        data.tesla.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -5693,6 +6384,8 @@ impl RolloutWorld {
                         data.spike.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_ENGINE {
                         data.engine.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_TESLA {
+                        data.tesla.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -5757,6 +6450,7 @@ impl RolloutWorld {
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
             slot.engine_entity = engine_entity;
+            slot.tesla_entity = tesla_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -6948,6 +7642,7 @@ impl RolloutWorld {
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
+                    ActiveAbility::Tesla => slot.tesla_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
@@ -7085,6 +7780,7 @@ impl RolloutWorld {
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::Engine => slot.engine_entity,
+                    ActiveAbility::Tesla => slot.tesla_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
@@ -7885,6 +8581,22 @@ impl RolloutWorld {
                 }
             } else if engine.platform_index > index {
                 engine.platform_index -= 1;
+            }
+        }
+        for node in &mut self.tesla_nodes {
+            if !node.active {
+                continue;
+            }
+            if node.platform_index == index {
+                node.active = false;
+                if let Some(entity) = node.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+                if let Some(entity) = node.line_entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if node.platform_index > index {
+                node.platform_index -= 1;
             }
         }
         self.platforms.remove(index);
@@ -9081,6 +9793,7 @@ impl RolloutWorld {
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::Engine => player.engine_entity,
+                    ActiveAbility::Tesla => player.tesla_entity,
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
                     ActiveAbility::Revival => player.revival_entity,
@@ -10104,6 +10817,18 @@ impl RolloutWorld {
                     .relative_center
                     .complex_mul(self.platforms[platform].surface.right);
         }
+        for node in &mut self.tesla_nodes {
+            if !node.active || node.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let platform = node.platform_index;
+            node.collider_rotation =
+                self.platform_dynamics[platform].body.orientation + node.relative_rotation;
+            node.collider_center = self.platform_dynamics[platform].composite_position
+                + node
+                    .relative_center
+                    .complex_mul(self.platforms[platform].surface.right);
+        }
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
@@ -10452,6 +11177,7 @@ impl RolloutWorld {
                 slot.spike_entity,
                 slot.time_stop_entity,
                 slot.engine_entity,
+                slot.tesla_entity,
             ];
             for entity in rows {
                 if entity == usize::MAX {
@@ -10511,6 +11237,7 @@ impl RolloutWorld {
                 slot.spike_entity,
                 slot.time_stop_entity,
                 slot.engine_entity,
+                slot.tesla_entity,
             ] {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
@@ -10562,6 +11289,7 @@ impl RolloutWorld {
                 slot.spike_entity,
                 slot.time_stop_entity,
                 slot.engine_entity,
+                slot.tesla_entity,
             ];
             for e in rows {
                 if e == usize::MAX {
@@ -10826,7 +11554,70 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         self.refresh_spike_entities();
         self.refresh_engine_entities();
+        self.refresh_tesla_entities();
         self.refresh_platform_entities();
+    }
+
+    fn refresh_tesla_entities(&mut self) {
+        let data = data::get();
+        for node_index in 0..self.tesla_nodes.len() {
+            let node = self.tesla_nodes[node_index];
+            if !node.active || node.platform_index >= self.platforms.len() {
+                continue;
+            }
+            if let Some(entity) = node.entity {
+                self.entities[entity] = CEntity {
+                    id: self.entities[entity].id,
+                    kind: 0,
+                    layer: if node.lethal {
+                        16
+                    } else {
+                        data.tesla.node_layer
+                    },
+                    owner: node.owner as u32 + 1,
+                    flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+                    hierarchy: self.entities[entity].hierarchy,
+                    x: node.collider_center.x.raw(),
+                    y: node.collider_center.y.raw(),
+                    radius: (data.tesla.node_radius * node.scale).raw(),
+                    rotation: node.collider_rotation.raw(),
+                    inverse_mass: node.body.inverse_mass.raw(),
+                    ..CEntity::default()
+                };
+            }
+            let Some(line_entity) = node.line_entity else {
+                continue;
+            };
+            let Some(child_index) = node.child else {
+                continue;
+            };
+            if child_index >= self.tesla_nodes.len() || !self.tesla_nodes[child_index].active {
+                continue;
+            }
+            self.entities[line_entity] = CEntity {
+                id: self.entities[line_entity].id,
+                kind: 1,
+                layer: data.tesla.lightning_layer,
+                owner: node.owner as u32 + 1,
+                flags: E_TRIGGER
+                    | if node.line_active { E_ACTIVE } else { 0 }
+                    | if node.line_collider_enabled {
+                        E_ENABLED
+                    } else {
+                        0
+                    },
+                hierarchy: self.entities[line_entity].hierarchy,
+                x: node.line_center.x.raw(),
+                y: node.line_center.y.raw(),
+                right_x: node.line_right.x.raw(),
+                right_y: node.line_right.y.raw(),
+                up_x: node.line_up.x.raw(),
+                up_y: node.line_up.y.raw(),
+                rotation: node.line_rotation.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            };
+        }
     }
 
     fn refresh_engine_entities(&mut self) {
@@ -10922,6 +11713,7 @@ impl RolloutWorld {
                 spike_e,
                 time_stop_e,
                 engine_e,
+                tesla_e,
             ) = {
                 let s = &self.players[index];
                 (
@@ -10941,6 +11733,7 @@ impl RolloutWorld {
                     s.spike_entity,
                     s.time_stop_entity,
                     s.engine_entity,
+                    s.tesla_entity,
                 )
             };
             let slot = &self.players[index];
@@ -10966,6 +11759,7 @@ impl RolloutWorld {
             let casting_time_stop = slot.active == ActiveAbility::TimeStop;
             let spiking = slot.active == ActiveAbility::Spike;
             let planting_engine = slot.active == ActiveAbility::Engine;
+            let planting_tesla = slot.active == ActiveAbility::Tesla;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -11494,6 +12288,43 @@ impl RolloutWorld {
                         center,
                         collider_basis,
                         data::surface_extents(data.engine.hurtbox_extents),
+                    );
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
+            if tesla_e != usize::MAX {
+                let box_row = &mut self.entities[tesla_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && planting_tesla {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if planting_tesla {
+                    box_row.owner = slot.base.id;
+                }
+                if planting_tesla || was_active {
+                    let (position, rotation, center_basis, collider_basis) = if planting_tesla {
+                        (
+                            slot.plant_cast.collider_position,
+                            slot.plant_cast.collider_rotation,
+                            slot.plant_cast.collider_up.perp_cw(),
+                            Vec2::angle(slot.plant_cast.collider_rotation),
+                        )
+                    } else {
+                        (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
+                    };
+                    let center = position + center_basis.complex_mul(data.tesla.collider_offset);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        collider_basis,
+                        data::surface_extents(data.tesla.hurtbox_extents),
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();

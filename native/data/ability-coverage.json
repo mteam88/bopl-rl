@@ -181,7 +181,8 @@
       "name": "Tesla coil",
       "prefab": "Assets/GameObject/Tesla coil.prefab",
       "prefab_guid": "fecc7830c8d177f4d9482f4c4302a06b",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "tesla_ability_ab matches 900 NativeAOT/Rust Q32 ticks across three grounded placements. It covers PlantObjectOnPlatform cast/recovery, scaled circle registration, composite mass/inertia and cast impulse, two-node connection, deferred lightning registration, staggered lethal activation, the five-second flicker cycle, one-tick destroyed-line publication, and two-slot ring eviction/reconnection. Entity positions differ by at most 16 raw Q32 units in the golden from fixed-point root/collider reconstruction. tesla_contact_ab matches the discrete death and telemetry stream for a separated-node owner contact over 700 ticks, including the uncredited tick-381 kill. Scale changes, platform destruction, time stop, smoke/mine ignition, and mixed attachment scenarios remain to be separately goldened."
     },
     {
       "id": 24,

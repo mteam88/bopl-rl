@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Shrink ray, Invisibility, Push, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
-  (catalog ids 0/1/2/3/4/7/8/9/10/11/12/13/14/15/17/19/22/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Shrink ray, Invisibility, Push, Tesla coil, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
+  (catalog ids 0/1/2/3/4/5/7/8/9/10/11/12/13/14/15/17/19/22/23/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/5/7/8/9/10/11/12/13/14/15/17/19/22/24/25/31/34/35/36/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/7/8/9/10/11/12/13/14/15/17/19/22/23/24/25/31/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -205,6 +205,16 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Its flame ignites the first overlapping Smoke collider without allocation.
   Smoke chaining, ring eviction, scale changes, platform destruction, time stop,
   and multiple simultaneous engines still need dedicated differential scenarios.
+  Tesla coil is exact within 16 raw Q32 position units through grounded
+  placement, two-node connection, staggered orb activation, lightning flicker,
+  and third-cast ring eviction. It preserves DetPhysics' temporary four-body
+  cast impulse before rebuilding the surviving three-body composite, and the
+  evicted lightning remains visible for one pass as a destroyed trigger.
+  Noncoincident moving-platform placement currently has bounded root/collider
+  reconstruction differences below 0.0001 world units. Its owner-contact kill
+  and uncredited `Explosion.PlayerOwnerId` telemetry match on the same tick;
+  scale changes, platform destruction, time stop, smoke/mine ignition, and
+  mixed attachments still need dedicated differential scenarios.
   Push is exact through grounded entry, animation/channel timing, direct
   control of an `AnimateVelocity` platform, home-spring retargeting, rigid-body
   force and torque, collider publication, and button-release restoration.

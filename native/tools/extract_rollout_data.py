@@ -405,6 +405,14 @@ def main():
     updater_count = lambda prefab: sum(
         "hierarchyNumber" in c.get("properties", {}) for c in prefab["data"]["components"]
     )
+    def hierarchy_span(prefab):
+        def visit(game_object):
+            own = (
+                c.get("properties", {}).get("hierarchyNumber", 0)
+                for c in game_object.get("components", [])
+            )
+            return max([*own, *(visit(child) for child in game_object.get("children", []))])
+        return visit(prefab["data"])
     out["prefabs"]["revival"] = {
         "anims": animations(guid_of(revival_quick["animData"])),
         "shockwave_offset": vec2(revival_quick, "shockwaveOffset"),
@@ -1136,6 +1144,54 @@ def main():
             "fire_offset": vec2(rocket_logic, "offset"),
             "fire_radius": fix(rocket_logic, "radius"),
             "smoke_mask": rocket_logic["smokeOnlyLayerMask.m_Bits"],
+        },
+    }
+
+    # ---- Tesla coil / paired SimpleSparkNode ----
+    _, tesla_ability = find_prefab("Assets/GameObject/Tesla coil.prefab")
+    tesla_place = component(tesla_ability, "PlantObjectOnPlatform")
+    tesla_factory = component(tesla_ability, "PlaceSparkNode")
+    tesla_box = component(tesla_ability, "DPhysicsBox")
+    tesla_fix = component(tesla_ability, "FixTransform")
+    tesla_anims = animations(guid_of(tesla_place["animData"]))
+    spark = ASSETS[guid_of(tesla_factory["plantablePrefab"])]
+    spark_logic = component(spark, "SimpleSparkNode")
+    spark_circle = component(spark, "DPhysicsCircle")
+    spark_fix = component(spark, "FixTransform")
+    spark_body = component(spark, "BoplBody")
+    lightning = ASSETS[guid_of(spark_logic["lightningPrefab"])]
+    lightning_logic = component(lightning, "StretchableLightning")
+    lightning_box = component(lightning, "DPhysicsBox")
+    lightning_anims = animations(guid_of(lightning_logic["animData"]))
+    out["prefabs"]["tesla"] = {
+        "hurtbox_extents": vec2(tesla_box, "startExtents"),
+        "collider_offset": vec2(tesla_fix, "offset"),
+        "collider_hierarchy": tesla_box["hierarchyNumber"],
+        "animations": {name: tesla_anims[name] for name in ("cast", "recover")},
+        "plant_offset": vec2(tesla_factory, "plantOffset"),
+        "cast_force": fix(tesla_factory, "castForce"),
+        "buffer_size": 2,
+        "node": {
+            "layer": spark["data"].get("layer"),
+            # SpriteAnimator receives hierarchy 5 even though the normalized
+            # runtime inventory does not classify it as an updatable here.
+            "updatable_count": hierarchy_span(spark),
+            "collider_hierarchy": spark_circle["hierarchyNumber"],
+            "radius": fix(spark_circle, "startRadius"),
+            "collider_offset": vec2(spark_fix, "offset"),
+            "body": physics_body(spark_body),
+            "line_length": fix(spark_logic, "lightningLineLength"),
+            "hitbox_offset_y": fix(spark_logic, "hitBoxOffsetY"),
+        },
+        "lightning": {
+            "layer": lightning["data"].get("layer"),
+            "updatable_count": hierarchy_span(lightning),
+            "collider_hierarchy": lightning_box["hierarchyNumber"],
+            "extents": vec2(lightning_box, "startExtents"),
+            "minimum_extent": fix(lightning_box, "minimumExtents"),
+            "flicker_period": fix(lightning_logic, "flickerPeriod"),
+            "enter_ticks": sum(abs(d) for d in lightning_anims["EnterOrb"]),
+            "flicker_ticks": sum(abs(d) for d in lightning_anims["flicker"]),
         },
     }
 

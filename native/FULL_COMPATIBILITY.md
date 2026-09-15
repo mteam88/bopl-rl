@@ -2133,3 +2133,52 @@ cast, recovery, persistent engine export, startup, sustained thrust, platform
 spring response and the first platform collision. Dedicated smoke-chain,
 four-engine eviction, scale-change, platform-destruction, time-stop and
 multi-engine goldens remain open, so coverage is marked partial.
+
+### Executable Tesla coil and connected lightning (2026-09-15)
+
+Catalog id 23 now executes the grounded `PlantObjectOnPlatform` form and its
+`PlaceSparkNode` payload. The cast uses the exported lateral offset, surface
+projection and normal, player-scaled plant height, five-frame callback, 10-unit
+off-centre platform impulse and three-frame recovery. Each ability instance has
+the source's two-entry `RingBuffer`; planted nodes survive form exit and stock
+or Revival cloning starts a fresh ring-buffer generation.
+
+Each `SimpleSparkNode` registers its one-unit circle as a child of the rounded
+platform's DetPhysics composite. A pair connects on the updater pass after the
+new node is planted. Its lightning box registers one pass later while inactive,
+the parent orb and line become lethal after the 54-tick enter animation, and the
+child orb follows one tick later. The active line uses the exported thickness
+and minimum extent, disables its collider after the strict five-second clock,
+and reenables it after the serialized 82 animation ticks plus the callback pass.
+Node and line contacts use their live circle and oriented-box geometry and keep
+the source behavior that permits owner damage.
+
+The third placement exposes two ordering details that are easy to lose in a
+cleaner implementation. `RingBuffer.Add` marks the oldest node before the new
+circle is attached, but DetPhysics removes that circle only at the start of its
+physics pass. The cast impulse therefore uses a temporary root-plus-three-node
+body; removal then rebuilds the root-plus-two-node body while copying that
+temporary body's velocity and angular velocity. The old lightning row remains
+for the destruction pass with owner zero and `TRIGGER|DESTROYED`, disappears on
+the following pass, and the replacement line registers one pass after that.
+Rust models those phases explicitly with capacity-reused node and destruction
+buffers, with no per-tick allocation.
+
+`tesla_ability_ab.c` compares 900 NativeAOT/Rust Q32 ticks across three casts,
+including connection, staggered activation, a complete flicker and reenable,
+ring eviction, destroyed-line lifetime, reconnection, platform composite motion
+and persistent objects after form exit. Header, player, slime, telemetry and
+entity metadata remain exact; entity axes differ by at most one raw Q32 unit and
+positions by at most 16 raw units. Those position bits come from reconstructing
+the node's child collider centre from the platform root instead of retaining
+Unity's separately rounded `FixTransform` and DetPhysics circle values. A
+separate noncoincident moving-platform probe found the same operation-order
+effect below 0.0001 world units and no state or collision-boundary change in
+the measured interval. `tesla_contact_ab.c` then separates the nodes, compares
+death and telemetry state for 700 ticks, and observes the same owner collision
+on tick 381. The kill is classified as `Other` with owner zero: both Tesla
+prefabs publish their `IPlayerIdHolder`, but neither assigns the adjacent
+`Explosion.PlayerOwnerId`, so its default is the value PlayerCollision uses for
+attribution. Scaling, platform destruction, time stop, smoke/mine ignition and
+mixed attachment types still need complete differential scenarios. Coverage
+therefore remains partial.
