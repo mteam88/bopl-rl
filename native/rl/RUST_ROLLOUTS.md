@@ -61,8 +61,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Rock circle: `BounceBall.OnCollide` receives its authored impulse before
   Rock's contact-kill flag kills the dasher at the ray near point. A five-player
   composition matches that same-pass death, owner credit and stock clone for
-  300 ticks without allocating ray-target storage. Other non-wall callbacks,
-  rope transfer and the public horizontal-under-water failure remain open.
+  300 ticks without allocating ray-target storage. A second composition drives
+  two ordinary players inside the target radius and matches the target's
+  one-sided overlap push before Dash passes through. Other transformed-form
+  callbacks, rope transfer and the public horizontal-under-water failure remain
+  open.
   Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,
   fire-on-release (early release fires from transform sprite index 2, tick

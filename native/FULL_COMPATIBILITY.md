@@ -969,6 +969,15 @@ no query, target, callback or lifecycle decision differs. Other non-wall Dash
 callbacks, rope transfer and the public horizontal-under-water failure remain
 open, so Dash is now cataloged as partial.
 
+`dash_player_ab.c` adds 240 exact differential ticks for the ordinary non-wall
+branch. Two grounded players approach until their centres are 2,279,456,327 raw
+Q32 units (0.5307 world units) apart. The tick-156 ray invokes the target
+slime's `OnCollide` before Dash's nonlethal `PlayerCollision` check, producing
+the same one-sided target push, pass-through endpoint and ordinary exit in both
+backends. All discrete fields match and the same 64-raw-unit normalization
+bound applies; the target velocity after the callback is exactly 594,545,423
+raw Q32 units per second in both backends.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned

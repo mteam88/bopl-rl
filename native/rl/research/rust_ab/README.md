@@ -24,6 +24,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_rock_ab.c`: a Dash ray crosses an active Rock circle, dispatches the
   Rock's BounceBall impulse first, kills the dasher at the exact ray near point,
   credits the Rock owner and reconstructs the dasher's stock clone.
+- `dash_player_ab.c`: an ordinary target overlaps the Dash ray origin, receives
+  its one-sided `SlimeController.OnCollide` push, and survives the pass-through
+  before the Dash completes its normal endpoint and exit.
 - `bow_ab.c`: hold arrow N decisions then release, bow slot flags/timers.
 - `bow_phase_ab.c`: tick-level airborne Bow entry, scheduler-staggered body
   position, charge/release flags, and deferred arrow registration/flight.
