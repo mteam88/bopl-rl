@@ -2680,9 +2680,21 @@ less than 300,000,000 raw Q32 units (0.0699 world units) after the 70-unit
 external pushes; it does not alter the overlap, pair order, pause, force or
 subsequent ability lifecycle.
 
+`magnet_time_stop_ab.c` composes Time Stop, Grenade and Magnet over 1,450
+optimized-Q32 ticks. The Grenade is picked up 22 passes before the stop. During
+the exact 690 frozen passes, the retained input direction, form transform,
+pull/release clocks and physics remain fixed while the locked branch continues
+to pin the zero-velocity item and refresh `BoplBody.Hold(2)`. Releasing and
+changing aim during the stop therefore fires along the retained pre-stop aim
+on the first restored pass, matching NativeAOT through form exit. The golden
+uses the item fixture's 0.0233-world-unit position allowance and matches every
+axis, velocity, flag and lifecycle tick. The pooled item stores the source's
+three-frame initial/two-frame refreshed hold countdown, so pause, holder death
+and duplication cannot leave a permanent holder reference.
+
 Magnet remains partial while projectile/Boulder/Black Hole pickup, player
-ragdoll holding, spell/weapon handling, lock loss and time stop are integrated
-and goldened.
+ragdoll holding, spell/weapon handling and lock loss are integrated and
+goldened.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

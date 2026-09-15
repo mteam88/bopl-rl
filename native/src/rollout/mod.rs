@@ -408,6 +408,7 @@ pub struct ThrownItem {
     pub duplicate_shake_offset: Vec2,
     /// Player slot whose Magnet currently refreshes this item's Hold(2).
     pub magnet_holder: Option<usize>,
+    pub magnet_hold_ticks: i8,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3772,6 +3773,16 @@ impl RolloutWorld {
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+                if self.players[index].active == ActiveAbility::Magnet {
+                    // Player's frozen input keeps MagnetGun's retained aim,
+                    // while its locked branch still pins and refreshes Hold.
+                    // Pull, pickup, release, animation and PlayerPhysics stop.
+                    self.players[index].base.external_velocity *= Fix::from_f64(0.95);
+                    if self.players[index].magnet.phase == 3 {
+                        self.magnet_update_held_item(index, data);
+                    }
+                    continue;
+                }
                 if self.players[index].active == ActiveAbility::Drill {
                     // This prefab has PlayerBody but no PlayerPhysics. With a
                     // zero fixed delta PlayerBody only damps external motion;
@@ -12851,6 +12862,7 @@ impl RolloutWorld {
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
             magnet_holder: None,
+            magnet_hold_ticks: -1,
         };
         let item_index = if let Some(free) = self.thrown_items.iter().position(|item| !item.active)
         {
@@ -13086,6 +13098,7 @@ impl RolloutWorld {
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
             magnet_holder: None,
+            magnet_hold_ticks: -1,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -13703,7 +13716,7 @@ impl RolloutWorld {
             self.players[index].magnet.aim = direction.normalized();
         }
         self.players[index].magnet.time_spent_pulling += DT;
-        if matches!(self.players[index].magnet.phase, 1 | 2)
+        if matches!(self.players[index].magnet.phase, 1 | 2 | 3)
             && self.players[index].magnet.time_spent_pulling > magnet.max_pull_duration
         {
             let state = &mut self.players[index].magnet;
@@ -14042,6 +14055,7 @@ impl RolloutWorld {
         let position = self.thrown_items[item_index].position;
         self.thrown_items[item_index].body.angular_velocity = data.magnet.locked_angular_velocity;
         self.thrown_items[item_index].magnet_holder = Some(index);
+        self.thrown_items[item_index].magnet_hold_ticks = 3;
         let slot = &mut self.players[index];
         if slot.magnet.phase == 1 {
             slot.magnet.animation = 2;
@@ -14144,6 +14158,7 @@ impl RolloutWorld {
         item.position = held_position;
         item.body.velocity = Vec2::ZERO;
         item.magnet_holder = Some(index);
+        item.magnet_hold_ticks = 2;
     }
 
     fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
@@ -14162,6 +14177,7 @@ impl RolloutWorld {
         }
         item.body.force += direction * data.magnet.fire_force;
         item.magnet_holder = None;
+        item.magnet_hold_ticks = -1;
     }
 
     fn drop_magnet_held_item(&mut self, index: usize) {
@@ -14172,6 +14188,7 @@ impl RolloutWorld {
             && item.magnet_holder == Some(index)
         {
             item.magnet_holder = None;
+            item.magnet_hold_ticks = -1;
         }
     }
 
@@ -14600,6 +14617,7 @@ impl RolloutWorld {
             clone.hierarchy_base = hierarchy_base;
             clone.entity = None;
             clone.magnet_holder = None;
+            clone.magnet_hold_ticks = -1;
             clone.position = position;
             clone.body.velocity = (position - source.position).normalized_safe() * speed;
             clone.duplicated = true;
@@ -16852,6 +16870,18 @@ impl RolloutWorld {
         updater_dt: Fix,
         physics_dt: Fix,
     ) {
+        // BoplBody.UpdateSim decrements the Hold frame count after player
+        // prefabs have had a chance to refresh it. A paused/destroyed Magnet
+        // therefore releases its item without retaining a stale owner.
+        for item in &mut self.thrown_items {
+            if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
+                item.magnet_hold_ticks -= 1;
+                if item.magnet_hold_ticks == 0 {
+                    item.magnet_holder = None;
+                    item.magnet_hold_ticks = -1;
+                }
+            }
+        }
         // PokeBall.UpdateSim starts on the first pass after ThrowItem2 releases
         // the manually initialized circle. Its victim search and capture state
         // are fixed-size scans over the player slots.
@@ -20491,7 +20521,7 @@ impl RolloutWorld {
                     let (root, rotation, offset_basis, scale) = if magnetizing {
                         (
                             synced,
-                            slot.magnet.aim.normalized_angle(),
+                            slot.magnet.body_right.normalized_angle(),
                             slot.magnet.body_right,
                             slot.base.scale,
                         )

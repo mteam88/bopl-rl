@@ -61,6 +61,12 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   animation exits over 1,000 optimized-Q32 ticks. The active form centre allows
   2,048 raw Q32 units for the independent FixTransform offset reconstruction;
   axes, rotations, gameplay bodies and every interaction boundary remain exact.
+- `magnet_item_ab.c`: a live Grenade pulled, picked up, held and launched by
+  Magnet over 450 ticks, including fuse suppression and holder cleanup.
+- `magnet_parry_ab.c`: ordered empty-pickup circles from two Magnet casters,
+  the post-update static overlap sweep, pause and symmetric push over 240 ticks.
+- `magnet_time_stop_ab.c`: a held Grenade across 690 frozen passes, retained
+  aim and hold refresh, followed by first-restored-pass launch and form exit.
 - `teleport_ability_ab.c`: first and second instant casts, deferred portal
   marker registration, release-driven readiness, caster transfer, inactive
   effect interval, RNG advancement, and exact reactivation.

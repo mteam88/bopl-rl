@@ -336,9 +336,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   grouped grounded-transform drift to 0.0233 world units while lifecycle and
   item velocities match exactly. The post-player static parry sweep also uses
   fixed player-slot storage and matches the source's ordered overlap, pause and
-  symmetric `AddForce` pushes in a two-Magnet golden. Projectile/Boulder/Black
-  Hole bodies, ragdolls, weapon/spell holding, lock loss and time stop remain
-  open.
+  symmetric `AddForce` pushes in a two-Magnet golden. A composed Time Stop
+  golden preserves the retained pre-stop aim and locked item for 690 frozen
+  passes, then fires on the first restored pass; the item pool carries the
+  authored Hold countdown. Projectile/Boulder/Black Hole bodies, ragdolls,
+  weapon/spell holding and lock loss remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
