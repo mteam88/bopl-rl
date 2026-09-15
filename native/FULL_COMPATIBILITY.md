@@ -997,7 +997,17 @@ and rope-segment field is bit-identical between optimized-Q32 Rust and
 NativeAOT. This also measures the private velocity-history transition because
 the first post-exit solver pass diverges when either body history is shared or
 the Dash exit force is left in place past the ordinary body's late callback.
-Top-endpoint Grappling Hook transfer and detached-rope entry remain open.
+
+`dash_grapple_rope_ab.c` covers the complementary endpoint. Another player
+fires Grappling Hook through the close-teammate branch; the hook attaches the
+grounded victim at the rope's top on tick 197, that victim enters an up-right
+Dash on tick 198, and exits on tick 202. Headers, players, slimes, telemetry,
+rope identities, flags, hierarchy and counts are exact through exit. The
+27-segment strand inherits Grappling Hook's iterative relaxation difference:
+rope coordinates and edge vectors differ by at most 716,909,914 raw Q32 units
+(0.16692 world units), while the attached player's complete public record stays
+bit-identical. This is continuous solver geometry with no different contact,
+attachment, Dash, exit or lifecycle decision. Detached-rope entry remains open.
 
 ### Executable Grenade throw and flight (2026-09-14)
 

@@ -66,8 +66,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   one-sided overlap push before Dash passes through. A third composition enters
   Dash from a live Web Swing endpoint and matches the Dash-prefab `PlayerBody`
   constraint pass, bottom-endpoint straightening, leave-force handoff and the
-  resumed ordinary slime for 300 exact ticks. Other transformed-form callbacks,
-  top-endpoint Grapple handoff, rope detachment and the public
+  resumed ordinary slime for 300 exact ticks. A close-player Grappling Hook
+  composition also matches top-endpoint transfer through Dash exit, with exact
+  player/gameplay state and bounded inherited long-strand relaxation. Other
+  transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,
