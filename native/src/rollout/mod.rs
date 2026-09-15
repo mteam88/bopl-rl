@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
+pub const ABILITY_ROCK: u32 = 9;
 pub const ABILITY_MISSILE: u32 = 10;
 pub const ABILITY_SPIKE: u32 = 11;
 pub const ABILITY_TIME_STOP: u32 = 12;
@@ -305,10 +306,10 @@ const TIMER_START: Fix = Fix::from_raw(-6_442_450_944); // -1.5s
 #[derive(Clone, Copy, Default)]
 pub struct Arrow {
     pub active: bool,
+    pub born_tick: u32,
     /// Instantiated this tick, but not added to DetPhysics/updatables until
     /// the next scheduler pass.
     pub registered: bool,
-    pub born_tick: u32,
     pub id: u32,
     /// Owning player id (1-based).
     pub owner: u32,
@@ -849,6 +850,20 @@ pub struct BowState {
     pub loading_frame: u32,
 }
 
+/// BounceBall.cs state for the Rock player form. The rigid body is kept here
+/// instead of borrowing the movement body's kinematic channels.
+#[derive(Clone, Copy, Default)]
+pub struct RockState {
+    pub body: Body,
+    pub time: Fix,
+    pub exit_time: Fix,
+    pub scale_sum: Fix,
+    pub exit_scale: Fix,
+    pub scale_last_frame: Fix,
+    pub scale: Fix,
+    pub exiting: bool,
+}
+
 /// Per-player platform ability state (PlatformTransform.cs).
 #[derive(Clone, Copy, Default)]
 pub struct PlatformState {
@@ -961,6 +976,7 @@ pub enum ActiveAbility {
     Tack,
     Mjolnir,
     Smoke,
+    Rock,
     Missile,
     Mine,
     Spike,
@@ -1019,6 +1035,7 @@ pub struct PlayerSlot {
     /// the destroyed StickyRoundedRectangle's last surface normal.
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
+    pub rock: RockState,
     pub missile: MissileFormState,
     pub throw_item: ThrowItemState,
     pub cast_spell: CastSpellState,
@@ -1079,6 +1096,8 @@ pub struct PlayerSlot {
     pub telemetry: CTelemetry,
     // Fixed entity table indices.
     pub circle_entity: usize,
+    pub rock_entity: usize,
+    pub rock_hierarchy: u32,
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
@@ -1115,6 +1134,7 @@ struct PlatformScratch {
     callback_colliders: Vec<RoundedRect>,
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
+    rock_wall_contacts: Vec<(usize, usize, Contact)>,
     squished: Vec<usize>,
 }
 
@@ -1518,6 +1538,7 @@ impl RolloutWorld {
         }
         self.next_spawn_hierarchy = hierarchy_cursor;
         let mut circle_entity = [usize::MAX; MAX_PLAYERS];
+        let mut rock_hierarchy = [0u32; MAX_PLAYERS];
         let mut gust_entity = [usize::MAX; MAX_PLAYERS];
         let mut revival_entity = [usize::MAX; MAX_PLAYERS];
         let mut time_stop_entity = [usize::MAX; MAX_PLAYERS];
@@ -1530,6 +1551,10 @@ impl RolloutWorld {
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
+                if ability == ABILITY_ROCK {
+                    rock_hierarchy[i] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
+                    continue;
+                }
                 let (radius, offset, relative_hierarchy, target) = match ability {
                     ABILITY_GUST => (
                         data.gust.hurtbox_radius,
@@ -1831,6 +1856,7 @@ impl RolloutWorld {
                 reported_tick: u32::MAX,
                 removed_ground_normal: None,
                 bow: BowState::default(),
+                rock: RockState::default(),
                 missile: MissileFormState::default(),
                 throw_item: ThrowItemState::default(),
                 cast_spell: CastSpellState::default(),
@@ -1864,6 +1890,8 @@ impl RolloutWorld {
                 last_movement_input: Vec2::ZERO,
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
+                rock_entity: usize::MAX,
+                rock_hierarchy: rock_hierarchy[i],
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
@@ -2324,6 +2352,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Missile
                     | ActiveAbility::Mine
+                    | ActiveAbility::Rock
                     | ActiveAbility::Spike
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
@@ -2358,6 +2387,7 @@ impl RolloutWorld {
         self.arrows_integrate(data, updater_dt, physics_dt);
         self.guided_missiles_integrate(data, physics_dt);
         self.thrown_items_integrate(data, updater_dt, physics_dt);
+        self.rocks_integrate(physics_dt);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -2366,6 +2396,7 @@ impl RolloutWorld {
                     slot.body_entity,
                     slot.dash_entity,
                     slot.circle_entity,
+                    slot.rock_entity,
                     slot.bow_entity,
                     slot.throw_entity,
                     slot.mine_entity,
@@ -2382,6 +2413,7 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
+        self.rocks_contacts(data);
         self.arrows_contacts(data);
         self.guided_missile_contacts(data);
         self.thrown_items_contacts(data);
@@ -2403,6 +2435,7 @@ impl RolloutWorld {
             }
         }
         self.mines_late_tick(data);
+        self.rocks_late_tick(data);
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -2698,6 +2731,75 @@ impl RolloutWorld {
                         }
                         return;
                     }
+                    ABILITY_ROCK => {
+                        let grounded = self.players[index].base.grounded;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform.surface.position(base.local, base.radius)
+                                })
+                        } else {
+                            self.players[index].base.position
+                        };
+                        if self.players[index].rock_entity == usize::MAX {
+                            let id = self.next_id();
+                            let entity = self.entities.len();
+                            self.entities.push(CEntity {
+                                id,
+                                kind: 0,
+                                layer: LAYER_PLAYER,
+                                owner: self.players[index].base.id,
+                                flags: E_ACTIVE | E_ENABLED,
+                                hierarchy: self.players[index].rock_hierarchy,
+                                x: form_position.x.raw(),
+                                y: form_position.y.raw(),
+                                radius: data.rock.radius.raw(),
+                                inverse_mass: data.rock.body.inverse_mass.raw(),
+                                ..CEntity::default()
+                            });
+                            self.players[index].rock_entity = entity;
+                        }
+                        let slot = &mut self.players[index];
+                        let mut body = data.rock.body;
+                        let velocity = slot.base.velocity + slot.base.external_velocity;
+                        let direction = if slot.base.velocity.x <= Fix::ZERO {
+                            Fix::ONE
+                        } else {
+                            -Fix::ONE
+                        };
+                        body.velocity = if grounded {
+                            velocity * Fix::from_f32(0.6667)
+                        } else {
+                            velocity
+                        };
+                        body.angular_velocity =
+                            velocity.length() * direction * data.rock.radius * Fix::from_f32(0.2);
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Rock;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.base.position = form_position;
+                        slot.base.rotation = Fix::ZERO;
+                        slot.base.up = Vec2::UP;
+                        slot.base.grounded = false;
+                        slot.base.ground = None;
+                        slot.base.grounded_speed = Fix::ZERO;
+                        slot.base.velocity = body.velocity;
+                        slot.base.external_velocity = Vec2::ZERO;
+                        slot.rock = RockState {
+                            body,
+                            exit_scale: Fix::ONE,
+                            scale_last_frame: Fix::ONE,
+                            scale: Fix::ONE,
+                            ..RockState::default()
+                        };
+                        return;
+                    }
                     ABILITY_MINE => {
                         let grounded = self.players[index].base.grounded;
                         let form_position = if grounded {
@@ -2946,6 +3048,9 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Missile {
             self.missile_form_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Rock {
             return;
         }
         if self.players[index].active == ActiveAbility::Mine {
@@ -3695,6 +3800,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Mine => slot.mine_entity,
+                    ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
@@ -4255,10 +4361,15 @@ impl RolloutWorld {
             }
 
             let mut platform_entity = usize::MAX;
+            let mut rock_hierarchy = 0;
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
             let mut time_stop_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+                if abilities[slot] == ABILITY_ROCK {
+                    rock_hierarchy = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
+                    continue;
+                }
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_GUST => (
                         data.gust.hurtbox_radius,
@@ -4393,6 +4504,7 @@ impl RolloutWorld {
             slot.obs_state = STATE_NOTHING;
             slot.timers.fill(Fix::from_f32(-1.5));
             slot.active = ActiveAbility::None;
+            slot.rock = RockState::default();
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
@@ -4406,6 +4518,8 @@ impl RolloutWorld {
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
+            slot.rock_entity = usize::MAX;
+            slot.rock_hierarchy = rock_hierarchy;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -4422,6 +4536,7 @@ impl RolloutWorld {
                 self.players[index].body_entity,
                 self.players[index].dash_entity,
                 self.players[index].circle_entity,
+                self.players[index].rock_entity,
                 self.players[index].bow_entity,
                 self.players[index].throw_entity,
                 self.players[index].mine_entity,
@@ -4447,10 +4562,15 @@ impl RolloutWorld {
             }
 
             let mut platform_entity = usize::MAX;
+            let mut rock_hierarchy = 0;
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
             let mut time_stop_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+                if abilities[slot] == ABILITY_ROCK {
+                    rock_hierarchy = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
+                    continue;
+                }
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_GUST => (
                         data.gust.hurtbox_radius,
@@ -4601,6 +4721,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.base.sync_collider();
             slot.active = ActiveAbility::None;
+            slot.rock = RockState::default();
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
@@ -4614,6 +4735,8 @@ impl RolloutWorld {
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
+            slot.rock_entity = usize::MAX;
+            slot.rock_hierarchy = rock_hierarchy;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -7049,7 +7172,7 @@ impl RolloutWorld {
             // Platform has no player hurtbox until the original slime exits.
             for (j, player) in self.players.iter().enumerate() {
                 if !self.playable(j)
-                    || player.active == ActiveAbility::Platform
+                    || matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock)
                     || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
                 {
                     continue;
@@ -7179,6 +7302,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Missile => player.throw_entity,
                     ActiveAbility::Mine => player.mine_entity,
+                    ActiveAbility::Rock => player.rock_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
@@ -7406,7 +7530,7 @@ impl RolloutWorld {
                         },
                     )
                     .is_some()
-                } else if player.active == ActiveAbility::Platform {
+                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
                     false
                 } else {
                     let hurtbox = match player.active {
@@ -7482,7 +7606,7 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if player.active == ActiveAbility::Platform {
+                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
                     false
                 } else {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
@@ -7530,7 +7654,7 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if player.active == ActiveAbility::Platform {
+                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
                     false
                 } else {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
@@ -7631,7 +7755,7 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if player.active == ActiveAbility::Platform {
+                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
                     false
                 } else {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
@@ -7857,6 +7981,209 @@ impl RolloutWorld {
     }
 
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
+    fn rocks_integrate(&mut self, physics_dt: Fix) {
+        for slot in &mut self.players {
+            if slot.active != ActiveAbility::Rock || !slot.base.alive {
+                continue;
+            }
+            let shift = slot.rock.body.integrate(physics_dt, Fix::from_int(-40));
+            slot.base.position += shift;
+            slot.base.rotation = slot.rock.body.orientation;
+            slot.base.up = Vec2::angle(slot.base.rotation).perp();
+            slot.base.velocity = slot.rock.body.velocity;
+        }
+    }
+
+    /// Circle/RoundedRect and player callbacks for BounceBall. Contacts are
+    /// captured before resolution, as DetPhysics does for each shape group.
+    fn rocks_contacts(&mut self, data: &data::RolloutData) {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.rock_wall_contacts.clear();
+        for (rock_index, slot) in self.players.iter().enumerate() {
+            if slot.active != ActiveAbility::Rock || !self.playable_slot(slot) {
+                continue;
+            }
+            let circle = Circle {
+                center: slot.base.position,
+                // Ability.UpdateSim restores Player.Scale before DetPhysics;
+                // BounceBall's pulse is applied only in the later LateUpdate.
+                radius: data.rock.radius,
+            };
+            for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if let Some(contact) =
+                    crate::physics::contact::circle_rounded(circle, platform.collider)
+                {
+                    scratch
+                        .rock_wall_contacts
+                        .push((rock_index, wall_index, contact));
+                }
+            }
+        }
+        let mut changed_platform = false;
+        for &(rock_index, wall_index, contact) in &scratch.rock_wall_contacts {
+            if self.players[rock_index].active != ActiveAbility::Rock {
+                continue;
+            }
+            let rock_position = self.players[rock_index].base.position;
+            let wall_position = self.platforms[wall_index].surface.center;
+            let (correction, rock_velocity) = {
+                let rock_body = &mut self.players[rock_index].rock.body;
+                let wall_body = &mut self.platform_dynamics[wall_index].body;
+                resolve(contact, rock_body, wall_body, rock_position, wall_position);
+                (
+                    positional_correction(
+                        contact,
+                        rock_body.inverse_mass,
+                        wall_body.inverse_mass,
+                        false,
+                    ),
+                    rock_body.velocity,
+                )
+            };
+            self.players[rock_index].base.position += correction[0];
+            self.platforms[wall_index].surface.center += correction[1];
+            self.platforms[wall_index].collider.inner.center += correction[1];
+            self.players[rock_index].base.velocity = rock_velocity;
+            changed_platform = true;
+        }
+        self.scratch = scratch;
+        if changed_platform {
+            self.platforms_changed();
+        }
+
+        // Circle/Circle callbacks between Rock forms apply the authored bounce
+        // impulse on the following integration pass. Neither form owns a
+        // PlayerCollision component, so Rock-vs-Rock is nonlethal.
+        for a in 0..self.players.len() {
+            if self.players[a].active != ActiveAbility::Rock || !self.playable(a) {
+                continue;
+            }
+            for b in a + 1..self.players.len() {
+                if self.players[b].active != ActiveAbility::Rock || !self.playable(b) {
+                    continue;
+                }
+                let ca = Circle {
+                    center: self.players[a].base.position,
+                    radius: data.rock.radius,
+                };
+                let cb = Circle {
+                    center: self.players[b].base.position,
+                    radius: data.rock.radius,
+                };
+                if let Some(contact) = crate::physics::contact::circle_circle(ca, cb) {
+                    let impulse =
+                        contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    let (left, right) = self.players.split_at_mut(b);
+                    left[a].rock.body.force += impulse;
+                    right[0].rock.body.force -= impulse;
+                }
+            }
+        }
+
+        // A normal slime's PlayerCollision callback sees Rock's Player-layer
+        // Ability and credits its owner. The Rock callback queues its bounce.
+        let mut victims = [usize::MAX; MAX_PLAYERS];
+        let mut victim_count = 0usize;
+        for rock_index in 0..self.players.len() {
+            if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
+            {
+                continue;
+            }
+            let rock = Circle {
+                center: self.players[rock_index].base.position,
+                radius: data.rock.radius,
+            };
+            for victim in 0..self.players.len() {
+                if victim == rock_index
+                    || !self.playable(victim)
+                    || self.players[victim].active == ActiveAbility::Rock
+                    || self.players[victim].active == ActiveAbility::Platform
+                {
+                    continue;
+                }
+                if let Some(contact) =
+                    crate::physics::contact::circle_box(rock, self.players[victim].base.collider)
+                {
+                    self.players[rock_index].rock.body.force +=
+                        contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    if !victims[..victim_count].contains(&victim) {
+                        victims[victim_count] = victim;
+                        victim_count += 1;
+                    }
+                }
+            }
+        }
+        for &victim in &victims[..victim_count] {
+            if self.playable(victim) {
+                let killer = (0..self.players.len())
+                    .find(|&rock_index| {
+                        self.players[rock_index].active == ActiveAbility::Rock
+                            && rock_index != victim
+                            && crate::physics::contact::circle_box(
+                                Circle {
+                                    center: self.players[rock_index].base.position,
+                                    radius: data.rock.radius,
+                                },
+                                self.players[victim].base.collider,
+                            )
+                            .is_some()
+                    })
+                    .map_or(0, |i| self.players[i].base.id);
+                self.kill(victim, killer, CAUSE_OTHER, true);
+            }
+        }
+    }
+
+    fn rocks_late_tick(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if self.players[index].active != ActiveAbility::Rock || !self.players[index].base.alive
+            {
+                continue;
+            }
+            let st = &mut self.players[index].rock;
+            if st.time > data.rock.max_duration && !st.exiting {
+                st.exiting = true;
+                st.exit_scale = Fix::ONE - st.scale_sum;
+            }
+            st.time += DT;
+            if st.exiting {
+                st.exit_time += DT;
+                if st.exit_time > data.rock.exit_time {
+                    let exit_scale = st.exit_scale;
+                    let velocity = st.body.velocity;
+                    let slot = &mut self.players[index];
+                    slot.rock.scale = exit_scale;
+                    slot.active = ActiveAbility::None;
+                    slot.base.velocity = velocity;
+                    slot.base.external_velocity = Vec2::ZERO;
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.base.grounded = false;
+                    slot.base.ground = None;
+                    slot.base.grounded_speed = Fix::ZERO;
+                    slot.base.sync_collider();
+                    slot.facing_right = velocity.x >= Fix::ZERO;
+                    slot.reported_position = slot.base.position;
+                    slot.reported_tick = self.tick;
+                    slot.exit_to_fall();
+                    continue;
+                }
+                let delta = Fix::ONE - st.scale_last_frame;
+                st.exit_scale += delta;
+                st.scale = data.rock.exit_scale.evaluate(st.exit_time) * st.exit_scale;
+            } else {
+                let amount = data.rock.enter_scale.evaluate(st.time);
+                // DetPhysics synchronizes the collider from FixTransform before
+                // each LateUpdateSim. SetScale_DPhysicsOnly does not change the
+                // transform's authoritative public scale, so the getter starts
+                // from the entry scale again on the following pass.
+                st.scale = Fix::ONE + amount;
+                st.scale_sum += amount;
+            }
+            st.scale_last_frame = st.scale;
+        }
+    }
+
     /// the updater pass: resize, integration, broad phase, narrow phase,
     /// collision impulse, positional correction, and transform sync.
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
@@ -8241,6 +8568,7 @@ impl RolloutWorld {
                 slot.body_entity,
                 slot.dash_entity,
                 slot.circle_entity,
+                slot.rock_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -8294,6 +8622,7 @@ impl RolloutWorld {
                 slot.body_entity,
                 slot.dash_entity,
                 slot.circle_entity,
+                slot.rock_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -8339,6 +8668,7 @@ impl RolloutWorld {
                 slot.body_entity,
                 slot.dash_entity,
                 slot.circle_entity,
+                slot.rock_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -8662,6 +8992,7 @@ impl RolloutWorld {
                 bow_e,
                 throw_e,
                 mine_e,
+                rock_e,
                 gust_e,
                 revival_e,
                 spike_e,
@@ -8675,6 +9006,7 @@ impl RolloutWorld {
                     s.bow_entity,
                     s.throw_entity,
                     s.mine_entity,
+                    s.rock_entity,
                     s.gust_entity,
                     s.revival_entity,
                     s.spike_entity,
@@ -8689,6 +9021,7 @@ impl RolloutWorld {
             let bowing = slot.active == ActiveAbility::Bow;
             let missile_form = slot.active == ActiveAbility::Missile;
             let mining = slot.active == ActiveAbility::Mine;
+            let rocking = slot.active == ActiveAbility::Rock;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -8932,6 +9265,28 @@ impl RolloutWorld {
                     mine_box.up_x = hurtbox.up.x.raw();
                     mine_box.up_y = hurtbox.up.y.raw();
                     mine_box.rotation = rotation.raw();
+                }
+            }
+            if rock_e != usize::MAX {
+                let circle = &mut self.entities[rock_e];
+                let was_active = circle.flags & E_ACTIVE != 0;
+                circle.flags = if alive && rocking {
+                    E_ACTIVE | E_ENABLED
+                } else {
+                    E_ENABLED
+                };
+                if rocking || was_active {
+                    circle.owner = slot.base.id;
+                    circle.x = slot.base.position.x.raw();
+                    circle.y = slot.base.position.y.raw();
+                    circle.vx = slot.rock.body.velocity.x.raw();
+                    circle.vy = slot.rock.body.velocity.y.raw();
+                    circle.radius = (data.rock.radius * slot.rock.scale).raw();
+                    circle.rotation = slot.rock.body.orientation.raw();
+                    circle.angular_velocity = slot.rock.body.angular_velocity.raw();
+                    circle.inverse_mass = data.rock.body.inverse_mass.raw();
+                } else {
+                    circle.rotation = 0;
                 }
             }
             // The Platform ability's hurtbox circle is live during

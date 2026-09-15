@@ -73,7 +73,8 @@
       "name": "Rock",
       "prefab": "Assets/GameObject/Rock.prefab",
       "prefab_guid": "44115a8eb36b70448af81e1d922e7e12",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "rock_ability_ab matches 500 NativeAOT/Rust Q32 ticks through grounded transformation, rigid circle gravity/bounce/friction, authored pulse scale, strict 2.5-second lifetime, exit shrink, and slime restoration. rock_contact_ab matches 360 ticks and the same-tick lethal player callback, ownership, telemetry, and stock recovery. Dynamic vectors and pulse scale are within 64 raw Q32 units (1.49e-8 game units) from ordered curve/normalization rounding, with identical collision and lifecycle decisions. Shockwave, projectile/item detonation, scale changes, arrows attaching to Rock, and mixed transformed-form contacts remain to be separately goldened."
     },
     {
       "id": 10,

@@ -1976,3 +1976,39 @@ hits, credit, or timing. `MineExplosion`'s remaining visual lifetime is already
 covered exactly by the Missile golden because both abilities reference the same
 prefab. Duplication, scaling, boundary effects, magnet holding, and dedicated
 Projectile/Explosion igniter scenarios remain open, so coverage is partial.
+
+### Executable Rock rigid form and bounce contacts (2026-09-14)
+
+Catalog id 9 now executes `BounceBall` as its own dynamic circle rather than
+moving the hidden slime body. Entry copies the grounded surface position into
+the form, installs the extracted mass, inertia, gravity, damping, friction and
+bounciness, and registers the circle synchronously on the first cast. The
+physics pass resolves Rock/rounded-platform, Rock/Rock, and Rock/player groups
+in stable source order using a reusable contact buffer. A player contact kills
+through the normal callback bookkeeping and queues the source's bounce force
+for the following integration pass; contacts with another Rock are nonlethal.
+Arrows and explosion hitboxes no longer treat the hidden slime box as a Rock
+hurtbox.
+
+The late updater reproduces the authored additive pulse curve and the strict
+`time > maxDuration` transition. Exit accumulates the inverse pulse deltas,
+multiplies them by the exit curve, and restores the slime at the rigid body's
+last position and velocity. The spawned collider row remains as a frozen,
+disabled ability object after exit and is reconstructed with its original
+hierarchy when stock or Revival creates a replacement slime.
+
+`rock_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks through entry, falling,
+terrain bounce, pulse, timed exit, and restored slime movement.
+`rock_contact_ab.c` compares a three-player 360-tick scenario whose teammate
+shares the spawn point; the first Rock frame kills that target on tick 181 and
+matches owner credit, telemetry, destroyed rows, and stock recovery. IDs,
+ordering, flags, layers, inverse masses and every discrete state transition
+match. Position, velocity, rotation and pulse-scale values differ by at most 64
+raw Q32 units (1.49e-8 game units) because the two runtimes round successive
+curve interpolation and normalized contact operations at slightly different
+points. That bound is far below every overlap and transition threshold in both
+goldens and does not alter contacts, deaths, timing, or control state.
+
+Dedicated Shockwave, scale-change, arrow-attachment, projectile/item-detonation,
+and mixed transformed-form contact scenarios remain open, so coverage is marked
+partial.

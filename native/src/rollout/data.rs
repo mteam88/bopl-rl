@@ -208,6 +208,7 @@ struct RawPrefabs {
     grenade: RawGrenade,
     missile: RawMissile,
     mine: RawMine,
+    rock: RawRock,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -370,6 +371,20 @@ struct RawMine {
     throw_data: RawMineThrow,
     item: RawMineItem,
     explosion: RawMissileExplosion,
+}
+
+#[derive(Deserialize)]
+struct RawRock {
+    radius: i64,
+    collider_hierarchy: u32,
+    body: RawBody,
+    max_duration: i64,
+    enter_scale: Curve,
+    is_cancellable: bool,
+    exit_time: i64,
+    exit_scale: Curve,
+    player_collision_bounce: i64,
+    shockwave_force: i64,
 }
 #[derive(Deserialize)]
 struct RawMineThrow {
@@ -872,6 +887,19 @@ pub struct MineData {
     pub explosion_animation_ticks: u32,
     pub explosion_shockwave: ExplosionShockwaveData,
 }
+
+pub struct RockData {
+    pub radius: Fix,
+    pub collider_hierarchy: u32,
+    pub body: crate::physics::Body,
+    pub max_duration: Fix,
+    pub enter_scale: Curve,
+    pub is_cancellable: bool,
+    pub exit_time: Fix,
+    pub exit_scale: Curve,
+    pub player_collision_bounce: Fix,
+    pub shockwave_force: Fix,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -1054,6 +1082,7 @@ pub struct RolloutData {
     pub grenade: GrenadeData,
     pub missile: MissileData,
     pub mine: MineData,
+    pub rock: RockData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -1524,6 +1553,18 @@ pub fn get() -> &'static RolloutData {
                         collision_mask: mine.explosion.shockwave.collision_mask,
                     },
                 }
+            },
+            rock: RockData {
+                radius: Fix::from_raw(raw.prefabs.rock.radius),
+                collider_hierarchy: raw.prefabs.rock.collider_hierarchy,
+                body: body(&raw.prefabs.rock.body, Fix::ZERO),
+                max_duration: Fix::from_raw(raw.prefabs.rock.max_duration),
+                enter_scale: raw.prefabs.rock.enter_scale,
+                is_cancellable: raw.prefabs.rock.is_cancellable,
+                exit_time: Fix::from_raw(raw.prefabs.rock.exit_time),
+                exit_scale: raw.prefabs.rock.exit_scale,
+                player_collision_bounce: Fix::from_raw(raw.prefabs.rock.player_collision_bounce),
+                shockwave_force: Fix::from_raw(raw.prefabs.rock.shockwave_force),
             },
             smoke: {
                 let smoke = &raw.prefabs.smoke;

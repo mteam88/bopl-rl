@@ -698,6 +698,24 @@ def main():
         },
     }
 
+    # ---- Rock / BounceBall player form ----
+    _, rock_ability = find_prefab("Assets/GameObject/Rock.prefab")
+    rock = component(rock_ability, "BounceBall")
+    rock_circle = component(rock_ability, "DPhysicsCircle")
+    rock_body = component(rock_ability, "BoplBody")
+    out["prefabs"]["rock"] = {
+        "radius": fix(rock_circle, "startRadius"),
+        "collider_hierarchy": rock_circle["hierarchyNumber"],
+        "body": physics_body(rock_body),
+        "max_duration": fix(rock, "maxDuration"),
+        "enter_scale": curve(rock, "scaleOnEnter"),
+        "is_cancellable": rock["IsCancellable"],
+        "exit_time": fix(rock, "exitTime"),
+        "exit_scale": curve(rock, "ScaleOnExit"),
+        "player_collision_bounce": fix(rock, "playerCollisionBounce"),
+        "shockwave_force": fix(rock, "shockwaveForce"),
+    }
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")
