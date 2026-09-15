@@ -6146,6 +6146,14 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Rock {
+            // Rock's DestroyIfOutsideSceneBounds runs after BounceBall and
+            // before its BoplBody, observing the previous physics pass's
+            // position. Exiting an ability body uses cause Other.
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.players[index].reported_position = self.players[index].base.position;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+            }
             return;
         }
         if self.players[index].active == ActiveAbility::Roll {
@@ -12397,6 +12405,25 @@ impl RolloutWorld {
             // deliberately excluded from the persistent target set.
             for player_index in 0..self.players.len() {
                 if player_index == wave_index / 3 || !self.playable(player_index) {
+                    continue;
+                }
+                if self.players[player_index].active == ActiveAbility::Rock {
+                    let target = &self.players[player_index];
+                    let rock = Circle {
+                        center: target.base.position,
+                        radius: data.rock.radius * target.rock.scale,
+                    };
+                    if crate::physics::contact::circle_circle(query, rock).is_some() {
+                        // Rock's Player-layer Ability is pushable, but it has
+                        // neither PlayerPhysics nor PlayerBody. Shockwave's
+                        // activation therefore takes the BoplBody fallback:
+                        // an unnormalized centre force multiplied by 9000.
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        self.players[player_index].rock.body.force +=
+                            delta * (data.gust.default_force / distance) * Fix::from_int(9000);
+                    }
                     continue;
                 }
                 let target = &mut self.players[player_index];

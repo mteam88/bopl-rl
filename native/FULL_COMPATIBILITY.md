@@ -1207,6 +1207,14 @@ has no public collider. The extractor now records that source-derived count, so
 the later explosion hierarchy matches as well. Every public field is exact
 within 64 raw Q32 units.
 
+`gust_rock_ab.c` covers Gust's distinct Player-layer active-form branch for 300
+ticks. Rock and Gust enter on ticks 214 and 224; the wave initializes on tick
+231 and sees Rock's pushable `Ability` with neither `PlayerPhysics` nor
+`PlayerBody`. It therefore queues the source's unnormalized center force times
+9,000 on Rock's `BoplBody` once, without retaining Rock in the curve target set.
+The trace stays exact through rigid flight, lower-boundary detection on tick 284,
+ability-body cause `Other`, effect allocation, stock loss and collider removal.
+
 
 ## Executable Invisibility and streamed actor verification
 
@@ -2171,9 +2179,14 @@ curve interpolation and normalized contact operations at slightly different
 points. That bound is far below every overlap and transition threshold in both
 goldens and does not alter contacts, deaths, timing, or control state.
 
-Dedicated Shockwave, scale-change, arrow-attachment, projectile/item-detonation
-and mixed transformed-form contact scenarios remain open, so coverage is
-marked partial.
+`gust_rock_ab.c` adds 300 exact ticks through the active form's pushable
+Player-layer Shockwave branch. The BoplBody force begins on tick 231 and carries
+Rock below the scene bound, where its own `DestroyIfOutsideSceneBounds` kills
+the ability body on tick 284 with the exact effect hierarchy and stock result.
+
+Other Shockwave, scale-change, arrow-attachment, projectile/item-detonation and
+mixed transformed-form contact scenarios remain open, so coverage is marked
+partial.
 
 
 ### Executable Push platform control (2026-09-14)

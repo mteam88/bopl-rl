@@ -133,7 +133,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   A guided Missile exercises the corresponding oriented-box capture and pooled
   body impulse path through its later boundary explosion. Shockwave allocation
   also reserves its source `MonoUpdatable` hierarchy entry, keeping subsequent
-  spawned prefab identities exact.
+  spawned prefab identities exact. A pushable active Rock takes Gust's distinct
+  one-shot Player-layer fallback: the unnormalized center force is multiplied
+  by 9,000 and queued on its BoplBody, then normal Rock physics carries it to an
+  exact ability-body boundary death.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same
@@ -232,10 +235,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   duplication, scaling, boundaries, magnet holding, and non-player igniters remain open.
   Rock executes the separate rigid circle body, terrain and Rock/Rock impulses,
   same-tick lethal player callbacks, authored pulse and exit curves, and exact
-  stock/Revival collider reconstruction. Ordered fixed-point curve and contact
-  math differ by at most 64 raw Q32 units without changing any collision or
-  state decision. Shockwaves, scale changes, arrow attachment, projectile/item
-  detonation, and mixed transformed-form contacts still need dedicated goldens.
+  stock/Revival collider reconstruction. Gust's active-form BoplBody force,
+  ensuing flight and lower-boundary death are exact. Ordered fixed-point curve
+  and contact math differ by at most 64 raw Q32 units without changing any
+  collision or state decision. Other Shockwaves, scale changes, arrow
+  attachment, projectile/item detonation, and mixed transformed-form contacts
+  still need dedicated goldens.
   Meteor executes its grounded anticipation and jump, direct airborne entry,
   normalized random vibration, short and maximum-charge downward release,
   charge-scaled platform impact, deferred Shockwave impulses, one-second
