@@ -397,6 +397,50 @@ def main():
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
     }
 
+    # ---- Black Hole casting form and persistent rigid-body affector ----
+    _, black_form = find_prefab("Assets/GameObject/Black hole.prefab")
+    black_clap = component(black_form, "BlackHoleClap")
+    black_box = component(black_form, "DPhysicsBox")
+    black_fix = component(black_form, "FixTransform")
+    black_physics = component(black_form, "PlayerPhysics")
+    black_hole = ASSETS[guid_of(black_clap["blackHolePrefab"])]
+    black = component(black_hole, "BlackHole")
+    black_circle = component(black_hole, "DPhysicsCircle")
+    out["prefabs"]["black_hole"] = {
+        "hurtbox_extents": vec2(black_box, "startExtents"),
+        "collider_hierarchy": black_box["hierarchyNumber"],
+        "collider_offset": vec2(black_fix, "offset"),
+        "physics": {
+            "max_speed": fix(black_physics, "maxSpeed"),
+            "accel": fix(black_physics, "accel"),
+            "air_accel": fix(black_physics, "airAccel"),
+            "radius": fix(black_physics, "radius"),
+            "gravity_accel": fix(black_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(black_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(black_physics, "gravity_modifier"),
+            "jump_strength": fix(black_physics, "jumpStrength"),
+        },
+        "animations": animations(guid_of(black_clap["animData"])),
+        "spawn_offset": vec2(black_clap, "blackholeOffset"),
+        "hole": {
+            "layer": black_hole["data"].get("layer"),
+            "updatable_count": updater_count(black_hole),
+            "collider_hierarchy": black_circle["hierarchyNumber"],
+            "start_radius": fix(black_circle, "startRadius"),
+            "starting_mass": fix(black, "startingMass"),
+            "gravity": fix(black, "G"),
+            "controlled_platform_multiplier": fix(black, "platformMultiplier"),
+            "growth": fix(black, "growth"),
+            "base_growth": fix(black, "baseGrowth"),
+            "merge_growth": fix(black, "ExtraBlackHoleMergeGrowth"),
+            "size_curve": curve(black, "SizeGrowthAnim"),
+            "min_size": fix(black, "minSize"),
+            "drag": fix(black, "drag01"),
+            "player_force": fix(black, "playerForce"),
+            "influence_radius_multiplier": fix(black, "influenceRadiusMultiplier"),
+        },
+    }
+
     # ---- Gust / QuickSpell ----
     _, gust = find_prefab("Assets/GameObject/Gust.prefab")
     gust_quick = component(gust, "QuickSpell")

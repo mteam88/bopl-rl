@@ -221,6 +221,7 @@ struct RawPrefabs {
     ability_pickup: RawPickup,
     platform_ability: RawPlatformAbility,
     resizable_platform: RawResizable,
+    black_hole: RawBlackHole,
     gust: RawGust,
     revival: RawRevival,
     teleport: RawTeleport,
@@ -242,6 +243,44 @@ struct RawPrefabs {
     tack: RawTack,
     mjolnir: RawMjolnir,
     poke_ball: RawPokeBall,
+}
+
+#[derive(Deserialize)]
+struct RawBlackHole {
+    hurtbox_extents: RawVec2,
+    collider_hierarchy: u32,
+    collider_offset: RawVec2,
+    physics: RawPhysics,
+    animations: RawBlackHoleAnimations,
+    spawn_offset: RawVec2,
+    hole: RawBlackHoleBody,
+}
+#[derive(Deserialize)]
+struct RawBlackHoleAnimations {
+    enter: Vec<i32>,
+    #[serde(rename = "enterAir")]
+    enter_air: Vec<i32>,
+    exit: Vec<i32>,
+    #[serde(rename = "exitAir")]
+    exit_air: Vec<i32>,
+}
+#[derive(Deserialize)]
+struct RawBlackHoleBody {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    start_radius: i64,
+    starting_mass: i64,
+    gravity: i64,
+    controlled_platform_multiplier: i64,
+    growth: i64,
+    base_growth: i64,
+    merge_growth: i64,
+    size_curve: Curve,
+    min_size: i64,
+    drag: i64,
+    player_force: i64,
+    influence_radius_multiplier: i64,
 }
 
 #[derive(Deserialize)]
@@ -928,6 +967,33 @@ pub struct MovementData {
     pub fast_spawn_anim_ticks: u32,
     pub boundary_effect_updatable_count: u32,
 }
+pub struct BlackHoleData {
+    pub hurtbox_extents: Vec2,
+    pub collider_hierarchy: u32,
+    pub collider_offset: Vec2,
+    pub physics_radius: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub enter_ticks: u32,
+    pub enter_air_ticks: u32,
+    pub exit_ticks: u32,
+    pub exit_air_ticks: u32,
+    pub spawn_offset: Vec2,
+    pub layer: u32,
+    pub updatable_count: u32,
+    pub hole_collider_hierarchy: u32,
+    pub start_radius: Fix,
+    pub starting_mass: Fix,
+    pub gravity: Fix,
+    pub controlled_platform_multiplier: Fix,
+    pub growth: Fix,
+    pub base_growth: Fix,
+    pub merge_growth: Fix,
+    pub size_curve: Curve,
+    pub min_size: Fix,
+    pub drag: Fix,
+    pub player_force: Fix,
+    pub influence_radius_multiplier: Fix,
+}
 pub struct BowData {
     pub cooldown: Fix,
     pub hurtbox_extents: Vec2,
@@ -1541,6 +1607,7 @@ pub struct AbilityData {
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
     pub player: MovementData,
+    pub black_hole: BlackHoleData,
     pub dash: DashData,
     pub bow: BowData,
     pub arrow: ArrowData,
@@ -1767,6 +1834,42 @@ pub fn get() -> &'static RolloutData {
                 spawn_anim_ticks: raw.prefabs.player.spawn_anim_ticks,
                 fast_spawn_anim_ticks: raw.prefabs.player.fast_spawn_anim_ticks,
                 boundary_effect_updatable_count: raw.prefabs.player.boundary_effect_updatable_count,
+            },
+            black_hole: {
+                let black = &raw.prefabs.black_hole;
+                let hole = &black.hole;
+                BlackHoleData {
+                    hurtbox_extents: {
+                        let extents = black.hurtbox_extents.get();
+                        Vec2::new(extents.x.abs(), extents.y.abs())
+                    },
+                    collider_hierarchy: black.collider_hierarchy,
+                    collider_offset: black.collider_offset.get(),
+                    physics_radius: Fix::from_raw(black.physics.radius),
+                    constants: constants(&black.physics),
+                    enter_ticks: ticks(&black.animations.enter),
+                    enter_air_ticks: ticks(&black.animations.enter_air),
+                    exit_ticks: ticks(&black.animations.exit),
+                    exit_air_ticks: ticks(&black.animations.exit_air),
+                    spawn_offset: black.spawn_offset.get(),
+                    layer: hole.layer,
+                    updatable_count: hole.updatable_count,
+                    hole_collider_hierarchy: hole.collider_hierarchy,
+                    start_radius: Fix::from_raw(hole.start_radius),
+                    starting_mass: Fix::from_raw(hole.starting_mass),
+                    gravity: Fix::from_raw(hole.gravity),
+                    controlled_platform_multiplier: Fix::from_raw(
+                        hole.controlled_platform_multiplier,
+                    ),
+                    growth: Fix::from_raw(hole.growth),
+                    base_growth: Fix::from_raw(hole.base_growth),
+                    merge_growth: Fix::from_raw(hole.merge_growth),
+                    size_curve: hole.size_curve.clone(),
+                    min_size: Fix::from_raw(hole.min_size),
+                    drag: Fix::from_raw(hole.drag),
+                    player_force: Fix::from_raw(hole.player_force),
+                    influence_radius_multiplier: Fix::from_raw(hole.influence_radius_multiplier),
+                }
             },
             dash: DashData {
                 cooldown: Fix::from_raw(raw.prefabs.dash.cooldown),

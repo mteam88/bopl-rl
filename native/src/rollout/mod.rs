@@ -54,6 +54,7 @@ pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_ROLL: u32 = 16;
 pub const ABILITY_SHRINK_RAY: u32 = 17;
+pub const ABILITY_BLACK_HOLE: u32 = 18;
 pub const ABILITY_METEOR: u32 = 20;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_PUSH: u32 = 22;
@@ -1186,6 +1187,33 @@ pub struct RevivalState {
     pub attached_ground: Option<u32>,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct BlackHoleCastState {
+    /// 0 = enter, 1 = exit.
+    pub phase: u32,
+    pub ticks: u32,
+    pub grounded: bool,
+    pub collider_position: Vec2,
+    pub collider_up: Vec2,
+    pub collider_rotation: Fix,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct BlackHoleState {
+    pub active: bool,
+    pub born_tick: u32,
+    pub entity: Option<usize>,
+    pub hierarchy_base: u32,
+    pub owner: usize,
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub mass: Fix,
+    pub time_since_growth: Fix,
+    pub previous_target_size: Fix,
+    pub target_size: Fix,
+    pub radius: Fix,
+}
+
 /// A RevivePositionIndicator spawned by one Revival ability instance.
 #[derive(Clone, Copy, Default)]
 pub struct RevivalMarker {
@@ -1267,6 +1295,7 @@ pub enum ActiveAbility {
     TimeStop,
     Gust,
     Revival,
+    BlackHole,
     Platform,
 }
 
@@ -1374,6 +1403,10 @@ pub struct PlayerSlot {
     pub platform: PlatformState,
     pub gust: GustState,
     pub revival: RevivalState,
+    pub black_hole_cast: BlackHoleCastState,
+    /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
+    /// to the equipped prefab instance, so duplicate slots are independent.
+    pub black_hole_castable: [bool; 3],
     /// Marker owned by each equipped Revival instance. Recasting the same
     /// instance ends its previous marker before creating another.
     pub revival_markers: [Option<usize>; 3],
@@ -1449,6 +1482,7 @@ pub struct PlayerSlot {
     pub engine_entity: usize,
     pub tesla_entity: usize,
     pub meteor_entity: usize,
+    pub black_hole_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1532,6 +1566,7 @@ pub struct RolloutWorld {
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
     pub ability_pickups: Vec<AbilityPickup>,
+    pub black_holes: Vec<BlackHoleState>,
     pub thrown_items: Vec<ThrownItem>,
     pub guided_missiles: Vec<GuidedMissile>,
     pub missile_explosions: Vec<MissileExplosion>,
@@ -1622,6 +1657,7 @@ impl RolloutWorld {
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
             ability_pickups: Vec::with_capacity(4),
+            black_holes: Vec::with_capacity(16),
             thrown_items: Vec::with_capacity(64),
             guided_missiles: Vec::with_capacity(64),
             missile_explosions: Vec::with_capacity(64),
@@ -1698,6 +1734,7 @@ impl RolloutWorld {
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
         self.ability_pickups.clone_from(&src.ability_pickups);
+        self.black_holes.clone_from(&src.black_holes);
         self.thrown_items.clone_from(&src.thrown_items);
         self.guided_missiles.clone_from(&src.guided_missiles);
         self.missile_explosions.clone_from(&src.missile_explosions);
@@ -1771,6 +1808,7 @@ impl RolloutWorld {
             platform_entities: _,
             arrows: _,
             ability_pickups: _,
+            black_holes: _,
             thrown_items: _,
             guided_missiles: _,
             missile_explosions: _,
@@ -1870,6 +1908,7 @@ impl RolloutWorld {
         self.sudden_death = false;
         self.arrows.clear();
         self.ability_pickups.clear();
+        self.black_holes.clear();
         self.thrown_items.clear();
         self.guided_missiles.clear();
         self.missile_explosions.clear();
@@ -1966,6 +2005,7 @@ impl RolloutWorld {
         let mut engine_entity = [usize::MAX; MAX_PLAYERS];
         let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
         let mut meteor_entity = [usize::MAX; MAX_PLAYERS];
+        let mut black_hole_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -2156,6 +2196,14 @@ impl RolloutWorld {
                             &mut meteor_entity[i],
                             false,
                         ),
+                        ABILITY_BLACK_HOLE => (
+                            data.black_hole.hurtbox_extents,
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.black_hole.collider_hierarchy,
+                            &mut black_hole_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -2178,6 +2226,7 @@ impl RolloutWorld {
                             | ABILITY_GROWTH_RAY
                             | ABILITY_SHRINK_RAY
                             | ABILITY_METEOR
+                            | ABILITY_BLACK_HOLE
                     ) {
                         E_ENABLED | E_TRIGGER
                     } else {
@@ -2200,6 +2249,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
+                        data.black_hole.collider_offset.x.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2229,6 +2280,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
+                        data.black_hole.collider_offset.y.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2435,6 +2488,8 @@ impl RolloutWorld {
                 platform: PlatformState::default(),
                 gust: GustState::default(),
                 revival: RevivalState::default(),
+                black_hole_cast: BlackHoleCastState::default(),
+                black_hole_castable: [true; 3],
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
                 stock_clone_pending: false,
@@ -2484,6 +2539,7 @@ impl RolloutWorld {
                 engine_entity: engine_entity[i],
                 tesla_entity: tesla_entity[i],
                 meteor_entity: meteor_entity[i],
+                black_hole_entity: black_hole_entity[i],
             });
         }
 
@@ -2776,6 +2832,7 @@ impl RolloutWorld {
             slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
             slot.timers[2] = Fix::from_int(100_000);
             slot.ability_instantiated[2] = false;
+            slot.black_hole_castable[2] = true;
             slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
 
@@ -2937,6 +2994,12 @@ impl RolloutWorld {
                 data.meteor.collider_hierarchy,
                 12,
             )),
+            ABILITY_BLACK_HOLE => Some((
+                data.black_hole.hurtbox_extents,
+                data.black_hole.collider_offset,
+                data.black_hole.collider_hierarchy,
+                13,
+            )),
             _ => None,
         };
         let Some((extents, offset, relative_hierarchy, target)) = box_data else {
@@ -2971,7 +3034,8 @@ impl RolloutWorld {
             9 => slot.spike_entity = entity,
             10 => slot.engine_entity = entity,
             11 => slot.tesla_entity = entity,
-            _ => slot.meteor_entity = entity,
+            12 => slot.meteor_entity = entity,
+            _ => slot.black_hole_entity = entity,
         }
     }
 
@@ -3172,6 +3236,15 @@ impl RolloutWorld {
     /// session end checks.
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
+        // DestroyFix from a BlackHole wall callback leaves the rounded body
+        // visible as destroyed for that contact pass. DetPhysics removes it
+        // at the beginning of the following simulation pass.
+        for platform_index in (0..self.platforms.len()).rev() {
+            let entity = self.platform_entities[platform_index];
+            if self.entities[entity].flags & E_DESTROYED != 0 {
+                self.remove_platform(platform_index);
+            }
+        }
         self.register_pending_picked_abilities(data);
         self.register_pending_arrows();
         self.register_pending_mines(data);
@@ -3326,9 +3399,13 @@ impl RolloutWorld {
                 } else {
                     CAUSE_OTHER
                 };
-                self.kill(index, ENVIRONMENT, cause, false);
+                self.kill(index, ENVIRONMENT, cause, false, false);
             }
         }
+        // Spawned BlackHole prefabs are registered after every authored
+        // player prefab. A hole fired by BlackHoleClap therefore receives its
+        // time-zero UpdateSim later in this same updater pass.
+        self.black_holes_tick(data, updater_dt);
         self.rewind_recorders_tick();
         // SuperStarEffect prefabs spawned during a slime update join the
         // updater list on the following tick. Once live they run after player
@@ -3395,7 +3472,8 @@ impl RolloutWorld {
                     | ActiveAbility::Tesla
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
-                    | ActiveAbility::Revival => true,
+                    | ActiveAbility::Revival
+                    | ActiveAbility::BlackHole => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -3450,6 +3528,7 @@ impl RolloutWorld {
                     slot.rock_entity,
                     slot.roll_entity,
                     slot.meteor_entity,
+                    slot.black_hole_entity,
                     slot.push_entity,
                     slot.freeze_entity,
                     slot.growth_ray_entity,
@@ -3472,6 +3551,7 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
+        self.black_hole_contacts(data);
         self.ability_pickups_contacts(data);
         self.rocks_contacts(data);
         self.arrows_contacts(data);
@@ -3633,6 +3713,7 @@ impl RolloutWorld {
                 let ability_data = &data.abilities[ability as usize];
                 if (ability_data.ground_only && !slot.base.grounded)
                     || !ability_data.castable
+                    || (ability == ABILITY_BLACK_HOLE && !slot.black_hole_castable[s])
                     || (ability == ABILITY_INVISIBILITY && slot.invisible)
                 {
                     continue;
@@ -4343,6 +4424,51 @@ impl RolloutWorld {
                         self.revival_tick(index, data);
                         return;
                     }
+                    ABILITY_BLACK_HOLE => {
+                        let grounded = self.players[index].base.grounded;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform
+                                        .surface
+                                        .position(base.local, data.black_hole.physics_radius)
+                                })
+                        } else {
+                            self.players[index].base.position
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::BlackHole;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.black_hole_cast = BlackHoleCastState {
+                            grounded,
+                            ..BlackHoleCastState::default()
+                        };
+                        slot.base.position = form_position;
+                        slot.base.radius = data.black_hole.physics_radius;
+                        slot.base.constants = data.black_hole.constants.clone();
+                        if grounded {
+                            slot.base.velocity = Vec2::ZERO;
+                        } else {
+                            slot.base.rotation = Fix::ZERO;
+                            slot.base.up = Vec2::UP;
+                            slot.base.ground = None;
+                            slot.base.grounded_speed = Fix::ZERO;
+                            slot.base.velocity *= Fix::from_f32(0.05);
+                            slot.base.external_velocity *= Fix::from_f32(0.05);
+                        }
+                        // BlackHoleClap follows the animator. Its first active
+                        // UpdateSim runs now, while the enter animation begins
+                        // advancing on the next updater pass.
+                        self.black_hole_form_motion(index);
+                        return;
+                    }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
@@ -4481,6 +4607,10 @@ impl RolloutWorld {
             self.revival_tick(index, data);
             return;
         }
+        if self.players[index].active == ActiveAbility::BlackHole {
+            self.black_hole_cast_tick(index, data);
+            return;
+        }
         if self.players[index].active == ActiveAbility::Platform {
             self.platform_ability_tick(index, action, data);
             // PlatformTransform updates before its own
@@ -4493,7 +4623,7 @@ impl RolloutWorld {
                 self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
                 let slot = &mut self.players[index];
                 slot.reported_position = slot.base.position;
-                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false);
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
             }
             return;
         }
@@ -6554,6 +6684,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -6592,7 +6723,7 @@ impl RolloutWorld {
                 // Spike's Explosion.PlayerOwnerId is never assigned and
                 // therefore remains zero, which is neither a live player id
                 // nor the game's environmental sentinel.
-                self.kill(player_index, 0, CAUSE_OTHER, true);
+                self.kill(player_index, 0, CAUSE_OTHER, true, true);
             }
         }
     }
@@ -6689,6 +6820,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -6733,7 +6865,7 @@ impl RolloutWorld {
                 // Explosion.PlayerOwnerId. PlayerCollision therefore uses
                 // its zero default for kill attribution even though the RL
                 // entity row publishes the holder's actual owner.
-                self.kill(player_index, 0, CAUSE_OTHER, true);
+                self.kill(player_index, 0, CAUSE_OTHER, true, true);
             }
         }
     }
@@ -6785,6 +6917,468 @@ impl RolloutWorld {
         }
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+    }
+
+    fn black_hole_form_motion(&mut self, index: usize) {
+        {
+            let slot = &mut self.players[index];
+            slot.black_hole_cast.collider_position = slot.base.position;
+            slot.black_hole_cast.collider_up = slot.base.up;
+            slot.black_hole_cast.collider_rotation = slot.base.rotation;
+        }
+        if self.players[index].base.grounded {
+            let ground_live = self.players[index]
+                .base
+                .ground
+                .is_some_and(|id| self.platforms.iter().any(|platform| platform.id == id));
+            if ground_live {
+                self.players[index]
+                    .base
+                    .move_only(Vec2::ZERO, terrain!(self));
+            } else {
+                self.exit_black_hole_form(index, false);
+                return;
+            }
+        } else {
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                slot.base.constants.gravity_accel,
+                slot.base.constants.gravity_modifier,
+                slot.base.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Black Hole gravity constants");
+            slot.base.collision_rays(terrain!(self));
+        }
+        let slot = &mut self.players[index];
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
+    fn black_hole_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let cast = &mut self.players[index].black_hole_cast;
+        cast.ticks += 1;
+        let animation_ticks = if cast.phase == 0 {
+            if cast.grounded {
+                data.black_hole.enter_ticks
+            } else {
+                data.black_hole.enter_air_ticks
+            }
+        } else if cast.grounded {
+            data.black_hole.exit_ticks
+        } else {
+            data.black_hole.exit_air_ticks
+        };
+        if (cast.phase == 0 && cast.ticks > animation_ticks)
+            || (cast.phase == 1 && cast.ticks >= animation_ticks)
+        {
+            if cast.phase == 0 {
+                self.spawn_black_hole(index, data);
+                let cast = &mut self.players[index].black_hole_cast;
+                cast.phase = 1;
+                cast.ticks = 0;
+            } else {
+                let grounded = self.players[index].base.grounded;
+                self.exit_black_hole_form(index, grounded);
+                return;
+            }
+        }
+        self.black_hole_form_motion(index);
+    }
+
+    fn exit_black_hole_form(&mut self, index: usize, grounded: bool) {
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.base.radius = data::get().player.radius;
+        slot.base.constants = data::get().player.constants.clone();
+        if grounded && slot.base.ground.is_some() {
+            slot.obs_state = STATE_IDLE;
+            slot.state_ticks = 0;
+        } else {
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.exit_to_fall();
+            slot.base.collision_rays(terrain!(self));
+        }
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
+    fn spawn_black_hole(&mut self, owner: usize, data: &data::RolloutData) {
+        let ability_slot = self.players[owner].active_slot;
+        self.players[owner].black_hole_castable[ability_slot] = false;
+        let slot = &self.players[owner];
+        let facing = if slot.facing_right {
+            Fix::ONE
+        } else {
+            -Fix::ONE
+        };
+        let local = Vec2::new(
+            data.black_hole.spawn_offset.x * facing,
+            data.black_hole.spawn_offset.y,
+        );
+        let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
+        let position = slot.base.position + scale * slot.base.up.perp_cw().complex_mul(local);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.black_hole.updatable_count;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.black_hole.layer,
+            // BlackHole does not implement the observation's player-holder
+            // interface; attribution is carried privately by OwnerId.
+            owner: 0,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000 + hierarchy_base + data.black_hole.hole_collider_hierarchy,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            radius: data.black_hole.start_radius.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        let target_size =
+            Fix::from_int(100) + data.black_hole.starting_mass.abs() * data.black_hole.growth;
+        let hole = BlackHoleState {
+            active: true,
+            born_tick: self.tick,
+            entity: Some(entity),
+            hierarchy_base,
+            owner,
+            position,
+            velocity: Vec2::ZERO,
+            mass: data.black_hole.starting_mass,
+            time_since_growth: Fix::ZERO,
+            previous_target_size: Fix::from_int(100),
+            target_size,
+            radius: data.black_hole.start_radius,
+        };
+        if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
+            self.black_holes[free] = hole;
+        } else {
+            self.black_holes.push(hole);
+        }
+    }
+
+    fn black_hole_grow(
+        hole: &mut BlackHoleState,
+        inverse_mass: Fix,
+        extra: Fix,
+        data: &data::RolloutData,
+    ) {
+        let old_mass = hole.mass;
+        hole.mass += Fix::ONE / inverse_mass + data.black_hole.base_growth + extra;
+        if hole.mass != Fix::ZERO {
+            hole.velocity = hole.velocity.normalized_safe()
+                * (old_mass * hole.velocity.length_squared() / hole.mass)
+                    .abs()
+                    .sqrt()
+                    .unwrap_or(Fix::ZERO);
+        }
+        hole.previous_target_size = hole.target_size;
+        hole.target_size = Fix::from_int(100) + hole.mass.abs() * data.black_hole.growth;
+        hole.time_since_growth = Fix::ZERO;
+    }
+
+    fn black_holes_tick(&mut self, data: &data::RolloutData, dt: Fix) {
+        let stopped = self.player_time_scale < Fix::from_f32(0.01);
+        for hole_index in 0..self.black_holes.len() {
+            if !self.black_holes[hole_index].active {
+                continue;
+            }
+            if !stopped {
+                self.black_holes[hole_index].time_since_growth += dt;
+            }
+            let hole = &mut self.black_holes[hole_index];
+            let t = data.black_hole.size_curve.evaluate(hole.time_since_growth);
+            let size = (hole.previous_target_size * (Fix::ONE - t) + hole.target_size * t)
+                .max(data.black_hole.min_size);
+            hole.radius = (size * data.black_hole.start_radius * Fix::from_f32(0.01))
+                .max(data.black_hole.min_size);
+            if stopped {
+                if let Some(entity) = hole.entity {
+                    self.entities[entity].radius = hole.radius.raw();
+                }
+                continue;
+            }
+            hole.position += hole.velocity * dt;
+            hole.velocity *= data.black_hole.drag;
+            let position = hole.position;
+            let radius = hole.radius;
+            let mass = hole.mass;
+
+            for player in &mut self.players {
+                if !player.base.alive || player.out || player.respawn_ticks > 0 {
+                    continue;
+                }
+                let vector = position - player.base.collider.center;
+                let squared = vector.length_squared();
+                if squared == Fix::ZERO {
+                    continue;
+                }
+                let distance = squared.sqrt().expect("Black Hole distance");
+                if distance >= radius * data.black_hole.influence_radius_multiplier {
+                    continue;
+                }
+                let cube = distance * distance * distance;
+                if cube == Fix::ZERO {
+                    continue;
+                }
+                // Player/ability hurtboxes have an infinite-mass trigger
+                // PhysicsBody. BlackHole applies its separate PlayerPhysics
+                // force in addition to the inert collider-body force.
+                let force = vector * (-(data.black_hole.gravity * mass)) / cube;
+                player.base.external_velocity +=
+                    (-force * data.black_hole.player_force) * Fix::from_int(35);
+            }
+
+            let controlled_ground = self.players.iter().find_map(|player| {
+                (player.active == ActiveAbility::Push)
+                    .then_some(player.base.ground)
+                    .flatten()
+            });
+            let mut changed = false;
+            for platform_index in 0..self.platforms.len() {
+                let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
+                if inverse_mass == Fix::ZERO {
+                    continue;
+                }
+                let vector = position - self.platforms[platform_index].surface.center;
+                let squared = vector.length_squared();
+                if squared == Fix::ZERO {
+                    continue;
+                }
+                // The shipped rounded-rect loop's boulder exception is
+                // inverted: ordinary black holes pull every wall regardless
+                // of the influence-radius cutoff (BlackHole.cs:384-397).
+                let distance = squared.sqrt().expect("Black Hole platform distance");
+                let cube = distance * distance * distance;
+                if cube == Fix::ZERO {
+                    continue;
+                }
+                let mut magnitude = data.black_hole.gravity * (Fix::ONE / inverse_mass) * mass;
+                if controlled_ground == Some(self.platforms[platform_index].id) {
+                    magnitude *= data.black_hole.controlled_platform_multiplier;
+                }
+                self.platform_dynamics[platform_index].body.force += vector * magnitude / cube;
+                changed = true;
+            }
+            if changed {
+                self.platforms_changed();
+            }
+            if let Some(entity) = self.black_holes[hole_index].entity {
+                let row = &mut self.entities[entity];
+                row.x = position.x.raw();
+                row.y = position.y.raw();
+                row.vx = self.black_holes[hole_index].velocity.x.raw();
+                row.vy = self.black_holes[hole_index].velocity.y.raw();
+                row.radius = radius.raw();
+            }
+        }
+    }
+
+    fn black_hole_contacts(&mut self, data: &data::RolloutData) {
+        // Circle/RoundedRect callbacks precede the circle/circle and
+        // circle/box groups. A wall is eaten only when it contains the hole's
+        // centre, even though the two colliders can overlap much earlier.
+        for hole_index in 0..self.black_holes.len() {
+            if !self.black_holes[hole_index].active || self.black_holes[hole_index].mass < Fix::ZERO
+            {
+                continue;
+            }
+            let mut platform_index = 0;
+            while platform_index < self.platforms.len() {
+                let hole = self.black_holes[hole_index];
+                let platform_entity = self.platform_entities[platform_index];
+                if self.entities[platform_entity].flags & E_DESTROYED != 0 {
+                    platform_index += 1;
+                    continue;
+                }
+                // CollisionInformation retains the narrow-phase collider
+                // copied before platform/platform positional corrections.
+                let collider = self
+                    .scratch
+                    .callback_colliders
+                    .get(platform_index)
+                    .copied()
+                    .unwrap_or(self.platforms[platform_index].collider);
+                if crate::physics::contact::circle_rounded(
+                    Circle {
+                        center: hole.position,
+                        radius: hole.radius,
+                    },
+                    collider,
+                )
+                .is_some()
+                    && collider.overlaps(hole.position)
+                {
+                    let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
+                    if inverse_mass != Fix::ZERO {
+                        Self::black_hole_grow(
+                            &mut self.black_holes[hole_index],
+                            inverse_mass,
+                            Fix::ZERO,
+                            data,
+                        );
+                    }
+                    // Updater.DestroyFix is deferred until DetPhysics's next
+                    // remove-destroyed pass, so this callback frame still
+                    // exports the wall with its destroyed bit.
+                    self.entities[platform_entity].flags = E_DESTROYED;
+                }
+                platform_index += 1;
+            }
+        }
+
+        // Equal holes use SpriteRenderer.sortingOrder as a deterministic
+        // tiebreak: the later-created one consumes the older one.
+        for newer in 0..self.black_holes.len() {
+            if !self.black_holes[newer].active || self.black_holes[newer].mass < Fix::ZERO {
+                continue;
+            }
+            for older in 0..newer {
+                if !self.black_holes[older].active {
+                    continue;
+                }
+                let a = self.black_holes[newer];
+                let b = self.black_holes[older];
+                if crate::physics::contact::circle_circle(
+                    Circle {
+                        center: a.position,
+                        radius: a.radius,
+                    },
+                    Circle {
+                        center: b.position,
+                        radius: b.radius,
+                    },
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                let consumer = if a.mass >= b.mass { newer } else { older };
+                let consumed = if consumer == newer { older } else { newer };
+                Self::black_hole_grow(
+                    &mut self.black_holes[consumer],
+                    -Fix::ONE,
+                    data.black_hole.merge_growth,
+                    data,
+                );
+                self.black_holes[consumed].active = false;
+                if let Some(entity) = self.black_holes[consumed].entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+                if consumed == newer {
+                    break;
+                }
+            }
+        }
+
+        let mut victims = [false; MAX_PLAYERS];
+        let mut killers = [0u32; MAX_PLAYERS];
+        for hole_index in 0..self.black_holes.len() {
+            let hole = self.black_holes[hole_index];
+            if !hole.active || hole.mass < Fix::ZERO {
+                continue;
+            }
+            let circle = Circle {
+                center: hole.position,
+                radius: hole.radius,
+            };
+            for (player_index, player) in self.players.iter().enumerate() {
+                if !self.playable_slot(player) || player.out {
+                    continue;
+                }
+                let entity = match player.active {
+                    ActiveAbility::None => player.body_entity,
+                    ActiveAbility::Dash => player.dash_entity,
+                    ActiveAbility::Bow => player.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
+                    | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Mine => player.mine_entity,
+                    ActiveAbility::Rock => player.rock_entity,
+                    ActiveAbility::Roll => player.roll_entity,
+                    ActiveAbility::Meteor => player.meteor_entity,
+                    ActiveAbility::Push => player.push_entity,
+                    ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::Blink => player.blink_entity,
+                    ActiveAbility::GrowthRay => player.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::Engine => player.engine_entity,
+                    ActiveAbility::Tesla => player.tesla_entity,
+                    ActiveAbility::TimeStop => player.time_stop_entity,
+                    ActiveAbility::Gust => player.gust_entity,
+                    ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Platform => player.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let overlaps = if row.kind == 0 {
+                    crate::physics::contact::circle_circle(
+                        circle,
+                        Circle {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            radius: Fix::from_raw(row.radius),
+                        },
+                    )
+                    .is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    crate::physics::contact::circle_box(
+                        circle,
+                        OrientedBox {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            right,
+                            up,
+                            inverse_extents: Vec2::new(
+                                Fix::ONE / right.length(),
+                                Fix::ONE / up.length(),
+                            ),
+                        },
+                    )
+                    .is_some()
+                };
+                if overlaps {
+                    victims[player_index] = true;
+                    killers[player_index] = hole.owner as u32 + 1;
+                    Self::black_hole_grow(
+                        &mut self.black_holes[hole_index],
+                        -Fix::ONE,
+                        Fix::ZERO,
+                        data,
+                    );
+                }
+            }
+        }
+        for player_index in 0..self.players.len() {
+            if victims[player_index] && self.playable(player_index) {
+                // BlackHole explicitly requests no ordinary death effect,
+                // while still executing from DetPhysics's callback queue.
+                self.kill(
+                    player_index,
+                    killers[player_index],
+                    CAUSE_OTHER,
+                    true,
+                    false,
+                );
+            }
+        }
     }
 
     fn end_revival_marker(&mut self, marker_index: usize) {
@@ -7339,6 +7933,7 @@ impl RolloutWorld {
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
             let mut meteor_entity = usize::MAX;
+            let mut black_hole_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -7402,6 +7997,11 @@ impl RolloutWorld {
                         data.meteor.collider_hierarchy,
                         &mut meteor_entity,
                     ),
+                    ABILITY_BLACK_HOLE => (
+                        data.black_hole.hurtbox_extents,
+                        data.black_hole.collider_hierarchy,
+                        &mut black_hole_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -7428,6 +8028,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_BLACK_HOLE {
+                        data.black_hole.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -7452,6 +8054,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_BLACK_HOLE {
+                        data.black_hole.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -7513,6 +8117,8 @@ impl RolloutWorld {
             slot.cast_spell = CastSpellState::default();
             slot.spike_cast = SpikeCastState::default();
             slot.plant_cast = PlantCastState::default();
+            slot.black_hole_cast = BlackHoleCastState::default();
+            slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
@@ -7536,6 +8142,7 @@ impl RolloutWorld {
             slot.engine_entity = engine_entity;
             slot.tesla_entity = tesla_entity;
             slot.meteor_entity = meteor_entity;
+            slot.black_hole_entity = black_hole_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -7564,6 +8171,7 @@ impl RolloutWorld {
                 self.players[index].time_stop_entity,
                 self.players[index].engine_entity,
                 self.players[index].tesla_entity,
+                self.players[index].black_hole_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -7698,6 +8306,7 @@ impl RolloutWorld {
             let mut engine_entity = usize::MAX;
             let mut tesla_entity = usize::MAX;
             let mut meteor_entity = usize::MAX;
+            let mut black_hole_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -7761,6 +8370,11 @@ impl RolloutWorld {
                         data.meteor.collider_hierarchy,
                         &mut meteor_entity,
                     ),
+                    ABILITY_BLACK_HOLE => (
+                        data.black_hole.hurtbox_extents,
+                        data.black_hole.collider_hierarchy,
+                        &mut black_hole_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -7788,6 +8402,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_BLACK_HOLE {
+                        data.black_hole.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -7812,6 +8428,8 @@ impl RolloutWorld {
                         data.blink.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_METEOR {
                         data.meteor.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_BLACK_HOLE {
+                        data.black_hole.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -7860,6 +8478,8 @@ impl RolloutWorld {
             slot.cast_spell = CastSpellState::default();
             slot.spike_cast = SpikeCastState::default();
             slot.plant_cast = PlantCastState::default();
+            slot.black_hole_cast = BlackHoleCastState::default();
+            slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
@@ -7883,6 +8503,7 @@ impl RolloutWorld {
             slot.engine_entity = engine_entity;
             slot.tesla_entity = tesla_entity;
             slot.meteor_entity = meteor_entity;
+            slot.black_hole_entity = black_hole_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -8204,7 +8825,7 @@ impl RolloutWorld {
                     let slot = &mut self.players[index];
                     slot.base.position = origin + direction * distance;
                     slot.reported_position = slot.base.position;
-                    self.kill(index, arrow.owner, cause, false);
+                    self.kill(index, arrow.owner, cause, false, false);
                     if arrow.owner != caster_id && arrow.owner >= 1 {
                         self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
                     }
@@ -9331,6 +9952,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -9476,6 +10098,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -9749,6 +10372,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -11351,7 +11975,7 @@ impl RolloutWorld {
                 // updater: it creates the normal death effect, while
                 // DetPhysics removes all killed colliders before contacts.
                 self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                self.kill(victim, killer, cause, false);
+                self.kill(victim, killer, cause, false, false);
                 self.remove_thrown_item(item_index, false);
             }
         }
@@ -11409,7 +12033,7 @@ impl RolloutWorld {
                     continue;
                 }
                 self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false);
+                self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false, false);
             }
 
             if self.thrown_items[item_index].phase == 0 {
@@ -11827,7 +12451,7 @@ impl RolloutWorld {
                 } else {
                     CAUSE_OTHER
                 };
-                self.kill(victim, arrow.owner, cause, true);
+                self.kill(victim, arrow.owner, cause, true, true);
                 if arrow.owner != victim_id && arrow.owner >= 1 {
                     self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
                 }
@@ -11927,6 +12551,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
                     ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::BlackHole => player.black_hole_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -12244,7 +12869,7 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(player_index, killer, cause, true);
+                    self.kill(player_index, killer, cause, true, true);
                 }
             }
         }
@@ -12296,7 +12921,7 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(player_index, killer, cause, true);
+                    self.kill(player_index, killer, cause, true, true);
                 }
             }
         }
@@ -12393,7 +13018,7 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(player_index, killer, cause, true);
+                    self.kill(player_index, killer, cause, true, true);
                 }
             }
         }
@@ -12792,7 +13417,7 @@ impl RolloutWorld {
                             .is_some()
                     })
                     .map_or(0, |i| self.players[i].base.id);
-                self.kill(victim, killer, CAUSE_OTHER, true);
+                self.kill(victim, killer, CAUSE_OTHER, true, true);
             }
         }
     }
@@ -12892,6 +13517,7 @@ impl RolloutWorld {
                     ActiveAbility::TimeStop => other.time_stop_entity,
                     ActiveAbility::Gust => other.gust_entity,
                     ActiveAbility::Revival => other.revival_entity,
+                    ActiveAbility::BlackHole => other.black_hole_entity,
                     ActiveAbility::Platform => other.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -12939,7 +13565,7 @@ impl RolloutWorld {
         }
         for victim in 0..self.players.len() {
             if victims[victim] && self.playable(victim) {
-                self.kill(victim, killers[victim], CAUSE_OTHER, true);
+                self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
             }
         }
     }
@@ -13364,7 +13990,7 @@ impl RolloutWorld {
                 .map(|(index, _)| index),
         );
         for &index in &scratch.squished {
-            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true);
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
         }
         self.scratch = scratch;
 
@@ -13385,7 +14011,14 @@ impl RolloutWorld {
 
     /// `by_callback`: the death came from a DetPhysics collision callback
     /// (after this pass's contacts) rather than an updatable.
-    pub fn kill(&mut self, index: usize, killer: u32, cause: u32, by_callback: bool) {
+    pub fn kill(
+        &mut self,
+        index: usize,
+        killer: u32,
+        cause: u32,
+        by_callback: bool,
+        spawn_effect: bool,
+    ) {
         // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
         // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
         // ordinary collision callbacks do not.
@@ -13440,7 +14073,7 @@ impl RolloutWorld {
             // before SpawnClone. Updatable callers account for their own
             // effect; boundary deaths accounted for the distinct bounds
             // effect before entering kill().
-            if by_callback {
+            if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
             let rows = [
@@ -13450,6 +14083,7 @@ impl RolloutWorld {
                 slot.rock_entity,
                 slot.roll_entity,
                 slot.meteor_entity,
+                slot.black_hole_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -13502,7 +14136,7 @@ impl RolloutWorld {
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
         if slot.stocks > 0 && !self.sudden_death {
-            if by_callback {
+            if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
             for entity in [
@@ -13512,6 +14146,7 @@ impl RolloutWorld {
                 slot.rock_entity,
                 slot.roll_entity,
                 slot.meteor_entity,
+                slot.black_hole_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -13566,6 +14201,7 @@ impl RolloutWorld {
                 slot.rock_entity,
                 slot.roll_entity,
                 slot.meteor_entity,
+                slot.black_hole_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -13592,7 +14228,7 @@ impl RolloutWorld {
                     row.flags = E_REMOVED;
                 }
             }
-            if by_callback {
+            if spawn_effect {
                 // Water/lethal callbacks request the ordinary death effect;
                 // its two updatables register before DropAbilities creates
                 // the pickup. Boundary deaths pass spawnEffect=false.
@@ -13997,6 +14633,7 @@ impl RolloutWorld {
                 time_stop_e,
                 engine_e,
                 tesla_e,
+                black_hole_e,
             ) = {
                 let s = &self.players[index];
                 (
@@ -14020,6 +14657,7 @@ impl RolloutWorld {
                     s.time_stop_entity,
                     s.engine_entity,
                     s.tesla_entity,
+                    s.black_hole_entity,
                 )
             };
             let slot = &self.players[index];
@@ -14050,6 +14688,7 @@ impl RolloutWorld {
             let spiking = slot.active == ActiveAbility::Spike;
             let planting_engine = slot.active == ActiveAbility::Engine;
             let planting_tesla = slot.active == ActiveAbility::Tesla;
+            let casting_black_hole = slot.active == ActiveAbility::BlackHole;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -14723,6 +15362,41 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
+            if black_hole_e != usize::MAX {
+                let box_row = &mut self.entities[black_hole_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && casting_black_hole {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if casting_black_hole {
+                    box_row.owner = slot.base.id;
+                }
+                if casting_black_hole || was_active {
+                    let (position, rotation, basis) = if casting_black_hole {
+                        (
+                            slot.black_hole_cast.collider_position,
+                            slot.black_hole_cast.collider_rotation,
+                            slot.black_hole_cast.collider_up.perp_cw(),
+                        )
+                    } else {
+                        (exit_position, slot.base.rotation, slot.base.up.perp_cw())
+                    };
+                    let center = position + basis.complex_mul(data.black_hole.collider_offset);
+                    let collider =
+                        OrientedBox::from_basis(center, basis, data.black_hole.hurtbox_extents);
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.vx = 0;
+                    box_row.vy = 0;
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
@@ -14813,13 +15487,15 @@ impl RolloutWorld {
             } else {
                 &dynamics.root_body
             };
-            e.flags = E_ACTIVE
-                | E_ENABLED
-                | if dynamics.attached_children == 0 {
-                    0
-                } else {
-                    E_COMPOSITE
-                };
+            if e.flags & E_DESTROYED == 0 {
+                e.flags = E_ACTIVE
+                    | E_ENABLED
+                    | if dynamics.attached_children == 0 {
+                        0
+                    } else {
+                        E_COMPOSITE
+                    };
+            }
             e.vx = observed_body.velocity.x.raw();
             e.vy = observed_body.velocity.y.raw();
             // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
@@ -15324,7 +16000,7 @@ mod tests {
         config.stocks = 0;
         world.reset(&config).unwrap();
 
-        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, true);
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, true, true);
         assert!(
             !world.terminal,
             "a collision death must not end its own updater pass"

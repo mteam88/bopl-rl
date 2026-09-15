@@ -2362,3 +2362,41 @@ effect. Pickup position and velocity differ by at most 2,103 raw Q32 units
 launch direction. Entity identities, hierarchy, lifecycle ticks, the reroll,
 collector and acquired ability remain exact. The pickup vector is stored in a
 capacity-retained collection and adds no per-tick allocation.
+
+### Executable Black Hole form and persistent gravity body (2026-09-15)
+
+Catalog id 18 now executes `BlackHoleClap` with the prefab's separate
+PlayerPhysics body. Grounded entry reprojects to the form's 0.76-unit radius,
+preserves external velocity, and runs the authored 15-tick enter and exit
+animations. The callback rotates the `(6, 3)` local spawn offset by the live
+surface basis and facing, applies the source's player-scale clamp, permanently
+marks that equipped ability instance uncastable, and returns to the ordinary
+slime through the same grounded body handoff. Air entry retains both velocity
+channels at five percent and uses the form's extracted gravity constants.
+
+The spawned layer-23 circle keeps the source's 15-unit starting mass, fixed
+Hermite size animation, 0.99 velocity drag and persistent lifetime. Its updater
+pulls every rounded platform because the shipped boulder exception bypasses
+the nominal influence cutoff for ordinary holes. Player and ability boxes use
+the separate `PlayerPhysics.AddForce` path, including the infinite-mass trigger
+body sign. Wall callbacks consume only when the retained narrow-phase rounded
+rectangle contains the hole centre, publish the wall as destroyed for one
+pass, grow and reset the size curve, then remove it on the following physics
+pass. Positive holes merge by mass with the later sorting order as the equal
+mass tiebreak. Player collisions grow first and call `killPlayer` with
+`spawnEffect: false`; the rollout death path now represents callback timing and
+effect creation independently so stock-clone hierarchy stays exact.
+
+`black_hole_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks. The persistent
+hole appears on differential tick 199, platform id 13 is destroyed on tick 231
+and removed on 232, the attracted owner dies on 241, and its stock clone
+registers on 242. IDs, hierarchy, flags, entity counts, platform trajectories,
+growth resets, death state and reconstruction boundaries match. The hole's
+curve radius differs by at most about 100 raw Q32 units. During the active cast
+form, separately synchronized PlayerPhysics and DetPhysics positions differ by
+at most 70,000,000 raw units (0.0163 world units); grounded exit reprojects to
+the exact same platform pose and no collision or lifecycle decision differs.
+Standalone projectile/item force and consumption paths remain to be exercised
+as their catalog abilities are composed with Black Hole, so coverage is marked
+partial. Hole and contact state reuse capacity-retained vectors and fixed player
+arrays; the tick path adds no allocation.

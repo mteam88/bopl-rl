@@ -146,7 +146,8 @@
       "name": "Black hole",
       "prefab": "Assets/GameObject/Black hole.prefab",
       "prefab_guid": "902b30a54480357438ed3cc55485e8de",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "black_hole_ability_ab compares 500 NativeAOT/Rust Q32 ticks through grounded BlackHoleClap entry, exact persistent hole spawn identity, fixed Hermite growth, whole-map platform attraction, center-only wall destruction/removal, player attraction, the no-death-effect callback kill, and exact stock-clone reconstruction boundaries. Hole radius differs by about 100 raw Q32 units; the active form position differs by at most 70,000,000 raw units (0.0163 world units) before both backends reproject to the exact same grounded exit pose. Standalone projectile/item attraction and consumption remain to be composed and goldened."
     },
     {
       "id": 19,

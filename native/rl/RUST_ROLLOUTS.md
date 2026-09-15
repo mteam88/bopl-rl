@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   collection, third-slot replacement and deferred acquired-ability
   registration. Dedicated collection and final-death goldens cover both
   origins.
-- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -205,6 +205,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   handoff. Its circle and movement radii remain distinct as authored. Platform
   hopping, early airborne release, moving-platform turns, wall squish and mixed
   transformed-form contacts still need dedicated differential scenarios.
+  Black Hole executes its grounded and airborne form animations, persistent
+  layer-23 circle, Hermite growth, all-wall gravity, controlled-platform
+  multiplier, player attraction, center-only wall consumption, hole merging,
+  and the source's no-death-effect player callback. The main differential
+  matches every lifecycle boundary; attraction while the cast form is active
+  differs by at most 70,000,000 raw Q32 units (0.0163 world units) before the
+  grounded exit reprojects both backends to the exact same platform pose.
+  Forces and consumption for standalone projectile/item prefabs still need
+  composed differential scenarios as those catalog ports are completed.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain
