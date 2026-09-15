@@ -2038,3 +2038,31 @@ angular motion, spring-home movement, channel timing, button release, inactive
 collider state, and restored slime movement. Platform destruction, sudden death,
 and overlapping-player scenarios remain to be separately goldened, so coverage
 is marked partial.
+
+### Executable Freeze ray and FrozenSolid (2026-09-14)
+
+Catalog id 36 now enters the shipped `GunTransform` form with the prefab's own
+movement constants. The form copies the exact ground basis, uses 0.03 gravity
+and a one-tenth airborne entry velocity while aiming, fires on button release,
+and switches to full gravity, 50-unit recoil, half-strength aerial steering and
+the 20-tick fire-animation exit. Its DPhysics box retains the same split as the
+reference: offset translation uses the stored `FixTransform` basis while the
+box axes use the scalar-angle lookup.
+
+`FreezeRayGun` raycasts the registered Player and wall shapes and reflects once
+from the map's Water box with the no-water mask. A player hit spawns the
+collider-free `FrozenSolid` updater. `Begin` immediately applies zero-speed
+ragdoll and the standard 0.05-unit ground detach; subsequent updates pin the
+victim, refresh the one-second ragdoll and suppress the next PlayerPhysics pass.
+After the serialized 1.6 seconds, thaw applies the `(0, 4)` fast ragdoll impulse
+and resets all three cooldown clocks. The rollout stores these small records in
+a capacity-reused vector, so the steady-state update path allocates nothing.
+
+`freeze_ability_ab.c` compares the grounded player-hit scenario through the
+complete freeze, thaw, ragdoll landing and cooldown restart, plus an airborne
+diagonal cast through recoil and animation exit. The two scenarios cover 1,000
+NativeAOT/Rust Q32 ticks exactly. Water reflection is source-ported but does
+not yet have a differential scenario. A measured hit against an active Bow
+form exposed an unresolved updater-order mismatch while restoring and freezing
+the original slime: ordinary-slime hits are exact, but transformed-player hits
+are not yet compatible. Coverage therefore remains partial.

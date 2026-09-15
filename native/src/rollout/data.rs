@@ -210,6 +210,7 @@ struct RawPrefabs {
     mine: RawMine,
     rock: RawRock,
     push: RawPush,
+    freeze: RawFreeze,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -399,6 +400,24 @@ struct RawPush {
     scene_bound_limit_offset: i64,
     boulder_force_multiplier: i64,
     home_position_lerp_speed: i64,
+}
+#[derive(Deserialize)]
+struct RawFreeze {
+    hurtbox_extents: RawVec2,
+    collider_hierarchy: u32,
+    collider_offset: RawVec2,
+    radius: i64,
+    physics: RawPhysics,
+    air_control_blend: i64,
+    firepoint_offset: RawVec2,
+    knockback: i64,
+    max_slow_mo_speed: i64,
+    transform_ticks: u32,
+    fire_ticks: u32,
+    collision_mask: u32,
+    collision_mask_no_water: u32,
+    freeze_seconds: i64,
+    frozen_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawMineThrow {
@@ -926,6 +945,23 @@ pub struct PushData {
     pub boulder_force_multiplier: Fix,
     pub home_position_lerp_speed: Fix,
 }
+pub struct FreezeData {
+    pub hurtbox_extents: Vec2,
+    pub collider_hierarchy: u32,
+    pub collider_offset: Vec2,
+    pub radius: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub air_control_blend: Fix,
+    pub firepoint_offset: Vec2,
+    pub knockback: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub transform_ticks: u32,
+    pub fire_ticks: u32,
+    pub collision_mask: u32,
+    pub collision_mask_no_water: u32,
+    pub freeze_seconds: Fix,
+    pub frozen_updatable_count: u32,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -1110,6 +1146,7 @@ pub struct RolloutData {
     pub mine: MineData,
     pub rock: RockData,
     pub push: PushData,
+    pub freeze: FreezeData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -1603,6 +1640,26 @@ pub fn get() -> &'static RolloutData {
                 scene_bound_limit_offset: Fix::from_raw(raw.prefabs.push.scene_bound_limit_offset),
                 boulder_force_multiplier: Fix::from_raw(raw.prefabs.push.boulder_force_multiplier),
                 home_position_lerp_speed: Fix::from_raw(raw.prefabs.push.home_position_lerp_speed),
+            },
+            freeze: FreezeData {
+                hurtbox_extents: {
+                    let extents = raw.prefabs.freeze.hurtbox_extents.get();
+                    Vec2::new(extents.x.abs(), extents.y.abs())
+                },
+                collider_hierarchy: raw.prefabs.freeze.collider_hierarchy,
+                collider_offset: raw.prefabs.freeze.collider_offset.get(),
+                radius: Fix::from_raw(raw.prefabs.freeze.radius),
+                constants: constants(&raw.prefabs.freeze.physics),
+                air_control_blend: Fix::from_raw(raw.prefabs.freeze.air_control_blend),
+                firepoint_offset: raw.prefabs.freeze.firepoint_offset.get(),
+                knockback: Fix::from_raw(raw.prefabs.freeze.knockback),
+                max_slow_mo_speed: Fix::from_raw(raw.prefabs.freeze.max_slow_mo_speed),
+                transform_ticks: raw.prefabs.freeze.transform_ticks,
+                fire_ticks: raw.prefabs.freeze.fire_ticks,
+                collision_mask: raw.prefabs.freeze.collision_mask,
+                collision_mask_no_water: raw.prefabs.freeze.collision_mask_no_water,
+                freeze_seconds: Fix::from_raw(raw.prefabs.freeze.freeze_seconds),
+                frozen_updatable_count: raw.prefabs.freeze.frozen_updatable_count,
             },
             smoke: {
                 let smoke = &raw.prefabs.smoke;

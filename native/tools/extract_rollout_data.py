@@ -735,6 +735,47 @@ def main():
         "home_position_lerp_speed": fix(push, "homePositionLerpSpeed"),
     }
 
+    # ---- Freeze ray / shared GunTransform form ----
+    _, freeze_ability = find_prefab("Assets/GameObject/Freeze ray.prefab")
+    freeze_gun = component(freeze_ability, "GunTransform")
+    freeze_box = component(freeze_ability, "DPhysicsBox")
+    freeze_physics = component(freeze_ability, "PlayerPhysics")
+    freeze_fix_transform = component(freeze_ability, "FixTransform")
+    freeze_payload = component(freeze_ability, "FreezeRayGun")
+    freeze_anims = animations(guid_of(freeze_gun["animData"]))
+    _, frozen_prefab = find_prefab("Assets/GameObject/FrozenSolid.prefab")
+    frozen = component(frozen_prefab, "FrozenSolid")
+    out["prefabs"]["freeze"] = {
+        "hurtbox_extents": vec2(freeze_box, "startExtents"),
+        "collider_hierarchy": freeze_box["hierarchyNumber"],
+        "collider_offset": vec2(freeze_fix_transform, "offset"),
+        "radius": fix(freeze_physics, "radius"),
+        "physics": {
+            "max_speed": fix(freeze_physics, "maxSpeed"),
+            "jump_strength": fix(freeze_physics, "jumpStrength"),
+            "accel": fix(freeze_physics, "accel"),
+            "radius": fix(freeze_physics, "radius"),
+            "gravity_accel": fix(freeze_physics, "gravity_accel"),
+            "gravity_max_fall_speed": fix(freeze_physics, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(freeze_physics, "gravity_modifier"),
+            "jump_extra_x": fix(freeze_physics, "jumpExtraXStrength"),
+            "jump_momentum": fix(freeze_physics, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(freeze_physics, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(freeze_physics, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(freeze_physics, "airAccel"),
+        },
+        "air_control_blend": fix(freeze_gun, "airealControlBlend"),
+        "firepoint_offset": vec2(freeze_gun, "FirepointOffset"),
+        "knockback": fix(freeze_gun, "KnockBack"),
+        "max_slow_mo_speed": fix(freeze_gun, "maxSlowMoSpeed"),
+        "transform_ticks": sum(abs(d) for d in freeze_anims["gunTransform"]),
+        "fire_ticks": sum(abs(d) for d in freeze_anims["gunTransformFire"]),
+        "collision_mask": freeze_payload["collisionMask.m_Bits"],
+        "collision_mask_no_water": freeze_payload["collisionMaskNoWater.m_Bits"],
+        "freeze_seconds": fix(frozen, "freezeSeconds"),
+        "frozen_updatable_count": updater_count(frozen_prefab),
+    }
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")

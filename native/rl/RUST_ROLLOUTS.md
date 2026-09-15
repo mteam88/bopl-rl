@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Gust, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Invisibility, Push, Mine, Teleport, Rewind, Gold mushroom, Tack, Mjolnir**
-  (catalog ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/22/24/25/31/34/35/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Gust, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Invisibility, Push, Mine, Teleport, Rewind, Gold mushroom, Tack, Freeze ray, Mjolnir**
+  (catalog ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/22/24/25/31/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -204,6 +204,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   force and torque, collider publication, and button-release restoration.
   Platform removal, sudden death, and overlapping-player cases remain to be
   exercised by dedicated differential scenarios.
+  Freeze ray executes the shared `GunTransform` form, its authored slow-motion
+  aiming and recoil physics, hitscan, one-pass water reflection, and
+  `FrozenSolid` pin/ragdoll/thaw lifecycle. The frozen effect is stored in a
+  reusable vector and performs no per-tick allocation. Grounded player hits and
+  airborne misses match NativeAOT through the complete cast and recovery.
+  Water reflection is source-ported but un-goldened. A measured active-Bow-form
+  hit still differs during original-slime restoration because cross-prefab
+  updater ordering is unresolved.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

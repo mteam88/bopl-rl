@@ -55,6 +55,7 @@ pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
 pub const ABILITY_TACK: u32 = 35;
+pub const ABILITY_FREEZE: u32 = 36;
 pub const ABILITY_MJOLNIR: u32 = 37;
 
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
@@ -231,6 +232,7 @@ const STATE_LAND: u32 = 4;
 const STATE_TURN: u32 = 6;
 const STATE_STOP: u32 = 7;
 const STATE_NOTHING: u32 = 8;
+const STATE_RAGDOLL: u32 = 10;
 // SlimeController animation lengths driving the state machine (rollout.json
 // player anims: land 6x6, stop 1x6, runTurnAround 4x3 ticks).
 const LAND_TICKS: u32 = 36;
@@ -874,6 +876,34 @@ pub struct PushState {
     pub collider_up: Vec2,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct GunState {
+    pub aim: Vec2,
+    pub has_fired: bool,
+    pub fire_ticks: u32,
+    pub collider_up: Vec2,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct RagdollState {
+    pub active: bool,
+    pub skip_physics: bool,
+    pub time: Fix,
+    pub duration: Fix,
+}
+
+/// FrozenSolid has no physics collider or observation row. It is still an
+/// Updater member: Begin acts immediately, registration is deferred, and each
+/// later update pins and re-ragdolls its victim until the ice shatters.
+#[derive(Clone, Copy, Default)]
+pub struct FrozenSolidState {
+    pub active: bool,
+    pub born_tick: u32,
+    pub victim: usize,
+    pub freeze_left: Fix,
+    pub freeze_position: Vec2,
+}
+
 /// Per-player platform ability state (PlatformTransform.cs).
 #[derive(Clone, Copy, Default)]
 pub struct PlatformState {
@@ -988,6 +1018,7 @@ pub enum ActiveAbility {
     Smoke,
     Rock,
     Push,
+    Freeze,
     Missile,
     Mine,
     Spike,
@@ -1048,6 +1079,8 @@ pub struct PlayerSlot {
     pub bow: BowState,
     pub rock: RockState,
     pub push: PushState,
+    pub gun: GunState,
+    pub ragdoll: RagdollState,
     pub missile: MissileFormState,
     pub throw_item: ThrowItemState,
     pub cast_spell: CastSpellState,
@@ -1111,6 +1144,7 @@ pub struct PlayerSlot {
     pub rock_entity: usize,
     pub rock_hierarchy: u32,
     pub push_entity: usize,
+    pub freeze_entity: usize,
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
@@ -1198,6 +1232,7 @@ pub struct RolloutWorld {
     pub smoke_explosions: Vec<SmokeExplosion>,
     pub time_stop_effects: Vec<TimeStopEffect>,
     pub spike_attacks: Vec<SpawnedSpike>,
+    pub frozen_solids: Vec<FrozenSolidState>,
     pub player_time_scale: Fix,
     pub time_stop_protected: [bool; MAX_PLAYERS],
     pub spawned: Vec<SpawnedPlatform>,
@@ -1277,6 +1312,7 @@ impl RolloutWorld {
             smoke_explosions: Vec::with_capacity(64),
             time_stop_effects: Vec::with_capacity(8),
             spike_attacks: Vec::with_capacity(32),
+            frozen_solids: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
             time_stop_protected: [false; MAX_PLAYERS],
             spawned: Vec::with_capacity(64),
@@ -1342,6 +1378,7 @@ impl RolloutWorld {
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
+        self.frozen_solids.clone_from(&src.frozen_solids);
         self.player_time_scale = src.player_time_scale;
         self.time_stop_protected = src.time_stop_protected;
         self.spawned.clone_from(&src.spawned);
@@ -1403,6 +1440,7 @@ impl RolloutWorld {
             smoke_explosions: _,
             time_stop_effects: _,
             spike_attacks: _,
+            frozen_solids: _,
             player_time_scale: _,
             time_stop_protected: _,
             spawned: _,
@@ -1491,6 +1529,7 @@ impl RolloutWorld {
         self.smoke_explosions.clear();
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
+        self.frozen_solids.clear();
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
@@ -1561,6 +1600,7 @@ impl RolloutWorld {
         let mut throw_entity = [usize::MAX; MAX_PLAYERS];
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut push_entity = [usize::MAX; MAX_PLAYERS];
+        let mut freeze_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
@@ -1676,6 +1716,14 @@ impl RolloutWorld {
                             &mut push_entity[i],
                             false,
                         ),
+                        ABILITY_FREEZE => (
+                            data::surface_extents(data.freeze.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.freeze.collider_hierarchy,
+                            &mut freeze_entity[i],
+                            false,
+                        ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR) => (
                             throw_config(data, ability).hurtbox_extents,
@@ -1703,7 +1751,8 @@ impl RolloutWorld {
                     owner: if body { i as u32 + 1 } else { 0 },
                     flags: if body {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
-                    } else if resolved_abilities[i][s - 1] == ABILITY_SPIKE {
+                    } else if matches!(resolved_abilities[i][s - 1], ABILITY_SPIKE | ABILITY_FREEZE)
+                    {
                         E_ENABLED | E_TRIGGER
                     } else {
                         E_TRIGGER
@@ -1715,6 +1764,8 @@ impl RolloutWorld {
                         data.mine.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_PUSH {
                         data.push.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_FREEZE {
+                        data.freeze.collider_offset.x.raw()
                     } else {
                         0
                     },
@@ -1724,6 +1775,8 @@ impl RolloutWorld {
                         data.mine.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_PUSH {
                         data.push.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_FREEZE {
+                        data.freeze.collider_offset.y.raw()
                     } else {
                         0
                     },
@@ -1884,6 +1937,8 @@ impl RolloutWorld {
                 bow: BowState::default(),
                 rock: RockState::default(),
                 push: PushState::default(),
+                gun: GunState::default(),
+                ragdoll: RagdollState::default(),
                 missile: MissileFormState::default(),
                 throw_item: ThrowItemState::default(),
                 cast_spell: CastSpellState::default(),
@@ -1920,6 +1975,7 @@ impl RolloutWorld {
                 rock_entity: usize::MAX,
                 rock_hierarchy: rock_hierarchy[i],
                 push_entity: push_entity[i],
+                freeze_entity: freeze_entity[i],
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
@@ -2050,6 +2106,7 @@ impl RolloutWorld {
             || slot.respawn_ticks > 0
             || slot.revival_clone_pending
             || slot.revival_effect_ticks > 0
+            || slot.obs_state == STATE_RAGDOLL
             || slot.active != ActiveAbility::None
             || slot.base.dash.active
         {
@@ -2365,6 +2422,7 @@ impl RolloutWorld {
         self.smoke_tick(data, updater_dt);
         self.time_stop_effects_tick(data);
         self.spike_attacks_tick(data, updater_dt);
+        self.frozen_solids_tick(updater_dt);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -2389,6 +2447,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mine
                     | ActiveAbility::Rock
                     | ActiveAbility::Push
+                    | ActiveAbility::Freeze
                     | ActiveAbility::Spike
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
@@ -2416,6 +2475,8 @@ impl RolloutWorld {
             if self.playable(index) {
                 if self.players[index].active == ActiveAbility::Push {
                     self.players[index].push.collider_up = self.players[index].base.up;
+                } else if self.players[index].active == ActiveAbility::Freeze {
+                    self.players[index].gun.collider_up = self.players[index].base.up;
                 }
                 self.players[index].base.sync_collider();
             }
@@ -2437,6 +2498,7 @@ impl RolloutWorld {
                     slot.circle_entity,
                     slot.rock_entity,
                     slot.push_entity,
+                    slot.freeze_entity,
                     slot.bow_entity,
                     slot.throw_entity,
                     slot.mine_entity,
@@ -2511,6 +2573,10 @@ impl RolloutWorld {
                 return;
             }
             self.respawn_tick(index, movement_input, jump_pressed, data);
+            return;
+        }
+        if self.players[index].ragdoll.active {
+            self.ragdoll_player_tick(index, data);
             return;
         }
         if self.players[index].rewind.rewinding {
@@ -2941,6 +3007,46 @@ impl RolloutWorld {
                         };
                         return;
                     }
+                    ABILITY_FREEZE => {
+                        let grounded = self.players[index].base.grounded;
+                        let aim = {
+                            let slot = &self.players[index];
+                            let forward = if grounded {
+                                slot.base.up.perp_cw()
+                            } else {
+                                Vec2::RIGHT
+                            };
+                            if slot.facing_right { forward } else { -forward }
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Freeze;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.gun = GunState {
+                            aim,
+                            ..GunState::default()
+                        };
+                        slot.base.rotation = Fix::ZERO;
+                        if grounded {
+                            if let Some(platform) = slot.base.platform(&self.platforms) {
+                                slot.base.position = platform
+                                    .surface
+                                    .position(slot.base.local, data.freeze.radius);
+                            }
+                            slot.base.radius = data.freeze.radius;
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        } else {
+                            slot.base.radius = data.freeze.radius;
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                            slot.base.external_velocity *= Fix::from_f32(0.1);
+                            slot.base.ground = None;
+                        }
+                        self.freeze_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -3128,6 +3234,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Push {
             self.push_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Freeze {
+            self.freeze_tick(index, action, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Mine {
@@ -3974,6 +4084,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => slot.mine_entity,
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
+                    ActiveAbility::Freeze => slot.freeze_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
@@ -4607,6 +4718,7 @@ impl RolloutWorld {
             let mut throw_entity = usize::MAX;
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
+            let mut freeze_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
@@ -4629,6 +4741,11 @@ impl RolloutWorld {
                         data.push.collider_hierarchy,
                         &mut push_entity,
                     ),
+                    ABILITY_FREEZE => (
+                        data::surface_extents(data.freeze.hurtbox_extents),
+                        data.freeze.collider_hierarchy,
+                        &mut freeze_entity,
+                    ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -4650,6 +4767,8 @@ impl RolloutWorld {
                         data.mine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
                         data.push.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_FREEZE {
+                        data.freeze.collider_offset.x.raw()
                     } else {
                         0
                     },
@@ -4659,6 +4778,8 @@ impl RolloutWorld {
                         data.mine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
                         data.push.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_FREEZE {
+                        data.freeze.collider_offset.y.raw()
                     } else {
                         0
                     },
@@ -4689,6 +4810,8 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.rock = RockState::default();
             slot.push = PushState::default();
+            slot.gun = GunState::default();
+            slot.ragdoll = RagdollState::default();
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
@@ -4705,6 +4828,7 @@ impl RolloutWorld {
             slot.rock_entity = usize::MAX;
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
+            slot.freeze_entity = freeze_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -4723,6 +4847,7 @@ impl RolloutWorld {
                 self.players[index].circle_entity,
                 self.players[index].rock_entity,
                 self.players[index].push_entity,
+                self.players[index].freeze_entity,
                 self.players[index].bow_entity,
                 self.players[index].throw_entity,
                 self.players[index].mine_entity,
@@ -4849,6 +4974,7 @@ impl RolloutWorld {
             let mut throw_entity = usize::MAX;
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
+            let mut freeze_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
@@ -4870,6 +4996,11 @@ impl RolloutWorld {
                         data::surface_extents(data.push.hurtbox_extents),
                         data.push.collider_hierarchy,
                         &mut push_entity,
+                    ),
+                    ABILITY_FREEZE => (
+                        data::surface_extents(data.freeze.hurtbox_extents),
+                        data.freeze.collider_hierarchy,
+                        &mut freeze_entity,
                     ),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
@@ -4893,6 +5024,8 @@ impl RolloutWorld {
                         data.mine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
                         data.push.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_FREEZE {
+                        data.freeze.collider_offset.x.raw()
                     } else {
                         0
                     },
@@ -4902,6 +5035,8 @@ impl RolloutWorld {
                         data.mine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
                         data.push.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_FREEZE {
+                        data.freeze.collider_offset.y.raw()
                     } else {
                         0
                     },
@@ -4919,6 +5054,8 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.rock = RockState::default();
             slot.push = PushState::default();
+            slot.gun = GunState::default();
+            slot.ragdoll = RagdollState::default();
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
@@ -4935,6 +5072,7 @@ impl RolloutWorld {
             slot.rock_entity = usize::MAX;
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
+            slot.freeze_entity = freeze_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -5773,6 +5911,409 @@ impl RolloutWorld {
         state.item = Some(item_index);
         state.phase = 1;
         state.ticks = 0;
+    }
+
+    /// GunTransform.UpdateSim for the ray-gun form. Freeze is the first user:
+    /// aim while nearly frozen in air, fire on button release, then fly under
+    /// full gravity until the firing animation ends or the recoil lands.
+    fn freeze_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let gun = &data.freeze;
+        // SpriteAnimator precedes GunTransform. The callback therefore exits
+        // on the pass after all authored fire-frame durations have elapsed.
+        if self.players[index].gun.has_fired {
+            if self.players[index].gun.fire_ticks == 0 {
+                self.exit_freeze_animation(index);
+                return;
+            }
+            self.players[index].gun.fire_ticks -= 1;
+        }
+
+        let direction = action.direction();
+        if direction != Vec2::ZERO {
+            self.players[index].gun.aim = direction.normalized();
+        }
+        let slot_button = 2u8 << self.players[index].active_slot;
+
+        // PlayerPhysics.Move(zero) runs before the release test.
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
+            self.fire_freeze(index, data);
+            // A water-reflected beam can hit the shooter's own Player-layer
+            // form. Shoot then exits and freezes the restored slime; the
+            // deactivated GunTransform returns before movement/recoil logic.
+            if self.players[index].active != ActiveAbility::Freeze {
+                return;
+            }
+        }
+
+        let invalid_ground = self.players[index].base.grounded
+            && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
+                || self.players[index].base.ground.is_none()
+                || self.players[index]
+                    .base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .is_none());
+        if invalid_ground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+
+        if !self.players[index].base.grounded {
+            let gravity_modifier = if self.players[index].gun.has_fired {
+                Fix::ONE
+            } else {
+                Fix::from_f32(0.03)
+            };
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                gun.constants.gravity_accel,
+                gravity_modifier,
+                gun.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid freeze-ray gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded && slot.gun.has_fired {
+                bow_exit(slot, terrain!(self));
+                return;
+            }
+        }
+
+        let slot = &mut self.players[index];
+        if !slot.gun.has_fired {
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
+            if slot.base.velocity.length() > gun.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * gun.max_slow_mo_speed;
+            }
+        } else {
+            let before = slot.base.velocity;
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                direction.x,
+                gun.constants.air_accel,
+                gun.constants.max_speed,
+            )
+            .expect("valid freeze-ray air constants");
+            let after = slot.base.velocity;
+            slot.base.velocity =
+                before * (Fix::ONE - gun.air_control_blend) + after * gun.air_control_blend;
+        }
+        if slot.base.velocity.length() > gun.constants.max_speed {
+            slot.base.velocity = slot.base.velocity.normalized() * gun.constants.max_speed;
+        }
+        if !slot.base.grounded {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+    }
+
+    fn fire_freeze(&mut self, index: usize, data: &data::RolloutData) {
+        let (aim, grounded, normal) = {
+            let slot = &self.players[index];
+            (
+                slot.gun.aim.normalized_safe(),
+                slot.base.grounded,
+                slot.base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .map(|p| p.surface.normal(slot.base.position)),
+            )
+        };
+        {
+            let slot = &mut self.players[index];
+            slot.gun.has_fired = true;
+            slot.gun.fire_ticks = data.freeze.fire_ticks;
+            slot.base.up = aim.perp();
+            slot.base.rotation = aim.normalized_angle();
+        }
+        let firepoint = {
+            let slot = &self.players[index];
+            slot.base.position
+                + slot.base.up * data.freeze.firepoint_offset.y
+                + aim * data.freeze.firepoint_offset.x
+        };
+        self.shoot_freeze_ray(firepoint, aim, data);
+        if self.players[index].active != ActiveAbility::Freeze {
+            return;
+        }
+
+        let slot = &mut self.players[index];
+        if grounded {
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.freeze.knockback);
+            slot.base.force_unground(&self.platforms);
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+        } else {
+            slot.base.velocity = -(aim * data.freeze.knockback);
+        }
+    }
+
+    fn shoot_freeze_ray(&mut self, origin: Vec2, direction: Vec2, data: &data::RolloutData) {
+        self.shoot_freeze_ray_pass(origin, direction, data, false);
+    }
+
+    fn shoot_freeze_ray_pass(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        data: &data::RolloutData,
+        already_hit_water: bool,
+    ) {
+        let max_distance = Fix::from_int(100);
+        let mask = if already_hit_water {
+            data.freeze.collision_mask_no_water
+        } else {
+            data.freeze.collision_mask
+        };
+        let terrain = terrain!(self);
+        let mut nearest = if mask & (1 << LAYER_WALL) != 0 {
+            crate::world::closest(terrain, origin, direction, max_distance, None)
+                .map_or(max_distance, |(_, distance, _)| distance)
+        } else {
+            max_distance
+        };
+        let mut victim = None;
+        let mut water_hit = false;
+        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
+            let map = &data.maps[self.map];
+            let water = OrientedBox::from_basis(
+                map.water_position,
+                Vec2::RIGHT,
+                data::surface_extents(map.water_extents),
+            );
+            if let Some(hit) = water.raycast(origin, direction)
+                && hit.near < nearest
+                && hit.near <= max_distance
+            {
+                nearest = hit.near;
+                water_hit = true;
+            }
+        }
+        if mask & (1 << LAYER_PLAYER) != 0 {
+            // Registered collider order is player/prefab order. Strictly
+            // closer hits replace the current one, preserving that tie-break.
+            for target in 0..self.players.len() {
+                if !self.playable(target) {
+                    continue;
+                }
+                let slot = &self.players[target];
+                let entity = match slot.active {
+                    ActiveAbility::None => slot.body_entity,
+                    ActiveAbility::Dash => slot.dash_entity,
+                    ActiveAbility::Bow => slot.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => slot.throw_entity,
+                    ActiveAbility::Mine => slot.mine_entity,
+                    ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Push => slot.push_entity,
+                    ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::TimeStop => slot.time_stop_entity,
+                    ActiveAbility::Gust => slot.gust_entity,
+                    ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::Platform => slot.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let hit = if row.kind == 0 {
+                    Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near)
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    OrientedBox {
+                        center,
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near)
+                };
+                if let Some(distance) = hit
+                    && distance < nearest
+                    && distance <= max_distance
+                {
+                    nearest = distance;
+                    victim = Some(target);
+                    water_hit = false;
+                }
+            }
+        }
+        if water_hit {
+            self.shoot_freeze_ray_pass(
+                origin + direction * nearest,
+                Vec2::new(direction.x, -direction.y),
+                data,
+                true,
+            );
+            return;
+        }
+        if let Some(victim) = victim {
+            if self.players[victim].active != ActiveAbility::None
+                || self.players[victim].base.dash.active
+            {
+                self.exit_form_for_freeze(victim, data);
+            }
+            self.begin_freeze(victim, data.freeze.freeze_seconds);
+        }
+    }
+
+    fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[victim];
+        // FreezeRayGun calls Ability.ExitAbility directly with a default
+        // packet containing only the form position and facing-right flag.
+        // The concrete form's normal exit callback does not run.
+        slot.active = ActiveAbility::None;
+        slot.base.dash.active = false;
+        slot.base.radius = data.player.radius;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.facing_right = true;
+        slot.exit_to_fall();
+        slot.base.collision_rays(terrain!(self));
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
+    fn begin_freeze(&mut self, victim: usize, duration: Fix) {
+        let freeze_position = self.players[victim].base.position;
+        self.next_spawn_hierarchy += data::get().freeze.frozen_updatable_count;
+        self.frozen_solids.push(FrozenSolidState {
+            active: true,
+            born_tick: self.tick,
+            victim,
+            freeze_left: duration,
+            freeze_position,
+        });
+        let slot = &mut self.players[victim];
+        slot.ragdoll = RagdollState {
+            active: true,
+            skip_physics: true,
+            time: Fix::ZERO,
+            duration: duration + Fix::ONE,
+        };
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.force_unground(&self.platforms);
+    }
+
+    fn ragdoll_player_tick(&mut self, index: usize, _data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        // SlimeController.OldUpdate advances all cooldowns before its
+        // ragdoll-state early return suppresses PlayerPhysics.Move.
+        for timer in &mut slot.timers {
+            *timer += DT;
+        }
+        if slot.ragdoll.skip_physics {
+            slot.ragdoll.skip_physics = false;
+        } else if !slot.base.grounded {
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                slot.base.constants.gravity_accel,
+                slot.base.constants.gravity_modifier,
+                slot.base.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid ragdoll gravity constants");
+            slot.base.collision_rays(terrain!(self));
+        }
+        // SlimeController publishes Player.Position after PlayerPhysics. A
+        // landing ray can move the body before that publication.
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+        if slot.base.grounded {
+            // AttachToGround switches a ragdoll straight into the land state
+            // before SlimeController.UpdateSim, which then performs its
+            // ordinary grounded Move in this same pass.
+            slot.ragdoll.active = false;
+            slot.obs_state = STATE_FALL;
+            slot.state_ticks = 0;
+            slot.base
+                .move_only(slot.last_movement_input, terrain!(self));
+        }
+        slot.ragdoll.time += DT;
+        if slot.ragdoll.active && slot.ragdoll.time > slot.ragdoll.duration {
+            slot.ragdoll.active = false;
+            slot.base.external_velocity += slot.base.velocity;
+            slot.base.velocity = Vec2::ZERO;
+            slot.exit_to_fall();
+            slot.base
+                .move_only(slot.last_movement_input, terrain!(self));
+        }
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
+    }
+
+    fn frozen_solids_tick(&mut self, updater_dt: Fix) {
+        for effect_index in 0..self.frozen_solids.len() {
+            let effect = self.frozen_solids[effect_index];
+            if !effect.active || self.tick <= effect.born_tick {
+                continue;
+            }
+            if !self.playable(effect.victim) {
+                self.frozen_solids[effect_index].active = false;
+                continue;
+            }
+            let slot = &mut self.players[effect.victim];
+            slot.base.position = effect.freeze_position;
+            slot.base.velocity = Vec2::ZERO;
+            slot.obs_state = STATE_RAGDOLL;
+            slot.ragdoll = RagdollState {
+                active: true,
+                skip_physics: true,
+                time: Fix::ZERO,
+                duration: Fix::ONE,
+            };
+            let state = &mut self.frozen_solids[effect_index];
+            state.freeze_left -= updater_dt;
+            if state.freeze_left <= Fix::ZERO {
+                state.active = false;
+                slot.ragdoll.duration = Fix::from_f32(0.35);
+                slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+                // FixTransform.right = normalized release speed.
+                slot.base.rotation = Vec2::UP.normalized_angle();
+                slot.base.up = Vec2::UP.perp();
+                slot.timers.fill(Fix::ZERO);
+            }
+        }
+    }
+
+    fn exit_freeze_animation(&mut self, index: usize) {
+        let terrain = terrain!(self);
+        let slot = &mut self.players[index];
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.base.force_unground(terrain.platforms);
+        slot.active = ActiveAbility::None;
+        slot.exit_to_fall();
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+        slot.base.ground = None;
+        slot.base.collision_rays(terrain);
     }
 
     /// BowTransform.OldUpdate + UpdateSim for one tick: aim tracking, the
@@ -7502,6 +8043,7 @@ impl RolloutWorld {
                     ActiveAbility::Mine => player.mine_entity,
                     ActiveAbility::Rock => player.rock_entity,
                     ActiveAbility::Push => player.push_entity,
+                    ActiveAbility::Freeze => player.freeze_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
@@ -8769,6 +9311,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.push_entity,
+                slot.freeze_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -8824,6 +9367,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.push_entity,
+                slot.freeze_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -8871,6 +9415,7 @@ impl RolloutWorld {
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.push_entity,
+                slot.freeze_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -9196,6 +9741,7 @@ impl RolloutWorld {
                 mine_e,
                 rock_e,
                 push_e,
+                freeze_e,
                 gust_e,
                 revival_e,
                 spike_e,
@@ -9211,6 +9757,7 @@ impl RolloutWorld {
                     s.mine_entity,
                     s.rock_entity,
                     s.push_entity,
+                    s.freeze_entity,
                     s.gust_entity,
                     s.revival_entity,
                     s.spike_entity,
@@ -9227,6 +9774,7 @@ impl RolloutWorld {
             let mining = slot.active == ActiveAbility::Mine;
             let rocking = slot.active == ActiveAbility::Rock;
             let pushing = slot.active == ActiveAbility::Push;
+            let freezing = slot.active == ActiveAbility::Freeze;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -9536,6 +10084,49 @@ impl RolloutWorld {
                     push_box.up_x = collider.up.x.raw();
                     push_box.up_y = collider.up.y.raw();
                     push_box.rotation = rotation.raw();
+                }
+            }
+            if freeze_e != usize::MAX {
+                let freeze_box = &mut self.entities[freeze_e];
+                let was_active = freeze_box.flags & E_ACTIVE != 0;
+                freeze_box.flags = if alive && freezing {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if freezing {
+                    freeze_box.owner = slot.base.id;
+                }
+                if (alive && freezing) || was_active {
+                    let (root, rotation) = if freezing {
+                        (synced, slot.gun.aim.normalized_angle())
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    let basis = Vec2::angle(rotation);
+                    // DPhysicsBox translates its authored offset with the
+                    // exact FixTransform basis copied/assigned by GunTransform,
+                    // while its axes are rebuilt from the scalar angle.
+                    let offset_basis = if freezing {
+                        slot.gun.collider_up.perp_cw()
+                    } else {
+                        basis
+                    };
+                    let center = root + offset_basis.complex_mul(data.freeze.collider_offset);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(data.freeze.hurtbox_extents),
+                    );
+                    freeze_box.x = center.x.raw();
+                    freeze_box.y = center.y.raw();
+                    freeze_box.vx = 0;
+                    freeze_box.vy = 0;
+                    freeze_box.right_x = collider.right.x.raw();
+                    freeze_box.right_y = collider.right.y.raw();
+                    freeze_box.up_x = collider.up.x.raw();
+                    freeze_box.up_y = collider.up.y.raw();
+                    freeze_box.rotation = rotation.raw();
                 }
             }
             // The Platform ability's hurtbox circle is live during
