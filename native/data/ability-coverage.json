@@ -37,7 +37,8 @@
       "name": "Bow",
       "prefab": "Assets/GameObject/Bow.prefab",
       "prefab_guid": "39014498316c3ea4fa825e8bba01c406",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Executable BowTransform and arrows are covered by bow_ab, bow_phase_ab, bow_ground_exit_ab, ability_hitbox_ab, dash_arrow_ab, arrow_bounds_ab and the seeded 300-episode fidelity gate. The Q32 form matches charge flags and launch timing, active hurtbox contacts, grounded/airborne entry and exit order, landing, boundary death, projectile eviction, ownership and stock reconstruction. Remaining gaps are composed projectile interactions and cosmetic retained-arrow child history."
     },
     {
       "id": 5,
@@ -115,7 +116,8 @@
       "name": "Platform",
       "prefab": "Assets/GameObject/Platform.prefab",
       "prefab_guid": "69401f310afcfa94a84da50ccfc4b638",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Executable PlatformTransform and ResizablePlatform are covered by platform_ab, platform_phase_ab, platform_rotation_ab, platform_boundary_ab, platform collision scenarios and the seeded 300-episode fidelity gate. The Q32 path reproduces anticipation, sizing, spawn/recast, active hurtbox contacts, platform physics/riding, landing, boundary death and stock reconstruction. Remaining differences are small chaotic contact-loaded platform trajectories and interactions with unsupported abilities."
     },
     {
       "id": 15,
