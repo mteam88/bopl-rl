@@ -574,6 +574,9 @@ impl Player {
         self.apply_ground_state(motion);
     }
     fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {
+        self.move_grounded_scaled(input, Fix::ONE, terrain);
+    }
+    fn move_grounded_scaled(&mut self, input: Vec2, speed_scale: Fix, terrain: Terrain) {
         let (platform_index, platform) = self.platform_indexed(terrain.platforms).unwrap();
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
@@ -602,7 +605,7 @@ impl Player {
         }
         // The position has not moved since `normal` was evaluated above.
         self.align_to(normal);
-        let speed = self.grounded_speed + self.external_velocity.dot(forward);
+        let speed = (self.grounded_speed + self.external_velocity.dot(forward)) * speed_scale;
         let velocity = forward * speed;
         // The own platform is excluded from the blocking test; with no other
         // platform near the rays `movement_limit` would return its unblocked
@@ -714,6 +717,22 @@ impl Player {
             self.collision_rays(terrain);
         }
     }
+    /// PlayerPhysics.MachoMove: normal player acceleration with a reduced
+    /// distance around a rounded platform corner.
+    pub(crate) fn macho_move(&mut self, input: Vec2, roundedness: Fix, terrain: Terrain) {
+        if self.grounded {
+            self.move_grounded_scaled(input, roundedness, terrain);
+        } else {
+            crate::player_physics::air_movement(
+                &mut self.velocity,
+                input.x,
+                self.constants.air_accel,
+                self.constants.max_speed,
+            )
+            .expect("valid MachoThrow air constants");
+            self.collision_rays(terrain);
+        }
+    }
     pub(crate) fn outside_bounds(&self) -> bool {
         self.position.y < Fix::from_f32(-11.3)
             || self.position.y > Fix::from_f64(72.5)
@@ -764,6 +783,21 @@ impl Player {
         if self.alive && self.grounded && !self.dash.active {
             let platform = self.platform(platforms).unwrap();
             self.position = platform.surface.position(self.local, self.radius);
+            self.align(platform);
+        }
+    }
+
+    pub(crate) fn late_step_with_shape_radius(
+        &mut self,
+        platforms: &[Platform],
+        shape_radius: Fix,
+    ) {
+        if self.alive && self.grounded && !self.dash.active {
+            let platform = self.platform(platforms).unwrap();
+            self.position =
+                platform
+                    .surface
+                    .position_with_shape_radius(self.local, self.radius, shape_radius);
             self.align(platform);
         }
     }

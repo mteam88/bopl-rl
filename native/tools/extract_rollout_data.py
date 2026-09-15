@@ -171,6 +171,7 @@ def extract_map(index):
                 "scale": ft.get("_scale.m_rawValue", ONE),
                 "extents": vec2(rr, "startExtents"),
                 "radius": fix(rr, "startRadius") if "startRadius.m_rawValue" in rr else fix(rr, "radius"),
+                "min_scale": fix(rr, "MinScale"),
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
                 "animate_velocity": {
@@ -772,6 +773,79 @@ def main():
                 "radius": fix(mine_explosion_waves[0], "radius"),
                 "collision_mask": mine_explosion_waves[0]["collisionMask.m_Bits"],
             },
+        },
+    }
+
+    # ---- Throw / MachoThrow2 platform-to-boulder conversion ----
+    _, macho_ability = find_prefab("Assets/GameObject/Throw.prefab")
+    macho = component(macho_ability, "MachoThrow2")
+    macho_box = component(macho_ability, "DPhysicsBox")
+    macho_fix = component(macho_ability, "FixTransform")
+    macho_phys = component(macho_ability, "PlayerPhysics")
+    macho_anims = animations(guid_of(macho["animData"]))
+    boulder = ASSETS[guid_of(macho["boulderPrefab"])]
+    boulder_rr = component(boulder, "DPhysicsRoundedRect")
+    boulder_body = component(boulder, "BoplBody")
+    boulder_logic = component(boulder, "Boulder")
+    boulder_bounds = component(boulder, "DestroyIfOutsideSceneBounds")
+    boulder_down_effect = ASSETS[guid_of(boulder_bounds["DownEffect"])]
+    macho_smoke = ASSETS[guid_of(macho["smokeEffectPrefab"])]
+    out["prefabs"]["macho_throw"] = {
+        "hurtbox_extents": vec2(macho_box, "startExtents"),
+        "collider_offset": vec2(macho_fix, "offset"),
+        "collider_hierarchy": macho_box["hierarchyNumber"],
+        "physics": {
+            "max_speed": fix(macho_phys, "maxSpeed"),
+            "jump_strength": fix(macho_phys, "jumpStrength"),
+            "accel": fix(macho_phys, "accel"),
+            "radius": fix(macho_phys, "radius"),
+            "gravity_accel": fix(macho_phys, "gravity_accel"),
+            "gravity_max_fall_speed": fix(macho_phys, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(macho_phys, "gravity_modifier"),
+            "jump_extra_x": fix(macho_phys, "jumpExtraXStrength"),
+            "jump_momentum": fix(macho_phys, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(macho_phys, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(macho_phys, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(macho_phys, "airAccel"),
+        },
+        "animations": {name: macho_anims[name] for name in (
+            "enter", "idle", "idleToWalk", "walk", "beginThrow", "exit",
+            "turn", "pickup", "grab",
+        )},
+        "dummy_positions": [vec2(macho, f"dummyPositions.Array.data[{i}]")
+                            for i in range(macho["dummyPositions.Array.size"])],
+        "prepare_positions": [vec2(macho, f"dummyPositionsPrepareThrow.Array.data[{i}]")
+                              for i in range(macho["dummyPositionsPrepareThrow.Array.size"])],
+        "force_from_boulder": fix(macho, "forceFromBoulder"),
+        "smoke_updatable_count": updater_count(macho_smoke),
+        "player_radius_hack": fix(macho, "playerRadiusHack"),
+        "move_after_throw_frames": macho["framesBeforeYouCanMoveAfterThrowing"],
+        "jump_after_throw_frames": macho["framesBeforeYouCanJumpAfterThrowing"],
+        "rotation_velocity": fix(macho, "rotationVelOnThrow"),
+        "ground_angular_multiplier": fix(macho, "angVelMultiplierOnGround01"),
+        "max_attachable_distance": fix(macho, "maxDistToPickupAttachable"),
+        "shrink_after_frames": macho["framesUntilPlatformShrinks"],
+        "projectile_position": vec2(macho, "projectileSpawnPos"),
+        "quick_projectile_position": vec2(macho, "projectileSpawnPos_low"),
+        "throw_speed": fix(macho, "throwSpeed"),
+        "min_throw_vector": vec2(macho, "minThrowVector"),
+        "extra_strength_scale": fix(macho, "proportionOfExtraStrFromScale"),
+        "quick_throw_strength": fix(macho, "quickThrowStr"),
+        "quick_charge_scaling": fix(macho, "quickThrowChargeScaling"),
+        "platform_scale_reduction": fix(macho, "scaleReductionOnGroundPlatform"),
+        "ground_to_hands": fix(macho, "distfromGroundToHands"),
+        "quick_position_swap_frame": macho["spritesBeforeWeSwapToDummyPosition"],
+        "boulder": {
+            "layer": boulder["data"].get("layer"),
+            "updatable_count": updater_count(boulder),
+            "collider_hierarchy": boulder_rr["hierarchyNumber"],
+            "extents": vec2(boulder_rr, "startExtents"),
+            "radius": fix(boulder_rr, "startRadius"),
+            "min_scale": fix(boulder_rr, "MinScale"),
+            "max_scale": fix(boulder_rr, "MaxScale"),
+            "body": physics_body(boulder_body),
+            "dropped_bounciness": fix(boulder_logic, "bouncinessWhenDropped01"),
+            "down_effect_updatable_count": updater_count(boulder_down_effect),
         },
     }
 

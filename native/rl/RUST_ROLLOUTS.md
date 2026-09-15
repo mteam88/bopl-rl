@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Meteor, Shrink ray, Invisibility, Push, Tesla coil, Mine, Teleport, Rewind, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir**
-  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/33/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Meteor, Shrink ray, Invisibility, Throw, Push, Tesla coil, Mine, Teleport, Rewind, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir**
+  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/21/22/23/24/25/31/33/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   collection, third-slot replacement and deferred acquired-ability
   registration. Dedicated collection and final-death goldens cover both
   origins.
-- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -214,6 +214,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   grounded exit reprojects both backends to the exact same platform pose.
   Forces and consumption for standalone projectile/item prefabs still need
   composed differential scenarios as those catalog ports are completed.
+  Throw executes its separate MachoThrow2 form, animation callbacks, movement,
+  eight ground-shrink passes and both release paths. Quick release creates and
+  launches its boulder in one pass; a full pickup holds the zero-velocity body
+  at the animated hand position before applying the authored scale-adjusted
+  launch. Boulders use the common rounded-platform pool, including gravity,
+  torque, collision response, player riding, bounds removal and death/stock
+  reconstruction. Transferring Spike, Engine, Tesla and rope attachments from
+  the consumed platform to the boulder remains open.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain

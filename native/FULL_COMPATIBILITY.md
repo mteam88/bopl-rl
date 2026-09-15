@@ -2400,3 +2400,41 @@ Standalone projectile/item force and consumption paths remain to be exercised
 as their catalog abilities are composed with Black Hole, so coverage is marked
 partial. Hole and contact state reuse capacity-retained vectors and fixed player
 arrays; the tick path adds no allocation.
+
+### Executable Throw form and Macho boulders (2026-09-15)
+
+Catalog id 21 now executes `MachoThrow2` with its separate one-unit-radius
+PlayerPhysics form. Grounded entry recomputes the surface-local pose for the
+larger form, preserves the source velocity channels and facing rule, and runs
+the enter, grab, pickup, idle/walk/turn, begin-throw and exit animator callback
+boundaries. The grab animation applies the source's eight scale reductions to
+the supporting platform. Collider geometry changes immediately while
+`StickyRoundedRectangle` perimeter data refreshes on its later updater pass;
+the non-resizable BoplBody mass and inertia update on that same later pass.
+
+Quick release creates a boulder from the low hand position and launches it in
+the pickup callback pass. Full pickup creates the rounded body at the animated
+dummy position, holds it with zero linear and angular velocity, feeds its prior
+velocity back through `PlayerPhysics.AddForce`, and launches after the authored
+anticipation. Scale clamps, inverse mass, gravity, bounciness, angular velocity
+and strength all come from the pinned prefabs. Boulders share the platform
+arrays and entity pool, so ordinary rounded-body contacts, riders, water
+removal, death callbacks and stock reconstruction see the same body without a
+second collision path or per-tick allocation.
+
+`macho_throw_ability_ab.c` compares two 500-tick NativeAOT/Rust Q32 scenarios.
+Quick release shrinks the ground starting on tick 218 and creates and launches
+the boulder on tick 226. The held path creates the boulder on tick 256,
+launches it on tick 279, kills the owner on tick 461 and registers the stock
+clone on tick 462. Positions, velocities, identities, metadata, contact
+response and lifecycle boundaries match. Repeated reciprocal/multiply updates
+to the shrinking collider axes differ by at most four raw Q32 units
+(9.4e-10 world units); this is below one serialized source coefficient step
+and does not change a contact or branch. The form collider preserves the source
+split where its centre uses the stored FixTransform right vector while its axes
+are rebuilt from scalar rotation.
+
+The source can detach an existing Spike, Engine, Tesla node or rope anchor from
+the consumed platform and reattach it to the held boulder. Those composed
+attachment transfers still require implementation and differential scenarios,
+so coverage remains partial.

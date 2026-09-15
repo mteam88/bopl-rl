@@ -52,6 +52,7 @@ struct RawPlatform {
     scale: i64,
     extents: RawVec2,
     radius: i64,
+    min_scale: i64,
     hierarchy: u32,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
@@ -228,6 +229,7 @@ struct RawPrefabs {
     grenade: RawGrenade,
     missile: RawMissile,
     mine: RawMine,
+    macho_throw: RawMachoThrow,
     rock: RawRock,
     roll: RawRoll,
     meteor: RawMeteor,
@@ -460,6 +462,66 @@ struct RawMine {
     throw_data: RawMineThrow,
     item: RawMineItem,
     explosion: RawMissileExplosion,
+}
+
+#[derive(Deserialize)]
+struct RawMachoThrow {
+    hurtbox_extents: RawVec2,
+    collider_offset: RawVec2,
+    collider_hierarchy: u32,
+    physics: RawPhysics,
+    animations: RawMachoAnimations,
+    dummy_positions: Vec<RawVec2>,
+    prepare_positions: Vec<RawVec2>,
+    force_from_boulder: i64,
+    smoke_updatable_count: u32,
+    player_radius_hack: i64,
+    move_after_throw_frames: u32,
+    jump_after_throw_frames: u32,
+    rotation_velocity: i64,
+    ground_angular_multiplier: i64,
+    max_attachable_distance: i64,
+    shrink_after_frames: u32,
+    projectile_position: RawVec2,
+    quick_projectile_position: RawVec2,
+    throw_speed: i64,
+    min_throw_vector: RawVec2,
+    extra_strength_scale: i64,
+    quick_throw_strength: i64,
+    quick_charge_scaling: i64,
+    platform_scale_reduction: i64,
+    ground_to_hands: i64,
+    quick_position_swap_frame: u32,
+    boulder: RawMachoBoulder,
+}
+
+#[derive(Deserialize)]
+struct RawMachoAnimations {
+    enter: Vec<i32>,
+    idle: Vec<i32>,
+    #[serde(rename = "idleToWalk")]
+    idle_to_walk: Vec<i32>,
+    walk: Vec<i32>,
+    #[serde(rename = "beginThrow")]
+    begin_throw: Vec<i32>,
+    exit: Vec<i32>,
+    turn: Vec<i32>,
+    pickup: Vec<i32>,
+    grab: Vec<i32>,
+}
+
+#[derive(Deserialize)]
+struct RawMachoBoulder {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    radius: i64,
+    min_scale: i64,
+    max_scale: i64,
+    body: RawBody,
+    dropped_bounciness: i64,
+    down_effect_updatable_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -925,6 +987,7 @@ pub struct PlatformDef {
     /// surface carries the perimeter's `One / (One / e)` reading instead.
     pub collider_extents: Vec2,
     pub hierarchy: u32,
+    pub min_scale: Fix,
     /// AnimateVelocity home spring (speed * (home - position)) and damping
     /// (-mu * velocity).
     pub speed: Fix,
@@ -1219,6 +1282,59 @@ pub struct MineData {
     pub explosion_extents: Vec2,
     pub explosion_animation_ticks: u32,
     pub explosion_shockwave: ExplosionShockwaveData,
+}
+
+pub struct MachoThrowData {
+    pub hurtbox_extents: Vec2,
+    pub collider_offset: Vec2,
+    pub collider_hierarchy: u32,
+    pub physics_radius: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub enter_ticks: u32,
+    pub idle_ticks: u32,
+    pub idle_to_walk_ticks: u32,
+    pub walk_ticks: u32,
+    pub begin_throw_ticks: u32,
+    pub exit_ticks: u32,
+    pub turn_ticks: u32,
+    pub pickup_ticks: u32,
+    pub grab_ticks: u32,
+    pub enter_frame_ticks: Vec<u32>,
+    pub grab_frame_ticks: Vec<u32>,
+    pub dummy_frame_ticks: Vec<u32>,
+    pub dummy_positions: Vec<Vec2>,
+    pub prepare_frame_ticks: Vec<u32>,
+    pub prepare_positions: Vec<Vec2>,
+    pub exit_frame_ticks: Vec<u32>,
+    pub force_from_boulder: Fix,
+    pub smoke_updatable_count: u32,
+    pub player_radius_hack: Fix,
+    pub move_after_throw_frames: u32,
+    pub jump_after_throw_frames: u32,
+    pub rotation_velocity: Fix,
+    pub ground_angular_multiplier: Fix,
+    pub max_attachable_distance: Fix,
+    pub shrink_after_frames: u32,
+    pub projectile_position: Vec2,
+    pub quick_projectile_position: Vec2,
+    pub throw_speed: Fix,
+    pub min_throw_vector: Vec2,
+    pub extra_strength_scale: Fix,
+    pub quick_throw_strength: Fix,
+    pub quick_charge_scaling: Fix,
+    pub platform_scale_reduction: Fix,
+    pub ground_to_hands: Fix,
+    pub quick_position_swap_frame: u32,
+    pub boulder_layer: u32,
+    pub boulder_updatable_count: u32,
+    pub boulder_collider_hierarchy: u32,
+    pub boulder_extents: Vec2,
+    pub boulder_radius: Fix,
+    pub boulder_min_scale: Fix,
+    pub boulder_max_scale: Fix,
+    pub boulder_body: crate::physics::Body,
+    pub boulder_dropped_bounciness: Fix,
+    pub boulder_down_effect_updatable_count: u32,
 }
 
 pub struct RockData {
@@ -1619,6 +1735,7 @@ pub struct RolloutData {
     pub grenade: GrenadeData,
     pub missile: MissileData,
     pub mine: MineData,
+    pub macho_throw: MachoThrowData,
     pub rock: RockData,
     pub roll: RollData,
     pub meteor: MeteorData,
@@ -1755,6 +1872,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                 },
                 collider_extents,
                 hierarchy: p.hierarchy,
+                min_scale: Fix::from_raw(p.min_scale),
                 speed: Fix::from_raw(p.animate_velocity.speed),
                 mu: Fix::from_raw(p.animate_velocity.mu),
                 rotation_speed: Fix::from_raw(p.animate_velocity.rotation_speed),
@@ -2176,6 +2294,71 @@ pub fn get() -> &'static RolloutData {
                         radius: Fix::from_raw(mine.explosion.shockwave.radius),
                         collision_mask: mine.explosion.shockwave.collision_mask,
                     },
+                }
+            },
+            macho_throw: {
+                let macho = &raw.prefabs.macho_throw;
+                let cumulative = |frames: &[i32]| {
+                    let mut elapsed = 0u32;
+                    frames
+                        .iter()
+                        .map(|duration| {
+                            elapsed += duration.unsigned_abs();
+                            elapsed
+                        })
+                        .collect()
+                };
+                MachoThrowData {
+                    hurtbox_extents: macho.hurtbox_extents.get(),
+                    collider_offset: macho.collider_offset.get(),
+                    collider_hierarchy: macho.collider_hierarchy,
+                    physics_radius: Fix::from_raw(macho.physics.radius),
+                    constants: constants(&macho.physics),
+                    enter_ticks: ticks(&macho.animations.enter),
+                    idle_ticks: ticks(&macho.animations.idle),
+                    idle_to_walk_ticks: ticks(&macho.animations.idle_to_walk),
+                    walk_ticks: ticks(&macho.animations.walk),
+                    begin_throw_ticks: ticks(&macho.animations.begin_throw),
+                    exit_ticks: ticks(&macho.animations.exit),
+                    turn_ticks: ticks(&macho.animations.turn),
+                    pickup_ticks: ticks(&macho.animations.pickup),
+                    grab_ticks: ticks(&macho.animations.grab),
+                    enter_frame_ticks: cumulative(&macho.animations.enter),
+                    grab_frame_ticks: cumulative(&macho.animations.grab),
+                    dummy_frame_ticks: cumulative(&macho.animations.pickup),
+                    dummy_positions: macho.dummy_positions.iter().map(RawVec2::get).collect(),
+                    prepare_frame_ticks: cumulative(&macho.animations.begin_throw),
+                    prepare_positions: macho.prepare_positions.iter().map(RawVec2::get).collect(),
+                    exit_frame_ticks: cumulative(&macho.animations.exit),
+                    force_from_boulder: Fix::from_raw(macho.force_from_boulder),
+                    smoke_updatable_count: macho.smoke_updatable_count,
+                    player_radius_hack: Fix::from_raw(macho.player_radius_hack),
+                    move_after_throw_frames: macho.move_after_throw_frames,
+                    jump_after_throw_frames: macho.jump_after_throw_frames,
+                    rotation_velocity: Fix::from_raw(macho.rotation_velocity),
+                    ground_angular_multiplier: Fix::from_raw(macho.ground_angular_multiplier),
+                    max_attachable_distance: Fix::from_raw(macho.max_attachable_distance),
+                    shrink_after_frames: macho.shrink_after_frames,
+                    projectile_position: macho.projectile_position.get(),
+                    quick_projectile_position: macho.quick_projectile_position.get(),
+                    throw_speed: Fix::from_raw(macho.throw_speed),
+                    min_throw_vector: macho.min_throw_vector.get(),
+                    extra_strength_scale: Fix::from_raw(macho.extra_strength_scale),
+                    quick_throw_strength: Fix::from_raw(macho.quick_throw_strength),
+                    quick_charge_scaling: Fix::from_raw(macho.quick_charge_scaling),
+                    platform_scale_reduction: Fix::from_raw(macho.platform_scale_reduction),
+                    ground_to_hands: Fix::from_raw(macho.ground_to_hands),
+                    quick_position_swap_frame: macho.quick_position_swap_frame,
+                    boulder_layer: macho.boulder.layer,
+                    boulder_updatable_count: macho.boulder.updatable_count,
+                    boulder_collider_hierarchy: macho.boulder.collider_hierarchy,
+                    boulder_extents: macho.boulder.extents.get(),
+                    boulder_radius: Fix::from_raw(macho.boulder.radius),
+                    boulder_min_scale: Fix::from_raw(macho.boulder.min_scale),
+                    boulder_max_scale: Fix::from_raw(macho.boulder.max_scale),
+                    boulder_body: body(&macho.boulder.body, Fix::ZERO),
+                    boulder_dropped_bounciness: Fix::from_raw(macho.boulder.dropped_bounciness),
+                    boulder_down_effect_updatable_count: macho.boulder.down_effect_updatable_count,
                 }
             },
             rock: RockData {

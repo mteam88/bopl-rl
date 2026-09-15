@@ -55,6 +55,7 @@ pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_ROLL: u32 = 16;
 pub const ABILITY_SHRINK_RAY: u32 = 17;
 pub const ABILITY_BLACK_HOLE: u32 = 18;
+pub const ABILITY_THROW: u32 = 21;
 pub const ABILITY_METEOR: u32 = 20;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_PUSH: u32 = 22;
@@ -940,6 +941,17 @@ pub struct SpawnedPlatform {
 #[derive(Clone, Copy, Default)]
 pub struct PlatformDynamics {
     pub body: Body,
+    /// DPhysicsRoundedRect.Scale and its authored lower clamp. MachoThrow2
+    /// mutates these while excavating a Boulder from the attached platform.
+    pub scale: Fix,
+    /// BoplBody.prevScale. Non-resizable bodies update inverse mass and
+    /// inertia on the updater pass after DPhysics changes FixTransform scale.
+    pub body_scale: Fix,
+    pub body_resizable: bool,
+    pub min_scale: Fix,
+    /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
+    /// the pass after a later MachoThrow2 scale write.
+    pub surface_shape_dirty: bool,
     /// The rounded rectangle's own serialized body. `body` becomes the
     /// effective CompositeBody while SpikeAttack children are attached; the
     /// observation bridge still exports this child body unchanged.
@@ -1214,6 +1226,37 @@ pub struct BlackHoleState {
     pub radius: Fix,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct MachoThrowState {
+    /// MachoThrow2.ThrowState: enter, pickup, idle, walk, turn,
+    /// throwAnticipation, exit.
+    pub phase: u8,
+    pub ticks: u32,
+    pub released: bool,
+    pub grabbing_dirt: bool,
+    pub facing_right: bool,
+    pub current_dummy_pos: Vec2,
+    pub held_boulder: Option<usize>,
+    pub collider_position: Vec2,
+    pub collider_right: Vec2,
+    pub collider_rotation: Fix,
+    pub collider_basis: Vec2,
+}
+
+/// A Boulder prefab created by MachoThrow2. Its rounded rectangle lives in
+/// the common platform arrays so all platform contacts and riders see it.
+#[derive(Clone, Copy, Default)]
+pub struct MachoBoulder {
+    pub active: bool,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub ability_generation: u32,
+    pub platform_index: usize,
+    pub born_tick: u32,
+    pub held: bool,
+    pub dropped: bool,
+}
+
 /// A RevivePositionIndicator spawned by one Revival ability instance.
 #[derive(Clone, Copy, Default)]
 pub struct RevivalMarker {
@@ -1296,6 +1339,7 @@ pub enum ActiveAbility {
     Gust,
     Revival,
     BlackHole,
+    Throw,
     Platform,
 }
 
@@ -1404,6 +1448,7 @@ pub struct PlayerSlot {
     pub gust: GustState,
     pub revival: RevivalState,
     pub black_hole_cast: BlackHoleCastState,
+    pub macho_throw: MachoThrowState,
     /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
     /// to the equipped prefab instance, so duplicate slots are independent.
     pub black_hole_castable: [bool; 3],
@@ -1483,6 +1528,7 @@ pub struct PlayerSlot {
     pub tesla_entity: usize,
     pub meteor_entity: usize,
     pub black_hole_entity: usize,
+    pub macho_throw_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1567,6 +1613,7 @@ pub struct RolloutWorld {
     pub arrows: Vec<Arrow>,
     pub ability_pickups: Vec<AbilityPickup>,
     pub black_holes: Vec<BlackHoleState>,
+    pub macho_boulders: Vec<MachoBoulder>,
     pub thrown_items: Vec<ThrownItem>,
     pub guided_missiles: Vec<GuidedMissile>,
     pub missile_explosions: Vec<MissileExplosion>,
@@ -1658,6 +1705,7 @@ impl RolloutWorld {
             arrows: Vec::with_capacity(64),
             ability_pickups: Vec::with_capacity(4),
             black_holes: Vec::with_capacity(16),
+            macho_boulders: Vec::with_capacity(16),
             thrown_items: Vec::with_capacity(64),
             guided_missiles: Vec::with_capacity(64),
             missile_explosions: Vec::with_capacity(64),
@@ -1735,6 +1783,7 @@ impl RolloutWorld {
         self.arrows.clone_from(&src.arrows);
         self.ability_pickups.clone_from(&src.ability_pickups);
         self.black_holes.clone_from(&src.black_holes);
+        self.macho_boulders.clone_from(&src.macho_boulders);
         self.thrown_items.clone_from(&src.thrown_items);
         self.guided_missiles.clone_from(&src.guided_missiles);
         self.missile_explosions.clone_from(&src.missile_explosions);
@@ -1809,6 +1858,7 @@ impl RolloutWorld {
             arrows: _,
             ability_pickups: _,
             black_holes: _,
+            macho_boulders: _,
             thrown_items: _,
             guided_missiles: _,
             missile_explosions: _,
@@ -1909,6 +1959,7 @@ impl RolloutWorld {
         self.arrows.clear();
         self.ability_pickups.clear();
         self.black_holes.clear();
+        self.macho_boulders.clear();
         self.thrown_items.clear();
         self.guided_missiles.clear();
         self.missile_explosions.clear();
@@ -2006,6 +2057,7 @@ impl RolloutWorld {
         let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
         let mut meteor_entity = [usize::MAX; MAX_PLAYERS];
         let mut black_hole_entity = [usize::MAX; MAX_PLAYERS];
+        let mut macho_throw_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -2204,6 +2256,14 @@ impl RolloutWorld {
                             &mut black_hole_entity[i],
                             false,
                         ),
+                        ABILITY_THROW => (
+                            data::surface_extents(data.macho_throw.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.macho_throw.collider_hierarchy,
+                            &mut macho_throw_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -2227,6 +2287,7 @@ impl RolloutWorld {
                             | ABILITY_SHRINK_RAY
                             | ABILITY_METEOR
                             | ABILITY_BLACK_HOLE
+                            | ABILITY_THROW
                     ) {
                         E_ENABLED | E_TRIGGER
                     } else {
@@ -2251,6 +2312,8 @@ impl RolloutWorld {
                         data.meteor.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
                         data.black_hole.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_THROW {
+                        data.macho_throw.collider_offset.x.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2282,6 +2345,8 @@ impl RolloutWorld {
                         data.meteor.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_BLACK_HOLE {
                         data.black_hole.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_THROW {
+                        data.macho_throw.collider_offset.y.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2325,6 +2390,11 @@ impl RolloutWorld {
             ));
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
+                scale: Fix::ONE,
+                body_scale: Fix::ONE,
+                body_resizable: false,
+                min_scale: p.min_scale,
+                surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
                 composite_position: p.surface.center,
@@ -2489,6 +2559,7 @@ impl RolloutWorld {
                 gust: GustState::default(),
                 revival: RevivalState::default(),
                 black_hole_cast: BlackHoleCastState::default(),
+                macho_throw: MachoThrowState::default(),
                 black_hole_castable: [true; 3],
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
@@ -2540,6 +2611,7 @@ impl RolloutWorld {
                 tesla_entity: tesla_entity[i],
                 meteor_entity: meteor_entity[i],
                 black_hole_entity: black_hole_entity[i],
+                macho_throw_entity: macho_throw_entity[i],
             });
         }
 
@@ -3000,6 +3072,12 @@ impl RolloutWorld {
                 data.black_hole.collider_hierarchy,
                 13,
             )),
+            ABILITY_THROW => Some((
+                data::surface_extents(data.macho_throw.hurtbox_extents),
+                data.macho_throw.collider_offset,
+                data.macho_throw.collider_hierarchy,
+                14,
+            )),
             _ => None,
         };
         let Some((extents, offset, relative_hierarchy, target)) = box_data else {
@@ -3035,7 +3113,8 @@ impl RolloutWorld {
             10 => slot.engine_entity = entity,
             11 => slot.tesla_entity = entity,
             12 => slot.meteor_entity = entity,
-            _ => slot.black_hole_entity = entity,
+            13 => slot.black_hole_entity = entity,
+            _ => slot.macho_throw_entity = entity,
         }
     }
 
@@ -3406,6 +3485,7 @@ impl RolloutWorld {
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
         self.black_holes_tick(data, updater_dt);
+        self.macho_boulders_tick(data);
         self.rewind_recorders_tick();
         // SuperStarEffect prefabs spawned during a slime update join the
         // updater list on the following tick. Once live they run after player
@@ -3473,7 +3553,8 @@ impl RolloutWorld {
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival
-                    | ActiveAbility::BlackHole => true,
+                    | ActiveAbility::BlackHole
+                    | ActiveAbility::Throw => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -3507,6 +3588,22 @@ impl RolloutWorld {
                     self.players[index].gun.collider_up = self.players[index].base.up;
                 }
                 self.players[index].base.sync_collider();
+                if self.players[index].active == ActiveAbility::Throw {
+                    let (position, right, rotation, basis) = {
+                        let base = &self.players[index].base;
+                        (
+                            base.position,
+                            base.up.perp_cw(),
+                            base.collider_rotation,
+                            base.collider_basis,
+                        )
+                    };
+                    let collider = &mut self.players[index].macho_throw;
+                    collider.collider_position = position;
+                    collider.collider_right = right;
+                    collider.collider_rotation = rotation;
+                    collider.collider_basis = basis;
+                }
             }
             let input = action.input_direction(self.players[index].keyboard);
             self.update_obs_state(index, input);
@@ -3529,6 +3626,7 @@ impl RolloutWorld {
                     slot.roll_entity,
                     slot.meteor_entity,
                     slot.black_hole_entity,
+                    slot.macho_throw_entity,
                     slot.push_entity,
                     slot.freeze_entity,
                     slot.growth_ray_entity,
@@ -3566,15 +3664,31 @@ impl RolloutWorld {
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
         // synced above until the next Simulate.
-        for slot in &mut self.players {
-            if slot.base.alive
-                && slot.base.grounded
-                && slot.removed_ground_normal.is_none()
-                && !slot.rewind.rewinding
+        for index in 0..self.players.len() {
+            let slot = &self.players[index];
+            if !slot.base.alive
+                || !slot.base.grounded
+                || slot.removed_ground_normal.is_some()
+                || slot.rewind.rewinding
             {
-                slot.base.late_step(&self.platforms);
+                continue;
+            }
+            let live_radius = slot.base.ground.and_then(|ground| {
+                self.platforms
+                    .iter()
+                    .position(|platform| platform.id == ground)
+                    .filter(|&platform| self.platform_dynamics[platform].surface_shape_dirty)
+                    .map(|platform| self.platforms[platform].collider.radius)
+            });
+            if let Some(radius) = live_radius {
+                self.players[index]
+                    .base
+                    .late_step_with_shape_radius(&self.platforms, radius);
+            } else {
+                self.players[index].base.late_step(&self.platforms);
             }
         }
+        self.macho_late_tick(data);
         self.mines_late_tick(data);
         self.rocks_late_tick(data);
         self.tick += 1;
@@ -4469,6 +4583,58 @@ impl RolloutWorld {
                         self.black_hole_form_motion(index);
                         return;
                     }
+                    ABILITY_THROW => {
+                        let ground = self.players[index].base.ground;
+                        let form_position = ground
+                            .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                            .map_or(self.players[index].base.position, |platform| {
+                                platform.surface.position(
+                                    self.players[index].base.local,
+                                    data.macho_throw.physics_radius,
+                                )
+                            });
+                        let mut facing_right = self.players[index].facing_right;
+                        if let Some(platform) = ground
+                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+                        {
+                            let aim = action.direction();
+                            let dot = platform.surface.normal(form_position).perp_cw().dot(aim);
+                            if dot > Fix::ZERO {
+                                facing_right = true;
+                            } else if dot < Fix::ZERO {
+                                facing_right = false;
+                            }
+                        }
+                        if let Some(platform_index) = ground.and_then(|id| {
+                            self.platforms.iter().position(|platform| platform.id == id)
+                        }) && self.macho_boulders.iter().any(|boulder| {
+                            boulder.active && boulder.platform_index == platform_index
+                        }) {
+                            self.platform_dynamics[platform_index].body.angular_velocity *=
+                                data.macho_throw.ground_angular_multiplier;
+                            self.platforms_changed();
+                        }
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Throw;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.macho_throw = MachoThrowState {
+                            phase: 0,
+                            // The ability prefab is registered after the
+                            // original slime, so its SpriteAnimator still
+                            // receives the entry tick after OnEnterAbility.
+                            ticks: 1,
+                            facing_right,
+                            ..MachoThrowState::default()
+                        };
+                        slot.base.position = form_position;
+                        slot.base.radius = data.macho_throw.physics_radius;
+                        slot.base.constants = data.macho_throw.constants.clone();
+                        self.macho_throw_tick(index, action, false, false, data);
+                        return;
+                    }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
@@ -4609,6 +4775,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::BlackHole {
             self.black_hole_cast_tick(index, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Throw {
+            self.macho_throw_tick(index, action, jump_pressed, true, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
@@ -6685,6 +6855,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
+                    ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -6821,6 +6992,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
+                    ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -7322,6 +7494,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => player.gust_entity,
                     ActiveAbility::Revival => player.revival_entity,
                     ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Throw => player.macho_throw_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -7377,6 +7550,585 @@ impl RolloutWorld {
                     true,
                     false,
                 );
+            }
+        }
+    }
+
+    fn macho_animation_frame(ticks: u32, frame_ends: &[u32]) -> u32 {
+        1 + frame_ends.iter().take_while(|&&end| ticks > end).count() as u32
+    }
+
+    fn macho_update_direction(&mut self, index: usize, direction: Vec2) {
+        let Some(platform) = self.players[index].base.platform(&self.platforms) else {
+            return;
+        };
+        let forward = platform.surface.forward(self.players[index].base.position);
+        let dot = forward.dot(direction);
+        if dot > Fix::ZERO {
+            self.players[index].macho_throw.facing_right = true;
+        } else if dot < Fix::ZERO {
+            self.players[index].macho_throw.facing_right = false;
+        }
+    }
+
+    fn macho_held_position(&self, index: usize, data: &data::RolloutData) -> Vec2 {
+        let slot = &self.players[index];
+        let mut local = slot.macho_throw.current_dummy_pos * slot.base.scale;
+        if !slot.macho_throw.facing_right {
+            local.x = -local.x;
+        }
+        if slot.macho_throw.held_boulder.is_some() {
+            local.y += data.macho_throw.boulder_radius * (slot.base.scale - Fix::ONE)
+                + data.macho_throw.ground_to_hands * (slot.base.scale - Fix::ONE);
+        }
+        slot.base.position + local.complex_mul(slot.base.up.perp_cw())
+    }
+
+    fn macho_update_held_boulder(
+        &mut self,
+        index: usize,
+        sync_pose: bool,
+        data: &data::RolloutData,
+    ) {
+        let Some(boulder_index) = self.players[index].macho_throw.held_boulder else {
+            return;
+        };
+        if boulder_index >= self.macho_boulders.len()
+            || !self.macho_boulders[boulder_index].active
+            || self.macho_boulders[boulder_index].dropped
+        {
+            self.players[index].macho_throw.held_boulder = None;
+            return;
+        }
+        let platform_index = self.macho_boulders[boulder_index].platform_index;
+        if platform_index >= self.platforms.len() {
+            self.players[index].macho_throw.held_boulder = None;
+            return;
+        }
+        let velocity = self.platform_dynamics[platform_index].body.velocity;
+        if sync_pose {
+            // This is the pre-physics UpdateSim write. LateUpdateSim writes
+            // the same FixTransform pose after collider synchronization, so
+            // it is intentionally deferred until the following pass here.
+            let position = self.macho_held_position(index, data);
+            let rotation = self.players[index].base.rotation;
+            self.platforms[platform_index].surface.center = position;
+            self.platforms[platform_index].collider.inner.center = position;
+            self.platform_dynamics[platform_index].composite_position = position;
+            self.platform_dynamics[platform_index].home_position = position;
+            self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
+            self.platforms_changed();
+        }
+        self.platform_dynamics[platform_index].body.velocity = Vec2::ZERO;
+        self.platform_dynamics[platform_index].body.angular_velocity = Fix::ZERO;
+        self.players[index].base.external_velocity +=
+            velocity * data.macho_throw.force_from_boulder;
+    }
+
+    fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) {
+        let Some(platform_index) = self.players[index]
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
+        else {
+            return;
+        };
+        let dynamics = self.platform_dynamics[platform_index];
+        let collider = self.platforms[platform_index].collider;
+        let extents = Vec2::new(
+            Fix::ONE / collider.inner.inverse_extents.x,
+            Fix::ONE / collider.inner.inverse_extents.y,
+        );
+        let area = platform_area(extents.x, extents.y, collider.radius);
+        let next =
+            dynamics.scale - dynamics.scale * DT * data.macho_throw.platform_scale_reduction / area;
+        let next = next.max(dynamics.min_scale);
+        let ratio = (Fix::ONE / dynamics.scale) * next;
+        {
+            let platform = &mut self.platforms[platform_index];
+            platform.collider.inner.right *= ratio;
+            platform.collider.inner.up *= ratio;
+            platform.collider.inner.inverse_extents =
+                platform.collider.inner.inverse_extents / ratio;
+            platform.collider.radius *= ratio;
+        }
+        let at_minimum = next <= self.platform_dynamics[platform_index].min_scale;
+        self.platform_dynamics[platform_index].scale = next;
+        self.platform_dynamics[platform_index].surface_shape_dirty = true;
+        self.platforms_changed();
+        if at_minimum {
+            self.entities[self.platform_entities[platform_index]].flags = E_DESTROYED;
+        }
+    }
+
+    fn spawn_macho_boulder(
+        &mut self,
+        owner: usize,
+        position: Vec2,
+        held: bool,
+        data: &data::RolloutData,
+    ) -> usize {
+        let scale = self.players[owner].base.scale.clamp(
+            data.macho_throw.boulder_min_scale,
+            data.macho_throw.boulder_max_scale,
+        );
+        let extents = data.macho_throw.boulder_extents * scale;
+        let radius = data.macho_throw.boulder_radius * scale;
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.macho_throw.boulder_updatable_count;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 2,
+            layer: data.macho_throw.boulder_layer,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + hierarchy_base + data.macho_throw.boulder_collider_hierarchy,
+            inverse_mass: data.macho_throw.boulder_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let surface = Surface {
+            center: position,
+            right: Vec2::RIGHT,
+            up: Vec2::UP,
+            extents: data::surface_extents(extents),
+            radius,
+        };
+        let platform_index = self.platforms.len();
+        self.platforms
+            .push(make_platform(self.next_platform_id, &surface, extents));
+        self.next_platform_id += 1;
+        self.platform_dynamics.push(PlatformDynamics {
+            body: data.macho_throw.boulder_body,
+            scale,
+            // Boulder.Scale is assigned before its first BoplBody update;
+            // BoplBody.prevScale retains the prefab default of one.
+            body_scale: Fix::ONE,
+            body_resizable: false,
+            min_scale: data.macho_throw.boulder_min_scale,
+            surface_shape_dirty: false,
+            root_body: data.macho_throw.boulder_body,
+            attached_children: 0,
+            composite_position: position,
+            transform_rotation: None,
+            init_tick: None,
+            home_position: position,
+            home_rotation: Fix::ZERO,
+            speed: Fix::ZERO,
+            mu: Fix::ZERO,
+            rotation_speed: Fix::ZERO,
+            rotation_mu: Fix::ZERO,
+            shake_time: Fix::ZERO,
+            shake_duration: Fix::ZERO,
+            shake_amount: Fix::ZERO,
+            shake_previous: Vec2::ZERO,
+            meteor_shake_curve: false,
+            basis: None,
+        });
+        self.platform_defs.push(usize::MAX);
+        self.platform_entities.push(entity);
+        self.platforms_changed();
+        self.rebuild_bounds();
+        let state = MachoBoulder {
+            active: true,
+            owner,
+            ability_slot: self.players[owner].active_slot,
+            ability_generation: self.players[owner].ability_generation,
+            platform_index,
+            born_tick: self.tick,
+            held,
+            dropped: !held,
+        };
+        let boulder_index = if let Some(free) = self.macho_boulders.iter().position(|b| !b.active) {
+            self.macho_boulders[free] = state;
+            free
+        } else {
+            self.macho_boulders.push(state);
+            self.macho_boulders.len() - 1
+        };
+        if held {
+            self.players[owner].macho_throw.held_boulder = Some(boulder_index);
+        }
+        boulder_index
+    }
+
+    fn macho_fire(&mut self, index: usize, quick: bool, aim: Vec2, data: &data::RolloutData) {
+        self.macho_update_direction(index, aim);
+        let boulder_index = if quick {
+            let frame = Self::macho_animation_frame(
+                self.players[index].macho_throw.ticks,
+                &data.macho_throw.dummy_frame_ticks,
+            );
+            let mut local = if frame > data.macho_throw.quick_position_swap_frame {
+                self.players[index].macho_throw.current_dummy_pos
+            } else {
+                data.macho_throw.quick_projectile_position
+            } * self.players[index].base.scale;
+            if !self.players[index].macho_throw.facing_right {
+                local.x = -local.x;
+            }
+            let position = self.players[index].base.position
+                + local.complex_mul(self.players[index].base.up.perp_cw());
+            self.spawn_macho_boulder(index, position, false, data)
+        } else {
+            let Some(held) = self.players[index].macho_throw.held_boulder else {
+                return;
+            };
+            held
+        };
+        let platform_index = self.macho_boulders[boulder_index].platform_index;
+        if platform_index >= self.platforms.len() {
+            return;
+        }
+        let body_right = self.players[index].base.up.perp_cw();
+        let body_up = self.players[index].base.up;
+        let mut minimum = if quick {
+            Vec2::RIGHT
+        } else {
+            data.macho_throw.min_throw_vector.normalized_safe()
+        };
+        let mut direction = aim;
+        if direction == Vec2::ZERO {
+            direction = body_right
+                * if self.players[index].macho_throw.facing_right {
+                    Fix::ONE
+                } else {
+                    -Fix::ONE
+                };
+        }
+        if body_up.dot(direction) < minimum.dot(Vec2::UP) {
+            if body_right.dot(direction) < Fix::ZERO {
+                minimum.x = -minimum.x;
+            }
+            direction = minimum.complex_mul(body_right);
+        }
+        let strength = if quick {
+            data.macho_throw.quick_throw_strength
+                + Fix::from_int(i64::from(Self::macho_animation_frame(
+                    self.players[index].macho_throw.ticks,
+                    &data.macho_throw.dummy_frame_ticks,
+                ))) * data.macho_throw.quick_charge_scaling
+        } else {
+            data.macho_throw.throw_speed
+        };
+        let scale_strength = (self.players[index].base.scale
+            + (data.macho_throw.extra_strength_scale - Fix::ONE))
+            / data.macho_throw.extra_strength_scale;
+        let body = &mut self.platform_dynamics[platform_index].body;
+        body.gravity_scale = Fix::ONE;
+        body.bounciness = data.macho_throw.boulder_dropped_bounciness;
+        body.velocity = direction * strength * scale_strength * body.inverse_mass;
+        body.angular_velocity = if self.players[index].macho_throw.facing_right {
+            -data.macho_throw.rotation_velocity
+        } else {
+            data.macho_throw.rotation_velocity
+        };
+        self.platform_dynamics[platform_index].root_body = *body;
+        self.macho_boulders[boulder_index].held = false;
+        self.macho_boulders[boulder_index].dropped = true;
+        self.players[index].macho_throw.held_boulder = None;
+        self.platforms_changed();
+    }
+
+    fn drop_macho_held_boulder(&mut self, index: usize, data: &data::RolloutData) {
+        let Some(held) = self.players[index].macho_throw.held_boulder.take() else {
+            return;
+        };
+        if held >= self.macho_boulders.len() || !self.macho_boulders[held].active {
+            return;
+        }
+        let platform = self.macho_boulders[held].platform_index;
+        if platform < self.platform_dynamics.len() {
+            let body = &mut self.platform_dynamics[platform].body;
+            body.gravity_scale = Fix::ONE;
+            body.bounciness = data.macho_throw.boulder_dropped_bounciness;
+            self.platform_dynamics[platform].root_body = *body;
+            self.platforms_changed();
+        }
+        self.macho_boulders[held].held = false;
+        self.macho_boulders[held].dropped = true;
+    }
+
+    fn exit_macho_throw(&mut self, index: usize, grounded: bool, data: &data::RolloutData) {
+        self.drop_macho_held_boulder(index, data);
+        let ordinary_ground = if grounded {
+            self.players[index]
+                .base
+                .ground
+                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                .map(|platform| {
+                    let local = platform
+                        .surface
+                        .local_position(self.players[index].base.position, data.player.radius)
+                        .ok();
+                    let up = platform.surface.normal(self.players[index].base.position);
+                    (local, up, up.perp_cw().normalized_angle())
+                })
+        } else {
+            None
+        };
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.facing_right = slot.macho_throw.facing_right;
+        slot.base.radius = data.player.radius;
+        if let Some((Some(local), up, rotation)) = ordinary_ground {
+            // PlayerPhysics.SyncPhysicsTo converts the form's world pose
+            // back into the ordinary slime's smaller-radius perimeter
+            // coordinate before its same-pass LateUpdateSim.
+            slot.base.local = local;
+            slot.base.up = up;
+            slot.base.rotation = rotation;
+        }
+        slot.base.constants = data.player.constants.clone();
+        if ordinary_ground.is_none() {
+            slot.base.rotation = Fix::ZERO;
+        }
+        if grounded && slot.base.ground.is_some() {
+            slot.obs_state = STATE_IDLE;
+            slot.state_ticks = 0;
+        } else {
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.exit_to_fall();
+        }
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
+    fn macho_throw_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        jump_pressed: bool,
+        advance_animation: bool,
+        data: &data::RolloutData,
+    ) {
+        // PlayerPhysics (hierarchy 3) applies gravity, then PlayerBody
+        // (hierarchy 7) integrates before MachoThrow2 (hierarchy 8) changes
+        // movement for the following pass. A freshly registered ability
+        // prefab starts after those hierarchy positions on its entry pass,
+        // represented by `advance_animation == false`.
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+        if advance_animation {
+            self.players[index].base.gravity_step(terrain!(self));
+            let slot = &mut self.players[index];
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+        if advance_animation {
+            self.players[index].macho_throw.ticks += 1;
+            let phase = self.players[index].macho_throw.phase;
+            let finished = match phase {
+                0 => self.players[index].macho_throw.ticks > data.macho_throw.enter_ticks,
+                1 => self.players[index].macho_throw.ticks > data.macho_throw.grab_ticks,
+                2 => self.players[index].macho_throw.ticks > data.macho_throw.pickup_ticks,
+                5 => self.players[index].macho_throw.ticks > data.macho_throw.turn_ticks,
+                6 => self.players[index].macho_throw.ticks > data.macho_throw.begin_throw_ticks,
+                7 => self.players[index].macho_throw.ticks > data.macho_throw.exit_ticks,
+                _ => false,
+            };
+            if finished {
+                match phase {
+                    0 => {
+                        self.next_spawn_hierarchy += data.macho_throw.smoke_updatable_count;
+                        let state = &mut self.players[index].macho_throw;
+                        state.phase = 1;
+                        state.ticks = 0;
+                        state.grabbing_dirt = true;
+                    }
+                    1 => {
+                        let state = &mut self.players[index].macho_throw;
+                        state.phase = 2;
+                        state.ticks = 0;
+                        state.grabbing_dirt = false;
+                    }
+                    2 => {
+                        let position = self.macho_held_position(index, data);
+                        self.spawn_macho_boulder(index, position, true, data);
+                        let state = &mut self.players[index].macho_throw;
+                        state.phase = 3;
+                        state.ticks = 0;
+                    }
+                    5 => {
+                        let state = &mut self.players[index].macho_throw;
+                        state.facing_right = !state.facing_right;
+                        state.phase = 4;
+                        state.ticks = 0;
+                    }
+                    6 => {
+                        self.macho_fire(index, false, action.direction(), data);
+                        let state = &mut self.players[index].macho_throw;
+                        state.phase = 7;
+                        state.ticks = 0;
+                    }
+                    7 => {
+                        let grounded = self.players[index].base.grounded;
+                        self.exit_macho_throw(index, grounded, data);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let button = 2u8 << self.players[index].active_slot;
+        if !self.players[index].macho_throw.released && action.buttons & button == 0 {
+            self.players[index].macho_throw.released = true;
+        }
+        self.macho_update_held_boulder(index, true, data);
+        let phase = self.players[index].macho_throw.phase;
+        if matches!(phase, 3..=5) && self.players[index].macho_throw.released {
+            self.players[index].macho_throw.phase = 6;
+            self.players[index].macho_throw.ticks = 0;
+        } else if phase == 2 && self.players[index].macho_throw.released {
+            self.macho_update_direction(index, action.direction());
+            self.macho_fire(index, true, action.direction(), data);
+            self.players[index].macho_throw.phase = 7;
+            self.players[index].macho_throw.ticks = 0;
+        }
+
+        let phase = self.players[index].macho_throw.phase;
+        if phase == 0 && self.players[index].macho_throw.grabbing_dirt {
+            unreachable!();
+        }
+        if phase == 1 && self.players[index].macho_throw.grabbing_dirt {
+            let frame = Self::macho_animation_frame(
+                self.players[index].macho_throw.ticks,
+                &data.macho_throw.grab_frame_ticks,
+            );
+            if frame > data.macho_throw.shrink_after_frames {
+                self.macho_shrink_ground(index, data);
+            }
+        }
+
+        let input = action.direction();
+        let alignment = self.players[index]
+            .base
+            .up
+            .perp_cw()
+            .dot(input.normalized_safe());
+        let aligned = alignment.abs() >= Fix::from_f32(0.2);
+        let moving_right = alignment > Fix::ZERO;
+        let mut move_input = Vec2::ZERO;
+        match phase {
+            3 => {
+                if alignment.abs() >= Fix::from_f32(0.2) {
+                    self.players[index].macho_throw.phase = 4;
+                    self.players[index].macho_throw.ticks = 0;
+                }
+            }
+            4 => {
+                if !aligned {
+                    self.players[index].macho_throw.phase = 3;
+                    self.players[index].macho_throw.ticks = 0;
+                } else if moving_right != self.players[index].macho_throw.facing_right {
+                    self.players[index].macho_throw.facing_right =
+                        !self.players[index].macho_throw.facing_right;
+                    self.players[index].macho_throw.phase = 5;
+                    self.players[index].macho_throw.ticks = 0;
+                }
+                move_input = input;
+            }
+            5 => {
+                if !aligned {
+                    self.players[index].macho_throw.phase = 3;
+                    self.players[index].macho_throw.ticks = 0;
+                    self.players[index].macho_throw.facing_right =
+                        !self.players[index].macho_throw.facing_right;
+                }
+                move_input = input;
+            }
+            7 => {
+                let frame = Self::macho_animation_frame(
+                    self.players[index].macho_throw.ticks,
+                    &data.macho_throw.exit_frame_ticks,
+                );
+                if frame > data.macho_throw.move_after_throw_frames {
+                    move_input = input;
+                }
+                if frame > data.macho_throw.jump_after_throw_frames && jump_pressed {
+                    if self.players[index].base.grounded {
+                        self.players[index].base.jump_with_strength(
+                            &self.platforms,
+                            data.macho_throw.constants.jump_strength,
+                        );
+                    }
+                    self.exit_macho_throw(index, false, data);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        let roundedness =
+            self.players[index]
+                .base
+                .platform(&self.platforms)
+                .map_or(Fix::ONE, |platform| {
+                    let (_, zone) = platform
+                        .surface
+                        .normal_and_zone(self.players[index].base.position);
+                    if zone % 2 == 1 {
+                        (platform.surface.radius * data.macho_throw.player_radius_hack)
+                            .min(Fix::from_int(10))
+                            / Fix::from_int(10)
+                    } else {
+                        Fix::ONE
+                    }
+                });
+        self.players[index]
+            .base
+            .macho_move(move_input, roundedness, terrain!(self));
+    }
+
+    fn macho_late_tick(&mut self, data: &data::RolloutData) {
+        for index in 0..self.players.len() {
+            if self.players[index].active != ActiveAbility::Throw {
+                continue;
+            }
+            let phase = self.players[index].macho_throw.phase;
+            let ticks = self.players[index].macho_throw.ticks;
+            let position = if phase == 2 {
+                let frame = Self::macho_animation_frame(ticks, &data.macho_throw.dummy_frame_ticks);
+                data.macho_throw
+                    .dummy_positions
+                    .get(frame as usize)
+                    .copied()
+            } else if phase == 6 {
+                let frame =
+                    Self::macho_animation_frame(ticks, &data.macho_throw.prepare_frame_ticks);
+                data.macho_throw
+                    .prepare_positions
+                    .get(frame as usize)
+                    .copied()
+            } else {
+                data.macho_throw.dummy_positions.last().copied()
+            };
+            if let Some(position) = position {
+                self.players[index].macho_throw.current_dummy_pos = position;
+            }
+            self.macho_update_held_boulder(index, false, data);
+        }
+    }
+
+    fn macho_boulders_tick(&mut self, data: &data::RolloutData) {
+        let water_height =
+            data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y;
+        for boulder in self.macho_boulders.iter().copied() {
+            if !boulder.active || boulder.platform_index >= self.platforms.len() {
+                continue;
+            }
+            // Boulder.prefab only destroys below the water boundary:
+            // DestroyIfTooFarX=false and DoNotDestroyUp=true.
+            if self.platforms[boulder.platform_index].surface.center.y < water_height {
+                let entity = self.platform_entities[boulder.platform_index];
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags = E_DESTROYED;
+                    self.next_spawn_hierarchy +=
+                        data.macho_throw.boulder_down_effect_updatable_count;
+                }
             }
         }
     }
@@ -7934,6 +8686,7 @@ impl RolloutWorld {
             let mut tesla_entity = usize::MAX;
             let mut meteor_entity = usize::MAX;
             let mut black_hole_entity = usize::MAX;
+            let mut macho_throw_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -8002,6 +8755,11 @@ impl RolloutWorld {
                         data.black_hole.collider_hierarchy,
                         &mut black_hole_entity,
                     ),
+                    ABILITY_THROW => (
+                        data::surface_extents(data.macho_throw.hurtbox_extents),
+                        data.macho_throw.collider_hierarchy,
+                        &mut macho_throw_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -8030,6 +8788,8 @@ impl RolloutWorld {
                         data.meteor.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
                         data.black_hole.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_THROW {
+                        data.macho_throw.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -8056,6 +8816,8 @@ impl RolloutWorld {
                         data.meteor.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
                         data.black_hole.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_THROW {
+                        data.macho_throw.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -8118,6 +8880,7 @@ impl RolloutWorld {
             slot.spike_cast = SpikeCastState::default();
             slot.plant_cast = PlantCastState::default();
             slot.black_hole_cast = BlackHoleCastState::default();
+            slot.macho_throw = MachoThrowState::default();
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
@@ -8143,6 +8906,7 @@ impl RolloutWorld {
             slot.tesla_entity = tesla_entity;
             slot.meteor_entity = meteor_entity;
             slot.black_hole_entity = black_hole_entity;
+            slot.macho_throw_entity = macho_throw_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -8172,6 +8936,7 @@ impl RolloutWorld {
                 self.players[index].engine_entity,
                 self.players[index].tesla_entity,
                 self.players[index].black_hole_entity,
+                self.players[index].macho_throw_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -8307,6 +9072,7 @@ impl RolloutWorld {
             let mut tesla_entity = usize::MAX;
             let mut meteor_entity = usize::MAX;
             let mut black_hole_entity = usize::MAX;
+            let mut macho_throw_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -8375,6 +9141,11 @@ impl RolloutWorld {
                         data.black_hole.collider_hierarchy,
                         &mut black_hole_entity,
                     ),
+                    ABILITY_THROW => (
+                        data::surface_extents(data.macho_throw.hurtbox_extents),
+                        data.macho_throw.collider_hierarchy,
+                        &mut macho_throw_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -8404,6 +9175,8 @@ impl RolloutWorld {
                         data.meteor.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
                         data.black_hole.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_THROW {
+                        data.macho_throw.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -8430,6 +9203,8 @@ impl RolloutWorld {
                         data.meteor.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_BLACK_HOLE {
                         data.black_hole.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_THROW {
+                        data.macho_throw.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -8479,6 +9254,7 @@ impl RolloutWorld {
             slot.spike_cast = SpikeCastState::default();
             slot.plant_cast = PlantCastState::default();
             slot.black_hole_cast = BlackHoleCastState::default();
+            slot.macho_throw = MachoThrowState::default();
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
@@ -8504,6 +9280,7 @@ impl RolloutWorld {
             slot.tesla_entity = tesla_entity;
             slot.meteor_entity = meteor_entity;
             slot.black_hole_entity = black_hole_entity;
+            slot.macho_throw_entity = macho_throw_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -9953,6 +10730,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
+                    ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -10099,6 +10877,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
+                    ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -10373,6 +11152,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
+                    ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -11078,6 +11858,11 @@ impl RolloutWorld {
         ));
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
+            scale: Fix::ONE,
+            body_scale: Fix::ONE,
+            body_resizable: true,
+            min_scale: Fix::from_f32(0.1),
+            surface_shape_dirty: false,
             root_body: pd.spawn_body,
             attached_children: 0,
             composite_position: position,
@@ -11193,6 +11978,23 @@ impl RolloutWorld {
                 node.platform_index -= 1;
             }
         }
+        for boulder_index in 0..self.macho_boulders.len() {
+            if !self.macho_boulders[boulder_index].active {
+                continue;
+            }
+            if self.macho_boulders[boulder_index].platform_index == index {
+                let owner = self.macho_boulders[boulder_index].owner;
+                self.macho_boulders[boulder_index].active = false;
+                self.macho_boulders[boulder_index].held = false;
+                if owner < self.players.len()
+                    && self.players[owner].macho_throw.held_boulder == Some(boulder_index)
+                {
+                    self.players[owner].macho_throw.held_boulder = None;
+                }
+            } else if self.macho_boulders[boulder_index].platform_index > index {
+                self.macho_boulders[boulder_index].platform_index -= 1;
+            }
+        }
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
@@ -11252,6 +12054,7 @@ impl RolloutWorld {
         inner.up *= extents.y;
         platform.collider.radius = radius;
         let dynamics = &mut self.platform_dynamics[index];
+        dynamics.surface_shape_dirty = false;
         // ResizablePlatform.ResizePlatform recomputes these from geometry on
         // every resize; keeping the prefab's mass makes long/thin platforms
         // react far too strongly to contacts.
@@ -12552,6 +13355,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => player.gust_entity,
                     ActiveAbility::Revival => player.revival_entity,
                     ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Throw => player.macho_throw_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -13120,6 +13924,32 @@ impl RolloutWorld {
     /// their damping must observe the velocity from the start of the tick,
     /// before Gust or another later ability applies a direct impulse.
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for i in 0..self.platforms.len() {
+            let previous = self.platform_dynamics[i].body_scale;
+            let scale = self.platform_dynamics[i].scale;
+            if !self.platform_dynamics[i].body_resizable && previous != scale {
+                let ratio = previous / scale;
+                self.platform_dynamics[i].body.inverse_mass *= ratio;
+                self.platform_dynamics[i].body.inverse_inertia *= ratio;
+                self.platform_dynamics[i].root_body.inverse_mass *= ratio;
+                self.platform_dynamics[i].root_body.inverse_inertia *= ratio;
+                self.platform_dynamics[i].body_scale = scale;
+                self.platforms_changed();
+            } else if self.platform_dynamics[i].body_resizable {
+                self.platform_dynamics[i].body_scale = scale;
+            }
+            if !self.platform_dynamics[i].surface_shape_dirty {
+                continue;
+            }
+            let inner = self.platforms[i].collider.inner;
+            self.platforms[i].surface.extents = Vec2::new(
+                Fix::ONE / inner.inverse_extents.x,
+                Fix::ONE / inner.inverse_extents.y,
+            );
+            self.platforms[i].surface.radius = self.platforms[i].collider.radius;
+            self.platform_dynamics[i].surface_shape_dirty = false;
+            self.platforms_changed();
+        }
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting.
         if self.sudden_death {
@@ -13518,6 +14348,7 @@ impl RolloutWorld {
                     ActiveAbility::Gust => other.gust_entity,
                     ActiveAbility::Revival => other.revival_entity,
                     ActiveAbility::BlackHole => other.black_hole_entity,
+                    ActiveAbility::Throw => other.macho_throw_entity,
                     ActiveAbility::Platform => other.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -13630,6 +14461,7 @@ impl RolloutWorld {
                             || dynamics.body.velocity != Vec2::ZERO
                             || dynamics.body.angular_velocity != Fix::ZERO
                             || dynamics.body.orientation != dynamics.home_rotation
+                            || dynamics.transform_rotation.is_some()
                     },
                 );
         if !disturbed {
@@ -14028,6 +14860,9 @@ impl RolloutWorld {
             return;
         }
         let players = self.players.len();
+        if self.players[index].active == ActiveAbility::Throw {
+            self.drop_macho_held_boulder(index, data::get());
+        }
         let revival_marker = self.players[index]
             .revival_markers
             .iter()
@@ -14084,6 +14919,7 @@ impl RolloutWorld {
                 slot.roll_entity,
                 slot.meteor_entity,
                 slot.black_hole_entity,
+                slot.macho_throw_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -14147,6 +14983,7 @@ impl RolloutWorld {
                 slot.roll_entity,
                 slot.meteor_entity,
                 slot.black_hole_entity,
+                slot.macho_throw_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -14202,6 +15039,7 @@ impl RolloutWorld {
                 slot.roll_entity,
                 slot.meteor_entity,
                 slot.black_hole_entity,
+                slot.macho_throw_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -14634,6 +15472,7 @@ impl RolloutWorld {
                 engine_e,
                 tesla_e,
                 black_hole_e,
+                macho_throw_e,
             ) = {
                 let s = &self.players[index];
                 (
@@ -14658,6 +15497,7 @@ impl RolloutWorld {
                     s.engine_entity,
                     s.tesla_entity,
                     s.black_hole_entity,
+                    s.macho_throw_entity,
                 )
             };
             let slot = &self.players[index];
@@ -14689,6 +15529,7 @@ impl RolloutWorld {
             let planting_engine = slot.active == ActiveAbility::Engine;
             let planting_tesla = slot.active == ActiveAbility::Tesla;
             let casting_black_hole = slot.active == ActiveAbility::BlackHole;
+            let macho_throwing = slot.active == ActiveAbility::Throw;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -15397,6 +16238,46 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
+            if macho_throw_e != usize::MAX {
+                let box_row = &mut self.entities[macho_throw_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && macho_throwing {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if macho_throwing {
+                    box_row.owner = slot.base.id;
+                }
+                if macho_throwing || was_active {
+                    let (position, center_basis, rotation, collider_basis) = if macho_throwing {
+                        (
+                            slot.macho_throw.collider_position,
+                            slot.macho_throw.collider_right,
+                            slot.macho_throw.collider_rotation,
+                            slot.macho_throw.collider_basis,
+                        )
+                    } else {
+                        (exit_position, Vec2::RIGHT, Fix::ZERO, Vec2::RIGHT)
+                    };
+                    let center =
+                        position + center_basis.complex_mul(data.macho_throw.collider_offset);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        collider_basis,
+                        data::surface_extents(data.macho_throw.hurtbox_extents),
+                    );
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.vx = 0;
+                    box_row.vy = 0;
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
@@ -15505,7 +16386,7 @@ impl RolloutWorld {
             e.right_y = right.y.raw();
             e.up_x = up.x.raw();
             e.up_y = up.y.raw();
-            e.radius = s.radius.raw();
+            e.radius = platform.collider.radius.raw();
             // RlObservation publishes PhysicsBody.orientation directly. The
             // collider basis is derived output and must not be converted back
             // into an angle (especially around the Q32 sine-table boundary).
@@ -15681,6 +16562,9 @@ impl RolloutWorld {
             }
             if slot.active == ActiveAbility::Platform {
                 player_flags |= 32;
+            }
+            if slot.active == ActiveAbility::Throw {
+                player_flags |= 64;
             }
             let position = if slot.reported_tick.checked_add(1) == Some(tick) {
                 slot.reported_position
