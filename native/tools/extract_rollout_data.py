@@ -849,6 +849,45 @@ def main():
         },
     }
 
+    # ---- Drill player form and its three dynamic lethal hitboxes ----
+    _, drill_ability = find_prefab("Assets/GameObject/Drill.prefab")
+    drill = component(drill_ability, "Drill")
+    drill_box = component(drill_ability, "DPhysicsBox")
+    drill_fix = component(drill_ability, "FixTransform")
+    drill_combo = component(drill_ability, "HitboxCombo")
+    drill_anims = animations(guid_of(drill["animData"]))
+    drill_hitbox = ASSETS[guid_of(drill_combo["hitboxPrefab"])]
+    out["prefabs"]["drill"] = {
+        "hurtbox_extents": vec2(drill_box, "startExtents"),
+        "collider_offset": vec2(drill_fix, "offset"),
+        "collider_hierarchy": drill_box["hierarchyNumber"],
+        "enter_ticks": sum(abs(d) for d in drill_anims["enter"]),
+        "exit_ticks": sum(abs(d) for d in drill_anims["exit"]),
+        "drill_offset": vec2(drill, "drillOffset"),
+        "drill_hitbox": vec2(drill, "drillHitbox"),
+        "gravity": fix(drill, "gravityStr"),
+        "drill_strength": fix(drill, "drillstr"),
+        "rotation_speed_air": fix(drill, "rotationSpeedAir"),
+        "leave_ground_speed_multiplier": fix(drill, "leaveGroundSpeedMultiplier"),
+        "enter_ground_speed_multiplier": fix(drill, "EnterGroundSpeedMultiplier"),
+        "speed_to_rotation": curve(drill, "SpeedToRotationSpeed01"),
+        "on_enter_offset": vec2(drill, "onEnterOffset"),
+        "min_underground_speed": fix(drill, "minUndergroundSpeed"),
+        "keep_strong_gravity_seconds": fix(drill, "keepStrongGravitySeconds"),
+        "strong_gravity": fix(drill, "strongGravity"),
+        "max_early_fall_speed": fix(drill, "maxEarlyFallSpeed"),
+        "hitboxes": [
+            {
+                "offset": vec2(drill_combo, f"hitBoxDefinitions.Array.data[{i}].offset"),
+                "extents": vec2(drill_combo, f"hitBoxDefinitions.Array.data[{i}].extents"),
+            }
+            for i in range(drill_combo["hitBoxDefinitions.Array.size"])
+        ],
+        "hitbox_layer": drill_hitbox["data"].get("layer"),
+        "hitbox_updatable_count": hierarchy_span(drill_hitbox),
+        "hitbox_collider_hierarchy": component(drill_hitbox, "DPhysicsBox")["hierarchyNumber"],
+    }
+
     # ---- Rock / BounceBall player form ----
     _, rock_ability = find_prefab("Assets/GameObject/Rock.prefab")
     rock = component(rock_ability, "BounceBall")

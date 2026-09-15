@@ -62,6 +62,7 @@ pub const ABILITY_PUSH: u32 = 22;
 pub const ABILITY_TESLA: u32 = 23;
 pub const ABILITY_MINE: u32 = 24;
 pub const ABILITY_TELEPORT: u32 = 25;
+pub const ABILITY_DRILL: u32 = 26;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_POKE_BALL: u32 = 33;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
@@ -1243,6 +1244,23 @@ pub struct MachoThrowState {
     pub collider_basis: Vec2,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct DrillState {
+    /// SpriteAnimator phase: 0 enter, 1 drilling loop, 2 exit.
+    pub phase: u8,
+    pub ticks: u32,
+    pub time: Fix,
+    pub time_underground: Fix,
+    pub underground: bool,
+    pub current_platform: Option<usize>,
+    pub collider_position: Vec2,
+    pub collider_up: Vec2,
+    pub collider_rotation: Fix,
+    pub hitbox_position: Vec2,
+    pub hitbox_up: Vec2,
+    pub hitbox_rotation: Fix,
+}
+
 /// A Boulder prefab created by MachoThrow2. Its rounded rectangle lives in
 /// the common platform arrays so all platform contacts and riders see it.
 #[derive(Clone, Copy, Default)]
@@ -1340,6 +1358,7 @@ pub enum ActiveAbility {
     Revival,
     BlackHole,
     Throw,
+    Drill,
     Platform,
 }
 
@@ -1449,6 +1468,10 @@ pub struct PlayerSlot {
     pub revival: RevivalState,
     pub black_hole_cast: BlackHoleCastState,
     pub macho_throw: MachoThrowState,
+    pub drill: DrillState,
+    /// HitboxCombo instantiates these on the first Drill cast for each live
+    /// equipped prefab. Old stock instances leave their inactive rows behind.
+    pub drill_hitbox_entities: [[usize; 3]; 3],
     /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
     /// to the equipped prefab instance, so duplicate slots are independent.
     pub black_hole_castable: [bool; 3],
@@ -1529,6 +1552,7 @@ pub struct PlayerSlot {
     pub meteor_entity: usize,
     pub black_hole_entity: usize,
     pub macho_throw_entity: usize,
+    pub drill_entity: usize,
 }
 
 impl PlayerSlot {
@@ -2058,6 +2082,7 @@ impl RolloutWorld {
         let mut meteor_entity = [usize::MAX; MAX_PLAYERS];
         let mut black_hole_entity = [usize::MAX; MAX_PLAYERS];
         let mut macho_throw_entity = [usize::MAX; MAX_PLAYERS];
+        let mut drill_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -2264,6 +2289,14 @@ impl RolloutWorld {
                             &mut macho_throw_entity[i],
                             false,
                         ),
+                        ABILITY_DRILL => (
+                            data::surface_extents(data.drill.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.drill.collider_hierarchy,
+                            &mut drill_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -2288,6 +2321,7 @@ impl RolloutWorld {
                             | ABILITY_METEOR
                             | ABILITY_BLACK_HOLE
                             | ABILITY_THROW
+                            | ABILITY_DRILL
                     ) {
                         E_ENABLED | E_TRIGGER
                     } else {
@@ -2314,6 +2348,8 @@ impl RolloutWorld {
                         data.black_hole.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_THROW {
                         data.macho_throw.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_DRILL {
+                        data.drill.collider_offset.x.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2347,6 +2383,8 @@ impl RolloutWorld {
                         data.black_hole.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_THROW {
                         data.macho_throw.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_DRILL {
+                        data.drill.collider_offset.y.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2560,6 +2598,8 @@ impl RolloutWorld {
                 revival: RevivalState::default(),
                 black_hole_cast: BlackHoleCastState::default(),
                 macho_throw: MachoThrowState::default(),
+                drill: DrillState::default(),
+                drill_hitbox_entities: [[usize::MAX; 3]; 3],
                 black_hole_castable: [true; 3],
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
@@ -2612,6 +2652,7 @@ impl RolloutWorld {
                 meteor_entity: meteor_entity[i],
                 black_hole_entity: black_hole_entity[i],
                 macho_throw_entity: macho_throw_entity[i],
+                drill_entity: drill_entity[i],
             });
         }
 
@@ -2904,6 +2945,7 @@ impl RolloutWorld {
             slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
             slot.timers[2] = Fix::from_int(100_000);
             slot.ability_instantiated[2] = false;
+            slot.drill_hitbox_entities[2] = [usize::MAX; 3];
             slot.black_hole_castable[2] = true;
             slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
@@ -3078,6 +3120,12 @@ impl RolloutWorld {
                 data.macho_throw.collider_hierarchy,
                 14,
             )),
+            ABILITY_DRILL => Some((
+                data::surface_extents(data.drill.hurtbox_extents),
+                data.drill.collider_offset,
+                data.drill.collider_hierarchy,
+                15,
+            )),
             _ => None,
         };
         let Some((extents, offset, relative_hierarchy, target)) = box_data else {
@@ -3114,7 +3162,8 @@ impl RolloutWorld {
             11 => slot.tesla_entity = entity,
             12 => slot.meteor_entity = entity,
             13 => slot.black_hole_entity = entity,
-            _ => slot.macho_throw_entity = entity,
+            14 => slot.macho_throw_entity = entity,
+            _ => slot.drill_entity = entity,
         }
     }
 
@@ -3390,6 +3439,23 @@ impl RolloutWorld {
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+                if self.players[index].active == ActiveAbility::Drill {
+                    // This prefab has PlayerBody but no PlayerPhysics. With a
+                    // zero fixed delta PlayerBody only damps external motion;
+                    // Drill updates the combo transforms and returns before
+                    // querying walls, steering, gravity, or release.
+                    let slot = &mut self.players[index];
+                    slot.reported_position = slot.base.position;
+                    slot.reported_tick = self.tick;
+                    slot.base.external_velocity *= Fix::from_f64(0.95);
+                    slot.drill.collider_position = slot.base.position;
+                    slot.drill.collider_up = slot.base.up;
+                    slot.drill.collider_rotation = slot.base.rotation;
+                    slot.drill.hitbox_position = slot.base.position;
+                    slot.drill.hitbox_up = slot.base.up;
+                    slot.drill.hitbox_rotation = slot.base.rotation;
+                    continue;
+                }
                 // PlayerPhysics and SlimeController still run. Their motion
                 // helpers apply unscaled gravity and air damping, but every
                 // position/raycast delta receives GameTime.FixedDeltaTime=0.
@@ -3554,7 +3620,8 @@ impl RolloutWorld {
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival
                     | ActiveAbility::BlackHole
-                    | ActiveAbility::Throw => true,
+                    | ActiveAbility::Throw
+                    | ActiveAbility::Drill => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -3627,6 +3694,7 @@ impl RolloutWorld {
                     slot.meteor_entity,
                     slot.black_hole_entity,
                     slot.macho_throw_entity,
+                    slot.drill_entity,
                     slot.push_entity,
                     slot.freeze_entity,
                     slot.growth_ray_entity,
@@ -3650,6 +3718,7 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
         self.black_hole_contacts(data);
+        self.drill_contacts();
         self.ability_pickups_contacts(data);
         self.rocks_contacts(data);
         self.arrows_contacts(data);
@@ -4635,6 +4704,40 @@ impl RolloutWorld {
                         self.macho_throw_tick(index, action, false, false, data);
                         return;
                     }
+                    ABILITY_DRILL => {
+                        self.ensure_drill_hitboxes(index, s, data);
+                        let (position, rotation, player_up, scale) = {
+                            let slot = &self.players[index];
+                            (
+                                slot.base.position,
+                                slot.base.rotation,
+                                slot.base.up,
+                                slot.player_scale,
+                            )
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Drill;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.drill = DrillState {
+                            // SpriteAnimator follows Ability and consumes the
+                            // first enter frame during this same updater pass.
+                            ticks: 1,
+                            ..DrillState::default()
+                        };
+                        slot.base.position = position
+                            + (data.drill.on_enter_offset * scale).complex_mul(player_up.perp_cw());
+                        slot.base.rotation = rotation;
+                        let right = Vec2::angle(rotation);
+                        slot.base.up = right.perp();
+                        slot.base.grounded = false;
+                        slot.base.ground = None;
+                        slot.base.grounded_speed = Fix::ZERO;
+                        self.drill_tick(index, action, data, false);
+                        return;
+                    }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
@@ -4779,6 +4882,18 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Throw {
             self.macho_throw_tick(index, action, jump_pressed, true, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Drill {
+            // DestroyIfOutsideSceneBounds observes the position left by the
+            // preceding pass before Drill's PlayerBody advances again.
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.players[index].reported_position = self.players[index].base.position;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                return;
+            }
+            self.drill_tick(index, action, data, true);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
@@ -6856,6 +6971,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
+                    ActiveAbility::Drill => slot.drill_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -6993,6 +7109,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
+                    ActiveAbility::Drill => slot.drill_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -7495,6 +7612,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => player.revival_entity,
                     ActiveAbility::BlackHole => player.black_hole_entity,
                     ActiveAbility::Throw => player.macho_throw_entity,
+                    ActiveAbility::Drill => player.drill_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -7550,6 +7668,366 @@ impl RolloutWorld {
                     true,
                     false,
                 );
+            }
+        }
+    }
+
+    fn ensure_drill_hitboxes(
+        &mut self,
+        index: usize,
+        ability_slot: usize,
+        data: &data::RolloutData,
+    ) {
+        if self.players[index].drill_hitbox_entities[ability_slot][0] != usize::MAX {
+            return;
+        }
+        debug_assert_eq!(data.drill.hitboxes.len(), 3);
+        let owner = self.players[index].base.id;
+        let mut entities = [usize::MAX; 3];
+        for entity_slot in &mut entities {
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.drill.hitbox_updatable_count;
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 1,
+                layer: data.drill.hitbox_layer,
+                owner,
+                flags: E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000 + hierarchy_base + data.drill.hitbox_collider_hierarchy,
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+            *entity_slot = entity;
+        }
+        self.players[index].drill_hitbox_entities[ability_slot] = entities;
+    }
+
+    fn deactivate_drill_hitboxes(&mut self, index: usize) {
+        for entities in self.players[index].drill_hitbox_entities {
+            for entity in entities {
+                if entity != usize::MAX {
+                    self.entities[entity].flags = E_ENABLED | E_TRIGGER;
+                }
+            }
+        }
+    }
+
+    fn drill_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        data: &data::RolloutData,
+        advance_animation: bool,
+    ) {
+        // Ability.UpdateSim publishes the collider before SpriteAnimator,
+        // PlayerBody, and Drill advance this prefab for the current pass.
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+        if advance_animation {
+            let drill = &mut self.players[index].drill;
+            if drill.phase == 0 && drill.ticks >= data.drill.enter_ticks {
+                drill.phase = 1;
+                drill.ticks = 0;
+            } else if drill.phase == 2 && drill.ticks >= data.drill.exit_ticks {
+                self.exit_drill(index, true, data);
+                return;
+            } else {
+                drill.ticks += 1;
+            }
+        }
+
+        // PlayerBody (hierarchy 6) advances before Drill (hierarchy 7).
+        {
+            let body = &mut self.players[index].base;
+            body.position += (body.velocity + body.external_velocity) * DT;
+            body.external_velocity *= Fix::from_f64(0.95);
+        }
+
+        let scale = self.players[index].player_scale;
+        self.players[index].drill.time += DT;
+        let (position, right, up) = {
+            let body = &self.players[index].base;
+            (body.position, body.up.perp_cw(), body.up)
+        };
+        let query = RoundedRect {
+            inner: OrientedBox {
+                center: position + (data.drill.drill_offset * scale).complex_mul(right),
+                right: right * data.drill.drill_hitbox.x * scale,
+                up: up * data.drill.drill_hitbox.y * scale,
+                inverse_extents: Vec2::new(
+                    Fix::ONE / (data.drill.drill_hitbox.x * scale),
+                    Fix::ONE / (data.drill.drill_hitbox.y * scale),
+                ),
+            },
+            radius: Fix::ZERO,
+        };
+        let current_platform = self.platforms.iter().position(|platform| {
+            crate::physics::contact::rounded_rounded(query, platform.collider).is_some()
+        });
+        self.players[index].drill.current_platform = current_platform;
+        let drilling = self.players[index].drill.phase == 1;
+        let stuck = !drilling && current_platform.is_some();
+
+        let aim = action.direction();
+        if aim != Vec2::ZERO {
+            let speed = self.players[index].base.velocity.length();
+            let rotation_scale = data.drill.speed_to_rotation.evaluate(speed);
+            let increment = data.drill.rotation_speed_air
+                * if self.players[index].drill.underground {
+                    rotation_scale
+                } else {
+                    Fix::ONE
+                }
+                * DT;
+            let from = -self.players[index].base.up;
+            let cross_before = from.cross(aim);
+            let turn = Vec2::angle(if cross_before < Fix::ZERO {
+                -increment
+            } else {
+                increment
+            });
+            let mut direction = from.complex_mul(turn);
+            if cross_before * direction.cross(aim) <= Fix::ZERO {
+                direction = aim;
+            }
+            let new_up = -direction;
+            let body = &mut self.players[index].base;
+            body.up = new_up;
+            body.rotation = new_up.perp_cw().normalized_angle();
+        }
+        if stuck {
+            self.players[index].base.velocity = Vec2::ZERO;
+        }
+
+        let was_underground = self.players[index].drill.underground;
+        let mut left_ground = false;
+        if let Some(platform_index) = current_platform.filter(|_| !stuck) {
+            self.players[index].drill.underground = true;
+            if !was_underground {
+                let platform = &self.platforms[platform_index];
+                if platform
+                    .surface
+                    .normal(self.players[index].base.position)
+                    .dot(self.players[index].base.up)
+                    <= Fix::ZERO
+                {
+                    self.exit_drill(index, false, data);
+                    return;
+                }
+                let velocity = self.players[index].base.velocity;
+                if velocity.length_squared()
+                    < data.drill.min_underground_speed * data.drill.min_underground_speed
+                {
+                    self.players[index].base.velocity =
+                        velocity.normalized_safe() * data.drill.min_underground_speed;
+                }
+                self.players[index].base.velocity *= data.drill.enter_ground_speed_multiplier;
+                self.players[index].base.external_velocity = Vec2::ZERO;
+            }
+            self.players[index].drill.time_underground += DT;
+        } else {
+            if was_underground {
+                self.players[index].base.velocity *= data.drill.leave_ground_speed_multiplier;
+                left_ground = true;
+            }
+            self.players[index].drill.underground = false;
+        }
+
+        if self.players[index].drill.underground {
+            let speed = self.players[index].base.velocity.length();
+            let direction = -self.players[index].base.up;
+            self.players[index].base.velocity =
+                direction * speed + direction * data.drill.drill_strength * DT;
+        } else {
+            let drill = self.players[index].drill;
+            let body = &mut self.players[index].base;
+            let gravity = if drill.time < data.drill.keep_strong_gravity_seconds
+                && body.velocity.y < data.drill.max_early_fall_speed
+            {
+                data.drill.strong_gravity
+            } else {
+                data.drill.gravity
+            };
+            body.velocity += -Vec2::UP * gravity * DT;
+        }
+
+        if let Some(platform_index) = current_platform {
+            let offset = self.players[index].base.position
+                - self.platform_dynamics[platform_index].composite_position;
+            let angular = self.platform_dynamics[platform_index].body.angular_velocity;
+            let point_velocity = offset.length() * angular * offset.normalized_safe().perp()
+                + self.platform_dynamics[platform_index].body.velocity;
+            self.players[index].base.position += point_velocity * DT;
+        }
+
+        if action.buttons & (2 << self.players[index].active_slot) as u8 == 0
+            && !self.players[index].drill.underground
+            && drilling
+        {
+            if left_ground {
+                self.exit_drill(index, false, data);
+                return;
+            }
+            let drill = &mut self.players[index].drill;
+            drill.phase = 2;
+            drill.ticks = 0;
+        }
+        self.players[index].drill.collider_position = self.players[index].base.position;
+        self.players[index].drill.collider_up = self.players[index].base.up;
+        self.players[index].drill.collider_rotation = self.players[index].base.rotation;
+        self.players[index].drill.hitbox_position = self.players[index].base.position;
+        self.players[index].drill.hitbox_up = self.players[index].base.up;
+        self.players[index].drill.hitbox_rotation = self.players[index].base.rotation;
+    }
+
+    fn exit_drill(&mut self, index: usize, use_offset: bool, data: &data::RolloutData) {
+        self.deactivate_drill_hitboxes(index);
+        let scale = self.players[index].player_scale;
+        self.players[index].drill.collider_position = self.players[index].base.position;
+        self.players[index].drill.collider_up = self.players[index].base.up;
+        self.players[index].drill.collider_rotation = self.players[index].base.rotation;
+        let ability_position = self.players[index].base.position;
+        let mut position = self.players[index].base.position;
+        if use_offset {
+            position -= (data.drill.on_enter_offset * scale)
+                .complex_mul(self.players[index].base.up.perp_cw());
+        }
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.base.position = position;
+        slot.base.radius = data.player.radius;
+        slot.base.constants = data.player.constants.clone();
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.facing_right = (slot.base.velocity + slot.base.external_velocity).x >= Fix::ZERO;
+        slot.exit_to_fall();
+        slot.base.collision_rays(terrain!(self));
+        // Ability.ExitAbility publishes the form collider before the slime's
+        // offset exit position is synchronized back into PlayerPhysics.
+        slot.reported_position = ability_position;
+        slot.reported_tick = self.tick;
+    }
+
+    /// The three Explosion-layer boxes spawned by HitboxCombo use the drill
+    /// owner's id and are ignored only by that drill form's PlayerCollision.
+    fn drill_contacts(&mut self) {
+        let mut victims = [false; MAX_PLAYERS];
+        let mut killers = [0u32; MAX_PLAYERS];
+        for attacker in 0..self.players.len() {
+            let slot = &self.players[attacker];
+            if !self.playable(attacker)
+                || slot.active != ActiveAbility::Drill
+                || slot.drill.phase == 0
+            {
+                continue;
+            }
+            let hitboxes = slot.drill_hitbox_entities[slot.active_slot];
+            let killer = slot.base.id;
+            for hitbox_entity in hitboxes {
+                if hitbox_entity == usize::MAX || self.entities[hitbox_entity].flags & E_ACTIVE == 0
+                {
+                    continue;
+                }
+                let hitbox_row = self.entities[hitbox_entity];
+                let hitbox_right = Vec2::new(
+                    Fix::from_raw(hitbox_row.right_x),
+                    Fix::from_raw(hitbox_row.right_y),
+                );
+                let hitbox_up = Vec2::new(
+                    Fix::from_raw(hitbox_row.up_x),
+                    Fix::from_raw(hitbox_row.up_y),
+                );
+                let hitbox = OrientedBox {
+                    center: Vec2::new(Fix::from_raw(hitbox_row.x), Fix::from_raw(hitbox_row.y)),
+                    right: hitbox_right,
+                    up: hitbox_up,
+                    inverse_extents: Vec2::new(
+                        Fix::ONE / hitbox_right.length(),
+                        Fix::ONE / hitbox_up.length(),
+                    ),
+                };
+                for victim in 0..self.players.len() {
+                    if victim == attacker || victims[victim] || !self.playable(victim) {
+                        continue;
+                    }
+                    let other = &self.players[victim];
+                    let entity = match other.active {
+                        ActiveAbility::None => other.body_entity,
+                        ActiveAbility::Dash => other.dash_entity,
+                        ActiveAbility::Bow => other.bow_entity,
+                        ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall
+                        | ActiveAbility::Missile => other.throw_entity,
+                        ActiveAbility::Mine => other.mine_entity,
+                        ActiveAbility::Rock => other.rock_entity,
+                        ActiveAbility::Roll => other.roll_entity,
+                        ActiveAbility::Meteor => other.meteor_entity,
+                        ActiveAbility::Push => other.push_entity,
+                        ActiveAbility::Freeze => other.freeze_entity,
+                        ActiveAbility::Blink => other.blink_entity,
+                        ActiveAbility::GrowthRay => other.growth_ray_entity,
+                        ActiveAbility::ShrinkRay => other.shrink_ray_entity,
+                        ActiveAbility::Spike => other.spike_entity,
+                        ActiveAbility::Engine => other.engine_entity,
+                        ActiveAbility::Tesla => other.tesla_entity,
+                        ActiveAbility::TimeStop => other.time_stop_entity,
+                        ActiveAbility::Gust => other.gust_entity,
+                        ActiveAbility::Revival => other.revival_entity,
+                        ActiveAbility::BlackHole => other.black_hole_entity,
+                        ActiveAbility::Throw => other.macho_throw_entity,
+                        ActiveAbility::Drill => other.drill_entity,
+                        ActiveAbility::Platform => other.circle_entity,
+                    };
+                    if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                        continue;
+                    }
+                    let row = self.entities[entity];
+                    let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                    let hit = if row.kind == 0 {
+                        crate::physics::contact::circle_box(
+                            Circle {
+                                center,
+                                radius: Fix::from_raw(row.radius),
+                            },
+                            hitbox,
+                        )
+                        .is_some()
+                    } else {
+                        let right =
+                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                        crate::physics::contact::box_box(
+                            hitbox,
+                            OrientedBox {
+                                center,
+                                right,
+                                up,
+                                inverse_extents: Vec2::new(
+                                    Fix::ONE / right.length(),
+                                    Fix::ONE / up.length(),
+                                ),
+                            },
+                        )
+                        .is_some()
+                    };
+                    if hit {
+                        victims[victim] = true;
+                        killers[victim] = killer;
+                    }
+                }
+            }
+        }
+        for victim in 0..self.players.len() {
+            if victims[victim] && self.playable(victim) {
+                self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
             }
         }
     }
@@ -8687,6 +9165,7 @@ impl RolloutWorld {
             let mut meteor_entity = usize::MAX;
             let mut black_hole_entity = usize::MAX;
             let mut macho_throw_entity = usize::MAX;
+            let mut drill_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -8760,6 +9239,11 @@ impl RolloutWorld {
                         data.macho_throw.collider_hierarchy,
                         &mut macho_throw_entity,
                     ),
+                    ABILITY_DRILL => (
+                        data::surface_extents(data.drill.hurtbox_extents),
+                        data.drill.collider_hierarchy,
+                        &mut drill_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -8790,6 +9274,8 @@ impl RolloutWorld {
                         data.black_hole.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_THROW {
                         data.macho_throw.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_DRILL {
+                        data.drill.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -8818,6 +9304,8 @@ impl RolloutWorld {
                         data.black_hole.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_THROW {
                         data.macho_throw.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_DRILL {
+                        data.drill.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -8881,6 +9369,8 @@ impl RolloutWorld {
             slot.plant_cast = PlantCastState::default();
             slot.black_hole_cast = BlackHoleCastState::default();
             slot.macho_throw = MachoThrowState::default();
+            slot.drill = DrillState::default();
+            slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
@@ -8907,6 +9397,7 @@ impl RolloutWorld {
             slot.meteor_entity = meteor_entity;
             slot.black_hole_entity = black_hole_entity;
             slot.macho_throw_entity = macho_throw_entity;
+            slot.drill_entity = drill_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -8937,6 +9428,7 @@ impl RolloutWorld {
                 self.players[index].tesla_entity,
                 self.players[index].black_hole_entity,
                 self.players[index].macho_throw_entity,
+                self.players[index].drill_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -9073,6 +9565,7 @@ impl RolloutWorld {
             let mut meteor_entity = usize::MAX;
             let mut black_hole_entity = usize::MAX;
             let mut macho_throw_entity = usize::MAX;
+            let mut drill_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -9146,6 +9639,11 @@ impl RolloutWorld {
                         data.macho_throw.collider_hierarchy,
                         &mut macho_throw_entity,
                     ),
+                    ABILITY_DRILL => (
+                        data::surface_extents(data.drill.hurtbox_extents),
+                        data.drill.collider_hierarchy,
+                        &mut drill_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -9177,6 +9675,8 @@ impl RolloutWorld {
                         data.black_hole.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_THROW {
                         data.macho_throw.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_DRILL {
+                        data.drill.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -9205,6 +9705,8 @@ impl RolloutWorld {
                         data.black_hole.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_THROW {
                         data.macho_throw.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_DRILL {
+                        data.drill.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -9255,6 +9757,8 @@ impl RolloutWorld {
             slot.plant_cast = PlantCastState::default();
             slot.black_hole_cast = BlackHoleCastState::default();
             slot.macho_throw = MachoThrowState::default();
+            slot.drill = DrillState::default();
+            slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
@@ -9281,6 +9785,7 @@ impl RolloutWorld {
             slot.meteor_entity = meteor_entity;
             slot.black_hole_entity = black_hole_entity;
             slot.macho_throw_entity = macho_throw_entity;
+            slot.drill_entity = drill_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -10731,6 +11236,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
+                    ActiveAbility::Drill => slot.drill_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -10878,6 +11384,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
+                    ActiveAbility::Drill => slot.drill_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -11153,6 +11660,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => slot.revival_entity,
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
+                    ActiveAbility::Drill => slot.drill_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -13356,6 +13864,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => player.revival_entity,
                     ActiveAbility::BlackHole => player.black_hole_entity,
                     ActiveAbility::Throw => player.macho_throw_entity,
+                    ActiveAbility::Drill => player.drill_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -14349,6 +14858,7 @@ impl RolloutWorld {
                     ActiveAbility::Revival => other.revival_entity,
                     ActiveAbility::BlackHole => other.black_hole_entity,
                     ActiveAbility::Throw => other.macho_throw_entity,
+                    ActiveAbility::Drill => other.drill_entity,
                     ActiveAbility::Platform => other.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -14863,6 +15373,7 @@ impl RolloutWorld {
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
         }
+        self.deactivate_drill_hitboxes(index);
         let revival_marker = self.players[index]
             .revival_markers
             .iter()
@@ -14920,6 +15431,7 @@ impl RolloutWorld {
                 slot.meteor_entity,
                 slot.black_hole_entity,
                 slot.macho_throw_entity,
+                slot.drill_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -14984,6 +15496,7 @@ impl RolloutWorld {
                 slot.meteor_entity,
                 slot.black_hole_entity,
                 slot.macho_throw_entity,
+                slot.drill_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -15040,6 +15553,7 @@ impl RolloutWorld {
                 slot.meteor_entity,
                 slot.black_hole_entity,
                 slot.macho_throw_entity,
+                slot.drill_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -15473,6 +15987,7 @@ impl RolloutWorld {
                 tesla_e,
                 black_hole_e,
                 macho_throw_e,
+                drill_e,
             ) = {
                 let s = &self.players[index];
                 (
@@ -15498,6 +16013,7 @@ impl RolloutWorld {
                     s.tesla_entity,
                     s.black_hole_entity,
                     s.macho_throw_entity,
+                    s.drill_entity,
                 )
             };
             let slot = &self.players[index];
@@ -15530,6 +16046,7 @@ impl RolloutWorld {
             let planting_tesla = slot.active == ActiveAbility::Tesla;
             let casting_black_hole = slot.active == ActiveAbility::BlackHole;
             let macho_throwing = slot.active == ActiveAbility::Throw;
+            let drilling = slot.active == ActiveAbility::Drill;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -16277,6 +16794,77 @@ impl RolloutWorld {
                     box_row.up_y = collider.up.y.raw();
                     box_row.rotation = rotation.raw();
                 }
+            }
+            if drill_e != usize::MAX {
+                let box_row = &mut self.entities[drill_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && drilling {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if drilling {
+                    box_row.owner = slot.base.id;
+                }
+                if drilling || was_active {
+                    let (position, up, rotation) = if drilling {
+                        (slot.base.position, slot.base.up, slot.base.rotation)
+                    } else {
+                        (
+                            slot.drill.collider_position,
+                            slot.drill.collider_up,
+                            slot.drill.collider_rotation,
+                        )
+                    };
+                    let basis = up.perp_cw();
+                    let center = position
+                        + (data.drill.collider_offset * slot.player_scale).complex_mul(basis);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(rotation),
+                        data::surface_extents(data.drill.hurtbox_extents) * slot.player_scale,
+                    );
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.vx = 0;
+                    box_row.vy = 0;
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
+            let drill_hitboxes_active = drilling && slot.drill.phase != 0;
+            for (hitbox_index, &entity) in slot.drill_hitbox_entities[slot.active_slot]
+                .iter()
+                .enumerate()
+            {
+                if entity == usize::MAX {
+                    continue;
+                }
+                let row = &mut self.entities[entity];
+                row.flags = if drill_hitboxes_active {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                let (offset, extents) = data.drill.hitboxes[hitbox_index];
+                let basis = slot.drill.hitbox_up.perp_cw();
+                let center =
+                    slot.drill.hitbox_position + (offset * slot.player_scale).complex_mul(basis);
+                let collider = OrientedBox::from_basis(
+                    center,
+                    Vec2::angle(slot.drill.hitbox_rotation),
+                    extents * slot.player_scale,
+                );
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.right_x = collider.right.x.raw();
+                row.right_y = collider.right.y.raw();
+                row.up_x = collider.up.x.raw();
+                row.up_y = collider.up.y.raw();
+                row.rotation = slot.drill.hitbox_rotation.raw();
             }
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];

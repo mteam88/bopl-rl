@@ -210,7 +210,8 @@
       "name": "Drill",
       "prefab": "Assets/GameObject/Drill.prefab",
       "prefab_guid": "42151d40a4924fd45b2fac553adf0f36",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "drill_ability_ab compares 2,700 NativeAOT/Rust Q32 ticks across four scenarios: first-cast allocation of three HitboxCombo boxes, exact 19-update entry and 13-update exit callbacks, air steering/gravity and offset exit, wall burrowing with minimum speed and entry/leave multipliers, bounds death plus stock reconstruction, a same-team owner-attributed hitbox kill, underside forced exit, and 690 ticks frozen by an opposing Time Stop. Lifecycle, flags, ownership, hierarchy, velocities, contact outcomes and callback ticks match; scaled entry/exit positions differ by at most two raw Q32 units from multiplication grouping. Rope detachment and direct Shockwave pushing remain to be composed and goldened."
     },
     {
       "id": 27,

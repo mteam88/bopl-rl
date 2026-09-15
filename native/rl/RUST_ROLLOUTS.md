@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Meteor, Shrink ray, Invisibility, Throw, Push, Tesla coil, Mine, Teleport, Rewind, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir**
-  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/21/22/23/24/25/31/33/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Engine, Blink gun, Gust, Growth ray, Rock, Missile, Spike, Time Stop, Smoke, Platform, Revival, Roll, Meteor, Shrink ray, Invisibility, Throw, Push, Tesla coil, Mine, Teleport, Drill, Rewind, Poke ball, Gold mushroom, Tack, Freeze ray, Mjolnir**
+  (catalog ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/21/22/23/24/25/26/31/33/34/35/36/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   collection, third-slot replacement and deferred acquired-ability
   registration. Dedicated collection and final-death goldens cover both
   origins.
-- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/31/33/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -222,6 +222,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   torque, collision response, player riding, bounds removal and death/stock
   reconstruction. Transferring Spike, Engine, Tesla and rope attachments from
   the consumed platform to the boulder remains open.
+  Drill executes its separate static-box PlayerBody form, 19-update entry and
+  13-update exit callbacks, air steering/gravity, first-cast HitboxCombo
+  registration, underground wall traversal and owner-credited Explosion-layer
+  kills. It preserves Ability/PlayerBody/Drill publication order, the first
+  registered overlapping platform, minimum and entry/leave speed multipliers,
+  underside forced exit, and the source's PlayerBody-only behavior during Time
+  Stop. Four differential scenarios cover ordinary/forced exits, a same-team
+  contact kill, bounds death, stock reconstruction, and 690 frozen ticks. Rope
+  detachment and direct Shockwave pushing remain to be composed and goldened.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain
@@ -294,7 +303,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
   so the remaining difference is primarily observation/entity history.
-- The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/22/24/35/37. Forces from
+- The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/22/24/26/35/37. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
 - f64 build only (2026-09-12): `Fix::sin` evaluates the quadrant-reduced

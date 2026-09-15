@@ -230,6 +230,7 @@ struct RawPrefabs {
     missile: RawMissile,
     mine: RawMine,
     macho_throw: RawMachoThrow,
+    drill: RawDrill,
     rock: RawRock,
     roll: RawRoll,
     meteor: RawMeteor,
@@ -245,6 +246,38 @@ struct RawPrefabs {
     tack: RawTack,
     mjolnir: RawMjolnir,
     poke_ball: RawPokeBall,
+}
+
+#[derive(Deserialize)]
+struct RawDrill {
+    hurtbox_extents: RawVec2,
+    collider_offset: RawVec2,
+    collider_hierarchy: u32,
+    enter_ticks: u32,
+    exit_ticks: u32,
+    drill_offset: RawVec2,
+    drill_hitbox: RawVec2,
+    gravity: i64,
+    drill_strength: i64,
+    rotation_speed_air: i64,
+    leave_ground_speed_multiplier: i64,
+    enter_ground_speed_multiplier: i64,
+    speed_to_rotation: Curve,
+    on_enter_offset: RawVec2,
+    min_underground_speed: i64,
+    keep_strong_gravity_seconds: i64,
+    strong_gravity: i64,
+    max_early_fall_speed: i64,
+    hitboxes: Vec<RawDrillHitbox>,
+    hitbox_layer: u32,
+    hitbox_updatable_count: u32,
+    hitbox_collider_hierarchy: u32,
+}
+
+#[derive(Deserialize)]
+struct RawDrillHitbox {
+    offset: RawVec2,
+    extents: RawVec2,
 }
 
 #[derive(Deserialize)]
@@ -1337,6 +1370,31 @@ pub struct MachoThrowData {
     pub boulder_down_effect_updatable_count: u32,
 }
 
+pub struct DrillData {
+    pub hurtbox_extents: Vec2,
+    pub collider_offset: Vec2,
+    pub collider_hierarchy: u32,
+    pub enter_ticks: u32,
+    pub exit_ticks: u32,
+    pub drill_offset: Vec2,
+    pub drill_hitbox: Vec2,
+    pub gravity: Fix,
+    pub drill_strength: Fix,
+    pub rotation_speed_air: Fix,
+    pub leave_ground_speed_multiplier: Fix,
+    pub enter_ground_speed_multiplier: Fix,
+    pub speed_to_rotation: Curve,
+    pub on_enter_offset: Vec2,
+    pub min_underground_speed: Fix,
+    pub keep_strong_gravity_seconds: Fix,
+    pub strong_gravity: Fix,
+    pub max_early_fall_speed: Fix,
+    pub hitboxes: Vec<(Vec2, Vec2)>,
+    pub hitbox_layer: u32,
+    pub hitbox_updatable_count: u32,
+    pub hitbox_collider_hierarchy: u32,
+}
+
 pub struct RockData {
     pub radius: Fix,
     pub collider_hierarchy: u32,
@@ -1736,6 +1794,7 @@ pub struct RolloutData {
     pub missile: MissileData,
     pub mine: MineData,
     pub macho_throw: MachoThrowData,
+    pub drill: DrillData,
     pub rock: RockData,
     pub roll: RollData,
     pub meteor: MeteorData,
@@ -2359,6 +2418,41 @@ pub fn get() -> &'static RolloutData {
                     boulder_body: body(&macho.boulder.body, Fix::ZERO),
                     boulder_dropped_bounciness: Fix::from_raw(macho.boulder.dropped_bounciness),
                     boulder_down_effect_updatable_count: macho.boulder.down_effect_updatable_count,
+                }
+            },
+            drill: {
+                let drill = &raw.prefabs.drill;
+                DrillData {
+                    hurtbox_extents: drill.hurtbox_extents.get(),
+                    collider_offset: drill.collider_offset.get(),
+                    collider_hierarchy: drill.collider_hierarchy,
+                    enter_ticks: drill.enter_ticks,
+                    exit_ticks: drill.exit_ticks,
+                    drill_offset: drill.drill_offset.get(),
+                    drill_hitbox: drill.drill_hitbox.get(),
+                    gravity: Fix::from_raw(drill.gravity),
+                    drill_strength: Fix::from_raw(drill.drill_strength),
+                    rotation_speed_air: Fix::from_raw(drill.rotation_speed_air),
+                    leave_ground_speed_multiplier: Fix::from_raw(
+                        drill.leave_ground_speed_multiplier,
+                    ),
+                    enter_ground_speed_multiplier: Fix::from_raw(
+                        drill.enter_ground_speed_multiplier,
+                    ),
+                    speed_to_rotation: drill.speed_to_rotation.clone(),
+                    on_enter_offset: drill.on_enter_offset.get(),
+                    min_underground_speed: Fix::from_raw(drill.min_underground_speed),
+                    keep_strong_gravity_seconds: Fix::from_raw(drill.keep_strong_gravity_seconds),
+                    strong_gravity: Fix::from_raw(drill.strong_gravity),
+                    max_early_fall_speed: Fix::from_raw(drill.max_early_fall_speed),
+                    hitboxes: drill
+                        .hitboxes
+                        .iter()
+                        .map(|hitbox| (hitbox.offset.get(), hitbox.extents.get()))
+                        .collect(),
+                    hitbox_layer: drill.hitbox_layer,
+                    hitbox_updatable_count: drill.hitbox_updatable_count,
+                    hitbox_collider_hierarchy: drill.hitbox_collider_hierarchy,
                 }
             },
             rock: RockData {

@@ -2438,3 +2438,44 @@ The source can detach an existing Spike, Engine, Tesla node or rope anchor from
 the consumed platform and reattach it to the held boulder. Those composed
 attachment transfers still require implementation and differential scenarios,
 so coverage remains partial.
+
+### Executable Drill form and combo hitboxes (2026-09-15)
+
+Catalog id 26 now executes the shipped `Drill` form. Entry copies both velocity
+channels and the scalar rotation into its separate `PlayerBody`, moves the root
+by the authored 2.01-unit local offset, and allocates its three static
+Explosion-layer boxes on the first cast of each equipped prefab. The inactive
+boxes retain their registered identity and hierarchy; the 19th animator update
+starts the loop and activates all three, while the 13th exit-animation update
+returns to the ordinary slime. `Ability.UpdateSim`, `PlayerBody`, and `Drill`
+retain their distinct publication phases, so `Player.Position` exposes the
+pre-movement form while DetPhysics entities expose the synchronized post-update
+colliders.
+
+The oriented drill query scans wall platforms in registered order. Air motion
+uses the strong 102-unit gravity for the strict initial 0.4-second interval and
+45 thereafter, with the source's normalized-vector steering. Entering a valid
+surface clamps nonzero speed to 10, applies the 0.66 multiplier, clears external
+velocity, then constrains and accelerates motion along the drill axis. Leaving
+applies the 1.5 multiplier; a held release is suppressed underground and exits
+without the positional offset on the emergence pass. An underside normal exits
+before later gravity, platform motion, release, or hitbox synchronization, so
+the combo boxes correctly retain their preceding pose. The root bounds handler
+also retains its earlier component phase and kills before another body update.
+
+`drill_ability_ab.c` compares 2,700 NativeAOT/Rust Q32 ticks across a downward
+burrow and bounds death, an airborne release through the full exit animation, a
+three-player same-team contact that verifies the first lethal callback and
+stock clone, and an opposing Time Stop. The hitboxes spawn on tick 181 and
+activate on 199; the bounds death and replacement clone occur on 291/292. The
+contact kills on 199 and the invalid-surface exit plus replacement registration
+occur on 200. The frozen case covers all 690 zero-scale ticks and verifies the
+Drill-specific rule that `PlayerBody` damps external velocity while Drill only
+updates combo transforms. Metadata, velocities, ownership, hierarchy, entity
+counts, contacts, deaths and callback ticks match. Entry, exit and collider
+positions differ by at most two raw Q32 units (4.7e-10 world units) because the
+Rust path groups the scaled local-vector multiplication differently; no query,
+contact or branch changes. State and hitbox storage are inline or retained and
+the tick path allocates nothing. Rope detachment and direct Shockwave pushing
+remain to be exercised as composed interactions, so catalog coverage remains
+partial.
