@@ -12424,6 +12424,37 @@ impl RolloutWorld {
                 if player_index == wave_index / 3 || !self.playable(player_index) {
                     continue;
                 }
+                if self.players[player_index].active == ActiveAbility::Bow {
+                    let target = &self.players[player_index];
+                    let up = if target.bow.aim == Vec2::ZERO {
+                        Vec2::UP
+                    } else {
+                        target.bow.aim
+                    };
+                    let extents = data.bow.hurtbox_extents;
+                    let bow = OrientedBox {
+                        center: target.base.position,
+                        right: up.perp_cw() * extents.x,
+                        up: up * extents.y,
+                        inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                    };
+                    if crate::physics::contact::circle_box(query, bow).is_some() {
+                        // Bow is another pushable PlayerPhysics-backed form;
+                        // use its live aim-oriented box for CircleCastAll.
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        let force = data.gust.default_force / distance;
+                        let force = if target.base.grounded {
+                            data.gust.grounded_multiplier * delta * force
+                        } else {
+                            delta * force
+                        };
+                        self.players[player_index].base.external_velocity +=
+                            force * Fix::from_int(35);
+                    }
+                    continue;
+                }
                 if self.players[player_index].active == ActiveAbility::Roll {
                     let target = &self.players[player_index];
                     let roll = Circle {

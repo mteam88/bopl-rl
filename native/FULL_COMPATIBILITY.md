@@ -1224,6 +1224,13 @@ preceding movement pose rather than the pose PlayerBody publishes later in that
 pass. The trace is exact through that phase distinction, lower-boundary death on
 tick 292, effect allocation, stock loss and collider removal.
 
+`gust_bow_ab.c` covers the aim-oriented pushable Bow form for 300 exact ticks.
+Bow and Gust enter on ticks 214 and 224; wave activation on tick 231 performs
+the source circle-versus-oriented-box query from the live Bow aim, then applies
+the same distance-scaled `PlayerPhysics` force through the inverse-mass factor
+of 35 before Bow's movement pass. The subsequent form position, aim, charge and
+ability clocks remain exact.
+
 
 ## Executable Invisibility and streamed actor verification
 

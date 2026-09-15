@@ -100,7 +100,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   live Arrow through the source's stronger layer-9 pull, nearest-circle pickup,
   held spin/pin countdown and doubled projectile launch force. Gust captures a
   live Arrow in its fixed target set and applies its full Shockwave curve with
-  orientation retained from the authored between-impulse Arrow update.
+  orientation retained from the authored between-impulse Arrow update. Gust
+  also queries the live aim-oriented Bow form and applies its one-shot
+  PlayerPhysics force before Bow movement.
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
@@ -138,7 +140,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   by 9,000 and queued on its BoplBody, then normal Rock physics carries it to an
   exact ability-body boundary death. An airborne charging Roll takes the other
   pushable-form path through `PlayerPhysics.AddForce`; its later boundary check
-  observes the pose before the lower-hierarchy `PlayerBody` movement pass.
+  observes the pose before the lower-hierarchy `PlayerBody` movement pass. Bow
+  uses the same force path with its aim-oriented box collider.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same

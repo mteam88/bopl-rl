@@ -98,6 +98,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   BoplBody fallback, subsequent rigid flight and lower-boundary death.
 - `gust_roll_ab.c`: Gust's one-shot PlayerPhysics force on an airborne charging
   Roll, subsequent form motion and correctly phased lower-boundary death.
+- `gust_bow_ab.c`: Gust's one-shot PlayerPhysics force against a live
+  aim-oriented Bow form and its subsequent charging-form motion.
 - `magnet_ability_ab.c`: Magnet's first-pass pull, rounded-platform impulses,
   player pull, grounded and airborne form motion, release recoil, landing and
   animation exits over 1,000 optimized-Q32 ticks. The active form centre allows
