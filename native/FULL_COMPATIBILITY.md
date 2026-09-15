@@ -191,8 +191,8 @@ against the instrumented Unity build with `just verify-beams`.
 This is a **graph-stage** comparison. The probe captures immediately before
 `renderBeams`, which also creates gameplay hitboxes and applies damage/forces.
 The graph result alone does not verify those effects. The component ports below
-cover hitbox geometry and target force/charge rules; beam ability startup/shutdown,
-pooled object lifecycle and independent native beam gameplay remain required.
+cover hitbox geometry and target force/charge rules; the executable rollout
+integration is covered in "Executable Beam" below.
 Graph scenarios currently use null ground references and synthetic obstacles;
 they do not certify every live-game beam state or the entire Beam ability.
 Evidence and assembly/input/output hashes are in `artifacts/beam/`,
@@ -227,10 +227,8 @@ Hashes and raw evidence live in `artifacts/curves/`, `artifacts/beam-hitbox/` an
 `artifacts/beam-effects/`.
 
 These component tests initialize the components directly. The combined-stage
-evidence below adds graph/pool/physics update order and composite target routing.
-Explosion collision callbacks, deaths, ability startup/shutdown and a native beam
-episode from player inputs remain required. The public C environment is still the movement/dash slice;
-Beam, Orb and BlackHole are not complete native abilities.
+evidence below adds graph/pool/physics update order and composite target routing;
+the executable rollout section adds player input, ability lifecycle and deaths.
 
 
 ## Combined beam and physics stage
@@ -314,8 +312,9 @@ Use `reference.py capture --physics` and `verify_physics_capture.py` for complet
 captures. Use `verify_physics_failure.py CAPTURE.failure.json` for a recorded
 exception boundary; it never upgrades the failed tick to a successful rollout.
 
-Beam's player controller, animation-driven lifecycle and collision damage remain
-unported. The public C environment remains the movement/dash slice.
+The captures in this section isolate the imported physics stage. End-to-end
+player control, animation lifecycle and collision damage are covered by the
+executable rollout differential below.
 
 
 ## Player death accounting
@@ -2517,6 +2516,56 @@ lands at the same exit. Its mapped velocity differs by less than 0.0024
 units/second because the existing ThrowItem2 port creates that grenade 0.0185
 units away from NativeAOT before portal capture; the portal resets its position
 and preserves the already-different incoming components, so no capture,
-branch, or lifecycle decision differs. Interactions with the five catalog
+branch, or lifecycle decision differs. Interactions with the four catalog
 abilities that remain unimplemented have not yet been exercised, so coverage
 is marked partial.
+
+### Executable Beam forms, pooled graph and damage (2026-09-15)
+
+Catalog id 28 now connects the previously verified Beam kernels to the public
+rollout. The separate grounded and airborne `PlayerBody` forms preserve their
+authored radii, offsets, movement constants and animation schedules. Ground
+entry chains `enterFrame1` into `enter` or `enterUp`, requests the exact
+ShakablePlatform trauma each pass, and keeps its clamped relative staff vector
+as the platform rotates. Air entry rotates the hurtbox with the approached aim
+and reproduces the three `getNumberOfPassedSprites` orb poses at ticks 32, 48
+and 64. Release during entry, manual release during the loop, jump cancellation,
+landing and the strict maximum-time condition all follow their distinct exit
+paths. The grounded exit reproduces `SyncPhysicsTo(AbilityExitInfo)`'s two
+positions: `Player.Position` sees the ability collider's published world pose,
+while the ordinary slime box is reconstructed from the newly advanced platform
+local using Beam's radius and then converted to the ordinary radius.
+
+The lazily instantiated layer-18 orb preserves its disabled charge state,
+enables on the firing transition, completes `whiteExit` when that animation is
+shorter, and remains as the same inactive object when an air form exits first.
+Recasting that equipped prefab reuses its id, hierarchy and previous cast-tick
+pose exactly. Destroying the holder instead removes the orb on its following
+updater pass. Beam inputs feed the retained crossing graph without allocating;
+the graph snapshot, reflected-id scratch, BeamObject pool, previous-pass contact
+boxes and kind-4 observation rows all reuse capacity. Collider objects are
+created before trace ids, matching `renderBeams` followed by `RlObservation`.
+Collision callbacks consume the box DetPhysics simulated before the current
+graph resized it, so a newly created beam is visible one pass before it can kill.
+Terrain, Black Hole and Rock endpoint forces use the exported scale clamp and
+time-stop protection. Water reflection and every graph role remain supplied by
+the same verified graph implementation.
+
+`beam_ability_ab.c` compares 3,810 optimized Q32 NativeAOT/Rust ticks across a
+ground lifecycle with stock death, charge cancellation on a shaken moving
+platform, complete airborne entry/release, retained-orb recast, automatic
+maximum-duration shrink/stop, and two simultaneous upward beams that produce
+the persistent crossing child. All headers, player/slime records, telemetry,
+entity order, identities, ownership and lifecycle boundaries match. The entity
+comparison permits one raw Q32 unit for positions, axes and radii: the observed
+case is a BeamObject centre where Unity restores inverse extents and associates
+the rotated half-length product one operation earlier. That is 2.33e-10 world
+units, while both axes, every overlap decision and all later state match.
+
+The retained standalone corpora continue to cover 995 primitive rays, 62 short
+and 51 stress graph scenarios, 250 curves, 196 hitbox sequences, 214 endpoint
+effect scenarios, and 73 combined physics scenes with no mismatches. Live
+`Orb.ApplyBeam` has no producer in the five shipped maps or the 39-ability
+catalog; its type/charge/firing/color behavior remains verified in the endpoint
+component corpus. The four remaining unimplemented catalog entries are
+Grappling hook, Duplicator, Magnet gun and Web swing.

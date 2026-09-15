@@ -1614,6 +1614,85 @@ def main():
         },
     }
 
+    # ---- Beam player form, retained orb, and DetPhysics beam pool ----
+    _, beam_prefab = find_prefab("Assets/GameObject/Beam.prefab")
+    beam = component(beam_prefab, "Beam")
+    beam_phys = component(beam_prefab, "PlayerPhysics")
+    beam_box = component(beam_prefab, "DPhysicsBox")
+    beam_fix = component(beam_prefab, "FixTransform")
+    beam_anims = animations(guid_of(beam["animData"]))
+    orb_prefab = ASSETS[guid_of(beam["OrbEffectPrefab"])]
+    orb_circle = component(orb_prefab, "DPhysicsCircle")
+    beam_object = ASSETS[guid_of(next(
+        node_component(node, "DetPhysics")["beamObjectPrefab"]
+        for node in walk(load("map-0.json"))
+        if node_component(node, "DetPhysics") is not None
+    ))]
+    beam_object_logic = component(beam_object, "BeamObject")
+    beam_object_box = component(beam_object, "DPhysicsBox")
+    det = next(node_component(node, "DetPhysics")
+               for node in walk(load("map-0.json"))
+               if node_component(node, "DetPhysics") is not None)
+    out["prefabs"]["beam"] = {
+        "hurtbox_extents": vec2(beam_box, "startExtents"),
+        "collider_offset": vec2(beam_fix, "offset"),
+        "collider_hierarchy": beam_box["hierarchyNumber"],
+        "physics": {
+            "max_speed": fix(beam_phys, "maxSpeed"),
+            "accel": fix(beam_phys, "accel"),
+            "air_accel": fix(beam_phys, "airAccel"),
+            "radius": fix(beam_phys, "radius"),
+            "gravity_accel": fix(beam_phys, "gravity_accel"),
+            "gravity_max_fall_speed": fix(beam_phys, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(beam_phys, "gravity_modifier"),
+            "jump_strength": fix(beam_phys, "jumpStrength"),
+        },
+        "enter_ground_ticks": sum(abs(t) for t in beam_anims["enterFrame1"])
+                              + sum(abs(t) for t in beam_anims["enter"]),
+        "enter_air_ticks": sum(abs(t) for t in beam_anims["enterAir"]),
+        # SpriteAnimator's passed-sprite counter becomes visible to Beam's
+        # LateUpdateSim two updater positions after each cumulative boundary.
+        "air_orb_frame8_ticks": sum(abs(t) for t in beam_anims["enterAir"][:7]) + 2,
+        "air_orb_frame9_ticks": sum(abs(t) for t in beam_anims["enterAir"][:8]) + 2,
+        "air_orb_frame10_ticks": sum(abs(t) for t in beam_anims["enterAir"][:9]) + 2,
+        "exit_ground_ticks": sum(abs(t) for t in beam_anims["exit"]),
+        "exit_air_ticks": sum(abs(t) for t in beam_anims["exitAir"]),
+        "up_alignment": fix(beam, "upAlignmentUntilUpAnimationIsUsed"),
+        "min_grounded_angle": fix(beam, "minGroundedAngle"),
+        "exit_scale_curve": curve(beam, "exitScaleAnim"),
+        "beam_offset": fix(beam, "beamOffset"),
+        "air_extents": vec2(beam, "hurtBoxExtentsAir"),
+        "air_offset": vec2(beam, "hurtBoxOffsetAir"),
+        "angular_aim_speed": fix(beam, "angularAimSpeed"),
+        "angular_aim_curve": curve(beam, "angularAimSpeedAnim01"),
+        "exit_up_speed": fix(beam, "onExitUpSpeed"),
+        "max_time": fix(beam, "maxTime"),
+        "max_time_air": fix(beam, "maxTimeAir"),
+        "exit_scale_time": fix(beam, "exitScaleTime"),
+        "shake_duration": fix(beam, "shakeDuration"),
+        "shake_strength": fix(beam, "shakeStr"),
+        "orb_layer": orb_prefab["data"].get("layer"),
+        "orb_updatable_count": hierarchy_span(orb_prefab),
+        "orb_collider_hierarchy": orb_circle["hierarchyNumber"],
+        "orb_radius": fix(orb_circle, "startRadius"),
+        "orb_exit_ticks": sum(abs(t) for t in animations(guid_of(beam["orbAnimData"]))["whiteExit"]),
+        "maximum_distance": fix(det, "maxBeamDistance"),
+        "width": fix(det, "beamWidth"),
+        "width_curve": curve(det, "beamWidthAnim"),
+        "parent_offset": fix(det, "beamParentOffset"),
+        "platform_force": fix(det, "beamPlatformPushForce"),
+        "black_hole_force": fix(det, "beamBlackHolePushForce"),
+        "rigid_body_force": fix(det, "beamRigidBodyPushFOrce"),
+        "cross_offset": fix(det, "crossBeamOffset"),
+        "hit_mask": det["beamHitMask"],
+        "object_layer": beam_object["data"].get("layer"),
+        "object_updatable_count": hierarchy_span(beam_object),
+        "object_collider_hierarchy": beam_object_box["hierarchyNumber"],
+        "base_width": fix(beam_object_logic, "baseWidth01"),
+        "extra_length": fix(beam_object_logic, "extraLength"),
+        "minimum_extent": fix(beam_object_box, "minimumExtents"),
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

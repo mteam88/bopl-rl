@@ -48,13 +48,38 @@ impl Default for Hitbox {
 }
 impl Hitbox {
     pub fn set_dimensions(&mut self, config: Config, dimensions: &Dimensions) {
-        self.owner_id = dimensions.player_id;
-        self.beam_id = dimensions.beam_id;
-        let width =
-            dimensions.width * (config.base_width * dimensions.curve.evaluate(dimensions.age));
-        self.position = dimensions.position;
+        self.set_dimension_values(
+            config,
+            dimensions.position,
+            dimensions.width,
+            dimensions.direction,
+            dimensions.distance,
+            dimensions.age,
+            dimensions.player_id,
+            dimensions.beam_id,
+            &dimensions.curve,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_dimension_values(
+        &mut self,
+        config: Config,
+        position: Vec2,
+        width: Fix,
+        direction: Vec2,
+        distance: Fix,
+        age: Fix,
+        player_id: i32,
+        beam_id: i32,
+        curve: &Curve,
+    ) {
+        self.owner_id = player_id;
+        self.beam_id = beam_id;
+        let width = width * (config.base_width * curve.evaluate(age));
+        self.position = position;
         self.offset = Vec2::new(
-            dimensions.distance * Fix::from_f64(0.5) + config.extra_length,
+            distance * Fix::from_f64(0.5) + config.extra_length,
             Fix::ZERO,
         );
         let mut extents = Vec2::new(self.offset.x, width);
@@ -73,7 +98,7 @@ impl Hitbox {
         } else {
             self.start_extents = extents;
         }
-        self.right = dimensions.direction.normalized_safe();
+        self.right = direction.normalized_safe();
         self.rotation = self.right.normalized_angle();
         if let Some(collider) = &mut self.collider {
             let basis = Vec2::angle(self.rotation);

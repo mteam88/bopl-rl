@@ -52,7 +52,7 @@ pub struct Config {
     pub cross_offset: Fix,
     pub environmental_player: i32,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub bodies: Vec<Beam>,
     pub roles: Vec<Role>,
@@ -66,7 +66,7 @@ pub struct Snapshot {
     pub initial: usize,
     pub mapping: Vec<(i32, usize)>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Graph {
     pub(super) config: Config,
     pub(super) bodies: Vec<Beam>,
@@ -78,6 +78,7 @@ pub struct Graph {
     pub(super) hits: Vec<Option<u32>>,
     pub(super) crossing: Vec<Crossing>,
     previous: Vec<Record>,
+    previous_reflected: Vec<i32>,
     mapping: Vec<(i32, usize)>,
     pub(super) count: usize,
     pub(super) initial: usize,
@@ -97,6 +98,7 @@ impl Graph {
             hits: vec![None; 128],
             crossing: Vec::new(),
             previous: Vec::new(),
+            previous_reflected: Vec::new(),
             mapping: Vec::new(),
             count: 0,
             initial: 0,
@@ -164,13 +166,20 @@ impl Graph {
         self.bodies[i].distance = hit.distance;
     }
     pub fn step(&mut self, input: &[Beam], caster: &mut Caster<'_>) -> Snapshot {
+        let mut snapshot = Snapshot::default();
+        self.step_into(input, caster, &mut snapshot);
+        snapshot
+    }
+
+    pub fn step_into(&mut self, input: &[Beam], caster: &mut Caster<'_>, snapshot: &mut Snapshot) {
         self.count = input.len();
         self.bodies[..self.count].copy_from_slice(input);
-        let previous_reflected: Vec<_> = self
-            .mapping
-            .iter()
-            .filter_map(|&(id, i)| self.reflected[i].then_some(id))
-            .collect();
+        self.previous_reflected.clear();
+        self.previous_reflected.extend(
+            self.mapping
+                .iter()
+                .filter_map(|&(id, i)| self.reflected[i].then_some(id)),
+        );
         self.was_reflected.fill(false);
         self.mapping.clear();
         self.roles.fill(Role::Single);
@@ -182,12 +191,13 @@ impl Graph {
         for i in 0..self.count {
             self.cast(i, caster);
         }
-        for id in previous_reflected {
+        for &id in &self.previous_reflected {
             if let Some(i) = self.lookup(id) {
                 self.was_reflected[i] = true;
             }
         }
-        for r in self.previous.clone() {
+        let mut previous = std::mem::take(&mut self.previous);
+        for &r in &previous {
             if let (Some(a), Some(b)) = (self.lookup(r.a), self.lookup(r.b)) {
                 let hit = self.intersect(a, b, false);
                 if hit.hit {
@@ -214,15 +224,13 @@ impl Graph {
                 self.cross(a, b, 0, best, caster);
             }
         }
-        self.previous = self
-            .crossing
-            .iter()
-            .map(|c| Record {
-                a: self.bodies[c.a].id,
-                b: self.bodies[c.b].id,
-                age: c.age.wrapping_add(1),
-            })
-            .collect();
+        previous.clear();
+        previous.extend(self.crossing.iter().map(|c| Record {
+            a: self.bodies[c.a].id,
+            b: self.bodies[c.b].id,
+            age: c.age.wrapping_add(1),
+        }));
+        self.previous = previous;
         for i in 0..self.count {
             if !matches!(self.roles[i], Role::MaybeChild | Role::Child) {
                 continue;
@@ -267,23 +275,31 @@ impl Graph {
             extra += 1;
         }
         let n = self.count + extra;
-        let snapshot = Snapshot {
-            bodies: self.bodies[..n].to_vec(),
-            roles: self.roles[..n].to_vec(),
-            parents: self.parents[..n].to_vec(),
-            reflected: self.reflected[..n].to_vec(),
-            was_reflected: self.was_reflected[..n].to_vec(),
-            reflection_distances: self.reflection_distances[..n].to_vec(),
-            hits: self.hits[..n].to_vec(),
-            crossings: self.previous.clone(),
-            total: self.count,
-            initial: self.initial,
-            mapping: self.mapping.clone(),
-        };
+        snapshot.bodies.clear();
+        snapshot.bodies.extend_from_slice(&self.bodies[..n]);
+        snapshot.roles.clear();
+        snapshot.roles.extend_from_slice(&self.roles[..n]);
+        snapshot.parents.clear();
+        snapshot.parents.extend_from_slice(&self.parents[..n]);
+        snapshot.reflected.clear();
+        snapshot.reflected.extend_from_slice(&self.reflected[..n]);
+        snapshot.was_reflected.clear();
+        snapshot
+            .was_reflected
+            .extend_from_slice(&self.was_reflected[..n]);
+        snapshot.reflection_distances.clear();
+        snapshot
+            .reflection_distances
+            .extend_from_slice(&self.reflection_distances[..n]);
+        snapshot.hits.clear();
+        snapshot.hits.extend_from_slice(&self.hits[..n]);
+        snapshot.crossings.clone_from(&self.previous);
+        snapshot.total = self.count;
+        snapshot.initial = self.initial;
+        snapshot.mapping.clone_from(&self.mapping);
         self.previous_count = self.count;
         self.crossing.clear();
         self.count = 0;
-        snapshot
     }
 }
 pub(super) fn blend(a: Vec2, b: Vec2) -> Vec2 {

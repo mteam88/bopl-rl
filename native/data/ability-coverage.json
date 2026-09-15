@@ -227,7 +227,8 @@
       "name": "Beam",
       "prefab": "Assets/GameObject/Beam.prefab",
       "prefab_guid": "551e7eb68828c994d8f83e8e070fed17",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "NativeAOT differential covers grounded and airborne charge, frame-driven orb poses, firing, one-pass collision latency and stock kill, manual cancellation, automatic maximum-duration scaling/stop, orb cleanup and retained-orb recast, plus two-player persistent beam crossings. The rollout uses pooled graph snapshots, hitboxes and trace rows without per-tick allocation; the retained synthetic graph/component/scene fixtures cover reflections and all endpoint effect classes."
     },
     {
       "id": 29,

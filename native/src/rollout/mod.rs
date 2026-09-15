@@ -63,6 +63,7 @@ pub const ABILITY_TESLA: u32 = 23;
 pub const ABILITY_MINE: u32 = 24;
 pub const ABILITY_TELEPORT: u32 = 25;
 pub const ABILITY_DRILL: u32 = 26;
+pub const ABILITY_BEAM: u32 = 28;
 pub const ABILITY_REWIND: u32 = 31;
 pub const ABILITY_POKE_BALL: u32 = 33;
 pub const ABILITY_GOLD_MUSHROOM: u32 = 34;
@@ -1262,6 +1263,54 @@ pub struct DrillState {
     pub hitbox_rotation: Fix,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct BeamState {
+    /// 0 enter, 1 firing loop, 2 exit animation.
+    pub phase: u8,
+    pub phase_ticks: u32,
+    pub in_air: bool,
+    pub aimed_up: bool,
+    pub staff_dir: Vec2,
+    pub relative_staff_dir: Vec2,
+    pub time_since_enter: Fix,
+    pub time_since_beam: Fix,
+    pub current_ground: Option<u32>,
+    pub orb: Option<usize>,
+    pub entry_facing_right: bool,
+    pub started: bool,
+    pub collider_position: Vec2,
+    pub collider_up: Vec2,
+    pub collider_rotation: Fix,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct BeamOrbState {
+    pub active: bool,
+    pub enabled: bool,
+    pub born_tick: u32,
+    pub entity: Option<usize>,
+    pub hierarchy_base: u32,
+    pub owner: usize,
+    pub position: Vec2,
+    pub exit_ticks: u32,
+    pub destroy_when_unheld: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct BeamPoolSlot {
+    pub entity: Option<usize>,
+    pub trace_entity: Option<usize>,
+    pub trace_beam_id: i32,
+    pub hitbox: crate::beam::hitbox::Hitbox,
+    /// Collider state DetPhysics simulated before UpdateBeams resized the
+    /// pooled object for this pass. Collision callbacks consume this copy
+    /// after the graph has already been rendered.
+    pub contact_collider: Option<OrientedBox>,
+    pub contact_beam_id: i32,
+    pub contact_owner_id: i32,
+    pub active: bool,
+}
+
 /// A Boulder prefab created by MachoThrow2. Its rounded rectangle lives in
 /// the common platform arrays so all platform contacts and riders see it.
 #[derive(Clone, Copy, Default)]
@@ -1395,6 +1444,7 @@ pub enum ActiveAbility {
     BlackHole,
     Throw,
     Drill,
+    Beam,
     Platform,
 }
 
@@ -1505,6 +1555,12 @@ pub struct PlayerSlot {
     pub black_hole_cast: BlackHoleCastState,
     pub macho_throw: MachoThrowState,
     pub drill: DrillState,
+    pub beam: BeamState,
+    /// OrbEffectPrefab is lazily instantiated and retained by each equipped
+    /// Beam prefab when its exit animation is interrupted by the shorter air
+    /// form exit. A completed whiteExit destroys it and the next cast creates
+    /// a fresh instance.
+    pub beam_orb_slots: [Option<usize>; 3],
     /// HitboxCombo instantiates these on the first Drill cast for each live
     /// equipped prefab. Old stock instances leave their inactive rows behind.
     pub drill_hitbox_entities: [[usize; 3]; 3],
@@ -1593,6 +1649,7 @@ pub struct PlayerSlot {
     pub black_hole_entity: usize,
     pub macho_throw_entity: usize,
     pub drill_entity: usize,
+    pub beam_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1701,6 +1758,11 @@ pub struct RolloutWorld {
     pub teleport_marker_pool: Vec<TeleportMarker>,
     pub portal_shots: Vec<PortalShotState>,
     pub portals: Vec<PortalEndpoint>,
+    pub beam_orbs: Vec<BeamOrbState>,
+    pub beam_pool: Vec<BeamPoolSlot>,
+    beam_graph: crate::beam::graph::Graph,
+    beam_snapshot: crate::beam::graph::Snapshot,
+    beam_inputs: Vec<crate::beam::graph::Beam>,
     /// Per collider-body portal hysteresis. Active portal pool indices are
     /// reused and fit in one word (six players * three slots * two mouths).
     pub portal_body_inside: Vec<u64>,
@@ -1744,6 +1806,17 @@ fn empty_state() -> Box<CState> {
         entities: core::ptr::null(),
         slimes: core::ptr::null(),
         telemetry: [CTelemetry::default(); 6],
+    })
+}
+
+fn new_beam_graph(data: &data::RolloutData) -> crate::beam::graph::Graph {
+    crate::beam::graph::Graph::new(crate::beam::graph::Config {
+        maximum: data.beam.maximum_distance,
+        water: Fix::from_f32(-11.22),
+        space: false,
+        mask: data.beam.hit_mask,
+        cross_offset: data.beam.cross_offset,
+        environmental_player: 1000,
     })
 }
 
@@ -1801,6 +1874,11 @@ impl RolloutWorld {
             portals: Vec::with_capacity(32),
             portal_body_inside: Vec::with_capacity(192),
             portal_body_ids: Vec::with_capacity(192),
+            beam_orbs: Vec::with_capacity(32),
+            beam_pool: Vec::with_capacity(16),
+            beam_graph: new_beam_graph(data::get()),
+            beam_snapshot: crate::beam::graph::Snapshot::default(),
+            beam_inputs: Vec::with_capacity(MAX_PLAYERS),
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
@@ -1886,6 +1964,11 @@ impl RolloutWorld {
         self.portals.clone_from(&src.portals);
         self.portal_body_inside.clone_from(&src.portal_body_inside);
         self.portal_body_ids.clone_from(&src.portal_body_ids);
+        self.beam_orbs.clone_from(&src.beam_orbs);
+        self.beam_pool.clone_from(&src.beam_pool);
+        self.beam_graph.clone_from(&src.beam_graph);
+        self.beam_snapshot.clone_from(&src.beam_snapshot);
+        self.beam_inputs.clone_from(&src.beam_inputs);
         self.sudden_death = src.sudden_death;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
@@ -1962,6 +2045,11 @@ impl RolloutWorld {
             portals: _,
             portal_body_inside: _,
             portal_body_ids: _,
+            beam_orbs: _,
+            beam_pool: _,
+            beam_graph: _,
+            beam_snapshot: _,
+            beam_inputs: _,
             sudden_death: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
@@ -2069,6 +2157,11 @@ impl RolloutWorld {
         self.portals.clear();
         self.portal_body_inside.clear();
         self.portal_body_ids.clear();
+        self.beam_orbs.clear();
+        self.beam_pool.clear();
+        self.beam_graph = new_beam_graph(data);
+        self.beam_snapshot = crate::beam::graph::Snapshot::default();
+        self.beam_inputs.clear();
         self.players.clear();
         self.platforms.clear();
         self.platform_dynamics.clear();
@@ -2145,6 +2238,7 @@ impl RolloutWorld {
         let mut black_hole_entity = [usize::MAX; MAX_PLAYERS];
         let mut macho_throw_entity = [usize::MAX; MAX_PLAYERS];
         let mut drill_entity = [usize::MAX; MAX_PLAYERS];
+        let mut beam_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -2359,6 +2453,14 @@ impl RolloutWorld {
                             &mut drill_entity[i],
                             false,
                         ),
+                        ABILITY_BEAM => (
+                            data.beam.hurtbox_extents,
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.beam.collider_hierarchy,
+                            &mut beam_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -2384,6 +2486,7 @@ impl RolloutWorld {
                             | ABILITY_BLACK_HOLE
                             | ABILITY_THROW
                             | ABILITY_DRILL
+                            | ABILITY_BEAM
                     ) {
                         E_ENABLED | E_TRIGGER
                     } else {
@@ -2412,6 +2515,8 @@ impl RolloutWorld {
                         data.macho_throw.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_DRILL {
                         data.drill.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_BEAM {
+                        data.beam.collider_offset.x.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2447,6 +2552,8 @@ impl RolloutWorld {
                         data.macho_throw.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_DRILL {
                         data.drill.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_BEAM {
+                        data.beam.collider_offset.y.raw()
                     } else if !body
                         && matches!(
                             resolved_abilities[i][s - 1],
@@ -2661,6 +2768,8 @@ impl RolloutWorld {
                 black_hole_cast: BlackHoleCastState::default(),
                 macho_throw: MachoThrowState::default(),
                 drill: DrillState::default(),
+                beam: BeamState::default(),
+                beam_orb_slots: [None; 3],
                 drill_hitbox_entities: [[usize::MAX; 3]; 3],
                 black_hole_castable: [true; 3],
                 revival_markers: [None; 3],
@@ -2717,6 +2826,7 @@ impl RolloutWorld {
                 black_hole_entity: black_hole_entity[i],
                 macho_throw_entity: macho_throw_entity[i],
                 drill_entity: drill_entity[i],
+                beam_entity: beam_entity[i],
             });
         }
 
@@ -3192,6 +3302,12 @@ impl RolloutWorld {
                 data.drill.collider_hierarchy,
                 15,
             )),
+            ABILITY_BEAM => Some((
+                data.beam.hurtbox_extents,
+                data.beam.collider_offset,
+                data.beam.collider_hierarchy,
+                16,
+            )),
             _ => None,
         };
         let Some((extents, offset, relative_hierarchy, target)) = box_data else {
@@ -3229,7 +3345,8 @@ impl RolloutWorld {
             12 => slot.meteor_entity = entity,
             13 => slot.black_hole_entity = entity,
             14 => slot.macho_throw_entity = entity,
-            _ => slot.drill_entity = entity,
+            15 => slot.drill_entity = entity,
+            _ => slot.beam_entity = entity,
         }
     }
 
@@ -3476,6 +3593,7 @@ impl RolloutWorld {
         self.platform_updaters_tick(data, updater_dt);
         self.ability_spawner_tick(data, updater_dt);
         self.ability_pickups_tick(data, updater_dt);
+        self.beam_inputs.clear();
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
@@ -3613,6 +3731,7 @@ impl RolloutWorld {
                 self.kill(index, ENVIRONMENT, cause, false, false);
             }
         }
+        self.beam_orbs_tick(data);
         // Spawned BlackHole prefabs are registered after every authored
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
@@ -3689,7 +3808,8 @@ impl RolloutWorld {
                     | ActiveAbility::Revival
                     | ActiveAbility::BlackHole
                     | ActiveAbility::Throw
-                    | ActiveAbility::Drill => true,
+                    | ActiveAbility::Drill
+                    | ActiveAbility::Beam => true,
                     ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
                 };
                 if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
@@ -3764,6 +3884,7 @@ impl RolloutWorld {
                     slot.black_hole_entity,
                     slot.macho_throw_entity,
                     slot.drill_entity,
+                    slot.beam_entity,
                     slot.push_entity,
                     slot.freeze_entity,
                     slot.growth_ray_entity,
@@ -3786,6 +3907,18 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
+        let beam_contact_count = self
+            .beam_pool
+            .iter()
+            .take_while(|slot| {
+                slot.active
+                    && slot
+                        .entity
+                        .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+            })
+            .count();
+        self.beam_physics_tick(data);
+        self.beam_contacts(beam_contact_count);
         self.portal_shots_contacts(data);
         self.black_hole_contacts(data);
         self.drill_contacts();
@@ -5535,6 +5668,94 @@ impl RolloutWorld {
                         self.drill_tick(index, action, data, false);
                         return;
                     }
+                    ABILITY_BEAM => {
+                        let grounded = self.players[index].base.grounded
+                            && self.players[index].base.ground.is_some_and(|ground| {
+                                self.platforms.iter().any(|platform| platform.id == ground)
+                            });
+                        let entry_facing_right = self.players[index].facing_right;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform.surface.position(base.local, data.beam.radius)
+                                })
+                        } else {
+                            self.players[index].base.position
+                        };
+                        let right = self.players[index].base.up.perp_cw();
+                        let mut aim = action.direction();
+                        if aim == Vec2::ZERO {
+                            aim = if entry_facing_right { right } else { -right };
+                        }
+                        let relative = aim.complex_mul(Vec2::new(right.x, -right.y));
+                        let angle = relative.normalized_angle();
+                        let local_facing_right = aim.dot(right) > Fix::ZERO;
+                        let relative_staff_dir = if angle < Fix::PI + data.beam.min_grounded_angle
+                            || angle > Fix::TAU - data.beam.min_grounded_angle
+                        {
+                            Vec2::angle(angle)
+                        } else if local_facing_right {
+                            Vec2::angle(Fix::TAU - data.beam.min_grounded_angle)
+                        } else {
+                            Vec2::angle(Fix::PI + data.beam.min_grounded_angle)
+                        };
+                        let (staff_dir, relative_staff_dir, aimed_up) = if grounded {
+                            let staff = relative_staff_dir.complex_mul(right);
+                            (
+                                staff,
+                                relative_staff_dir,
+                                relative_staff_dir.dot(Vec2::UP) > data.beam.up_alignment,
+                            )
+                        } else {
+                            let staff = if action.direction() == Vec2::ZERO {
+                                -Vec2::UP
+                            } else {
+                                action.direction()
+                            };
+                            (staff, staff, false)
+                        };
+                        {
+                            let slot = &mut self.players[index];
+                            slot.timers[s] = Fix::ZERO;
+                            slot.active = ActiveAbility::Beam;
+                            slot.active_slot = s;
+                            slot.ability_entry_action = action;
+                            slot.telemetry.ability_activations[s] += 1;
+                            slot.facing_right = local_facing_right;
+                            slot.beam = BeamState {
+                                phase: 0,
+                                phase_ticks: 1,
+                                in_air: !grounded,
+                                aimed_up,
+                                staff_dir,
+                                relative_staff_dir,
+                                current_ground: if grounded { slot.base.ground } else { None },
+                                entry_facing_right,
+                                collider_position: form_position,
+                                collider_up: slot.base.up,
+                                collider_rotation: slot.base.rotation,
+                                ..BeamState::default()
+                            };
+                            slot.base.position = form_position;
+                            slot.base.radius = data.beam.radius;
+                            slot.base.constants = data.beam.constants.clone();
+                            if !grounded {
+                                slot.base.velocity = Vec2::ZERO;
+                                slot.base.rotation = Fix::ZERO;
+                                slot.base.up = Vec2::UP;
+                                slot.base.grounded = false;
+                                slot.base.ground = None;
+                                slot.base.grounded_speed = Fix::ZERO;
+                            }
+                        }
+                        self.spawn_beam_orb(index, data);
+                        self.beam_tick(index, action, false, data);
+                        return;
+                    }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
@@ -5691,6 +5912,10 @@ impl RolloutWorld {
                 return;
             }
             self.drill_tick(index, action, data, true);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Beam {
+            self.beam_tick(index, action, true, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
@@ -7769,6 +7994,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Drill => slot.drill_entity,
+                    ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -7907,6 +8133,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Drill => slot.drill_entity,
+                    ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -8410,6 +8637,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => player.black_hole_entity,
                     ActiveAbility::Throw => player.macho_throw_entity,
                     ActiveAbility::Drill => player.drill_entity,
+                    ActiveAbility::Beam => player.beam_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -8781,6 +9009,7 @@ impl RolloutWorld {
                         ActiveAbility::BlackHole => other.black_hole_entity,
                         ActiveAbility::Throw => other.macho_throw_entity,
                         ActiveAbility::Drill => other.drill_entity,
+                        ActiveAbility::Beam => other.beam_entity,
                         ActiveAbility::Platform => other.circle_entity,
                     };
                     if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -8819,6 +9048,951 @@ impl RolloutWorld {
                         victims[victim] = true;
                         killers[victim] = killer;
                     }
+                }
+            }
+        }
+        for victim in 0..self.players.len() {
+            if victims[victim] && self.playable(victim) {
+                self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
+            }
+        }
+    }
+
+    fn spawn_beam_orb(&mut self, owner: usize, data: &data::RolloutData) {
+        let position = self.players[owner].base.position
+            + self.players[owner].beam.staff_dir
+                * Fix::from_f64(2.8)
+                * self.players[owner].player_scale;
+        let ability_slot = self.players[owner].active_slot;
+        if let Some(orb) = self.players[owner].beam_orb_slots[ability_slot]
+            && self.beam_orbs[orb].active
+        {
+            let state = &mut self.beam_orbs[orb];
+            state.enabled = false;
+            state.born_tick = self.tick;
+            state.exit_ticks = 0;
+            state.destroy_when_unheld = false;
+            if let Some(entity) = state.entity {
+                let row = &mut self.entities[entity];
+                row.flags = E_ACTIVE | E_TRIGGER;
+            }
+            self.players[owner].beam.orb = Some(orb);
+            return;
+        }
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.beam.orb_updatable_count;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.beam.orb_layer,
+            owner: 0,
+            flags: E_ACTIVE | E_TRIGGER,
+            hierarchy: 100_000_000 + hierarchy_base + data.beam.orb_collider_hierarchy,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            radius: data.beam.orb_radius.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        let orb = self.beam_orbs.len();
+        self.beam_orbs.push(BeamOrbState {
+            active: true,
+            enabled: false,
+            born_tick: self.tick,
+            entity: Some(entity),
+            hierarchy_base,
+            owner,
+            position,
+            exit_ticks: 0,
+            destroy_when_unheld: false,
+        });
+        self.players[owner].beam_orb_slots[ability_slot] = Some(orb);
+        self.players[owner].beam.orb = Some(orb);
+    }
+
+    fn beam_approach(from: Vec2, target: Vec2, increment: Fix) -> Vec2 {
+        let cross = from.cross(target);
+        let turn = Vec2::angle(if cross < Fix::ZERO {
+            -increment
+        } else {
+            increment
+        });
+        let result = from.complex_mul(turn);
+        if cross * result.cross(target) <= Fix::ZERO {
+            target
+        } else {
+            result
+        }
+    }
+
+    fn stop_beam(&mut self, index: usize) {
+        if self.players[index].beam.phase == 2 {
+            return;
+        }
+        self.players[index].beam.phase = 2;
+        self.players[index].beam.phase_ticks = 0;
+        if let Some(orb) = self.players[index].beam.orb
+            && let Some(entity) = self.beam_orbs[orb].entity
+        {
+            self.beam_orbs[orb].enabled = false;
+            self.beam_orbs[orb].exit_ticks = 0;
+            self.entities[entity].flags = E_ACTIVE | E_TRIGGER;
+        }
+    }
+
+    fn exit_beam(&mut self, index: usize, data: &data::RolloutData) {
+        let grounded = self.players[index].base.grounded
+            && self.players[index]
+                .base
+                .ground
+                .is_some_and(|ground| self.platforms.iter().any(|platform| platform.id == ground));
+        let form_position = self.players[index].base.position;
+        let grounded_pose = if grounded {
+            self.players[index]
+                .base
+                .ground
+                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                .map(|platform| {
+                    // Beam.MovePlayer updates LocalPlatformPos without moving
+                    // the body. SyncPhysicsTo(AbilityExitInfo) first resolves
+                    // that new local using Beam's radius, then maps the world
+                    // point back onto the ordinary slime's smaller perimeter.
+                    let position = platform
+                        .surface
+                        .position(self.players[index].base.local, data.beam.radius);
+                    let local = platform
+                        .surface
+                        .local_position(position, data.player.radius)
+                        .ok();
+                    (position, local)
+                })
+        } else {
+            None
+        };
+        {
+            let slot = &mut self.players[index];
+            slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
+            slot.active = ActiveAbility::None;
+            slot.base.radius = data.player.radius;
+            slot.base.constants = data.player.constants.clone();
+            slot.facing_right = slot.beam.entry_facing_right;
+            if grounded {
+                // SyncPhysicsTo(AbilityExitInfo) discards self-imposed
+                // velocity when the reported attachment remains valid.
+                slot.base.velocity = Vec2::ZERO;
+                if let Some((position, local)) = grounded_pose {
+                    slot.base.position = position;
+                    if let Some(local) = local {
+                        slot.base.local = local;
+                    }
+                }
+                slot.obs_state = STATE_IDLE;
+                slot.state_ticks = 0;
+            } else {
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
+                slot.base.grounded = false;
+                slot.base.ground = None;
+                slot.base.grounded_speed = Fix::ZERO;
+                slot.exit_to_fall();
+            }
+            slot.reported_position = form_position;
+            slot.reported_tick = self.tick;
+            slot.base.sync_collider();
+        }
+        if !grounded {
+            self.players[index].base.collision_rays(terrain!(self));
+        }
+        if let Some(orb) = self.players[index].beam.orb
+            && self.beam_orbs[orb].active
+            && let Some(entity) = self.beam_orbs[orb].entity
+        {
+            // DisableIfNotHeld runs after the form has gone inactive. Air's
+            // six-tick exit beats the orb's twelve-tick whiteExit, leaving
+            // the retained GameObject inactive for this prefab's next cast.
+            self.entities[entity].flags = E_TRIGGER;
+        }
+    }
+
+    fn beam_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        advance_animation: bool,
+        data: &data::RolloutData,
+    ) {
+        let mut exit_after_move = false;
+        if advance_animation {
+            let phase = self.players[index].beam.phase;
+            self.players[index].beam.phase_ticks += 1;
+            if phase == 0 {
+                let enter_ticks = if self.players[index].beam.in_air {
+                    data.beam.enter_air_ticks
+                } else {
+                    data.beam.enter_ground_ticks
+                };
+                // Ground entry chains enterFrame1 into enter and pays the
+                // child-animation handoff pass; enterAir is a single clip.
+                let handoff_tick = u32::from(!self.players[index].beam.in_air);
+                if self.players[index].beam.phase_ticks > enter_ticks + handoff_tick {
+                    let right = self.players[index].base.up.perp_cw();
+                    let beam = &mut self.players[index].beam;
+                    beam.phase = 1;
+                    beam.started = true;
+                    beam.phase_ticks = 0;
+                    beam.time_since_beam = Fix::ZERO;
+                    if !beam.in_air {
+                        beam.staff_dir = if beam.entry_facing_right {
+                            right
+                        } else {
+                            -right
+                        };
+                    }
+                    if let Some(orb) = beam.orb
+                        && let Some(entity) = self.beam_orbs[orb].entity
+                    {
+                        self.beam_orbs[orb].enabled = true;
+                        self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    }
+                }
+            } else if phase == 2 {
+                let exit_ticks = if self.players[index].beam.in_air {
+                    data.beam.exit_air_ticks
+                } else {
+                    data.beam.exit_ground_ticks
+                };
+                if self.players[index].beam.phase_ticks > exit_ticks {
+                    // Beam precedes its SpriteAnimator in the prefab updater
+                    // hierarchy. The last Beam.UpdateSim therefore moves the
+                    // form before the animation callback packages the
+                    // ordinary slime's AbilityExitInfo later in this pass.
+                    exit_after_move = true;
+                }
+            }
+        }
+
+        // PlayerBody precedes Beam on the prefab. Its damping is unscaled,
+        // including while time is stopped. On the completed-exit pass the
+        // SpriteAnimator has already deactivated PlayerBody before its turn,
+        // while Beam's registered updater still finishes MovePlayer below.
+        {
+            let body = &mut self.players[index].base;
+            body.position += (body.velocity + body.external_velocity) * DT;
+            body.external_velocity *= Fix::from_f64(0.95);
+        }
+
+        if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+            return;
+        }
+
+        let aim = action.direction();
+        let angular_increment = data.beam.angular_aim_speed
+            * data
+                .beam
+                .angular_aim_curve
+                .evaluate(self.players[index].beam.time_since_enter);
+        self.players[index].beam.time_since_enter += DT;
+        if aim != Vec2::ZERO {
+            if self.players[index].beam.in_air {
+                let current = self.players[index].beam.staff_dir;
+                let next = Self::beam_approach(current, aim, angular_increment);
+                self.players[index].beam.staff_dir = next;
+                self.players[index].beam.relative_staff_dir = next;
+            } else {
+                let right = self.players[index].base.up.perp_cw();
+                let target = Vec2::new(right.x, -right.y).complex_mul(aim);
+                let current = self.players[index].beam.relative_staff_dir;
+                let next = Self::beam_approach(current, target, angular_increment);
+                let angle = next.normalized_angle();
+                if angle < Fix::PI + data.beam.min_grounded_angle
+                    || angle > Fix::TAU - data.beam.min_grounded_angle
+                {
+                    self.players[index].beam.relative_staff_dir = next;
+                }
+            }
+        }
+        if !self.players[index].beam.in_air {
+            let right = self.players[index].base.up.perp_cw();
+            self.players[index].beam.staff_dir =
+                right.complex_mul(self.players[index].beam.relative_staff_dir);
+        } else {
+            let staff = self.players[index].beam.staff_dir;
+            let up = if staff.y > Fix::ONE || staff.y < -Fix::ONE {
+                Vec2::UP
+            } else {
+                -staff
+            };
+            self.players[index].base.up = up;
+            self.players[index].base.rotation = up.perp_cw().normalized_angle();
+        }
+
+        if self.players[index].beam.phase == 0
+            && let Some(ground) = self.players[index].beam.current_ground
+            && let Some(platform) = self.platforms.iter().position(|p| p.id == ground)
+        {
+            let dynamics = &mut self.platform_dynamics[platform];
+            dynamics.shake_time = Fix::ZERO;
+            dynamics.shake_duration = data.beam.shake_duration;
+            dynamics.shake_amount = data.beam.shake_strength;
+            dynamics.meteor_shake_curve = false;
+        }
+
+        let button = (2u8) << self.players[index].active_slot;
+        if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
+            // DetPhysics has synchronized the orb transform from the prior
+            // late phase before Beam starts whiteExit on this pass.
+            self.update_beam_orb_position(index);
+            self.stop_beam(index);
+        }
+
+        let ground_live = self.players[index]
+            .base
+            .ground
+            .is_some_and(|ground| self.platforms.iter().any(|platform| platform.id == ground));
+        if self.players[index].beam.in_air {
+            crate::player_physics::air_movement(
+                &mut self.players[index].base.velocity,
+                Fix::ZERO,
+                data.beam.constants.air_accel,
+                data.beam.constants.max_speed,
+            )
+            .expect("valid Beam aerial constants");
+            self.players[index].base.collision_rays(terrain!(self));
+            if self.players[index].base.grounded {
+                self.stop_beam(index);
+                self.exit_beam(index, data);
+                return;
+            }
+        } else if ground_live {
+            let input = if self.players[index].beam.phase == 2 {
+                self.players[index].last_movement_input
+            } else {
+                Vec2::ZERO
+            };
+            self.players[index].base.move_only(input, terrain!(self));
+        } else {
+            crate::player_physics::apply_gravity(
+                &mut self.players[index].base.velocity,
+                data.beam.constants.gravity_accel,
+                data.beam.constants.gravity_modifier,
+                data.beam.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Beam gravity constants");
+            self.players[index].base.collision_rays(terrain!(self));
+        }
+
+        if exit_after_move {
+            self.exit_beam(index, data);
+            return;
+        }
+
+        if self.players[index].beam.phase == 1 {
+            let scale = {
+                let elapsed = self.players[index].beam.time_since_beam;
+                let maximum = if self.players[index].beam.in_air {
+                    data.beam.max_time_air
+                } else {
+                    data.beam.max_time
+                };
+                if elapsed + data.beam.exit_scale_time > maximum {
+                    let t = (data.beam.exit_scale_time - (maximum - elapsed))
+                        / data.beam.exit_scale_time;
+                    data.beam.exit_scale_curve.evaluate(t)
+                } else {
+                    Fix::ONE
+                }
+            };
+            let beam = &self.players[index].beam;
+            let fire = self.players[index].base.position
+                + beam.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale;
+            if fire.y >= Fix::from_f32(-11.22) {
+                let ability_hierarchy = self.entities[self.players[index].beam_entity]
+                    .hierarchy
+                    .wrapping_sub(100_000_000)
+                    .wrapping_add(2);
+                self.beam_inputs.push(crate::beam::graph::Beam {
+                    id: ability_hierarchy as i32,
+                    owner_id: self.players[index].base.id as i32,
+                    position: fire + beam.staff_dir * data.beam.beam_offset,
+                    direction: beam.staff_dir,
+                    time_passed: beam.time_since_beam,
+                    scale: self.players[index].player_scale * scale,
+                    distance: Fix::ZERO,
+                    colors: crate::beam::color::Colors::default(),
+                    ground: beam.current_ground,
+                });
+            }
+            self.players[index].beam.time_since_beam += DT;
+            if action.buttons & 1 != 0 && !self.players[index].base.previous_jump {
+                self.stop_beam(index);
+                self.exit_beam(index, data);
+                return;
+            }
+            let maximum = if self.players[index].beam.in_air {
+                data.beam.max_time_air
+            } else {
+                data.beam.max_time
+            };
+            if self.players[index].beam.time_since_beam > maximum {
+                // The maximum-duration check follows the final loop
+                // LateUpdate pose in the native scheduler. Preserve that
+                // tick's FirePos before whiteExit disables the orb hitbox.
+                self.update_beam_orb_position(index);
+                self.stop_beam(index);
+            }
+        } else if self.players[index].beam.phase == 2
+            && action.buttons & 1 != 0
+            && !self.players[index].base.previous_jump
+        {
+            self.exit_beam(index, data);
+            return;
+        }
+
+        self.players[index].base.previous_jump = action.buttons & 1 != 0;
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+        self.players[index].beam.collider_position = self.players[index].base.position;
+        self.players[index].beam.collider_up = self.players[index].base.up;
+        self.players[index].beam.collider_rotation = self.players[index].base.rotation;
+        self.update_beam_orb_position(index);
+    }
+
+    fn update_beam_orb_position(&mut self, index: usize) {
+        let Some(orb) = self.players[index].beam.orb else {
+            return;
+        };
+        if !self.beam_orbs[orb].active || self.beam_orbs[orb].born_tick == self.tick {
+            return;
+        }
+        let state = self.players[index].beam;
+        let body = &self.players[index].base;
+        let position = if state.phase == 1 && state.phase_ticks == 0 && state.in_air {
+            // StartBeam switches the clip during UpdateSim. Beam's air-orb
+            // LateUpdate keeps the last enter pose until the next pass.
+            self.beam_orbs[orb].position
+        } else if state.phase == 1 && state.phase_ticks == 0 {
+            let facing = if self.players[index].facing_right {
+                Fix::ONE
+            } else {
+                -Fix::ONE
+            };
+            body.position
+                + Vec2::new(
+                    Fix::from_f64(1.28) * facing,
+                    if state.aimed_up {
+                        Fix::from_f64(0.4)
+                    } else {
+                        Fix::from_f64(0.26)
+                    },
+                )
+                .complex_mul(body.up.perp_cw())
+                    * self.players[index].player_scale
+        } else if state.phase == 1 {
+            body.position + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+        } else if state.phase == 0 && !state.in_air {
+            let facing = if self.players[index].facing_right {
+                Fix::ONE
+            } else {
+                -Fix::ONE
+            };
+            let local = if state.phase_ticks >= 63 {
+                Vec2::new(
+                    Fix::from_f64(1.28) * facing,
+                    if state.aimed_up {
+                        Fix::from_f64(0.4)
+                    } else {
+                        Fix::from_f64(0.26)
+                    },
+                )
+            } else {
+                Vec2::new(Fix::from_int(2) * facing, Fix::from_f64(-0.05))
+            };
+            body.position + local.complex_mul(body.up.perp_cw()) * self.players[index].player_scale
+        } else if state.phase == 0 {
+            let facing = if self.players[index].facing_right {
+                Fix::ONE
+            } else {
+                -Fix::ONE
+            };
+            if state.phase_ticks >= data::get().beam.air_orb_frame10_ticks {
+                body.position
+                    + state.staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
+            } else if state.phase_ticks >= data::get().beam.air_orb_frame9_ticks {
+                body.position
+                    + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_int(-2))
+                        .complex_mul(body.up.perp_cw())
+                        * self.players[index].player_scale
+            } else if state.phase_ticks >= data::get().beam.air_orb_frame8_ticks {
+                body.position
+                    + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_f64(-2.3))
+                        .complex_mul(body.up.perp_cw())
+                        * self.players[index].player_scale
+            } else {
+                body.position
+                    + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+            }
+        } else {
+            self.beam_orbs[orb].position
+        };
+        self.beam_orbs[orb].position = position;
+        if let Some(entity) = self.beam_orbs[orb].entity {
+            self.entities[entity].x = position.x.raw();
+            self.entities[entity].y = position.y.raw();
+        }
+    }
+
+    fn beam_orbs_tick(&mut self, data: &data::RolloutData) {
+        for orb in &mut self.beam_orbs {
+            if !orb.active {
+                continue;
+            }
+            if self.players[orb.owner].active != ActiveAbility::Beam {
+                if let Some(entity) = orb.entity {
+                    if orb.destroy_when_unheld {
+                        self.entities[entity].flags = E_REMOVED;
+                    } else {
+                        self.entities[entity].flags = E_TRIGGER;
+                    }
+                }
+                orb.active = !orb.destroy_when_unheld;
+                continue;
+            }
+            if orb.enabled || orb.exit_ticks == 0 && orb.born_tick == self.tick {
+                continue;
+            }
+            // An orb with a zero counter may still be charging. Only a form
+            // in its exit phase has started whiteExit.
+            if orb.exit_ticks == 0
+                && self.players[orb.owner].active == ActiveAbility::Beam
+                && self.players[orb.owner].beam.phase != 2
+            {
+                continue;
+            }
+            orb.exit_ticks += 1;
+            if orb.exit_ticks > data.beam.orb_exit_ticks {
+                orb.active = false;
+                if let Some(entity) = orb.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            }
+        }
+    }
+
+    fn beam_raycast(
+        platforms: &[Platform],
+        platform_entities: &[usize],
+        entities: &[CEntity],
+        origin: Vec2,
+        direction: Vec2,
+        maximum: Fix,
+        mask: u32,
+    ) -> crate::physics::query::CastHit {
+        let mut result = crate::physics::query::CastHit {
+            object: None,
+            point: Vec2::ZERO,
+            distance: Fix::MAX,
+        };
+        for (platform, &entity) in platforms.iter().zip(platform_entities) {
+            let row = entities[entity];
+            if row.flags & E_ACTIVE == 0 || mask & (1u32 << row.layer) == 0 {
+                continue;
+            }
+            if let Some(hit) = platform.collider.raycast(origin, direction)
+                && hit.near < result.distance
+                && hit.near <= maximum
+            {
+                result.object = Some(row.id);
+                result.point = origin + direction * hit.near;
+                result.distance = hit.near;
+            }
+        }
+        for kind in [0, 1] {
+            for row in entities {
+                if row.kind != kind
+                    || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || mask & (1u32 << row.layer) == 0
+                {
+                    continue;
+                }
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let hit = if kind == 0 {
+                    Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    }
+                    .raycast(origin, direction)
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    if right == Vec2::ZERO || up == Vec2::ZERO {
+                        continue;
+                    }
+                    OrientedBox {
+                        center,
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    }
+                    .raycast(origin, direction)
+                };
+                if let Some(hit) = hit
+                    && hit.near < result.distance
+                    && hit.near <= maximum
+                {
+                    result.object = Some(row.id);
+                    result.point = origin + direction * hit.near;
+                    result.distance = hit.near;
+                }
+            }
+        }
+        result
+    }
+
+    fn beam_physics_tick(&mut self, data: &data::RolloutData) {
+        let platforms = &self.platforms;
+        let platform_entities = &self.platform_entities;
+        let entities = &self.entities;
+        self.beam_graph.step_into(
+            &self.beam_inputs,
+            &mut |origin, direction, distance, mask| {
+                Self::beam_raycast(
+                    platforms,
+                    platform_entities,
+                    entities,
+                    origin,
+                    direction,
+                    distance,
+                    mask,
+                )
+            },
+            &mut self.beam_snapshot,
+        );
+
+        let count = self.beam_snapshot.bodies.len();
+        while self.beam_pool.len() < count {
+            self.beam_pool.push(BeamPoolSlot::default());
+        }
+        let hitbox_config = crate::beam::hitbox::Config {
+            base_width: data.beam.base_width,
+            extra_length: data.beam.extra_length,
+            minimum_extents: data.beam.minimum_extent,
+        };
+        for i in 0..count {
+            let mut beam = self.beam_snapshot.bodies[i];
+            let role = self.beam_snapshot.roles[i];
+            let parent = matches!(
+                role,
+                crate::beam::graph::Role::Parent | crate::beam::graph::Role::ParentAndChild
+            );
+            if parent {
+                beam.position += beam.direction * data.beam.parent_offset;
+                beam.distance -= data.beam.parent_offset;
+            }
+            let existed = self.beam_pool[i].entity.is_some();
+            if !existed {
+                let mut hitbox = crate::beam::hitbox::Hitbox::default();
+                hitbox.set_dimension_values(
+                    hitbox_config,
+                    beam.position,
+                    data.beam.width * beam.scale,
+                    beam.direction,
+                    beam.distance,
+                    beam.time_passed,
+                    beam.owner_id,
+                    beam.id,
+                    &data.beam.width_curve,
+                );
+                hitbox.initialize(hitbox_config);
+                let hierarchy_base = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy += data.beam.object_updatable_count;
+                let entity = self.entities.len();
+                let id = self.next_id();
+                self.entities.push(CEntity {
+                    id,
+                    kind: 1,
+                    layer: data.beam.object_layer,
+                    flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                    hierarchy: 100_000_000 + hierarchy_base + data.beam.object_collider_hierarchy,
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                });
+                self.beam_pool[i] = BeamPoolSlot {
+                    entity: Some(entity),
+                    hitbox,
+                    active: true,
+                    ..BeamPoolSlot::default()
+                };
+            } else {
+                self.beam_pool[i].active = true;
+            }
+            let slot = &mut self.beam_pool[i];
+            if existed {
+                slot.contact_collider = slot.hitbox.collider;
+                slot.contact_beam_id = slot.hitbox.beam_id;
+                slot.contact_owner_id = slot.hitbox.owner_id;
+            } else {
+                slot.contact_collider = None;
+            }
+            slot.hitbox.set_dimension_values(
+                hitbox_config,
+                beam.position,
+                data.beam.width * beam.scale,
+                beam.direction,
+                beam.distance,
+                beam.time_passed,
+                beam.owner_id,
+                beam.id,
+                &data.beam.width_curve,
+            );
+            let collider = slot.hitbox.collider.expect("initialized BeamObject");
+            let row = &mut self.entities[slot.entity.expect("BeamObject entity")];
+            row.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+            row.x = collider.center.x.raw();
+            row.y = collider.center.y.raw();
+            row.right_x = collider.right.x.raw();
+            row.right_y = collider.right.y.raw();
+            row.up_x = collider.up.x.raw();
+            row.up_y = collider.up.y.raw();
+            row.rotation = slot.hitbox.rotation.raw();
+        }
+        // DetPhysics creates and initializes every BeamObject during
+        // renderBeams. RlObservation then enumerates the completed graph and
+        // emits its synthetic trace rows, so all collider ids precede trace
+        // ids when several beams begin in the same pass.
+        for i in 0..count {
+            let beam = self.beam_snapshot.bodies[i];
+            let role = self.beam_snapshot.roles[i];
+            let existing = &self.beam_pool[i];
+            let trace_entity = if existing.trace_beam_id == beam.id {
+                existing.trace_entity
+            } else {
+                None
+            };
+            let trace_entity = trace_entity.unwrap_or_else(|| {
+                let entity = self.entities.len();
+                self.entities.push(CEntity::default());
+                entity
+            });
+            if self.beam_pool[i].trace_entity != Some(trace_entity)
+                || self.beam_pool[i].trace_beam_id != beam.id
+            {
+                if let Some(old) = self.beam_pool[i].trace_entity {
+                    self.entities[old].flags = E_REMOVED;
+                }
+                self.beam_pool[i].trace_entity = Some(trace_entity);
+                self.beam_pool[i].trace_beam_id = beam.id;
+                self.entities[trace_entity].id = self.next_id();
+            }
+            self.entities[trace_entity] = CEntity {
+                id: self.entities[trace_entity].id,
+                kind: 4,
+                owner: beam.owner_id as u32,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: match role {
+                    crate::beam::graph::Role::Single => 0,
+                    crate::beam::graph::Role::MaybeChild => 1,
+                    crate::beam::graph::Role::Child => 2,
+                    crate::beam::graph::Role::Parent => 3,
+                    crate::beam::graph::Role::ParentAndChild => 4,
+                    crate::beam::graph::Role::ChildWithEffect => 5,
+                    crate::beam::graph::Role::Reflected => 6,
+                },
+                x: self.beam_snapshot.bodies[i].position.x.raw(),
+                y: self.beam_snapshot.bodies[i].position.y.raw(),
+                right_x: (self.beam_snapshot.bodies[i].direction
+                    * self.beam_snapshot.bodies[i].distance)
+                    .x
+                    .raw(),
+                right_y: (self.beam_snapshot.bodies[i].direction
+                    * self.beam_snapshot.bodies[i].distance)
+                    .y
+                    .raw(),
+                radius: (data.beam.width * self.beam_snapshot.bodies[i].scale).raw(),
+                ..CEntity::default()
+            };
+        }
+        for slot in self.beam_pool.iter_mut().skip(count) {
+            let Some(entity) = slot.entity else {
+                break;
+            };
+            if !slot.active || self.entities[entity].flags & E_ACTIVE == 0 {
+                break;
+            }
+            slot.active = false;
+            self.entities[entity].flags = E_ENABLED | E_TRIGGER;
+            if let Some(trace) = slot.trace_entity {
+                self.entities[trace].flags = E_REMOVED;
+            }
+        }
+
+        // renderBeams applies endpoint impulses after every BeamObject has
+        // been resized. Child/crossing bodies and water reflections do not
+        // push their endpoints.
+        for i in 0..count {
+            if matches!(
+                self.beam_snapshot.roles[i],
+                crate::beam::graph::Role::Child
+                    | crate::beam::graph::Role::MaybeChild
+                    | crate::beam::graph::Role::ParentAndChild
+                    | crate::beam::graph::Role::ChildWithEffect
+            ) || self.beam_snapshot.reflected[i]
+            {
+                continue;
+            }
+            let Some(hit_id) = self.beam_snapshot.hits[i] else {
+                continue;
+            };
+            let beam = self.beam_snapshot.bodies[i];
+            let scale = beam.scale.min(Fix::from_int(40));
+            let stopped = beam.owner_id != 1000
+                && self.player_time_scale < Fix::from_f32(0.01)
+                && !self.time_stop_protected[(beam.owner_id - 1) as usize];
+            if let Some(platform) = self
+                .platform_entities
+                .iter()
+                .position(|&entity| self.entities[entity].id == hit_id)
+            {
+                let endpoint = beam.position + beam.direction * beam.distance;
+                if endpoint.y > Fix::from_f32(-10.22) && !stopped {
+                    self.platform_dynamics[platform].body.force +=
+                        beam.direction * data.beam.platform_force * scale;
+                    self.platforms_changed();
+                }
+            } else if let Some(hole_index) = self.black_holes.iter().position(|hole| {
+                hole.active
+                    && hole
+                        .entity
+                        .is_some_and(|entity| self.entities[entity].id == hit_id)
+            }) && !stopped
+            {
+                // BlackHole.AddForceLessMassInfluence: signed mass determines
+                // attraction/repulsion, while magnitude contributes only its
+                // square root so a large hole remains movable by Beam.
+                let mass = self.black_holes[hole_index].mass;
+                let divisor = mass
+                    .abs()
+                    .sqrt()
+                    .expect("active Black Hole has a finite mass");
+                if divisor != Fix::ZERO {
+                    self.black_holes[hole_index].velocity += beam.direction
+                        * data.beam.black_hole_force
+                        * scale
+                        * Fix::from_int(mass.sign())
+                        / divisor;
+                }
+            } else if let Some(player) = self.players.iter().position(|slot| {
+                slot.active == ActiveAbility::Rock
+                    && slot.rock_entity != usize::MAX
+                    && self.entities[slot.rock_entity].id == hit_id
+            }) && !stopped
+            {
+                self.players[player].rock.body.force +=
+                    beam.direction * data.beam.rigid_body_force * scale;
+            }
+        }
+    }
+
+    fn beam_contacts(&mut self, contact_count: usize) {
+        let mut victims = [false; MAX_PLAYERS];
+        let mut killers = [0u32; MAX_PLAYERS];
+        for slot in self.beam_pool.iter().take(contact_count) {
+            let Some(entity) = slot.entity else {
+                continue;
+            };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            let Some(hitbox) = slot.contact_collider else {
+                continue;
+            };
+            for victim in 0..self.players.len() {
+                if victims[victim] || !self.playable(victim) {
+                    continue;
+                }
+                // PlayerCollision.IgnoreBeamId only suppresses the owning
+                // ability's beam. Crossed beams retain each segment's id.
+                let own_beam_id = if self.players[victim].beam_entity == usize::MAX {
+                    i32::MIN
+                } else {
+                    self.entities[self.players[victim].beam_entity]
+                        .hierarchy
+                        .wrapping_sub(100_000_000)
+                        .wrapping_add(2) as i32
+                };
+                if slot.contact_beam_id.abs() == own_beam_id.abs() {
+                    continue;
+                }
+                let target = match self.players[victim].active {
+                    ActiveAbility::None => self.players[victim].body_entity,
+                    ActiveAbility::Dash => self.players[victim].dash_entity,
+                    ActiveAbility::Bow => self.players[victim].bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
+                    | ActiveAbility::Missile => self.players[victim].throw_entity,
+                    ActiveAbility::Mine => self.players[victim].mine_entity,
+                    ActiveAbility::Rock => self.players[victim].rock_entity,
+                    ActiveAbility::Roll => self.players[victim].roll_entity,
+                    ActiveAbility::Meteor => self.players[victim].meteor_entity,
+                    ActiveAbility::Push => self.players[victim].push_entity,
+                    ActiveAbility::Freeze => self.players[victim].freeze_entity,
+                    ActiveAbility::Blink => self.players[victim].blink_entity,
+                    ActiveAbility::GrowthRay => self.players[victim].growth_ray_entity,
+                    ActiveAbility::ShrinkRay => self.players[victim].shrink_ray_entity,
+                    ActiveAbility::Spike => self.players[victim].spike_entity,
+                    ActiveAbility::Engine => self.players[victim].engine_entity,
+                    ActiveAbility::Tesla => self.players[victim].tesla_entity,
+                    ActiveAbility::TimeStop => self.players[victim].time_stop_entity,
+                    ActiveAbility::Gust => self.players[victim].gust_entity,
+                    ActiveAbility::Revival => self.players[victim].revival_entity,
+                    ActiveAbility::BlackHole => self.players[victim].black_hole_entity,
+                    ActiveAbility::Throw => self.players[victim].macho_throw_entity,
+                    ActiveAbility::Drill => self.players[victim].drill_entity,
+                    ActiveAbility::Beam => self.players[victim].beam_entity,
+                    ActiveAbility::Platform => self.players[victim].circle_entity,
+                };
+                if target == usize::MAX || self.entities[target].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[target];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let overlap = if row.kind == 0 {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center,
+                            radius: Fix::from_raw(row.radius),
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    crate::physics::contact::box_box(
+                        hitbox,
+                        OrientedBox {
+                            center,
+                            right,
+                            up,
+                            inverse_extents: Vec2::new(
+                                Fix::ONE / right.length(),
+                                Fix::ONE / up.length(),
+                            ),
+                        },
+                    )
+                    .is_some()
+                };
+                if overlap {
+                    victims[victim] = true;
+                    killers[victim] = slot.contact_owner_id as u32;
                 }
             }
         }
@@ -9963,6 +11137,7 @@ impl RolloutWorld {
             let mut black_hole_entity = usize::MAX;
             let mut macho_throw_entity = usize::MAX;
             let mut drill_entity = usize::MAX;
+            let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -10041,6 +11216,11 @@ impl RolloutWorld {
                         data.drill.collider_hierarchy,
                         &mut drill_entity,
                     ),
+                    ABILITY_BEAM => (
+                        data.beam.hurtbox_extents,
+                        data.beam.collider_hierarchy,
+                        &mut beam_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -10073,6 +11253,8 @@ impl RolloutWorld {
                         data.macho_throw.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_DRILL {
                         data.drill.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_BEAM {
+                        data.beam.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -10103,6 +11285,8 @@ impl RolloutWorld {
                         data.macho_throw.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_DRILL {
                         data.drill.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_BEAM {
+                        data.beam.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -10167,6 +11351,8 @@ impl RolloutWorld {
             slot.black_hole_cast = BlackHoleCastState::default();
             slot.macho_throw = MachoThrowState::default();
             slot.drill = DrillState::default();
+            slot.beam = BeamState::default();
+            slot.beam_orb_slots = [None; 3];
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
@@ -10197,6 +11383,7 @@ impl RolloutWorld {
             slot.black_hole_entity = black_hole_entity;
             slot.macho_throw_entity = macho_throw_entity;
             slot.drill_entity = drill_entity;
+            slot.beam_entity = beam_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -10228,6 +11415,7 @@ impl RolloutWorld {
                 self.players[index].black_hole_entity,
                 self.players[index].macho_throw_entity,
                 self.players[index].drill_entity,
+                self.players[index].beam_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -10365,6 +11553,7 @@ impl RolloutWorld {
             let mut black_hole_entity = usize::MAX;
             let mut macho_throw_entity = usize::MAX;
             let mut drill_entity = usize::MAX;
+            let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -10443,6 +11632,11 @@ impl RolloutWorld {
                         data.drill.collider_hierarchy,
                         &mut drill_entity,
                     ),
+                    ABILITY_BEAM => (
+                        data.beam.hurtbox_extents,
+                        data.beam.collider_hierarchy,
+                        &mut beam_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -10476,6 +11670,8 @@ impl RolloutWorld {
                         data.macho_throw.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_DRILL {
                         data.drill.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_BEAM {
+                        data.beam.collider_offset.x.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -10506,6 +11702,8 @@ impl RolloutWorld {
                         data.macho_throw.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_DRILL {
                         data.drill.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_BEAM {
+                        data.beam.collider_offset.y.raw()
                     } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
                         scale_ray_data(data, abilities[slot])
                             .collider_offset
@@ -10557,6 +11755,8 @@ impl RolloutWorld {
             slot.black_hole_cast = BlackHoleCastState::default();
             slot.macho_throw = MachoThrowState::default();
             slot.drill = DrillState::default();
+            slot.beam = BeamState::default();
+            slot.beam_orb_slots = [None; 3];
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
@@ -10587,6 +11787,7 @@ impl RolloutWorld {
             slot.black_hole_entity = black_hole_entity;
             slot.macho_throw_entity = macho_throw_entity;
             slot.drill_entity = drill_entity;
+            slot.beam_entity = beam_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -12038,6 +13239,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Drill => slot.drill_entity,
+                    ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -12186,6 +13388,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Drill => slot.drill_entity,
+                    ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -12462,6 +13665,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => slot.black_hole_entity,
                     ActiveAbility::Throw => slot.macho_throw_entity,
                     ActiveAbility::Drill => slot.drill_entity,
+                    ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -14666,6 +15870,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => player.black_hole_entity,
                     ActiveAbility::Throw => player.macho_throw_entity,
                     ActiveAbility::Drill => player.drill_entity,
+                    ActiveAbility::Beam => player.beam_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -15660,6 +16865,7 @@ impl RolloutWorld {
                     ActiveAbility::BlackHole => other.black_hole_entity,
                     ActiveAbility::Throw => other.macho_throw_entity,
                     ActiveAbility::Drill => other.drill_entity,
+                    ActiveAbility::Beam => other.beam_entity,
                     ActiveAbility::Platform => other.circle_entity,
                 };
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
@@ -16174,6 +17380,11 @@ impl RolloutWorld {
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
         }
+        if self.players[index].active == ActiveAbility::Beam
+            && let Some(orb) = self.players[index].beam.orb
+        {
+            self.beam_orbs[orb].destroy_when_unheld = true;
+        }
         self.deactivate_drill_hitboxes(index);
         let revival_marker = self.players[index]
             .revival_markers
@@ -16235,6 +17446,7 @@ impl RolloutWorld {
                 slot.black_hole_entity,
                 slot.macho_throw_entity,
                 slot.drill_entity,
+                slot.beam_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -16300,6 +17512,7 @@ impl RolloutWorld {
                 slot.black_hole_entity,
                 slot.macho_throw_entity,
                 slot.drill_entity,
+                slot.beam_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -16357,6 +17570,7 @@ impl RolloutWorld {
                 slot.black_hole_entity,
                 slot.macho_throw_entity,
                 slot.drill_entity,
+                slot.beam_entity,
                 slot.push_entity,
                 slot.freeze_entity,
                 slot.growth_ray_entity,
@@ -16597,7 +17811,7 @@ impl RolloutWorld {
     /// while preserving registration order inside each shape group.
     fn publish_entities(out: &mut Vec<CEntity>, entities: &[CEntity]) {
         out.clear();
-        for kind in 0..=2 {
+        for kind in [0, 1, 2, 4] {
             out.extend(
                 entities
                     .iter()
@@ -16791,6 +18005,7 @@ impl RolloutWorld {
                 black_hole_e,
                 macho_throw_e,
                 drill_e,
+                beam_e,
             ) = {
                 let s = &self.players[index];
                 (
@@ -16817,6 +18032,7 @@ impl RolloutWorld {
                     s.black_hole_entity,
                     s.macho_throw_entity,
                     s.drill_entity,
+                    s.beam_entity,
                 )
             };
             let slot = &self.players[index];
@@ -16850,6 +18066,7 @@ impl RolloutWorld {
             let casting_black_hole = slot.active == ActiveAbility::BlackHole;
             let macho_throwing = slot.active == ActiveAbility::Throw;
             let drilling = slot.active == ActiveAbility::Drill;
+            let beaming = slot.active == ActiveAbility::Beam;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -17626,6 +18843,70 @@ impl RolloutWorld {
                         center,
                         Vec2::angle(rotation),
                         data::surface_extents(data.drill.hurtbox_extents) * slot.player_scale,
+                    );
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.vx = 0;
+                    box_row.vy = 0;
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
+            if beam_e != usize::MAX {
+                let box_row = &mut self.entities[beam_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && beaming {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if beaming {
+                    box_row.owner = slot.base.id;
+                }
+                if beaming || was_active {
+                    let state = slot.beam;
+                    let (position, up, rotation, extents, offset) = if beaming {
+                        (
+                            state.collider_position,
+                            state.collider_up,
+                            state.collider_rotation,
+                            if state.in_air {
+                                data.beam.air_extents
+                            } else {
+                                data.beam.hurtbox_extents
+                            },
+                            if state.started || state.in_air {
+                                data.beam.air_offset
+                            } else {
+                                data.beam.collider_offset
+                            },
+                        )
+                    } else {
+                        (
+                            exit_position,
+                            Vec2::UP,
+                            Fix::ZERO,
+                            if state.in_air {
+                                data.beam.air_extents
+                            } else {
+                                data.beam.hurtbox_extents
+                            },
+                            if state.started || state.in_air {
+                                data.beam.air_offset
+                            } else {
+                                data.beam.collider_offset
+                            },
+                        )
+                    };
+                    let basis = up.perp_cw();
+                    let center = position + (offset * slot.player_scale).complex_mul(basis);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(rotation),
+                        extents * slot.player_scale,
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
