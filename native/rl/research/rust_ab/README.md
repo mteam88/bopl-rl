@@ -94,6 +94,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   init/Arrow-update/wave-update ordering, force curve and projectile flight.
 - `gust_missile_ab.c`: a live guided Missile box captured by Gust, including
   the full force curve, later right-boundary explosion and prefab hierarchy.
+- `gust_missile_form_ab.c`: Gust's one-shot PlayerPhysics force against the
+  grounded controlling Missile form, including its lagged collider basis.
 - `gust_rock_ab.c`: Gust's one-shot push of a pushable active Rock through the
   BoplBody fallback, subsequent rigid flight and lower-boundary death.
 - `gust_roll_ab.c`: Gust's one-shot PlayerPhysics force on an airborne charging

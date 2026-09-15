@@ -1231,6 +1231,14 @@ the same distance-scaled `PlayerPhysics` force through the inverse-mass factor
 of 35 before Bow's movement pass. The subsequent form position, aim, charge and
 ability clocks remain exact.
 
+`gust_missile_form_ab.c` covers the grounded controlling Missile form for 294
+exact ticks, separately from the guided projectile covered above. Missile and
+Gust enter on ticks 214 and 224 and the wave pushes the form on tick 231. The
+source phase order is visible in one public row: `DPhysicsBox` retains the
+prior basis for the pass while the later `PlayerBody` publishes the position
+after the new external velocity. Rust stores that prior scalar rotation and
+uses fixed player state only; the following grounded movement remains exact.
+
 
 ## Executable Invisibility and streamed actor verification
 

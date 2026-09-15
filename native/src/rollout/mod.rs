@@ -626,6 +626,7 @@ pub struct MissileFormState {
     pub phase: u8,
     pub ticks: u32,
     pub projectile: Option<usize>,
+    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5228,7 +5229,10 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.missile = MissileFormState::default();
+                        slot.missile = MissileFormState {
+                            collider_rotation: slot.base.rotation,
+                            ..MissileFormState::default()
+                        };
                         if slot.base.grounded {
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
@@ -12424,6 +12428,31 @@ impl RolloutWorld {
                 if player_index == wave_index / 3 || !self.playable(player_index) {
                     continue;
                 }
+                if self.players[player_index].active == ActiveAbility::Missile {
+                    let target = &self.players[player_index];
+                    let missile = OrientedBox::from_basis(
+                        target.base.position,
+                        Vec2::angle(target.base.rotation),
+                        data.missile.hurtbox_extents,
+                    );
+                    if crate::physics::contact::circle_box(query, missile).is_some() {
+                        // The controlling Missile form is a pushable
+                        // PlayerPhysics-backed Ability, independently of the
+                        // layer-10 guided projectile it owns.
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        let force = data.gust.default_force / distance;
+                        let force = if target.base.grounded {
+                            data.gust.grounded_multiplier * delta * force
+                        } else {
+                            delta * force
+                        };
+                        self.players[player_index].base.external_velocity +=
+                            force * Fix::from_int(35);
+                    }
+                    continue;
+                }
                 if self.players[player_index].active == ActiveAbility::Bow {
                     let target = &self.players[player_index];
                     let up = if target.bow.aim == Vec2::ZERO {
@@ -12948,6 +12977,9 @@ impl RolloutWorld {
     }
 
     fn missile_form_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        // DPhysicsBox publishes the basis from the start of SparkShot's pass;
+        // PlayerPhysics may align the live transform later in that pass.
+        self.players[index].missile.collider_rotation = self.players[index].base.rotation;
         let state = &mut self.players[index].missile;
         state.ticks += 1;
         match state.phase {
@@ -13001,7 +13033,15 @@ impl RolloutWorld {
         }
 
         if self.players[index].base.grounded {
-            self.players[index].base.velocity = Vec2::ZERO;
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+            let slot = &mut self.players[index];
+            // SparkShot calls PlayerPhysics.Move(zero) above, then the later
+            // PlayerBody component still integrates and damps external
+            // velocity even while attached.
+            slot.base.position += slot.base.external_velocity * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
             let slot = &mut self.players[index];
             crate::player_physics::apply_gravity(
@@ -20866,7 +20906,7 @@ impl RolloutWorld {
                 }
                 if (alive && (throwing || missile_form)) || was_active {
                     let (center, rotation) = if missile_form {
-                        (synced, slot.base.rotation)
+                        (synced, slot.missile.collider_rotation)
                     } else if throwing {
                         // `Fire` applies the recoil before this pass's
                         // grounded `PlayerPhysics.Move`. The ability body
