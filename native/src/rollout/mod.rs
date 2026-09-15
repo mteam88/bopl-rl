@@ -5459,6 +5459,7 @@ impl RolloutWorld {
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
+                            collider_rotation: slot.base.rotation,
                             ..ThrowItemState::default()
                         };
                         slot.base.position = form_position;
@@ -12455,6 +12456,29 @@ impl RolloutWorld {
                     }
                     continue;
                 }
+                if self.players[player_index].active == ActiveAbility::Mine {
+                    let target = &self.players[player_index];
+                    let basis = Vec2::angle(target.base.rotation);
+                    let form = OrientedBox::from_basis(
+                        target.base.position + data.mine.collider_offset.complex_mul(basis),
+                        basis,
+                        data::surface_extents(data.mine.hurtbox_extents),
+                    );
+                    if crate::physics::contact::circle_box(query, form).is_some() {
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        let force = data.gust.default_force / distance;
+                        let force = if target.base.grounded {
+                            data.gust.grounded_multiplier * delta * force
+                        } else {
+                            delta * force
+                        };
+                        self.players[player_index].base.external_velocity +=
+                            force * Fix::from_int(35);
+                    }
+                    continue;
+                }
                 if matches!(
                     self.players[player_index].active,
                     ActiveAbility::Grenade
@@ -13102,6 +13126,7 @@ impl RolloutWorld {
     /// callback, its circle auto-registers on the following scheduler pass,
     /// and grounded throws are forced along the attached surface normal.
     fn mine_throw_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         let button = 2u8 << self.players[index].active_slot;
         let released = action.buttons & button == 0;
         let aim = action.direction();
@@ -13167,7 +13192,14 @@ impl RolloutWorld {
         }
 
         if self.players[index].throw_item.grounded {
+            let before_player_physics = self.players[index].base.position;
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
             let slot = &mut self.players[index];
+            // ThrowItem's PlayerPhysics.Move advances the surface local and
+            // rotation, but PlayerBody owns the later world-position move.
+            slot.base.position = before_player_physics;
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
@@ -21003,11 +21035,11 @@ impl RolloutWorld {
                 }
                 if (alive && mining) || was_active {
                     let root = if mining {
-                        slot.base.position
+                        synced
                     } else {
                         exit_position
                     };
-                    let rotation = slot.base.rotation;
+                    let rotation = slot.throw_item.collider_rotation;
                     let basis = Vec2::angle(rotation);
                     let center = root + data.mine.collider_offset.complex_mul(basis);
                     let hurtbox = OrientedBox::from_basis(

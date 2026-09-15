@@ -1207,6 +1207,16 @@ the public collider row, so Rust sets that owner while leaving Smoke, Mjolnir
 and Poke Ball payload roots at the source's zero owner. No comparator bound is
 needed for any of these form traces.
 
+`gust_mine_form_ab.c` covers Mine's older ThrowItem form for 248 ticks. Gust
+enters on tick 214, Mine on tick 217, and the wave pushes Mine on tick 221.
+`PlayerPhysics.Move` advances the attached-surface local and rotation before
+the later `PlayerBody` integrates external velocity; the DetPhysics-synced form
+collider observes that body position while the live transform is snapped back
+to its surface local afterward. The trace preserves this order and the payload
+callback schedule. Mine's existing surface/FixTransform reconstruction allows
+8,192 raw Q32 units (under 0.000002 world units) on the active collider centre;
+axes, force, clocks, lifecycle and every interaction boundary are exact.
+
 `gust_arrow_ab.c` composes a live Bow Arrow with Gust for 400 ticks. Bow begins
 on tick 214; Arrow registration, Bow exit and Gust entry all occur on tick 255;
 the first observable horizontal Gust impulse occurs on tick 262. The fixed
