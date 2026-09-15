@@ -1009,6 +1009,21 @@ rope coordinates and edge vectors differ by at most 716,909,914 raw Q32 units
 bit-identical. This is continuous solver geometry with no different contact,
 attachment, Dash, exit or lifecycle decision. Detached-rope entry remains open.
 
+### Dash ray collision with active Bow (2026-09-15)
+
+Dash now distinguishes an ordinary slime callback from an active ability form.
+An ordinary target owns `SlimeController.OnCollide` and receives the one-sided
+overlap push measured by `dash_player_ab.c`. Active Bow owns `PlayerCollision`;
+because neither Bow nor Dash has `KillPlayersOnContact`, both callbacks return
+without a kill or push. Rust previously invoked `push_from` for every non-Rock
+player target, moving Bow despite the source callback graph.
+
+`dash_bow_ab.c` holds Bow active while the players close to 2,708,939,319 raw
+Q32 units (0.6307 world units), then casts Dash through the overlapping active
+hurtbox on tick 159. All 240 optimized-Q32 NativeAOT/Rust ticks and every public
+field are bit-identical; Bow's horizontal velocity remains exactly zero in both
+backends after the Dash callback.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned

@@ -68,8 +68,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   constraint pass, bottom-endpoint straightening, leave-force handoff and the
   resumed ordinary slime for 300 exact ticks. A close-player Grappling Hook
   composition also matches top-endpoint transfer through Dash exit, with exact
-  player/gameplay state and bounded inherited long-strand relaxation. Other
-  transformed-form callbacks, rope detachment and the public
+  player/gameplay state and bounded inherited long-strand relaxation. An active
+  Bow target now dispatches its own nonlethal `PlayerCollision` callback and
+  remains stationary rather than receiving the ordinary slime's overlap push.
+  Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,

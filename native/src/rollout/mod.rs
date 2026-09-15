@@ -12622,7 +12622,13 @@ impl RolloutWorld {
                     );
                     return;
                 }
-                self.players[target].base.push_from(origin, target < index);
+                if self.players[target].active == ActiveAbility::None {
+                    // An ordinary target dispatches SlimeController.OnCollide
+                    // and receives its one-sided overlap push. Active forms
+                    // own PlayerCollision instead; a nonlethal Dash has no
+                    // push callback for them.
+                    self.players[target].base.push_from(origin, target < index);
+                }
             }
         }
         if !self.players[index].base.dash.active {
