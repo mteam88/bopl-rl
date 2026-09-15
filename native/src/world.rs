@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 mod dash;
 
 pub const DT: Fix = Fix::from_raw(71_582_788);
+fn default_scale() -> Fix {
+    Fix::ONE
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Platform {
     pub id: u32,
@@ -44,6 +47,10 @@ pub struct Player {
     pub velocity: Vec2,
     pub external_velocity: Vec2,
     pub radius: Fix,
+    /// FixTransform/DPhysics collider scale. Player.Scale lives above the
+    /// body and can lead this value by one updater phase.
+    #[serde(skip, default = "default_scale")]
+    pub scale: Fix,
     pub grounded: bool,
     pub ground: Option<u32>,
     pub local: Fix,
@@ -727,7 +734,7 @@ impl Player {
             Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
         } else {
             Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
-        };
+        } * self.scale;
         let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
             self.collider_basis = Vec2::angle(self.rotation);

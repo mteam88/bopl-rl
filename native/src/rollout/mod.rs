@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
+pub const ABILITY_GROWTH_RAY: u32 = 8;
 pub const ABILITY_ROCK: u32 = 9;
 pub const ABILITY_MISSILE: u32 = 10;
 pub const ABILITY_SPIKE: u32 = 11;
@@ -48,6 +49,7 @@ pub const ABILITY_TIME_STOP: u32 = 12;
 pub const ABILITY_SMOKE: u32 = 13;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
+pub const ABILITY_SHRINK_RAY: u32 = 17;
 pub const ABILITY_INVISIBILITY: u32 = 19;
 pub const ABILITY_PUSH: u32 = 22;
 pub const ABILITY_MINE: u32 = 24;
@@ -904,6 +906,17 @@ pub struct FrozenSolidState {
     pub freeze_position: Vec2,
 }
 
+/// A ScaleChanger prefab has no collider row. It joins Updater on the pass
+/// after the ray hit and mutates Player.Scale after all player components.
+#[derive(Clone, Copy, Default)]
+pub struct ScaleChangerState {
+    pub active: bool,
+    pub born_tick: u32,
+    pub victim: usize,
+    pub time: Fix,
+    pub growth: bool,
+}
+
 /// Per-player platform ability state (PlatformTransform.cs).
 #[derive(Clone, Copy, Default)]
 pub struct PlatformState {
@@ -1019,6 +1032,8 @@ pub enum ActiveAbility {
     Rock,
     Push,
     Freeze,
+    GrowthRay,
+    ShrinkRay,
     Missile,
     Mine,
     Spike,
@@ -1034,6 +1049,14 @@ fn active_throw_ability(active: ActiveAbility) -> u32 {
         ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
         ActiveAbility::Smoke => ABILITY_SMOKE,
         _ => ABILITY_GRENADE,
+    }
+}
+
+fn scale_ray_data(data: &data::RolloutData, ability: u32) -> &data::ScaleRayData {
+    match ability {
+        ABILITY_GROWTH_RAY => &data.scale_rays.growth,
+        ABILITY_SHRINK_RAY => &data.scale_rays.shrink,
+        _ => unreachable!("not a scale ray"),
     }
 }
 
@@ -1061,7 +1084,18 @@ pub struct PlayerSlot {
     pub ability_origin_velocity: Vec2,
     pub ability_origin_rotation: Fix,
     pub ability_origin_state: u32,
+    pub ability_origin_scale: Fix,
     pub ability_entry_action: Action,
+    /// Player.Scale, which ScaleChanger mutates after the player updaters.
+    pub player_scale: Fix,
+    /// PlayerPhysics.prevScal for the ordinary slime body. Its radius follows
+    /// FixTransform scale one player-updater pass after the hurtbox does.
+    pub physics_scale: Fix,
+    /// DPhysicsBox stores inverse extents and updates them by the rounded
+    /// old-to-new scale ratio. Keeping that representation reproduces the
+    /// few-raw-unit drift that an absolute authored_extents * scale loses.
+    pub body_collider_scale: Fix,
+    pub body_inverse_extents: Vec2,
     /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
     /// currently active SlimeController and drives cooldown restoration.
     pub invisible: bool,
@@ -1145,6 +1179,8 @@ pub struct PlayerSlot {
     pub rock_hierarchy: u32,
     pub push_entity: usize,
     pub freeze_entity: usize,
+    pub growth_ray_entity: usize,
+    pub shrink_ray_entity: usize,
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
@@ -1157,6 +1193,17 @@ pub struct PlayerSlot {
 }
 
 impl PlayerSlot {
+    fn set_ordinary_body_scale(&mut self, scale: Fix) {
+        let scale = scale.clamp(Fix::from_f32(0.3), Fix::from_int(3));
+        // SlimeController assigns hurtBox.Scale every pass even when the
+        // value is unchanged. Q32 `(One / old) * new` is not necessarily one,
+        // so the collider's stored inverse extents keep drifting by raw units.
+        let ratio = (Fix::ONE / self.body_collider_scale) * scale;
+        self.body_inverse_extents = self.body_inverse_extents / ratio;
+        self.body_collider_scale = scale;
+        self.base.scale = scale;
+    }
+
     /// SlimeController.ExitAbility enters Fall and raycasts at once
     /// (SlimeController.cs:249, 263-272). A landing on this pass begins the
     /// land animation after the slime's SpriteAnimator (hierarchy 100000007,
@@ -1233,6 +1280,7 @@ pub struct RolloutWorld {
     pub time_stop_effects: Vec<TimeStopEffect>,
     pub spike_attacks: Vec<SpawnedSpike>,
     pub frozen_solids: Vec<FrozenSolidState>,
+    pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
     pub time_stop_protected: [bool; MAX_PLAYERS],
     pub spawned: Vec<SpawnedPlatform>,
@@ -1313,6 +1361,7 @@ impl RolloutWorld {
             time_stop_effects: Vec::with_capacity(8),
             spike_attacks: Vec::with_capacity(32),
             frozen_solids: Vec::with_capacity(32),
+            scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
             time_stop_protected: [false; MAX_PLAYERS],
             spawned: Vec::with_capacity(64),
@@ -1379,6 +1428,7 @@ impl RolloutWorld {
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
         self.frozen_solids.clone_from(&src.frozen_solids);
+        self.scale_changers.clone_from(&src.scale_changers);
         self.player_time_scale = src.player_time_scale;
         self.time_stop_protected = src.time_stop_protected;
         self.spawned.clone_from(&src.spawned);
@@ -1441,6 +1491,7 @@ impl RolloutWorld {
             time_stop_effects: _,
             spike_attacks: _,
             frozen_solids: _,
+            scale_changers: _,
             player_time_scale: _,
             time_stop_protected: _,
             spawned: _,
@@ -1530,6 +1581,7 @@ impl RolloutWorld {
         self.time_stop_effects.clear();
         self.spike_attacks.clear();
         self.frozen_solids.clear();
+        self.scale_changers.clear();
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
@@ -1601,6 +1653,8 @@ impl RolloutWorld {
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut push_entity = [usize::MAX; MAX_PLAYERS];
         let mut freeze_entity = [usize::MAX; MAX_PLAYERS];
+        let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
+        let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
@@ -1724,6 +1778,21 @@ impl RolloutWorld {
                             &mut freeze_entity[i],
                             false,
                         ),
+                        ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
+                            let ray = scale_ray_data(data, ability);
+                            (
+                                data::surface_extents(ray.hurtbox_extents),
+                                100_000_000
+                                    + ability_hierarchy[i][slot_index]
+                                    + ray.collider_hierarchy,
+                                if ability == ABILITY_GROWTH_RAY {
+                                    &mut growth_ray_entity[i]
+                                } else {
+                                    &mut shrink_ray_entity[i]
+                                },
+                                false,
+                            )
+                        }
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR) => (
                             throw_config(data, ability).hurtbox_extents,
@@ -1751,8 +1820,10 @@ impl RolloutWorld {
                     owner: if body { i as u32 + 1 } else { 0 },
                     flags: if body {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
-                    } else if matches!(resolved_abilities[i][s - 1], ABILITY_SPIKE | ABILITY_FREEZE)
-                    {
+                    } else if matches!(
+                        resolved_abilities[i][s - 1],
+                        ABILITY_SPIKE | ABILITY_FREEZE | ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY
+                    ) {
                         E_ENABLED | E_TRIGGER
                     } else {
                         E_TRIGGER
@@ -1766,6 +1837,16 @@ impl RolloutWorld {
                         data.push.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_FREEZE {
                         data.freeze.collider_offset.x.raw()
+                    } else if !body
+                        && matches!(
+                            resolved_abilities[i][s - 1],
+                            ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY
+                        )
+                    {
+                        scale_ray_data(data, resolved_abilities[i][s - 1])
+                            .collider_offset
+                            .x
+                            .raw()
                     } else {
                         0
                     },
@@ -1777,6 +1858,16 @@ impl RolloutWorld {
                         data.push.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_FREEZE {
                         data.freeze.collider_offset.y.raw()
+                    } else if !body
+                        && matches!(
+                            resolved_abilities[i][s - 1],
+                            ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY
+                        )
+                    {
+                        scale_ray_data(data, resolved_abilities[i][s - 1])
+                            .collider_offset
+                            .y
+                            .raw()
                     } else {
                         0
                     },
@@ -1888,6 +1979,7 @@ impl RolloutWorld {
                     velocity: Vec2::ZERO,
                     external_velocity: Vec2::ZERO,
                     radius: data.player.radius,
+                    scale: Fix::ONE,
                     grounded: false,
                     ground: None,
                     local: Fix::ZERO,
@@ -1926,7 +2018,15 @@ impl RolloutWorld {
                 ability_origin_velocity: Vec2::ZERO,
                 ability_origin_rotation: Fix::ZERO,
                 ability_origin_state: STATE_FALL,
+                ability_origin_scale: Fix::ONE,
                 ability_entry_action: Action::default(),
+                player_scale: Fix::ONE,
+                physics_scale: Fix::ONE,
+                body_collider_scale: Fix::ONE,
+                body_inverse_extents: Vec2::new(
+                    Fix::ONE / data.player.hurtbox_extents.x,
+                    Fix::ONE / data.player.hurtbox_extents.y,
+                ),
                 invisible: false,
                 invisible_time: Fix::ZERO,
                 was_invisible: false,
@@ -1976,6 +2076,8 @@ impl RolloutWorld {
                 rock_hierarchy: rock_hierarchy[i],
                 push_entity: push_entity[i],
                 freeze_entity: freeze_entity[i],
+                growth_ray_entity: growth_ray_entity[i],
+                shrink_ray_entity: shrink_ray_entity[i],
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
@@ -2423,6 +2525,7 @@ impl RolloutWorld {
         self.time_stop_effects_tick(data);
         self.spike_attacks_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
+        self.scale_changers_tick(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -2448,6 +2551,8 @@ impl RolloutWorld {
                     | ActiveAbility::Rock
                     | ActiveAbility::Push
                     | ActiveAbility::Freeze
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
                     | ActiveAbility::Spike
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
@@ -2475,7 +2580,10 @@ impl RolloutWorld {
             if self.playable(index) {
                 if self.players[index].active == ActiveAbility::Push {
                     self.players[index].push.collider_up = self.players[index].base.up;
-                } else if self.players[index].active == ActiveAbility::Freeze {
+                } else if matches!(
+                    self.players[index].active,
+                    ActiveAbility::Freeze | ActiveAbility::GrowthRay | ActiveAbility::ShrinkRay
+                ) {
                     self.players[index].gun.collider_up = self.players[index].base.up;
                 }
                 self.players[index].base.sync_collider();
@@ -2499,6 +2607,8 @@ impl RolloutWorld {
                     slot.rock_entity,
                     slot.push_entity,
                     slot.freeze_entity,
+                    slot.growth_ray_entity,
+                    slot.shrink_ray_entity,
                     slot.bow_entity,
                     slot.throw_entity,
                     slot.mine_entity,
@@ -2575,8 +2685,17 @@ impl RolloutWorld {
             self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
         }
+        if self.players[index].active == ActiveAbility::None {
+            let slot = &mut self.players[index];
+            if slot.base.scale != slot.physics_scale {
+                slot.base.radius *= slot.base.scale / slot.physics_scale;
+                slot.physics_scale = slot.base.scale;
+            }
+        }
         if self.players[index].ragdoll.active {
             self.ragdoll_player_tick(index, data);
+            let scale = self.players[index].player_scale;
+            self.players[index].set_ordinary_body_scale(scale);
             return;
         }
         if self.players[index].rewind.rewinding {
@@ -2688,6 +2807,10 @@ impl RolloutWorld {
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
                     slot.ability_origin_state = slot.obs_state;
+                    slot.ability_origin_scale = slot.base.scale;
+                    // Ability.EnterAbility scales the enabled form collider
+                    // from Player.Scale before invoking its components.
+                    slot.base.scale = slot.player_scale;
                 }
                 match ability {
                     ABILITY_INVISIBILITY => {
@@ -3047,6 +3170,50 @@ impl RolloutWorld {
                         self.freeze_tick(index, action, data);
                         return;
                     }
+                    ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
+                        let ray = scale_ray_data(data, ability);
+                        let grounded = self.players[index].base.grounded;
+                        let aim = {
+                            let slot = &self.players[index];
+                            let forward = if grounded {
+                                slot.base.up.perp_cw()
+                            } else {
+                                Vec2::RIGHT
+                            };
+                            if slot.facing_right { forward } else { -forward }
+                        };
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = if ability == ABILITY_GROWTH_RAY {
+                            ActiveAbility::GrowthRay
+                        } else {
+                            ActiveAbility::ShrinkRay
+                        };
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.gun = GunState {
+                            aim,
+                            ..GunState::default()
+                        };
+                        slot.base.rotation = Fix::ZERO;
+                        if grounded {
+                            if let Some(platform) = slot.base.platform(&self.platforms) {
+                                slot.base.position =
+                                    platform.surface.position(slot.base.local, ray.radius);
+                            }
+                            slot.base.radius = ray.radius;
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        } else {
+                            slot.base.radius = ray.radius;
+                            slot.base.velocity *= Fix::from_f32(0.1);
+                            slot.base.external_velocity *= Fix::from_f32(0.1);
+                            slot.base.ground = None;
+                        }
+                        self.scale_ray_tick(index, action, data);
+                        return;
+                    }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Bow;
@@ -3240,6 +3407,13 @@ impl RolloutWorld {
             self.freeze_tick(index, action, data);
             return;
         }
+        if matches!(
+            self.players[index].active,
+            ActiveAbility::GrowthRay | ActiveAbility::ShrinkRay
+        ) {
+            self.scale_ray_tick(index, action, data);
+            return;
+        }
         if self.players[index].active == ActiveAbility::Mine {
             self.mine_throw_tick(index, action, data);
             return;
@@ -3311,6 +3485,10 @@ impl RolloutWorld {
         self.players[index]
             .base
             .move_step(masked, movement_input, terrain!(self));
+        // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
+        // PlayerPhysics observes this FixTransform scale on the next pass.
+        let scale = self.players[index].player_scale;
+        self.players[index].set_ordinary_body_scale(scale);
     }
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
@@ -4085,6 +4263,8 @@ impl RolloutWorld {
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
@@ -4719,6 +4899,8 @@ impl RolloutWorld {
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entity = usize::MAX;
+            let mut growth_ray_entity = usize::MAX;
+            let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
@@ -4746,6 +4928,18 @@ impl RolloutWorld {
                         data.freeze.collider_hierarchy,
                         &mut freeze_entity,
                     ),
+                    ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
+                        let ray = scale_ray_data(data, ability);
+                        (
+                            data::surface_extents(ray.hurtbox_extents),
+                            ray.collider_hierarchy,
+                            if ability == ABILITY_GROWTH_RAY {
+                                &mut growth_ray_entity
+                            } else {
+                                &mut shrink_ray_entity
+                            },
+                        )
+                    }
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -4769,6 +4963,11 @@ impl RolloutWorld {
                         data.push.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.x.raw()
+                    } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
+                        scale_ray_data(data, abilities[slot])
+                            .collider_offset
+                            .x
+                            .raw()
                     } else {
                         0
                     },
@@ -4780,6 +4979,11 @@ impl RolloutWorld {
                         data.push.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.y.raw()
+                    } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
+                        scale_ray_data(data, abilities[slot])
+                            .collider_offset
+                            .y
+                            .raw()
                     } else {
                         0
                     },
@@ -4802,12 +5006,21 @@ impl RolloutWorld {
             slot.base.grounded = false;
             slot.base.ground = None;
             slot.base.grounded_speed = Fix::ZERO;
+            slot.base.radius = data.player.radius;
+            slot.physics_scale = Fix::ONE;
+            slot.body_collider_scale = Fix::ONE;
+            slot.body_inverse_extents = Vec2::new(
+                Fix::ONE / data.player.hurtbox_extents.x,
+                Fix::ONE / data.player.hurtbox_extents.y,
+            );
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.base.sync_collider();
             slot.reported_position = position;
             slot.reported_tick = self.tick;
             slot.obs_state = STATE_NOTHING;
             slot.timers.fill(Fix::from_f32(-1.5));
             slot.active = ActiveAbility::None;
+            slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
@@ -4829,6 +5042,8 @@ impl RolloutWorld {
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
             slot.freeze_entity = freeze_entity;
+            slot.growth_ray_entity = growth_ray_entity;
+            slot.shrink_ray_entity = shrink_ray_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -4848,6 +5063,8 @@ impl RolloutWorld {
                 self.players[index].rock_entity,
                 self.players[index].push_entity,
                 self.players[index].freeze_entity,
+                self.players[index].growth_ray_entity,
+                self.players[index].shrink_ray_entity,
                 self.players[index].bow_entity,
                 self.players[index].throw_entity,
                 self.players[index].mine_entity,
@@ -4975,6 +5192,8 @@ impl RolloutWorld {
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entity = usize::MAX;
+            let mut growth_ray_entity = usize::MAX;
+            let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
@@ -5002,6 +5221,18 @@ impl RolloutWorld {
                         data.freeze.collider_hierarchy,
                         &mut freeze_entity,
                     ),
+                    ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
+                        let ray = scale_ray_data(data, ability);
+                        (
+                            data::surface_extents(ray.hurtbox_extents),
+                            ray.collider_hierarchy,
+                            if ability == ABILITY_GROWTH_RAY {
+                                &mut growth_ray_entity
+                            } else {
+                                &mut shrink_ray_entity
+                            },
+                        )
+                    }
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -5026,6 +5257,11 @@ impl RolloutWorld {
                         data.push.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.x.raw()
+                    } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
+                        scale_ray_data(data, abilities[slot])
+                            .collider_offset
+                            .x
+                            .raw()
                     } else {
                         0
                     },
@@ -5037,6 +5273,11 @@ impl RolloutWorld {
                         data.push.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_FREEZE {
                         data.freeze.collider_offset.y.raw()
+                    } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
+                        scale_ray_data(data, abilities[slot])
+                            .collider_offset
+                            .y
+                            .raw()
                     } else {
                         0
                     },
@@ -5050,8 +5291,17 @@ impl RolloutWorld {
             }
 
             let slot = &mut self.players[index];
+            slot.base.radius = data.player.radius;
+            slot.physics_scale = Fix::ONE;
+            slot.body_collider_scale = Fix::ONE;
+            slot.body_inverse_extents = Vec2::new(
+                Fix::ONE / data.player.hurtbox_extents.x,
+                Fix::ONE / data.player.hurtbox_extents.y,
+            );
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.base.sync_collider();
             slot.active = ActiveAbility::None;
+            slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
             slot.push = PushState::default();
             slot.gun = GunState::default();
@@ -5073,6 +5323,8 @@ impl RolloutWorld {
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
             slot.freeze_entity = freeze_entity;
+            slot.growth_ray_entity = growth_ray_entity;
+            slot.shrink_ray_entity = shrink_ray_entity;
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
@@ -6054,6 +6306,289 @@ impl RolloutWorld {
         }
     }
 
+    /// GunTransform with ShootScaleChange. Growth and Shrink share every
+    /// authored form constant and animation; only the spawned ScaleChanger's
+    /// signed multipliers differ.
+    fn scale_ray_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let growth = self.players[index].active == ActiveAbility::GrowthRay;
+        let ray = if growth {
+            &data.scale_rays.growth
+        } else {
+            &data.scale_rays.shrink
+        };
+        if self.players[index].gun.has_fired {
+            if self.players[index].gun.fire_ticks == 0 {
+                self.exit_scale_ray_animation(index);
+                return;
+            }
+            self.players[index].gun.fire_ticks -= 1;
+        }
+
+        let direction = action.direction();
+        if direction != Vec2::ZERO {
+            self.players[index].gun.aim = direction.normalized();
+        }
+        let slot_button = 2u8 << self.players[index].active_slot;
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
+            self.fire_scale_ray(index, growth, data);
+        }
+
+        let invalid_ground = self.players[index].base.grounded
+            && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
+                || self.players[index].base.ground.is_none()
+                || self.players[index]
+                    .base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .is_none());
+        if invalid_ground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+
+        if !self.players[index].base.grounded {
+            let gravity_modifier = if self.players[index].gun.has_fired {
+                Fix::ONE
+            } else {
+                Fix::from_f32(0.03)
+            };
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                ray.constants.gravity_accel,
+                gravity_modifier,
+                ray.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid scale-ray gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded && slot.gun.has_fired {
+                bow_exit(slot, terrain!(self));
+                return;
+            }
+        }
+
+        let slot = &mut self.players[index];
+        if !slot.gun.has_fired {
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
+            if slot.base.velocity.length() > ray.max_slow_mo_speed {
+                slot.base.velocity = slot.base.velocity.normalized() * ray.max_slow_mo_speed;
+            }
+        } else {
+            let before = slot.base.velocity;
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                direction.x,
+                ray.constants.air_accel,
+                ray.constants.max_speed,
+            )
+            .expect("valid scale-ray air constants");
+            let after = slot.base.velocity;
+            slot.base.velocity =
+                before * (Fix::ONE - ray.air_control_blend) + after * ray.air_control_blend;
+        }
+        if slot.base.velocity.length() > ray.constants.max_speed {
+            slot.base.velocity = slot.base.velocity.normalized() * ray.constants.max_speed;
+        }
+        if !slot.base.grounded {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+    }
+
+    fn fire_scale_ray(&mut self, index: usize, growth: bool, data: &data::RolloutData) {
+        let ray = if growth {
+            &data.scale_rays.growth
+        } else {
+            &data.scale_rays.shrink
+        };
+        let (aim, grounded, normal) = {
+            let slot = &self.players[index];
+            (
+                slot.gun.aim.normalized_safe(),
+                slot.base.grounded,
+                slot.base
+                    .ground
+                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                    .map(|p| p.surface.normal(slot.base.position)),
+            )
+        };
+        {
+            let slot = &mut self.players[index];
+            slot.gun.has_fired = true;
+            slot.gun.fire_ticks = ray.fire_ticks;
+            slot.base.up = aim.perp();
+            slot.base.rotation = aim.normalized_angle();
+        }
+        let firepoint = {
+            let slot = &self.players[index];
+            let offset = ray.firepoint_offset * slot.base.scale;
+            slot.base.position + slot.base.up * offset.y + aim * offset.x
+        };
+        self.shoot_scale_ray(firepoint, aim, growth, data);
+
+        let slot = &mut self.players[index];
+        if grounded {
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * ray.knockback);
+            slot.base.force_unground(&self.platforms);
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+        } else {
+            slot.base.velocity = -(aim * ray.knockback);
+        }
+    }
+
+    fn shoot_scale_ray(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        growth: bool,
+        data: &data::RolloutData,
+    ) {
+        self.shoot_scale_ray_pass(origin, direction, growth, data, false);
+    }
+
+    fn shoot_scale_ray_pass(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        growth: bool,
+        data: &data::RolloutData,
+        already_hit_water: bool,
+    ) {
+        let ray = if growth {
+            &data.scale_rays.growth
+        } else {
+            &data.scale_rays.shrink
+        };
+        let max_distance = Fix::from_int(100);
+        let mask = if already_hit_water {
+            ray.collision_mask_no_water
+        } else {
+            ray.collision_mask
+        };
+        let terrain = terrain!(self);
+        let mut nearest = if mask & (1 << LAYER_WALL) != 0 {
+            crate::world::closest(terrain, origin, direction, max_distance, None)
+                .map_or(max_distance, |(_, distance, _)| distance)
+        } else {
+            max_distance
+        };
+        let mut victim = None;
+        let mut water_hit = false;
+        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
+            let map = &data.maps[self.map];
+            let water = OrientedBox::from_basis(
+                map.water_position,
+                Vec2::RIGHT,
+                data::surface_extents(map.water_extents),
+            );
+            if let Some(hit) = water.raycast(origin, direction)
+                && hit.near < nearest
+                && hit.near <= max_distance
+            {
+                nearest = hit.near;
+                water_hit = true;
+            }
+        }
+        if mask & (1 << LAYER_PLAYER) != 0 {
+            for target in 0..self.players.len() {
+                if !self.playable(target) {
+                    continue;
+                }
+                let slot = &self.players[target];
+                let entity = match slot.active {
+                    ActiveAbility::None => slot.body_entity,
+                    ActiveAbility::Dash => slot.dash_entity,
+                    ActiveAbility::Bow => slot.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => slot.throw_entity,
+                    ActiveAbility::Mine => slot.mine_entity,
+                    ActiveAbility::Rock => slot.rock_entity,
+                    ActiveAbility::Push => slot.push_entity,
+                    ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+                    ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::TimeStop => slot.time_stop_entity,
+                    ActiveAbility::Gust => slot.gust_entity,
+                    ActiveAbility::Revival => slot.revival_entity,
+                    ActiveAbility::Platform => slot.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let hit = if row.kind == 0 {
+                    Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near)
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    OrientedBox {
+                        center,
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near)
+                };
+                if let Some(distance) = hit
+                    && distance < nearest
+                    && distance <= max_distance
+                {
+                    nearest = distance;
+                    victim = Some(target);
+                    water_hit = false;
+                }
+            }
+        }
+        if water_hit {
+            self.shoot_scale_ray_pass(
+                origin + direction * nearest,
+                Vec2::new(direction.x, -direction.y),
+                growth,
+                data,
+                true,
+            );
+        } else if let Some(victim) = victim {
+            self.begin_scale_change(victim, growth, ray.changer_updatable_count);
+        }
+    }
+
+    fn begin_scale_change(&mut self, victim: usize, growth: bool, updatable_count: u32) {
+        self.next_spawn_hierarchy += updatable_count;
+        let effect = ScaleChangerState {
+            active: true,
+            born_tick: self.tick,
+            victim,
+            time: Fix::ZERO,
+            growth,
+        };
+        if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
+            self.scale_changers[free] = effect;
+        } else {
+            self.scale_changers.push(effect);
+        }
+    }
+
     fn shoot_freeze_ray(&mut self, origin: Vec2, direction: Vec2, data: &data::RolloutData) {
         self.shoot_freeze_ray_pass(origin, direction, data, false);
     }
@@ -6116,6 +6651,8 @@ impl RolloutWorld {
                     ActiveAbility::Rock => slot.rock_entity,
                     ActiveAbility::Push => slot.push_entity,
                     ActiveAbility::Freeze => slot.freeze_entity,
+                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
@@ -6302,6 +6839,40 @@ impl RolloutWorld {
         }
     }
 
+    fn scale_changers_tick(&mut self, data: &data::RolloutData) {
+        for index in 0..self.scale_changers.len() {
+            let effect = self.scale_changers[index];
+            if !effect.active || effect.born_tick >= self.tick {
+                continue;
+            }
+            let ray = if effect.growth {
+                &data.scale_rays.growth
+            } else {
+                &data.scale_rays.shrink
+            };
+            let duration = ray
+                .scale_curve
+                .keys
+                .last()
+                .expect("ScaleChanger curve has keys")
+                .time;
+            if effect.time > duration {
+                self.scale_changers[index].active = false;
+                continue;
+            }
+            if self.player_time_scale < Fix::from_f32(0.01)
+                && !self.time_stop_protected[effect.victim]
+            {
+                continue;
+            }
+            let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
+            let slot = &mut self.players[effect.victim];
+            slot.player_scale =
+                (slot.player_scale + delta).clamp(Fix::from_f32(0.3), Fix::from_int(3));
+            self.scale_changers[index].time += DT;
+        }
+    }
+
     fn exit_freeze_animation(&mut self, index: usize) {
         let terrain = terrain!(self);
         let slot = &mut self.players[index];
@@ -6314,6 +6885,24 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
         slot.base.ground = None;
         slot.base.collision_rays(terrain);
+    }
+
+    fn exit_scale_ray_animation(&mut self, index: usize) {
+        let terrain = terrain!(self);
+        let slot = &mut self.players[index];
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.base.force_unground(terrain.platforms);
+        slot.active = ActiveAbility::None;
+        slot.exit_to_fall();
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+        slot.base.ground = None;
+        slot.base.collision_rays(terrain);
+        // The restored slime receives Player.Scale on its next updater pass.
+        slot.physics_scale = slot.ability_origin_scale;
+        slot.base.radius = data::get().player.radius * slot.ability_origin_scale;
+        slot.set_ordinary_body_scale(slot.player_scale);
     }
 
     /// BowTransform.OldUpdate + UpdateSim for one tick: aim tracking, the
@@ -8044,6 +8633,8 @@ impl RolloutWorld {
                     ActiveAbility::Rock => player.rock_entity,
                     ActiveAbility::Push => player.push_entity,
                     ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::GrowthRay => player.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
                     ActiveAbility::Spike => player.spike_entity,
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
@@ -9312,6 +9903,8 @@ impl RolloutWorld {
                 slot.rock_entity,
                 slot.push_entity,
                 slot.freeze_entity,
+                slot.growth_ray_entity,
+                slot.shrink_ray_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -9368,6 +9961,8 @@ impl RolloutWorld {
                 slot.rock_entity,
                 slot.push_entity,
                 slot.freeze_entity,
+                slot.growth_ray_entity,
+                slot.shrink_ray_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -9416,6 +10011,8 @@ impl RolloutWorld {
                 slot.rock_entity,
                 slot.push_entity,
                 slot.freeze_entity,
+                slot.growth_ray_entity,
+                slot.shrink_ray_entity,
                 slot.bow_entity,
                 slot.throw_entity,
                 slot.mine_entity,
@@ -9742,6 +10339,8 @@ impl RolloutWorld {
                 rock_e,
                 push_e,
                 freeze_e,
+                growth_ray_e,
+                shrink_ray_e,
                 gust_e,
                 revival_e,
                 spike_e,
@@ -9758,6 +10357,8 @@ impl RolloutWorld {
                     s.rock_entity,
                     s.push_entity,
                     s.freeze_entity,
+                    s.growth_ray_entity,
+                    s.shrink_ray_entity,
                     s.gust_entity,
                     s.revival_entity,
                     s.spike_entity,
@@ -9775,6 +10376,8 @@ impl RolloutWorld {
             let rocking = slot.active == ActiveAbility::Rock;
             let pushing = slot.active == ActiveAbility::Push;
             let freezing = slot.active == ActiveAbility::Freeze;
+            let growing = slot.active == ActiveAbility::GrowthRay;
+            let shrinking = slot.active == ActiveAbility::ShrinkRay;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -9842,21 +10445,13 @@ impl RolloutWorld {
                 // itself (the slime is never dashing while its row is active).
                 // By reference: a by-value copy of the 64-byte box followed
                 // by a vector reload of its axes stalls on store forwarding.
-                let rebuilt;
-                let hurtbox: &OrientedBox = if body_active {
-                    &slot.base.collider
-                } else {
-                    rebuilt = OrientedBox::from_basis(
-                        center,
-                        Vec2::angle(angle),
-                        data.player.hurtbox_extents,
-                    );
-                    &rebuilt
-                };
-                body.right_x = hurtbox.right.x.raw();
-                body.right_y = hurtbox.right.y.raw();
-                body.up_x = hurtbox.up.x.raw();
-                body.up_y = hurtbox.up.y.raw();
+                let basis = Vec2::angle(angle);
+                let right = (Vec2::RIGHT / slot.body_inverse_extents.x).complex_mul(basis);
+                let up = (Vec2::UP / slot.body_inverse_extents.y).complex_mul(basis);
+                body.right_x = right.x.raw();
+                body.right_y = right.y.raw();
+                body.up_x = up.x.raw();
+                body.up_y = up.y.raw();
                 body.rotation = angle.raw();
             }
 
@@ -10127,6 +10722,52 @@ impl RolloutWorld {
                     freeze_box.up_x = collider.up.x.raw();
                     freeze_box.up_y = collider.up.y.raw();
                     freeze_box.rotation = rotation.raw();
+                }
+            }
+            for (ray_e, active, ray) in [
+                (growth_ray_e, growing, &data.scale_rays.growth),
+                (shrink_ray_e, shrinking, &data.scale_rays.shrink),
+            ] {
+                if ray_e == usize::MAX {
+                    continue;
+                }
+                let ray_box = &mut self.entities[ray_e];
+                let was_active = ray_box.flags & E_ACTIVE != 0;
+                ray_box.flags = if alive && active {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if active {
+                    ray_box.owner = slot.base.id;
+                }
+                if (alive && active) || was_active {
+                    let (root, rotation, scale) = if active {
+                        (synced, slot.gun.aim.normalized_angle(), slot.base.scale)
+                    } else {
+                        (exit_position, Fix::ZERO, slot.base.scale)
+                    };
+                    let basis = Vec2::angle(rotation);
+                    let offset_basis = if active {
+                        slot.gun.collider_up.perp_cw()
+                    } else {
+                        basis
+                    };
+                    let center = root + offset_basis.complex_mul(ray.collider_offset * scale);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        basis,
+                        data::surface_extents(ray.hurtbox_extents) * scale,
+                    );
+                    ray_box.x = center.x.raw();
+                    ray_box.y = center.y.raw();
+                    ray_box.vx = 0;
+                    ray_box.vy = 0;
+                    ray_box.right_x = collider.right.x.raw();
+                    ray_box.right_y = collider.right.y.raw();
+                    ray_box.up_x = collider.up.x.raw();
+                    ray_box.up_y = collider.up.y.raw();
+                    ray_box.rotation = rotation.raw();
                 }
             }
             // The Platform ability's hurtbox circle is live during
@@ -10456,7 +11097,11 @@ impl RolloutWorld {
                 vx: velocity.x.raw(),
                 vy: velocity.y.raw(),
                 rotation: rotation.raw(),
-                scale: 1 << 32,
+                scale: if in_ability {
+                    slot.ability_origin_scale.raw()
+                } else {
+                    slot.base.scale.raw()
+                },
                 abilities: slot.abilities,
                 ability_flags,
                 cooldowns: [
@@ -10534,7 +11179,7 @@ impl RolloutWorld {
                 cause_of_death: slot.cause_of_death,
                 x: position.x.raw(),
                 y: position.y.raw(),
-                scale: 1 << 32,
+                scale: slot.player_scale.raw(),
                 invisible_time: slot.invisible_time.raw(),
                 ability_time: slot.ability_time.raw(),
             };

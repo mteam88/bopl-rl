@@ -2066,3 +2066,35 @@ not yet have a differential scenario. A measured hit against an active Bow
 form exposed an unresolved updater-order mismatch while restoring and freezing
 the original slime: ordinary-slime hits are exact, but transformed-player hits
 are not yet compatible. Coverage therefore remains partial.
+
+### Executable Growth and Shrink rays on players (2026-09-15)
+
+Catalog ids 8 and 17 now execute the same serialized `GunTransform` used by
+Freeze: grounded and airborne entry, aim tracking, release-to-fire, 50-unit
+recoil, gravity, half-strength aerial steering, landing exit and the 20-tick
+fire animation. `ShootScaleChange` raycasts Player and wall rows and retains
+the source's one-pass Water reflection path.
+
+An ordinary player hit queues the collider-free `ScaleChanger` prefab for the
+next updater pass. It evaluates the exported five-key fixed Hermite curve at
+the source's pre-increment time and applies the signed 0.8 Player multiplier,
+including the strict duration boundary, time-stop rule and `[0.3, 3]` clamp.
+The rollout stores changers in a capacity-reused vector.
+
+Scaling has three separately visible clocks in Unity. `Player.Scale` changes
+after player components, the slime hurtbox copies it on the following player
+pass, and `PlayerPhysics.radius` consumes that FixTransform scale one pass
+later. Rust represents all three. It also retains the hurtbox's inverse
+extents: `SlimeController` assigns the same scale every tick, and
+`DPhysicsBox.Scale` repeatedly rounds `(One / oldScale) * newScale`, so its Q32
+axes continue drifting by raw units after the curve finishes. Reconstructing
+axes from `authoredExtents * scale` was visibly different; updating stored
+inverse extents matches the reference and preserves the actual collision
+shape.
+
+`scale_rays_ab.c` compares 500 Growth and 500 Shrink ticks exactly through
+form entry and exit, ScaleChanger registration, the complete curve, collider
+and radius phase lags, and subsequent scaled movement. Water reflection,
+non-player targets, active transformed-player targets, BlackHole growth and
+orb conversion still require their concrete entity implementations and
+differential scenarios, so both abilities remain partial.

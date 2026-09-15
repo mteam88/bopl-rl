@@ -776,6 +776,57 @@ def main():
         "frozen_updatable_count": updater_count(frozen_prefab),
     }
 
+    # ---- Growth/Shrink rays / ScaleChanger ----
+    scale_rays = {}
+    for name, ability_path, effect_path in (
+        ("growth", "Assets/GameObject/Growth ray.prefab", "Assets/GameObject/GrowRayEffect.prefab"),
+        ("shrink", "Assets/GameObject/Shrink ray.prefab", "Assets/GameObject/ShrinkRayEffect.prefab"),
+    ):
+        _, ray_ability = find_prefab(ability_path)
+        ray_gun = component(ray_ability, "GunTransform")
+        ray_box = component(ray_ability, "DPhysicsBox")
+        ray_physics = component(ray_ability, "PlayerPhysics")
+        ray_fix_transform = component(ray_ability, "FixTransform")
+        ray_payload = component(ray_ability, "ShootScaleChange")
+        ray_anims = animations(guid_of(ray_gun["animData"]))
+        _, effect_prefab = find_prefab(effect_path)
+        changer = component(effect_prefab, "ScaleChanger")
+        scale_rays[name] = {
+            "hurtbox_extents": vec2(ray_box, "startExtents"),
+            "collider_hierarchy": ray_box["hierarchyNumber"],
+            "collider_offset": vec2(ray_fix_transform, "offset"),
+            "radius": fix(ray_physics, "radius"),
+            "physics": {
+                "max_speed": fix(ray_physics, "maxSpeed"),
+                "jump_strength": fix(ray_physics, "jumpStrength"),
+                "accel": fix(ray_physics, "accel"),
+                "radius": fix(ray_physics, "radius"),
+                "gravity_accel": fix(ray_physics, "gravity_accel"),
+                "gravity_max_fall_speed": fix(ray_physics, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(ray_physics, "gravity_modifier"),
+                "jump_extra_x": fix(ray_physics, "jumpExtraXStrength"),
+                "jump_momentum": fix(ray_physics, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(ray_physics, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(ray_physics, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(ray_physics, "airAccel"),
+            },
+            "air_control_blend": fix(ray_gun, "airealControlBlend"),
+            "firepoint_offset": vec2(ray_gun, "FirepointOffset"),
+            "knockback": fix(ray_gun, "KnockBack"),
+            "max_slow_mo_speed": fix(ray_gun, "maxSlowMoSpeed"),
+            "transform_ticks": sum(abs(d) for d in ray_anims["gunTransform"]),
+            "fire_ticks": sum(abs(d) for d in ray_anims["gunTransformFire"]),
+            "collision_mask": ray_payload["collisionMask.m_Bits"],
+            "collision_mask_no_water": ray_payload["collisionMaskNoWater.m_Bits"],
+            "scale_curve": curve(changer, "scaleAnimation"),
+            "player_multiplier": fix(changer, "PlayerMultiplier"),
+            "multiplier": fix(changer, "multiplier"),
+            "small_non_players_multiplier": fix(changer, "smallNonPlayersMultiplier"),
+            "inverse_mass_before_big": fix(changer, "inverseMassBeforeConsideredBig"),
+            "changer_updatable_count": updater_count(effect_prefab),
+        }
+    out["prefabs"]["scale_rays"] = scale_rays
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")

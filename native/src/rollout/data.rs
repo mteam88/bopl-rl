@@ -211,6 +211,7 @@ struct RawPrefabs {
     rock: RawRock,
     push: RawPush,
     freeze: RawFreeze,
+    scale_rays: RawScaleRays,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -418,6 +419,33 @@ struct RawFreeze {
     collision_mask_no_water: u32,
     freeze_seconds: i64,
     frozen_updatable_count: u32,
+}
+#[derive(Deserialize)]
+struct RawScaleRays {
+    growth: RawScaleRay,
+    shrink: RawScaleRay,
+}
+#[derive(Deserialize)]
+struct RawScaleRay {
+    hurtbox_extents: RawVec2,
+    collider_hierarchy: u32,
+    collider_offset: RawVec2,
+    radius: i64,
+    physics: RawPhysics,
+    air_control_blend: i64,
+    firepoint_offset: RawVec2,
+    knockback: i64,
+    max_slow_mo_speed: i64,
+    transform_ticks: u32,
+    fire_ticks: u32,
+    collision_mask: u32,
+    collision_mask_no_water: u32,
+    scale_curve: Curve,
+    player_multiplier: i64,
+    multiplier: i64,
+    small_non_players_multiplier: i64,
+    inverse_mass_before_big: i64,
+    changer_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawMineThrow {
@@ -962,6 +990,31 @@ pub struct FreezeData {
     pub freeze_seconds: Fix,
     pub frozen_updatable_count: u32,
 }
+pub struct ScaleRaysData {
+    pub growth: ScaleRayData,
+    pub shrink: ScaleRayData,
+}
+pub struct ScaleRayData {
+    pub hurtbox_extents: Vec2,
+    pub collider_hierarchy: u32,
+    pub collider_offset: Vec2,
+    pub radius: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub air_control_blend: Fix,
+    pub firepoint_offset: Vec2,
+    pub knockback: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub transform_ticks: u32,
+    pub fire_ticks: u32,
+    pub collision_mask: u32,
+    pub collision_mask_no_water: u32,
+    pub scale_curve: Curve,
+    pub player_multiplier: Fix,
+    pub multiplier: Fix,
+    pub small_non_players_multiplier: Fix,
+    pub inverse_mass_before_big: Fix,
+    pub changer_updatable_count: u32,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -1147,6 +1200,7 @@ pub struct RolloutData {
     pub rock: RockData,
     pub push: PushData,
     pub freeze: FreezeData,
+    pub scale_rays: ScaleRaysData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -1175,6 +1229,33 @@ fn constants(physics: &RawPhysics) -> crate::world::MovementConstants {
         jump_teleport: Fix::from_raw(physics.jump_teleport.unwrap_or(42_949_672)),
         friction: FRICTION,
         ice_friction: ICE_FRICTION,
+    }
+}
+
+fn scale_ray(raw: &RawScaleRay) -> ScaleRayData {
+    ScaleRayData {
+        hurtbox_extents: {
+            let extents = raw.hurtbox_extents.get();
+            Vec2::new(extents.x.abs(), extents.y.abs())
+        },
+        collider_hierarchy: raw.collider_hierarchy,
+        collider_offset: raw.collider_offset.get(),
+        radius: Fix::from_raw(raw.radius),
+        constants: constants(&raw.physics),
+        air_control_blend: Fix::from_raw(raw.air_control_blend),
+        firepoint_offset: raw.firepoint_offset.get(),
+        knockback: Fix::from_raw(raw.knockback),
+        max_slow_mo_speed: Fix::from_raw(raw.max_slow_mo_speed),
+        transform_ticks: raw.transform_ticks,
+        fire_ticks: raw.fire_ticks,
+        collision_mask: raw.collision_mask,
+        collision_mask_no_water: raw.collision_mask_no_water,
+        scale_curve: raw.scale_curve.clone(),
+        player_multiplier: Fix::from_raw(raw.player_multiplier),
+        multiplier: Fix::from_raw(raw.multiplier),
+        small_non_players_multiplier: Fix::from_raw(raw.small_non_players_multiplier),
+        inverse_mass_before_big: Fix::from_raw(raw.inverse_mass_before_big),
+        changer_updatable_count: raw.changer_updatable_count,
     }
 }
 
@@ -1660,6 +1741,10 @@ pub fn get() -> &'static RolloutData {
                 collision_mask_no_water: raw.prefabs.freeze.collision_mask_no_water,
                 freeze_seconds: Fix::from_raw(raw.prefabs.freeze.freeze_seconds),
                 frozen_updatable_count: raw.prefabs.freeze.frozen_updatable_count,
+            },
+            scale_rays: ScaleRaysData {
+                growth: scale_ray(&raw.prefabs.scale_rays.growth),
+                shrink: scale_ray(&raw.prefabs.scale_rays.shrink),
             },
             smoke: {
                 let smoke = &raw.prefabs.smoke;
