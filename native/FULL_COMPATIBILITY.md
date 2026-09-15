@@ -2692,9 +2692,24 @@ axis, velocity, flag and lifecycle tick. The pooled item stores the source's
 three-frame initial/two-frame refreshed hold countdown, so pause, holder death
 and duplication cannot leave a permanent holder reference.
 
-Magnet remains partial while projectile/Boulder/Black Hole pickup, player
-ragdoll holding, spell/weapon handling and lock loss are integrated and
-goldened.
+`magnet_missile_ab.c` adds a 275-tick airborne composition with a live guided
+Missile. Although `Missile` is projectile-shaped, its prefab is on Unity's
+layer 10 (`item`), so the source routes it through the ordinary 100-force pull
+branch and its source-buggy close multiplier rather than the 500-force
+Projectile branch. The Rust pool preserves that dispatch, nearest box pickup,
+momentum transfer, locked firepoint interpolation, zero-velocity pin and
+thrust suppression while held. On release the source clears Magnet's item
+reference but leaves `BoplBody.Hold` to expire independently; preserving that
+countdown suppresses Missile's 1,000-force instability thrust on the launch
+pass and leaves the authored speed exactly 75. Cast, catch and release
+boundaries, velocities, axes, flags and entity ordering match. Airborne form
+and held-body positions use a 700,000,000-raw-unit bound (0.163 world units)
+for the already documented grouped player/form update ordering; it does not
+change the selected target or any lifecycle boundary in the fixture.
+
+Magnet remains partial while layer-9 projectile, Boulder and Black Hole
+pickup, player ragdoll holding, spell/weapon handling and lock loss are
+integrated and goldened.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

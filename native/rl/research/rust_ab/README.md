@@ -67,6 +67,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   the post-update static overlap sweep, pause and symmetric push over 240 ticks.
 - `magnet_time_stop_ab.c`: a held Grenade across 690 frozen passes, retained
   aim and hold refresh, followed by first-restored-pass launch and form exit.
+- `magnet_missile_ab.c`: an airborne Magnet pulls a guided Missile through the
+  item-layer branch, catches and pins it with engine thrust suppressed, then
+  launches it at the authored Missile speed while `BoplBody.Hold` expires.
 - `teleport_ability_ab.c`: first and second instant casts, deferred portal
   marker registration, release-driven readiness, caster transfer, inactive
   effect interval, RNG advancement, and exact reactivation.

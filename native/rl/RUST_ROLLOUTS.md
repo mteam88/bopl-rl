@@ -339,8 +339,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   symmetric `AddForce` pushes in a two-Magnet golden. A composed Time Stop
   golden preserves the retained pre-stop aim and locked item for 690 frozen
   passes, then fires on the first restored pass; the item pool carries the
-  authored Hold countdown. Projectile/Boulder/Black Hole bodies, ragdolls,
-  weapon/spell holding and lock loss remain open.
+  authored Hold countdown. Guided Missiles also use the source's item-layer
+  pull strength, nearest pickup and locked motion. Their independent Hold
+  countdown suppresses the 1,000-force instability engine on the 75-unit
+  launch pass, matching the composed 275-tick differential. Layer-9
+  projectiles, Boulder/Black Hole bodies, ragdolls, weapon/spell holding and
+  lock loss remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

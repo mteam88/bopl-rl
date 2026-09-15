@@ -437,6 +437,8 @@ pub struct GuidedMissile {
     pub body: Body,
     pub up: Vec2,
     pub instability_ticks: u32,
+    pub magnet_holder: Option<usize>,
+    pub magnet_hold_ticks: i8,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1156,6 +1158,7 @@ pub struct MagnetState {
     pub body_right: Vec2,
     pub has_fired: bool,
     pub held_item: Option<usize>,
+    pub held_missile: Option<usize>,
     pub held_position: Vec2,
     /// TryPickupNearbyItems contributes this cast-pass circle to MagnetGun's
     /// allocation-free StaticUpdate parry sweep.
@@ -13716,7 +13719,7 @@ impl RolloutWorld {
             self.players[index].magnet.aim = direction.normalized();
         }
         self.players[index].magnet.time_spent_pulling += DT;
-        if matches!(self.players[index].magnet.phase, 1 | 2 | 3)
+        if matches!(self.players[index].magnet.phase, 1..=3)
             && self.players[index].magnet.time_spent_pulling > magnet.max_pull_duration
         {
             let state = &mut self.players[index].magnet;
@@ -13805,7 +13808,7 @@ impl RolloutWorld {
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
-            if slot.magnet.held_item.is_some()
+            if (slot.magnet.held_item.is_some() || slot.magnet.held_missile.is_some())
                 && let Some(platform) = slot.base.platform(&self.platforms)
             {
                 // Player.Position follows the late platform-local pose, while
@@ -13933,6 +13936,29 @@ impl RolloutWorld {
             }
             item.body.force -= direction * magnet.pull_strength * strength;
         }
+        for missile in &mut self.guided_missiles {
+            if !missile.active || !missile.registered || missile.magnet_holder.is_some() {
+                continue;
+            }
+            let collider = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents,
+            );
+            if crate::physics::contact::box_box(query, collider).is_none() {
+                continue;
+            }
+            // The guided Missile carries an Item component and lives on layer
+            // 10 (`item`), so MagnetGun routes it through the ordinary item
+            // branch. ProjectilePullStr is reserved for layer 9 projectiles.
+            let mut strength = multiplier;
+            if (missile.position - magnet.firepoint_offset).length_squared()
+                < magnet.fast_pull_radius_squared
+            {
+                strength *= magnet.close_pull_multiplier;
+            }
+            missile.body.force -= direction * magnet.pull_strength * strength;
+        }
         if changed {
             self.platforms_changed();
         }
@@ -14004,6 +14030,7 @@ impl RolloutWorld {
         };
         let mut nearest = Fix::MAX;
         let mut selected = None;
+        let mut selected_missile = None;
         for (item_index, item) in self.thrown_items.iter().enumerate() {
             let Some(entity) = item.entity else {
                 continue;
@@ -14038,6 +14065,37 @@ impl RolloutWorld {
                 selected = Some(item_index);
             }
         }
+        for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
+            if !missile.active || !missile.registered {
+                continue;
+            }
+            let collider = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents,
+            );
+            if crate::physics::contact::circle_box(
+                Circle {
+                    center: firepoint,
+                    radius,
+                },
+                collider,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let distance = (missile.position - firepoint).length_squared();
+            if distance < nearest {
+                nearest = distance;
+                selected = None;
+                selected_missile = Some(missile_index);
+            }
+        }
+        if let Some(missile_index) = selected_missile {
+            self.magnet_pickup_missile(index, missile_index, data);
+            return;
+        }
         let Some(item_index) = selected else {
             return;
         };
@@ -14064,6 +14122,40 @@ impl RolloutWorld {
         slot.magnet.phase = 3;
         slot.magnet.time_spent_pulling = Fix::ZERO;
         slot.magnet.held_item = Some(item_index);
+        slot.magnet.held_missile = None;
+        slot.magnet.held_position = position;
+        slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
+    }
+
+    fn magnet_pickup_missile(
+        &mut self,
+        index: usize,
+        missile_index: usize,
+        data: &data::RolloutData,
+    ) {
+        if let Some(previous) = self.guided_missiles[missile_index].magnet_holder
+            && previous != index
+            && previous < self.players.len()
+            && self.players[previous].active == ActiveAbility::Magnet
+        {
+            self.players[previous].magnet.phase = 4;
+            self.players[previous].magnet.held_missile = None;
+        }
+        let velocity = self.guided_missiles[missile_index].body.velocity;
+        let position = self.guided_missiles[missile_index].position;
+        let missile = &mut self.guided_missiles[missile_index];
+        missile.body.angular_velocity = data.magnet.locked_angular_velocity;
+        missile.magnet_holder = Some(index);
+        missile.magnet_hold_ticks = 3;
+        let slot = &mut self.players[index];
+        if slot.magnet.phase == 1 {
+            slot.magnet.animation = 2;
+            slot.magnet.animation_ticks = 0;
+        }
+        slot.magnet.phase = 3;
+        slot.magnet.time_spent_pulling = Fix::ZERO;
+        slot.magnet.held_item = None;
+        slot.magnet.held_missile = Some(missile_index);
         slot.magnet.held_position = position;
         slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
     }
@@ -14111,9 +14203,16 @@ impl RolloutWorld {
     }
 
     fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
-        let Some(item_index) = self.players[index].magnet.held_item else {
-            self.players[index].magnet.phase = 4;
+        if self.players[index].magnet.held_item.is_none() {
+            if let Some(missile_index) = self.players[index].magnet.held_missile {
+                self.magnet_update_held_missile(index, missile_index, data);
+            } else {
+                self.players[index].magnet.phase = 4;
+            }
             return;
+        }
+        let Some(item_index) = self.players[index].magnet.held_item else {
+            unreachable!();
         };
         if item_index >= self.thrown_items.len()
             || !self.thrown_items[item_index].active
@@ -14161,7 +14260,75 @@ impl RolloutWorld {
         item.magnet_hold_ticks = 2;
     }
 
+    fn magnet_update_held_missile(
+        &mut self,
+        index: usize,
+        missile_index: usize,
+        data: &data::RolloutData,
+    ) {
+        if missile_index >= self.guided_missiles.len()
+            || !self.guided_missiles[missile_index].active
+            || self.guided_missiles[missile_index].magnet_holder != Some(index)
+        {
+            let state = &mut self.players[index].magnet;
+            state.held_missile = None;
+            state.phase = 4;
+            return;
+        }
+        let firepoint = self.magnet_firepoint(index, data);
+        if (firepoint - self.guided_missiles[missile_index].position).length_squared()
+            > data.magnet.max_lock_distance_squared
+        {
+            self.guided_missiles[missile_index].magnet_holder = None;
+            let state = &mut self.players[index].magnet;
+            state.held_missile = None;
+            state.phase = 2;
+            return;
+        }
+        let firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
+        let body_position = self.players[index].base.position;
+        let old = self.players[index].magnet.held_position;
+        let old_direction = (old - body_position).normalized_safe();
+        let target = firepoint - body_position;
+        let distance = (old - body_position).length() * (Fix::ONE - data.magnet.held_lerp)
+            + target.length() * data.magnet.held_lerp;
+        let direction = slerp(
+            old_direction,
+            target.normalized_safe(),
+            data.magnet.held_lerp,
+        );
+        let mut position = body_position + direction * distance;
+        if let Some(wall) = self.magnet_wall_ray(body_position, direction, Fix::from_int(1000))
+            && wall < distance
+        {
+            position = body_position + direction * wall;
+        }
+        let velocity = self.guided_missiles[missile_index].body.velocity;
+        self.players[index].base.external_velocity += velocity / Fix::from_int(10);
+        self.players[index].magnet.held_position = position;
+        let missile = &mut self.guided_missiles[missile_index];
+        missile.position = position;
+        missile.body.velocity = Vec2::ZERO;
+        missile.magnet_holder = Some(index);
+        missile.magnet_hold_ticks = 2;
+    }
+
     fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
+        if let Some(missile_index) = self.players[index].magnet.held_missile.take() {
+            if let Some(missile) = self.guided_missiles.get_mut(missile_index)
+                && missile.active
+                && missile.magnet_holder == Some(index)
+            {
+                missile.up = direction;
+                missile.body.velocity = direction * data.magnet.fire_missile_force;
+                missile.body.orientation = direction.perp_cw().normalized_angle();
+                // MagnetGun clears its heldItem reference, but BoplBody.Hold
+                // remains live until its independent frame countdown drops
+                // the holder. Missile therefore suppresses engine thrust on
+                // the launch pass.
+            }
+            return;
+        }
         let Some(item_index) = self.players[index].magnet.held_item.take() else {
             return;
         };
@@ -14181,6 +14348,13 @@ impl RolloutWorld {
     }
 
     fn drop_magnet_held_item(&mut self, index: usize) {
+        if let Some(missile_index) = self.players[index].magnet.held_missile.take()
+            && let Some(missile) = self.guided_missiles.get_mut(missile_index)
+            && missile.magnet_holder == Some(index)
+        {
+            missile.magnet_holder = None;
+            missile.magnet_hold_ticks = -1;
+        }
         let Some(item_index) = self.players[index].magnet.held_item.take() else {
             return;
         };
@@ -14194,7 +14368,9 @@ impl RolloutWorld {
 
     fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
         let aim = self.players[index].magnet.aim.normalized_safe();
-        self.magnet_fire_held_item(index, aim, data);
+        if self.players[index].magnet.phase == 3 {
+            self.magnet_fire_held_item(index, aim, data);
+        }
         let normal = self.players[index]
             .base
             .ground
@@ -16632,6 +16808,14 @@ impl RolloutWorld {
             if !self.guided_missiles[index].active || !self.guided_missiles[index].registered {
                 continue;
             }
+            let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
+            if physics_dt > Fix::ZERO && being_held {
+                self.guided_missiles[index].magnet_hold_ticks -= 1;
+                if self.guided_missiles[index].magnet_hold_ticks == 0 {
+                    self.guided_missiles[index].magnet_holder = None;
+                    self.guided_missiles[index].magnet_hold_ticks = -1;
+                }
+            }
             let position = self.guided_missiles[index].position;
             let mut boundary_explosion = None;
             if position.y < Fix::from_f32(-11.3) {
@@ -16656,7 +16840,7 @@ impl RolloutWorld {
             // SparkShot.UpdateSim still advances its instability counter while
             // GameTime is frozen, but AddForce scales by FixedTimeStep. Do not
             // leave thrust queued for the first unfrozen DetPhysics pass.
-            if physics_dt > Fix::ZERO {
+            if physics_dt > Fix::ZERO && !being_held {
                 if missile.instability_ticks >= 3 {
                     missile.body.force += missile.up * data.missile.instability_accel;
                 } else if missile.up.dot(missile.body.velocity) < data.missile.minimum_forward_speed
