@@ -98,7 +98,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   arrow immediately before the stop, holds its position for all 690 frozen
   passes, and matches motion on the first restored pass. Magnet also routes a
   live Arrow through the source's stronger layer-9 pull, nearest-circle pickup,
-  held spin/pin countdown and doubled projectile launch force.
+  held spin/pin countdown and doubled projectile launch force. Gust captures a
+  live Arrow in its fixed target set and applies its full Shockwave curve with
+  orientation retained from the authored between-impulse Arrow update.
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
@@ -125,7 +127,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   first time-zero platform impulse runs in prefab initialization before map
   home springs and its second runs later in the same updater pass. The fixed
   capture set now also retains live thrown items; a composed Grenade receives
-  both time-zero impulses and the full curve with exact pooled-body motion.
+  both time-zero impulses and the full curve with exact pooled-body motion. A
+  composed Arrow receives the same force path while preserving source updater
+  order: wave initialization, Arrow orientation, then the wave's normal update.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same

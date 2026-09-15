@@ -90,6 +90,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   field for 360 ticks; static authored geometry allows one Q32.32 least bit.
 - `gust_grenade_ab.c`: a released Grenade captured by Gust's fixed target set,
   both time-zero impulses, the complete force curve and subsequent item flight.
+- `gust_arrow_ab.c`: a live Bow Arrow captured by Gust, including the split
+  init/Arrow-update/wave-update ordering, force curve and projectile flight.
 - `magnet_ability_ab.c`: Magnet's first-pass pull, rounded-platform impulses,
   player pull, grounded and airborne form motion, release recoil, landing and
   animation exits over 1,000 optimized-Q32 ticks. The active form centre allows

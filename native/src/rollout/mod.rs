@@ -342,6 +342,9 @@ pub struct Arrow {
     pub velocity: Vec2,
     pub force: Vec2,
     pub angular_velocity: Fix,
+    /// Pass in which Arrow.UpdateSim already aligned the transform. Later
+    /// spawned updaters such as Gust may change velocity without rerunning it.
+    pub updater_tick: u32,
     /// Arrow.UpdateSim aligns the sprite before DetPhysics applies gravity.
     pub rotation: Fix,
     pub time_passed: Fix,
@@ -1464,6 +1467,8 @@ pub struct GustWave {
     pub platform_ids: [u32; 50],
     pub item_count: usize,
     pub item_indices: [usize; 50],
+    pub arrow_count: usize,
+    pub arrow_indices: [usize; 50],
 }
 impl Default for GustWave {
     fn default() -> Self {
@@ -1477,6 +1482,8 @@ impl Default for GustWave {
             platform_ids: [0; 50],
             item_count: 0,
             item_indices: [usize::MAX; 50],
+            arrow_count: 0,
+            arrow_indices: [usize::MAX; 50],
         }
     }
 }
@@ -12299,7 +12306,8 @@ impl RolloutWorld {
                 radius: data.gust.radius,
             };
             for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
-                if wave.target_count + wave.item_count == wave.platform_ids.len() {
+                if wave.target_count + wave.item_count + wave.arrow_count == wave.platform_ids.len()
+                {
                     break;
                 }
                 if crate::physics::contact::circle_rounded(query, platform.collider)
@@ -12315,7 +12323,7 @@ impl RolloutWorld {
             // Thrown items are pooled, so retain stable pool indices rather
             // than allocating a per-wave object set.
             for (item_index, item) in self.thrown_items.iter().enumerate() {
-                if wave.target_count + wave.item_count == wave.platform_ids.len()
+                if wave.target_count + wave.item_count + wave.arrow_count == wave.platform_ids.len()
                     || !item.active
                     || item.entity.is_none()
                 {
@@ -12337,6 +12345,26 @@ impl RolloutWorld {
                 {
                     wave.item_indices[wave.item_count] = item_index;
                     wave.item_count += 1;
+                }
+            }
+            for (arrow_index, arrow) in self.arrows.iter().enumerate() {
+                if wave.target_count + wave.item_count + wave.arrow_count == wave.platform_ids.len()
+                    || !arrow.active
+                    || !arrow.registered
+                {
+                    continue;
+                }
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: arrow.position,
+                        radius: data.arrow.radius,
+                    },
+                )
+                .is_some()
+                {
+                    wave.arrow_indices[wave.arrow_count] = arrow_index;
+                    wave.arrow_count += 1;
                 }
             }
             // Player-layer colliders are processed during activation and are
@@ -12429,6 +12457,33 @@ impl RolloutWorld {
                 * strength
                 * Fix::from_int(60);
             item.body.apply_impulse(impulse, Vec2::ZERO);
+        }
+        for target in 0..wave.arrow_count {
+            let arrow_index = wave.arrow_indices[target];
+            let tick = self.tick;
+            let Some(arrow) = self.arrows.get_mut(arrow_index) else {
+                continue;
+            };
+            if !arrow.active || !arrow.registered {
+                continue;
+            }
+            if dt > Fix::ZERO && arrow.magnet_hold_ticks < 0 && arrow.updater_tick != tick {
+                let speed = arrow.velocity.length();
+                let up = if speed == Fix::ZERO {
+                    Vec2::UP
+                } else {
+                    arrow.velocity / speed
+                };
+                arrow.rotation = up.perp_cw().normalized_angle();
+                arrow.updater_tick = tick;
+            }
+            let direction = arrow.position - wave.position;
+            let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+            let impulse = direction.normalized_safe()
+                * (data.gust.default_force / distance)
+                * strength
+                * Fix::from_int(60);
+            arrow.velocity += impulse * data.arrow.body.inverse_mass;
         }
         self.gust_waves[wave_index] = wave;
         if applied {
@@ -16877,6 +16932,7 @@ impl RolloutWorld {
             velocity,
             force: Vec2::ZERO,
             angular_velocity: Fix::ZERO,
+            updater_tick: u32::MAX,
             rotation: Fix::ZERO,
             time_passed: Fix::ZERO,
             hurt_owner_after,
@@ -17233,7 +17289,7 @@ impl RolloutWorld {
             // Arrow.UpdateSim runs in the updater pass, before DetPhysics
             // integrates gravity and position. Preserve that authored phase
             // for the policy-visible collider orientation.
-            if !being_held {
+            if !being_held && arrow.updater_tick != self.tick {
                 let speed = arrow.velocity.length();
                 let up = if speed == Fix::ZERO {
                     Vec2::UP
@@ -17244,6 +17300,7 @@ impl RolloutWorld {
                 // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
                 // arrow's FixTransform, so a straight shot reads 0, not 2pi.
                 arrow.rotation = up.perp_cw().normalized_angle();
+                arrow.updater_tick = self.tick;
             }
             arrow.velocity +=
                 (arrow.force * data.arrow.body.inverse_mass + Vec2::UP * gravity) * physics_dt;

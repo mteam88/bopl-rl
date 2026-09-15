@@ -1161,10 +1161,15 @@ first impulse. The wave's later `UpdateSim` applies a second time-zero impulse
 and advances the authored 0.25-second curve. Its captured platform-id array
 rejects destroyed targets and computes closest surface points, current normals,
 distance scaling, impulse arms, and body torque each pass. Captured thrown items
-retain stable pool indices in the same fixed-capacity wave record. Each live
-body receives the source's normalized direction, distance-scaled default force,
-curve value and 60-fold `ForceMode2D.Impulse` conversion at its transform
-position, so a circle receives no spurious torque. A center-radius player
+and Arrow projectiles retain stable pool indices in the same fixed-capacity wave
+record. Each live body receives the source's normalized direction,
+distance-scaled default force, curve value and 60-fold
+`ForceMode2D.Impulse` conversion at its transform position, so a circle receives
+no spurious torque. For an Arrow captured on the wave's first pass, source
+component order is significant: wave initialization applies the first impulse,
+the pre-existing `Arrow.UpdateSim` aligns the transform to that velocity, then
+the wave's ordinary update applies the second impulse without aligning the Arrow
+again. A center-radius player
 approximation was rejected during measurement: the map-0 opponent passes that
 broad phase but misses the actual oriented box.
 
@@ -1184,6 +1189,13 @@ and same-pass update impulses, follows the full curve and remains in the normal
 pooled rigid-body/contact path. Every public field matches within the existing
 64-raw-Q32 grouped transform bound; the first horizontal impulse occurs on the
 same tick and all later item positions and velocities match NativeAOT.
+
+`gust_arrow_ab.c` composes a live Bow Arrow with Gust for 400 ticks. Bow begins
+on tick 214; Arrow registration, Bow exit and Gust entry all occur on tick 255;
+the first observable horizontal Gust impulse occurs on tick 262. The fixed
+target capture, split initialization/Arrow/wave updater order, complete curve,
+later flight and every lifecycle field match NativeAOT within the existing
+64-raw-Q32 grouped transform bound.
 
 
 ## Executable Invisibility and streamed actor verification

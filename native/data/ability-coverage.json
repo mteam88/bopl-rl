@@ -39,7 +39,7 @@
       "prefab": "Assets/GameObject/Bow.prefab",
       "prefab_guid": "39014498316c3ea4fa825e8bba01c406",
       "native_status": "partial",
-      "verification": "Executable BowTransform and arrows are covered by bow_ab, bow_phase_ab, bow_ground_exit_ab, ability_hitbox_ab, dash_arrow_ab, arrow_bounds_ab, time_stop_arrow_ab, time_stop_bow_ab, magnet_arrow_ab and the seeded 300-episode fidelity gate. The Q32 form matches charge flags and launch timing, active hurtbox contacts, grounded/airborne entry and exit order, landing, boundary death, projectile eviction, ownership and stock reconstruction. Time Stop projectile and active-form freezing/restoration, Magnet pull/pickup/fire and source Arrow hierarchy allocation are differential-covered. Remaining gaps are composed projectile interactions and cosmetic retained-arrow child history."
+      "verification": "Executable BowTransform and arrows are covered by bow_ab, bow_phase_ab, bow_ground_exit_ab, ability_hitbox_ab, dash_arrow_ab, arrow_bounds_ab, time_stop_arrow_ab, time_stop_bow_ab, magnet_arrow_ab, gust_arrow_ab and the seeded 300-episode fidelity gate. The Q32 form matches charge flags and launch timing, active hurtbox contacts, grounded/airborne entry and exit order, landing, boundary death, projectile eviction, ownership and stock reconstruction. Time Stop projectile and active-form freezing/restoration, Magnet pull/pickup/fire, Gust fixed-set capture and full force-curve updater ordering, and source Arrow hierarchy allocation are differential-covered. Remaining gaps are other composed projectile interactions and cosmetic retained-arrow child history."
     },
     {
       "id": 5,
@@ -63,7 +63,7 @@
       "prefab": "Assets/GameObject/Gust.prefab",
       "prefab_guid": "05feec16b8416224fb842a3774879cf4",
       "native_status": "slice-only",
-      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred AirWave Shockwave, exact fixed-set target capture, player/platform/thrown-item impulses, force curve, and entity observations. gust_ability_ab compares 360 complete NativeAOT/Rust ticks; gust_grenade_ab adds 340 ticks through live Grenade capture, both time-zero impulses and the full pooled-body force path. Other items, projectiles, boulders, active forms, Black Holes, ropes and destructible objects remain open."
+      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred AirWave Shockwave, exact fixed-set target capture, player/platform/thrown-item/Arrow impulses, force curve, and entity observations. gust_ability_ab compares 360 complete NativeAOT/Rust ticks; gust_grenade_ab adds 340 ticks through live Grenade capture, both time-zero impulses and the full pooled-body force path; gust_arrow_ab adds 400 ticks through live Bow Arrow capture and exact initialization/Arrow/wave updater ordering. Other items and projectiles, boulders, active forms, Black Holes, ropes and destructible objects remain open."
     },
     {
       "id": 8,
