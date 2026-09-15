@@ -1190,6 +1190,14 @@ pooled rigid-body/contact path. Every public field matches within the existing
 64-raw-Q32 grouped transform bound; the first horizontal impulse occurs on the
 same tick and all later item positions and velocities match NativeAOT.
 
+`gust_grenade_form_ab.c` covers the complementary held state for 294 exact
+ticks. Grenade and Gust enter on ticks 214 and 224; the wave pushes the grounded
+ThrowItem2 form on tick 231 while its manually initialized payload remains
+outside DetPhysics. The form's prior collider basis and later PlayerBody pose,
+grounded surface motion, held payload placement, release position, inherited
+spawn rotation and launch impulse all match. Rust retains this state in the
+existing fixed player and item pools.
+
 `gust_arrow_ab.c` composes a live Bow Arrow with Gust for 400 ticks. Bow begins
 on tick 214; Arrow registration, Bow exit and Gust entry all occur on tick 255;
 the first observable horizontal Gust impulse occurs on tick 262. The fixed

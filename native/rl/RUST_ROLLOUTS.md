@@ -101,10 +101,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   held spin/pin countdown and doubled projectile launch force. Gust captures a
   live Arrow in its fixed target set and applies its full Shockwave curve with
   orientation retained from the authored between-impulse Arrow update. Gust
-  also queries the live aim-oriented Bow form and the grounded controlling
-  Missile form, applying their one-shot PlayerPhysics forces before the later
-  form movement. Missile retains the source DPhysicsBox's one-pass-lagged
-  basis while PlayerBody publishes the newly forced position.
+  also queries the live aim-oriented Bow form, the grounded controlling
+  Missile form, and the grounded held-Grenade form, applying their one-shot
+  PlayerPhysics forces before the later form movement. Missile and Grenade
+  retain the source DPhysicsBox's one-pass-lagged basis while PlayerBody
+  publishes the newly forced position.
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
@@ -142,8 +143,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   by 9,000 and queued on its BoplBody, then normal Rock physics carries it to an
   exact ability-body boundary death. An airborne charging Roll takes the other
   pushable-form path through `PlayerPhysics.AddForce`; its later boundary check
-  observes the pose before the lower-hierarchy `PlayerBody` movement pass. Bow
-  and Missile use the same force path with their oriented box colliders.
+  observes the pose before the lower-hierarchy `PlayerBody` movement pass. Bow,
+  Missile and the ThrowItem2 forms use the same force path with their oriented
+  box colliders; the held Grenade case is exact through release.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same

@@ -641,6 +641,7 @@ pub struct ThrowItemState {
     pub fire_input_time: Fix,
     pub direction: Vec2,
     pub item: Option<usize>,
+    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy)]
@@ -5212,6 +5213,7 @@ impl RolloutWorld {
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
+                            collider_rotation: slot.base.rotation,
                             ..ThrowItemState::default()
                         };
                         if grounded {
@@ -12453,6 +12455,36 @@ impl RolloutWorld {
                     }
                     continue;
                 }
+                if matches!(
+                    self.players[player_index].active,
+                    ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall
+                ) {
+                    let target = &self.players[player_index];
+                    let config = throw_config(data, active_throw_ability(target.active));
+                    let form = OrientedBox::from_basis(
+                        target.base.position,
+                        Vec2::angle(target.base.rotation),
+                        config.hurtbox_extents,
+                    );
+                    if crate::physics::contact::circle_box(query, form).is_some() {
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        let force = data.gust.default_force / distance;
+                        let force = if target.base.grounded {
+                            data.gust.grounded_multiplier * delta * force
+                        } else {
+                            delta * force
+                        };
+                        self.players[player_index].base.external_velocity +=
+                            force * Fix::from_int(35);
+                    }
+                    continue;
+                }
                 if self.players[player_index].active == ActiveAbility::Bow {
                     let target = &self.players[player_index];
                     let up = if target.bow.aim == Vec2::ZERO {
@@ -13271,6 +13303,7 @@ impl RolloutWorld {
     }
 
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
         let aim = action.direction();
@@ -13384,6 +13417,9 @@ impl RolloutWorld {
             // attached to the authored surface. PlayerBody still integrates
             // external velocity afterward, which is observable when a moving
             // platform carried the caster immediately before entry.
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
             let this = &mut *self;
             let slot = &mut this.players[index];
             slot.base.velocity = Vec2::ZERO;
@@ -13459,7 +13495,10 @@ impl RolloutWorld {
             hierarchy_base,
             entity: None,
             position: self.players[index].base.position,
-            body: config.item_body,
+            body: Body {
+                orientation: self.players[index].base.rotation,
+                ..config.item_body
+            },
             fuse: match ability {
                 ABILITY_GRENADE => data.grenade.detonation_time,
                 ABILITY_SMOKE => data.smoke.detonation_time,
@@ -13530,7 +13569,9 @@ impl RolloutWorld {
         if self.thrown_items[item_index].active {
             let item = &mut self.thrown_items[item_index];
             item.position = position;
-            item.body.orientation = slot.base.rotation;
+            // SpawnGrenade instantiated the payload with the form rotation.
+            // Fire repositions and initializes it without rotating the held
+            // FixTransform again.
             item.body.force += impulse_force;
             item.hurt_owner_delay = gd.hurt_owner_delay;
             if item.entity.is_none() {
@@ -20917,7 +20958,7 @@ impl RolloutWorld {
                         } else {
                             synced
                         };
-                        (center, slot.base.rotation)
+                        (center, slot.throw_item.collider_rotation)
                     } else {
                         (exit_position, slot.base.rotation)
                     };
