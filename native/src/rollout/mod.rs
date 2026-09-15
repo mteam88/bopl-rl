@@ -340,12 +340,16 @@ pub struct Arrow {
     pub entity: Option<usize>,
     pub position: Vec2,
     pub velocity: Vec2,
+    pub force: Vec2,
+    pub angular_velocity: Fix,
     /// Arrow.UpdateSim aligns the sprite before DetPhysics applies gravity.
     pub rotation: Fix,
     pub time_passed: Fix,
     /// Projectile.DelayedEnableHurtOwner: 5 units of travel time.
     pub hurt_owner_after: Fix,
     pub can_hurt_owner: bool,
+    pub magnet_holder: Option<usize>,
+    pub magnet_hold_ticks: i8,
 }
 
 /// A live `DynamicAbilityPickup`. The vector is bounded by the authored three
@@ -1160,6 +1164,7 @@ pub struct MagnetState {
     pub has_fired: bool,
     pub held_item: Option<usize>,
     pub held_missile: Option<usize>,
+    pub held_arrow: Option<usize>,
     pub held_position: Vec2,
     /// TryPickupNearbyItems contributes this cast-pass circle to MagnetGun's
     /// allocation-free StaticUpdate parry sweep.
@@ -13879,7 +13884,9 @@ impl RolloutWorld {
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
-            if (slot.magnet.held_item.is_some() || slot.magnet.held_missile.is_some())
+            if (slot.magnet.held_item.is_some()
+                || slot.magnet.held_missile.is_some()
+                || slot.magnet.held_arrow.is_some())
                 && let Some(platform) = slot.base.platform(&self.platforms)
             {
                 // Player.Position follows the late platform-local pose, while
@@ -14030,6 +14037,28 @@ impl RolloutWorld {
             }
             missile.body.force -= direction * magnet.pull_strength * strength;
         }
+        for arrow in &mut self.arrows {
+            if !arrow.active || !arrow.registered || arrow.magnet_holder.is_some() {
+                continue;
+            }
+            let contact = crate::physics::contact::circle_box(
+                Circle {
+                    center: arrow.position,
+                    radius: data.arrow.radius,
+                },
+                query,
+            );
+            if contact.is_none() {
+                continue;
+            }
+            let mut strength = multiplier;
+            if (arrow.position - magnet.firepoint_offset).length_squared()
+                < magnet.fast_pull_radius_squared
+            {
+                strength *= magnet.close_pull_multiplier;
+            }
+            arrow.force -= direction * magnet.projectile_pull_strength * strength;
+        }
         if changed {
             self.platforms_changed();
         }
@@ -14102,6 +14131,7 @@ impl RolloutWorld {
         let mut nearest = Fix::MAX;
         let mut selected = None;
         let mut selected_missile = None;
+        let mut selected_arrow = None;
         for (item_index, item) in self.thrown_items.iter().enumerate() {
             let Some(entity) = item.entity else {
                 continue;
@@ -14134,6 +14164,8 @@ impl RolloutWorld {
             if distance < nearest {
                 nearest = distance;
                 selected = Some(item_index);
+                selected_missile = None;
+                selected_arrow = None;
             }
         }
         for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
@@ -14161,7 +14193,38 @@ impl RolloutWorld {
                 nearest = distance;
                 selected = None;
                 selected_missile = Some(missile_index);
+                selected_arrow = None;
             }
+        }
+        for (arrow_index, arrow) in self.arrows.iter().enumerate() {
+            if !arrow.active || !arrow.registered {
+                continue;
+            }
+            if crate::physics::contact::circle_circle(
+                Circle {
+                    center: firepoint,
+                    radius,
+                },
+                Circle {
+                    center: arrow.position,
+                    radius: data.arrow.radius,
+                },
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let distance = (arrow.position - firepoint).length_squared();
+            if distance < nearest {
+                nearest = distance;
+                selected = None;
+                selected_missile = None;
+                selected_arrow = Some(arrow_index);
+            }
+        }
+        if let Some(arrow_index) = selected_arrow {
+            self.magnet_pickup_arrow(index, arrow_index, data);
+            return;
         }
         if let Some(missile_index) = selected_missile {
             self.magnet_pickup_missile(index, missile_index, data);
@@ -14194,6 +14257,7 @@ impl RolloutWorld {
         slot.magnet.time_spent_pulling = Fix::ZERO;
         slot.magnet.held_item = Some(item_index);
         slot.magnet.held_missile = None;
+        slot.magnet.held_arrow = None;
         slot.magnet.held_position = position;
         slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
     }
@@ -14227,6 +14291,36 @@ impl RolloutWorld {
         slot.magnet.time_spent_pulling = Fix::ZERO;
         slot.magnet.held_item = None;
         slot.magnet.held_missile = Some(missile_index);
+        slot.magnet.held_arrow = None;
+        slot.magnet.held_position = position;
+        slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
+    }
+
+    fn magnet_pickup_arrow(&mut self, index: usize, arrow_index: usize, data: &data::RolloutData) {
+        if let Some(previous) = self.arrows[arrow_index].magnet_holder
+            && previous != index
+            && previous < self.players.len()
+            && self.players[previous].active == ActiveAbility::Magnet
+        {
+            self.players[previous].magnet.phase = 4;
+            self.players[previous].magnet.held_arrow = None;
+        }
+        let velocity = self.arrows[arrow_index].velocity;
+        let position = self.arrows[arrow_index].position;
+        let arrow = &mut self.arrows[arrow_index];
+        arrow.angular_velocity = data.magnet.locked_angular_velocity;
+        arrow.magnet_holder = Some(index);
+        arrow.magnet_hold_ticks = 3;
+        let slot = &mut self.players[index];
+        if slot.magnet.phase == 1 {
+            slot.magnet.animation = 2;
+            slot.magnet.animation_ticks = 0;
+        }
+        slot.magnet.phase = 3;
+        slot.magnet.time_spent_pulling = Fix::ZERO;
+        slot.magnet.held_item = None;
+        slot.magnet.held_missile = None;
+        slot.magnet.held_arrow = Some(arrow_index);
         slot.magnet.held_position = position;
         slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
     }
@@ -14277,6 +14371,8 @@ impl RolloutWorld {
         if self.players[index].magnet.held_item.is_none() {
             if let Some(missile_index) = self.players[index].magnet.held_missile {
                 self.magnet_update_held_missile(index, missile_index, data);
+            } else if let Some(arrow_index) = self.players[index].magnet.held_arrow {
+                self.magnet_update_held_arrow(index, arrow_index, data);
             } else {
                 self.players[index].magnet.phase = 4;
             }
@@ -14384,7 +14480,69 @@ impl RolloutWorld {
         missile.magnet_hold_ticks = 2;
     }
 
+    fn magnet_update_held_arrow(
+        &mut self,
+        index: usize,
+        arrow_index: usize,
+        data: &data::RolloutData,
+    ) {
+        if arrow_index >= self.arrows.len()
+            || !self.arrows[arrow_index].active
+            || self.arrows[arrow_index].magnet_holder != Some(index)
+        {
+            let state = &mut self.players[index].magnet;
+            state.held_arrow = None;
+            state.phase = 4;
+            return;
+        }
+        let firepoint = self.magnet_firepoint(index, data);
+        if (firepoint - self.arrows[arrow_index].position).length_squared()
+            > data.magnet.max_lock_distance_squared
+        {
+            self.arrows[arrow_index].magnet_holder = None;
+            let state = &mut self.players[index].magnet;
+            state.held_arrow = None;
+            state.phase = 2;
+            return;
+        }
+        let firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
+        let body_position = self.players[index].base.position;
+        let old = self.players[index].magnet.held_position;
+        let old_direction = (old - body_position).normalized_safe();
+        let target = firepoint - body_position;
+        let distance = (old - body_position).length() * (Fix::ONE - data.magnet.held_lerp)
+            + target.length() * data.magnet.held_lerp;
+        let direction = slerp(
+            old_direction,
+            target.normalized_safe(),
+            data.magnet.held_lerp,
+        );
+        let mut position = body_position + direction * distance;
+        if let Some(wall) = self.magnet_wall_ray(body_position, direction, Fix::from_int(1000))
+            && wall < distance
+        {
+            position = body_position + direction * wall;
+        }
+        let velocity = self.arrows[arrow_index].velocity;
+        self.players[index].base.external_velocity += velocity / Fix::from_int(10);
+        self.players[index].magnet.held_position = position;
+        let arrow = &mut self.arrows[arrow_index];
+        arrow.position = position;
+        arrow.velocity = Vec2::ZERO;
+        arrow.magnet_holder = Some(index);
+        arrow.magnet_hold_ticks = 2;
+    }
+
     fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
+        if let Some(arrow_index) = self.players[index].magnet.held_arrow.take() {
+            if let Some(arrow) = self.arrows.get_mut(arrow_index)
+                && arrow.active
+                && arrow.magnet_holder == Some(index)
+            {
+                arrow.force += direction * data.magnet.fire_force * Fix::from_int(2);
+            }
+            return;
+        }
         if let Some(missile_index) = self.players[index].magnet.held_missile.take() {
             if let Some(missile) = self.guided_missiles.get_mut(missile_index)
                 && missile.active
@@ -14419,6 +14577,13 @@ impl RolloutWorld {
     }
 
     fn drop_magnet_held_item(&mut self, index: usize) {
+        if let Some(arrow_index) = self.players[index].magnet.held_arrow.take()
+            && let Some(arrow) = self.arrows.get_mut(arrow_index)
+            && arrow.magnet_holder == Some(index)
+        {
+            arrow.magnet_holder = None;
+            arrow.magnet_hold_ticks = -1;
+        }
         if let Some(missile_index) = self.players[index].magnet.held_missile.take()
             && let Some(missile) = self.guided_missiles.get_mut(missile_index)
             && missile.magnet_holder == Some(index)
@@ -16638,10 +16803,14 @@ impl RolloutWorld {
             entity,
             position,
             velocity,
+            force: Vec2::ZERO,
+            angular_velocity: Fix::ZERO,
             rotation: Fix::ZERO,
             time_passed: Fix::ZERO,
             hurt_owner_after,
             can_hurt_owner: false,
+            magnet_holder: None,
+            magnet_hold_ticks: -1,
         };
         match free {
             Some(i) => self.arrows[i] = arrow,
@@ -16979,25 +17148,38 @@ impl RolloutWorld {
             {
                 arrow.can_hurt_owner = true;
             }
+            // Arrow.UpdateSim runs in the updater pass, before BoplBody's
+            // hold countdown and DetPhysics integration.
+            let being_held = arrow.magnet_hold_ticks >= 0;
+            if being_held {
+                arrow.magnet_hold_ticks -= 1;
+                if arrow.magnet_hold_ticks == 0 {
+                    arrow.magnet_holder = None;
+                    arrow.magnet_hold_ticks = -1;
+                }
+            }
             // Arrow.UpdateSim runs in the updater pass, before DetPhysics
             // integrates gravity and position. Preserve that authored phase
             // for the policy-visible collider orientation.
-            let speed = arrow.velocity.length();
-            let up = if speed == Fix::ZERO {
-                Vec2::UP
-            } else {
-                arrow.velocity / speed
-            };
-            // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
-            // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
-            // arrow's FixTransform, so a straight shot reads 0, not 2pi.
-            arrow.rotation = up
-                .perp_cw()
-                .normalized_angle()
-                .checked_rem(Fix::TAU, true)
-                .expect("finite angle");
-            arrow.velocity.y += gravity * physics_dt;
+            if !being_held {
+                let speed = arrow.velocity.length();
+                let up = if speed == Fix::ZERO {
+                    Vec2::UP
+                } else {
+                    arrow.velocity / speed
+                };
+                // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
+                // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
+                // arrow's FixTransform, so a straight shot reads 0, not 2pi.
+                arrow.rotation = up.perp_cw().normalized_angle();
+            }
+            arrow.velocity +=
+                (arrow.force * data.arrow.body.inverse_mass + Vec2::UP * gravity) * physics_dt;
             arrow.position += arrow.velocity * physics_dt;
+            arrow.rotation = (arrow.rotation + arrow.angular_velocity * physics_dt)
+                .checked_rem(Fix::TAU, true)
+                .expect("finite arrow orientation");
+            arrow.force = Vec2::ZERO;
         }
     }
 
@@ -21255,6 +21437,7 @@ impl RolloutWorld {
             e.vx = arrow.velocity.x.raw();
             e.vy = arrow.velocity.y.raw();
             e.rotation = arrow.rotation.raw();
+            e.angular_velocity = arrow.angular_velocity.raw();
         }
         for marker in &self.revival_marker_pool {
             if !marker.active || !marker.registered {

@@ -88,7 +88,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   all five prefab updaters and publishes the source collider hierarchy rather
   than an id-derived surrogate. A composed Time Stop golden fires an airborne
   arrow immediately before the stop, holds its position for all 690 frozen
-  passes, and matches motion on the first restored pass.
+  passes, and matches motion on the first restored pass. Magnet also routes a
+  live Arrow through the source's stronger layer-9 pull, nearest-circle pickup,
+  held spin/pin countdown and doubled projectile launch force.
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
@@ -367,9 +369,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   authored Hold countdown. Guided Missiles also use the source's item-layer
   pull strength, nearest pickup and locked motion. Their independent Hold
   countdown suppresses the 1,000-force instability engine on the 75-unit
-  launch pass, matching the composed 275-tick differential. Layer-9
-  projectiles, Boulder/Black Hole bodies, ragdolls, weapon/spell holding and
-  lock loss remain open.
+  launch pass, matching the composed 275-tick differential. A live Bow arrow
+  also matches the distinct layer-9 projectile pull, pickup, held countdown
+  and `FireForce * 2` launch path. Other projectiles, Boulder/Black Hole bodies,
+  ragdolls, weapon/spell holding and lock loss remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

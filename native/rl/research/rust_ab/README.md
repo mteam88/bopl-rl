@@ -93,6 +93,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `magnet_missile_ab.c`: an airborne Magnet pulls a guided Missile through the
   item-layer branch, catches and pins it with engine thrust suppressed, then
   launches it at the authored Missile speed while `BoplBody.Hold` expires.
+- `magnet_arrow_ab.c`: a live layer-9 Bow projectile follows Magnet's stronger
+  pull branch, nearest-circle pickup, held spin/pin countdown and doubled
+  launch force. Held position inherits the documented Magnet form bound;
+  velocities and interaction boundaries match.
 - `teleport_ability_ab.c`: first and second instant casts, deferred portal
   marker registration, release-driven readiness, caster transfer, inactive
   effect interval, RNG advancement, and exact reactivation.

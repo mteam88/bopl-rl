@@ -2797,9 +2797,19 @@ and held-body positions use a 700,000,000-raw-unit bound (0.163 world units)
 for the already documented grouped player/form update ordering; it does not
 change the selected target or any lifecycle boundary in the fixture.
 
-Magnet remains partial while layer-9 projectile, Boulder and Black Hole
-pickup, player ragdoll holding, spell/weapon handling and lock loss are
-integrated and goldened.
+`magnet_arrow_ab.c` closes the layer-9 Bow projectile path. Magnet applies
+`ProjectilePullStr`, selects the Arrow circle as the nearest pickup, transfers
+momentum, sets the authored two-radian angular velocity, refreshes
+`BoplBody.Hold(2)`, pins the body at its firepoint and launches it with
+`FireForce * 2`. The 360-tick differential matches every lifecycle boundary,
+velocity, angular velocity, flag and entity order. Held position differs by at
+most 48,225,412 raw Q32 units (0.01123 world units) because it inherits the
+documented grouped Magnet form pose; target selection, wall handling, release
+and later flight are unchanged.
+
+Magnet remains partial while other projectiles, Boulder and Black Hole pickup,
+player ragdoll holding, spell/weapon handling and lock loss are integrated and
+goldened.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 
