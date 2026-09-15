@@ -80,6 +80,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Active Rock is exact across the same boundary. Its activation clock freezes,
   while `BounceBall.LateUpdateSim` retains the source's repeated entry-curve
   scale addition at zero delta; rigid-body motion resumes on restoration.
+  Charging Roll also freezes for all 690 passes and exactly resumes charge,
+  lethal release and ground motion; its later platform-hop branch remains open.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
@@ -235,7 +237,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   swept lethal hurtboxes, jump cancel, airborne gravity/control and exit body
   handoff. Its circle and movement radii remain distinct as authored. A Dash
   composition exactly covers the released Roll's contact-kill callback and
-  stock reconstruction. Platform hopping, early airborne release,
+  stock reconstruction, and a Time Stop composition covers frozen charge plus
+  restored release and motion. Platform hopping, early airborne release,
   moving-platform turns, wall squish and other transformed-form contacts still
   need dedicated differential scenarios.
   Black Hole executes its grounded and airborne form animations, persistent
@@ -297,8 +300,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   the 10-second hold plus exit-alpha lifetime, restoration, protected-caster
   cooldowns/motion, and global DetPhysics freezing for the currently ported
   projectile, item, smoke, explosion and platform bodies. Arrow entry, active
-  Bow charge, active Rock scale/clock behavior, all 690 frozen passes and the
-  first restored form/projectile passes are exact through the public rows. Cross-ability
+  Bow charge, active Rock scale/clock behavior, charging Roll, all 690 frozen
+  passes and the first restored form/projectile passes are exact through the public rows. Cross-ability
   interactions with catalog entries that remain absent inherit those entries'
   open scope.
   Spike is exact through its grounded cast and recovery, opposite-surface

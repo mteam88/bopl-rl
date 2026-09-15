@@ -61,6 +61,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_rock_ab.c`: an unprotected active Rock across all 690 stopped
   passes, including Unity's repeated zero-delta entry-scale update and the
   first restored rigid-body motion.
+- `time_stop_roll_ab.c`: an unprotected charging Roll across all 690 stopped
+  passes, then restored release and ground motion up to the separately open
+  platform-hop boundary.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass

@@ -2000,6 +2000,14 @@ Rock position and timers remain frozen and rigid-body motion resumes on the
 first restored pass. All public state matches, with the existing Rock bound of
 64 raw Q32 units for successive curve and normalization rounding.
 
+`time_stop_roll_ab.c` holds an opposing Roll charge across all 690 stopped
+passes. The unprotected charge clock and form position remain frozen, then the
+first restored clock resumes charge, lethal release and curved-platform motion.
+The differential covers 1,540 ticks with the established Roll pose bound of
+2,048 raw Q32 units. It deliberately ends before tick 1557, where this route
+first reaches Roll's separately open platform-hop behavior; that later branch
+is not attributed to Time Stop coverage.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback
@@ -2244,7 +2252,9 @@ release, repeated curved-platform circuits, jump cancel, high-speed airborne
 motion, boundary death, and stock replacement. All state and entity metadata
 match, including the reconstructed hierarchy after a charged release.
 `dash_roll_ab.c` additionally covers the released form's lethal callback against
-another transformed player. Repeated surface local-to-world transforms
+another transformed player. `time_stop_roll_ab.c` covers the charging form
+through frozen clocks, restored release and motion up to the first platform-hop
+boundary. Repeated surface local-to-world transforms
 accumulate at most 2,048 raw Q32 units (less than 0.0000005 world units) in the
 comparator; velocity is exact through the measured jump and fall. The
 difference comes from reconstructing the curved surface position in Rust
