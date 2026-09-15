@@ -330,8 +330,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Pulling is live on the cast pass as in the modified source. Its rounded-wall
   query, off-centre platform impulses, source-buggy close-distance test and
   ordinary/Macho player pulls are executable without per-tick allocation.
-  Pickup, locked-object launch, non-player bodies and two-Magnet parry remain
-  open.
+  Circular thrown items now receive pull force, transfer momentum on nearest
+  pickup, pause their fuse while held, track the clamped firepoint and launch
+  with the authored force; a 450-tick Grenade composition golden bounds the
+  grouped grounded-transform drift to 0.0233 world units while lifecycle and
+  item velocities match exactly. Projectile/Boulder/Black Hole bodies,
+  ragdolls, weapon/spell holding and two-Magnet parry remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

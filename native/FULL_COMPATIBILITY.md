@@ -2621,7 +2621,7 @@ attached-terrain and orb branches are integrated. Smoke, Tack, Mjolnir, Poke
 Ball and Mine use the same allocation-free circular-item clone path but still
 need their own composed goldens.
 
-### Magnet form, platform pull and player pull (2026-09-15)
+### Magnet form, pull field and thrown-item handling (2026-09-15)
 
 Catalog id 30 now executes `MagnetGun`'s authored player form. Prefab extraction
 records its collider and physics constants, all pull/pickup masks and strengths,
@@ -2652,9 +2652,25 @@ ability FixTransform offset from its live basis, while Rust reconstructs the
 same centre from the exported scalar rotation. This does not affect the
 canonical player body, pull query, collision decisions or later state.
 
-Magnet remains partial while item/projectile/Boulder/Black Hole pickup, held
-motion and launch, player ragdoll holding, spell/weapon handling, lock loss,
-time stop and two-Magnet parry are integrated and goldened.
+`magnet_item_ab.c` adds 450 optimized-Q32 ticks composed with a live Grenade.
+It covers circular-item pull force, nearest pickup, holder/fuse suppression,
+the locked angular velocity and zero-velocity pin, repeated held-body momentum
+transfer, release recoil and the 10,000-force launch. Cast, pickup, release,
+form exit and item survival ticks match exactly, as do every item velocity and
+all non-position state. The golden permits at most 100,000,000 raw Q32 units
+(0.0233 world units) in the grounded player, form and held-item positions; the
+observed release-frame maximum is 82,887,626 raw units (0.0193). Unity performs
+the newly transferred item velocity, grounded PlayerPhysics movement,
+PlayerBody integration and late platform-local publication through separate
+updatables in one pass. Rust groups those operations around its shared player
+body and reconstructs the same published transform. The small integration-order
+drift does not alter the aim byte, pickup/lock decision, collision manifold,
+lifecycle tick or exact launch velocity. Holding and duplication remain
+allocation-free, and copied items explicitly discard the source holder.
+
+Magnet remains partial while projectile/Boulder/Black Hole pickup, player
+ragdoll holding, spell/weapon handling, lock loss, time stop and two-Magnet
+parry are integrated and goldened.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

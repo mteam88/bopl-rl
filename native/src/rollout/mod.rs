@@ -406,6 +406,8 @@ pub struct ThrownItem {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    /// Player slot whose Magnet currently refreshes this item's Hold(2).
+    pub magnet_holder: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1148,7 +1150,12 @@ pub struct MagnetState {
     pub animation_ticks: u32,
     pub time_spent_pulling: Fix,
     pub aim: Vec2,
+    /// The ability FixTransform's previous right basis. Magnet's
+    /// PlayerPhysics does not synchronize rotation to its ground.
+    pub body_right: Vec2,
     pub has_fired: bool,
+    pub held_item: Option<usize>,
+    pub held_position: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5653,6 +5660,7 @@ impl RolloutWorld {
                             // slime and consumes the first enter frame now.
                             animation_ticks: 1,
                             aim,
+                            body_right: aim,
                             ..MagnetState::default()
                         };
                         slot.base.radius = data.magnet.radius;
@@ -12834,6 +12842,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
+            magnet_holder: None,
         };
         let item_index = if let Some(free) = self.thrown_items.iter().position(|item| !item.active)
         {
@@ -13068,6 +13077,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
+            magnet_holder: None,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -13696,6 +13706,10 @@ impl RolloutWorld {
 
         if matches!(self.players[index].magnet.phase, 1 | 2) {
             self.magnet_pull(index, data);
+            self.magnet_try_pickup_item(index, data);
+        }
+        if self.players[index].magnet.phase == 3 {
+            self.magnet_update_held_item(index, data);
         }
 
         let button = 2u8 << self.players[index].active_slot;
@@ -13746,6 +13760,7 @@ impl RolloutWorld {
         if !slot.magnet.has_fired {
             slot.base.up = slot.magnet.aim.perp();
             slot.base.rotation = slot.magnet.aim.normalized_angle();
+            slot.magnet.body_right = slot.magnet.aim;
             if slot.base.velocity.length() > magnet.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * magnet.max_slow_mo_speed;
             }
@@ -13768,6 +13783,19 @@ impl RolloutWorld {
         if !slot.base.grounded {
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
+        } else {
+            if slot.magnet.held_item.is_some()
+                && let Some(platform) = slot.base.platform(&self.platforms)
+            {
+                // Player.Position follows the late platform-local pose, while
+                // the active collider below observes PlayerBody's pre-late
+                // integration of the newly transferred item velocity.
+                slot.reported_position =
+                    platform.surface.position(slot.base.local, slot.base.radius);
+                slot.reported_tick = self.tick;
+            }
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
         }
     }
 
@@ -13783,9 +13811,7 @@ impl RolloutWorld {
         if direction == Vec2::ZERO {
             return;
         }
-        let firepoint = slot.base.position
-            + slot.base.up * magnet.firepoint_offset.y
-            + direction * magnet.firepoint_offset.x;
+        let firepoint = self.magnet_firepoint(index, data);
         let mut half_length = Fix::from_int(1000);
         let mut nearest = Fix::MAX;
         for platform in &self.platforms {
@@ -13818,15 +13844,7 @@ impl RolloutWorld {
             if ground == Some(self.platforms[platform_index].id) {
                 continue;
             }
-            let rounded = self.platforms[platform_index].collider;
-            let inner_right = rounded.inner.right.length();
-            let inner_up = rounded.inner.up.length();
-            let expanded = OrientedBox::from_basis(
-                rounded.inner.center,
-                rounded.inner.right.normalized_safe(),
-                Vec2::new(inner_right + rounded.radius, inner_up + rounded.radius),
-            );
-            if crate::physics::contact::box_box(query, expanded).is_none() {
+            if !box_rounded_overlaps(query, self.platforms[platform_index].collider) {
                 continue;
             }
             let position = self.platforms[platform_index].surface.center;
@@ -13860,13 +13878,251 @@ impl RolloutWorld {
             };
             self.players[player_index].base.external_velocity -= direction * pull * strength;
         }
+        for item in &mut self.thrown_items {
+            let Some(entity) = item.entity else {
+                continue;
+            };
+            if !item.active
+                || item.magnet_holder.is_some()
+                || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
+            {
+                continue;
+            }
+            let radius = if item.ability == ABILITY_MINE {
+                data.mine.item_radius
+            } else {
+                throw_config(data, item.ability).item_radius
+            };
+            if crate::physics::contact::circle_box(
+                Circle {
+                    center: item.position,
+                    radius,
+                },
+                query,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let mut strength = multiplier;
+            if (item.position - magnet.firepoint_offset).length_squared()
+                < magnet.fast_pull_radius_squared
+            {
+                strength *= magnet.close_pull_multiplier;
+            }
+            item.body.force -= direction * magnet.pull_strength * strength;
+        }
         if changed {
             self.platforms_changed();
         }
     }
 
+    fn magnet_firepoint(&self, index: usize, data: &data::RolloutData) -> Vec2 {
+        let slot = &self.players[index];
+        let right = slot.magnet.body_right;
+        let up = right.perp();
+        let offset = data.magnet.firepoint_offset * slot.base.scale;
+        slot.base.position + up * offset.y + right * offset.x
+    }
+
+    fn magnet_wall_ray(&self, origin: Vec2, direction: Vec2, distance: Fix) -> Option<Fix> {
+        let mut nearest = Fix::MAX;
+        for platform in &self.platforms {
+            if let Some(hit) = platform
+                .collider
+                .raycast(origin, direction)
+                .filter(|hit| hit.near <= distance && hit.near < nearest)
+            {
+                nearest = hit.near;
+            }
+        }
+        (nearest != Fix::MAX).then_some(nearest)
+    }
+
+    fn magnet_firepoint_before_item_walls(
+        &self,
+        index: usize,
+        firepoint: Vec2,
+        data: &data::RolloutData,
+    ) -> Vec2 {
+        let slot = &self.players[index];
+        let direction = slot.magnet.aim.normalized_safe();
+        let offset_x = data.magnet.firepoint_offset.x * slot.base.scale;
+        let root = firepoint - slot.magnet.body_right * offset_x;
+        let side = data.magnet.raycast_offset * slot.base.scale;
+        let distance = offset_x + Fix::from_int(1000);
+        let center = self.magnet_wall_ray(slot.base.position, direction, distance);
+        let upper = self.magnet_wall_ray(
+            root + direction * side.x + direction.perp() * side.y,
+            direction,
+            distance,
+        );
+        let lower = self.magnet_wall_ray(
+            root + direction * side.x + direction.perp_cw() * side.y,
+            direction,
+            distance,
+        );
+        let mut allowed = center.unwrap_or(offset_x);
+        if let (Some(upper), Some(lower)) = (upper, lower) {
+            allowed = upper.max(lower).min(center.unwrap_or(Fix::MAX));
+        }
+        if allowed < offset_x {
+            root + direction * allowed
+        } else {
+            firepoint
+        }
+    }
+
+    fn magnet_try_pickup_item(&mut self, index: usize, data: &data::RolloutData) {
+        let firepoint = self.magnet_firepoint(index, data);
+        let radius = data.magnet.pickup_radius * self.players[index].base.scale;
+        let mut nearest = Fix::MAX;
+        let mut selected = None;
+        for (item_index, item) in self.thrown_items.iter().enumerate() {
+            let Some(entity) = item.entity else {
+                continue;
+            };
+            if !item.active
+                || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
+            {
+                continue;
+            }
+            let item_radius = if item.ability == ABILITY_MINE {
+                data.mine.item_radius
+            } else {
+                throw_config(data, item.ability).item_radius
+            };
+            if crate::physics::contact::circle_circle(
+                Circle {
+                    center: firepoint,
+                    radius,
+                },
+                Circle {
+                    center: item.position,
+                    radius: item_radius,
+                },
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let distance = (item.position - firepoint).length_squared();
+            if distance < nearest {
+                nearest = distance;
+                selected = Some(item_index);
+            }
+        }
+        let Some(item_index) = selected else {
+            return;
+        };
+
+        if let Some(previous) = self.thrown_items[item_index].magnet_holder
+            && previous != index
+            && previous < self.players.len()
+            && self.players[previous].active == ActiveAbility::Magnet
+            && self.players[previous].magnet.phase != 5
+        {
+            self.players[previous].magnet.phase = 4;
+            self.players[previous].magnet.held_item = None;
+        }
+        let velocity = self.thrown_items[item_index].body.velocity;
+        let position = self.thrown_items[item_index].position;
+        self.thrown_items[item_index].body.angular_velocity = data.magnet.locked_angular_velocity;
+        self.thrown_items[item_index].magnet_holder = Some(index);
+        let slot = &mut self.players[index];
+        if slot.magnet.phase == 1 {
+            slot.magnet.animation = 2;
+            slot.magnet.animation_ticks = 0;
+        }
+        slot.magnet.phase = 3;
+        slot.magnet.time_spent_pulling = Fix::ZERO;
+        slot.magnet.held_item = Some(item_index);
+        slot.magnet.held_position = position;
+        slot.base.external_velocity += velocity / data.magnet.player_mass * Fix::from_int(35);
+    }
+
+    fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
+        let Some(item_index) = self.players[index].magnet.held_item else {
+            self.players[index].magnet.phase = 4;
+            return;
+        };
+        if item_index >= self.thrown_items.len()
+            || !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].magnet_holder != Some(index)
+        {
+            let state = &mut self.players[index].magnet;
+            state.held_item = None;
+            state.phase = 4;
+            return;
+        }
+        let firepoint = self.magnet_firepoint(index, data);
+        if (firepoint - self.thrown_items[item_index].position).length_squared()
+            > data.magnet.max_lock_distance_squared
+        {
+            self.thrown_items[item_index].magnet_holder = None;
+            let state = &mut self.players[index].magnet;
+            state.held_item = None;
+            state.phase = 2;
+            return;
+        }
+        let firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
+        let body_position = self.players[index].base.position;
+        let held_position = self.players[index].magnet.held_position;
+        let old_direction = (held_position - body_position).normalized_safe();
+        let target = firepoint - body_position;
+        let target_direction = target.normalized_safe();
+        let distance = (held_position - body_position).length()
+            * (Fix::ONE - data.magnet.held_lerp)
+            + target.length() * data.magnet.held_lerp;
+        let direction = slerp(old_direction, target_direction, data.magnet.held_lerp);
+        let mut held_position = body_position + direction * distance;
+        let wall_distance = self
+            .magnet_wall_ray(body_position, direction, Fix::from_int(1000))
+            .unwrap_or(Fix::MAX);
+        if wall_distance < distance {
+            held_position = body_position + direction * wall_distance;
+        }
+        let velocity = self.thrown_items[item_index].body.velocity;
+        self.players[index].base.external_velocity += velocity / Fix::from_int(10);
+        self.players[index].magnet.held_position = held_position;
+        let item = &mut self.thrown_items[item_index];
+        item.position = held_position;
+        item.body.velocity = Vec2::ZERO;
+        item.magnet_holder = Some(index);
+    }
+
+    fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
+        let Some(item_index) = self.players[index].magnet.held_item.take() else {
+            return;
+        };
+        if item_index >= self.thrown_items.len()
+            || !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].magnet_holder != Some(index)
+        {
+            return;
+        }
+        let item = &mut self.thrown_items[item_index];
+        if item.ability == ABILITY_MINE {
+            item.body.velocity = direction * data.magnet.fire_force_mines;
+        }
+        item.body.force += direction * data.magnet.fire_force;
+        item.magnet_holder = None;
+    }
+
+    fn drop_magnet_held_item(&mut self, index: usize) {
+        let Some(item_index) = self.players[index].magnet.held_item.take() else {
+            return;
+        };
+        if let Some(item) = self.thrown_items.get_mut(item_index)
+            && item.magnet_holder == Some(index)
+        {
+            item.magnet_holder = None;
+        }
+    }
+
     fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
         let aim = self.players[index].magnet.aim.normalized_safe();
+        self.magnet_fire_held_item(index, aim, data);
         let normal = self.players[index]
             .base
             .ground
@@ -13878,6 +14134,7 @@ impl RolloutWorld {
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
+        slot.magnet.body_right = aim;
         slot.base.up = aim.perp();
         slot.base.rotation = aim.normalized_angle();
         if grounded {
@@ -13889,6 +14146,7 @@ impl RolloutWorld {
     }
 
     fn exit_magnet(&mut self, index: usize, landed: bool, data: &data::RolloutData) {
+        self.drop_magnet_held_item(index);
         let terrain = terrain!(self);
         let landed_surface = landed.then(|| {
             let ground = self.players[index]
@@ -14286,6 +14544,7 @@ impl RolloutWorld {
             clone.born_tick = self.tick;
             clone.hierarchy_base = hierarchy_base;
             clone.entity = None;
+            clone.magnet_holder = None;
             clone.position = position;
             clone.body.velocity = (position - source.position).normalized_safe() * speed;
             clone.duplicated = true;
@@ -16841,7 +17100,9 @@ impl RolloutWorld {
                 let item = &mut self.thrown_items[item_index];
                 if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
                 {
-                    item.fuse -= updater_dt;
+                    if item.magnet_holder.is_none() {
+                        item.fuse -= updater_dt;
+                    }
                     if item.hurt_owner_delay > Fix::ZERO {
                         item.hurt_owner_delay -= updater_dt;
                         if item.hurt_owner_delay <= Fix::ZERO {
@@ -17618,6 +17879,9 @@ impl RolloutWorld {
                     continue;
                 }
                 let player = &self.players[player_index];
+                if item.magnet_holder == Some(player_index) {
+                    continue;
+                }
                 if player.base.id == owner_id && !item.detonates_on_owner {
                     continue;
                 }
@@ -18923,6 +19187,9 @@ impl RolloutWorld {
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
         }
+        if self.players[index].active == ActiveAbility::Magnet {
+            self.drop_magnet_held_item(index);
+        }
         if self.players[index].active == ActiveAbility::Beam
             && let Some(orb) = self.players[index].beam.orb
         {
@@ -20166,13 +20433,19 @@ impl RolloutWorld {
                     row.owner = slot.base.id;
                 }
                 if (alive && magnetizing) || was_active {
-                    let (root, rotation, scale) = if magnetizing {
-                        (synced, slot.magnet.aim.normalized_angle(), slot.base.scale)
+                    let (root, rotation, offset_basis, scale) = if magnetizing {
+                        (
+                            synced,
+                            slot.magnet.aim.normalized_angle(),
+                            slot.magnet.body_right,
+                            slot.base.scale,
+                        )
                     } else {
-                        (exit_position, Fix::ZERO, slot.base.scale)
+                        (exit_position, Fix::ZERO, Vec2::RIGHT, slot.base.scale)
                     };
                     let basis = Vec2::angle(rotation);
-                    let center = root + basis.complex_mul(data.magnet.collider_offset * scale);
+                    let center =
+                        root + offset_basis.complex_mul(data.magnet.collider_offset * scale);
                     let collider = OrientedBox::from_basis(
                         center,
                         basis,
@@ -20943,6 +21216,39 @@ fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
     // separately, after its own sine product.
     let inverse = Fix::ONE / denominator;
     from * ((Fix::ONE - t) * angle).sin() * inverse + to * (t * angle).sin() * inverse
+}
+
+/// Convex box against the Minkowski-rounded box used by DetPhysics. Once the
+/// two inner boxes are separated, their minimum distance is attained by a
+/// vertex against an edge, so eight fixed vertex tests reproduce the rounded
+/// cap without the false-positive square corners of an expanded OBB.
+fn box_rounded_overlaps(query: OrientedBox, rounded: RoundedRect) -> bool {
+    if crate::physics::contact::box_box(query, rounded.inner).is_some() {
+        return true;
+    }
+    let corners = |shape: OrientedBox| {
+        [
+            shape.center + shape.right + shape.up,
+            shape.center + shape.right - shape.up,
+            shape.center - shape.right + shape.up,
+            shape.center - shape.right - shape.up,
+        ]
+    };
+    let distance_squared = |point: Vec2, shape: OrientedBox| {
+        let delta = point - shape.center;
+        let right = shape.right.normalized_safe();
+        let up = shape.up.normalized_safe();
+        let dx = (delta.dot(right).abs() - shape.right.length()).max(Fix::ZERO);
+        let dy = (delta.dot(up).abs() - shape.up.length()).max(Fix::ZERO);
+        dx * dx + dy * dy
+    };
+    let radius_squared = rounded.radius * rounded.radius;
+    corners(query)
+        .into_iter()
+        .any(|point| distance_squared(point, rounded.inner) <= radius_squared)
+        || corners(rounded.inner)
+            .into_iter()
+            .any(|point| distance_squared(point, query) <= radius_squared)
 }
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
