@@ -330,6 +330,7 @@ const TIMER_START: Fix = Fix::from_raw(-6_442_450_944); // -1.5s
 pub struct Arrow {
     pub active: bool,
     pub born_tick: u32,
+    pub hierarchy_base: u32,
     /// Instantiated this tick, but not added to DetPhysics/updatables until
     /// the next scheduler pass.
     pub registered: bool,
@@ -16625,10 +16626,13 @@ impl RolloutWorld {
         let free = self.arrows.iter().position(|a| !a.active);
         let entity = free.and_then(|i| self.arrows[i].entity);
         let id = self.next_id();
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data::get().arrow.updatable_count;
         let arrow = Arrow {
             active: true,
             registered: false,
             born_tick: self.tick,
+            hierarchy_base,
             id,
             owner,
             entity,
@@ -16725,7 +16729,9 @@ impl RolloutWorld {
                 layer: LAYER_PROJECTILE,
                 owner: arrow.owner,
                 flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 200_000_000 + arrow.id,
+                hierarchy: 100_000_000
+                    + arrow.hierarchy_base
+                    + data::get().arrow.collider_hierarchy,
                 radius: radius.raw(),
                 inverse_mass: Fix::from_f64(0.2).raw(),
                 ..CEntity::default()

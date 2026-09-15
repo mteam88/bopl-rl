@@ -1961,6 +1961,15 @@ clock restoration. Interactions with ability entity types that have not yet
 been ported remain part of those abilities' open scope, so coverage is marked
 partial until the catalog is complete.
 
+`time_stop_arrow_ab.c` composes Bow and Time Stop through the public rollout
+ABI. Bow releases an upward arrow on tick 702; the stop begins on tick 738,
+holds the projectile position bit-exactly for 690 passes, then restores its
+gravity and flight on tick 1428. Every header, player, slime, telemetry and
+entity field matches NativeAOT through the first restored pass. The arrow now
+reserves the five updater hierarchy numbers instantiated by its prefab and uses
+the extracted `DPhysicsCircle` hierarchy, which also keeps later dynamic entity
+ordering equal to the source.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback

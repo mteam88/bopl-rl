@@ -81,7 +81,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   20-arrow owner cap, projectile collision during a dash raycast, and
   post-integration discrete circle contacts in DetPhysics group order.
   Terrain consumes an arrow; PlayerBody-backed hurtboxes kill without
-  consuming it, matching `Arrow.OnCollide`.
+  consuming it, matching `Arrow.OnCollide`. Arrow instantiation now reserves
+  all five prefab updaters and publishes the source collider hierarchy rather
+  than an id-derived surrogate. A composed Time Stop golden fires an airborne
+  arrow immediately before the stop, holds its position for all 690 frozen
+  passes, and matches motion on the first restored pass.
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
@@ -279,7 +283,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Time Stop is exact through grounded channeling, casting, team protection,
   the 10-second hold plus exit-alpha lifetime, restoration, protected-caster
   cooldowns/motion, and global DetPhysics freezing for the currently ported
-  projectile, item, smoke, explosion and platform bodies. Cross-ability
+  projectile, item, smoke, explosion and platform bodies. Arrow entry, all 690
+  frozen passes and the first restored projectile pass are exact through the
+  public entity rows. Cross-ability
   interactions with catalog entries that remain absent inherit those entries'
   open scope.
   Spike is exact through its grounded cast and recovery, opposite-surface

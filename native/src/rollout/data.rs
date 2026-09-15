@@ -163,6 +163,8 @@ struct RawArrowBody {
 #[derive(Deserialize)]
 struct RawArrow {
     radius: i64,
+    collider_hierarchy: u32,
+    updatable_count: u32,
     body: RawArrowBody,
 }
 #[derive(Deserialize)]
@@ -1309,6 +1311,8 @@ pub struct BowData {
 }
 pub struct ArrowData {
     pub radius: Fix,
+    pub collider_hierarchy: u32,
+    pub updatable_count: u32,
     /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
     pub body: crate::physics::Body,
 }
@@ -2456,6 +2460,8 @@ pub fn get() -> &'static RolloutData {
             },
             arrow: ArrowData {
                 radius: Fix::from_raw(raw.prefabs.arrow.radius),
+                collider_hierarchy: raw.prefabs.arrow.collider_hierarchy,
+                updatable_count: raw.prefabs.arrow.updatable_count,
                 body: {
                     let b = &raw.prefabs.arrow.body;
                     body(

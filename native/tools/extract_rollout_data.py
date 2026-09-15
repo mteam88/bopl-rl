@@ -332,6 +332,8 @@ def main():
     out["prefabs"]["arrow"] = {
         "layer": arrow["data"].get("layer"),
         "radius": fix(arrow_circle, "startRadius") if "startRadius.m_rawValue" in arrow_circle else fix(arrow_circle, "radius"),
+        "collider_hierarchy": arrow_circle["hierarchyNumber"],
+        "updatable_count": updater_count(arrow),
         "body": {k[:-len(".m_rawValue")]: v for k, v in arrow_body.items()
                  if k.endswith("m_rawValue")},
     }
