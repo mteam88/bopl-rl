@@ -1160,7 +1160,11 @@ before any existing updater. Map `AnimateVelocity` then sees and damps that
 first impulse. The wave's later `UpdateSim` applies a second time-zero impulse
 and advances the authored 0.25-second curve. Its captured platform-id array
 rejects destroyed targets and computes closest surface points, current normals,
-distance scaling, impulse arms, and body torque each pass. A center-radius player
+distance scaling, impulse arms, and body torque each pass. Captured thrown items
+retain stable pool indices in the same fixed-capacity wave record. Each live
+body receives the source's normalized direction, distance-scaled default force,
+curve value and 60-fold `ForceMode2D.Impulse` conversion at its transform
+position, so a circle receives no spurious torque. A center-radius player
 approximation was rejected during measurement: the map-0 opponent passes that
 broad phase but misses the actual oriented box.
 
@@ -1173,6 +1177,13 @@ lifecycle match. Static authored collider vectors allow one Q32.32 least bit;
 the observed case is Dash's inactive half-extent imported through a Unity float
 path and has no semantic effect. Cross-ability targets beyond the currently
 executable public forms remain part of those abilities' later integration.
+
+`gust_grenade_ab.c` composes a released Grenade with Gust for 340 ticks. The
+item enters the wave's captured set on tick 250, receives the initialization
+and same-pass update impulses, follows the full curve and remains in the normal
+pooled rigid-body/contact path. Every public field matches within the existing
+64-raw-Q32 grouped transform bound; the first horizontal impulse occurs on the
+same tick and all later item positions and velocities match NativeAOT.
 
 
 ## Executable Invisibility and streamed actor verification

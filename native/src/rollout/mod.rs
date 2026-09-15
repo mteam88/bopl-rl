@@ -1462,6 +1462,8 @@ pub struct GustWave {
     pub time: Fix,
     pub target_count: usize,
     pub platform_ids: [u32; 50],
+    pub item_count: usize,
+    pub item_indices: [usize; 50],
 }
 impl Default for GustWave {
     fn default() -> Self {
@@ -1473,6 +1475,8 @@ impl Default for GustWave {
             time: Fix::ZERO,
             target_count: 0,
             platform_ids: [0; 50],
+            item_count: 0,
+            item_indices: [usize::MAX; 50],
         }
     }
 }
@@ -12295,7 +12299,7 @@ impl RolloutWorld {
                 radius: data.gust.radius,
             };
             for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
-                if wave.target_count == wave.platform_ids.len() {
+                if wave.target_count + wave.item_count == wave.platform_ids.len() {
                     break;
                 }
                 if crate::physics::contact::circle_rounded(query, platform.collider)
@@ -12304,6 +12308,35 @@ impl RolloutWorld {
                 {
                     wave.platform_ids[wave.target_count] = platform.id;
                     wave.target_count += 1;
+                }
+            }
+            // CircleCastAll captures non-player rigid bodies once in Init and
+            // UpdateHitObjects keeps applying the curve to that fixed set.
+            // Thrown items are pooled, so retain stable pool indices rather
+            // than allocating a per-wave object set.
+            for (item_index, item) in self.thrown_items.iter().enumerate() {
+                if wave.target_count + wave.item_count == wave.platform_ids.len()
+                    || !item.active
+                    || item.entity.is_none()
+                {
+                    continue;
+                }
+                let radius = if item.ability == ABILITY_MINE {
+                    data.mine.item_radius
+                } else {
+                    throw_config(data, item.ability).item_radius
+                };
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: item.position,
+                        radius,
+                    },
+                )
+                .is_some()
+                {
+                    wave.item_indices[wave.item_count] = item_index;
+                    wave.item_count += 1;
                 }
             }
             // Player-layer colliders are processed during activation and are
@@ -12380,6 +12413,22 @@ impl RolloutWorld {
                 .body
                 .apply_impulse(impulse, arm);
             applied = true;
+        }
+        for target in 0..wave.item_count {
+            let item_index = wave.item_indices[target];
+            let Some(item) = self.thrown_items.get_mut(item_index) else {
+                continue;
+            };
+            if !item.active || item.entity.is_none() {
+                continue;
+            }
+            let direction = item.position - wave.position;
+            let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+            let impulse = direction.normalized_safe()
+                * (data.gust.default_force / distance)
+                * strength
+                * Fix::from_int(60);
+            item.body.apply_impulse(impulse, Vec2::ZERO);
         }
         self.gust_waves[wave_index] = wave;
         if applied {

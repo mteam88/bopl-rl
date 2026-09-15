@@ -31,7 +31,7 @@
       "prefab": "Assets/GameObject/Grenade_0.prefab",
       "prefab_guid": "7deaedf5cf4a92e4585ce06988f30efd",
       "native_status": "partial",
-      "verification": "grenade_ability_ab and grenade_fuse_ab each match 700 NativeAOT/Rust ticks; grenade_air_ab matches 100. Together they cover grounded and aerial ThrowItem2 entry, charged release, slow-gravity aiming, aerial recoil/control and raycast landing, recoil/body split, delayed owner contact, held-position fuse expiry, deferred explosion, both startup shockwaves, first-frame self-kill, 90-frame lifetime, stock choice, fast respawn and landing. Terrain bounce, non-owner hits, duplication, and forced exits remain open."
+      "verification": "grenade_ability_ab and grenade_fuse_ab each match 700 NativeAOT/Rust ticks; grenade_air_ab matches 100. Together they cover grounded and aerial ThrowItem2 entry, charged release, slow-gravity aiming, aerial recoil/control and raycast landing, recoil/body split, delayed owner contact, held-position fuse expiry, deferred explosion, both startup shockwaves, first-frame self-kill, 90-frame lifetime, stock choice, fast respawn and landing. gust_grenade_ab adds exact fixed-set Gust capture, both time-zero impulses and the full force curve on a live thrown Grenade. Terrain bounce, non-owner hits, duplication, and forced exits remain open."
     },
     {
       "id": 4,
@@ -63,7 +63,7 @@
       "prefab": "Assets/GameObject/Gust.prefab",
       "prefab_guid": "05feec16b8416224fb842a3774879cf4",
       "native_status": "slice-only",
-      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred AirWave Shockwave, exact target capture, player/platform impulses, force curve, and entity observations; gust_ability_ab compares 360 complete NativeAOT/Rust ticks. Cross-ability targets expand with each concrete ability port."
+      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred AirWave Shockwave, exact fixed-set target capture, player/platform/thrown-item impulses, force curve, and entity observations. gust_ability_ab compares 360 complete NativeAOT/Rust ticks; gust_grenade_ab adds 340 ticks through live Grenade capture, both time-zero impulses and the full pooled-body force path. Other items, projectiles, boulders, active forms, Black Holes, ropes and destructible objects remain open."
     },
     {
       "id": 8,

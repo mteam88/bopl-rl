@@ -123,7 +123,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   hurtbox, deferred Shockwave registration, exact circle/shape target capture,
   one-time grounded-player push, and the shipped 0.25-second force curve. Its
   first time-zero platform impulse runs in prefab initialization before map
-  home springs and its second runs later in the same updater pass.
+  home springs and its second runs later in the same updater pass. The fixed
+  capture set now also retains live thrown items; a composed Grenade receives
+  both time-zero impulses and the full curve with exact pooled-body motion.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same
