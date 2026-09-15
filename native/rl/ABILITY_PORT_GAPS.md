@@ -1,7 +1,9 @@
 # Ability differential gaps
 
-This is the ranked closure queue for the 29 `partial` and two `slice-only`
-entries in `native/data/ability-coverage.json`. Rank reflects how often the
+This queue started from the 29 `partial` and two `slice-only` entries in
+`native/data/ability-coverage.json` at commit `2f3cf18`; entries stay here while
+their remaining gaps are closed and their status labels track the catalog.
+Rank reflects how often the
 missing branch should arise in unconstrained RL play: ordinary casts, airborne
 casts and pickup-driven loadout changes come first; cross-ability contacts come
 next; rare destruction, time-stop and pool-eviction boundaries come last. Each
@@ -9,7 +11,7 @@ entry names only source behavior that does not yet have an exact end-to-end
 NativeAOT/Rust differential through the public rollout ABI. A branch can already
 be implemented and still appear here when its dedicated differential is absent.
 
-1. **ID 2 — Dash (`slice-only`):** Non-wall ray hits still lack a successful public-rollout differential for damage against ordinary or transformed players, collision-mask and hierarchy tie cases, rope transfer/detachment, and death/respawn handoff; the horizontal-under-water zero-divide failure is covered only by the component actor corpus rather than an end-to-end RL episode.
+1. **ID 2 — Dash (`partial`):** The active-Rock ray, BounceBall impulse, exact near-point death, owner credit and stock respawn are now differential-covered; ordinary-player callback pushes, other transformed-player callbacks, collision-mask and hierarchy tie cases, rope transfer/detachment, and the horizontal-under-water zero-divide failure still lack exact public-rollout episodes.
 2. **ID 4 — Bow (`partial`):** Ordinary arrow flight is exact, but live compositions with projectile, item, Black Hole, Magnet, Portal, transformed-form and other ability colliders have not each been differentially exercised; Unity's inert landed-arrow child retention also remains absent from the exact entity-history comparison.
 3. **ID 7 — Gust (`slice-only`):** The player/platform cast is exact, but Shockwave capture and force delivery still lack public differentials for every live spawned item, projectile, boulder, active form, Black Hole, rope-attached body and destructible ability object.
 4. **ID 12 — Time stop (`partial`):** The base cast and currently measured frozen bodies are exact, but freeze-entry, held-state, updater-clock and first-restored-pass behavior is still unmeasured for several ability compositions, especially arrows and Portal transit, active forms, boulders, ropes, scale effects, Tesla/Engine attachments, Black Holes and pickup collection or replacement during the stop.

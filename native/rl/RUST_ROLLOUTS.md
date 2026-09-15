@@ -57,7 +57,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
   Platform are ported from `sim/Gameplay`
-  with measured timings. Bow: transform 30 ticks, loadingFrame =
+  with measured timings. Dash's non-wall ray dispatch now includes the active
+  Rock circle: `BounceBall.OnCollide` receives its authored impulse before
+  Rock's contact-kill flag kills the dasher at the ray near point. A five-player
+  composition matches that same-pass death, owner credit and stock clone for
+  300 ticks without allocating ray-target storage. Other non-wall callbacks,
+  rope transfer and the public horizontal-under-water failure remain open.
+  Bow: transform 30 ticks, loadingFrame =
   passedSprites (1 at load start, then +8/+7/+7), slow-mo aiming physics,
   fire-on-release (early release fires from transform sprite index 2, tick
   11), knockback recoil, arrow gravity -40 (the DetPhysics override, not

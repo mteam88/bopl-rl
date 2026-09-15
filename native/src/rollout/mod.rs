@@ -12493,6 +12493,7 @@ impl RolloutWorld {
             ))
         };
         if let Some((origin, direction, caster_id)) = dash_cast {
+            let data = data::get();
             let wall =
                 crate::world::closest(terrain!(self), origin, direction, Fix::from_int(13), None)
                     .map(|(_, distance, _)| distance);
@@ -12510,7 +12511,7 @@ impl RolloutWorld {
                 .filter_map(|(arrow_index, arrow)| {
                     (Circle {
                         center: arrow.position,
-                        radius: data::get().arrow.radius,
+                        radius: data.arrow.radius,
                     })
                     .raycast(origin, direction)
                     .filter(|hit| {
@@ -12544,20 +12545,53 @@ impl RolloutWorld {
                 }
             }
 
-            let targets: Vec<usize> = self
-                .players
-                .iter()
-                .enumerate()
-                .filter(|(i, p)| *i != index && p.base.alive && !p.base.dash.active)
-                .filter_map(|(i, p)| {
-                    p.base
+            let mut targets = [(usize::MAX, Fix::MAX); MAX_PLAYERS];
+            let mut target_count = 0;
+            for (target, player) in self.players.iter().enumerate() {
+                if target == index || !player.base.alive || player.base.dash.active {
+                    continue;
+                }
+                let hit = if player.active == ActiveAbility::Rock {
+                    Circle {
+                        center: player.base.position,
+                        radius: data.rock.radius * player.rock.scale,
+                    }
+                    .raycast(origin, direction)
+                } else {
+                    player
+                        .base
                         .collider
                         .raycast_within(origin, direction, Fix::from_int(13))
-                        .filter(|hit| wall.is_none_or(|distance| hit.near < distance))
-                        .map(|_| i)
-                })
-                .collect();
-            for target in targets {
+                };
+                let Some(hit) = hit.filter(|hit| {
+                    hit.near <= Fix::from_int(13) && wall.is_none_or(|distance| hit.near < distance)
+                }) else {
+                    continue;
+                };
+                targets[target_count] = (target, hit.near.max(Fix::ZERO));
+                target_count += 1;
+            }
+            targets[..target_count].sort_unstable_by_key(|&(target, distance)| (distance, target));
+            for &(target, distance) in &targets[..target_count] {
+                if self.players[target].active == ActiveAbility::Rock {
+                    // Dash.performDash invokes the hit PhysicsParent callback
+                    // before its own PlayerCollision. BounceBall first queues
+                    // its Player-layer impulse; Rock's KillPlayersOnContact
+                    // flag then kills the dasher at the ray's near point.
+                    self.players[target].rock.body.force +=
+                        direction * data.rock.player_collision_bounce * Fix::from_int(60);
+                    let slot = &mut self.players[index];
+                    slot.base.position = origin + direction * distance;
+                    slot.reported_position = slot.base.position;
+                    self.kill(
+                        index,
+                        self.players[target].base.id,
+                        CAUSE_OTHER,
+                        false,
+                        true,
+                    );
+                    return;
+                }
                 self.players[target].base.push_from(origin, target < index);
             }
         }

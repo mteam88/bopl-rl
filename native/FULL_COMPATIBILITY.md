@@ -949,6 +949,26 @@ teammate offsets, now reproduced at reset. Projectile, item and tagged-boulder
 targets are part of Teleport's mask but cannot be certified until their dynamic
 entity types are present in the rollout backend; the player mechanic is exact.
 
+### Dash ray collision with active Rock (2026-09-15)
+
+Dash's public ray now uses fixed six-player candidate storage for non-wall
+Player-layer hits. An active Rock is queried with its live pulsing circle scale,
+rather than the inactive slime's box. The source invokes the target callback
+first, so Rust queues `BounceBall`'s authored Player-layer impulse before the
+Dash form's own `PlayerCollision` sees Rock's `KillPlayersOnContact` flag. The
+dasher moves to the ray's exact near point, dies in the Dash updater pass, and
+credits the Rock owner before the ordinary stock path builds its replacement.
+
+`dash_rock_ab.c` compares 300 optimized-Q32 NativeAOT/Rust ticks with five
+players. Rock casts on tick 154; the Dash ray hits and kills on tick 164. Every
+identity, flag, hierarchy, timer, activation, death, credit and stock boundary
+matches. Dynamic positions and velocities are within 64 raw Q32 units
+(1.49e-8 world units), and collider axes are within one raw unit, from the same
+fixed-point normalization ordering already bounded by the Rock differential;
+no query, target, callback or lifecycle decision differs. Other non-wall Dash
+callbacks, rope transfer and the public horizontal-under-water failure remain
+open, so Dash is now cataloged as partial.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned
