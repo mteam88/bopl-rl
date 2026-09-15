@@ -261,6 +261,7 @@ const TURN_TICKS: u32 = 12;
 // Layers (sim/Export/settings.json).
 const LAYER_PLAYER: u32 = 8;
 const LAYER_PROJECTILE: u32 = 9;
+const LAYER_ITEM: u32 = 10;
 const LAYER_WALL: u32 = 11;
 const LAYER_WATER: u32 = 4;
 
@@ -400,6 +401,11 @@ pub struct ThrownItem {
     /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
     pub capture_victim: Option<usize>,
     pub capture_left: Fix,
+    /// `DetPhysics.duplicatedObjects`: Duplicator copies count down from 1800
+    /// before ordinary updaters run.
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1468,6 +1474,13 @@ pub enum ActiveAbility {
     Beam,
     Duplicator,
     Platform,
+}
+
+#[derive(Clone, Copy)]
+struct DuplicatorRayHit {
+    entity: usize,
+    distance: Fix,
+    position: Vec2,
 }
 
 fn active_throw_ability(active: ActiveAbility) -> u32 {
@@ -3649,6 +3662,7 @@ impl RolloutWorld {
         self.register_pending_grenade_explosions(data);
         self.register_pending_smoke(data);
         self.register_pending_time_stops();
+        self.duplicated_objects_tick();
         // Updatables earlier than a TimeStop effect observe the scale from
         // the start of the pass. DetPhysics observes any scale written by the
         // effect later in this same pass.
@@ -3850,6 +3864,7 @@ impl RolloutWorld {
         self.scale_changers_tick(data);
         self.duplicate_platform_effects_tick(data, updater_dt);
         self.meteor_smears_tick(data);
+        self.register_pending_duplicated_items(data);
         // Roll dispatches its extra swept hurtboxes from Roll.UpdateSim,
         // before this pass's DetPhysics collider synchronization.
         self.roll_contacts(data);
@@ -4015,6 +4030,8 @@ impl RolloutWorld {
         self.rocks_contacts(data);
         self.arrows_contacts(data);
         self.guided_missile_contacts(data);
+        self.thrown_item_platform_contacts(data);
+        self.thrown_item_pair_contacts(data);
         self.thrown_items_contacts(data);
         self.grenade_explosion_contacts(data);
         self.missile_explosion_contacts(data);
@@ -10977,6 +10994,81 @@ impl RolloutWorld {
                 self.platforms_changed();
             }
         }
+        if wave.collision_mask & (1 << LAYER_ITEM) != 0 {
+            for item in &mut self.thrown_items {
+                if !item.active || item.entity.is_none() {
+                    continue;
+                }
+                let radius = if item.ability == ABILITY_MINE {
+                    data::get().mine.item_radius
+                } else {
+                    throw_config(data::get(), item.ability).item_radius
+                };
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: item.position,
+                        radius,
+                    },
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                let direction = item.position - position;
+                let distance =
+                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+                let impulse = direction.normalized_safe()
+                    * (wave.default_force / distance)
+                    * Fix::from_int(60);
+                item.body.apply_impulse(impulse, Vec2::ZERO);
+            }
+        }
+        if wave.collision_mask & (1 << LAYER_PROJECTILE) != 0 {
+            let arrow_radius = data::get().arrow.radius;
+            for arrow in &mut self.arrows {
+                if !arrow.active
+                    || !arrow.registered
+                    || crate::physics::contact::circle_circle(
+                        query,
+                        Circle {
+                            center: arrow.position,
+                            radius: arrow_radius,
+                        },
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                let direction = arrow.position - position;
+                let distance =
+                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+                arrow.velocity += direction.normalized_safe()
+                    * (wave.default_force / distance)
+                    * Fix::from_int(60)
+                    * Fix::from_f64(0.2);
+            }
+            for missile in &mut self.guided_missiles {
+                if !missile.active || !missile.registered {
+                    continue;
+                }
+                let collider = OrientedBox::from_basis(
+                    missile.position,
+                    Vec2::angle(missile.body.orientation),
+                    data::get().missile.spark_extents,
+                );
+                if crate::physics::contact::circle_box(query, collider).is_none() {
+                    continue;
+                }
+                let direction = missile.position - position;
+                let distance =
+                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+                let impulse = direction.normalized_safe()
+                    * (wave.default_force / distance)
+                    * Fix::from_int(60);
+                missile.body.apply_impulse(impulse, Vec2::ZERO);
+            }
+        }
         if wave.collision_mask & (1 << LAYER_PLAYER) == 0 {
             return;
         }
@@ -11572,8 +11664,10 @@ impl RolloutWorld {
                 self.players[index].roll_entity,
                 self.players[index].push_entity,
                 self.players[index].freeze_entity,
+                self.players[index].blink_entity,
                 self.players[index].growth_ray_entity,
                 self.players[index].shrink_ray_entity,
+                self.players[index].duplicator_entity,
                 self.players[index].bow_entity,
                 self.players[index].throw_entity,
                 self.players[index].mine_entity,
@@ -11583,6 +11677,7 @@ impl RolloutWorld {
                 self.players[index].time_stop_entity,
                 self.players[index].engine_entity,
                 self.players[index].tesla_entity,
+                self.players[index].meteor_entity,
                 self.players[index].black_hole_entity,
                 self.players[index].macho_throw_entity,
                 self.players[index].drill_entity,
@@ -12616,6 +12711,9 @@ impl RolloutWorld {
             prev_velocity_change: Vec2::ZERO,
             capture_victim: None,
             capture_left: Fix::ZERO,
+            duplicated: false,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
         };
         let item_index = if let Some(free) = self.thrown_items.iter().position(|item| !item.active)
         {
@@ -12847,6 +12945,9 @@ impl RolloutWorld {
             prev_velocity_change: Vec2::ZERO,
             capture_victim: None,
             capture_left: Fix::ZERO,
+            duplicated: false,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
         };
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
             let entity = self.thrown_items[free].entity;
@@ -13507,39 +13608,373 @@ impl RolloutWorld {
             gun.collision_mask
         };
         let max_distance = Fix::from_int(100);
-        let mut platform_hit = if mask & (1 << LAYER_WALL) != 0 {
-            crate::world::closest(terrain!(self), origin, direction, max_distance, None)
-        } else {
-            None
-        };
-        let mut nearest = platform_hit.map_or(max_distance, |hit| hit.1);
-        let mut water_hit = false;
-        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
-            let map = &data.maps[self.map];
-            let water = OrientedBox::from_basis(
-                map.water_position,
-                Vec2::RIGHT,
-                data::surface_extents(map.water_extents),
-            );
-            if let Some(hit) = water.raycast(origin, direction)
-                && hit.near < nearest
-                && hit.near <= max_distance
-            {
-                nearest = hit.near;
-                water_hit = true;
-                platform_hit = None;
+        let excluded = (!already_hit_water).then_some(self.players[caster].duplicator_entity);
+
+        // PointCheckAllRoundedRects precedes the ray and keeps the last
+        // overlapping rounded rectangle in DetPhysics registration order.
+        let mut selected = None;
+        for (entity, row) in self.entities.iter().enumerate() {
+            if row.kind != 2 || row.flags & E_ACTIVE == 0 || excluded == Some(entity) {
+                continue;
+            }
+            if Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin)) {
+                selected = Some(DuplicatorRayHit {
+                    entity,
+                    distance: Fix::from_f32(0.001),
+                    position: origin,
+                });
             }
         }
-        if water_hit {
+
+        if selected.is_none() {
+            let side = direction.perp() * gun.triple_raycast_radius;
+            let center =
+                self.duplicator_raycast_one(origin, direction, max_distance, mask, excluded, data);
+            let positive = self.duplicator_raycast_one(
+                origin + side,
+                direction,
+                max_distance,
+                mask,
+                excluded,
+                data,
+            );
+            let negative = self.duplicator_raycast_one(
+                origin - side,
+                direction,
+                max_distance,
+                mask,
+                excluded,
+                data,
+            );
+            let center_distance = center.map_or(Fix::MAX, |hit| hit.distance);
+            let positive_distance = positive.map_or(Fix::MAX, |hit| hit.distance);
+            let negative_distance = negative.map_or(Fix::MAX, |hit| hit.distance);
+            selected = if center_distance < positive_distance && center_distance < negative_distance
+            {
+                center
+            } else if positive_distance < center_distance && positive_distance < negative_distance {
+                positive
+            } else if negative_distance < positive_distance && negative_distance < center_distance {
+                negative
+            } else {
+                center
+            };
+        }
+
+        let Some(hit) = selected else {
+            return;
+        };
+        if hit.entity == usize::MAX {
             self.shoot_duplicator_ray(
-                origin + direction * nearest,
+                hit.position,
                 Vec2::new(direction.x, -direction.y),
                 caster,
                 data,
                 true,
             );
-        } else if let Some((platform_index, _, hit_position)) = platform_hit {
-            self.begin_duplicate_platform(platform_index, hit_position, direction, caster, data);
+            return;
+        }
+        if let Some(platform_index) = self
+            .platform_entities
+            .iter()
+            .position(|&entity| entity == hit.entity)
+        {
+            self.begin_duplicate_platform(platform_index, hit.position, direction, caster, data);
+            return;
+        }
+        if let Some(item_index) = self
+            .thrown_items
+            .iter()
+            .position(|item| item.active && item.entity == Some(hit.entity))
+        {
+            self.duplicate_thrown_item(item_index, direction, data);
+        }
+    }
+
+    fn entity_rounded_rect(row: CEntity) -> Option<RoundedRect> {
+        if row.kind != 2 {
+            return None;
+        }
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        if right == Vec2::ZERO || up == Vec2::ZERO {
+            return None;
+        }
+        Some(RoundedRect {
+            inner: OrientedBox {
+                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                right,
+                up,
+                inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+            },
+            radius: Fix::from_raw(row.radius),
+        })
+    }
+
+    fn duplicator_raycast_one(
+        &self,
+        origin: Vec2,
+        direction: Vec2,
+        max_distance: Fix,
+        mask: u32,
+        excluded: Option<usize>,
+        data: &data::RolloutData,
+    ) -> Option<DuplicatorRayHit> {
+        let mut best = None;
+        let mut nearest = Fix::MAX;
+        // RaycastToClosest visits rounded rectangles, circles, then boxes.
+        for kind in [2u32, 0, 1] {
+            for (entity, row) in self.entities.iter().copied().enumerate() {
+                if row.kind != kind
+                    || row.flags & E_ACTIVE == 0
+                    || excluded == Some(entity)
+                    || mask & (1 << row.layer) == 0
+                {
+                    continue;
+                }
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let distance = match kind {
+                    0 => Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    }
+                    .raycast(origin, direction)
+                    .map(|hit| hit.near),
+                    1 => {
+                        let right =
+                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                        (right != Vec2::ZERO && up != Vec2::ZERO)
+                            .then(|| OrientedBox {
+                                center,
+                                right,
+                                up,
+                                inverse_extents: Vec2::new(
+                                    Fix::ONE / right.length(),
+                                    Fix::ONE / up.length(),
+                                ),
+                            })
+                            .and_then(|shape| shape.raycast(origin, direction))
+                            .map(|hit| hit.near)
+                    }
+                    _ => Self::entity_rounded_rect(row)
+                        .and_then(|shape| shape.raycast(origin, direction))
+                        .map(|hit| hit.near),
+                };
+                if let Some(distance) = distance
+                    && distance < nearest
+                    && distance <= max_distance
+                {
+                    nearest = distance;
+                    best = Some(DuplicatorRayHit {
+                        entity,
+                        distance,
+                        position: origin + direction * distance,
+                    });
+                }
+            }
+            // The scene water is a DPhysicsBox instantiated before player
+            // prefabs, so it precedes the other box rows in this collection.
+            if kind == 0 && mask & (1 << LAYER_WATER) != 0 {
+                let map = &data.maps[self.map];
+                let water = OrientedBox::from_basis(
+                    map.water_position,
+                    Vec2::RIGHT,
+                    data::surface_extents(map.water_extents),
+                );
+                if let Some(hit) = water.raycast(origin, direction)
+                    && hit.near < nearest
+                    && hit.near <= max_distance
+                {
+                    nearest = hit.near;
+                    best = Some(DuplicatorRayHit {
+                        entity: usize::MAX,
+                        distance: hit.near,
+                        position: origin + direction * hit.near,
+                    });
+                }
+            }
+        }
+        best
+    }
+
+    fn fan_out(
+        clone_count: u32,
+        direction: Vec2,
+        position: Vec2,
+        offset: Fix,
+        angle: Fix,
+        index: u32,
+    ) -> Vec2 {
+        let turn = match (clone_count, index) {
+            (2, 0) | (3, 1) | (4, 0) => angle,
+            (2, 1) | (3, 2) | (4, 1) => -angle,
+            (4, 2) => angle * Fix::from_int(3),
+            (4, 3) => -angle * Fix::from_int(3),
+            _ => Fix::ZERO,
+        };
+        position + direction.complex_mul(Vec2::angle(turn)) * offset
+    }
+
+    fn duplicate_thrown_item(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let source = self.thrown_items[source_index];
+        let (clone_count, spacing, angle, updatable_count) = if source.ability == ABILITY_MINE {
+            (
+                data.mine.clone_count,
+                data.mine.duplicate_spacing,
+                data.mine.duplicate_angle,
+                data.mine.item_updatable_count,
+            )
+        } else {
+            let item = throw_config(data, source.ability);
+            let (clone_count, spacing, angle) = match source.ability {
+                ABILITY_SMOKE => (
+                    data.smoke.clone_count,
+                    data.smoke.duplicate_spacing,
+                    data.smoke.duplicate_angle,
+                ),
+                ABILITY_TACK => (
+                    data.tack.clone_count,
+                    data.tack.duplicate_spacing,
+                    data.tack.duplicate_angle,
+                ),
+                ABILITY_MJOLNIR => (
+                    data.mjolnir.clone_count,
+                    data.mjolnir.duplicate_spacing,
+                    data.mjolnir.duplicate_angle,
+                ),
+                ABILITY_POKE_BALL => (
+                    data.poke_ball.clone_count,
+                    data.poke_ball.duplicate_spacing,
+                    data.poke_ball.duplicate_angle,
+                ),
+                _ => (
+                    data.grenade.clone_count,
+                    data.grenade.duplicate_spacing,
+                    data.grenade.duplicate_angle,
+                ),
+            };
+            (clone_count, spacing, angle, item.item_updatable_count)
+        };
+        let speed = source.body.velocity.length() + Fix::from_int(10);
+        for clone_index in 0..clone_count {
+            let position = Self::fan_out(
+                clone_count,
+                direction,
+                source.position,
+                spacing,
+                angle,
+                clone_index,
+            );
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += updatable_count;
+            let mut clone = source;
+            clone.active = true;
+            clone.id = 0;
+            clone.born_tick = self.tick;
+            clone.hierarchy_base = hierarchy_base;
+            clone.entity = None;
+            clone.position = position;
+            clone.body.velocity = (position - source.position).normalized_safe() * speed;
+            clone.duplicated = true;
+            clone.duplicate_lifespan = 1800;
+            clone.duplicate_shake_offset = Vec2::ZERO;
+            if source.ability == ABILITY_GRENADE {
+                clone.fuse = data.grenade.detonation_time
+                    - Fix::from_int((clone_index + 1) as i64) * Fix::from_f32(0.1);
+                clone.hurt_owner_delay = Fix::ZERO;
+                clone.detonates_on_owner = true;
+                clone.launched = false;
+            }
+            if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
+                self.thrown_items[free] = clone;
+            } else {
+                self.thrown_items.push(clone);
+            }
+        }
+    }
+
+    fn duplicated_objects_tick(&mut self) {
+        if self.player_time_scale < Fix::from_f32(0.01) {
+            return;
+        }
+        for item in &mut self.thrown_items {
+            if !item.active || !item.duplicated {
+                continue;
+            }
+            item.duplicate_lifespan -= 1;
+            if item.duplicate_lifespan < 0 {
+                item.active = false;
+                if let Some(entity) = item.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if item.duplicate_lifespan < 60 {
+                let progress =
+                    Fix::ONE - Fix::from_int(item.duplicate_lifespan as i64) / Fix::from_int(60);
+                item.position -= item.duplicate_shake_offset;
+                item.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                item.position += item.duplicate_shake_offset;
+            }
+        }
+    }
+
+    fn register_pending_duplicated_items(&mut self, data: &data::RolloutData) {
+        for index in 0..self.thrown_items.len() {
+            let item = self.thrown_items[index];
+            if !item.active
+                || !item.duplicated
+                || item.entity.is_some()
+                || item.born_tick >= self.tick
+            {
+                continue;
+            }
+            let (layer, collider_hierarchy, radius) = if item.ability == ABILITY_MINE {
+                (
+                    data.mine.item_layer,
+                    data.mine.item_collider_hierarchy,
+                    data.mine.item_radius,
+                )
+            } else {
+                let config = throw_config(data, item.ability);
+                (
+                    config.item_layer,
+                    config.item_collider_hierarchy,
+                    config.item_radius,
+                )
+            };
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000 + item.hierarchy_base + collider_hierarchy,
+                x: item.position.x.raw(),
+                y: item.position.y.raw(),
+                vx: item.body.velocity.x.raw(),
+                vy: item.body.velocity.y.raw(),
+                radius: radius.raw(),
+                rotation: item.body.orientation.raw(),
+                angular_velocity: item.body.angular_velocity.raw(),
+                inverse_mass: item.body.inverse_mass.raw(),
+                ..CEntity::default()
+            });
+            let item = &mut self.thrown_items[index];
+            item.id = id;
+            item.entity = Some(self.entities.len() - 1);
+            if item.ability == ABILITY_GRENADE {
+                // Grenade.UpdateSim sees the cloned thrower as inactive,
+                // marks the copy thrown and replaces the explicit zero delay.
+                item.launched = true;
+                item.hurt_owner_delay = Fix::ONE;
+            }
         }
     }
 
@@ -15976,6 +16411,17 @@ impl RolloutWorld {
                 continue;
             }
             let ability = self.thrown_items[item_index].ability;
+            // DestroyIfOutsideSceneBounds precedes Grenade/Item updaters.
+            // Grenade, Smoke and Mine instantiate the two-updatable water
+            // splash before removing their collider; the other thrown items
+            // have no DownEffect.
+            if self.thrown_items[item_index].position.y < Fix::from_f32(-11.3) {
+                if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
+                    self.next_spawn_hierarchy += 2;
+                }
+                self.remove_thrown_item(item_index, false);
+                continue;
+            }
             let item_inverse_mass = if ability == ABILITY_MINE {
                 data.mine.item_body.inverse_mass
             } else {
@@ -16089,11 +16535,10 @@ impl RolloutWorld {
             .iter()
             .position(|explosion| !explosion.active)
         {
-            let entity = self.grenade_explosions[free].entity;
-            self.grenade_explosions[free] = GrenadeExplosion {
-                entity,
-                ..explosion
-            };
+            // The state slot is reusable, but Unity instantiates a fresh
+            // DPhysicsBox. Appending its collider preserves DetPhysics box
+            // registration order relative to intervening respawn bodies.
+            self.grenade_explosions[free] = explosion;
         } else {
             self.grenade_explosions.push(explosion);
         }
@@ -16497,9 +16942,10 @@ impl RolloutWorld {
         }
     }
 
-    /// Item circles participate in ordinary rigid-body contacts, then their
-    /// queued GrenadeExplode callback observes Player-layer overlaps.
-    fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
+    /// DetPhysics resolves Circle/RoundedRectangle before Circle/Circle.
+    /// Keep this separate from item callbacks so all physical contacts finish
+    /// before GrenadeExplode observes Player-layer overlaps.
+    fn thrown_item_platform_contacts(&mut self, data: &data::RolloutData) {
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].entity.is_none()
@@ -16529,73 +16975,165 @@ impl RolloutWorld {
                     contact_count += 1;
                 }
             }
-            if contact_count > 0 {
-                let mut body = item.body;
-                let mut center = item.position;
-                for &(platform_index, contact) in &contacts[..contact_count] {
-                    let platform_center = self.platforms[platform_index].surface.center;
-                    let platform_body = &mut self.platform_dynamics[platform_index].body;
-                    resolve(contact, &mut body, platform_body, center, platform_center);
-                    let correction = positional_correction(
-                        contact,
-                        body.inverse_mass,
-                        platform_body.inverse_mass,
-                        false,
-                    );
-                    center += correction[0];
-                    self.platforms[platform_index].surface.center += correction[1];
-                    self.platforms[platform_index].collider.inner.center += correction[1];
+            if contact_count == 0 {
+                continue;
+            }
+
+            let mut body = item.body;
+            let mut center = item.position;
+            for &(platform_index, contact) in &contacts[..contact_count] {
+                let platform_center = self.platforms[platform_index].surface.center;
+                let platform_body = &mut self.platform_dynamics[platform_index].body;
+                resolve(contact, &mut body, platform_body, center, platform_center);
+                let correction = positional_correction(
+                    contact,
+                    body.inverse_mass,
+                    platform_body.inverse_mass,
+                    false,
+                );
+                center += correction[0];
+                self.platforms[platform_index].surface.center += correction[1];
+                self.platforms[platform_index].collider.inner.center += correction[1];
+            }
+            self.platforms_changed();
+            let thrown = &mut self.thrown_items[item_index];
+            thrown.body = body;
+            thrown.position = center;
+            let entity = thrown.entity.expect("contacting thrown-item collider");
+            {
+                let row = &mut self.entities[entity];
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.vx = body.velocity.x.raw();
+                row.vy = body.velocity.y.raw();
+                row.rotation = body.orientation.raw();
+                row.angular_velocity = body.angular_velocity.raw();
+            }
+
+            if item.ability == ABILITY_MJOLNIR
+                && item.launched
+                && item.age >= data.mjolnir.clang_grace_seconds
+            {
+                let force = body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
+                for &(platform_index, _) in &contacts[..contact_count] {
+                    self.platform_dynamics[platform_index].body.force += force;
                 }
                 self.platforms_changed();
-                let thrown = &mut self.thrown_items[item_index];
-                thrown.body = body;
-                thrown.position = center;
-                let entity = thrown.entity.expect("contacting grenade collider");
-                {
-                    let row = &mut self.entities[entity];
-                    row.x = center.x.raw();
-                    row.y = center.y.raw();
-                    row.vx = body.velocity.x.raw();
-                    row.vy = body.velocity.y.raw();
-                    row.rotation = body.orientation.raw();
-                    row.angular_velocity = body.angular_velocity.raw();
-                }
-
-                if item.ability == ABILITY_MJOLNIR
-                    && item.launched
-                    && item.age >= data.mjolnir.clang_grace_seconds
-                {
-                    let force = body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
-                    for &(platform_index, _) in &contacts[..contact_count] {
-                        self.platform_dynamics[platform_index].body.force += force;
-                    }
-                    self.platforms_changed();
-                    if self.thrown_items[item_index].phase == 0 {
-                        self.thrown_items[item_index].phase = 1;
-                    }
-                }
-
-                if item.ability == ABILITY_TACK
-                    && !item.settled
-                    && item.launched
-                    && item.age > Fix::from_f32(0.1)
-                    && item.body.velocity.y <= Fix::from_f32(0.5)
-                    && contacts[..contact_count]
-                        .iter()
-                        .any(|(_, contact)| contact.normal.y < Fix::from_f32(-0.5))
-                {
-                    let thrown = &mut self.thrown_items[item_index];
-                    thrown.settled = true;
-                    thrown.settle_position = center;
-                    thrown.body.velocity = Vec2::ZERO;
-                    thrown.body.angular_velocity = Fix::ZERO;
-                    let row = &mut self.entities[entity];
-                    row.vx = 0;
-                    row.vy = 0;
-                    row.angular_velocity = 0;
+                if self.thrown_items[item_index].phase == 0 {
+                    self.thrown_items[item_index].phase = 1;
                 }
             }
 
+            if item.ability == ABILITY_TACK
+                && !item.settled
+                && item.launched
+                && item.age > Fix::from_f32(0.1)
+                && item.body.velocity.y <= Fix::from_f32(0.5)
+                && contacts[..contact_count]
+                    .iter()
+                    .any(|(_, contact)| contact.normal.y < Fix::from_f32(-0.5))
+            {
+                let thrown = &mut self.thrown_items[item_index];
+                thrown.settled = true;
+                thrown.settle_position = center;
+                thrown.body.velocity = Vec2::ZERO;
+                thrown.body.angular_velocity = Fix::ZERO;
+                let row = &mut self.entities[entity];
+                row.vx = 0;
+                row.vy = 0;
+                row.angular_velocity = 0;
+            }
+        }
+    }
+
+    /// Item circles participate in ordinary rigid-body contacts.
+    fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
+        let mut contacts = [(0usize, 0usize, Contact::default()); 256];
+        let mut contact_count = 0usize;
+        for newer in 0..self.thrown_items.len() {
+            if !self.thrown_items[newer].active || self.thrown_items[newer].entity.is_none() {
+                continue;
+            }
+            for older in 0..newer {
+                if !self.thrown_items[older].active || self.thrown_items[older].entity.is_none() {
+                    continue;
+                }
+                let radius = |item: ThrownItem| {
+                    if item.ability == ABILITY_MINE {
+                        data.mine.item_radius
+                    } else {
+                        throw_config(data, item.ability).item_radius
+                    }
+                };
+                let a = self.thrown_items[older];
+                let b = self.thrown_items[newer];
+                let Some(contact) = crate::physics::contact::circle_circle(
+                    Circle {
+                        center: a.position,
+                        radius: radius(a),
+                    },
+                    Circle {
+                        center: b.position,
+                        radius: radius(b),
+                    },
+                ) else {
+                    continue;
+                };
+                if contact_count == contacts.len() {
+                    break;
+                }
+                contacts[contact_count] = (older, newer, contact);
+                contact_count += 1;
+            }
+        }
+        // DetPhysics builds every narrow-phase manifold before resolving any
+        // of them. In particular the three overlapping fan copies must all
+        // use their initial positions rather than a prior pair's correction.
+        for &(older, newer, contact) in &contacts[..contact_count] {
+            let a = self.thrown_items[older];
+            let b = self.thrown_items[newer];
+            let mut body_a = a.body;
+            let mut body_b = b.body;
+            resolve(contact, &mut body_a, &mut body_b, a.position, b.position);
+            let correction =
+                positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+            let (left, right) = self.thrown_items.split_at_mut(newer);
+            left[older].body = body_a;
+            left[older].position += correction[0];
+            right[0].body = body_b;
+            right[0].position += correction[1];
+        }
+        for item in &self.thrown_items {
+            let Some(entity) = item.entity.filter(|_| item.active) else {
+                continue;
+            };
+            let row = &mut self.entities[entity];
+            row.x = item.position.x.raw();
+            row.y = item.position.y.raw();
+            row.vx = item.body.velocity.x.raw();
+            row.vy = item.body.velocity.y.raw();
+            row.rotation = item.body.orientation.raw();
+            row.angular_velocity = item.body.angular_velocity.raw();
+        }
+    }
+
+    fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].entity.is_none()
+            {
+                continue;
+            }
+            let item = self.thrown_items[item_index];
+            let item_radius = if item.ability == ABILITY_MINE {
+                data.mine.item_radius
+            } else {
+                throw_config(data, item.ability).item_radius
+            };
+            let circle = Circle {
+                center: item.position,
+                radius: item_radius,
+            };
             if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
             {
                 let mine_circle = Circle {

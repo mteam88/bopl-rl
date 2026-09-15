@@ -2569,7 +2569,7 @@ effect scenarios, and 73 combined physics scenes with no mismatches. Live
 catalog; its type/charge/firing/color behavior remains verified in the endpoint
 component corpus.
 
-### Duplicator GunTransform and rounded-platform copies (2026-09-15)
+### Duplicator GunTransform, platform and thrown-item copies (2026-09-15)
 
 Catalog id 29 now executes its independently authored GunTransform lifecycle.
 The form uses Duplicator's 0.70 PlayerPhysics radius, 3.78-unit firepoint,
@@ -2591,9 +2591,36 @@ the source collider's live accumulator. `duplicator_ability_ab.c` compares
 forms and a downward platform hit; all public state, source-platform impulses,
 clone identity, hierarchy, geometry and later motion match exactly.
 
-Duplicator remains partial while its player, projectile, item, weapon,
-Black Hole, attached terrain and orb target branches are integrated. Magnet gun
-is the only catalog entry with no executable Rust form.
+The live ray now follows `ShootDuplicator`'s full query order: last overlapping
+rounded rectangle first, then three parallel closest rays, each scanning
+rounded rectangles, circles and boxes with strict-distance tie handling. Water
+recurses once with the reflected direction. Circular item targets use their
+authored three-copy fan, spacing and angle without allocating. Copies inherit
+the live body and item state, receive locally renumbered updater hierarchies,
+register one updater pass later, and expire after the source's 1,800-pass
+duplicated-object lifetime. Grenade copies additionally reproduce the explicit
+thrower, owner-hit and staggered-fuse reset.
+
+`duplicator_item_ab.c` drives a live grenade into that moving triple ray and
+compares 450 optimized-Q32 NativeAOT/Rust ticks. All copy positions and
+velocities match within one raw unit through overlapping Circle/Circle
+manifolds, the source grenade's two startup shockwaves, a water-boundary
+removal, a stock clone, and a later copied-grenade explosion. Fresh explosion
+colliders append in DetPhysics box order even when their fixed native state
+slot is reused. The only accepted item difference is 32,722 raw Q32 rotation
+units (7.62e-6 radians): Unity copies the source `BoplBody.rotation`
+accumulator, while Rust retains the previously published circular collider
+orientation. Rotation has no geometric or collision meaning for these circle
+items; their positions, velocities, mass and every contact decision match.
+Player-layer form axes and rotation retain the existing dynamic ThrowItem2
+allowance of 30,000,000 raw units (0.00699 radians); player/body state and all
+translational results remain exact.
+
+Duplicator remains partial while its player, projectile, weapon, Black Hole,
+attached-terrain and orb branches are integrated. Smoke, Tack, Mjolnir, Poke
+Ball and Mine use the same allocation-free circular-item clone path but still
+need their own composed goldens. Magnet gun is the only catalog entry with no
+executable Rust form.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

@@ -237,7 +237,7 @@
       "prefab": "Assets/GameObject/Duplicator.prefab",
       "prefab_guid": "9c1404930ef762b49ad05b1034a4c4d8",
       "native_status": "partial",
-      "verification": "Optimized-Q32 NativeAOT differential covers the exact smaller-radius GunTransform lifecycle on grounded and airborne casts plus the shipped delayed rounded-platform copy branch, including overlap forces, spring suppression, fresh-body initialization, collider hierarchy and later motion over 1,500 ticks. Player, projectile, item, weapon, Black Hole, attached-terrain and orb duplication targets remain open."
+      "verification": "Optimized-Q32 NativeAOT differential covers the exact smaller-radius GunTransform lifecycle on grounded and airborne casts plus delayed rounded-platform copies over 1,500 ticks. A second 450-tick live golden covers last-overlap/triple-ray selection, three-way Grenade fan copies, deferred registration, exact body trajectories and collision manifolds, two startup shockwaves, water-boundary removal, stock respawn ordering and a copied-grenade explosion. The shared allocation-free circular-item path also serves Smoke, Tack, Mjolnir, Poke Ball and Mine, whose composed goldens remain open. Player, projectile, weapon, Black Hole, attached-terrain and orb targets remain open."
     },
     {
       "id": 30,

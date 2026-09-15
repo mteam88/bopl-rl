@@ -319,8 +319,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Duplicator uses its exact smaller-radius GunTransform and implements the
   shipped delayed rounded-platform copy path, including overlap forces,
   next-pass spring suppression, fresh-body initialization and locally
-  renumbered collider hierarchy. Player/projectile/item/weapon/Black Hole,
-  attached-terrain and orb targets remain open.
+  renumbered collider hierarchy. Its last-overlap/triple-ray query and
+  allocation-free circular-item fan copies are also live, including deferred
+  collider registration, copied body state, 1,800-pass expiry, grenade reset
+  fields, ordinary rigid contacts, explosion shockwaves and water-boundary
+  cleanup. Player/projectile/weapon/Black Hole, attached-terrain and orb
+  targets remain open; the non-Grenade item variants need composed goldens.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
