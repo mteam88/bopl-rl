@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
+pub const ABILITY_MISSILE: u32 = 10;
 pub const ABILITY_SPIKE: u32 = 11;
 pub const ABILITY_TIME_STOP: u32 = 12;
 pub const ABILITY_SMOKE: u32 = 13;
@@ -360,6 +361,34 @@ pub struct GrenadeExplosion {
     pub age: u32,
 }
 
+/// SparkShot's guided projectile. The projectile remains live after the
+/// ability form exits and switches from stabilized flight to its own thrust.
+#[derive(Clone, Copy, Default)]
+pub struct GuidedMissile {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub owner: usize,
+    pub position: Vec2,
+    pub body: Body,
+    pub up: Vec2,
+    pub instability_ticks: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct MissileExplosion {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub position: Vec2,
+    pub owner: usize,
+    pub age: u32,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct SmokeCloud {
     pub active: bool,
@@ -437,6 +466,14 @@ pub struct SpikeCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct MissileFormState {
+    /// 0: enter, 1: enter-to-idle, 2: idle, 3: exit.
+    pub phase: u8,
+    pub ticks: u32,
+    pub projectile: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -915,6 +952,7 @@ pub enum ActiveAbility {
     Tack,
     Mjolnir,
     Smoke,
+    Missile,
     Spike,
     TimeStop,
     Gust,
@@ -971,6 +1009,7 @@ pub struct PlayerSlot {
     /// the destroyed StickyRoundedRectangle's last surface normal.
     pub removed_ground_normal: Option<Vec2>,
     pub bow: BowState,
+    pub missile: MissileFormState,
     pub throw_item: ThrowItemState,
     pub cast_spell: CastSpellState,
     pub spike_cast: SpikeCastState,
@@ -1108,6 +1147,8 @@ pub struct RolloutWorld {
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
     pub thrown_items: Vec<ThrownItem>,
+    pub guided_missiles: Vec<GuidedMissile>,
+    pub missile_explosions: Vec<MissileExplosion>,
     pub grenade_explosions: Vec<GrenadeExplosion>,
     pub smoke_clouds: Vec<SmokeCloud>,
     pub smoke_explosions: Vec<SmokeExplosion>,
@@ -1185,6 +1226,8 @@ impl RolloutWorld {
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
             thrown_items: Vec::with_capacity(64),
+            guided_missiles: Vec::with_capacity(64),
+            missile_explosions: Vec::with_capacity(64),
             grenade_explosions: Vec::with_capacity(64),
             smoke_clouds: Vec::with_capacity(64),
             smoke_explosions: Vec::with_capacity(64),
@@ -1248,6 +1291,8 @@ impl RolloutWorld {
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
         self.thrown_items.clone_from(&src.thrown_items);
+        self.guided_missiles.clone_from(&src.guided_missiles);
+        self.missile_explosions.clone_from(&src.missile_explosions);
         self.grenade_explosions.clone_from(&src.grenade_explosions);
         self.smoke_clouds.clone_from(&src.smoke_clouds);
         self.smoke_explosions.clone_from(&src.smoke_explosions);
@@ -1307,6 +1352,8 @@ impl RolloutWorld {
             platform_entities: _,
             arrows: _,
             thrown_items: _,
+            guided_missiles: _,
+            missile_explosions: _,
             grenade_explosions: _,
             smoke_clouds: _,
             smoke_explosions: _,
@@ -1393,6 +1440,8 @@ impl RolloutWorld {
         self.sudden_death = false;
         self.arrows.clear();
         self.thrown_items.clear();
+        self.guided_missiles.clear();
+        self.missile_explosions.clear();
         self.grenade_explosions.clear();
         self.smoke_clouds.clear();
         self.smoke_explosions.clear();
@@ -1554,6 +1603,12 @@ impl RolloutWorld {
                             data.bow.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut bow_entity[i],
+                            false,
+                        ),
+                        ABILITY_MISSILE => (
+                            data.missile.hurtbox_extents,
+                            100_000_000 + ability_hierarchy[i][slot_index] + 7,
+                            &mut throw_entity[i],
                             false,
                         ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
@@ -1754,6 +1809,7 @@ impl RolloutWorld {
                 reported_tick: u32::MAX,
                 removed_ground_normal: None,
                 bow: BowState::default(),
+                missile: MissileFormState::default(),
                 throw_item: ThrowItemState::default(),
                 cast_spell: CastSpellState::default(),
                 spike_cast: SpikeCastState::default(),
@@ -2063,6 +2119,8 @@ impl RolloutWorld {
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
         self.register_pending_arrows();
+        self.register_pending_guided_missiles(data);
+        self.register_pending_missile_explosions(data);
         self.register_pending_revival_markers(data);
         self.register_pending_teleport_markers(data);
         self.register_pending_revival_clones(data);
@@ -2216,6 +2274,7 @@ impl RolloutWorld {
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
         self.grenade_explosions_tick(data, updater_dt);
+        self.missile_explosions_tick(data, updater_dt);
         self.smoke_tick(data, updater_dt);
         self.time_stop_effects_tick(data);
         self.spike_attacks_tick(data, updater_dt);
@@ -2239,6 +2298,7 @@ impl RolloutWorld {
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile
                     | ActiveAbility::Spike
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
@@ -2271,6 +2331,7 @@ impl RolloutWorld {
         }
         let physics_dt = DT * self.player_time_scale;
         self.arrows_integrate(data, updater_dt, physics_dt);
+        self.guided_missiles_integrate(data, physics_dt);
         self.thrown_items_integrate(data, updater_dt, physics_dt);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
@@ -2296,8 +2357,10 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
         self.arrows_contacts(data);
+        self.guided_missile_contacts(data);
         self.thrown_items_contacts(data);
         self.grenade_explosion_contacts(data);
+        self.missile_explosion_contacts(data);
         self.smoke_contacts(data);
         self.spike_contacts(data);
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
@@ -2594,6 +2657,20 @@ impl RolloutWorld {
                         self.throw_item_tick(index, action, data);
                         return;
                     }
+                    ABILITY_MISSILE => {
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Missile;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.missile = MissileFormState::default();
+                        if slot.base.grounded {
+                            slot.base.velocity = Vec2::ZERO;
+                            slot.base.external_velocity = Vec2::ZERO;
+                        }
+                        return;
+                    }
                     ABILITY_TIME_STOP => {
                         let grounded = self.players[index].base.grounded;
                         let slot = &mut self.players[index];
@@ -2809,6 +2886,10 @@ impl RolloutWorld {
 
         if self.players[index].active == ActiveAbility::Bow {
             self.bow_tick(index, action, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Missile {
+            self.missile_form_tick(index, action, data);
             return;
         }
         if matches!(
@@ -3551,7 +3632,8 @@ impl RolloutWorld {
                     ActiveAbility::Grenade
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir => slot.throw_entity,
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => slot.throw_entity,
                     ActiveAbility::Spike => slot.spike_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
@@ -3932,6 +4014,29 @@ impl RolloutWorld {
         }
     }
 
+    fn missile_explosions_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for explosion in &mut self.missile_explosions {
+            if !explosion.active || !explosion.registered {
+                continue;
+            }
+            let entity = explosion.entity.expect("registered Missile explosion");
+            if explosion.age >= data.missile.explosion_animation_ticks {
+                explosion.active = false;
+                explosion.registered = false;
+                self.entities[entity].flags = E_REMOVED;
+                continue;
+            }
+            self.entities[entity].flags = if explosion.age == 0 {
+                E_ACTIVE | E_ENABLED | E_TRIGGER
+            } else {
+                E_ACTIVE | E_TRIGGER
+            };
+            if updater_dt > Fix::ZERO || explosion.age == 0 {
+                explosion.age += 1;
+            }
+        }
+    }
+
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut detonations = [usize::MAX; 64];
         let mut detonation_count = 0;
@@ -4166,6 +4271,7 @@ impl RolloutWorld {
                         8,
                         &mut throw_entity,
                     ),
+                    ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -4216,6 +4322,7 @@ impl RolloutWorld {
             slot.obs_state = STATE_NOTHING;
             slot.timers.fill(Fix::from_f32(-1.5));
             slot.active = ActiveAbility::None;
+            slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
             slot.spike_cast = SpikeCastState::default();
@@ -4372,6 +4479,7 @@ impl RolloutWorld {
                         8,
                         &mut throw_entity,
                     ),
+                    ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
                     ABILITY_SPIKE => (
                         data.spike.hurtbox_extents,
                         data.spike.collider_hierarchy,
@@ -4410,6 +4518,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.base.sync_collider();
             slot.active = ActiveAbility::None;
+            slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
             slot.spike_cast = SpikeCastState::default();
@@ -4671,6 +4780,118 @@ impl RolloutWorld {
     /// Shared `ThrowItem2` player-form lifecycle. The item
     /// collider is manually initialized by `Fire`, so it joins DetPhysics in
     /// the cast pass even though its MonoUpdatables initialize next pass.
+    fn spawn_guided_missile(&mut self, index: usize, data: &data::RolloutData) -> usize {
+        let rotation = self.players[index].base.rotation;
+        let right = Vec2::angle(rotation);
+        let up = right.perp();
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.missile.spark_updatable_count;
+        let mut body = data.missile.spark_body;
+        body.orientation = rotation;
+        body.velocity = self.players[index].base.up * data.missile.projectile_start_speed;
+        let missile = GuidedMissile {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            owner: index,
+            position: self.players[index].base.position
+                + data.missile.projectile_offset.complex_mul(right),
+            body,
+            up,
+            ..GuidedMissile::default()
+        };
+        if let Some(free) = self
+            .guided_missiles
+            .iter()
+            .position(|missile| !missile.active)
+        {
+            let entity = self.guided_missiles[free].entity;
+            self.guided_missiles[free] = GuidedMissile { entity, ..missile };
+            free
+        } else {
+            self.guided_missiles.push(missile);
+            self.guided_missiles.len() - 1
+        }
+    }
+
+    fn missile_form_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        let state = &mut self.players[index].missile;
+        state.ticks += 1;
+        match state.phase {
+            0 if state.ticks >= data.missile.enter_ticks => {
+                state.phase = 1;
+                state.ticks = 0;
+                let projectile = self.spawn_guided_missile(index, data);
+                self.players[index].missile.projectile = Some(projectile);
+            }
+            1 if state.ticks > data.missile.enter_to_idle_ticks => {
+                state.phase = 2;
+                state.ticks = 0;
+            }
+            3 if state.ticks > data.missile.idle_ticks => {
+                let slot = &mut self.players[index];
+                slot.active = ActiveAbility::None;
+                slot.reported_position = slot.base.position;
+                slot.reported_tick = self.tick;
+                return;
+            }
+            _ => {}
+        }
+
+        if self.players[index].missile.phase == 2 && action.buttons & 2 == 0 {
+            self.players[index].missile.phase = 3;
+            self.players[index].missile.ticks = 0;
+        }
+
+        let projectile = self.players[index].missile.projectile;
+        if self.players[index].missile.phase != 3
+            && let Some(projectile) = projectile
+            && self.guided_missiles[projectile].active
+            && self.guided_missiles[projectile].registered
+        {
+            let missile = &mut self.guided_missiles[projectile];
+            missile.instability_ticks = 0;
+            let aim = action.direction();
+            let forward = missile.body.velocity.normalized_safe();
+            let signed_turn = if forward.cross(aim) > Fix::ZERO {
+                DT * data.missile.rotation_speed
+            } else {
+                -DT * data.missile.rotation_speed
+            };
+            let mut next_up = Vec2::angle(signed_turn).complex_mul(missile.up);
+            if aim.length_squared() < Fix::from_f32(0.4) * Fix::from_f32(0.4) {
+                next_up = missile.up;
+            }
+            missile.body.velocity = next_up * missile.body.velocity.length();
+            missile.up = next_up;
+            missile.body.orientation = next_up.perp_cw().normalized_angle();
+        }
+
+        if self.players[index].base.grounded {
+            self.players[index].base.velocity = Vec2::ZERO;
+        } else {
+            let slot = &mut self.players[index];
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                data.missile.constants.gravity_accel,
+                data.missile.constants.gravity_modifier,
+                data.missile.constants.gravity_max_fall_speed,
+                false,
+            )
+            .expect("valid Missile gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded {
+                slot.active = ActiveAbility::None;
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS + 2;
+                slot.reported_position = slot.base.position;
+            } else {
+                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+            }
+        }
+    }
+
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
@@ -5660,6 +5881,200 @@ impl RolloutWorld {
         }
     }
 
+    fn register_pending_guided_missiles(&mut self, data: &data::RolloutData) {
+        for missile in &self.guided_missiles {
+            if !missile.active
+                && let Some(entity) = missile.entity
+                && self.entities[entity].flags & E_DESTROYED != 0
+            {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
+        for index in 0..self.guided_missiles.len() {
+            let missile = self.guided_missiles[index];
+            if !missile.active || missile.registered || missile.born_tick >= self.tick {
+                continue;
+            }
+            let entity = match missile.entity {
+                Some(entity) => entity,
+                None => {
+                    self.entities.push(CEntity::default());
+                    let entity = self.entities.len() - 1;
+                    self.guided_missiles[index].entity = Some(entity);
+                    entity
+                }
+            };
+            let id = self.next_id();
+            let collider = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents,
+            );
+            self.entities[entity] = CEntity {
+                id,
+                kind: 1,
+                layer: data.missile.spark_layer,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000
+                    + missile.hierarchy_base
+                    + data.missile.spark_collider_hierarchy,
+                x: missile.position.x.raw(),
+                y: missile.position.y.raw(),
+                vx: missile.body.velocity.x.raw(),
+                vy: missile.body.velocity.y.raw(),
+                right_x: collider.right.x.raw(),
+                right_y: collider.right.y.raw(),
+                up_x: collider.up.x.raw(),
+                up_y: collider.up.y.raw(),
+                rotation: missile.body.orientation.raw(),
+                angular_velocity: missile.body.angular_velocity.raw(),
+                inverse_mass: missile.body.inverse_mass.raw(),
+                ..CEntity::default()
+            };
+            self.guided_missiles[index].registered = true;
+        }
+    }
+
+    fn register_pending_missile_explosions(&mut self, data: &data::RolloutData) {
+        for index in 0..self.missile_explosions.len() {
+            let explosion = self.missile_explosions[index];
+            if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
+                continue;
+            }
+            let entity = match explosion.entity {
+                Some(entity) => entity,
+                None => {
+                    self.entities.push(CEntity::default());
+                    let entity = self.entities.len() - 1;
+                    self.missile_explosions[index].entity = Some(entity);
+                    entity
+                }
+            };
+            let id = self.next_id();
+            let collider = OrientedBox::from_basis(
+                explosion.position,
+                Vec2::RIGHT,
+                data.missile.explosion_extents,
+            );
+            self.entities[entity] = CEntity {
+                id,
+                kind: 1,
+                layer: data.missile.explosion_layer,
+                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000
+                    + explosion.hierarchy_base
+                    + data.missile.explosion_collider_hierarchy,
+                x: explosion.position.x.raw(),
+                y: explosion.position.y.raw(),
+                right_x: collider.right.x.raw(),
+                right_y: collider.right.y.raw(),
+                up_x: collider.up.x.raw(),
+                up_y: collider.up.y.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            };
+            self.missile_explosions[index].registered = true;
+            self.apply_explosion_shockwave(explosion.position, data.missile.explosion_shockwave);
+        }
+    }
+
+    fn spawn_missile_explosion(&mut self, position: Vec2, owner: usize, data: &data::RolloutData) {
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.missile.explosion_updatable_count;
+        let explosion = MissileExplosion {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            position,
+            owner,
+            ..MissileExplosion::default()
+        };
+        if let Some(free) = self
+            .missile_explosions
+            .iter()
+            .position(|explosion| !explosion.active)
+        {
+            let entity = self.missile_explosions[free].entity;
+            self.missile_explosions[free] = MissileExplosion {
+                entity,
+                ..explosion
+            };
+        } else {
+            self.missile_explosions.push(explosion);
+        }
+    }
+
+    fn destroy_guided_missile(&mut self, index: usize, by_callback: bool) {
+        let missile = &mut self.guided_missiles[index];
+        missile.active = false;
+        missile.registered = false;
+        if let Some(entity) = missile.entity {
+            self.entities[entity].flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+        }
+    }
+
+    fn guided_missiles_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
+        for index in 0..self.guided_missiles.len() {
+            if !self.guided_missiles[index].active || !self.guided_missiles[index].registered {
+                continue;
+            }
+            let position = self.guided_missiles[index].position;
+            let mut boundary_explosion = None;
+            if position.y < Fix::from_f32(-11.3) {
+                self.destroy_guided_missile(index, false);
+                continue;
+            } else if position.y > Fix::from_f64(72.5) {
+                boundary_explosion = Some(Vec2::new(position.x, Fix::from_f64(72.5)));
+            } else if position.x < Fix::from_f64(-131.25) {
+                boundary_explosion = Some(Vec2::new(Fix::from_f64(-131.25), position.y));
+            } else if position.x > Fix::from_f64(131.25) {
+                boundary_explosion = Some(Vec2::new(Fix::from_f64(131.25), position.y));
+            }
+            if let Some(explosion_position) = boundary_explosion {
+                let owner = self.guided_missiles[index].owner;
+                self.spawn_missile_explosion(explosion_position, owner, data);
+                self.destroy_guided_missile(index, false);
+                continue;
+            }
+
+            let missile = &mut self.guided_missiles[index];
+            missile.instability_ticks += 1;
+            // SparkShot.UpdateSim still advances its instability counter while
+            // GameTime is frozen, but AddForce scales by FixedTimeStep. Do not
+            // leave thrust queued for the first unfrozen DetPhysics pass.
+            if physics_dt > Fix::ZERO {
+                if missile.instability_ticks >= 3 {
+                    missile.body.force += missile.up * data.missile.instability_accel;
+                } else if missile.up.dot(missile.body.velocity) < data.missile.minimum_forward_speed
+                {
+                    missile.body.force += missile.up * data.missile.accel;
+                }
+            }
+            missile.position += missile.body.integrate(physics_dt, Fix::from_int(-40));
+            let entity = missile.entity.expect("registered Missile collider");
+            let collider = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents,
+            );
+            let row = &mut self.entities[entity];
+            row.x = missile.position.x.raw();
+            row.y = missile.position.y.raw();
+            row.vx = missile.body.velocity.x.raw();
+            row.vy = missile.body.velocity.y.raw();
+            row.right_x = collider.right.x.raw();
+            row.right_y = collider.right.y.raw();
+            row.up_x = collider.up.x.raw();
+            row.up_y = collider.up.y.raw();
+            row.rotation = missile.body.orientation.raw();
+            row.angular_velocity = missile.body.angular_velocity.raw();
+            // DetPhysics writes PhysicsBody.orientation back through the
+            // FixTransform rotation setter after simulation, rebuilding the
+            // basis that SparkShot reads on the following updater pass.
+            missile.up = Vec2::angle(missile.body.orientation).perp();
+        }
+    }
+
     /// DetPhysics integrates every BoplBody before constructing contact
     /// manifolds. Keep projectile time/gravity in that body phase; contacts
     /// run after platform integration below.
@@ -6225,6 +6640,126 @@ impl RolloutWorld {
         }
     }
 
+    fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
+        for missile_index in 0..self.guided_missiles.len() {
+            if !self.guided_missiles[missile_index].active
+                || !self.guided_missiles[missile_index].registered
+            {
+                continue;
+            }
+            let missile = self.guided_missiles[missile_index];
+            let missile_box = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents,
+            );
+            let missile_shape = RoundedRect {
+                inner: missile_box,
+                radius: Fix::ZERO,
+            };
+            let mut contacts = [(0usize, Contact::default()); 64];
+            let mut contact_count = 0;
+            for (platform_index, platform) in self.platforms.iter().enumerate() {
+                if contact_count == contacts.len() {
+                    break;
+                }
+                if let Some(contact) =
+                    crate::physics::contact::rounded_rounded(missile_shape, platform.collider)
+                {
+                    contacts[contact_count] = (platform_index, contact);
+                    contact_count += 1;
+                }
+            }
+            if contact_count > 0 {
+                let mut body = missile.body;
+                let mut center = missile.position;
+                for &(platform_index, contact) in &contacts[..contact_count] {
+                    let platform_center = self.platforms[platform_index].surface.center;
+                    let platform_body = &mut self.platform_dynamics[platform_index].body;
+                    resolve(contact, &mut body, platform_body, center, platform_center);
+                    let correction = positional_correction(
+                        contact,
+                        body.inverse_mass,
+                        platform_body.inverse_mass,
+                        false,
+                    );
+                    center += correction[0];
+                    self.platforms[platform_index].surface.center += correction[1];
+                    self.platforms[platform_index].collider.inner.center += correction[1];
+                }
+                self.platforms_changed();
+                let owner = missile.owner;
+                self.spawn_missile_explosion(center, owner, data);
+                self.destroy_guided_missile(missile_index, true);
+                if let Some(entity) = missile.entity {
+                    let row = &mut self.entities[entity];
+                    row.x = center.x.raw();
+                    row.y = center.y.raw();
+                    row.vx = body.velocity.x.raw();
+                    row.vy = body.velocity.y.raw();
+                    row.rotation = body.orientation.raw();
+                    row.angular_velocity = body.angular_velocity.raw();
+                }
+                continue;
+            }
+
+            let hit_player = self.players.iter().enumerate().any(|(index, player)| {
+                if !self.playable(index) {
+                    return false;
+                }
+                let entity = match player.active {
+                    ActiveAbility::None => player.body_entity,
+                    ActiveAbility::Dash => player.dash_entity,
+                    ActiveAbility::Bow => player.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::TimeStop => player.time_stop_entity,
+                    ActiveAbility::Gust => player.gust_entity,
+                    ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::Platform => player.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    return false;
+                }
+                let row = self.entities[entity];
+                if row.kind == 0 {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            radius: Fix::from_raw(row.radius),
+                        },
+                        missile_box,
+                    )
+                    .is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    crate::physics::contact::box_box(
+                        OrientedBox {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            right,
+                            up,
+                            inverse_extents: Vec2::new(
+                                Fix::ONE / right.length(),
+                                Fix::ONE / up.length(),
+                            ),
+                        },
+                        missile_box,
+                    )
+                    .is_some()
+                }
+            });
+            if hit_player {
+                self.spawn_missile_explosion(missile.position, missile.owner, data);
+                self.destroy_guided_missile(missile_index, true);
+            }
+        }
+    }
+
     /// Item circles participate in ordinary rigid-body contacts, then their
     /// queued GrenadeExplode callback observes Player-layer overlaps.
     fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
@@ -6436,6 +6971,48 @@ impl RolloutWorld {
                         CAUSE_OTHER
                     };
                     self.kill(player_index, killer, cause, true);
+                }
+            }
+        }
+    }
+
+    fn missile_explosion_contacts(&mut self, data: &data::RolloutData) {
+        for explosion_index in 0..self.missile_explosions.len() {
+            let explosion = self.missile_explosions[explosion_index];
+            if !explosion.active || !explosion.registered || explosion.age != 1 {
+                continue;
+            }
+            let hitbox = OrientedBox::from_basis(
+                explosion.position,
+                Vec2::RIGHT,
+                data.missile.explosion_extents,
+            );
+            let mut victims = [false; MAX_PLAYERS];
+            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
+                if !self.playable(player_index) {
+                    continue;
+                }
+                let player = &self.players[player_index];
+                *victim = if player.active == ActiveAbility::Platform
+                    && player.platform.phase == PLATFORM_ANTICIPATION
+                {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: player.base.position,
+                            radius: data.platform.hurtbox_radius,
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
+                    false
+                } else {
+                    crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
+                };
+            }
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim && self.playable(player_index) {
+                    self.kill(player_index, 0, CAUSE_OTHER, true);
                 }
             }
         }
@@ -7559,6 +8136,7 @@ impl RolloutWorld {
             let teleporting = slot.teleport_effect_active;
             let dashing = slot.base.dash.active;
             let bowing = slot.active == ActiveAbility::Bow;
+            let missile_form = slot.active == ActiveAbility::Missile;
             let throwing = matches!(
                 slot.active,
                 ActiveAbility::Grenade
@@ -7726,14 +8304,17 @@ impl RolloutWorld {
             if throw_e != usize::MAX {
                 let throw_box = &mut self.entities[throw_e];
                 let was_active = throw_box.flags & E_ACTIVE != 0;
-                if alive && throwing {
+                let missile_row = missile_form || (was_active && slot.missile.projectile.is_some());
+                if alive && (throwing || missile_form) {
                     throw_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                     throw_box.owner = slot.base.id;
                 } else {
                     throw_box.flags = E_ENABLED | E_TRIGGER;
                 }
-                if (alive && throwing) || was_active {
-                    let (center, rotation) = if throwing {
+                if (alive && (throwing || missile_form)) || was_active {
+                    let (center, rotation) = if missile_form {
+                        (synced, slot.base.rotation)
+                    } else if throwing {
                         // `Fire` applies the recoil before this pass's
                         // grounded `PlayerPhysics.Move`. The ability body
                         // advances once by that velocity while the original
@@ -7750,7 +8331,11 @@ impl RolloutWorld {
                     let hurtbox = OrientedBox::from_basis(
                         center,
                         Vec2::angle(rotation),
-                        throw_config.hurtbox_extents,
+                        if missile_row {
+                            data.missile.hurtbox_extents
+                        } else {
+                            throw_config.hurtbox_extents
+                        },
                     );
                     throw_box.x = center.x.raw();
                     throw_box.y = center.y.raw();
@@ -8145,6 +8730,9 @@ impl RolloutWorld {
             }
             if time_stop_protected[i] {
                 player_flags |= 8;
+            }
+            if slot.active == ActiveAbility::Missile {
+                player_flags |= 16;
             }
             if slot.active == ActiveAbility::Platform {
                 player_flags |= 32;

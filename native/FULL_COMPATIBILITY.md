@@ -1919,3 +1919,32 @@ rigid-body contacts. The attack collider's vertical half-extent uses the same
 raw Q32 units between the serialized extent and observed axis and is not a
 semantic difference. Dedicated recast-replacement and player-lethality goldens
 remain open, so the catalog entry is marked partial.
+
+### Executable Missile and guided box projectile (2026-09-14)
+
+Catalog id 10 now executes `SparkShot` with its extracted form physics and exact
+animation callbacks. The Spark prefab registers on the following updater pass,
+starts along the form's copied up vector, and is then steered by rotating its
+live `FixTransform` basis while preserving speed. The implementation mirrors the
+otherwise subtle scheduler order: the older form stabilizes the projectile
+before the appended `Missile` updater increments its instability counter, and
+DetPhysics rebuilds the transform basis from body orientation after each pass.
+Releasing the form leaves the projectile alive; two unstabilized updates later
+its authored 1000-unit thrust begins.
+
+The layer-10 box resolves and position-corrects against rounded platforms before
+its callback queues the ownerless MineExplosion and marks the Spark destroyed
+for one observation. The next pass removes that collider, registers the scaled
+layer-18 trigger, applies its constant one-shot Shockwave, and disables the
+lethal box after its first physics frame. Collision projections now fold over
+fixed slices directly, removing their former short-lived heap allocation from
+this projectile's per-platform hot path.
+
+`missile_ability_ab.c` compares 500 NativeAOT/Q32 ticks exactly. It covers the
+grounded entry, delayed spawn, two-direction guided turn, release, instability,
+box/rounded manifold and platform response, callback destruction, deferred
+explosion, first-frame hitbox flags, Shockwave, and the full 82-tick visual
+lifetime. The observed explosion collider axes differ from the serialized
+extents only by the source's `One / (One / extent)` fixed-point scale round trip.
+Projectile/item/form contacts, time-stop and scale interactions, duplication,
+and a dedicated explosion victim remain open, so coverage is marked partial.

@@ -532,6 +532,84 @@ def main():
         },
     }
 
+    # ---- Missile / SparkShot guided projectile ----
+    _, missile_ability = find_prefab("Assets/GameObject/Missile.prefab")
+    spark_shot = component(missile_ability, "SparkShot")
+    missile_box = component(missile_ability, "DPhysicsBox")
+    missile_phys = component(missile_ability, "PlayerPhysics")
+    missile_anims = animations(guid_of(spark_shot["animData"]))
+    spark = ASSETS[guid_of(spark_shot["SparkPrefab"])]
+    spark_missile = component(spark, "Missile")
+    spark_item = component(spark, "Item")
+    spark_box = component(spark, "DPhysicsBox")
+    spark_body = component(spark, "BoplBody")
+    missile_explosion = ASSETS[guid_of(spark_missile["onHitExplosionPrefab"])]
+    missile_explosion_component = component(missile_explosion, "Explosion")
+    missile_explosion_box = component(missile_explosion, "DPhysicsBox")
+    missile_explosion_waves = [c["properties"] for c in
+                               component(missile_explosion, "Shockwave", all_matches=True)]
+    assert len(missile_explosion_waves) == 1
+    missile_explosion_anims = animations(
+        guid_of(missile_explosion_component["explosionAnimation"])
+    )
+    out["prefabs"]["missile"] = {
+        "hurtbox_extents": vec2(missile_box, "startExtents"),
+        "projectile_offset": vec2(spark_shot, "projectileOffset"),
+        "projectile_start_speed": fix(spark_shot, "projectileStartSpeed"),
+        "rotation_speed": fix(spark_shot, "SparkRotationSpeed"),
+        "physics": {
+            "max_speed": fix(missile_phys, "maxSpeed"),
+            "jump_strength": fix(missile_phys, "jumpStrength"),
+            "accel": fix(missile_phys, "accel"),
+            "radius": fix(missile_phys, "radius"),
+            "gravity_accel": fix(missile_phys, "gravity_accel"),
+            "gravity_max_fall_speed": fix(missile_phys, "gravity_maxFallSpeed"),
+            "gravity_modifier": fix(missile_phys, "gravity_modifier"),
+            "jump_extra_x": fix(missile_phys, "jumpExtraXStrength"),
+            "jump_momentum": fix(missile_phys, "jumpKeptMomentum"),
+            "jump_normal_scale": fix(missile_phys, "jumpNormalScaleFactor"),
+            "jump_teleport": fix(missile_phys, "extraJumpTeleportMultiplier"),
+            "air_accel": fix(missile_phys, "airAccel"),
+        },
+        "animations": {name: missile_anims[name]
+                       for name in ("enter", "enterToIdle", "idle")},
+        "spark": {
+            "layer": spark["data"].get("layer"),
+            "updatable_count": sum(
+                "hierarchyNumber" in c.get("properties", {})
+                for node in [spark["data"], *walk(spark["data"].get("children", []))]
+                for c in node.get("components", [])
+            ),
+            "collider_hierarchy": spark_box["hierarchyNumber"],
+            "extents": vec2(spark_box, "startExtents"),
+            "body": physics_body(spark_body),
+            "minimum_forward_speed": fix(spark_missile, "minimumForwardsSpeed"),
+            "accel": fix(spark_missile, "accel"),
+            "instability_accel": fix(spark_missile, "instabilityAccel"),
+            "clone_count": spark_item["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": spark_item["duplicatePattern"],
+            "duplicate_spacing": fix(spark_item, "duplicate_spacing"),
+            "duplicate_angle": fix(spark_item, "duplicate_angle"),
+        },
+        "explosion": {
+            "layer": missile_explosion["data"].get("layer"),
+            "updatable_count": updater_count(missile_explosion),
+            "collider_hierarchy": missile_explosion_box["hierarchyNumber"],
+            "extents": vec2(missile_explosion_box, "startExtents"),
+            "animation_ticks": sum(abs(d) for d in
+                                   missile_explosion_anims[next(iter(missile_explosion_anims))]),
+            "shockwave": {
+                "platform_force": fix(missile_explosion_waves[0], "platformForce"),
+                "default_force": fix(missile_explosion_waves[0], "defaultForce"),
+                "grounded_player_multiplier": fix(
+                    missile_explosion_waves[0], "groundedPlayerForceMultiplier"
+                ),
+                "radius": fix(missile_explosion_waves[0], "radius"),
+                "collision_mask": missile_explosion_waves[0]["collisionMask.m_Bits"],
+            },
+        },
+    }
+
     # ---- Tack / shared ThrowItem2 item path ----
     _, tack_ability = find_prefab("Assets/GameObject/Banana peel.prefab")
     tack_throw = component(tack_ability, "ThrowItem2")

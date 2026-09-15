@@ -51,8 +51,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `Player.Position` is normally the position published by `SlimeController`
   before the later movement/physics work in that pass; the rollout represents
   that report phase separately from the live body.
-- **NullAbility, Random, Dash, Grenade, Bow, Gust, Smoke, Platform, Revival, Invisibility, Teleport, Rewind, Gold mushroom, Tack, Mjolnir**
-  (catalog ids 0/1/2/3/4/7/13/14/15/19/25/31/34/35/37): NullAbility is the menu placeholder and is rejected as a
+- **NullAbility, Random, Dash, Grenade, Bow, Gust, Missile, Smoke, Platform, Revival, Invisibility, Teleport, Rewind, Gold mushroom, Tack, Mjolnir**
+  (catalog ids 0/1/2/3/4/7/10/13/14/15/19/25/31/34/35/37): NullAbility is the menu placeholder and is rejected as a
   match loadout by the public ABI, matching NativeAOT. Random loadouts are
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/11/12/13/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/7/10/11/12/13/14/15/19/25/31/34/35/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -170,6 +170,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   expiry; its shared `Item.Duplicate` path remains absent.
   Mjolnir is exact through outbound flight, platform clangs, return and catch;
   its victim-hit and shared `Item.Duplicate` interactions remain open.
+  Missile is exact through the guided form, steering, stabilization, release into
+  instability thrust, rounded-platform collision, and its MineExplosion lifecycle.
+  Projectile/item contacts, time-stop/scale interactions and duplication remain open.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain

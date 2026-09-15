@@ -39,8 +39,11 @@ fn corners(b: OrientedBox) -> [Vec2; 4] {
     ]
 }
 fn projection(points: &[Vec2], axis: Vec2) -> [Fix; 2] {
-    let values: Vec<_> = points.iter().map(|p| axis.dot(*p)).collect();
-    [*values.iter().min().unwrap(), *values.iter().max().unwrap()]
+    let mut values = points.iter().map(|point| axis.dot(*point));
+    let first = values.next().expect("collision projection is non-empty");
+    values.fold([first, first], |[minimum, maximum], value| {
+        [minimum.min(value), maximum.max(value)]
+    })
 }
 fn sat(a: [Fix; 2], b: [Fix; 2], axis: Vec2, inverse: Option<Fix>, contact: &mut Contact) -> bool {
     let mut forward = a[1] - b[0];

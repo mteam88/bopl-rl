@@ -206,6 +206,7 @@ struct RawPrefabs {
     revival: RawRevival,
     teleport: RawTeleport,
     grenade: RawGrenade,
+    missile: RawMissile,
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
@@ -315,6 +316,49 @@ struct RawGrenadeExplosion {
     extents: RawVec2,
     animation_ticks: u32,
     shockwaves: [RawExplosionShockwave; 2],
+}
+
+#[derive(Deserialize)]
+struct RawMissile {
+    hurtbox_extents: RawVec2,
+    projectile_offset: RawVec2,
+    projectile_start_speed: i64,
+    rotation_speed: i64,
+    physics: RawPhysics,
+    animations: RawMissileAnimations,
+    spark: RawMissileSpark,
+    explosion: RawMissileExplosion,
+}
+#[derive(Deserialize)]
+struct RawMissileAnimations {
+    enter: Vec<i32>,
+    #[serde(rename = "enterToIdle")]
+    enter_to_idle: Vec<i32>,
+    idle: Vec<i32>,
+}
+#[derive(Deserialize)]
+struct RawMissileSpark {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    body: RawBody,
+    minimum_forward_speed: i64,
+    accel: i64,
+    instability_accel: i64,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+}
+#[derive(Deserialize)]
+struct RawMissileExplosion {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    animation_ticks: u32,
+    shockwave: RawExplosionShockwave,
 }
 
 #[derive(Deserialize)]
@@ -702,6 +746,34 @@ pub struct GrenadeData {
     pub explosion_animation_ticks: u32,
     pub explosion_shockwaves: [ExplosionShockwaveData; 2],
 }
+pub struct MissileData {
+    pub hurtbox_extents: Vec2,
+    pub projectile_offset: Vec2,
+    pub projectile_start_speed: Fix,
+    pub rotation_speed: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub enter_ticks: u32,
+    pub enter_to_idle_ticks: u32,
+    pub idle_ticks: u32,
+    pub spark_layer: u32,
+    pub spark_updatable_count: u32,
+    pub spark_collider_hierarchy: u32,
+    pub spark_extents: Vec2,
+    pub spark_body: crate::physics::Body,
+    pub minimum_forward_speed: Fix,
+    pub accel: Fix,
+    pub instability_accel: Fix,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub explosion_layer: u32,
+    pub explosion_updatable_count: u32,
+    pub explosion_collider_hierarchy: u32,
+    pub explosion_extents: Vec2,
+    pub explosion_animation_ticks: u32,
+    pub explosion_shockwave: ExplosionShockwaveData,
+}
 pub struct TackData {
     pub hurtbox_extents: Vec2,
     pub air_position: Vec2,
@@ -882,6 +954,7 @@ pub struct RolloutData {
     pub revival: RevivalData,
     pub teleport: TeleportData,
     pub grenade: GrenadeData,
+    pub missile: MissileData,
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
@@ -1259,6 +1332,45 @@ pub fn get() -> &'static RolloutData {
                             collision_mask: wave.collision_mask,
                         }
                     }),
+                }
+            },
+            missile: {
+                let missile = &raw.prefabs.missile;
+                MissileData {
+                    hurtbox_extents: missile.hurtbox_extents.get(),
+                    projectile_offset: missile.projectile_offset.get(),
+                    projectile_start_speed: Fix::from_raw(missile.projectile_start_speed),
+                    rotation_speed: Fix::from_raw(missile.rotation_speed),
+                    constants: constants(&missile.physics),
+                    enter_ticks: ticks(&missile.animations.enter),
+                    enter_to_idle_ticks: ticks(&missile.animations.enter_to_idle),
+                    idle_ticks: ticks(&missile.animations.idle),
+                    spark_layer: missile.spark.layer,
+                    spark_updatable_count: missile.spark.updatable_count,
+                    spark_collider_hierarchy: missile.spark.collider_hierarchy,
+                    spark_extents: missile.spark.extents.get(),
+                    spark_body: body(&missile.spark.body, Fix::ZERO),
+                    minimum_forward_speed: Fix::from_raw(missile.spark.minimum_forward_speed),
+                    accel: Fix::from_raw(missile.spark.accel),
+                    instability_accel: Fix::from_raw(missile.spark.instability_accel),
+                    clone_count: missile.spark.clone_count,
+                    duplicate_pattern: missile.spark.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(missile.spark.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(missile.spark.duplicate_angle),
+                    explosion_layer: missile.explosion.layer,
+                    explosion_updatable_count: missile.explosion.updatable_count,
+                    explosion_collider_hierarchy: missile.explosion.collider_hierarchy,
+                    explosion_extents: missile.explosion.extents.get(),
+                    explosion_animation_ticks: missile.explosion.animation_ticks,
+                    explosion_shockwave: ExplosionShockwaveData {
+                        platform_force: Fix::from_raw(missile.explosion.shockwave.platform_force),
+                        default_force: Fix::from_raw(missile.explosion.shockwave.default_force),
+                        grounded_player_multiplier: Fix::from_raw(
+                            missile.explosion.shockwave.grounded_player_multiplier,
+                        ),
+                        radius: Fix::from_raw(missile.explosion.shockwave.radius),
+                        collision_mask: missile.explosion.shockwave.collision_mask,
+                    },
                 }
             },
             smoke: {
