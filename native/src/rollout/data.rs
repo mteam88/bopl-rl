@@ -215,6 +215,7 @@ struct RawPrefabs {
     smoke: RawSmoke,
     time_stop: RawTimeStop,
     spike: RawSpike,
+    engine: RawEngine,
     tack: RawTack,
     mjolnir: RawMjolnir,
 }
@@ -590,6 +591,32 @@ struct RawSpikeAttack {
     knock_wall: i64,
     self_push_multiplier: i64,
     push_time: i64,
+}
+#[derive(Deserialize)]
+struct RawEngine {
+    hurtbox_extents: RawVec2,
+    collider_offset: RawVec2,
+    collider_hierarchy: u32,
+    animations: RawSpikeAnimations,
+    plant_offset: RawVec2,
+    cast_force: i64,
+    buffer_size: usize,
+    rocket: RawRocketEngine,
+}
+#[derive(Deserialize)]
+struct RawRocketEngine {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    collider_offset: RawVec2,
+    body: RawBody,
+    force: Curve,
+    start_ticks: u32,
+    end_ticks: u32,
+    fire_offset: RawVec2,
+    fire_radius: i64,
+    smoke_mask: u32,
 }
 #[derive(Clone, Copy, Deserialize)]
 struct RawExplosionShockwave {
@@ -1158,6 +1185,28 @@ pub struct SpikeData {
     pub self_push_multiplier: Fix,
     pub push_time: Fix,
 }
+pub struct EngineData {
+    pub hurtbox_extents: Vec2,
+    pub collider_offset: Vec2,
+    pub collider_hierarchy: u32,
+    pub cast_ticks: u32,
+    pub recover_ticks: u32,
+    pub plant_offset: Vec2,
+    pub cast_force: Fix,
+    pub buffer_size: usize,
+    pub rocket_layer: u32,
+    pub rocket_updatable_count: u32,
+    pub rocket_collider_hierarchy: u32,
+    pub rocket_extents: Vec2,
+    pub rocket_collider_offset: Vec2,
+    pub rocket_body: crate::physics::Body,
+    pub force: Curve,
+    pub start_ticks: u32,
+    pub end_ticks: u32,
+    pub fire_offset: Vec2,
+    pub fire_radius: Fix,
+    pub smoke_mask: u32,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -1204,6 +1253,7 @@ pub struct RolloutData {
     pub smoke: SmokeData,
     pub time_stop: TimeStopData,
     pub spike: SpikeData,
+    pub engine: EngineData,
     pub tack: TackData,
     pub mjolnir: MjolnirData,
     pub abilities: Vec<AbilityData>,
@@ -1847,6 +1897,31 @@ pub fn get() -> &'static RolloutData {
                     knock_wall: Fix::from_raw(spike.attack.knock_wall),
                     self_push_multiplier: Fix::from_raw(spike.attack.self_push_multiplier),
                     push_time: Fix::from_raw(spike.attack.push_time),
+                }
+            },
+            engine: {
+                let engine = &raw.prefabs.engine;
+                EngineData {
+                    hurtbox_extents: engine.hurtbox_extents.get(),
+                    collider_offset: engine.collider_offset.get(),
+                    collider_hierarchy: engine.collider_hierarchy,
+                    cast_ticks: ticks(&engine.animations.cast),
+                    recover_ticks: ticks(&engine.animations.recover),
+                    plant_offset: engine.plant_offset.get(),
+                    cast_force: Fix::from_raw(engine.cast_force),
+                    buffer_size: engine.buffer_size,
+                    rocket_layer: engine.rocket.layer,
+                    rocket_updatable_count: engine.rocket.updatable_count,
+                    rocket_collider_hierarchy: engine.rocket.collider_hierarchy,
+                    rocket_extents: engine.rocket.extents.get(),
+                    rocket_collider_offset: engine.rocket.collider_offset.get(),
+                    rocket_body: body(&engine.rocket.body, Fix::ZERO),
+                    force: engine.rocket.force.clone(),
+                    start_ticks: engine.rocket.start_ticks,
+                    end_ticks: engine.rocket.end_ticks,
+                    fire_offset: engine.rocket.fire_offset.get(),
+                    fire_radius: Fix::from_raw(engine.rocket.fire_radius),
+                    smoke_mask: engine.rocket.smoke_mask,
                 }
             },
             tack: {

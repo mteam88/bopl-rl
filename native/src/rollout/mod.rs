@@ -40,6 +40,7 @@ pub const ABILITY_RANDOM: u32 = 1;
 pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
+pub const ABILITY_ENGINE: u32 = 5;
 pub const ABILITY_GUST: u32 = 7;
 pub const ABILITY_GROWTH_RAY: u32 = 8;
 pub const ABILITY_ROCK: u32 = 9;
@@ -483,6 +484,41 @@ pub struct SpikeCastState {
     pub collider_rotation: Fix,
 }
 
+/// PlantObjectOnPlatform animation state shared by Engine and Tesla coil.
+#[derive(Clone, Copy, Default)]
+pub struct PlantCastState {
+    pub phase: u32,
+    pub ticks: u32,
+    pub collider_position: Vec2,
+    pub collider_up: Vec2,
+    pub collider_rotation: Fix,
+}
+
+/// One RocketEngine collider attached to a rounded-platform composite.
+#[derive(Clone, Copy, Default)]
+pub struct SpawnedEngine {
+    pub active: bool,
+    pub born_tick: u32,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub ability_generation: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub platform_index: usize,
+    pub local: Fix,
+    pub relative_center: Vec2,
+    pub relative_rotation: Fix,
+    pub collider_center: Vec2,
+    pub collider_rotation: Fix,
+    pub surface_offset: Fix,
+    pub scale: Fix,
+    pub time: Fix,
+    /// 0=start animation, 1=firing, 2=end animation, 3=off.
+    pub phase: u32,
+    pub ticks: u32,
+    pub body: Body,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct MissileFormState {
     /// 0: enter, 1: enter-to-idle, 2: idle, 3: exit.
@@ -810,7 +846,7 @@ pub struct PlatformDynamics {
     /// effective CompositeBody while SpikeAttack children are attached; the
     /// observation bridge still exports this child body unchanged.
     pub root_body: Body,
-    pub attached_spikes: u32,
+    pub attached_children: u32,
     /// CompositeBody.position is separate from the rounded-rectangle child
     /// centre. Box/RR positional correction can move the former without
     /// moving the latter until a later operation rebuilds the composite.
@@ -1037,6 +1073,7 @@ pub enum ActiveAbility {
     Missile,
     Mine,
     Spike,
+    Engine,
     TimeStop,
     Gust,
     Revival,
@@ -1074,6 +1111,8 @@ pub struct PlayerSlot {
     pub out: bool, // dead with no stock left
     /// Ability catalog ids per slot, and which slots this backend simulates.
     pub abilities: [u32; 3],
+    /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
+    pub ability_generation: u32,
     pub timers: [Fix; 3],
     pub cooldowns: [Fix; 3],
     pub active: ActiveAbility,
@@ -1119,6 +1158,7 @@ pub struct PlayerSlot {
     pub throw_item: ThrowItemState,
     pub cast_spell: CastSpellState,
     pub spike_cast: SpikeCastState,
+    pub plant_cast: PlantCastState,
     /// `Spike.currentSpike` belongs to each equipped ability object. The
     /// spawned attack survives form exit, while recasting this same slot
     /// destroys and replaces it.
@@ -1190,6 +1230,7 @@ pub struct PlayerSlot {
     pub mine_entity: usize,
     pub spike_entity: usize,
     pub time_stop_entity: usize,
+    pub engine_entity: usize,
 }
 
 impl PlayerSlot {
@@ -1228,6 +1269,7 @@ struct PlatformScratch {
     callback_colliders: Vec<RoundedRect>,
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
+    engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     squished: Vec<usize>,
 }
@@ -1279,6 +1321,7 @@ pub struct RolloutWorld {
     pub smoke_explosions: Vec<SmokeExplosion>,
     pub time_stop_effects: Vec<TimeStopEffect>,
     pub spike_attacks: Vec<SpawnedSpike>,
+    pub engines: Vec<SpawnedEngine>,
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
@@ -1360,6 +1403,7 @@ impl RolloutWorld {
             smoke_explosions: Vec::with_capacity(64),
             time_stop_effects: Vec::with_capacity(8),
             spike_attacks: Vec::with_capacity(32),
+            engines: Vec::with_capacity(32),
             frozen_solids: Vec::with_capacity(32),
             scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
@@ -1427,6 +1471,7 @@ impl RolloutWorld {
         self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.time_stop_effects.clone_from(&src.time_stop_effects);
         self.spike_attacks.clone_from(&src.spike_attacks);
+        self.engines.clone_from(&src.engines);
         self.frozen_solids.clone_from(&src.frozen_solids);
         self.scale_changers.clone_from(&src.scale_changers);
         self.player_time_scale = src.player_time_scale;
@@ -1490,6 +1535,7 @@ impl RolloutWorld {
             smoke_explosions: _,
             time_stop_effects: _,
             spike_attacks: _,
+            engines: _,
             frozen_solids: _,
             scale_changers: _,
             player_time_scale: _,
@@ -1656,6 +1702,7 @@ impl RolloutWorld {
         let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut spike_entity = [usize::MAX; MAX_PLAYERS];
+        let mut engine_entity = [usize::MAX; MAX_PLAYERS];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -1808,6 +1855,14 @@ impl RolloutWorld {
                             &mut spike_entity[i],
                             false,
                         ),
+                        ABILITY_ENGINE => (
+                            data::surface_extents(data.engine.hurtbox_extents),
+                            100_000_000
+                                + ability_hierarchy[i][slot_index]
+                                + data.engine.collider_hierarchy,
+                            &mut engine_entity[i],
+                            false,
+                        ),
                         _ => continue,
                     }
                 };
@@ -1822,7 +1877,11 @@ impl RolloutWorld {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
                     } else if matches!(
                         resolved_abilities[i][s - 1],
-                        ABILITY_SPIKE | ABILITY_FREEZE | ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY
+                        ABILITY_SPIKE
+                            | ABILITY_ENGINE
+                            | ABILITY_FREEZE
+                            | ABILITY_GROWTH_RAY
+                            | ABILITY_SHRINK_RAY
                     ) {
                         E_ENABLED | E_TRIGGER
                     } else {
@@ -1831,6 +1890,8 @@ impl RolloutWorld {
                     hierarchy,
                     x: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_ENGINE {
+                        data.engine.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_MINE {
                         data.mine.collider_offset.x.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_PUSH {
@@ -1852,6 +1913,8 @@ impl RolloutWorld {
                     },
                     y: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
                         data.spike.collider_offset.y.raw()
+                    } else if !body && resolved_abilities[i][s - 1] == ABILITY_ENGINE {
+                        data.engine.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_MINE {
                         data.mine.collider_offset.y.raw()
                     } else if !body && resolved_abilities[i][s - 1] == ABILITY_PUSH {
@@ -1902,7 +1965,7 @@ impl RolloutWorld {
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
                 root_body: p.body,
-                attached_spikes: 0,
+                attached_children: 0,
                 composite_position: p.surface.center,
                 home_position: p.surface.center,
                 transform_rotation: None,
@@ -2010,6 +2073,7 @@ impl RolloutWorld {
                 won: false,
                 out: false,
                 abilities,
+                ability_generation: 0,
                 timers: [timer0; 3],
                 cooldowns,
                 active: ActiveAbility::None,
@@ -2043,6 +2107,7 @@ impl RolloutWorld {
                 throw_item: ThrowItemState::default(),
                 cast_spell: CastSpellState::default(),
                 spike_cast: SpikeCastState::default(),
+                plant_cast: PlantCastState::default(),
                 spike_attacks: [None; 3],
                 platform: PlatformState::default(),
                 gust: GustState::default(),
@@ -2087,6 +2152,7 @@ impl RolloutWorld {
                 mine_entity: mine_entity[i],
                 spike_entity: spike_entity[i],
                 time_stop_entity: time_stop_entity[i],
+                engine_entity: engine_entity[i],
             });
         }
 
@@ -2524,6 +2590,7 @@ impl RolloutWorld {
         self.smoke_tick(data, updater_dt);
         self.time_stop_effects_tick(data);
         self.spike_attacks_tick(data, updater_dt);
+        self.engines_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
         self.scale_changers_tick(data);
         // Slime-vs-slime shove (World::step parity).
@@ -2554,6 +2621,7 @@ impl RolloutWorld {
                     | ActiveAbility::GrowthRay
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Spike
+                    | ActiveAbility::Engine
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Gust
                     | ActiveAbility::Revival => true,
@@ -2616,6 +2684,7 @@ impl RolloutWorld {
                     slot.revival_entity,
                     slot.spike_entity,
                     slot.time_stop_entity,
+                    slot.engine_entity,
                 ] {
                     if e != usize::MAX {
                         self.entities[e].flags = E_REMOVED;
@@ -3130,6 +3199,21 @@ impl RolloutWorld {
                         };
                         return;
                     }
+                    ABILITY_ENGINE => {
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.active = ActiveAbility::Engine;
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        slot.plant_cast = PlantCastState {
+                            collider_position: slot.base.position,
+                            collider_up: slot.base.up,
+                            collider_rotation: slot.base.rotation,
+                            ..PlantCastState::default()
+                        };
+                        return;
+                    }
                     ABILITY_FREEZE => {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
@@ -3434,6 +3518,10 @@ impl RolloutWorld {
         }
         if self.players[index].active == ActiveAbility::Spike {
             self.spike_cast_tick(index, data);
+            return;
+        }
+        if self.players[index].active == ActiveAbility::Engine {
+            self.engine_cast_tick(index, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
@@ -3958,6 +4046,253 @@ impl RolloutWorld {
         }
     }
 
+    fn engine_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let published_position = self.players[index].base.position;
+        {
+            let slot = &mut self.players[index];
+            slot.plant_cast.collider_position = published_position;
+            slot.plant_cast.collider_up = slot.base.up;
+            slot.plant_cast.collider_rotation = slot.base.rotation;
+            slot.plant_cast.ticks += 1;
+        }
+        let plant_now = self.players[index].plant_cast.phase == 0
+            && self.players[index].plant_cast.ticks >= data.engine.cast_ticks;
+        if plant_now {
+            if self.spawn_engine(index, data) {
+                self.players[index].plant_cast.phase = 1;
+                self.players[index].plant_cast.ticks = 0;
+            } else {
+                self.exit_engine_cast(index);
+                return;
+            }
+        }
+        if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
+        {
+            let slot = &mut self.players[index];
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+            slot.reported_position = published_position;
+            slot.reported_tick = self.tick;
+        }
+        if self.players[index].plant_cast.phase == 1
+            && self.players[index].plant_cast.ticks > data.engine.recover_ticks
+        {
+            self.exit_engine_cast(index);
+        }
+    }
+
+    fn exit_engine_cast(&mut self, index: usize) {
+        let grounded_pose = self.players[index].base.ground.and_then(|ground| {
+            self.platforms
+                .iter()
+                .find(|platform| platform.id == ground)
+                .map(|platform| platform.surface.normal(self.players[index].base.position))
+        });
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.base.rotation = Fix::ZERO;
+        if slot.base.grounded
+            && let Some(up) = grounded_pose
+        {
+            slot.base.up = up;
+            slot.base.rotation = up.perp_cw().normalized_angle();
+            slot.obs_state = STATE_IDLE;
+            slot.state_ticks = 0;
+        } else {
+            slot.base.up = Vec2::UP;
+            slot.exit_to_fall();
+        }
+    }
+
+    fn spawn_engine(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        let Some(ground_id) = self.players[index].base.ground else {
+            return false;
+        };
+        let Some(platform_index) = self.platforms.iter().position(|p| p.id == ground_id) else {
+            return false;
+        };
+        let body_position = self.players[index].base.position;
+        let body_right = self.players[index].base.up.perp_cw();
+        let facing_sign = if self.players[index].facing_right {
+            -Fix::ONE
+        } else {
+            Fix::ONE
+        };
+        let target = body_position + body_right * facing_sign * data.engine.plant_offset.x;
+        let Ok(closest) = self.platforms[platform_index].surface.closest_point(target) else {
+            return false;
+        };
+        let Ok(local) = self.platforms[platform_index]
+            .surface
+            .local_position(closest, Fix::ZERO)
+        else {
+            return false;
+        };
+        let normal = self.platforms[platform_index].surface.normal(closest);
+        let scale = self.players[index]
+            .player_scale
+            .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+
+        let ability_slot = self.players[index].active_slot;
+        let ability_generation = self.players[index].ability_generation;
+        let mut oldest = None;
+        let mut count = 0usize;
+        for (engine_index, engine) in self.engines.iter().enumerate() {
+            if engine.active
+                && engine.owner == index
+                && engine.ability_slot == ability_slot
+                && engine.ability_generation == ability_generation
+            {
+                count += 1;
+                if oldest.is_none_or(|old: usize| engine.born_tick < self.engines[old].born_tick) {
+                    oldest = Some(engine_index);
+                }
+            }
+        }
+        if count >= data.engine.buffer_size
+            && let Some(oldest) = oldest
+        {
+            self.remove_engine(oldest);
+        }
+
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let rocket_right = normal.perp_cw();
+        let rocket_rotation = rocket_right.normalized_angle();
+        let surface_offset = data.engine.plant_offset.y * scale;
+        let root_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO)
+            + normal * surface_offset;
+        let relative_right = rocket_right.complex_mul(inverse_basis);
+        let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
+            + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
+        let relative_rotation = rocket_rotation - parent_rotation;
+
+        self.attach_engine_body(platform_index, data.engine.rocket_body);
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: data.engine.rocket_layer,
+            flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+            hierarchy: 100_000_000 + hierarchy_base + data.engine.rocket_collider_hierarchy,
+            inverse_mass: data.engine.rocket_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let engine = SpawnedEngine {
+            active: true,
+            born_tick: self.tick,
+            owner: index,
+            ability_slot,
+            ability_generation,
+            hierarchy_base,
+            entity: Some(entity),
+            platform_index,
+            local,
+            relative_center,
+            relative_rotation,
+            collider_center: parent_position
+                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_rotation: rocket_rotation,
+            surface_offset,
+            scale,
+            time: Fix::ZERO,
+            phase: 0,
+            ticks: 0,
+            body: data.engine.rocket_body,
+        };
+        if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
+            self.engines[free] = engine;
+        } else {
+            self.engines.push(engine);
+        }
+
+        let arm = (body_position - parent_position).normalized_safe();
+        self.platform_dynamics[platform_index]
+            .body
+            .apply_impulse(-normal * data.engine.cast_force, arm);
+        self.platforms_changed();
+        true
+    }
+
+    fn attach_engine_body(&mut self, platform_index: usize, child: Body) {
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        if dynamics.attached_children == 0 {
+            dynamics.composite_position = self.platforms[platform_index].surface.center;
+        }
+        let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
+        let child_mass = Fix::ONE / child.inverse_mass;
+        let parent_moment = Fix::ONE / dynamics.body.inverse_inertia;
+        let child_moment = Fix::ONE / child.inverse_inertia;
+        dynamics.body.inverse_mass = Fix::ONE / (parent_mass + child_mass);
+        dynamics.body.inverse_inertia = Fix::ONE / (parent_moment + child_moment);
+        dynamics.attached_children += 1;
+    }
+
+    fn remove_engine(&mut self, engine_index: usize) {
+        if !self.engines[engine_index].active {
+            return;
+        }
+        let platform_index = self.engines[engine_index].platform_index;
+        self.engines[engine_index].active = false;
+        if let Some(entity) = self.engines[engine_index].entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+        self.rebuild_platform_attachment_body(platform_index);
+        self.platforms_changed();
+    }
+
+    fn rebuild_platform_attachment_body(&mut self, platform_index: usize) {
+        let old = self.platform_dynamics[platform_index].body;
+        let mut mass = Fix::ONE
+            / self.platform_dynamics[platform_index]
+                .root_body
+                .inverse_mass;
+        let mut moment = Fix::ONE
+            / self.platform_dynamics[platform_index]
+                .root_body
+                .inverse_inertia;
+        let mut count = 0u32;
+        for spike in &self.spike_attacks {
+            if spike.active && spike.platform_index == platform_index {
+                mass += Fix::ONE / spike.body.inverse_mass;
+                moment += Fix::ONE / spike.body.inverse_inertia;
+                count += 1;
+            }
+        }
+        for engine in &self.engines {
+            if engine.active && engine.platform_index == platform_index {
+                mass += Fix::ONE / engine.body.inverse_mass;
+                moment += Fix::ONE / engine.body.inverse_inertia;
+                count += 1;
+            }
+        }
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        dynamics.body = dynamics.root_body;
+        dynamics.body.inverse_mass = Fix::ONE / mass;
+        dynamics.body.inverse_inertia = if count == 0 {
+            old.inverse_inertia
+        } else {
+            Fix::ONE / moment
+        };
+        dynamics.body.velocity = old.velocity;
+        dynamics.body.angular_velocity = old.angular_velocity;
+        dynamics.body.orientation = old.orientation;
+        dynamics.body.force = old.force;
+        dynamics.attached_children = count;
+        dynamics.composite_position = self.platforms[platform_index].surface.center;
+        dynamics.basis = None;
+    }
+
     fn spawn_spike(&mut self, index: usize, data: &data::RolloutData) -> bool {
         let Some(ground_id) = self.players[index].base.ground else {
             return false;
@@ -4056,7 +4391,7 @@ impl RolloutWorld {
 
     fn attach_spike_body(&mut self, platform_index: usize, child: Body) {
         let dynamics = &mut self.platform_dynamics[platform_index];
-        if dynamics.attached_spikes == 0 {
+        if dynamics.attached_children == 0 {
             dynamics.composite_position = self.platforms[platform_index].surface.center;
         }
         let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
@@ -4065,7 +4400,7 @@ impl RolloutWorld {
         let child_moment = Fix::ONE / child.inverse_inertia;
         dynamics.body.inverse_mass = Fix::ONE / (parent_mass + child_mass);
         dynamics.body.inverse_inertia = Fix::ONE / (parent_moment + child_moment);
-        dynamics.attached_spikes += 1;
+        dynamics.attached_children += 1;
     }
 
     fn remove_spike(&mut self, spike_index: usize) {
@@ -4073,46 +4408,14 @@ impl RolloutWorld {
             return;
         }
         let platform_index = self.spike_attacks[spike_index].platform_index;
-        let child = self.spike_attacks[spike_index].body;
         self.spike_attacks[spike_index].active = false;
         if let Some(entity) = self.spike_attacks[spike_index].entity {
             self.entities[entity].flags = E_REMOVED;
         }
-        let remaining = self
-            .spike_attacks
-            .iter()
-            .filter(|spike| spike.active && spike.platform_index == platform_index)
-            .count() as u32;
-        // DestroyFix's composite detach retains the moving parent's effective
-        // velocity/orientation for the replacement created later in the same
-        // callback, while the new root+child mass is recomputed from authored
-        // bodies. Keeping the old effective inverse mass here would make the
-        // cast impulse behave as if both attacks were still attached.
-        let dynamics = &mut self.platform_dynamics[platform_index];
-        let old = dynamics.body;
-        dynamics.body = dynamics.root_body;
-        // CreateMultiComposite's one-root detach restores root mass, but its
-        // subsequent same-callback attach observes the prior composite moment
-        // through the retained parent object. This shipped asymmetry is
-        // visible as root+one-child translation with root+two-child torque.
-        if remaining == 0 {
-            dynamics.body.inverse_inertia = old.inverse_inertia;
-        } else {
-            let count = Fix::from_int(i64::from(remaining));
-            let root_mass = Fix::ONE / dynamics.root_body.inverse_mass;
-            let child_mass = Fix::ONE / child.inverse_mass;
-            let root_moment = Fix::ONE / dynamics.root_body.inverse_inertia;
-            let child_moment = Fix::ONE / child.inverse_inertia;
-            dynamics.body.inverse_mass = Fix::ONE / (root_mass + child_mass * count);
-            dynamics.body.inverse_inertia = Fix::ONE / (root_moment + child_moment * count);
-        }
-        dynamics.body.velocity = old.velocity;
-        dynamics.body.angular_velocity = old.angular_velocity;
-        dynamics.body.orientation = old.orientation;
-        dynamics.body.force = old.force;
-        dynamics.attached_spikes = remaining;
-        dynamics.composite_position = self.platforms[platform_index].surface.center;
-        dynamics.basis = None;
+        // DestroyFix reconstructs the composite from every child still
+        // attached to the platform. This matters when Spike and Engine are
+        // mixed on one parent rather than when only identical spikes remain.
+        self.rebuild_platform_attachment_body(platform_index);
         self.platforms_changed();
     }
 
@@ -4220,6 +4523,104 @@ impl RolloutWorld {
         }
     }
 
+    fn engines_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        let end_time = data
+            .engine
+            .force
+            .keys
+            .last()
+            .map_or(Fix::ZERO, |key| key.time);
+        let mut platforms_changed = false;
+        for engine in &mut self.engines {
+            if !engine.active || engine.born_tick == self.tick {
+                continue;
+            }
+            match engine.phase {
+                0 => {
+                    engine.ticks += 1;
+                    if engine.ticks > data.engine.start_ticks {
+                        engine.phase = 1;
+                        engine.ticks = 0;
+                        engine.time = Fix::ZERO;
+                    }
+                }
+                1 => {
+                    let platform = engine.platform_index;
+                    if platform >= self.platforms.len() {
+                        engine.active = false;
+                        continue;
+                    }
+                    let surface_position = self.platforms[platform]
+                        .surface
+                        .position(engine.local, Fix::ZERO);
+                    let normal = self.platforms[platform].surface.normal(surface_position);
+                    let rocket_right = Vec2::angle(engine.collider_rotation);
+                    let root = engine.collider_center
+                        - (data.engine.rocket_collider_offset * engine.scale)
+                            .complex_mul(rocket_right);
+                    let fire =
+                        root + (data.engine.fire_offset * engine.scale).complex_mul(rocket_right);
+                    let flame = Circle {
+                        center: fire,
+                        radius: data.engine.fire_radius * engine.scale,
+                    };
+                    if let Some(cloud) = self.smoke_clouds.iter_mut().find(|cloud| {
+                        if !cloud.active || !cloud.registered {
+                            return false;
+                        }
+                        let entity = cloud.entity.expect("registered smoke cloud");
+                        self.entities[entity].flags & E_ENABLED != 0
+                            && crate::physics::contact::circle_circle(
+                                flame,
+                                Circle {
+                                    center: cloud.position,
+                                    radius: Fix::from_raw(self.entities[entity].radius),
+                                },
+                            )
+                            .is_some()
+                    }) {
+                        cloud.ignition_time = Fix::ZERO;
+                        let entity = cloud.entity.expect("registered smoke cloud");
+                        self.entities[entity].flags = E_ACTIVE;
+                    }
+                    let water_height =
+                        data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y;
+                    if engine.time > end_time || surface_position.y < water_height {
+                        engine.phase = 2;
+                        engine.ticks = 0;
+                        continue;
+                    }
+                    if updater_dt == Fix::ZERO {
+                        continue;
+                    }
+                    engine.time += updater_dt;
+                    let impulse = -normal * data.engine.force.evaluate(engine.time) * engine.scale;
+                    let center = self.platforms[platform].surface.center;
+                    let arm = (surface_position - center).normalized_safe();
+                    self.platform_dynamics[platform]
+                        .body
+                        .apply_impulse(impulse, arm);
+                    if self.platform_dynamics[platform].speed > Fix::ZERO {
+                        self.platform_dynamics[platform].home_position = center;
+                        self.platform_dynamics[platform].home_rotation =
+                            self.platform_dynamics[platform].body.orientation;
+                    }
+                    platforms_changed = true;
+                }
+                2 => {
+                    engine.ticks += 1;
+                    if engine.ticks > data.engine.end_ticks {
+                        engine.phase = 3;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if platforms_changed {
+            self.platforms_changed();
+        }
+    }
+
     fn spike_contacts(&mut self, data: &data::RolloutData) {
         // Circle/Box and Box/Box callbacks run after all rigid-body groups.
         // Player colliders are triggers, so contact only schedules callbacks:
@@ -4266,6 +4667,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
@@ -4902,6 +5304,7 @@ impl RolloutWorld {
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
+            let mut engine_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -4945,6 +5348,11 @@ impl RolloutWorld {
                         data.spike.collider_hierarchy,
                         &mut spike_entity,
                     ),
+                    ABILITY_ENGINE => (
+                        data::surface_extents(data.engine.hurtbox_extents),
+                        data.engine.collider_hierarchy,
+                        &mut engine_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -4957,6 +5365,8 @@ impl RolloutWorld {
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_ENGINE {
+                        data.engine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -4973,6 +5383,8 @@ impl RolloutWorld {
                     },
                     y: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_ENGINE {
+                        data.engine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -4998,6 +5410,7 @@ impl RolloutWorld {
             self.next_spawn_hierarchy += data.revival.effect_updatable_count;
 
             let slot = &mut self.players[index];
+            slot.ability_generation = slot.ability_generation.wrapping_add(1);
             slot.base.position = position;
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
@@ -5029,6 +5442,7 @@ impl RolloutWorld {
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
             slot.spike_cast = SpikeCastState::default();
+            slot.plant_cast = PlantCastState::default();
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
@@ -5047,6 +5461,7 @@ impl RolloutWorld {
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
+            slot.engine_entity = engine_entity;
             slot.revival_clone_pending = false;
         }
     }
@@ -5072,6 +5487,7 @@ impl RolloutWorld {
                 self.players[index].revival_entity,
                 self.players[index].spike_entity,
                 self.players[index].time_stop_entity,
+                self.players[index].engine_entity,
             ] {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
@@ -5195,6 +5611,7 @@ impl RolloutWorld {
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
             let mut spike_entity = usize::MAX;
+            let mut engine_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
@@ -5238,6 +5655,11 @@ impl RolloutWorld {
                         data.spike.collider_hierarchy,
                         &mut spike_entity,
                     ),
+                    ABILITY_ENGINE => (
+                        data::surface_extents(data.engine.hurtbox_extents),
+                        data.engine.collider_hierarchy,
+                        &mut engine_entity,
+                    ),
                     _ => continue,
                 };
                 let id = self.next_id();
@@ -5251,6 +5673,8 @@ impl RolloutWorld {
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
+                    } else if abilities[slot] == ABILITY_ENGINE {
+                        data.engine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.x.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -5267,6 +5691,8 @@ impl RolloutWorld {
                     },
                     y: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.y.raw()
+                    } else if abilities[slot] == ABILITY_ENGINE {
+                        data.engine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_MINE {
                         data.mine.collider_offset.y.raw()
                     } else if abilities[slot] == ABILITY_PUSH {
@@ -5291,6 +5717,7 @@ impl RolloutWorld {
             }
 
             let slot = &mut self.players[index];
+            slot.ability_generation = slot.ability_generation.wrapping_add(1);
             slot.base.radius = data.player.radius;
             slot.physics_scale = Fix::ONE;
             slot.body_collider_scale = Fix::ONE;
@@ -5310,6 +5737,7 @@ impl RolloutWorld {
             slot.throw_item = ThrowItemState::default();
             slot.cast_spell = CastSpellState::default();
             slot.spike_cast = SpikeCastState::default();
+            slot.plant_cast = PlantCastState::default();
             slot.spike_attacks = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
@@ -5328,6 +5756,7 @@ impl RolloutWorld {
             slot.gust_entity = gust_entity;
             slot.revival_entity = revival_entity;
             slot.time_stop_entity = time_stop_entity;
+            slot.engine_entity = engine_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
         }
@@ -6518,6 +6947,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
@@ -6654,6 +7084,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => slot.growth_ray_entity,
                     ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
                     ActiveAbility::Spike => slot.spike_entity,
+                    ActiveAbility::Engine => slot.engine_entity,
                     ActiveAbility::TimeStop => slot.time_stop_entity,
                     ActiveAbility::Gust => slot.gust_entity,
                     ActiveAbility::Revival => slot.revival_entity,
@@ -7363,7 +7794,7 @@ impl RolloutWorld {
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
             root_body: pd.spawn_body,
-            attached_spikes: 0,
+            attached_children: 0,
             composite_position: position,
             home_position: position,
             transform_rotation: None,
@@ -7441,6 +7872,19 @@ impl RolloutWorld {
                 }
             } else if spike.platform_index > index {
                 spike.platform_index -= 1;
+            }
+        }
+        for engine in &mut self.engines {
+            if !engine.active {
+                continue;
+            }
+            if engine.platform_index == index {
+                engine.active = false;
+                if let Some(entity) = engine.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if engine.platform_index > index {
+                engine.platform_index -= 1;
             }
         }
         self.platforms.remove(index);
@@ -8636,6 +9080,7 @@ impl RolloutWorld {
                     ActiveAbility::GrowthRay => player.growth_ray_entity,
                     ActiveAbility::ShrinkRay => player.shrink_ray_entity,
                     ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::Engine => player.engine_entity,
                     ActiveAbility::TimeStop => player.time_stop_entity,
                     ActiveAbility::Gust => player.gust_entity,
                     ActiveAbility::Revival => player.revival_entity,
@@ -9608,7 +10053,7 @@ impl RolloutWorld {
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
             let dynamics = &mut self.platform_dynamics[i];
-            if dynamics.attached_spikes != 0 {
+            if dynamics.attached_children != 0 {
                 // SyncAllPhysicsObjectsToFixTransformPosition discards any
                 // prior Box/RR correction of CompositeBody.position and
                 // re-anchors the composite on its rounded-root FixTransform.
@@ -9628,7 +10073,7 @@ impl RolloutWorld {
                 }
             };
             let platform = &mut self.platforms[i];
-            if dynamics.attached_spikes != 0 {
+            if dynamics.attached_children != 0 {
                 dynamics.root_body.orientation = orientation;
                 dynamics.composite_position += shift;
             } else {
@@ -9643,6 +10088,21 @@ impl RolloutWorld {
             inner.right =
                 (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(platform.surface.right);
             inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(platform.surface.right);
+        }
+        // Composite children are synchronized immediately after integration.
+        // Positional corrections later in this pass move CompositeBody.position
+        // while leaving each child collider center stale until the next pass.
+        for engine in &mut self.engines {
+            if !engine.active || engine.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let platform = engine.platform_index;
+            engine.collider_rotation =
+                self.platform_dynamics[platform].body.orientation + engine.relative_rotation;
+            engine.collider_center = self.platform_dynamics[platform].composite_position
+                + engine
+                    .relative_center
+                    .complex_mul(self.platforms[platform].surface.right);
         }
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
@@ -9666,12 +10126,12 @@ impl RolloutWorld {
             }
         }
         for &(a, b, contact) in &scratch.contacts {
-            let pos_a = if self.platform_dynamics[a].attached_spikes == 0 {
+            let pos_a = if self.platform_dynamics[a].attached_children == 0 {
                 self.platforms[a].surface.center
             } else {
                 self.platform_dynamics[a].composite_position
             };
-            let pos_b = if self.platform_dynamics[b].attached_spikes == 0 {
+            let pos_b = if self.platform_dynamics[b].attached_children == 0 {
                 self.platforms[b].surface.center
             } else {
                 self.platform_dynamics[b].composite_position
@@ -9684,12 +10144,20 @@ impl RolloutWorld {
                 (&mut right[0].body, &mut left[b].body)
             };
             resolve(contact, body_a, body_b, pos_a, pos_b);
-            let correction =
-                positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+            // PositionalCorrection receives the two rounded-rectangle child
+            // inverse masses. ResolveCollision redirects impulses through a
+            // composite body, but the source does not redirect these scalar
+            // arguments (DetPhysics.cs:2956-2966).
+            let correction = positional_correction(
+                contact,
+                self.platform_dynamics[a].root_body.inverse_mass,
+                self.platform_dynamics[b].root_body.inverse_mass,
+                false,
+            );
             for (index, delta) in [(a, correction[0]), (b, correction[1])] {
                 self.platforms[index].surface.center += delta;
                 self.platforms[index].collider.inner.center += delta;
-                if self.platform_dynamics[index].attached_spikes != 0 {
+                if self.platform_dynamics[index].attached_children != 0 {
                     self.platform_dynamics[index].composite_position += delta;
                 }
             }
@@ -9740,7 +10208,7 @@ impl RolloutWorld {
         for &(spike_index, wall_index, contact) in &scratch.spike_wall_contacts {
             let parent_index = self.spike_attacks[spike_index].platform_index;
             let spike_body_position = self.platform_dynamics[parent_index].composite_position;
-            let wall_center = if self.platform_dynamics[wall_index].attached_spikes == 0 {
+            let wall_center = if self.platform_dynamics[wall_index].attached_children == 0 {
                 self.platforms[wall_index].surface.center
             } else {
                 self.platform_dynamics[wall_index].composite_position
@@ -9771,7 +10239,78 @@ impl RolloutWorld {
             self.platform_dynamics[parent_index].composite_position += correction[0];
             self.platforms[wall_index].surface.center += correction[1];
             self.platforms[wall_index].collider.inner.center += correction[1];
-            if self.platform_dynamics[wall_index].attached_spikes != 0 {
+            if self.platform_dynamics[wall_index].attached_children != 0 {
+                self.platform_dynamics[wall_index].composite_position += correction[1];
+            }
+        }
+
+        // RocketEngine uses the same Box/RoundedRect physical group as a
+        // SpikeAttack child, but has no collision callback of its own.
+        scratch.engine_wall_contacts.clear();
+        for (engine_index, engine) in self.engines.iter().enumerate() {
+            if !engine.active || engine.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let parent_index = engine.platform_index;
+            let basis = Vec2::angle(engine.collider_rotation);
+            let center = engine.collider_center;
+            let extents = data::surface_extents(data.engine.rocket_extents * engine.scale);
+            let box_rr = RoundedRect {
+                inner: OrientedBox {
+                    center,
+                    right: basis * extents.x,
+                    up: basis.perp() * extents.y,
+                    inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                },
+                radius: Fix::ZERO,
+            };
+            for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if wall_index == parent_index {
+                    continue;
+                }
+                if let Some(contact) =
+                    crate::physics::contact::rounded_rounded(box_rr, platform.collider)
+                {
+                    scratch
+                        .engine_wall_contacts
+                        .push((engine_index, wall_index, contact));
+                }
+            }
+        }
+        for &(engine_index, wall_index, contact) in &scratch.engine_wall_contacts {
+            let engine = self.engines[engine_index];
+            let parent_index = engine.platform_index;
+            let engine_body_position = self.platform_dynamics[parent_index].composite_position;
+            let wall_center = if self.platform_dynamics[wall_index].attached_children == 0 {
+                self.platforms[wall_index].surface.center
+            } else {
+                self.platform_dynamics[wall_index].composite_position
+            };
+            let wall_child_inverse_mass = self.platform_dynamics[wall_index].root_body.inverse_mass;
+            let (engine_body, wall_body) = if parent_index < wall_index {
+                let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
+                (&mut left[parent_index].body, &mut right[0].body)
+            } else {
+                let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
+                (&mut right[0].body, &mut left[wall_index].body)
+            };
+            resolve(
+                contact,
+                engine_body,
+                wall_body,
+                engine_body_position,
+                wall_center,
+            );
+            let correction = positional_correction(
+                contact,
+                engine.body.inverse_mass,
+                wall_child_inverse_mass,
+                false,
+            );
+            self.platform_dynamics[parent_index].composite_position += correction[0];
+            self.platforms[wall_index].surface.center += correction[1];
+            self.platforms[wall_index].collider.inner.center += correction[1];
+            if self.platform_dynamics[wall_index].attached_children != 0 {
                 self.platform_dynamics[wall_index].composite_position += correction[1];
             }
         }
@@ -9912,6 +10451,7 @@ impl RolloutWorld {
                 slot.revival_entity,
                 slot.spike_entity,
                 slot.time_stop_entity,
+                slot.engine_entity,
             ];
             for entity in rows {
                 if entity == usize::MAX {
@@ -9970,6 +10510,7 @@ impl RolloutWorld {
                 slot.revival_entity,
                 slot.spike_entity,
                 slot.time_stop_entity,
+                slot.engine_entity,
             ] {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
@@ -10020,6 +10561,7 @@ impl RolloutWorld {
                 slot.revival_entity,
                 slot.spike_entity,
                 slot.time_stop_entity,
+                slot.engine_entity,
             ];
             for e in rows {
                 if e == usize::MAX {
@@ -10283,7 +10825,41 @@ impl RolloutWorld {
     fn refresh_entities(&mut self) {
         self.refresh_actor_entities();
         self.refresh_spike_entities();
+        self.refresh_engine_entities();
         self.refresh_platform_entities();
+    }
+
+    fn refresh_engine_entities(&mut self) {
+        let data = data::get();
+        for engine in &self.engines {
+            if !engine.active || engine.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let Some(entity) = engine.entity else {
+                continue;
+            };
+            let rotation = engine.collider_rotation;
+            let basis = Vec2::angle(rotation);
+            let center = engine.collider_center;
+            let extents = data::surface_extents(data.engine.rocket_extents * engine.scale);
+            self.entities[entity] = CEntity {
+                id: self.entities[entity].id,
+                kind: 1,
+                layer: data.engine.rocket_layer,
+                owner: 0,
+                flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+                hierarchy: self.entities[entity].hierarchy,
+                x: center.x.raw(),
+                y: center.y.raw(),
+                right_x: (basis * extents.x).x.raw(),
+                right_y: (basis * extents.x).y.raw(),
+                up_x: (basis.perp() * extents.y).x.raw(),
+                up_y: (basis.perp() * extents.y).y.raw(),
+                rotation: rotation.raw(),
+                inverse_mass: engine.body.inverse_mass.raw(),
+                ..CEntity::default()
+            };
+        }
     }
 
     fn refresh_spike_entities(&mut self) {
@@ -10345,6 +10921,7 @@ impl RolloutWorld {
                 revival_e,
                 spike_e,
                 time_stop_e,
+                engine_e,
             ) = {
                 let s = &self.players[index];
                 (
@@ -10363,6 +10940,7 @@ impl RolloutWorld {
                     s.revival_entity,
                     s.spike_entity,
                     s.time_stop_entity,
+                    s.engine_entity,
                 )
             };
             let slot = &self.players[index];
@@ -10387,6 +10965,7 @@ impl RolloutWorld {
             );
             let casting_time_stop = slot.active == ActiveAbility::TimeStop;
             let spiking = slot.active == ActiveAbility::Spike;
+            let planting_engine = slot.active == ActiveAbility::Engine;
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
@@ -10888,6 +11467,43 @@ impl RolloutWorld {
                     box_row.rotation = rotation.raw();
                 }
             }
+            if engine_e != usize::MAX {
+                let box_row = &mut self.entities[engine_e];
+                let was_active = box_row.flags & E_ACTIVE != 0;
+                box_row.flags = if alive && planting_engine {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if planting_engine {
+                    box_row.owner = slot.base.id;
+                }
+                if planting_engine || was_active {
+                    let (position, rotation, center_basis, collider_basis) = if planting_engine {
+                        (
+                            slot.plant_cast.collider_position,
+                            slot.plant_cast.collider_rotation,
+                            slot.plant_cast.collider_up.perp_cw(),
+                            Vec2::angle(slot.plant_cast.collider_rotation),
+                        )
+                    } else {
+                        (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
+                    };
+                    let center = position + center_basis.complex_mul(data.engine.collider_offset);
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        collider_basis,
+                        data::surface_extents(data.engine.hurtbox_extents),
+                    );
+                    box_row.x = center.x.raw();
+                    box_row.y = center.y.raw();
+                    box_row.right_x = collider.right.x.raw();
+                    box_row.right_y = collider.right.y.raw();
+                    box_row.up_x = collider.up.x.raw();
+                    box_row.up_y = collider.up.y.raw();
+                    box_row.rotation = rotation.raw();
+                }
+            }
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
@@ -10973,14 +11589,14 @@ impl RolloutWorld {
             let dynamics = &self.platform_dynamics[i];
             e.x = s.center.x.raw();
             e.y = s.center.y.raw();
-            let observed_body = if dynamics.attached_spikes == 0 {
+            let observed_body = if dynamics.attached_children == 0 {
                 &dynamics.body
             } else {
                 &dynamics.root_body
             };
             e.flags = E_ACTIVE
                 | E_ENABLED
-                | if dynamics.attached_spikes == 0 {
+                | if dynamics.attached_children == 0 {
                     0
                 } else {
                     E_COMPOSITE

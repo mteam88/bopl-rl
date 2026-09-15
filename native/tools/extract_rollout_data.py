@@ -1102,6 +1102,43 @@ def main():
         },
     }
 
+    # ---- Engine / platform-attached RocketEngine ----
+    _, engine_ability = find_prefab("Assets/GameObject/Engine.prefab")
+    engine_place = component(engine_ability, "PlantObjectOnPlatform")
+    engine_factory = component(engine_ability, "PlaceRocketEngine")
+    engine_box = component(engine_ability, "DPhysicsBox")
+    engine_fix = component(engine_ability, "FixTransform")
+    engine_anims = animations(guid_of(engine_place["animData"]))
+    rocket = ASSETS[guid_of(engine_factory["plantablePrefab"])]
+    rocket_logic = component(rocket, "RocketEngine")
+    rocket_box = component(rocket, "DPhysicsBox")
+    rocket_fix = component(rocket, "FixTransform")
+    rocket_body = component(rocket, "BoplBody")
+    rocket_anims = animations(guid_of(rocket_logic["FireData"]))
+    out["prefabs"]["engine"] = {
+        "hurtbox_extents": vec2(engine_box, "startExtents"),
+        "collider_offset": vec2(engine_fix, "offset"),
+        "collider_hierarchy": engine_box["hierarchyNumber"],
+        "animations": {name: engine_anims[name] for name in ("cast", "recover")},
+        "plant_offset": vec2(engine_factory, "plantOffset"),
+        "cast_force": fix(engine_factory, "castForce"),
+        "buffer_size": engine_factory["bufferSize"],
+        "rocket": {
+            "layer": rocket["data"].get("layer"),
+            "updatable_count": updater_count(rocket),
+            "collider_hierarchy": rocket_box["hierarchyNumber"],
+            "extents": vec2(rocket_box, "startExtents"),
+            "collider_offset": vec2(rocket_fix, "offset"),
+            "body": physics_body(rocket_body),
+            "force": curve(rocket_logic, "ForceAnim"),
+            "start_ticks": sum(abs(d) for d in rocket_anims["start"]),
+            "end_ticks": sum(abs(d) for d in rocket_anims["end"]),
+            "fire_offset": vec2(rocket_logic, "offset"),
+            "fire_radius": fix(rocket_logic, "radius"),
+            "smoke_mask": rocket_logic["smokeOnlyLayerMask.m_Bits"],
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

@@ -160,7 +160,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
   oracle back into full-game pickup spawning for diagnostics. This is an RL
   configuration choice, not an open default-backend divergence.
-- Only ids 0/1/2/3/4/7/9/10/11/12/13/14/15/19/22/24/25/31/34/35/37 have executable catalog behavior in the public
+- Only ids 0/1/2/3/4/5/7/8/9/10/11/12/13/14/15/17/19/22/24/25/31/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
   while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
@@ -199,6 +199,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   mass and inertia, cast impulse, and box/wall collision response. Recast
   replacement and player-lethality paths are implemented but still need
   dedicated differential scenarios.
+  Engine is exact through grounded placement and recovery, scaled attached-box
+  registration, composite mass and inertia, cast impulse, startup delay, fixed
+  thrust curve, parent spring re-homing, and the resulting platform collisions.
+  Its flame ignites the first overlapping Smoke collider without allocation.
+  Smoke chaining, ring eviction, scale changes, platform destruction, time stop,
+  and multiple simultaneous engines still need dedicated differential scenarios.
   Push is exact through grounded entry, animation/channel timing, direct
   control of an `AnimateVelocity` platform, home-spring retargeting, rigid-body
   force and torque, collider publication, and button-release restoration.

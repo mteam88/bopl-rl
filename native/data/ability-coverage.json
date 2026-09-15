@@ -44,7 +44,8 @@
       "name": "Engine",
       "prefab": "Assets/GameObject/Engine.prefab",
       "prefab_guid": "06006cbd8160cbe4e8f343b1ec17a96c",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "engine_ability_ab matches 500 exact NativeAOT/Rust Q32 ticks through grounded placement, cast and recovery callbacks, scaled RocketEngine registration, persistent layer-21 box export, composite mass/inertia, cast impulse, startup delay, the full fixed thrust curve, platform spring re-homing, and composite platform collision response. Smoke ignition is source-ported; dedicated smoke-chain, four-slot ring eviction, scale-change, platform-destruction, time-stop, and multi-engine scenarios remain to be goldened."
     },
     {
       "id": 6,

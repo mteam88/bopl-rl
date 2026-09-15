@@ -2098,3 +2098,38 @@ and radius phase lags, and subsequent scaled movement. Water reflection,
 non-player targets, active transformed-player targets, BlackHole growth and
 orb conversion still require their concrete entity implementations and
 differential scenarios, so both abilities remain partial.
+
+### Executable Engine and attached thrust body (2026-09-15)
+
+Catalog id 5 now executes the grounded `PlantObjectOnPlatform` form and its
+`PlaceRocketEngine` payload. The five-frame cast projects the authored lateral
+plant offset onto the attached rounded rectangle, preserves the live surface
+normal, scales the plant height and collider with `Player.Scale`, adds the
+10-unit off-centre cast impulse, and returns through the three-frame recovery.
+Each equipped ability instance retains the source's four-entry ring buffer; a
+stock or Revival clone receives a fresh buffer generation while already planted
+engines remain in the world.
+
+The spawned layer-21 box is a persistent child of the platform composite. Its
+one-unit body mass and ten-unit moment contribute to the combined body, its
+startup animation delays ignition for ten ticks, and its fixed Hermite force
+curve drives the platform at the live surface point for 5.5181274 seconds. The
+engine updates movable-platform homes after thrust, stops below the water line,
+and tests its scaled flame circle against Smoke before the time-stop early
+return. Engine and Smoke records reuse existing vectors and do not allocate in
+the tick path.
+
+This port also records two general DetPhysics composite rules exposed by the
+Engine trajectory. `ResolveCollision` redirects impulses through a composite,
+but rounded-rectangle positional correction still receives each serialized
+child inverse mass. After integration, a positional correction moves the
+`CompositeBody` while child collider centers retain their already-synchronized
+value until the next physics pass. Preserving both rules removed a same-pass
+0.00024-unit platform displacement and 0.0134-unit attached-box observation
+difference without changing the previously matched pre-contact trajectory.
+
+`engine_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks exactly through the
+cast, recovery, persistent engine export, startup, sustained thrust, platform
+spring response and the first platform collision. Dedicated smoke-chain,
+four-engine eviction, scale-change, platform-destruction, time-stop and
+multi-engine goldens remain open, so coverage is marked partial.
