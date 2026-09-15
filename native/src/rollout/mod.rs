@@ -2570,14 +2570,17 @@ impl RolloutWorld {
         selected + 2
     }
 
-    fn spawn_ability_pickup(&mut self, position: Vec2, current: u32, data: &data::RolloutData) {
+    fn spawn_ability_pickup(
+        &mut self,
+        position: Vec2,
+        ability: u32,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
         let pickup = &data.pickup;
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += pickup.updatable_count;
         let id = self.next_id();
-        let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-        let direction = Vec2::angle(angle);
-        let ability = self.random_pickup_ability(current);
         let mut body = pickup.body;
         // BoplBody.AddForce(..., Impulse) multiplies by 60; the collider is
         // disabled initially, so this force remains queued until activation.
@@ -2620,9 +2623,13 @@ impl RolloutWorld {
             // the disabled manual collider, but InitPickup is passed a null
             // icon and clears that sprite before RandomAbility excludes it.
             // Its updater begins next pass.
+            let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let direction = Vec2::angle(angle);
+            let ability = self.random_pickup_ability(ABILITY_NULL);
             self.spawn_ability_pickup(
                 data.maps[self.map].ability_spawner_position,
-                ABILITY_NULL,
+                ability,
+                direction,
                 data,
             );
         }
@@ -3306,6 +3313,9 @@ impl RolloutWorld {
                     && slot.base.outside_bounds()
             };
             if boundary_death {
+                // DestroyIfOutsideSceneBounds instantiates the water/bounds
+                // effect before it calls killPlayer with spawnEffect=false.
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
                 // The ordinary slime's boundary component kills with
                 // Accident (DestroyIfOutsideSceneBounds.cs:148); an ability
                 // body's exits through Ability.ExitAbility with a default
@@ -4480,6 +4490,7 @@ impl RolloutWorld {
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
                 // The slime takes over the ability body's position
                 // (DestroyIfOutsideSceneBounds.cs:137, SlimeController.cs:217).
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
                 let slot = &mut self.players[index];
                 slot.reported_position = slot.base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false);
@@ -13425,9 +13436,13 @@ impl RolloutWorld {
         }
         let slot = &mut self.players[index];
         if let Some(marker_index) = revival_marker {
-            // The ordinary death effect is instantiated before SpawnClone and
-            // consumes two hierarchy entries despite having no collider.
-            self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            // Collision callbacks instantiate the ordinary death effect
+            // before SpawnClone. Updatable callers account for their own
+            // effect; boundary deaths accounted for the distinct bounds
+            // effect before entering kill().
+            if by_callback {
+                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            }
             let rows = [
                 slot.body_entity,
                 slot.dash_entity,
@@ -13577,30 +13592,21 @@ impl RolloutWorld {
                     row.flags = E_REMOVED;
                 }
             }
-            // A final death drops the last ability as a DynamicAbilityPickup
-            // at the slime body (SlimeController.cs:274-310). Its circle is
-            // registered at once with the collider disabled for
-            // `disabledSeconds` (DynamicAbilityPickup.cs:147-155), so
-            // DetPhysics neither integrates the launch impulse nor moves it
-            // while this match still runs. The pickup's later flight, swaps
-            // and the RandomFix launch draw are not simulated: with two
-            // players the drop ends the match.
-            let pickup = &data::get().pickup;
-            let id = self.next_id();
-            let position = drop_position + pickup.offset;
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: pickup.layer,
-                owner: 0,
-                flags: E_ACTIVE,
-                hierarchy: 300_000_000 + id,
-                x: position.x.raw(),
-                y: position.y.raw(),
-                radius: pickup.radius.raw(),
-                inverse_mass: pickup.body.inverse_mass.raw(),
-                ..CEntity::default()
-            });
+            if by_callback {
+                // Water/lethal callbacks request the ordinary death effect;
+                // its two updatables register before DropAbilities creates
+                // the pickup. Boundary deaths pass spawnEffect=false.
+                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            }
+            // DropAbilities samples the horizontal launch perturbation before
+            // it reads the final ability icon, then initializes the same live
+            // DynamicAbilityPickup used by the map spawner. With three or
+            // more players the match continues and all later flight, reroll
+            // and collection phases remain observable.
+            let dropped_ability = slot.abilities[2];
+            let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
+            let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
+            self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
         }
     }
 

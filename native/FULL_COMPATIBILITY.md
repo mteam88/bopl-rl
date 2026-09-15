@@ -2347,5 +2347,18 @@ exactly 100,000 seconds. On tick 2507 both remove the pickup row and register
 the acquired Revival collider as id 17, hierarchy 100000071, inactive and
 unowned. The registration range is reserved in the collision callback and the
 bounded player state carries only a pending hierarchy scalar; no hot-path
-allocation or global lookup was added. Live death-dropped pickup flight is the
-remaining pickup-path work.
+allocation or global lookup was added.
+
+`ability_pickup_death_drop_ab.c` keeps a three-player match alive after a
+final elimination and compares the dropped pickup through launch, hover, the
+first strict seven-second reroll, pursuit and collection. Both backends drop
+Bow as collider id 20 at level tick 318 and hierarchy 100000095, then player
+two collects its rerolled Rock ability at tick 950. The hierarchy includes the
+two updater entries consumed by `WaterDeathEffect 1` before
+`killPlayer(..., spawnEffect: false)`; this distinct boundary effect is now
+extracted from the Player prefab rather than inferred from the ordinary death
+effect. Pickup position and velocity differ by at most 2,103 raw Q32 units
+(4.9e-7 world units), originating in `Vec2.NormalizedSafe` of the sampled
+launch direction. Entity identities, hierarchy, lifecycle ticks, the reroll,
+collector and acquired ability remain exact. The pickup vector is stored in a
+capacity-retained collection and adds no per-tick allocation.

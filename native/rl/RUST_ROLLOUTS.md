@@ -154,11 +154,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 ## Known approximations (documented divergence)
 
 - Fixed-loadout RL sessions disable `AbilitySpawner` on both backends by
-  default. `BOPL_RL_ABILITY_SPAWNS=1` enables the authored 40-second, three-item
-  spawner in NativeAOT and Rust. Rust currently matches pickup registration,
-  delayed activation, launch, hover physics, reroll RNG, player collection,
-  third-slot replacement, deferred acquired-ability registration and entity
-  rows. Live death-drop flight remains open.
+  default. `BOPL_RL_ABILITY_SPAWNS=1` enables the authored 40-second,
+  three-item spawner in NativeAOT and Rust. Spawned and death-dropped pickups
+  execute registration, delayed activation, launch, hover physics, reroll RNG,
+  collection, third-slot replacement and deferred acquired-ability
+  registration. Dedicated collection and final-death goldens cover both
+  origins.
 - Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
@@ -276,10 +277,6 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
   so the remaining difference is primarily observation/entity history.
-- On final elimination, `SlimeController.DropAbilities` spawns a
-  `DynamicAbilityPickup`; Rust emits that terminal row (layer 13, at the dying
-  body + (0, 0.04)) but does not simulate pickup flight, swaps or the
-  `RandomFix` draw, which only matter with three or more players.
 - The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/22/24/35/37. Forces from
   unsupported abilities (for example Machoman impulses into a platform) and
   their circle/box/rope collision pairs remain absent.
@@ -318,10 +315,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | An end-of-tick Rust boundary pass killed ordinary/Bow bodies one tick before Unity's pre-`PlayerBody` boundary component | fixed with component-specific boundary phases |
 | behavior-changing | Match termination consumed deaths after physics in the same tick, while Unity's earlier `GameSessionHandler` sees them next tick | fixed: result consumption now runs at the beginning of the following updater pass |
 | behavior-changing | Keyboard-configured players discarded the high S/D bits and used joystick aim for movement | fixed: W/A/S/D drive motion while the angle byte remains independent ability aim |
-| configured scope | Ability pickups | disabled on both RL backends by default; the shared diagnostic opt-in executes live spawner, flight, collection and slot replacement; death-drop flight remains open |
+| configured scope | Ability pickups | disabled on both RL backends by default; the shared diagnostic opt-in executes the authored spawner, while death drops remain live in ordinary matches; both paths include flight, rerolls, collection and slot replacement |
 | exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
-| cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | fixed: the terminal pickup row is emitted (flight unsimulated, see above) |
+| cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | fixed: the pickup remains a live simulated entity when the match continues |
 
 ## Warmup, phase and physics audit (2026-09-11)
 
@@ -358,7 +355,7 @@ positions had drifted 0.2 units through a jump/landing loop.
 | RR pair roles: `Fix` multiplication floors, so `IdPair(active, current)` order changes impulses and corrections by an LSB | DetPhysics.cs:2169-2236 | pairs follow the sweep |
 | Sweep axis used active platforms only; DetPhysics means over active colliders but spreads over every registered one, including frozen inactive hurtboxes | DetPhysics.cs:2827-2894, 2498-2530 | every row feeds the variance; inactive rows keep their frozen FixTransform |
 | Ability rows froze at the slime's post-exit position; `Ability.ExitAbility` deactivates the ability body where it ended, `AttachToGround` aligns a landing Dash, Bow and Platform zero their rotation first | Ability.cs:151-152, PlayerPhysics.cs:508, BowTransform.cs:119 and 225, PlatformTransform.cs:462 | published exit pose, `dash.exit_rotation` (this flipped the sweep axis in a three-platform chain: ep 98) |
-| Final death dropped no pickup; `DropAbilities` spawns a `DynamicAbilityPickup` circle at body + (0, 0.04) | SlimeController.cs:274-310, DynamicAbilityPickup.cs:147-155 | terminal row (layer 13) |
+| Final death dropped no pickup; `DropAbilities` spawns a `DynamicAbilityPickup` circle at body + (0, 0.04) | SlimeController.cs:274-310, DynamicAbilityPickup.cs:147-155 | live layer-13 pickup with exact hidden boundary-effect hierarchy reservation, sampled launch, flight, rerolls and collection |
 | `PlatformArea` factor grouping, `ResizePlatform`'s swapped `(rHeight, rWidth)` mass arguments and `State.Size`'s operand order each round differently | DPhysicsRoundedRect.cs:621-627, ResizablePlatform.cs:53, PlatformTransform.cs:335-336 and 354 | source expressions |
 | A jump that re-attaches in the same pass showed `fall`; `Jump` ungrounds (`State.fall`) and `Move`'s air raycasts land it again | SlimeController.cs:868, 956-958, 1126-1128, PlayerPhysics.cs:236-238 | `jumped_this_frame` |
 | Boundary deaths inside an ability used `Accident` and the slime's position; the ability body exits with a default `AbilityExitInfo` (`Other`), the Bow after `UnGround` and before `PlayerBody` integrates, and the slime takes that position | DestroyIfOutsideSceneBounds.cs:135-148, SlimeController.cs:215-219, BowTransform.cs:120 and 124 | cause `Other`, pre-integration Bow position |
@@ -373,10 +370,9 @@ the branch base -> 52.8% after the phase fixes -> 70.7% (arrow impulse) ->
 poses) -> 100.0% (74809/74809 ticks) with 300/300 equal lengths and
 winners. The last classes were closed in order: RR pair roles, frozen
 inactive rows feeding the sweep axis, ability boundary deaths, the dash-arrow
-death position, the removal lerp and the pickup drop position. What remains
-unmodelled is only visible after the terminal tick (the dropped pickup's
-gravity) or with three or more players (pickup flight/swaps and their
-`RandomFix` draw). `entity_count` differs by design: Rust keeps a fixed
+death position, the removal lerp and the pickup drop position. The later
+three-player death-drop flight, reroll and collection path is covered by
+`ability_pickup_death_drop_ab.c`. `entity_count` differs by design: Rust keeps a fixed
 table and marks rows with `E_REMOVED`, consumers filter on the active bit.
 `TICK_STEP_OK` and the scripted-bot idle gate is 9/9. Sim-only cost
 (`benchmark.c`, 2 players, repeat 4, 200k ticks, `perf stat`): retired

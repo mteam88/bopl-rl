@@ -50,6 +50,13 @@ def component(entry, type_name, all_matches=False):
     return found[0]["properties"]
 
 
+def updater_count(prefab):
+    return sum(
+        "hierarchyNumber" in c.get("properties", {})
+        for c in prefab["data"]["components"]
+    )
+
+
 def node_component(node, type_name):
     for c in node.get("components", []):
         if c["type"] == type_name:
@@ -228,6 +235,8 @@ def main():
     slime_ctl = component(player, "SlimeController")
     box = component(player, "DPhysicsBox")
     pcol = component(player, "PlayerCollision")
+    player_bounds = component(player, "DestroyIfOutsideSceneBounds")
+    boundary_effect = ASSETS[guid_of(player_bounds["DownEffect"])]
     anim_guid = guid_of(slime_ctl.get("animData"))
     slime_anims = animations(anim_guid)
     out["prefabs"]["player"] = {
@@ -251,6 +260,7 @@ def main():
         # SlimeController.ReSpawnFast uses SpeedUpAnimation(anim, 4): C#
         # integer division per frame, with every duration clamped to >= 1.
         "fast_spawn_anim_ticks": sum(max(1, abs(d) // 4) for d in slime_anims["spawn"]),
+        "boundary_effect_updatable_count": updater_count(boundary_effect),
         "land_anim_ticks": sum(abs(d) for d in slime_anims["land"]),
         "anims": {k: v for k, v in slime_anims.items() if k in (
             "spawn", "land", "stop", "runTurnAround", "idle", "run")},
@@ -420,9 +430,6 @@ def main():
     particle = ASSETS[guid_of(effect_config["Particle"])]
     particle_config = component(particle, "ReviveParticle")
     death_effect = ASSETS[guid_of(component(revival, "PlayerCollision")["deathEffect"])]
-    updater_count = lambda prefab: sum(
-        "hierarchyNumber" in c.get("properties", {}) for c in prefab["data"]["components"]
-    )
     def hierarchy_span(prefab):
         def visit(game_object):
             own = (

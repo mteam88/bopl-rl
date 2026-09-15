@@ -106,6 +106,7 @@ struct RawPlayer {
     hurtbox_extents: RawVec2,
     spawn_anim_ticks: u32,
     fast_spawn_anim_ticks: u32,
+    boundary_effect_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawDash {
@@ -925,6 +926,7 @@ pub struct MovementData {
     pub hurtbox_extents: Vec2,
     pub spawn_anim_ticks: u32,
     pub fast_spawn_anim_ticks: u32,
+    pub boundary_effect_updatable_count: u32,
 }
 pub struct BowData {
     pub cooldown: Fix,
@@ -1764,6 +1766,7 @@ pub fn get() -> &'static RolloutData {
                 hurtbox_extents: raw.prefabs.player.hurtbox_extents.get(),
                 spawn_anim_ticks: raw.prefabs.player.spawn_anim_ticks,
                 fast_spawn_anim_ticks: raw.prefabs.player.fast_spawn_anim_ticks,
+                boundary_effect_updatable_count: raw.prefabs.player.boundary_effect_updatable_count,
             },
             dash: DashData {
                 cooldown: Fix::from_raw(raw.prefabs.dash.cooldown),
