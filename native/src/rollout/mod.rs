@@ -12587,17 +12587,21 @@ impl RolloutWorld {
                 if target == index || !player.base.alive || player.base.dash.active {
                     continue;
                 }
-                let hit = if player.active == ActiveAbility::Rock {
-                    Circle {
+                let hit = match player.active {
+                    ActiveAbility::Rock => Circle {
                         center: player.base.position,
                         radius: data.rock.radius * player.rock.scale,
                     }
-                    .raycast(origin, direction)
-                } else {
-                    player
+                    .raycast(origin, direction),
+                    ActiveAbility::Roll => Circle {
+                        center: player.base.position,
+                        radius: data.roll.radius,
+                    }
+                    .raycast(origin, direction),
+                    _ => player
                         .base
                         .collider
-                        .raycast_within(origin, direction, Fix::from_int(13))
+                        .raycast_within(origin, direction, Fix::from_int(13)),
                 };
                 let Some(hit) = hit.filter(|hit| {
                     hit.near <= Fix::from_int(13) && wall.is_none_or(|distance| hit.near < distance)
@@ -12616,6 +12620,25 @@ impl RolloutWorld {
                     // flag then kills the dasher at the ray's near point.
                     self.players[target].rock.body.force +=
                         direction * data.rock.player_collision_bounce * Fix::from_int(60);
+                    let slot = &mut self.players[index];
+                    slot.base.position = origin + direction * distance;
+                    slot.reported_position = slot.base.position;
+                    self.kill(
+                        index,
+                        self.players[target].base.id,
+                        CAUSE_OTHER,
+                        false,
+                        true,
+                    );
+                    return;
+                }
+                if self.players[target].active == ActiveAbility::Roll
+                    && self.players[target].roll.lethal
+                {
+                    // A released Roll sets its owning Ability's
+                    // KillPlayersOnContact flag. Dash temporarily moves to
+                    // the ray near point before invoking its PlayerCollision,
+                    // so a lethal Roll kills it there and owns the credit.
                     let slot = &mut self.players[index];
                     slot.base.position = origin + direction * distance;
                     slot.reported_position = slot.base.position;

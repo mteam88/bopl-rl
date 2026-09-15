@@ -951,7 +951,6 @@ def main():
     roll = component(roll_ability, "Roll")
     roll_circle = component(roll_ability, "DPhysicsCircle")
     roll_physics = component(roll_ability, "PlayerPhysics")
-    roll_trail = ASSETS[guid_of(roll["DashTrailPrefab"])]
     out["prefabs"]["roll"] = {
         "radius": fix(roll_circle, "startRadius"),
         "collider_hierarchy": roll_circle["hierarchyNumber"],
@@ -979,12 +978,9 @@ def main():
         "platform_turn_speed": fix(roll, "platformTurnSpeed"),
         "early_release_jump_strength": fix(roll, "EarlyReleaseJumpStr"),
         "short_jump_strength": fix(roll, "shortJumpStr"),
-        # The oracle assigns two reference hierarchy entries when this
-        # runtime-instantiated trail wakes: its ParticleSystem and follower.
-        "trail_hierarchy_count": sum(
-            c["type"] in ("UnityEngine.ParticleSystem", "FollowTransform")
-            for c in roll_trail["data"]["components"]
-        ),
+        # The trail has a ParticleSystem and FollowTransform, but neither is a
+        # MonoUpdatable and therefore neither consumes Updater hierarchy.
+        "trail_hierarchy_count": 0,
     }
 
     # ---- Meteor Smash player form ----

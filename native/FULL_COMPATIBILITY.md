@@ -1024,6 +1024,21 @@ hurtbox on tick 159. All 240 optimized-Q32 NativeAOT/Rust ticks and every public
 field are bit-identical; Bow's horizontal velocity remains exactly zero in both
 backends after the Dash callback.
 
+### Dash ray collision with active Roll (2026-09-15)
+
+Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden
+slime box. Once `Roll.ReleaseDash` sets `Ability.KillPlayersOnContact`, Dash's
+temporary move to the ray near point lets its own `PlayerCollision` observe the
+lethal form, kill the dasher there and credit the Roll owner. A charging Roll
+keeps the same nonlethal no-push behavior as other active forms.
+
+`dash_roll_ab.c` compares five players for 300 NativeAOT/Rust ticks. Roll casts
+on tick 154, releases after a full charge and kills the tick-226 Dash in the
+Dash updater before the ordinary swept Roll contact pass. Death, credit and the
+following stock clone match. Curved-surface pose values retain Roll's existing
+2,048-raw-Q32 bound (less than 0.0000005 world units); all discrete state and
+contact decisions are identical.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned
@@ -2218,21 +2233,25 @@ Ground motion preserves `Roll.Move`'s unusual collision discretization. It
 computes `n = floor(abs(speed) * dt * density / hurtboxRadius) + 1`, advances
 exactly `n` times by `speed/(n+1)`, and retains all intermediate circle centres
 in a fixed 30-entry state array for `CollideExtraHurtBoxes`. This has no tick
-allocation. The trail's first charged release also consumes the two measured
-runtime hierarchy entries, so a later stock clone has the same entity ordering
-as NativeAOT.
+allocation. The charged release instantiates a cosmetic particle trail, but its
+particle system and `FollowTransform` are ordinary Unity components rather than
+`MonoUpdatable`s. It therefore consumes zero updater hierarchy entries. The
+previous extracted count of two shifted every entity created after a release;
+the corrected count makes later stock clones match NativeAOT.
 
 `roll_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks from charge through
 release, repeated curved-platform circuits, jump cancel, high-speed airborne
 motion, boundary death, and stock replacement. All state and entity metadata
-match. Repeated surface local-to-world transforms accumulate at most 2,048 raw
-Q32 units (less than 0.0000005 world units) in the comparator; velocity is exact
-through the measured jump and fall. The difference comes from reconstructing
-the curved surface position in Rust instead of retaining Unity's separately
-rounded transform fields and does not cross a zone, contact, or state boundary
-in the golden. Cross-platform hopping, an isolated early airborne release,
-moving-platform turns, wall squish and mixed transformed-form contacts remain
-open, so coverage is partial.
+match, including the reconstructed hierarchy after a charged release.
+`dash_roll_ab.c` additionally covers the released form's lethal callback against
+another transformed player. Repeated surface local-to-world transforms
+accumulate at most 2,048 raw Q32 units (less than 0.0000005 world units) in the
+comparator; velocity is exact through the measured jump and fall. The
+difference comes from reconstructing the curved surface position in Rust
+instead of retaining Unity's separately rounded transform fields and does not
+cross a zone, contact, or state boundary in the golden. Cross-platform hopping,
+an isolated early airborne release, moving-platform turns, wall squish and
+other transformed-form contacts remain open, so coverage is partial.
 
 ### Executable Blink gun and player QuantumTunnel (2026-09-15)
 

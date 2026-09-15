@@ -71,6 +71,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   player/gameplay state and bounded inherited long-strand relaxation. An active
   Bow target now dispatches its own nonlethal `PlayerCollision` callback and
   remains stationary rather than receiving the ordinary slime's overlap push.
+  A released lethal Roll uses its live circle for the same ray dispatch, kills
+  the dasher at the near point and owns the credit; its cosmetic trail consumes
+  no updater hierarchy because neither trail component is a `MonoUpdatable`.
   An unprotected active Bow form is also exact across Time Stop: its charge,
   body and cooldown clocks remain fixed for all 690 stopped passes, then its
   release and Arrow spawn resume on the restored clock.
@@ -230,9 +233,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Roll executes its separate PlayerPhysics form, charged ground release,
   serialized Hermite speed curve, source `n/(n+1)` surface substeps, fixed-size
   swept lethal hurtboxes, jump cancel, airborne gravity/control and exit body
-  handoff. Its circle and movement radii remain distinct as authored. Platform
-  hopping, early airborne release, moving-platform turns, wall squish and mixed
-  transformed-form contacts still need dedicated differential scenarios.
+  handoff. Its circle and movement radii remain distinct as authored. A Dash
+  composition exactly covers the released Roll's contact-kill callback and
+  stock reconstruction. Platform hopping, early airborne release,
+  moving-platform turns, wall squish and other transformed-form contacts still
+  need dedicated differential scenarios.
   Black Hole executes its grounded and airborne form animations, persistent
   layer-23 circle, Hermite growth, all-wall gravity, controlled-platform
   multiplier, player attraction, center-only wall consumption, hole merging,
