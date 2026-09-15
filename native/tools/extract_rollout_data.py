@@ -653,6 +653,103 @@ def main():
         },
     }
 
+    # ---- Smoke / shared ThrowItem2 item path ----
+    _, smoke_ability = find_prefab("Assets/GameObject/Smoke.prefab")
+    smoke_throw = component(smoke_ability, "ThrowItem2")
+    smoke_box = component(smoke_ability, "DPhysicsBox")
+    smoke_phys = component(smoke_ability, "PlayerPhysics")
+    smoke_anims = animations(guid_of(smoke_throw["animData"]))
+    smoke_item = ASSETS[guid_of(smoke_throw["ItemPrefab"])]
+    smoke_item_data = component(smoke_item, "Item")
+    smoke_circle = component(smoke_item, "DPhysicsCircle")
+    smoke_body = component(smoke_item, "BoplBody")
+    smoke_grenade = component(smoke_item, "Grenade")
+    smoke_spawner = component(smoke_item, "SmokeGrenadeExplode2")
+    cloud = ASSETS[guid_of(smoke_spawner["Smoke"])]
+    cloud_item = component(cloud, "Item")
+    cloud_circle = component(cloud, "DPhysicsCircle")
+    cloud_body = component(cloud, "BoplBody")
+    cloud_smoke = component(cloud, "FlammableSmoke")
+    cloud_anims = animations(guid_of(cloud_smoke["animData"]))
+    cloud_burst = ASSETS[guid_of(smoke_spawner["SmokeExplosion"])]
+    smoke_explosion = ASSETS[guid_of(cloud_smoke["ExplosionPrefab"])]
+    smoke_explosion_box = component(smoke_explosion, "DPhysicsBox")
+    smoke_explosion_config = component(smoke_explosion, "Explosion")
+    smoke_explosion_anims = animations(guid_of(smoke_explosion_config["explosionAnimation"]))
+    out["prefabs"]["smoke"] = {
+        "hurtbox_extents": vec2(smoke_box, "startExtents"),
+        "throw": {
+            "air_position": vec2(smoke_throw, "aThrowPosition"),
+            "ground_position": vec2(smoke_throw, "gThrowPosition"),
+            "ground_dummy": [vec2(smoke_throw, f"groundedDummyPositions.Array.data[{i}]")
+                             for i in range(smoke_throw["groundedDummyPositions.Array.size"])],
+            "air_dummy": [vec2(smoke_throw, f"airealDummyPositions.Array.data[{i}]")
+                          for i in range(smoke_throw["airealDummyPositions.Array.size"])],
+            "hurt_owner_delay": fix(smoke_throw, "DisableGrenadeHitBoxTime"),
+            "max_force": fix(smoke_throw, "maxThrowForce"),
+            "min_force": fix(smoke_throw, "minThrowForce"),
+            "force_gain_speed": fix(smoke_throw, "ThrowForceGainSpeed"),
+            "max_slow_mo_speed": fix(smoke_throw, "maxSlowMoSpeed"),
+            "knockback": fix(smoke_throw, "knockback"),
+            "physics": {
+                "max_speed": fix(smoke_phys, "maxSpeed"),
+                "jump_strength": fix(smoke_phys, "jumpStrength"),
+                "accel": fix(smoke_phys, "accel"),
+                "radius": fix(smoke_phys, "radius"),
+                "gravity_accel": fix(smoke_phys, "gravity_accel"),
+                "gravity_max_fall_speed": fix(smoke_phys, "gravity_maxFallSpeed"),
+                "gravity_modifier": fix(smoke_phys, "gravity_modifier"),
+                "jump_extra_x": fix(smoke_phys, "jumpExtraXStrength"),
+                "jump_momentum": fix(smoke_phys, "jumpKeptMomentum"),
+                "jump_normal_scale": fix(smoke_phys, "jumpNormalScaleFactor"),
+                "jump_teleport": fix(smoke_phys, "extraJumpTeleportMultiplier"),
+                "air_accel": fix(smoke_phys, "airAccel"),
+            },
+            "animations": {name: smoke_anims[name]
+                           for name in ("gEnter", "gExit", "aEnter", "aExit")},
+        },
+        "item": {
+            "layer": smoke_item["data"].get("layer"),
+            "updatable_count": updater_count(smoke_item),
+            "collider_hierarchy": smoke_circle["hierarchyNumber"],
+            "radius": fix(smoke_circle, "startRadius"),
+            "body": physics_body(smoke_body),
+            "detonation_time": fix(smoke_grenade, "detonationTime"),
+            "clone_count": smoke_item_data["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": smoke_item_data["duplicatePattern"],
+            "duplicate_spacing": fix(smoke_item_data, "duplicate_spacing"),
+            "duplicate_angle": fix(smoke_item_data, "duplicate_angle"),
+            "cloud_offsets": [vec2(smoke_spawner, f"cloudOffsets.Array.data[{i}]")
+                              for i in range(smoke_spawner["cloudOffsets.Array.size"])],
+            "spread": fix(smoke_spawner, "spread"),
+            "noise": fix(smoke_spawner, "noise"),
+            "burst_updatable_count": updater_count(cloud_burst),
+        },
+        "cloud": {
+            "layer": cloud["data"].get("layer"),
+            "updatable_count": updater_count(cloud),
+            "collider_hierarchy": cloud_circle["hierarchyNumber"],
+            "base_radius": fix(cloud_circle, "startRadius"),
+            "body": physics_body(cloud_body),
+            "clone_count": cloud_item["nrOfClonesWhenDuplicated"],
+            "duplicate_pattern": cloud_item["duplicatePattern"],
+            "duplicate_spacing": fix(cloud_item, "duplicate_spacing"),
+            "duplicate_angle": fix(cloud_item, "duplicate_angle"),
+            "radii": [fix(cloud_smoke, f"SmokeRadius.Array.data[{i}]")
+                      for i in range(cloud_smoke["SmokeRadius.Array.size"])],
+            "enter_frames": cloud_anims["enter"],
+            "min_ignition_delay": fix(cloud_smoke, "minDetonationDelay"),
+            "max_ignition_delay": fix(cloud_smoke, "maxDetonationDelay"),
+        },
+        "explosion": {
+            "layer": smoke_explosion["data"].get("layer"),
+            "updatable_count": updater_count(smoke_explosion),
+            "collider_hierarchy": smoke_explosion_box["hierarchyNumber"],
+            "extents": vec2(smoke_explosion_box, "startExtents"),
+            "animation_ticks": sum(abs(d) for d in smoke_explosion_anims[next(iter(smoke_explosion_anims))]),
+        },
+    }
+
     # ---- Complete ability catalog ----
     # The catalog order is the public RL ability id. Pull common routing data
     # from the concrete prefab instead of maintaining a second hand-written

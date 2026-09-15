@@ -41,6 +41,7 @@ pub const ABILITY_DASH: u32 = 2;
 pub const ABILITY_GRENADE: u32 = 3;
 pub const ABILITY_BOW: u32 = 4;
 pub const ABILITY_GUST: u32 = 7;
+pub const ABILITY_SMOKE: u32 = 13;
 pub const ABILITY_PLATFORM: u32 = 14;
 pub const ABILITY_REVIVAL: u32 = 15;
 pub const ABILITY_INVISIBILITY: u32 = 19;
@@ -355,6 +356,36 @@ pub struct GrenadeExplosion {
 }
 
 #[derive(Clone, Copy, Default)]
+pub struct SmokeCloud {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub position: Vec2,
+    pub rotation: Fix,
+    pub scale: Fix,
+    pub owner: usize,
+    pub ability_slot: usize,
+    pub age_ticks: u32,
+    pub ignition_time: Fix,
+    pub ignition_delay: Fix,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct SmokeExplosion {
+    pub active: bool,
+    pub registered: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub position: Vec2,
+    pub scale: Fix,
+    pub owner: usize,
+    pub age: u32,
+}
+
+#[derive(Clone, Copy, Default)]
 pub struct ThrowItemState {
     /// 0: enter animation, 1: exit animation.
     pub phase: u32,
@@ -394,7 +425,32 @@ struct ThrowConfig<'a> {
 }
 
 fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
-    if ability == ABILITY_MJOLNIR {
+    if ability == ABILITY_SMOKE {
+        let d = &data.smoke;
+        ThrowConfig {
+            hurtbox_extents: d.hurtbox_extents,
+            air_position: d.air_position,
+            ground_position: d.ground_position,
+            ground_dummy: &d.ground_dummy,
+            air_dummy: &d.air_dummy,
+            hurt_owner_delay: d.hurt_owner_delay,
+            max_force: d.max_force,
+            min_force: d.min_force,
+            force_gain_speed: d.force_gain_speed,
+            max_slow_mo_speed: d.max_slow_mo_speed,
+            knockback: d.knockback,
+            constants: &d.constants,
+            ground_enter_ticks: d.ground_enter_ticks,
+            ground_exit_ticks: d.ground_exit_ticks,
+            air_enter_ticks: d.air_enter_ticks,
+            air_exit_ticks: d.air_exit_ticks,
+            item_layer: d.item_layer,
+            item_updatable_count: d.item_updatable_count,
+            item_collider_hierarchy: d.item_collider_hierarchy,
+            item_radius: d.item_radius,
+            item_body: d.item_body,
+        }
+    } else if ability == ABILITY_MJOLNIR {
         let d = &data.mjolnir;
         ThrowConfig {
             hurtbox_extents: d.hurtbox_extents,
@@ -795,6 +851,7 @@ pub enum ActiveAbility {
     Grenade,
     Tack,
     Mjolnir,
+    Smoke,
     Gust,
     Revival,
     Platform,
@@ -804,6 +861,7 @@ fn active_throw_ability(active: ActiveAbility) -> u32 {
     match active {
         ActiveAbility::Tack => ABILITY_TACK,
         ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
+        ActiveAbility::Smoke => ABILITY_SMOKE,
         _ => ABILITY_GRENADE,
     }
 }
@@ -974,6 +1032,8 @@ pub struct RolloutWorld {
     pub arrows: Vec<Arrow>,
     pub thrown_items: Vec<ThrownItem>,
     pub grenade_explosions: Vec<GrenadeExplosion>,
+    pub smoke_clouds: Vec<SmokeCloud>,
+    pub smoke_explosions: Vec<SmokeExplosion>,
     pub spawned: Vec<SpawnedPlatform>,
     pub gust_waves: [GustWave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
@@ -1045,6 +1105,8 @@ impl RolloutWorld {
             arrows: Vec::with_capacity(64),
             thrown_items: Vec::with_capacity(64),
             grenade_explosions: Vec::with_capacity(64),
+            smoke_clouds: Vec::with_capacity(64),
+            smoke_explosions: Vec::with_capacity(64),
             spawned: Vec::with_capacity(64),
             gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
@@ -1102,6 +1164,8 @@ impl RolloutWorld {
         self.arrows.clone_from(&src.arrows);
         self.thrown_items.clone_from(&src.thrown_items);
         self.grenade_explosions.clone_from(&src.grenade_explosions);
+        self.smoke_clouds.clone_from(&src.smoke_clouds);
+        self.smoke_explosions.clone_from(&src.smoke_explosions);
         self.spawned.clone_from(&src.spawned);
         self.gust_waves = src.gust_waves;
         self.revival_marker_pool
@@ -1155,6 +1219,8 @@ impl RolloutWorld {
             arrows: _,
             thrown_items: _,
             grenade_explosions: _,
+            smoke_clouds: _,
+            smoke_explosions: _,
             spawned: _,
             gust_waves: _,
             revival_marker_pool: _,
@@ -1235,6 +1301,8 @@ impl RolloutWorld {
         self.arrows.clear();
         self.thrown_items.clear();
         self.grenade_explosions.clear();
+        self.smoke_clouds.clear();
+        self.smoke_explosions.clear();
         self.spawned.clear();
         self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
         self.revival_marker_pool.clear();
@@ -1383,7 +1451,8 @@ impl RolloutWorld {
                             &mut bow_entity[i],
                             false,
                         ),
-                        ability @ (ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR) => (
+                        ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
+                        | ABILITY_MJOLNIR) => (
                             throw_config(data, ability).hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i],
@@ -1865,6 +1934,7 @@ impl RolloutWorld {
         self.register_pending_revival_clones(data);
         self.register_pending_stock_clones(data);
         self.register_pending_grenade_explosions(data);
+        self.register_pending_smoke(data);
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
@@ -1969,6 +2039,7 @@ impl RolloutWorld {
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
         self.grenade_explosions_tick(data);
+        self.smoke_tick(data);
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -1986,6 +2057,7 @@ impl RolloutWorld {
                     | ActiveAbility::Dash
                     | ActiveAbility::Bow
                     | ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::Gust
@@ -2042,6 +2114,7 @@ impl RolloutWorld {
         self.arrows_contacts(data);
         self.thrown_items_contacts(data);
         self.grenade_explosion_contacts(data);
+        self.smoke_contacts(data);
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -2303,12 +2376,13 @@ impl RolloutWorld {
                         self.dash_move(index, masked, movement_input);
                         return;
                     }
-                    ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR => {
+                    ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR => {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.active = match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
                             ABILITY_MJOLNIR => ActiveAbility::Mjolnir,
+                            ABILITY_SMOKE => ActiveAbility::Smoke,
                             _ => ActiveAbility::Grenade,
                         };
                         slot.active_slot = s;
@@ -2508,7 +2582,10 @@ impl RolloutWorld {
         }
         if matches!(
             self.players[index].active,
-            ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir
+            ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
         ) {
             self.throw_item_tick(index, action, data);
             return;
@@ -2955,6 +3032,84 @@ impl RolloutWorld {
         }
     }
 
+    fn register_pending_smoke(&mut self, data: &data::RolloutData) {
+        for cloud_index in 0..self.smoke_clouds.len() {
+            let cloud = self.smoke_clouds[cloud_index];
+            if !cloud.active || cloud.registered || cloud.born_tick >= self.tick {
+                continue;
+            }
+            let entity = match cloud.entity {
+                Some(entity) => entity,
+                None => {
+                    self.entities.push(CEntity::default());
+                    let entity = self.entities.len() - 1;
+                    self.smoke_clouds[cloud_index].entity = Some(entity);
+                    entity
+                }
+            };
+            let id = self.next_id();
+            let delay = self
+                .rng
+                .fix_range(data.smoke.min_ignition_delay, data.smoke.max_ignition_delay);
+            self.entities[entity] = CEntity {
+                id,
+                kind: 0,
+                layer: data.smoke.cloud_layer,
+                owner: 0,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000 + cloud.hierarchy_base + data.smoke.cloud_collider_hierarchy,
+                x: cloud.position.x.raw(),
+                y: cloud.position.y.raw(),
+                radius: (data.smoke.cloud_radii[0] * cloud.scale).raw(),
+                rotation: cloud.rotation.raw(),
+                inverse_mass: data.smoke.cloud_body.inverse_mass.raw(),
+                ..CEntity::default()
+            };
+            let cloud = &mut self.smoke_clouds[cloud_index];
+            cloud.registered = true;
+            cloud.ignition_time = -Fix::ONE;
+            cloud.ignition_delay = delay;
+        }
+
+        for explosion_index in 0..self.smoke_explosions.len() {
+            let explosion = self.smoke_explosions[explosion_index];
+            if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
+                continue;
+            }
+            let entity = match explosion.entity {
+                Some(entity) => entity,
+                None => {
+                    self.entities.push(CEntity::default());
+                    let entity = self.entities.len() - 1;
+                    self.smoke_explosions[explosion_index].entity = Some(entity);
+                    entity
+                }
+            };
+            let id = self.next_id();
+            let extents = data.smoke.explosion_extents * explosion.scale;
+            let collider = OrientedBox::from_basis(explosion.position, Vec2::RIGHT, extents);
+            self.entities[entity] = CEntity {
+                id,
+                kind: 1,
+                layer: data.smoke.explosion_layer,
+                owner: explosion.owner as u32 + 1,
+                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000
+                    + explosion.hierarchy_base
+                    + data.smoke.explosion_collider_hierarchy,
+                x: explosion.position.x.raw(),
+                y: explosion.position.y.raw(),
+                right_x: collider.right.x.raw(),
+                right_y: collider.right.y.raw(),
+                up_x: collider.up.x.raw(),
+                up_y: collider.up.y.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            };
+            self.smoke_explosions[explosion_index].registered = true;
+        }
+    }
+
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
         let query = Circle {
             center: position,
@@ -3022,6 +3177,57 @@ impl RolloutWorld {
             }
             let entity = explosion.entity.expect("registered grenade explosion");
             if explosion.age >= data.grenade.explosion_animation_ticks {
+                explosion.active = false;
+                explosion.registered = false;
+                self.entities[entity].flags = E_REMOVED;
+                continue;
+            }
+            self.entities[entity].flags = if explosion.age == 0 {
+                E_ACTIVE | E_ENABLED | E_TRIGGER
+            } else {
+                E_ACTIVE | E_TRIGGER
+            };
+            explosion.age += 1;
+        }
+    }
+
+    fn smoke_tick(&mut self, data: &data::RolloutData) {
+        let mut detonations = [usize::MAX; 64];
+        let mut detonation_count = 0;
+        for cloud_index in 0..self.smoke_clouds.len() {
+            let cloud = &mut self.smoke_clouds[cloud_index];
+            if !cloud.active || !cloud.registered {
+                continue;
+            }
+            let frame = data
+                .smoke
+                .cloud_enter_frame_ticks
+                .partition_point(|&end| end <= cloud.age_ticks)
+                .min(data.smoke.cloud_radii.len() - 1);
+            if let Some(entity) = cloud.entity {
+                self.entities[entity].radius = (data.smoke.cloud_radii[frame] * cloud.scale).raw();
+            }
+            cloud.age_ticks = cloud.age_ticks.saturating_add(1);
+            if cloud.ignition_time >= Fix::ZERO {
+                cloud.ignition_time += DT;
+                if cloud.ignition_time > cloud.ignition_delay
+                    && detonation_count < detonations.len()
+                {
+                    detonations[detonation_count] = cloud_index;
+                    detonation_count += 1;
+                }
+            }
+        }
+        for &cloud_index in &detonations[..detonation_count] {
+            self.detonate_smoke_cloud(cloud_index, data);
+        }
+
+        for explosion in &mut self.smoke_explosions {
+            if !explosion.active || !explosion.registered {
+                continue;
+            }
+            let entity = explosion.entity.expect("registered smoke explosion");
+            if explosion.age >= data.smoke.explosion_animation_ticks {
                 explosion.active = false;
                 explosion.registered = false;
                 self.entities[entity].flags = E_REMOVED;
@@ -3201,7 +3407,8 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ability @ (ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR) => (
+                    ability
+                    @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
@@ -3376,7 +3583,8 @@ impl RolloutWorld {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
                     ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
-                    ability @ (ABILITY_GRENADE | ABILITY_TACK | ABILITY_MJOLNIR) => (
+                    ability
+                    @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entity,
@@ -3850,10 +4058,10 @@ impl RolloutWorld {
             entity: None,
             position: self.players[index].base.position,
             body: config.item_body,
-            fuse: if ability == ABILITY_GRENADE {
-                data.grenade.detonation_time
-            } else {
-                Fix::MAX
+            fuse: match ability {
+                ABILITY_GRENADE => data.grenade.detonation_time,
+                ABILITY_SMOKE => data.smoke.detonation_time,
+                _ => Fix::MAX,
             },
             hurt_owner_delay: Fix::ZERO,
             detonates_on_owner: false,
@@ -4854,7 +5062,8 @@ impl RolloutWorld {
             let config = throw_config(data, ability);
             let timed_out = {
                 let item = &mut self.thrown_items[item_index];
-                if ability == ABILITY_GRENADE && item.born_tick < self.tick {
+                if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
+                {
                     item.fuse -= DT;
                     if item.hurt_owner_delay > Fix::ZERO {
                         item.hurt_owner_delay -= DT;
@@ -4863,10 +5072,14 @@ impl RolloutWorld {
                         }
                     }
                 }
-                ability == ABILITY_GRENADE && item.fuse <= Fix::ZERO
+                matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse <= Fix::ZERO
             };
             if timed_out {
-                self.detonate_grenade(item_index, false, data);
+                if ability == ABILITY_SMOKE {
+                    self.detonate_smoke(item_index, false, data);
+                } else {
+                    self.detonate_grenade(item_index, false, data);
+                }
                 continue;
             }
             if self.thrown_items[item_index].entity.is_none() {
@@ -4927,6 +5140,109 @@ impl RolloutWorld {
             self.grenade_explosions.push(explosion);
         }
         self.remove_thrown_item(item_index, by_callback);
+    }
+
+    fn detonate_smoke(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
+        if !self.thrown_items[item_index].active {
+            return;
+        }
+        let item = self.thrown_items[item_index];
+        let ability_slot = self.players[item.owner].active_slot;
+        for &authored_offset in &data.smoke.cloud_offsets {
+            let noise_angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let noise_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            let noise = Vec2::angle(noise_angle) * noise_radius * data.smoke.noise;
+            let rotation = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let offset = (authored_offset + noise) * data.smoke.spread;
+
+            let active_for_form = self
+                .smoke_clouds
+                .iter()
+                .filter(|cloud| {
+                    cloud.active && cloud.owner == item.owner && cloud.ability_slot == ability_slot
+                })
+                .count();
+            if active_for_form >= 40
+                && let Some((oldest, _)) = self
+                    .smoke_clouds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cloud)| {
+                        cloud.active
+                            && cloud.owner == item.owner
+                            && cloud.ability_slot == ability_slot
+                    })
+                    .min_by_key(|(_, cloud)| cloud.hierarchy_base)
+            {
+                self.remove_smoke_cloud(oldest);
+            }
+
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.smoke.cloud_updatable_count;
+            let cloud = SmokeCloud {
+                active: true,
+                born_tick: self.tick,
+                hierarchy_base,
+                position: item.position + offset,
+                rotation,
+                scale: Fix::ONE,
+                owner: item.owner,
+                ability_slot,
+                ignition_time: -Fix::ONE,
+                ..SmokeCloud::default()
+            };
+            if let Some(free) = self.smoke_clouds.iter().position(|cloud| !cloud.active) {
+                let entity = self.smoke_clouds[free].entity;
+                self.smoke_clouds[free] = SmokeCloud { entity, ..cloud };
+            } else {
+                self.smoke_clouds.push(cloud);
+            }
+            // SmokeGrenadeExplode2 instantiates the presentation burst after
+            // each cloud; it has updatables but no observed collider.
+            self.next_spawn_hierarchy += data.smoke.burst_updatable_count;
+        }
+        self.remove_thrown_item(item_index, by_callback);
+    }
+
+    fn remove_smoke_cloud(&mut self, cloud_index: usize) {
+        let cloud = &mut self.smoke_clouds[cloud_index];
+        cloud.active = false;
+        cloud.registered = false;
+        if let Some(entity) = cloud.entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+    }
+
+    fn detonate_smoke_cloud(&mut self, cloud_index: usize, data: &data::RolloutData) {
+        let cloud = self.smoke_clouds[cloud_index];
+        if !cloud.active {
+            return;
+        }
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.smoke.explosion_updatable_count;
+        let explosion = SmokeExplosion {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            position: cloud.position,
+            scale: cloud.scale,
+            owner: cloud.owner,
+            ..SmokeExplosion::default()
+        };
+        if let Some(free) = self
+            .smoke_explosions
+            .iter()
+            .position(|explosion| !explosion.active)
+        {
+            let entity = self.smoke_explosions[free].entity;
+            self.smoke_explosions[free] = SmokeExplosion {
+                entity,
+                ..explosion
+            };
+        } else {
+            self.smoke_explosions.push(explosion);
+        }
+        self.remove_smoke_cloud(cloud_index);
     }
 
     /// DetPhysics contact group order for Arrow's circle is Circle/RR,
@@ -5052,13 +5368,14 @@ impl RolloutWorld {
                             inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                         }
                     }
-                    ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir => {
-                        OrientedBox::from_basis(
-                            player.base.position,
-                            Vec2::angle(player.base.rotation),
-                            throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
-                        )
-                    }
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir => OrientedBox::from_basis(
+                        player.base.position,
+                        Vec2::angle(player.base.rotation),
+                        throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
+                    ),
                     _ => player.base.collider,
                 };
                 if crate::physics::contact::circle_box(circle, hurtbox).is_some() {
@@ -5225,14 +5542,14 @@ impl RolloutWorld {
                                 ),
                             }
                         }
-                        ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir => {
-                            OrientedBox::from_basis(
-                                player.base.position,
-                                Vec2::angle(player.base.rotation),
-                                throw_config(data, active_throw_ability(player.active))
-                                    .hurtbox_extents,
-                            )
-                        }
+                        ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir => OrientedBox::from_basis(
+                            player.base.position,
+                            Vec2::angle(player.base.rotation),
+                            throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
+                        ),
                         _ => player.base.collider,
                     };
                     crate::physics::contact::circle_box(circle, hurtbox).is_some()
@@ -5240,7 +5557,11 @@ impl RolloutWorld {
                 detonate |= hit;
             }
             if detonate {
-                self.detonate_grenade(item_index, true, data);
+                if item.ability == ABILITY_SMOKE {
+                    self.detonate_smoke(item_index, true, data);
+                } else {
+                    self.detonate_grenade(item_index, true, data);
+                }
             }
         }
     }
@@ -5259,6 +5580,103 @@ impl RolloutWorld {
                 Vec2::RIGHT,
                 data.grenade.explosion_extents,
             );
+            let mut victims = [false; MAX_PLAYERS];
+            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
+                if !self.playable(player_index) {
+                    continue;
+                }
+                let player = &self.players[player_index];
+                *victim = if player.active == ActiveAbility::Platform
+                    && player.platform.phase == PLATFORM_ANTICIPATION
+                {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: player.base.position,
+                            radius: data.platform.hurtbox_radius,
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
+                    false
+                } else {
+                    crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
+                };
+            }
+            let killer = explosion.owner as u32 + 1;
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim && self.playable(player_index) {
+                    let cause = if self.players[player_index].base.id == killer {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    self.kill(player_index, killer, cause, true);
+                }
+            }
+        }
+    }
+
+    fn smoke_contacts(&mut self, data: &data::RolloutData) {
+        // Both grenade and smoke explosions have `igniteFlammables`; their
+        // boxes are enabled only on their first registered physics pass.
+        for explosion in self.grenade_explosions.iter().copied() {
+            if !explosion.active || !explosion.registered || explosion.age != 1 {
+                continue;
+            }
+            let hitbox = OrientedBox::from_basis(
+                explosion.position,
+                Vec2::RIGHT,
+                data.grenade.explosion_extents,
+            );
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                let radius = Fix::from_raw(self.entities[entity].radius);
+                if crate::physics::contact::circle_box(
+                    Circle {
+                        center: cloud.position,
+                        radius,
+                    },
+                    hitbox,
+                )
+                .is_some()
+                {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
+                }
+            }
+        }
+
+        for explosion_index in 0..self.smoke_explosions.len() {
+            let explosion = self.smoke_explosions[explosion_index];
+            if !explosion.active || !explosion.registered || explosion.age != 1 {
+                continue;
+            }
+            let extents = data.smoke.explosion_extents * explosion.scale;
+            let hitbox = OrientedBox::from_basis(explosion.position, Vec2::RIGHT, extents);
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                let radius = Fix::from_raw(self.entities[entity].radius);
+                if crate::physics::contact::circle_box(
+                    Circle {
+                        center: cloud.position,
+                        radius,
+                    },
+                    hitbox,
+                )
+                .is_some()
+                {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
+                }
+            }
+
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.playable(player_index) {
@@ -6131,7 +6549,10 @@ impl RolloutWorld {
             let bowing = slot.active == ActiveAbility::Bow;
             let throwing = matches!(
                 slot.active,
-                ActiveAbility::Grenade | ActiveAbility::Tack | ActiveAbility::Mjolnir
+                ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
             );
             let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;

@@ -1834,3 +1834,23 @@ and failed-prefix allocations; it is not the total number of pooled objects.
 Physical destruction of arbitrary initially supplied instant graphs, cloning
 other concrete abilities, pickups/drops, complete match lifecycle and the
 full C environment remain open.
+
+### Executable Smoke throw and persistent cloud field (2026-09-14)
+
+Catalog id 13 now shares the extracted `ThrowItem2` form and carries its own
+SmokeGrenade body, five-second timed detonation, and four authored cloud offsets.
+`SpawnCloud` preserves the source RNG order: each offset consumes the inside-unit
+angle and radius before its independent cloud rotation. Clouds register on the
+following updater pass in hierarchy order, draw their ignition delay there, and
+export their layer-22 circle with the seven authored enter radii. The hot path
+uses retained vectors and fixed arrays; it does not allocate per tick.
+
+The implemented interaction path also disables a cloud collider when an
+ignite-capable grenade or smoke explosion overlaps it, waits the cloud's sampled
+strict delay, and spawns the owner-attributed first-frame lethal explosion.
+Per-form cloud retention is capped at the source's 40-effect ring size.
+`smoke_ability_ab.c` compares 800 exact NativeAOT/Q32 ticks through a grounded
+charged throw, ballistic item flight, timed removal, exact randomized placement,
+radius animation, and persistence of all four cloud entities. Ignition chaining,
+scale changes, ring eviction, and `Item.Duplicate` remain to be exercised by
+dedicated goldens, so the catalog entry remains partial.

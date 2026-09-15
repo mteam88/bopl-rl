@@ -206,6 +206,7 @@ struct RawPrefabs {
     revival: RawRevival,
     teleport: RawTeleport,
     grenade: RawGrenade,
+    smoke: RawSmoke,
     tack: RawTack,
     mjolnir: RawMjolnir,
 }
@@ -312,6 +313,53 @@ struct RawGrenadeExplosion {
     extents: RawVec2,
     animation_ticks: u32,
     shockwaves: [RawExplosionShockwave; 2],
+}
+
+#[derive(Deserialize)]
+struct RawSmoke {
+    hurtbox_extents: RawVec2,
+    #[serde(rename = "throw")]
+    throw_data: RawThrowItem,
+    item: RawSmokeItem,
+    cloud: RawSmokeCloud,
+    explosion: RawSmokeExplosion,
+}
+#[derive(Deserialize)]
+struct RawSmokeItem {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    radius: i64,
+    body: RawBody,
+    detonation_time: i64,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
+    cloud_offsets: Vec<RawVec2>,
+    spread: i64,
+    noise: i64,
+    burst_updatable_count: u32,
+}
+#[derive(Deserialize)]
+struct RawSmokeCloud {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    base_radius: i64,
+    body: RawBody,
+    radii: Vec<i64>,
+    enter_frames: Vec<i32>,
+    min_ignition_delay: i64,
+    max_ignition_delay: i64,
+}
+#[derive(Deserialize)]
+struct RawSmokeExplosion {
+    layer: u32,
+    updatable_count: u32,
+    collider_hierarchy: u32,
+    extents: RawVec2,
+    animation_ticks: u32,
 }
 #[derive(Clone, Copy, Deserialize)]
 struct RawExplosionShockwave {
@@ -664,6 +712,52 @@ pub struct MjolnirData {
     pub clang_grace_seconds: Fix,
     pub platform_push_force: Fix,
 }
+pub struct SmokeData {
+    pub hurtbox_extents: Vec2,
+    pub air_position: Vec2,
+    pub ground_position: Vec2,
+    pub ground_dummy: Vec<Vec2>,
+    pub air_dummy: Vec<Vec2>,
+    pub hurt_owner_delay: Fix,
+    pub max_force: Fix,
+    pub min_force: Fix,
+    pub force_gain_speed: Fix,
+    pub max_slow_mo_speed: Fix,
+    pub knockback: Fix,
+    pub constants: crate::world::MovementConstants,
+    pub ground_enter_ticks: u32,
+    pub ground_exit_ticks: u32,
+    pub air_enter_ticks: u32,
+    pub air_exit_ticks: u32,
+    pub item_layer: u32,
+    pub item_updatable_count: u32,
+    pub item_collider_hierarchy: u32,
+    pub item_radius: Fix,
+    pub item_body: crate::physics::Body,
+    pub detonation_time: Fix,
+    pub clone_count: u32,
+    pub duplicate_pattern: u32,
+    pub duplicate_spacing: Fix,
+    pub duplicate_angle: Fix,
+    pub cloud_offsets: Vec<Vec2>,
+    pub spread: Fix,
+    pub noise: Fix,
+    pub burst_updatable_count: u32,
+    pub cloud_layer: u32,
+    pub cloud_updatable_count: u32,
+    pub cloud_collider_hierarchy: u32,
+    pub cloud_base_radius: Fix,
+    pub cloud_body: crate::physics::Body,
+    pub cloud_radii: Vec<Fix>,
+    pub cloud_enter_frame_ticks: Vec<u32>,
+    pub min_ignition_delay: Fix,
+    pub max_ignition_delay: Fix,
+    pub explosion_layer: u32,
+    pub explosion_updatable_count: u32,
+    pub explosion_collider_hierarchy: u32,
+    pub explosion_extents: Vec2,
+    pub explosion_animation_ticks: u32,
+}
 #[derive(Clone, Copy)]
 pub struct ExplosionShockwaveData {
     pub platform_force: Fix,
@@ -701,6 +795,7 @@ pub struct RolloutData {
     pub revival: RevivalData,
     pub teleport: TeleportData,
     pub grenade: GrenadeData,
+    pub smoke: SmokeData,
     pub tack: TackData,
     pub mjolnir: MjolnirData,
     pub abilities: Vec<AbilityData>,
@@ -1075,6 +1170,69 @@ pub fn get() -> &'static RolloutData {
                             collision_mask: wave.collision_mask,
                         }
                     }),
+                }
+            },
+            smoke: {
+                let smoke = &raw.prefabs.smoke;
+                let throw = &smoke.throw_data;
+                let mut cloud_enter_frame_ticks =
+                    Vec::with_capacity(smoke.cloud.enter_frames.len());
+                let mut elapsed = 0;
+                for duration in &smoke.cloud.enter_frames {
+                    elapsed += duration.unsigned_abs();
+                    cloud_enter_frame_ticks.push(elapsed);
+                }
+                SmokeData {
+                    hurtbox_extents: smoke.hurtbox_extents.get(),
+                    air_position: throw.air_position.get(),
+                    ground_position: throw.ground_position.get(),
+                    ground_dummy: throw.ground_dummy.iter().map(RawVec2::get).collect(),
+                    air_dummy: throw.air_dummy.iter().map(RawVec2::get).collect(),
+                    hurt_owner_delay: Fix::from_raw(throw.hurt_owner_delay),
+                    max_force: Fix::from_raw(throw.max_force),
+                    min_force: Fix::from_raw(throw.min_force),
+                    force_gain_speed: Fix::from_raw(throw.force_gain_speed),
+                    max_slow_mo_speed: Fix::from_raw(throw.max_slow_mo_speed),
+                    knockback: Fix::from_raw(throw.knockback),
+                    constants: constants(&throw.physics),
+                    ground_enter_ticks: ticks(&throw.animations.ground_enter),
+                    ground_exit_ticks: ticks(&throw.animations.ground_exit),
+                    air_enter_ticks: ticks(&throw.animations.air_enter),
+                    air_exit_ticks: ticks(&throw.animations.air_exit),
+                    item_layer: smoke.item.layer,
+                    item_updatable_count: smoke.item.updatable_count,
+                    item_collider_hierarchy: smoke.item.collider_hierarchy,
+                    item_radius: Fix::from_raw(smoke.item.radius),
+                    item_body: body(&smoke.item.body, Fix::ZERO),
+                    detonation_time: Fix::from_raw(smoke.item.detonation_time),
+                    clone_count: smoke.item.clone_count,
+                    duplicate_pattern: smoke.item.duplicate_pattern,
+                    duplicate_spacing: Fix::from_raw(smoke.item.duplicate_spacing),
+                    duplicate_angle: Fix::from_raw(smoke.item.duplicate_angle),
+                    cloud_offsets: smoke.item.cloud_offsets.iter().map(RawVec2::get).collect(),
+                    spread: Fix::from_raw(smoke.item.spread),
+                    noise: Fix::from_raw(smoke.item.noise),
+                    burst_updatable_count: smoke.item.burst_updatable_count,
+                    cloud_layer: smoke.cloud.layer,
+                    cloud_updatable_count: smoke.cloud.updatable_count,
+                    cloud_collider_hierarchy: smoke.cloud.collider_hierarchy,
+                    cloud_base_radius: Fix::from_raw(smoke.cloud.base_radius),
+                    cloud_body: body(&smoke.cloud.body, Fix::ZERO),
+                    cloud_radii: smoke
+                        .cloud
+                        .radii
+                        .iter()
+                        .copied()
+                        .map(Fix::from_raw)
+                        .collect(),
+                    cloud_enter_frame_ticks,
+                    min_ignition_delay: Fix::from_raw(smoke.cloud.min_ignition_delay),
+                    max_ignition_delay: Fix::from_raw(smoke.cloud.max_ignition_delay),
+                    explosion_layer: smoke.explosion.layer,
+                    explosion_updatable_count: smoke.explosion.updatable_count,
+                    explosion_collider_hierarchy: smoke.explosion.collider_hierarchy,
+                    explosion_extents: smoke.explosion.extents.get(),
+                    explosion_animation_ticks: smoke.explosion.animation_ticks,
                 }
             },
             tack: {

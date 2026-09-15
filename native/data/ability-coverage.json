@@ -101,7 +101,8 @@
       "name": "Smoke",
       "prefab": "Assets/GameObject/Smoke.prefab",
       "prefab_guid": "ce4ee6a2ec049d6498bc13786335c085",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "smoke_ability_ab matches 800 exact NativeAOT/Rust Q32 ticks through grounded ThrowItem2 entry, charged release, ballistic flight, the strict five-second fuse, all randomized cloud offsets and rotations, cloud registration, enter-radius animation, and persistent layer-22 entity export. Explosion ignition/chaining, scale changes, repeated-cast ring eviction, and Item.Duplicate still need dedicated goldens."
     },
     {
       "id": 14,
