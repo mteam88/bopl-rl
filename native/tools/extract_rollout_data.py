@@ -210,7 +210,10 @@ def extract_map(index):
         sp = node_component(node, "AbilitySpawner")
         if sp is not None:
             ft = node_component(node, "FixTransform")
-            spawner = {"position": vec2(ft, "_position")}
+            spawner = {
+                "position": vec2(ft, "_position"),
+                "hierarchy": sp["hierarchyNumber"],
+            }
     return {"platforms": platforms, "water": water, "session": session, "ability_spawner": spawner}
 
 
@@ -317,8 +320,23 @@ def main():
     out["prefabs"]["ability_pickup"] = {
         "layer": pickup["data"].get("layer"),
         "radius": fix(pickup_circle, "startRadius"),
-        "mass": fix(pickup_body, "mass"),
         "offset": vec2(pickup_tf, "offset"),
+        "collider_hierarchy": pickup_circle["hierarchyNumber"],
+        "updatable_count": sum(
+            "hierarchyNumber" in c.get("properties", {})
+            for c in pickup["data"]["components"]
+        ),
+        "body": physics_body(pickup_body),
+        "up_force": fix(component(pickup, "DynamicAbilityPickup"), "UpForce"),
+        "wobble_speed": fix(component(pickup, "DynamicAbilityPickup"), "wobbleSpeed"),
+        "wobble_amount": fix(component(pickup, "DynamicAbilityPickup"), "wobbleAmount"),
+        "launch_force": fix(component(pickup, "DynamicAbilityPickup"), "launchForce"),
+        "disabled_seconds": fix(component(pickup, "DynamicAbilityPickup"), "disabledSeconds"),
+        "swap_period": fix(component(pickup, "DynamicAbilityPickup"), "SwapAbilityPeriod"),
+        "vibration_strength": fix(component(pickup, "DynamicAbilityPickup"), "vibrationStr"),
+        "vibration_duration": fix(component(pickup, "DynamicAbilityPickup"), "vibrationDuration"),
+        "vibrate_timing_offset": fix(component(pickup, "DynamicAbilityPickup"), "vibrateTimingOffset"),
+        "gravity": fix(component(pickup, "DynamicAbilityPickup"), "gravity"),
     }
 
     # ---- Platform ability ----

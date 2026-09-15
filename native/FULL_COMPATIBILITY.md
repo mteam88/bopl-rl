@@ -2308,3 +2308,32 @@ Q32 units (0.175 world units), while the selected victim and every capture
 boundary remain unchanged. Shared `Item.Duplicate` and isolated boundary/time
 stop interactions still need dedicated differential scenarios, so coverage
 remains partial.
+
+### Live AbilitySpawner pickup flight (2026-09-15)
+
+The existing `BOPL_RL_ABILITY_SPAWNS=1` diagnostic now enables the map's
+`AbilitySpawner` in Rust as well as NativeAOT. Each map retains the authored
+spawn position and hierarchy. The strict 40-second clock creates at most three
+`DynamicAbilityPickup` instances, consumes `RandomUnitVector` and the
+current-sprite-excluding catalog draw in source order, and reserves the exact
+three updater hierarchy entries per prefab.
+
+The live pickup keeps its collider disabled for the serialized 0.1 seconds.
+During that phase its direct gravity changes velocity while the launch impulse
+and hover force remain queued; the seventh updater pass enables the collider
+and integrates the accumulated force. Subsequent updates reproduce the
+platform raycast hover force, air drag, 7-second ability reroll, and late-cycle
+two-draw vibration. Layer 13 does not collide with layer 11 in the shipped
+Physics2D matrix, so terrain affects the item through the raycast hover force
+rather than a rigid contact. State lives in a capacity-retained vector bounded
+by the authored three spawns, with no per-tick allocation.
+
+`ability_spawner_ab.c` verifies the default disabled 0/0 configuration and the
+enabled NativeAOT/Rust path for 2,700 episode ticks. Both create collider id 16
+at level tick 2401, keep it disabled until 2408, and match all metadata and
+phase boundaries. Maximum spatial and velocity differences are 3,180 and
+13,737 raw Q32 units (7.5e-7 and 3.2e-6 world units). They begin at the strict
+half-unit damping boundary because Rust reconstructs the rounded platform ray
+from its separately rounded exported basis; no measured behavior boundary
+changes. Player collision/replacement and live death-dropped pickup flight are
+the remaining pickup-path work.

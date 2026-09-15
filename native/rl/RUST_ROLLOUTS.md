@@ -153,13 +153,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 
 ## Known approximations (documented divergence)
 
-- Fixed-loadout RL sessions disable `AbilitySpawner` on both backends. Rust
-  intentionally has no spawner path: the extractor retains each map's
-  `ability_spawner` position in `rollout.json`, but `rollout/mod.rs` never
-  reads it. The .NET Host and NativeAOT RL boundaries disable the authored
-  component by default; `BOPL_RL_ABILITY_SPAWNS=1` explicitly opts only the
-  oracle back into full-game pickup spawning for diagnostics. This is an RL
-  configuration choice, not an open default-backend divergence.
+- Fixed-loadout RL sessions disable `AbilitySpawner` on both backends by
+  default. `BOPL_RL_ABILITY_SPAWNS=1` enables the authored 40-second, three-item
+  spawner in NativeAOT and Rust. Rust currently matches pickup registration,
+  delayed activation, launch, hover physics, reroll RNG and entity rows;
+  pickup/player replacement and death-drop flight remain open.
 - Only ids 0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/19/20/22/23/24/25/31/33/34/35/36/37 have executable catalog behavior in the public
   backend. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
@@ -319,7 +317,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 | behavior-changing | An end-of-tick Rust boundary pass killed ordinary/Bow bodies one tick before Unity's pre-`PlayerBody` boundary component | fixed with component-specific boundary phases |
 | behavior-changing | Match termination consumed deaths after physics in the same tick, while Unity's earlier `GameSessionHandler` sees them next tick | fixed: result consumption now runs at the beginning of the following updater pass |
 | behavior-changing | Keyboard-configured players discarded the high S/D bits and used joystick aim for movement | fixed: W/A/S/D drive motion while the angle byte remains independent ability aim |
-| configured scope | Ability pickups | disabled on both RL backends by default; explicit .NET-only diagnostic opt-in above |
+| configured scope | Ability pickups | disabled on both RL backends by default; the shared diagnostic opt-in executes live spawner/flight, with pickup replacement still open |
 | exploitable | Abilities other than 2/4/14 are absent | open scope described above |
 | cosmetic/observation | Stuck arrow children are not retained | not changed; no live collision remains in Unity either |
 | cosmetic/observation | Unity can emit a death-dropped pickup in the terminal snapshot | fixed: the terminal pickup row is emitted (flight unsimulated, see above) |
@@ -568,8 +566,14 @@ rad/s. The .NET replay lands that platform elsewhere, with no continuing
 contact, and settles at 1.5831333 rad and zero angular speed by age 170.
 
 `ability_spawner_ab` observes no layer-13 pickup on either backend under the
-default RL configuration and one only in .NET with
-`BOPL_RL_ABILITY_SPAWNS=1`. With spawns enabled, `sudden_death_ab` reached
+default RL configuration. With `BOPL_RL_ABILITY_SPAWNS=1`, both create the
+first row on level tick 2401 and enable it on 2408; over the measured 2700
+episode ticks metadata is exact and the maximum position/velocity gaps are
+3,180/13,737 raw Q32 units (7.5e-7/3.2e-6 world units). The difference starts
+when the hover ray enters its strict half-unit damping boundary and comes from
+the already documented separately rounded rounded-rectangle ray geometry; it
+does not alter a boundary, reroll, or collision in the golden. Before this
+port, with spawns enabled, `sudden_death_ab` reached
 1.427 units maximum Y error. Disabling them alone still left 1.584 units from
 the skipped intro RNG draws; after preserving that RNG phase, all three map-0
 platforms begin moving on the same ticks (7236/7252/7257), maximum Y error is

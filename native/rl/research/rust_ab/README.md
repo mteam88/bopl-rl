@@ -33,8 +33,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `arrow_bounds_ab.c`: `Arrow.prefab` side-boundary destruction phase and
   removal from the live projectile observation.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
-  pickup boundary; default RL configuration is 0/0, while the explicit .NET
-  `BOPL_RL_ABILITY_SPAWNS=1` opt-in proves the original spawner remains live.
+  pickup boundary. The default RL configuration is 0/0; with the shared
+  `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass
+  collider delay, launch and hover flight in NativeAOT and Rust.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

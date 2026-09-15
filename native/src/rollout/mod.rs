@@ -335,6 +335,25 @@ pub struct Arrow {
     pub can_hurt_owner: bool,
 }
 
+/// A live `DynamicAbilityPickup`. The vector is bounded by the authored three
+/// spawns and retains its capacity across resets.
+#[derive(Clone, Copy, Default)]
+pub struct AbilityPickup {
+    pub active: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    /// AbilityIcons index; the full catalog is dense and uses the same ids.
+    pub ability: u32,
+    /// Root FixTransform position. The collider centre includes `pickup.offset`.
+    pub position: Vec2,
+    pub body: Body,
+    pub enabled: bool,
+    pub time_passed: Fix,
+    pub time_since_swap: Fix,
+    pub previous_vibration: Vec2,
+}
+
 /// Shared `ThrowItem2` payload state. Grenade is the first consumer; Smoke,
 /// Poke Ball, Tack, and Mjolnir use the same held-item/throw lifecycle.
 #[derive(Clone, Copy, Default)]
@@ -1505,6 +1524,7 @@ pub struct RolloutWorld {
     /// Parallel to `platforms`: index into the entity table.
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
+    pub ability_pickups: Vec<AbilityPickup>,
     pub thrown_items: Vec<ThrownItem>,
     pub guided_missiles: Vec<GuidedMissile>,
     pub missile_explosions: Vec<MissileExplosion>,
@@ -1529,6 +1549,9 @@ pub struct RolloutWorld {
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
+    pub ability_spawner_enabled: bool,
+    pub ability_spawner_time: Fix,
+    pub ability_spawner_spawns: u8,
     /// AntiLockPlatform runtime (map 2): platform index and waypoint.
     pub orbits: Vec<(usize, usize)>,
     pub next_platform_id: u32,
@@ -1591,6 +1614,7 @@ impl RolloutWorld {
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
+            ability_pickups: Vec::with_capacity(4),
             thrown_items: Vec::with_capacity(64),
             guided_missiles: Vec::with_capacity(64),
             missile_explosions: Vec::with_capacity(64),
@@ -1615,6 +1639,9 @@ impl RolloutWorld {
             sudden_death: false,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
+            ability_spawner_enabled: false,
+            ability_spawner_time: Fix::ZERO,
+            ability_spawner_spawns: 0,
             orbits: Vec::with_capacity(4),
             next_platform_id: 0,
             next_entity_id: 0,
@@ -1663,6 +1690,7 @@ impl RolloutWorld {
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
+        self.ability_pickups.clone_from(&src.ability_pickups);
         self.thrown_items.clone_from(&src.thrown_items);
         self.guided_missiles.clone_from(&src.guided_missiles);
         self.missile_explosions.clone_from(&src.missile_explosions);
@@ -1691,6 +1719,9 @@ impl RolloutWorld {
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
             .clone_from(&src.sudden_death_delays);
+        self.ability_spawner_enabled = src.ability_spawner_enabled;
+        self.ability_spawner_time = src.ability_spawner_time;
+        self.ability_spawner_spawns = src.ability_spawner_spawns;
         self.orbits.clone_from(&src.orbits);
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
@@ -1732,6 +1763,7 @@ impl RolloutWorld {
             platform_defs: _,
             platform_entities: _,
             arrows: _,
+            ability_pickups: _,
             thrown_items: _,
             guided_missiles: _,
             missile_explosions: _,
@@ -1756,6 +1788,9 @@ impl RolloutWorld {
             sudden_death: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
+            ability_spawner_enabled: _,
+            ability_spawner_time: _,
+            ability_spawner_spawns: _,
             orbits: _,
             next_platform_id: _,
             next_entity_id: _,
@@ -1827,6 +1862,7 @@ impl RolloutWorld {
         self.rng = Random::new(config.seed.max(1));
         self.sudden_death = false;
         self.arrows.clear();
+        self.ability_pickups.clear();
         self.thrown_items.clear();
         self.guided_missiles.clear();
         self.missile_explosions.clear();
@@ -1840,6 +1876,10 @@ impl RolloutWorld {
         self.destroyed_tesla_lines.clear();
         self.frozen_solids.clear();
         self.scale_changers.clear();
+        self.ability_spawner_enabled =
+            std::env::var_os("BOPL_RL_ABILITY_SPAWNS").is_some_and(|value| value == "1");
+        self.ability_spawner_time = Fix::from_int(i64::from(self.warmup)) * DT;
+        self.ability_spawner_spawns = 0;
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
@@ -2507,6 +2547,161 @@ impl RolloutWorld {
         self.next_entity_id
     }
 
+    fn random_pickup_ability(&mut self, current: u32) -> u32 {
+        // RandomAbility.GetRandomAbilityPrefab excludes entries 0/1 and the
+        // current sprite. Its `num <= 0` sentinel deliberately fails to
+        // exclude Dash (catalog entry 2), which permits Dash -> Dash.
+        let excluded = current.saturating_sub(2);
+        let excluded = if excluded == 0 { 100_000 } else { excluded };
+        let count = ABILITY_COUNT - 2;
+        let mut selected = self.rng.uint_range(0, count - 1);
+        if selected >= excluded {
+            selected = (selected + 1) % count;
+        }
+        selected + 2
+    }
+
+    fn spawn_ability_pickup(&mut self, position: Vec2, current: u32, data: &data::RolloutData) {
+        let pickup = &data.pickup;
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += pickup.updatable_count;
+        let id = self.next_id();
+        let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+        let direction = Vec2::angle(angle);
+        let ability = self.random_pickup_ability(current);
+        let mut body = pickup.body;
+        // BoplBody.AddForce(..., Impulse) multiplies by 60; the collider is
+        // disabled initially, so this force remains queued until activation.
+        body.force += direction * pickup.launch_force * Fix::from_int(60);
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: pickup.layer,
+            flags: E_ACTIVE,
+            hierarchy: 100_000_000 + hierarchy_base + pickup.collider_hierarchy,
+            x: (position + pickup.offset).x.raw(),
+            y: (position + pickup.offset).y.raw(),
+            radius: pickup.radius.raw(),
+            inverse_mass: body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        self.ability_pickups.push(AbilityPickup {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: Some(self.entities.len() - 1),
+            ability,
+            position,
+            body,
+            ..AbilityPickup::default()
+        });
+    }
+
+    fn ability_spawner_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        if !self.ability_spawner_enabled || self.ability_spawner_spawns >= 3 {
+            return;
+        }
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            self.ability_spawner_time += updater_dt;
+        }
+        if self.ability_spawner_time > Fix::from_int(40) {
+            self.ability_spawner_time = Fix::ZERO;
+            self.ability_spawner_spawns += 1;
+            // The prefab's initial sprite is Bow. Spawn immediately registers
+            // the disabled manual collider; its updater begins next pass.
+            self.spawn_ability_pickup(
+                data.maps[self.map].ability_spawner_position,
+                ABILITY_BOW,
+                data,
+            );
+        }
+    }
+
+    fn ability_pickups_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        let pickup = &data.pickup;
+        for index in 0..self.ability_pickups.len() {
+            if !self.ability_pickups[index].active
+                || self.ability_pickups[index].born_tick >= self.tick
+            {
+                continue;
+            }
+            let stopped = self.player_time_scale < Fix::from_f32(0.01);
+            if stopped {
+                self.ability_pickups[index].body.velocity = Vec2::ZERO;
+            } else {
+                self.ability_pickups[index].time_passed += updater_dt;
+                self.ability_pickups[index].time_since_swap += updater_dt;
+            }
+            if self.ability_pickups[index].time_passed >= pickup.disabled_seconds {
+                self.ability_pickups[index].enabled = true;
+            }
+            if self.ability_pickups[index].time_since_swap > pickup.swap_period {
+                self.ability_pickups[index].time_since_swap = Fix::ZERO;
+                let current = self.ability_pickups[index].ability;
+                self.ability_pickups[index].ability = self.random_pickup_ability(current);
+            }
+            let vibration_clock = self.ability_pickups[index]
+                .time_since_swap
+                .checked_rem(pickup.swap_period, true)
+                .expect("positive pickup swap period");
+            if vibration_clock > pickup.swap_period - pickup.vibration_duration {
+                let old = self.ability_pickups[index].previous_vibration;
+                self.ability_pickups[index].position -= old;
+                let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+                let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+                let vibration = Vec2::angle(angle) * radius * pickup.vibration_strength;
+                self.ability_pickups[index].previous_vibration = vibration;
+                self.ability_pickups[index].position += vibration;
+            }
+
+            // DPhysicsCircle.position exposes its root FixTransform position,
+            // while the observation collider centre includes `offset`.
+            let center = self.ability_pickups[index].position;
+            let mut height = self.ability_pickups[index].position.y - Fix::from_f32(-11.22);
+            for platform in &self.platforms {
+                if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
+                    && hit.near < height
+                {
+                    height = hit.near;
+                }
+            }
+            if height < Fix::from_f32(0.5) {
+                self.ability_pickups[index].body.velocity *= Fix::from_f32(0.95);
+            }
+            let divisor = height.max(Fix::ONE);
+            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+            let wobble = (sim_time * pickup.wobble_speed).sin() * pickup.wobble_amount;
+            let state = &mut self.ability_pickups[index];
+            state.body.velocity.y -= pickup.gravity * updater_dt;
+            state.body.force.y += wobble + pickup.up_force / divisor;
+            if let Some(entity) = state.entity {
+                let row = &mut self.entities[entity];
+                row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
+                row.x = (state.position + pickup.offset).x.raw();
+                row.y = (state.position + pickup.offset).y.raw();
+                row.vx = state.body.velocity.x.raw();
+                row.vy = state.body.velocity.y.raw();
+            }
+        }
+    }
+
+    fn ability_pickups_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
+        for state in &mut self.ability_pickups {
+            if !state.active || !state.enabled {
+                continue;
+            }
+            state.position += state.body.integrate(physics_dt, Fix::ZERO);
+            if let Some(entity) = state.entity {
+                let row = &mut self.entities[entity];
+                let center = state.position + data.pickup.offset;
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.vx = state.body.velocity.x.raw();
+                row.vy = state.body.velocity.y.raw();
+            }
+        }
+    }
+
     fn record_warmup_rewind(&mut self, warmup_tick: u32) {
         let timer = TIMER_START
             + DT * Fix::from_int(i64::from(warmup_tick.saturating_sub(SLIME_AWAKE_TICK)));
@@ -2738,6 +2933,8 @@ impl RolloutWorld {
         // as Gust changes a platform body's velocity. DetPhysics integrates
         // both the queued spring force and those later direct impulses below.
         self.platform_updaters_tick(data, updater_dt);
+        self.ability_spawner_tick(data, updater_dt);
+        self.ability_pickups_tick(data, updater_dt);
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
@@ -2961,6 +3158,7 @@ impl RolloutWorld {
         }
         let physics_dt = DT * self.player_time_scale;
         self.arrows_integrate(data, updater_dt, physics_dt);
+        self.ability_pickups_integrate(data, physics_dt);
         self.guided_missiles_integrate(data, physics_dt);
         self.thrown_items_integrate(data, updater_dt, physics_dt);
         self.rocks_integrate(physics_dt);
@@ -13128,7 +13326,7 @@ impl RolloutWorld {
                 x: position.x.raw(),
                 y: position.y.raw(),
                 radius: pickup.radius.raw(),
-                inverse_mass: pickup.inverse_mass.raw(),
+                inverse_mass: pickup.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
         }

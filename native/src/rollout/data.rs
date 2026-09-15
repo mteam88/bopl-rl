@@ -73,6 +73,12 @@ struct RawMap {
     platforms: Vec<RawPlatform>,
     water: RawWater,
     session: RawSession,
+    ability_spawner: RawAbilitySpawner,
+}
+#[derive(Deserialize)]
+struct RawAbilitySpawner {
+    position: RawVec2,
+    hierarchy: u32,
 }
 #[derive(Deserialize)]
 struct RawPhysics {
@@ -190,8 +196,20 @@ struct RawResizable {
 struct RawPickup {
     layer: u32,
     radius: i64,
-    mass: i64,
     offset: RawVec2,
+    collider_hierarchy: u32,
+    updatable_count: u32,
+    body: RawBody,
+    up_force: i64,
+    wobble_speed: i64,
+    wobble_amount: i64,
+    launch_force: i64,
+    disabled_seconds: i64,
+    swap_period: i64,
+    vibration_strength: i64,
+    vibration_duration: i64,
+    vibrate_timing_offset: i64,
+    gravity: i64,
 }
 #[derive(Deserialize)]
 struct RawPrefabs {
@@ -898,6 +916,8 @@ pub struct MapDef {
     pub teammate_spacing: Fix,
     pub respawn_points: [Vec2; 3],
     pub sudden_death_time: Fix,
+    pub ability_spawner_position: Vec2,
+    pub ability_spawner_hierarchy: u32,
 }
 pub struct MovementData {
     pub constants: crate::world::MovementConstants,
@@ -933,9 +953,21 @@ pub struct ArrowData {
 pub struct PickupData {
     pub layer: u32,
     pub radius: Fix,
-    pub inverse_mass: Fix,
     /// DPhysicsCircle centre offset from the FixTransform (DetPhysics.cs:2513).
     pub offset: Vec2,
+    pub collider_hierarchy: u32,
+    pub updatable_count: u32,
+    pub body: crate::physics::Body,
+    pub up_force: Fix,
+    pub wobble_speed: Fix,
+    pub wobble_amount: Fix,
+    pub launch_force: Fix,
+    pub disabled_seconds: Fix,
+    pub swap_period: Fix,
+    pub vibration_strength: Fix,
+    pub vibration_duration: Fix,
+    pub vibrate_timing_offset: Fix,
+    pub gravity: Fix,
 }
 pub struct PlatformAbilityData {
     pub cooldown: Fix,
@@ -1706,6 +1738,8 @@ fn map_def(raw: &RawMap) -> MapDef {
         teammate_spacing: Fix::from_raw(raw.session.teammate_spacing),
         respawn_points,
         sudden_death_time: Fix::from_raw(raw.session.time_before_sudden_death),
+        ability_spawner_position: raw.ability_spawner.position.get(),
+        ability_spawner_hierarchy: raw.ability_spawner.hierarchy,
     }
 }
 
@@ -1774,8 +1808,20 @@ pub fn get() -> &'static RolloutData {
                 PickupData {
                     layer: p.layer,
                     radius: Fix::from_raw(p.radius),
-                    inverse_mass: Fix::ONE / Fix::from_raw(p.mass),
                     offset: p.offset.get(),
+                    collider_hierarchy: p.collider_hierarchy,
+                    updatable_count: p.updatable_count,
+                    body: body(&p.body, Fix::ZERO),
+                    up_force: Fix::from_raw(p.up_force),
+                    wobble_speed: Fix::from_raw(p.wobble_speed),
+                    wobble_amount: Fix::from_raw(p.wobble_amount),
+                    launch_force: Fix::from_raw(p.launch_force),
+                    disabled_seconds: Fix::from_raw(p.disabled_seconds),
+                    swap_period: Fix::from_raw(p.swap_period),
+                    vibration_strength: Fix::from_raw(p.vibration_strength),
+                    vibration_duration: Fix::from_raw(p.vibration_duration),
+                    vibrate_timing_offset: Fix::from_raw(p.vibrate_timing_offset),
+                    gravity: Fix::from_raw(p.gravity),
                 }
             },
             platform: PlatformAbilityData {
