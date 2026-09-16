@@ -1285,6 +1285,13 @@ curve and later pooled-body flight match NativeAOT. This separately verifies
 that the generic layer-10 item branch is not relying on Grenade's later fuse or
 collision callbacks.
 
+`gust_poke_ball_ab.c` and `gust_tack_ab.c` add the corresponding released Poke
+Ball and Projectile-backed Tack paths. Each 340-tick differential has the same
+measured 214/243/243 cast, release and Gust-entry schedule and tick-250 first
+horizontal impulse. Target capture, both initialization-pass forces, the full
+curve, entity ownership and later flight are exact; Tack retains its source
+Projectile owner while the Poke Ball item root remains ownerless.
+
 `gust_grenade_form_ab.c` covers the complementary held state for 294 exact
 ticks. Grenade and Gust enter on ticks 214 and 224; the wave pushes the grounded
 ThrowItem2 form on tick 231 while its manually initialized payload remains

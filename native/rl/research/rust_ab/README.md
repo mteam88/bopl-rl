@@ -204,6 +204,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   both time-zero impulses, the complete force curve and subsequent item flight.
 - `gust_smoke_ab.c`: the same fixed-set released-item path for Smoke, including
   same-pass Gust entry/capture, both initialization impulses and pooled flight.
+- `gust_poke_ball_ab.c` and `gust_tack_ab.c`: released Poke Ball and
+  Projectile-backed Tack capture, ownership, full force curves and pooled flight.
 - `gust_grenade_form_ab.c`: Gust's one-shot PlayerPhysics force against the
   grounded Grenade form while its manually initialized payload is still held.
 - `gust_throw_forms_ab.c`: the same exact active-form branch for Smoke, Tack,
