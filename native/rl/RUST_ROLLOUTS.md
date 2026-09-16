@@ -293,7 +293,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and visual expiry. The Bow case uses the registered form for Shockwave selection and
   reproduces its callback-time rotation reset and surface-normal death exit. Projectile,
   item and other active-form contacts, scale interactions, duplication and Portal
-  traversal remain open.
+  traversal remain open. A crossing Arrow additionally matches dynamic Circle/Box
+  resolution, both callback destructions and the complete ownerless explosion
+  lifecycle using a fixed stack contact set.
   Mine executes the separate original `ThrowItem` form and exact autonomous
   hover, arming, scan/chase, player ignition, anticipation, owner-credited
   MineExplosion kill, and stock recovery path. Chase normalization and the

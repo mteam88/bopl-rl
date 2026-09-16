@@ -2403,6 +2403,13 @@ and stock handling. Projectile, thrown-item and other active-form contacts, scal
 interactions, duplication and Portal traversal remain open, so coverage is
 marked partial.
 
+`missile_arrow_ab.c` adds a 500-tick bit-exact crossing shot. DetPhysics resolves
+the Arrow circle and guided Missile box as two dynamic bodies before its callback
+queue destroys both; the corrected positions, linear/angular velocities, Arrow
+owner clearing, same-tick destroyed rows, deferred ownerless explosion, hitbox
+disable and visual expiry all match. The candidate scan uses a fixed 64-entry
+stack buffer and adds no per-tick allocation.
+
 ### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
 
 Catalog id 24 now uses the older `ThrowItem` controller rather than the shared

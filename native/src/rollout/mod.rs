@@ -18917,6 +18917,101 @@ impl RolloutWorld {
                 continue;
             }
 
+            // Circle/Box: a guided Missile is a dynamic layer-item box. Both
+            // bodies resolve before the callback queue runs; Arrow then
+            // consumes its StickTo contact while Missile spawns its ownerless
+            // hit explosion. Keep the candidate set on the stack so this
+            // common projectile composition adds no tick allocation.
+            let mut missile_contacts = [(usize::MAX, Contact::default()); 64];
+            let mut missile_contact_count = 0;
+            for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
+                if missile_contact_count == missile_contacts.len() {
+                    break;
+                }
+                if !missile.active || !missile.registered || missile.magnet_hold_ticks >= 0 {
+                    continue;
+                }
+                let missile_box = OrientedBox::from_basis(
+                    missile.position,
+                    Vec2::angle(missile.body.orientation),
+                    data.missile.spark_extents,
+                );
+                if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
+                    missile_contacts[missile_contact_count] = (missile_index, contact);
+                    missile_contact_count += 1;
+                }
+            }
+            if missile_contact_count > 0 {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    angular_velocity: arrow.angular_velocity,
+                    ..data.arrow.body
+                };
+                let mut arrow_center = arrow.position;
+                for &(missile_index, contact) in
+                    &missile_contacts[..missile_contact_count]
+                {
+                    let missile = self.guided_missiles[missile_index];
+                    let mut missile_body = missile.body;
+                    let mut missile_center = missile.position;
+                    resolve(
+                        contact,
+                        &mut arrow_body,
+                        &mut missile_body,
+                        arrow_center,
+                        missile_center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        arrow_body.inverse_mass,
+                        missile_body.inverse_mass,
+                        false,
+                    );
+                    arrow_center += correction[0];
+                    missile_center += correction[1];
+                    let live = &mut self.guided_missiles[missile_index];
+                    live.position = missile_center;
+                    live.body = missile_body;
+                }
+
+                self.destroy_arrow(i);
+                if let Some(entity) = self.arrows[i].entity {
+                    let row = &mut self.entities[entity];
+                    row.flags = E_DESTROYED;
+                    row.owner = 0;
+                    row.x = arrow_center.x.raw();
+                    row.y = arrow_center.y.raw();
+                    row.vx = arrow_body.velocity.x.raw();
+                    row.vy = arrow_body.velocity.y.raw();
+                    row.rotation = arrow_body.orientation.raw();
+                    row.angular_velocity = arrow_body.angular_velocity.raw();
+                }
+                for &(missile_index, _) in &missile_contacts[..missile_contact_count] {
+                    if !self.guided_missiles[missile_index].active {
+                        continue;
+                    }
+                    let missile = self.guided_missiles[missile_index];
+                    self.spawn_missile_explosion(
+                        missile.position,
+                        missile.owner,
+                        false,
+                        data,
+                    );
+                    self.destroy_guided_missile(missile_index, true);
+                    if let Some(entity) = missile.entity {
+                        let row = &mut self.entities[entity];
+                        row.x = missile.position.x.raw();
+                        row.y = missile.position.y.raw();
+                        row.vx = missile.body.velocity.x.raw();
+                        row.vy = missile.body.velocity.y.raw();
+                        row.rotation = missile.body.orientation.raw();
+                        row.angular_velocity = missile.body.angular_velocity.raw();
+                    }
+                }
+                continue;
+            }
+
             let mut victims = Vec::new();
             // Platform anticipation replaces the original slime box with a
             // Player-layer circle and is the only supported player circle.
