@@ -74,10 +74,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Blink, Growth, Missile, Shrink, Duplicator, Magnet and Freeze forms match the
   same callback boundary in seven exact 240-tick compositions. Held Grenade,
   Smoke, Mine, Poke Ball, Tack and Mjolnir forms match it through six more
-  180-tick compositions. Seventeen remaining active forms cover Engine, Gust,
-  Spike, Time Stop, Revival, Black Hole, Invisibility, Meteor, Throw, Push,
-  Tesla, Teleport, Drill, Beam, Rewind, Web Swing and Portal Gun through the
-  same callback.
+  180-tick compositions. Eighteen remaining active forms cover Engine, Gust,
+  Spike, Time Stop, Platform, Revival, Black Hole, Invisibility, Meteor, Throw,
+  Push, Tesla, Teleport, Drill, Beam, Rewind, Web Swing and Portal Gun through
+  the same callback.
   A released lethal Roll uses its live circle for the same ray dispatch, kills
   the dasher at the near point and owns the credit; its cosmetic trail consumes
   no updater hierarchy because neither trail component is a `MonoUpdatable`.

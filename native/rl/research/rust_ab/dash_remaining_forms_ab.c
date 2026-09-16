@@ -1,4 +1,4 @@
-/* Dash ray through seventeen remaining nonlethal ability forms. Their active
+/* Dash ray through eighteen remaining nonlethal ability forms. Their active
  * PlayerCollision owns the callback, so the ordinary-slime push must not run.
  * Meteor inherits its measured 8,192-raw-Q32 grounded form pose bound. */
 #include "bopl_rl.h"
@@ -156,9 +156,9 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
-    static const uint32_t abilities[] = {5, 7, 11, 12, 15, 18, 19, 20, 21, 22, 23, 25, 26, 28, 31, 32, 38};
+    static const uint32_t abilities[] = {5, 7, 11, 12, 14, 15, 18, 19, 20, 21, 22, 23, 25, 26, 28, 31, 32, 38};
     static const char *names[] = {
-        "Engine", "Gust", "Spike", "TimeStop", "Revival", "BlackHole",
+        "Engine", "Gust", "Spike", "TimeStop", "Platform", "Revival", "BlackHole",
         "Invisibility", "Meteor", "Throw", "Push", "Tesla", "Teleport",
         "Drill", "Beam", "Rewind", "WebSwing", "PortalGun"
     };
@@ -178,6 +178,7 @@ int main(int argc, char **argv) {
         }
         config.player[4].abilities[0] = abilities[scenario];
         config.player[4].abilities[1] = 2;
+        if (abilities[scenario] == 14) config.player[4].abilities[2] = 4;
         if (reset(world[0], &config, "reference") ||
             reset(world[1], &config, "rust"))
             return 1;
