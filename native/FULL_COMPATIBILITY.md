@@ -2395,8 +2395,13 @@ force curve, right-boundary destruction and the deferred explosion's hierarchy.
 an ordinary opponent directly on tick 279, its ownerless MineExplosion registers
 and kills on tick 280, and the differential preserves `deaths_other` attribution,
 the three-choice stock clone, first-frame hitbox disable and tick-362 visual
-expiry. Projectile, thrown-item and active-form contacts, scale interactions,
-duplication and Portal traversal remain open, so coverage is marked partial.
+expiry. `missile_bow_ab.c` follows the same flight into an active Bow form for
+another 500 bit-exact ticks. That slice uses the registered form collider for
+Shockwave's `CircleCastAll`, then reproduces `BowTransform.ExitAbility` resetting
+rotation and moving one 0.05-unit surface-normal `UnGround` step before death
+and stock handling. Projectile, thrown-item and other active-form contacts, scale
+interactions, duplication and Portal traversal remain open, so coverage is
+marked partial.
 
 ### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
 

@@ -11476,13 +11476,93 @@ impl RolloutWorld {
             return;
         }
         for player_index in 0..self.players.len() {
-            if !self.playable(player_index)
-                || crate::physics::contact::circle_box(
+            if !self.playable(player_index) {
+                continue;
+            }
+            if matches!(
+                self.players[player_index].active,
+                ActiveAbility::Dash
+                    | ActiveAbility::Gust
+                    | ActiveAbility::Meteor
+                    | ActiveAbility::Platform
+                    | ActiveAbility::Push
+                    | ActiveAbility::Revival
+            ) {
+                // Shockwave skips an Ability component whose prefab has
+                // isPushable=false before looking for PlayerPhysics.
+                continue;
+            }
+            // CircleCastAll sees the registered Player-layer collider. During
+            // a non-instant ability that is the form row, while the ordinary
+            // slime box is disabled. The form may extend into a blast whose
+            // centre does not reach the hidden slime collider (Bow is the
+            // common case), so test the same DetPhysics shape the source
+            // returned to Shockwave.Init.
+            let player = &self.players[player_index];
+            let entity = match player.active {
+                ActiveAbility::None => player.body_entity,
+                ActiveAbility::Dash => player.dash_entity,
+                ActiveAbility::Bow => player.bow_entity,
+                ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
+                | ActiveAbility::Missile => player.throw_entity,
+                ActiveAbility::Mine => player.mine_entity,
+                ActiveAbility::Rock => player.rock_entity,
+                ActiveAbility::Roll => player.roll_entity,
+                ActiveAbility::Meteor => player.meteor_entity,
+                ActiveAbility::Push => player.push_entity,
+                ActiveAbility::Freeze => player.freeze_entity,
+                ActiveAbility::Blink => player.blink_entity,
+                ActiveAbility::GrowthRay => player.growth_ray_entity,
+                ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                ActiveAbility::Duplicator => player.duplicator_entity,
+                ActiveAbility::Magnet => player.magnet_entity,
+                ActiveAbility::Spike => player.spike_entity,
+                ActiveAbility::Engine => player.engine_entity,
+                ActiveAbility::Tesla => player.tesla_entity,
+                ActiveAbility::TimeStop => player.time_stop_entity,
+                ActiveAbility::Gust => player.gust_entity,
+                ActiveAbility::Revival => player.revival_entity,
+                ActiveAbility::BlackHole => player.black_hole_entity,
+                ActiveAbility::Throw => player.macho_throw_entity,
+                ActiveAbility::Drill => player.drill_entity,
+                ActiveAbility::Beam => player.beam_entity,
+                ActiveAbility::Platform => player.circle_entity,
+            };
+            if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            let row = self.entities[entity];
+            let overlaps = if row.kind == 0 {
+                crate::physics::contact::circle_circle(
                     query,
-                    self.players[player_index].base.collider,
+                    Circle {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        radius: Fix::from_raw(row.radius),
+                    },
                 )
-                .is_none()
-            {
+                .is_some()
+            } else {
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                crate::physics::contact::circle_box(
+                    query,
+                    OrientedBox {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    },
+                )
+                .is_some()
+            };
+            if !overlaps {
                 continue;
             }
             let target = &mut self.players[player_index];
@@ -20824,6 +20904,16 @@ impl RolloutWorld {
             && let Some(orb) = self.players[index].beam.orb
         {
             self.beam_orbs[orb].destroy_when_unheld = true;
+        }
+        if self.players[index].active == ActiveAbility::Bow {
+            // PlayerCollision.killPlayer calls BowTransform.ExitAbility with
+            // isDead=true. Bow resets rotation, then PlayerPhysics.UnGround
+            // moves the form one 0.05-unit surface-normal step before Ability
+            // copies that position back to the slime and stock logic reads it.
+            let slot = &mut self.players[index];
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.force_unground(&self.platforms);
         }
         self.deactivate_drill_hitboxes(index);
         let revival_marker = self.players[index]

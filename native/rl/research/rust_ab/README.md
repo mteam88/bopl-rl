@@ -222,6 +222,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `missile_player_ab.c`: a guided Missile directly hits an ordinary player, then
   matches ownerless MineExplosion lethality, telemetry, stock reconstruction,
   first-frame disable and visual expiry over 500 bit-exact ticks.
+- `missile_bow_ab.c`: the same guided impact against an active Bow form, covering
+  registered-form Shockwave selection, callback-time Bow death exit and the same
+  ownerless explosion/stock lifecycle over 500 bit-exact ticks.
 - `gust_rock_ab.c`: Gust's one-shot push of a pushable active Rock through the
   BoplBody fallback, subsequent rigid flight and lower-boundary death.
 - `gust_roll_ab.c`: Gust's one-shot PlayerPhysics force on an airborne charging

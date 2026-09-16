@@ -288,10 +288,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and isolated boundary/time-stop interactions remain open.
   Missile is exact through the guided form, steering, stabilization, release into
   instability thrust, rounded-platform collision, and its MineExplosion lifecycle.
-  A direct ordinary-player hit additionally matches callback destruction, ownerless
-  explosion lethality and telemetry, stock reconstruction, hitbox disable and visual
-  expiry. Projectile/item/active-form contacts, scale interactions, duplication and
-  Portal traversal remain open.
+  Direct ordinary-player and active-Bow hits additionally match callback destruction,
+  ownerless explosion lethality and telemetry, stock reconstruction, hitbox disable
+  and visual expiry. The Bow case uses the registered form for Shockwave selection and
+  reproduces its callback-time rotation reset and surface-normal death exit. Projectile,
+  item and other active-form contacts, scale interactions, duplication and Portal
+  traversal remain open.
   Mine executes the separate original `ThrowItem` form and exact autonomous
   hover, arming, scan/chase, player ignition, anticipation, owner-credited
   MineExplosion kill, and stock recovery path. Chase normalization and the
