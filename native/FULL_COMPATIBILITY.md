@@ -2391,9 +2391,12 @@ lifetime. The observed explosion collider axes differ from the serialized
 extents only by the source's `One / (One / extent)` fixed-point scale round trip.
 `gust_missile_ab.c` adds exact oriented-box Shockwave capture, the complete Gust
 force curve, right-boundary destruction and the deferred explosion's hierarchy.
-Other projectile/item/form contacts, time-stop and scale interactions,
-duplication, and a dedicated explosion victim remain open, so coverage is
-marked partial.
+`missile_player_ab.c` compares another 500 ticks bit exactly. A guided box hits
+an ordinary opponent directly on tick 279, its ownerless MineExplosion registers
+and kills on tick 280, and the differential preserves `deaths_other` attribution,
+the three-choice stock clone, first-frame hitbox disable and tick-362 visual
+expiry. Projectile, thrown-item and active-form contacts, scale interactions,
+duplication and Portal traversal remain open, so coverage is marked partial.
 
 ### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
 
