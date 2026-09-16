@@ -42,6 +42,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_bow_ab.c`: a Dash ray crosses an overlapping active Bow hurtbox and
   verifies the form's nonlethal `PlayerCollision` callback does not receive the
   ordinary slime's one-sided push.
+- `dash_dash_ab.c`: staggered overlapping Dashes cover the final active-form
+  callback, tolerating only the inactive duplicate prefab's inert ENABLED bit.
 - `dash_gun_forms_ab.c`: the same overlapping ray callback across live Blink,
   Growth, Missile, Shrink, Duplicator, Magnet and Freeze forms, covering seven
   more nonlethal `PlayerCollision` owners without an ordinary-slime push.

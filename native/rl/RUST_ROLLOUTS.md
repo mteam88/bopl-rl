@@ -78,7 +78,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Spike, Time Stop, Platform, Revival, Black Hole, Invisibility, Meteor, Throw,
   Push, Tesla, Teleport, Drill, Beam, Rewind, Web Swing and Portal Gun through
   the same callback. A live Grappling Hook form and its strand cover the final
-  non-Dash form callback through Dash exit with bounded solver geometry.
+  non-Dash form callback through Dash exit with bounded solver geometry. Two
+  staggered Dashes cover the remaining active-form callback without a kill or
+  push.
   A released lethal Roll uses its live circle for the same ray dispatch, kills
   the dasher at the near point and owns the credit; its cosmetic trail consumes
   no updater hierarchy because neither trail component is a `MonoUpdatable`.

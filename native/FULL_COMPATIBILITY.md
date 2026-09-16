@@ -1058,6 +1058,16 @@ Grappling Hook solver bound. The callback completes before the next independent
 hook/player constraint pass, so that later force path is not attributed to this
 Dash slice.
 
+`dash_dash_ab.c` starts the target Dash on tick 157 and crosses its live form
+with the caster's tick-159 Dash. The source and Rust both skip a kill and push,
+then complete both form exits with matching bodies, cooldowns and lifecycle
+state through tick 240. Before either duplicate Dash prefab is used, NativeAOT
+publishes its hidden layer-8 trigger row with ENABLED set while Rust publishes
+the same inactive row trigger-only. Neither row has ACTIVE set or participates
+in physics; the live target row's flags and callback are exact once activated.
+The differential therefore ignores only that inert pre-use ENABLED bit and
+retains 64-raw-Q32 vector bounds for every row.
+
 ### Dash ray collision with active Roll (2026-09-15)
 
 Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden
