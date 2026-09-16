@@ -467,7 +467,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   below WaterHeight. Tack copies now match fresh prefab runtime state, delayed
   behavior registration, arming and two trap consumptions over 450 ticks.
   Mjolnir copies match the same clone initialization, outbound damping, recall
-  and original-hammer removal over 420 ticks.
+  and original-hammer removal, then all three owner-return removals on tick 451
+  over 500 exact ticks.
   Poke Ball copies match registration, launch initialization, DetPhysics sweep
   ordering, the first shared dynamic-platform contact, later bounces and all
   four boundary/fizzle removals over 900 ticks. Capture by a duplicated ball
@@ -478,8 +479,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   equipped Duplicator with Revival and matches deferred registration, acquired
   cast, marker creation and exit.
   Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
-  open; duplicated Poke capture and the Mjolnir late tail need composed
-  goldens.
+  open; duplicated Poke capture still needs a composed golden.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
   Pulling is live on the cast pass as in the modified source. Its rounded-wall

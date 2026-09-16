@@ -207,8 +207,9 @@ int main(int argc, char **argv) {
 
     unsigned mjolnir_cast = 0, mjolnir_exit = 0, duplicator_cast = 0;
     unsigned duplicator_release = 0, max_items = 0;
-    unsigned first_loss = 0, second_loss = 0, previous_items = 0;
-    for (unsigned tick = 1; tick <= 420; tick++) {
+    unsigned first_loss = 0, second_loss = 0, return_removal = 0;
+    unsigned previous_items = 0;
+    for (unsigned tick = 1; tick <= 500; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
 
@@ -266,6 +267,8 @@ int main(int argc, char **argv) {
             max_items = items;
         if (previous_items == 4 && items == 3 && !first_loss)
             first_loss = tick;
+        if (previous_items == 3 && items == 0 && !return_removal)
+            return_removal = tick;
         if (previous_items == 3 && items == 2 && !second_loss)
             second_loss = tick;
         previous_items = items;
@@ -275,16 +278,19 @@ int main(int argc, char **argv) {
         bopl_rl_close(world[backend]);
     if (mjolnir_cast != 274 || mjolnir_exit != 303 ||
         duplicator_cast != 303 || duplicator_release != 348 ||
-        max_items != 4 || first_loss != 404 || second_loss != 0) {
+        max_items != 4 || first_loss != 404 || return_removal != 451 ||
+        second_loss != 0 || previous_items != 0) {
         fprintf(stderr,
-                "unexpected stages %u/%u/%u/%u items %u losses %u/%u\n",
+                "unexpected stages %u/%u/%u/%u items %u losses %u/%u "
+                "return=%u final=%u\n",
                 mjolnir_cast, mjolnir_exit, duplicator_cast,
-                duplicator_release, max_items, first_loss, second_loss);
+                duplicator_release, max_items, first_loss, second_loss,
+                return_removal, previous_items);
         return 1;
     }
-    printf("DUPLICATOR_MJOLNIR_GOLDEN_OK ticks=420 stages=%u/%u/%u/%u "
-           "items=%u losses=%u/%u\n",
+    printf("DUPLICATOR_MJOLNIR_GOLDEN_OK ticks=500 stages=%u/%u/%u/%u "
+           "items=%u losses=%u/%u return=%u\n",
            mjolnir_cast, mjolnir_exit, duplicator_cast, duplicator_release,
-           max_items, first_loss, second_loss);
+           max_items, first_loss, second_loss, return_removal);
     return 0;
 }

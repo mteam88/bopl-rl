@@ -3157,11 +3157,11 @@ All three fan copies match through ballistic contacts, arming and two trap
 consumptions within 64 raw Q32 units.
 
 `duplicator_mjolnir_ab.c` applies the same fresh-prefab rule to a live hammer.
-The 420-tick differential covers its three-copy fan, clone-local collider
+The 500-tick differential covers its three-copy fan, clone-local collider
 hierarchies, deferred `Mjolnir` launch initialization, outbound damping, turn
-to recall, homing acceleration and the original hammer's removal. All public
-state remains within 64 raw Q32 units through tick 420. The later sensitive
-recall/contact tail and duplicated-object expiry remain open.
+to recall, homing acceleration, the original hammer's removal and the three
+copies reaching their owner and disappearing together on tick 451. All public
+state remains within 64 raw Q32 units through tick 500.
 
 `duplicator_poke_ab.c` verifies the same serialized-versus-runtime reset for a
 Poke Ball. Its three fan copies, clone-local collider hierarchies, delayed
@@ -3198,7 +3198,7 @@ pickup through collection. The pickup replaces Duplicator with Revival on tick
 
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
 attached-terrain and orb branches are integrated. Poke Ball capture by a
-duplicated ball and Mjolnir's later tail remain unmeasured.
+duplicated ball remains unmeasured.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 

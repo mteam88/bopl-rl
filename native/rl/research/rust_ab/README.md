@@ -156,7 +156,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   and two exact trap consumptions over 450 ticks.
 - `duplicator_mjolnir_ab.c`: Mjolnir's three-copy fan through fresh prefab
   physics/runtime state, deferred launch initialization, outbound damping,
-  recall and the original hammer's removal over 420 exact ticks.
+  recall, original-hammer removal and simultaneous owner-return removal of all
+  three copies over 500 exact ticks.
 - `duplicator_poke_ab.c`: Poke Ball's three-copy fan through fresh prefab
   physics/runtime state, split collider/behavior registration, global
   Circle/Circle sweep ordering, shared dynamic-platform contacts, later
