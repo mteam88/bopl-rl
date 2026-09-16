@@ -73,6 +73,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   all 690 stopped passes, restored release and autonomous item registration.
 - `time_stop_mine_ab.c`: a previously released autonomous Mine held motionless
   for all 690 stopped passes and resuming its hover clock and motion afterward.
+- `time_stop_throw_forms_ab.c`: slot-two Grenade, Smoke, Poke Ball, Tack and
+  Mjolnir held forms across all 690 stopped passes, followed by exact restored
+  release and item registration.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass

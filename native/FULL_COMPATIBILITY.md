@@ -2150,6 +2150,16 @@ After restoration its hover clock, force and body motion resume on the same
 pass. This scenario is exact under the same established form bound and does
 not claim the still-unmeasured chasing, anticipation or explosion-entry phases.
 
+`time_stop_throw_forms_ab.c` runs Grenade, Smoke, Poke Ball, Tack and Mjolnir
+from slot two through 1,540 ticks each. Every held form, position, collider,
+cooldown and timer remains fixed for all 690 stopped passes, then releases and
+registers its item on the restored clock. The long-held Mjolnir exposed a
+semantic lifecycle bug: Rust began outbound/recall logic before `ThrowItem2`
+released it. Source `Mjolnir.UpdateSim` returns while
+`grenade.hasBeenThrown` is false. The pooled implementation now uses the same
+boundary represented by manual collider registration, so the held payload
+remains owned by the form without a lookup or per-tick allocation.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback

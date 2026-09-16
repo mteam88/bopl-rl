@@ -88,6 +88,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Mine's older held form and a separately released autonomous Mine are exact
   across all 690 passes; the form releases after restoration and the live item
   resumes its hover clock and motion.
+  Grenade, Smoke, Poke Ball, Tack and Mjolnir also retain their shared
+  `ThrowItem2` forms for all 690 passes and release on the restored clock.
+  Mjolnir waits for `Fire`'s manual collider registration before beginning its
+  outbound updater, matching the source `grenade.hasBeenThrown` guard.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =

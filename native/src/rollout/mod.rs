@@ -18021,6 +18021,14 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // Mjolnir.UpdateSim leaves the payload entirely under ThrowItem2
+            // control until Grenade.hasBeenThrown is set by Fire. Its manual
+            // collider registration is the corresponding pooled-state edge.
+            if !self.thrown_items[item_index].launched
+                && self.thrown_items[item_index].entity.is_none()
+            {
+                continue;
+            }
             {
                 let item = &mut self.thrown_items[item_index];
                 if !item.launched {
