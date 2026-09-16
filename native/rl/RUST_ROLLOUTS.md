@@ -537,6 +537,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   pickup, pause their fuse while held, track the clamped firepoint and launch
   with the authored force; a 450-tick Grenade composition now matches complete
   public state within 64 raw Q32 units after source updater-phase separation.
+  A second same-player Grenade composition matches the 214/243/245/250
+  cast/release/catch/fire schedule with no positional allowance.
   The post-player static parry sweep also uses
   fixed player-slot storage and matches the source's ordered overlap, pause and
   symmetric `AddForce` pushes in a two-Magnet golden. A composed Time Stop

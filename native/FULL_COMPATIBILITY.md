@@ -3398,6 +3398,12 @@ separate source-ordered phases, including the grounded platform-local handoff.
 Holding and duplication remain allocation-free, and copied items explicitly
 discard the source holder.
 
+`magnet_grenade_ab.c` adds a strict 340-tick same-player composition without
+the inherited form-pose allowance. Grenade casts on tick 214 and releases on
+tick 243; Magnet enters that same pass, catches on tick 245, and fires on tick
+250. The item query, nearest selection, locked angular velocity, two-pass Hold
+refresh, firepoint pinning and 10,000-force launch match every public field.
+
 The allocation-free replacement for `MagnetGun.StaticUpdate` retains one
 pickup circle per player slot, scans pairs in slot order after every player's
 ability update, pauses only magnets still prepulling/pulling, and applies the
