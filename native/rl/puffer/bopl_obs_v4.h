@@ -74,6 +74,138 @@ static Bopl4Enemy bopl4_primary_enemy(const BoplRlState *state, const BoplRlPlay
     }
     return best;
 }
+/* ---- terrain: the static-collider SDF the scripted bots use (bopl_bots.h
+ * bot_wall_sdf / bot_sdf / bot_raycast), filled here for the observer. ---- */
+typedef struct {
+    BotView view;                 /* only walls[], wall_count and soa are filled */
+    double water_top;             /* y of the water surface, -1e9 if no water entity */
+    int has_water;
+    /* Dynamic, visible entities as circles for the ray casts. */
+    int circle_count; double cx[BOPL4_ENTITIES], cy[BOPL4_ENTITIES], cr[BOPL4_ENTITIES], cvx[BOPL4_ENTITIES], cvy[BOPL4_ENTITIES];
+} Bopl4Terrain;
+static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const uint32_t *nearest, int count) {
+    BotView *view=&t->view;
+    view->wall_count=0; t->has_water=0; t->water_top=-1e9; t->circle_count=0;
+    for (uint32_t i=0; i<state->header.entity_count; i++) {
+        const BoplRlEntity *e=&state->entities[i];
+        if (!(e->flags&1) || (e->flags&4)) continue;
+        if (e->layer==BOPL4_WATER_LAYER) {
+            double top=bopl_fix(e->y)+fabs(bopl_fix(e->up_y))+fabs(bopl_fix(e->right_y));
+            if (!t->has_water || top>t->water_top) t->water_top=top;
+            t->has_water=1;
+            continue;
+        }
+        /* Terrain: rounded rects on wall/terrain layers (11 wall, 16 lethal, 21 non-lethal). */
+        if (e->kind==2 && (e->layer==11 || e->layer==16 || e->layer==21) && view->wall_count<48) {
+            BotWall *w=&view->walls[view->wall_count++];
+            w->cx=bopl_fix(e->x); w->cy=bopl_fix(e->y);
+            double rx=bopl_fix(e->right_x), ry=bopl_fix(e->right_y), ux=bopl_fix(e->up_x), uy=bopl_fix(e->up_y);
+            double fex=sqrt(rx*rx+ry*ry), fey=sqrt(ux*ux+uy*uy);
+            w->radius=bopl_fix(e->radius);
+            if (fex>1e-6) { w->rx=rx/fex; w->ry=ry/fex; } else { w->rx=1; w->ry=0; }
+            if (fey>1e-6) { w->ux=ux/fey; w->uy=uy/fey; } else { w->ux=-w->ry; w->uy=w->rx; }
+            w->ex=fex; w->ey=fey;
+            w->top=w->cy+w->ex*fabs(w->ry)+w->ey*fabs(w->uy)+w->radius;
+            w->spanx=w->ex*fabs(w->rx)+w->ey*fabs(w->ux);
+            w->standable=e->layer==16?-1:1;   /* -1 marks lethal terrain for the ray class */
+            int k=view->wall_count-1;
+            view->soa.cx[k]=w->cx; view->soa.cy[k]=w->cy; view->soa.rx[k]=w->rx; view->soa.ry[k]=w->ry;
+            view->soa.ux[k]=w->ux; view->soa.uy[k]=w->uy; view->soa.ex[k]=w->ex; view->soa.ey[k]=w->ey;
+            view->soa.radius[k]=w->radius; view->soa.top[k]=w->top;
+        }
+    }
+    /* The observed (visible, nearest) dynamic bodies, as circles. */
+    for (int i=0; i<count; i++) {
+        const BoplRlEntity *e=&state->entities[nearest[i]];
+        if (e->inverse_mass<=0 || e->kind==3 || e->kind==4) continue;
+        int k=t->circle_count++;
+        t->cx[k]=bopl_fix(e->x); t->cy[k]=bopl_fix(e->y); t->cr[k]=fmax(bopl_fix(e->radius), 0.25);
+        t->cvx[k]=bopl_fix(e->vx); t->cvy[k]=bopl_fix(e->vy);
+    }
+}
+/* Nearest wall's index at a point (for the lethal class). */
+static int bopl4_nearest_wall(const BotView *view, double x, double y) {
+    int best=-1; double best_d=1e9;
+    for (int i=0; i<view->wall_count; i++) { double d=bot_wall_sdf(&view->walls[i], x, y); if (d<best_d) { best_d=d; best=i; } }
+    return best;
+}
+/* One ray: distance to the first surface among walls, water and circles
+ * (BOPL4_RAY_LENGTH when nothing), the class and, for a circle, its closing
+ * speed along the ray (relative to the observer's velocity). */
+static void bopl4_ray(const Bopl4Terrain *t, double x, double y, double dx, double dy, double svx, double svy, float *out) {
+    double best=BOPL4_RAY_LENGTH; int class=-1; double closing=0;
+    if (t->view.wall_count) {
+        double d=bot_raycast(&t->view, x, y, dx, dy, BOPL4_RAY_LENGTH);
+        if (d<best) {
+            best=d;
+            int w=bopl4_nearest_wall(&t->view, x+dx*d, y+dy*d);
+            class=(w>=0 && t->view.walls[w].standable<0)?1:0;
+        }
+    }
+    if (t->has_water && dy<-1e-9) {
+        double d=(t->water_top-y)/dy;
+        if (d>=0 && d<best) { best=d; class=2; }
+    }
+    for (int i=0; i<t->circle_count; i++) {
+        double px=t->cx[i]-x, py=t->cy[i]-y, along=px*dx+py*dy;
+        if (along<0) continue;
+        double perp2=px*px+py*py-along*along, r2=t->cr[i]*t->cr[i];
+        if (perp2>r2) continue;
+        double d=along-sqrt(r2-perp2);
+        if (d<0) d=0;
+        if (d<best) { best=d; class=3; closing=-((t->cvx[i]-svx)*dx+(t->cvy[i]-svy)*dy); }
+    }
+    out[0]=(float)(best/BOPL4_RAY_LENGTH);
+    out[1]=class==0; out[2]=class==1; out[3]=class==2; out[4]=class==3;
+    out[5]=class==3?bopl_clip(closing/BOPL4_VELOCITY_SCALE):0.0f;
+}
+static double bopl4_drop(const Bopl4Terrain *t, double x, double y, double cap) {
+    double d=t->view.wall_count?bot_raycast(&t->view, x, y, 0, -1, cap):cap;
+    if (t->has_water && y>t->water_top && y-t->water_top<d) d=y-t->water_top;
+    return d;
+}
+/* The egocentric terrain block (BOPL4_TERRAIN) at body position (x, y). */
+static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out) {
+    const BotView *view=&t->view;
+    double drop=bopl4_drop(t, x, y, 32.0);
+    double ceiling=view->wall_count?bot_raycast(view, x, y, 0, 1, 32.0):32.0;
+    out[0]=(float)(drop/32.0); out[1]=(float)(ceiling/32.0);
+    /* Edges: walk left/right in 1.5-unit steps to one dash length; the edge
+     * is where the floor drops away by more than 4 units (or ends in water),
+     * a wall is where the step lands inside terrain. */
+    for (int side=0; side<2; side++) {
+        double sign=side?1.0:-1.0, edge=BOPL4_DASH_LENGTH; int wall=0;
+        for (int k=1; k<=8; k++) {
+            double px=x+sign*1.5*k;
+            if (view->wall_count && bot_sdf(view, px, y)<0.3) { edge=1.5*k; wall=1; break; }
+            if (bopl4_drop(t, px, y, 32.0)>drop+4.0) { edge=1.5*k; break; }
+        }
+        out[2+side]=(float)(edge/BOPL4_DASH_LENGTH); out[4+side]=wall;
+    }
+    out[6]=t->has_water?bopl_clip((y-t->water_top)/32.0):1.0f;
+    double lethal=16.0;
+    for (int i=0; i<view->wall_count; i++) if (view->walls[i].standable<0) {
+        double d=bot_wall_sdf(&view->walls[i], x, y); if (d<lethal) lethal=d;
+    }
+    out[7]=(float)(lethal/16.0);
+    /* Ground within one dash: some dash endpoint (16 directions, stopped at
+     * terrain) has a surface within 4 units below it. */
+    int landing=drop<=4.0;
+    for (int k=0; k<16 && !landing; k++) {
+        double angle=6.28318530717958647692*k/16.0, dx=cos(angle), dy=sin(angle);
+        double d=view->wall_count?bot_raycast(view, x, y, dx, dy, BOPL4_DASH_LENGTH):BOPL4_DASH_LENGTH;
+        double ex=x+dx*(d-0.5), ey=y+dy*(d-0.5);
+        if (t->has_water && ey<=t->water_top) continue;
+        landing=bopl4_drop(t, ex, ey, 8.0)<=4.0;
+    }
+    out[8]=landing;
+    double sdf=view->wall_count?bot_sdf(view, x, y):8.0;
+    out[9]=bopl_clip(sdf/8.0);
+    if (view->wall_count) {
+        double h=0.05, gx=(bot_sdf(view, x+h, y)-bot_sdf(view, x-h, y))/(2*h), gy=(bot_sdf(view, x, y+h)-bot_sdf(view, x, y-h))/(2*h);
+        out[10]=bopl_clip(gx); out[11]=bopl_clip(gy);
+    } else out[10]=out[11]=0;
+}
 /* Encode `state` into player a's v4 row. Same contract as the v3 row writer:
  * every feature stored, unused set slots zeroed (with the bopl_written record
  * of the previous encode), the own-action tail zeroed and the privileged block
@@ -160,7 +292,7 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     obs[5]=bopl_clip((double)(active_count-count)/BOPL4_ENTITIES);
     obs[6]=bopl_clip((double)visible_slimes/BOPL4_SLIMES);
     obs[7]=bopl_clip((double)(visible_slimes>BOPL4_SLIMES?visible_slimes-BOPL4_SLIMES:0)/BOPL4_SLIMES);
-    obs[8]=bopl_clip(self_x/64.0); obs[9]=bopl_clip(self_y/64.0);
+    obs[8]=0; obs[9]=0;   /* v3's absolute self position: a map lookup key, dropped (terrain block instead) */
     double level_time=bopl_fix(state->header.simulation_time_since_level_loaded);
     obs[10]=bopl_clip(fmax(0.0, 120.0-level_time)/120.0);
     obs[11]=state->header.sudden_death!=0;
@@ -187,7 +319,18 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
         bopl4_body(opp+BOPL_PLAYER_FEATURES, enemy.slime);
         if (enemy.known) bopl4_relation(opp+BOPL4_SELF, enemy.x-self_x, enemy.y-self_y, enemy.vx-self_vx, enemy.vy-self_vy, 0.0, 0);
     }
-    memset(obs+BOPL4_OBS_PREVIOUS_OFFSET, 0, (BOPL4_PREVIOUS+BOPL4_RAYS*BOPL4_RAY_FEATURES)*sizeof(float));
+    memset(obs+BOPL4_OBS_PREVIOUS_OFFSET, 0, BOPL4_PREVIOUS*sizeof(float));
+    /* Terrain and rays: the egocentric view of the map from the body. */
+    {
+        Bopl4Terrain terrain;
+        bopl4_terrain_fill(&terrain, state, nearest, count);
+        bopl4_terrain(&terrain, self_x, self_y, obs+BOPL4_OBS_TERRAIN_OFFSET);
+        for (int k=0; k<BOPL4_RAYS; k++) {
+            double angle=6.28318530717958647692*k/BOPL4_RAYS;
+            bopl4_ray(&terrain, self_x, self_y, cos(angle), sin(angle), self_vx, self_vy,
+                      obs+BOPL4_OBS_RAY_OFFSET+(size_t)k*BOPL4_RAY_FEATURES);
+        }
+    }
 
     uint32_t player_count=state->header.player_count<BOPL4_PLAYERS?state->header.player_count:BOPL4_PLAYERS;
     for (uint32_t i=0; i<player_count; i++) {
@@ -344,8 +487,12 @@ static void bopl4_privileged(BoplPuffer *env, const BoplRlState *state, int a,
         }
         out[47]=(enemy->flags&1)!=0;
     }
-    const float *row=bopl_obs_row(env, a);
-    out[43]=bopl_clip(self_x/64.0-row[8]); out[44]=bopl_clip(self_y/64.0-row[9]);
+    /* How stale the actor's delayed view of the enemy is: true relative
+     * position now minus the opponent block's delayed one. */
+    const float *opp=bopl_obs_row(env, a)+BOPL4_OBS_OPPONENT_OFFSET;
+    if (enemy) {
+        out[43]=bopl_clip((bopl_fix(enemy->x)-self_x)/64.0-opp[9]); out[44]=bopl_clip((bopl_fix(enemy->y)-self_y)/64.0-opp[10]);
+    }
     if (controller) { out[45]=bopl_clip(bopl_fix(controller->vx)/BOPL4_VELOCITY_SCALE); out[46]=bopl_clip(bopl_fix(controller->vy)/BOPL4_VELOCITY_SCALE); }
 }
 

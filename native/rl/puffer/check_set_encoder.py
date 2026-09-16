@@ -125,8 +125,8 @@ class Check:
         gradients = np.empty_like(weights)
         # Rows live in BOPL_OBS_STRIDE floats (layout v4 is wider); the v3 columns come first.
         observations = np.asarray(observations, dtype=np.float32)
-        padded = np.zeros((observations.shape[0], layout.OBS_STRIDE), np.float32)
-        padded[:, :OBS] = observations
+        padded = np.zeros(observations.shape[:-1] + (layout.OBS_STRIDE,), np.float32)
+        padded[..., :OBS] = observations
         args = [np.ascontiguousarray(value, dtype=np.float32)
                 for value in (weights, padded, incoming)]
         if self.lib.bopl_set_check_run(self.context, *args, output, gradients, int(graph)):
