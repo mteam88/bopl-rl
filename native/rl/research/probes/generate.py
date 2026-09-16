@@ -81,9 +81,10 @@ def heldout_schedule():
 
 
 class Runner:
-    def __init__(self, out, log_dir):
+    def __init__(self, out, log_dir, arrays=None):
         configure(log_dir, GAME)
         self.out = Path(out)
+        self.arrays = arrays
         self.policies = {}
         self.meta = json.loads(Path(str(FINAL) + ".json").read_text())
         reward = self.meta["config"]["reward"]
@@ -221,6 +222,8 @@ class Runner:
         out = dict(obs=np.stack(rows["obs"])[order], obs_now=np.stack(rows["obs_now"])[order],
                    meta=meta.reshape(-1, len(schema.META))[order], labels=labels.reshape(-1, len(schema.LABELS))[order],
                    **{k: np.stack(rows[k])[order] for k in schema.RAY_SETS})
+        if self.arrays:  # regenerate a subset of the arrays (meta always, for alignment checks)
+            out = {k: v for k, v in out.items() if k in self.arrays or k == "meta"}
         path = self.out / "games" / f"{game['game']:05d}.npz"
         tmp = path.with_suffix(".tmp.npz")
         np.savez(tmp, **out)
@@ -229,10 +232,10 @@ class Runner:
                     winner=[int(bool(final.players[p].flags & 2)) for p in range(2)], focal=game["focal"], other=game["other"])
 
 
-def worker(index, workers, games, out):
+def worker(index, workers, games, out, arrays=None):
     torch.set_num_threads(1)
     os.nice(15)
-    runner = Runner(out, Path(out) / "workers" / f"{index}")
+    runner = Runner(out, Path(out) / "workers" / f"{index}", arrays)
     for game in games[index::workers]:
         path = Path(out) / "games" / f"{game['game']:05d}.npz"
         if path.exists():
@@ -249,14 +252,18 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=0, help="only the first N games of the schedule")
     parser.add_argument("--heldout", action="store_true", help="the maps 3-4 supplement (game ids from 10000)")
+    parser.add_argument("--all", action="store_true", help="main schedule + held-out supplement")
+    parser.add_argument("--arrays", nargs="*", default=None, help="write only these arrays per game (plus meta), e.g. rays32x3")
     args = parser.parse_args()
     games = heldout_schedule() if args.heldout else schedule()
+    if args.all:
+        games = schedule() + heldout_schedule()
     if args.limit:
         games = games[:args.limit]
     (args.out / "games").mkdir(parents=True, exist_ok=True)
     name = "schedule-heldout.json" if args.heldout else "schedule.json"
     (args.out / name).write_text(json.dumps(dict(controllers=CONTROLLERS, games=games), indent=1))
-    processes = [Process(target=worker, args=(i, args.workers, games, args.out)) for i in range(args.workers)]
+    processes = [Process(target=worker, args=(i, args.workers, games, args.out, args.arrays)) for i in range(args.workers)]
     for p in processes:
         p.start()
     for p in processes:

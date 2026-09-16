@@ -25,10 +25,36 @@ def test_game(game):
     return (int(game) * 2654435761) % 5 == 0
 
 
+def merge_one(dataset, games_dir, name):
+    """Rebuild one array from a regenerated games dir, checking every game's rows against index.json."""
+    index = json.loads((dataset / "index.json").read_text())
+    files = sorted(Path(games_dir).glob("*.npz"))
+    expected = {g["game"]: g for g in index["game_index"]}
+    if len(files) != len(expected):
+        raise SystemExit(f"{len(files)} games regenerated, index has {len(expected)}")
+    out = None
+    for f in files:
+        with np.load(f) as d:
+            meta = d["meta"]; g = expected[int(meta[0, schema.META.index("game")])]
+            if meta.shape[0] != g["rows"]:
+                raise SystemExit(f"game {g['game']}: {meta.shape[0]} rows regenerated vs {g['rows']} in the index")
+            block = d[name]
+            if out is None:
+                out = np.lib.format.open_memmap(dataset / f"{name}.npy", mode="w+", dtype=block.dtype, shape=(index["rows"], block.shape[1]))
+            out[g["start"]:g["start"] + g["rows"]] = block
+    out.flush()
+    print(json.dumps(dict(array=name, rows=index["rows"], width=out.shape[1])))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=OUT)
+    parser.add_argument("--only", default=None, help="rebuild just this array from --games-dir (alignment-checked)")
+    parser.add_argument("--games-dir", type=Path, default=None)
     args = parser.parse_args()
+    if args.only:
+        merge_one(args.dataset, args.games_dir or args.dataset / "games", args.only)
+        return
     files = sorted((args.dataset / "games").glob("*.npz"))
     if not files:
         raise SystemExit("no games")

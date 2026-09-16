@@ -66,10 +66,11 @@ class Data:
         self.dataset = Path(dataset)
         self.index = json.loads((self.dataset / "index.json").read_text())
         self.obs = np.load(self.dataset / "obs.npy", mmap_mode="r")
-        self.obs_now = np.load(self.dataset / "obs_now.npy", mmap_mode="r")
+        now = self.dataset / "obs_now.npy"  # deleted once the undelayed probes were done (disk budget); regenerate with generate.py + merge.py
+        self.obs_now = np.load(now, mmap_mode="r") if now.exists() else None
         self.meta = np.load(self.dataset / "meta.npy", mmap_mode="r")
         self.labels = np.load(self.dataset / "labels.npy", mmap_mode="r")
-        self.rays = {k: np.load(self.dataset / f"{k}.npy", mmap_mode="r") for k in schema.RAY_SETS}
+        self.rays = {k: np.load(self.dataset / f"{k}.npy", mmap_mode="r") for k in schema.RAY_SETS if (self.dataset / f"{k}.npy").exists()}
         acts_path = self.dataset / f"acts-{acts_tag}.npy"
         self.acts = np.load(acts_path, mmap_mode="r") if acts_path.exists() else None
         self.meta_cols = {k: i for i, k in enumerate(schema.META)}
@@ -252,7 +253,7 @@ def fit(data, feature_name, label_names, device, epochs=6, batch=4096, chunk=327
             x = (t(data.features(feature_name, rows)) - mean_t) / std_t
             ys_all.append(data.targets(rows, label_names)[0])
             preds["linear"].append((linear(x) * ystd_t + ymean_t).cpu().numpy())
-            preds["mlp"].append((mlp(x) * ystd_t + ymean_t).cpu().numpy())
+            preds["mlp"].append(np.concatenate([(mlp(x[b:b + batch]) * ystd_t + ymean_t).cpu().numpy() for b in range(0, len(x), batch)]))
     y = np.concatenate(ys_all)
     result = dict(features=feature_name, dim=int(d), train_rows=int(len(train)), test_rows=int(len(test)), seconds=time.time() - started, labels={})
     col = 0
@@ -293,7 +294,13 @@ def main():
     parser.add_argument("--max-train", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=Path, default=None, help="results json (default <dataset>/results/probes-<acts-tag>.json)")
+    parser.add_argument("--gpu-fraction", type=float, default=0.12, help="torch per-process GPU memory cap (fraction of the device)")
+    parser.add_argument("--batch", type=int, default=2048)
+    parser.add_argument("--chunk", type=int, default=16384)
+    parser.add_argument("--skip-done", action="store_true", help="skip feature sets already in the results json")
     args = parser.parse_args()
+    if args.device.startswith("cuda"):  # the machine is shared with a live training job: hard cap at ~1.5 GB
+        torch.cuda.set_per_process_memory_fraction(args.gpu_fraction)
     data = Data(args.dataset, args.acts_tag, args.maps, args.controllers)
     out = args.out or args.dataset / "results" / f"probes-{args.acts_tag}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -302,7 +309,10 @@ def main():
     for feature_name in args.features:
         if any(p in SLICES or p == "pooled" for p in feature_name.split("+")) and data.acts is None:
             print(f"skip {feature_name}: no acts-{args.acts_tag}.npy"); continue
-        results[feature_name] = fit(data, feature_name, args.labels, args.device, epochs=args.epochs, max_train=args.max_train)
+        if args.skip_done and feature_name in results:
+            continue
+        results[feature_name] = fit(data, feature_name, args.labels, args.device, epochs=args.epochs, max_train=args.max_train,
+                                    batch=args.batch, chunk=args.chunk)
         out.write_text(json.dumps(results, indent=1))
         lab = results[feature_name]["labels"]
         show = [f"{k}: lin {v['linear'].get('auc', v['linear'].get('r2', v['linear'].get('accuracy'))):.3f} mlp {v['mlp'].get('auc', v['mlp'].get('r2', v['mlp'].get('accuracy'))):.3f}"
