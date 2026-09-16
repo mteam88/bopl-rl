@@ -177,9 +177,9 @@ int main(int argc, char **argv) {
     config.player[0].abilities[2] = 14;
     config.player[1].abilities[0] = 2;
     config.player[1].abilities[2] = 14;
-    static const unsigned abilities[] = {13, 33, 35};
-    static const char *names[] = {"Smoke", "PokeBall", "Tack"};
-    for (unsigned scenario = 0; scenario < 3; scenario++) {
+    static const unsigned abilities[] = {3, 13, 33, 35};
+    static const char *names[] = {"Grenade", "Smoke", "PokeBall", "Tack"};
+    for (unsigned scenario = 0; scenario < 4; scenario++) {
     config.player[1].abilities[1] = abilities[scenario];
     if (reset(world[0], &config, "reference") ||
         reset(world[1], &config, "rust"))
@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
     if (!cast_tick || !saw_form || !saw_exit || !saw_stopped ||
         !saw_restored || !saw_protection || !saw_protected_cooldown ||
         !saw_item_before_stop || !froze_item || !saw_item_motion_after_stop ||
-        (scenario == 2 && !saw_opponent_death_after_stop) ||
+        (scenario == 3 && !saw_opponent_death_after_stop) ||
         frozen_ticks < 600 || final->header.player_time_scale != (1LL << 32) ||
         final->players[0].deaths != 0) {
         fprintf(stderr,
