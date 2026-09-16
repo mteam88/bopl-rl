@@ -3134,10 +3134,19 @@ Player-layer form axes and rotation retain the existing dynamic ThrowItem2
 allowance of 30,000,000 raw units (0.00699 radians); player/body state and all
 translational results remain exact.
 
+`duplicator_smoke_ab.c` adds 450 exact ticks for the same fan path using a live
+Smoke grenade. This exposed three source distinctions now preserved by Rust:
+all cloned `Grenade` components receive the staggered fuse and owner-contact
+reset, Smoke detonates on rounded-wall and Water contacts after owner contact
+is enabled, and a newly spawned cloud below `WaterHeight` consumes its Init RNG
+draw but is destroyed before its collider reaches the public entity rows. The
+three copies, collision responses, randomized clouds, identities, hierarchies
+and removal ticks all match.
+
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. Smoke, Tack, Mjolnir, Poke
-Ball and Mine use the same allocation-free circular-item clone path but still
-need their own composed goldens.
+attached-terrain and orb branches are integrated. Tack, Mjolnir, Poke Ball and
+Mine use the same allocation-free circular-item clone path but still need
+their own composed goldens.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 

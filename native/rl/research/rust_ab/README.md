@@ -148,6 +148,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   negative ScaleChanger, reduced-body fall and platform contacts.
 - `freeze_airborne_hit_ab.c`: a rising ordinary player caught by Freeze through
   `FrozenSolid` takeover, thaw, resumed fall and landing over 500 exact ticks.
+- `duplicator_smoke_ab.c`: Smoke's three-copy fan through cloned-Grenade reset,
+  rigid and Water contact detonation, randomized clouds and same-pass removal
+  of a cloud born below WaterHeight over 450 ticks.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

@@ -11259,6 +11259,17 @@ impl RolloutWorld {
             if !cloud.active || cloud.registered || cloud.born_tick >= self.tick {
                 continue;
             }
+            let delay = self
+                .rng
+                .fix_range(data.smoke.min_ignition_delay, data.smoke.max_ignition_delay);
+            // Newly instantiated cloud prefabs run Init (including the RNG
+            // draw above) before their bounds updater in the same pass. A
+            // cloud born below WaterHeight is destroyed before its collider
+            // can appear in the public entity rows.
+            if cloud.position.y < Fix::from_f32(-11.3) {
+                self.remove_smoke_cloud(cloud_index);
+                continue;
+            }
             let entity = match cloud.entity {
                 Some(entity) => entity,
                 None => {
@@ -11269,9 +11280,6 @@ impl RolloutWorld {
                 }
             };
             let id = self.next_id();
-            let delay = self
-                .rng
-                .fix_range(data.smoke.min_ignition_delay, data.smoke.max_ignition_delay);
             self.entities[entity] = CEntity {
                 id,
                 kind: 0,
@@ -15682,9 +15690,14 @@ impl RolloutWorld {
             clone.duplicated = true;
             clone.duplicate_lifespan = 1800;
             clone.duplicate_shake_offset = Vec2::ZERO;
-            if source.ability == ABILITY_GRENADE {
-                clone.fuse = data.grenade.detonation_time
-                    - Fix::from_int((clone_index + 1) as i64) * Fix::from_f32(0.1);
+            if matches!(source.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
+                let detonation_time = if source.ability == ABILITY_SMOKE {
+                    data.smoke.detonation_time
+                } else {
+                    data.grenade.detonation_time
+                };
+                clone.fuse =
+                    detonation_time - Fix::from_int((clone_index + 1) as i64) * Fix::from_f64(0.1);
                 clone.hurt_owner_delay = Fix::ZERO;
                 clone.detonates_on_owner = true;
                 clone.launched = false;
@@ -18899,6 +18912,13 @@ impl RolloutWorld {
                 row.vy = 0;
                 row.angular_velocity = 0;
             }
+
+            // SmokeGrenadeExplode2 differs from the ordinary Grenade callback:
+            // once owner contact is enabled, every collision (including a
+            // rounded wall) detonates the smoke payload.
+            if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
+                self.detonate_smoke(item_index, true, data);
+            }
         }
     }
 
@@ -18990,6 +19010,18 @@ impl RolloutWorld {
                 center: item.position,
                 radius: item_radius,
             };
+            if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
+                let map = &data.maps[self.map];
+                let water = OrientedBox::from_basis(
+                    map.water_position,
+                    Vec2::RIGHT,
+                    data::surface_extents(map.water_extents),
+                );
+                if crate::physics::contact::circle_box(circle, water).is_some() {
+                    self.detonate_smoke(item_index, true, data);
+                    continue;
+                }
+            }
             if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
             {
                 let mine_circle = Circle {

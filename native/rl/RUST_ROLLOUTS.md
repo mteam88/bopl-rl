@@ -462,8 +462,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   allocation-free circular-item fan copies are also live, including deferred
   collider registration, copied body state, 1,800-pass expiry, grenade reset
   fields, ordinary rigid contacts, explosion shockwaves and water-boundary
-  cleanup. Player/projectile/weapon/Black Hole, attached-terrain and orb
-  targets remain open; the non-Grenade item variants need composed goldens.
+  cleanup. A Smoke-copy differential additionally covers its cloned-Grenade
+  reset, wall/Water contact detonation and same-pass removal of clouds born
+  below WaterHeight. Player/projectile/weapon/Black Hole, attached-terrain and
+  orb targets remain open; Tack, Mjolnir, Poke Ball and Mine need composed
+  goldens.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
   Pulling is live on the cast pass as in the modified source. Its rounded-wall
