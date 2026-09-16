@@ -3175,6 +3175,21 @@ Circle/RoundedRectangle manifold before resolving the first one, matching the
 source phase that prevents an earlier ball's platform correction from changing
 a later ball's already-queued contact.
 
+`duplicator_poke_capture_ab.c` adds a 248-tick exact differential for the
+capture path. On tick 237 the original ball's updater-radius query misses a
+player that has just exited a held Bow form; DetPhysics then integrates
+the ball, synchronizes the restored ordinary Player box and dispatches the
+queued Circle/Box callback, which captures it. A fan copy catches an airborne
+ordinary player in the same callback pass. On tick 238 another copy's queued
+Circle/Box callback captures that already-invulnerable victim as the source
+allows: both PokeBall instances retain their victim reference, and their
+ordered updaters pin the shared body on later passes. Rust keeps the collider at
+the position used to build the current callback batch and synchronizes it on
+the next physics pass. Every public field stays within 64 raw Q32 units through
+12 pinned passes. A fired Arrow exposes a separate destroyed-row angular-velocity
+publication difference on tick 249, so this fixture does not claim the later
+multi-captor expiry/ejection boundary.
+
 `duplicator_mine_ab.c` adds 2,200 ticks for Mine's distinct original
 `ThrowItem` path and duplicate initialization. Releasing during grounded
 anticipation records the source's down direction and selects the 2-unit
@@ -3197,8 +3212,9 @@ pickup through collection. The pickup replaces Duplicator with Revival on tick
 2,600-tick public state matches NativeAOT exactly.
 
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. Poke Ball capture by a
-duplicated ball remains unmeasured.
+attached-terrain and orb branches are integrated. The later simultaneous or
+one-pass-staggered expiry/ejection of multiple Poke Balls holding one victim
+remains unmeasured.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 

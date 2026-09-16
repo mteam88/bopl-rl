@@ -18085,6 +18085,58 @@ impl RolloutWorld {
         }
     }
 
+    /// PokeBall.BeginCapture. `sync_collider` distinguishes the UpdateSim
+    /// proximity path (before DetPhysics synchronizes shapes) from OnCollide
+    /// (after this pass's manifolds and observation collider positions exist).
+    fn capture_poke_victim(
+        &mut self,
+        item_index: usize,
+        victim: usize,
+        data: &data::RolloutData,
+        sync_collider: bool,
+    ) {
+        let capture_position = self.thrown_items[item_index].position;
+        {
+            let slot = &mut self.players[victim];
+            slot.late_obs_tick = self.tick;
+            slot.late_obs_position = slot.base.position;
+            slot.late_obs_velocity = slot.base.velocity + slot.base.external_velocity;
+            slot.late_obs_rotation = slot.base.rotation;
+            slot.late_obs_state = slot.obs_state;
+            slot.captured_by_ball = Some(item_index);
+            slot.invisible = true;
+            slot.base.force_unground(&self.platforms);
+            slot.base.position = capture_position;
+            slot.base.velocity = Vec2::ZERO;
+            if sync_collider {
+                slot.base.sync_collider();
+            } else {
+                // A physics-callback capture happens after PlayerBody has
+                // published this pass. BeginCapture's zero velocity is what
+                // the late observation sees; updater captures retain the
+                // velocity sampled before the PlayerBody phase.
+                slot.late_obs_velocity = Vec2::ZERO;
+            }
+            slot.late_obs_position = capture_position;
+            slot.late_obs_state = STATE_FALL;
+            slot.obs_state = STATE_RAGDOLL;
+            slot.ragdoll = RagdollState {
+                active: true,
+                skip_physics: true,
+                time: Fix::ZERO,
+                duration: data.poke_ball.capture_seconds + Fix::ONE,
+            };
+        }
+        let item = &mut self.thrown_items[item_index];
+        item.capture_victim = Some(victim);
+        item.capture_left = data.poke_ball.capture_seconds;
+        item.body.velocity = Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
+        if let Some(entity) = item.entity {
+            self.entities[entity].vx = item.body.velocity.x.raw();
+            self.entities[entity].vy = item.body.velocity.y.raw();
+        }
+    }
+
     fn detonate_mine(&mut self, item_index: usize, data: &data::RolloutData) {
         if !self.thrown_items[item_index].active {
             return;
@@ -18143,9 +18195,11 @@ impl RolloutWorld {
             self.thrown_items[item_index].age += updater_dt;
 
             if let Some(victim) = self.thrown_items[item_index].capture_victim {
-                let valid = victim < self.players.len()
-                    && self.playable(victim)
-                    && self.players[victim].captured_by_ball == Some(item_index);
+                // Every PokeBall keeps its own victim reference. Several
+                // balls may capture the same slime from manifolds queued in
+                // one DetPhysics pass, even after the first callback sets the
+                // shared invulnerability mask.
+                let valid = victim < self.players.len() && self.playable(victim);
                 if !valid {
                     self.release_poke_victim(item_index, victim, data);
                     self.remove_thrown_item(item_index, false);
@@ -18203,35 +18257,7 @@ impl RolloutWorld {
                 }
             }
             if let Some(victim) = victim {
-                let capture_position = self.thrown_items[item_index].position;
-                {
-                    let slot = &mut self.players[victim];
-                    slot.late_obs_tick = self.tick;
-                    slot.late_obs_position = slot.base.position;
-                    slot.late_obs_velocity = slot.base.velocity + slot.base.external_velocity;
-                    slot.late_obs_rotation = slot.base.rotation;
-                    slot.late_obs_state = slot.obs_state;
-                    slot.captured_by_ball = Some(item_index);
-                    slot.invisible = true;
-                    slot.base.force_unground(&self.platforms);
-                    slot.base.position = capture_position;
-                    slot.base.velocity = Vec2::ZERO;
-                    slot.base.sync_collider();
-                    slot.late_obs_position = capture_position;
-                    slot.late_obs_state = STATE_FALL;
-                    slot.obs_state = STATE_RAGDOLL;
-                    slot.ragdoll = RagdollState {
-                        active: true,
-                        skip_physics: true,
-                        time: Fix::ZERO,
-                        duration: data.poke_ball.capture_seconds + Fix::ONE,
-                    };
-                }
-                let item = &mut self.thrown_items[item_index];
-                item.capture_victim = Some(victim);
-                item.capture_left = data.poke_ball.capture_seconds;
-                item.body.velocity =
-                    Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
+                self.capture_poke_victim(item_index, victim, data, true);
             }
         }
 
@@ -18485,10 +18511,7 @@ impl RolloutWorld {
     }
 
     fn release_poke_victim(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
-        if victim >= self.players.len()
-            || !self.players[victim].base.alive
-            || self.players[victim].captured_by_ball != Some(item_index)
-        {
+        if victim >= self.players.len() || !self.players[victim].base.alive {
             return;
         }
         let item = self.thrown_items[item_index];
@@ -19253,6 +19276,44 @@ impl RolloutWorld {
                 center: item.position,
                 radius: item_radius,
             };
+            if item.ability == ABILITY_POKE_BALL && item.launched && item.capture_victim.is_none() {
+                // PokeBall.TryProximityCapture runs in UpdateSim and uses the
+                // smaller authored 0.8-player-radius query. The item circle can
+                // still overlap the ordinary slime's Player-layer box later in
+                // DetPhysics. PokeBall.OnCollide then captures that slime. This
+                // is observable on the first pass after Bow exits: the updater
+                // query misses, Bow's disabled box has been replaced by the
+                // ordinary collider, and the physics callback catches it.
+                //
+                // DetPhysics constructs all manifolds before invoking either
+                // callback, so retain the synchronized collider position for
+                // the rest of this contact pass. BeginCapture only moves the
+                // live PlayerBody; the box is synchronized next pass.
+                let owner = item.owner;
+                let mut victim = None;
+                for player_index in 0..self.players.len() {
+                    if player_index == owner
+                        || !self.playable(player_index)
+                        || self.players[player_index].active != ActiveAbility::None
+                        || self.players[player_index].base.dash.active
+                    {
+                        continue;
+                    }
+                    if crate::physics::contact::circle_box(
+                        circle,
+                        self.players[player_index].base.collider,
+                    )
+                    .is_some()
+                    {
+                        victim = Some(player_index);
+                        break;
+                    }
+                }
+                if let Some(victim) = victim {
+                    self.capture_poke_victim(item_index, victim, data, false);
+                    continue;
+                }
+            }
             if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
                 let map = &data.maps[self.map];
                 let water = OrientedBox::from_basis(

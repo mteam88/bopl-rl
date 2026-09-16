@@ -471,7 +471,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   over 500 exact ticks.
   Poke Ball copies match registration, launch initialization, DetPhysics sweep
   ordering, the first shared dynamic-platform contact, later bounces and all
-  four boundary/fizzle removals over 900 ticks. Capture by a duplicated ball
+  four boundary/fizzle removals over 900 ticks. A second exact differential
+  covers duplicated callback capture, a second queued copy callback against
+  the already-held victim and 12 pinned passes; multi-captor expiry/ejection
   remains open. Mine copies now match the source's low-strength button-release
   throw, three-copy fan, deferred single `Mine.Init` RNG sample, arming and
   hover trajectories, reverse-list final shake and simultaneous 1,800-pass
@@ -479,7 +481,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   equipped Duplicator with Revival and matches deferred registration, acquired
   cast, marker creation and exit.
   Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
-  open; duplicated Poke capture still needs a composed golden.
+  open, as does duplicated Poke Ball multi-captor expiry/ejection.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
   Pulling is live on the cast pass as in the modified source. Its rounded-wall

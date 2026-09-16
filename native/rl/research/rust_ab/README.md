@@ -162,6 +162,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   physics/runtime state, split collider/behavior registration, global
   Circle/Circle sweep ordering, shared dynamic-platform contacts, later
   bounces and all boundary/fizzle removals over 900 exact ticks.
+- `duplicator_poke_capture_ab.c`: 248 exact ticks through the fan, an airborne
+  victim captured by one copy, a second queued copy callback capturing the
+  already-held victim on the next pass, and the original ball's simultaneous
+  callback capture immediately after a different player exits Bow form.
 - `duplicator_mine_ab.c`: a released low-strength Mine followed by its
   three-copy fan, single deferred `Mine.Init` RNG sample per clone, arming and
   hover trajectories, reverse-order final shake and simultaneous 1,800-pass
