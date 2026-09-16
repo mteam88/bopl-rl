@@ -1155,8 +1155,18 @@ hierarchies are now reserved at each callback, including the intervening death
 effect and choice-marker prefabs, while observation IDs are assigned across the
 global circle registry before the box registry. Both callback-created clones,
 their copied ability colliders and all six choice markers match exactly on the
-next pass. Grenade duplication and grounded-form forced exits still require
-separate goldens before id 3 is complete.
+next pass.
+
+`grenade_pickup_ab.c` adds 2,593 differential passes with the authored
+AbilitySpawner enabled. A live pickup overlaps the active Grenade body and is
+correctly rejected because that form has no `SlimeController`; the released
+grenade continues independently, the ordinary slime later collects Revival,
+and the replacement collider registers one pass later. The fixture immediately
+casts the acquired third slot through marker creation and form exit. Pickup
+flight retains the established 100,000-raw-Q32 bound, and the angled Grenade
+form retains a one-raw-unit position bound; identities, selection, contacts and
+all lifecycle ticks are exact. Grenade duplication and grounded-form forced
+exits still require separate goldens before id 3 is complete.
 
 ### Executable Tack throw and trap (2026-09-14)
 

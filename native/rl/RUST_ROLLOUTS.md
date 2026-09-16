@@ -260,7 +260,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   post-exit collection and the source hierarchy order between its released
   Arrow and acquired ability. The deterministic acquired Revival is also cast
   directly from the replaced slot, covering airborne entry, marker creation
-  and exit. Dedicated collection and final-death goldens cover both origins.
+  and exit. A Grenade composition independently covers active-form rejection,
+  released-item continuation, post-exit collection and an immediate complete
+  cast of the acquired Revival. Dedicated collection and final-death goldens
+  cover both origins.
 - All catalog ids 0..38 now have executable behavior in the public backend,
   although the partial entries below still lack interaction branches. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
