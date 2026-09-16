@@ -1868,6 +1868,10 @@ pub struct PlayerSlot {
     pub roll_entity: usize,
     pub rock_hierarchy: u32,
     pub push_entity: usize,
+    /// Current Freeze prefab for each equipped slot. `freeze_entity` below is
+    /// the one selected by `active_slot`, retained as the hot-path alias used
+    /// by collider queries and observation refresh.
+    pub freeze_entities: [usize; 3],
     pub freeze_entity: usize,
     pub blink_entity: usize,
     pub growth_ray_entity: usize,
@@ -2521,7 +2525,7 @@ impl RolloutWorld {
         let mut throw_entity = [usize::MAX; MAX_PLAYERS];
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut push_entity = [usize::MAX; MAX_PLAYERS];
-        let mut freeze_entity = [usize::MAX; MAX_PLAYERS];
+        let mut freeze_entities = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut blink_entity = [usize::MAX; MAX_PLAYERS];
         let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
         let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
@@ -2660,7 +2664,7 @@ impl RolloutWorld {
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.freeze.collider_hierarchy,
-                            &mut freeze_entity[i],
+                            &mut freeze_entities[i][slot_index],
                             false,
                         ),
                         ABILITY_BLINK => (
@@ -3151,7 +3155,12 @@ impl RolloutWorld {
                 roll_entity: roll_entity[i],
                 rock_hierarchy: rock_hierarchy[i],
                 push_entity: push_entity[i],
-                freeze_entity: freeze_entity[i],
+                freeze_entities: freeze_entities[i],
+                freeze_entity: freeze_entities[i]
+                    .iter()
+                    .copied()
+                    .find(|&entity| entity != usize::MAX)
+                    .unwrap_or(usize::MAX),
                 blink_entity: blink_entity[i],
                 growth_ray_entity: growth_ray_entity[i],
                 shrink_ray_entity: shrink_ray_entity[i],
@@ -3721,7 +3730,10 @@ impl RolloutWorld {
             2 => slot.throw_entity = entity,
             3 => slot.mine_entity = entity,
             4 => slot.push_entity = entity,
-            5 => slot.freeze_entity = entity,
+            5 => {
+                slot.freeze_entities[ability_slot] = entity;
+                slot.freeze_entity = entity;
+            }
             6 => slot.blink_entity = entity,
             7 => slot.growth_ray_entity = entity,
             8 => slot.shrink_ray_entity = entity,
@@ -4339,7 +4351,9 @@ impl RolloutWorld {
                     slot.drill_entity,
                     slot.beam_entity,
                     slot.push_entity,
-                    slot.freeze_entity,
+                    slot.freeze_entities[0],
+                    slot.freeze_entities[1],
+                    slot.freeze_entities[2],
                     slot.growth_ray_entity,
                     slot.shrink_ray_entity,
                     slot.duplicator_entity,
@@ -6081,6 +6095,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
+                        slot.freeze_entity = slot.freeze_entities[s];
                         slot.active = ActiveAbility::Freeze;
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
@@ -12442,7 +12457,7 @@ impl RolloutWorld {
             let mut throw_entity = usize::MAX;
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
-            let mut freeze_entity = usize::MAX;
+            let mut freeze_entities = [usize::MAX; 3];
             let mut blink_entity = usize::MAX;
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
@@ -12480,7 +12495,7 @@ impl RolloutWorld {
                     ABILITY_FREEZE => (
                         data::surface_extents(data.freeze.hurtbox_extents),
                         data.freeze.collider_hierarchy,
-                        &mut freeze_entity,
+                        &mut freeze_entities[slot],
                     ),
                     ABILITY_BLINK => (
                         data::surface_extents(data.blink.hurtbox_extents),
@@ -12710,7 +12725,12 @@ impl RolloutWorld {
             slot.rock_entity = usize::MAX;
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
-            slot.freeze_entity = freeze_entity;
+            slot.freeze_entities = freeze_entities;
+            slot.freeze_entity = freeze_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.blink_entity = blink_entity;
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
@@ -12750,7 +12770,9 @@ impl RolloutWorld {
                 self.players[index].rock_entity,
                 self.players[index].roll_entity,
                 self.players[index].push_entity,
-                self.players[index].freeze_entity,
+                self.players[index].freeze_entities[0],
+                self.players[index].freeze_entities[1],
+                self.players[index].freeze_entities[2],
                 self.players[index].blink_entity,
                 self.players[index].growth_ray_entity,
                 self.players[index].shrink_ray_entity,
@@ -12891,7 +12913,7 @@ impl RolloutWorld {
             let mut throw_entity = usize::MAX;
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
-            let mut freeze_entity = usize::MAX;
+            let mut freeze_entities = [usize::MAX; 3];
             let mut blink_entity = usize::MAX;
             let mut growth_ray_entity = usize::MAX;
             let mut shrink_ray_entity = usize::MAX;
@@ -12929,7 +12951,7 @@ impl RolloutWorld {
                     ABILITY_FREEZE => (
                         data::surface_extents(data.freeze.hurtbox_extents),
                         data.freeze.collider_hierarchy,
-                        &mut freeze_entity,
+                        &mut freeze_entities[slot],
                     ),
                     ABILITY_BLINK => (
                         data::surface_extents(data.blink.hurtbox_extents),
@@ -13147,7 +13169,12 @@ impl RolloutWorld {
             slot.rock_entity = usize::MAX;
             slot.rock_hierarchy = rock_hierarchy;
             slot.push_entity = push_entity;
-            slot.freeze_entity = freeze_entity;
+            slot.freeze_entities = freeze_entities;
+            slot.freeze_entity = freeze_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.blink_entity = blink_entity;
             slot.growth_ray_entity = growth_ray_entity;
             slot.shrink_ray_entity = shrink_ray_entity;
@@ -17617,118 +17644,54 @@ impl RolloutWorld {
         } else {
             data.freeze.collision_mask
         };
-        let terrain = terrain!(self);
-        let mut nearest = if mask & (1 << LAYER_WALL) != 0 {
-            crate::world::closest(terrain, origin, direction, max_distance, None)
-                .map_or(max_distance, |(_, distance, _)| distance)
-        } else {
-            max_distance
+        // FreezeRayGun performs this unmasked rounded-rectangle query before
+        // its ordinary RaycastToClosest call. A non-player object selected by
+        // either query blocks the beam even though Freeze has no callback for
+        // that layer.
+        let point_hit = self
+            .entities
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, row)| {
+                row.flags & E_ACTIVE != 0
+                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
+            })
+            .map(|(entity, _)| DuplicatorRayHit {
+                entity,
+                distance: Fix::ZERO,
+                position: origin,
+            });
+        let Some(hit) = point_hit.or_else(|| {
+            self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
+        }) else {
+            return;
         };
-        let mut victim = None;
-        let mut water_hit = false;
-        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
-            let map = &data.maps[self.map];
-            let water = OrientedBox::from_basis(
-                map.water_position,
-                Vec2::RIGHT,
-                data::surface_extents(map.water_extents),
-            );
-            if let Some(hit) = water.raycast(origin, direction)
-                && hit.near < nearest
-                && hit.near <= max_distance
-            {
-                nearest = hit.near;
-                water_hit = true;
+        if hit.entity == usize::MAX {
+            if already_hit_water {
+                return;
             }
-        }
-        if mask & (1 << LAYER_PLAYER) != 0 {
-            // Registered collider order is player/prefab order. Strictly
-            // closer hits replace the current one, preserving that tie-break.
-            for target in 0..self.players.len() {
-                if !self.playable(target) {
-                    continue;
-                }
-                let slot = &self.players[target];
-                let entity = match slot.active {
-                    ActiveAbility::None => slot.body_entity,
-                    ActiveAbility::Dash => slot.dash_entity,
-                    ActiveAbility::Bow => slot.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => slot.throw_entity,
-                    ActiveAbility::Mine => slot.mine_entity,
-                    ActiveAbility::Rock => slot.rock_entity,
-                    ActiveAbility::Roll => slot.roll_entity,
-                    ActiveAbility::Meteor => slot.meteor_entity,
-                    ActiveAbility::Push => slot.push_entity,
-                    ActiveAbility::Freeze => slot.freeze_entity,
-                    ActiveAbility::Blink => slot.blink_entity,
-                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
-                    ActiveAbility::Duplicator => slot.duplicator_entity,
-                    ActiveAbility::Magnet => slot.magnet_entity,
-                    ActiveAbility::Spike => slot.spike_entity,
-                    ActiveAbility::Engine => slot.engine_entity,
-                    ActiveAbility::Tesla => slot.tesla_entity,
-                    ActiveAbility::TimeStop => slot.time_stop_entity,
-                    ActiveAbility::Gust => slot.gust_entity,
-                    ActiveAbility::Revival => slot.revival_entity,
-                    ActiveAbility::BlackHole => slot.black_hole_entity,
-                    ActiveAbility::Throw => slot.macho_throw_entity,
-                    ActiveAbility::Drill => slot.drill_entity,
-                    ActiveAbility::Beam => slot.beam_entity,
-                    ActiveAbility::Platform => slot.circle_entity,
-                };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let hit = if row.kind == 0 {
-                    Circle {
-                        center,
-                        radius: Fix::from_raw(row.radius),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near)
-                } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    OrientedBox {
-                        center,
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(
-                            Fix::ONE / right.length(),
-                            Fix::ONE / up.length(),
-                        ),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near)
-                };
-                if let Some(distance) = hit
-                    && distance < nearest
-                    && distance <= max_distance
-                {
-                    nearest = distance;
-                    victim = Some(target);
-                    water_hit = false;
-                }
-            }
-        }
-        if water_hit {
             self.shoot_freeze_ray_pass(
-                origin + direction * nearest,
+                hit.position,
                 Vec2::new(direction.x, -direction.y),
                 data,
                 true,
             );
             return;
         }
-        if let Some(victim) = victim {
+        if self.entities[hit.entity].layer != LAYER_PLAYER {
+            return;
+        }
+        if let Some(victim) = self.players.iter().position(|slot| {
+            self.playable_slot(slot) && Self::blink_player_entity(slot) == hit.entity
+        }) {
+            // The modeled gameplay invulnerability source reachable from the
+            // rollout ABI is Poke Ball capture. Spawn shielding and Machoman's
+            // block do not expose an actionable ordinary slime/form collider
+            // in the currently ported public lifecycle.
+            if self.players[victim].captured_by_ball.is_some() {
+                return;
+            }
             let deferred_bow_exit = if self.players[victim].active != ActiveAbility::None
                 || self.players[victim].base.dash.active
             {
@@ -17785,13 +17748,18 @@ impl RolloutWorld {
     fn begin_freeze(&mut self, victim: usize, duration: Fix, deferred_form_exit: bool) {
         let freeze_position = self.players[victim].base.position;
         self.next_spawn_hierarchy += data::get().freeze.frozen_updatable_count;
-        self.frozen_solids.push(FrozenSolidState {
+        let state = FrozenSolidState {
             active: true,
             born_tick: self.tick,
             victim,
             freeze_left: duration,
             freeze_position,
-        });
+        };
+        if let Some(free) = self.frozen_solids.iter().position(|effect| !effect.active) {
+            self.frozen_solids[free] = state;
+        } else {
+            self.frozen_solids.push(state);
+        }
         let slot = &mut self.players[victim];
         slot.frozen_solid_count = slot.frozen_solid_count.saturating_add(1);
         slot.ragdoll = RagdollState {
@@ -23083,7 +23051,9 @@ impl RolloutWorld {
                 slot.drill_entity,
                 slot.beam_entity,
                 slot.push_entity,
-                slot.freeze_entity,
+                slot.freeze_entities[0],
+                slot.freeze_entities[1],
+                slot.freeze_entities[2],
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
                 slot.duplicator_entity,
@@ -23165,7 +23135,9 @@ impl RolloutWorld {
                 slot.drill_entity,
                 slot.beam_entity,
                 slot.push_entity,
-                slot.freeze_entity,
+                slot.freeze_entities[0],
+                slot.freeze_entities[1],
+                slot.freeze_entities[2],
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
                 slot.duplicator_entity,
@@ -23228,7 +23200,9 @@ impl RolloutWorld {
                 slot.drill_entity,
                 slot.beam_entity,
                 slot.push_entity,
-                slot.freeze_entity,
+                slot.freeze_entities[0],
+                slot.freeze_entities[1],
+                slot.freeze_entities[2],
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
                 slot.duplicator_entity,

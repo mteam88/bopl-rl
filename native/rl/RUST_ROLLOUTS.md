@@ -534,7 +534,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and airborne timed-ragdoll exit. A grounded active-Bow-form hit is also exact
   through the retained inactive-form basis, restored-slime air reattachment,
   next-pass grounded movement, FrozenSolid pin, grounded thaw and timed-ragdoll
-  exit.
+  exit. The complete hitscan now uses the common collider registry after its
+  unmasked rounded-rectangle muzzle query, so every serialized projectile,
+  item, terrain, rigid-affector, orb and spell layer can block the beam in
+  source order even though only Player receives a freeze callback. Freeze
+  prefab colliders are retained per equipped slot across pickups and clone
+  reconstruction. A 620-tick broad differential is exact through duplicate
+  Freeze slots, active-Bow cancellation, overlapping FrozenSolids, first
+  shatter/re-pin and final thaw.
   Growth and Shrink rays share that `GunTransform` implementation and spawn
   the signed `ScaleChanger` on a player hit. Rust preserves Player.Scale,
   collider scale and PlayerPhysics radius as separate updater-phase values.

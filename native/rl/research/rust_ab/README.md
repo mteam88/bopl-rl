@@ -190,6 +190,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   negative ScaleChanger, reduced-body fall and platform contacts.
 - `freeze_airborne_hit_ab.c`: a rising ordinary player caught by Freeze through
   `FrozenSolid` takeover, thaw, resumed fall and landing over 500 exact ticks.
+- `freeze_broad_ab.c`: a 620-tick duplicate-slot composition covering the
+  correct per-prefab collider, active-Bow cancellation, a second hit while the
+  victim is pinned, overlapping FrozenSolids and both shatter boundaries.
 - `duplicator_smoke_ab.c`: Smoke's three-copy fan through cloned-Grenade reset,
   rigid and Water contact detonation, randomized clouds and same-pass removal
   of a cloud born below WaterHeight over 450 ticks.

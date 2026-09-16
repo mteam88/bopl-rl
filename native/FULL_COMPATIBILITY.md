@@ -3880,3 +3880,34 @@ compared public field matches within the existing Black Hole spatial bound. The
 airborne-player, reflected-wall and live-Missile Shrink differentials remain
 exact; unmeasured generic target classes and target-specific spell internals stay
 listed in `rl/ABILITY_PORT_GAPS.md`.
+
+
+### Complete Freeze query and duplicate-slot lifecycle (2026-09-16)
+
+Catalog id 36 now translates the rest of `FreezeRayGun.Shoot` as one query.
+Before `RaycastToClosest`, it performs the source's unmasked rounded-rectangle
+point check at the muzzle. The ordinary pass traverses the complete serialized
+mask in DetPhysics rounded-rectangle, circle and box order; projectile, item,
+terrain, EffectorZone, rigid-affector, orb and spell hits stop the beam without
+receiving a callback. Water reflects once through the no-water mask. Player
+hits resolve the live collider for every active form and apply the source's
+alive and invulnerability gates before direct `Ability.ExitAbility` and
+`FrozenSolid.Begin`. Poke Ball capture is the currently modeled gameplay
+invulnerability source.
+
+Freeze prefab identity is now slot-indexed. Initial loadouts, pickup-created
+slot-three abilities, stock clones and revival clones retain one collider per
+equipped Freeze instance; entering a slot selects that instance, and death
+removes all current equipped instances while pickup-replaced orphan prefabs
+remain inert as in Unity. Inactive FrozenSolid records are reused before the
+vector grows, preserving allocation-free steady-state updates.
+
+`freeze_broad_ab.c` compares 620 optimized-Q32 NativeAOT/Rust ticks with two
+Freeze copies in separate slots. The first ray cancels an active grounded Bow;
+the second slot fires while the victim is already pinned. The backends match
+the two prefab rows, overlapping ice clocks, the first shatter immediately
+followed by the surviving effect's re-pin, the final cooldown-reset thaw,
+ragdoll and resumed movement exactly. The frozen state spans ticks 335 through
+503. Existing grounded, airborne, Water/self and Bow differentials remain
+exact. Unmeasured blocker classes, other forms, ropes, death and pickup-created
+duplicate casting remain listed in `rl/ABILITY_PORT_GAPS.md`.
