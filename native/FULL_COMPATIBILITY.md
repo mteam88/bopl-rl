@@ -3152,10 +3152,17 @@ models that phase split and the clone-local third-updater collider hierarchy.
 All three fan copies match through ballistic contacts, arming and two trap
 consumptions within 64 raw Q32 units.
 
+`duplicator_mjolnir_ab.c` applies the same fresh-prefab rule to a live hammer.
+The 420-tick differential covers its three-copy fan, clone-local collider
+hierarchies, deferred `Mjolnir` launch initialization, outbound damping, turn
+to recall, homing acceleration and the original hammer's removal. All public
+state remains within 64 raw Q32 units through tick 420. The later sensitive
+recall/contact tail and duplicated-object expiry remain open.
+
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. Mjolnir, Poke Ball and Mine
-use the same allocation-free circular-item clone path but still need their own
-composed goldens.
+attached-terrain and orb branches are integrated. Poke Ball and Mine use the
+same allocation-free circular-item clone path but still need exact composed
+goldens, and Mjolnir's later tail remains unmeasured.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 

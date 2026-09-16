@@ -154,6 +154,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `duplicator_tack_ab.c`: Tack's three-copy fan through fresh prefab runtime
   state, deferred collider/behavior registration, ballistic contact, arming
   and two exact trap consumptions over 450 ticks.
+- `duplicator_mjolnir_ab.c`: Mjolnir's three-copy fan through fresh prefab
+  physics/runtime state, deferred launch initialization, outbound damping,
+  recall and the original hammer's removal over 420 exact ticks.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

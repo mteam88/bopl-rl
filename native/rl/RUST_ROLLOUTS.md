@@ -466,8 +466,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   reset, wall/Water contact detonation and same-pass removal of clouds born
   below WaterHeight. Tack copies now match fresh prefab runtime state, delayed
   behavior registration, arming and two trap consumptions over 450 ticks.
+  Mjolnir copies match the same clone initialization, outbound damping, recall
+  and original-hammer removal over 420 ticks.
   Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
-  open; Mjolnir, Poke Ball and Mine need composed goldens.
+  open; Poke Ball, Mine, copied-object expiry and Mjolnir's late tail need
+  composed goldens.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
   Pulling is live on the cast pass as in the modified source. Its rounded-wall
