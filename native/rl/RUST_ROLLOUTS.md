@@ -473,7 +473,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   four boundary/fizzle removals over 900 ticks. Capture by a duplicated ball
   remains open. Mine copies now match the source's low-strength button-release
   throw, three-copy fan, deferred single `Mine.Init` RNG sample, arming and
-  hover trajectories for 1,500 ticks.
+  hover trajectories for 1,500 ticks. The pickup diagnostic also replaces an
+  equipped Duplicator with Revival and matches deferred registration, acquired
+  cast, marker creation and exit.
   Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
   open; copied-object lifetime expiry, duplicated Poke capture and the Mjolnir
   late tail need composed goldens.

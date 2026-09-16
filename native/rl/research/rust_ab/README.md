@@ -164,6 +164,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `duplicator_mine_ab.c`: a released low-strength Mine followed by its
   three-copy fan, single deferred `Mine.Init` RNG sample per clone, arming and
   long-lived hover trajectories over 1,500 exact ticks.
+- `duplicator_pickup_ab.c`: deterministic AbilitySpawner collection replaces
+  equipped Duplicator in slot three, then the acquired Revival registers,
+  casts, creates its marker and exits exactly.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

@@ -3186,6 +3186,13 @@ once during deferred registration; sampling eagerly at duplication had advanced
 the shared generator three extra values. The active Mine form retains only its
 existing 5,000-raw-Q32 grounded reprojection bound.
 
+`duplicator_pickup_ab.c` starts with Duplicator equipped in slot three, enables
+the authored AbilitySpawner diagnostic, and follows the deterministic first
+pickup through collection. The pickup replaces Duplicator with Revival on tick
+2506; its ability row registers on tick 2507, the acquired slot casts on tick
+2508, creates the owner marker and completes the QuickSpell exit. The complete
+2,600-tick public state matches NativeAOT exactly.
+
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
 attached-terrain and orb branches are integrated. Poke Ball capture by a
 duplicated ball, copied-object lifetime expiry and Mjolnir's later tail remain
