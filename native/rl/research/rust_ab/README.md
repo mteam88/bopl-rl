@@ -83,6 +83,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_released_items_ab.c`: released Grenade, Smoke, Poke Ball and Tack
   bodies across all 690 stopped passes, restored motion, and Tack's later exact
   owner-clear/re-entry self-kill and stock transition.
+- `time_stop_smoke_cloud_ab.c`: all four spawned Smoke clouds across 690
+  stopped passes, preserving identities, positions and enter-animation radii,
+  then resuming radius growth on restoration.
 - `time_stop_engine_ab.c`: an attached live RocketEngine and its composite
   platform across all 690 stopped passes, then restored force-clock and body
   motion.

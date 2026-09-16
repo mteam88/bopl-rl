@@ -2177,7 +2177,15 @@ owner cooldowns and opponent state remain fixed for all 690 passes, then body
 motion resumes on the restored clock. Tack continues far enough to cover its
 owner-clear/re-entry self-kill and stock transition after restoration. All
 four 1,540-tick scenarios are exact with the ordinary 2,048-raw-Q32 body bound;
-this does not claim Smoke's later cloud state or Poke Ball capture state.
+this does not claim Poke Ball's capture state.
+
+`time_stop_smoke_cloud_ab.c` times Smoke's fuse so all four clouds register
+shortly before the stop while their enter animation is still growing. All four
+identities, positions and radii remain unchanged through 690 zero-scale passes,
+then their radius-frame clocks resume after restoration. The full 1,540-tick
+scenario is exact under the same ordinary entity bounds and uses fixed four-row
+scratch in the golden; the runtime already uses its capacity-retained cloud
+pool.
 
 `time_stop_engine_ab.c` plants a RocketEngine shortly before the global stop.
 The live layer-21 child and its composite rounded platform remain fixed for all

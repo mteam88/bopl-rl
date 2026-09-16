@@ -363,7 +363,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   position, velocity and spin for the same interval, and frozen ordinary-slime
   animation state no longer advances until restoration. Released Grenade,
   Smoke, Poke Ball and Tack bodies likewise freeze all motion and resume their
-  updater and physics paths together. Frozen DetPhysics boxes
+  updater and physics paths together. All four spawned Smoke clouds also hold
+  their enter-animation radii and resume the frame clock after restoration.
+  Frozen DetPhysics boxes
   retain their stop-entry sync through the restoration pass, matching the
   source updater delta captured at the pass start. Cross-ability interactions
   with catalog entries that remain absent inherit those entries' open scope.
