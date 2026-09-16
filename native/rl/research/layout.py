@@ -135,8 +135,13 @@ def layout_of(architecture):
 
 
 def aligned(count):
-    """Every tensor in a native flat weight buffer starts on an 8-float boundary."""
-    return (count + 7) & ~7
+    """v4 tensors are stored back to back in the trainer's flat weight dump
+    (bindings.cu save_weights: total_elems floats, no padding); the device
+    allocator aligns every tensor to 16 bytes, so bopl_v4.cu requires every
+    tensor's element count to be a multiple of 4 and the two layouts agree."""
+    if count % 4:
+        raise ValueError(f"v4 tensor of {count} floats is not 16-byte aligned")
+    return count
 
 
 def policy_v4_tensors(hidden, num_layers, aim_fourier=4, aim_ar=0, set_dim=128, set_inner=128,

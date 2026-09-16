@@ -539,15 +539,22 @@ static void enc_init(void* weights, ulong* seed, cudaStream_t stream) {
     puf_kaiming_init(&w->flat, std::sqrt(2.0f), (*seed)++, stream);
     puf_kaiming_init(&w->fusion, 1.0f, (*seed)++, stream);
 }
+/* save_weights dumps the allocator's total_elems floats back to back while the
+ * device offsets are 16-byte aligned: every tensor must be a multiple of 4
+ * floats for the file and the device to agree (research/layout.py aligned). */
+static void reg_aligned(Allocator* alloc, PrecisionTensor* t) {
+    if (numel(t->shape) % 4) throw std::runtime_error("Bopl v4: a weight tensor of " + std::to_string(numel(t->shape)) + " floats is not 16-byte aligned");
+    alloc_register(alloc, t);
+}
 static void enc_reg_params(void* weights, Allocator* alloc) {
     auto* w = (EncWeights*)weights; int H = w->hidden, D = w->D, I = w->I;
     for (int s = 0; s < SETS; s++) {
-        w->w1[s] = {.shape = {I, SPEC[s].features}}; alloc_register(alloc, &w->w1[s]);
-        w->w2[s] = {.shape = {D, I}}; alloc_register(alloc, &w->w2[s]);
+        w->w1[s] = {.shape = {I, SPEC[s].features}}; reg_aligned(alloc, &w->w1[s]);
+        w->w2[s] = {.shape = {D, I}}; reg_aligned(alloc, &w->w2[s]);
     }
-    w->embedding = {.shape = {IDS, I}}; alloc_register(alloc, &w->embedding);
-    w->flat = {.shape = {w->flat_dim, FLAT}}; alloc_register(alloc, &w->flat);
-    w->fusion = {.shape = {H, w->flat_dim + SETS * 2 * D}}; alloc_register(alloc, &w->fusion);
+    w->embedding = {.shape = {IDS, I}}; reg_aligned(alloc, &w->embedding);
+    w->flat = {.shape = {w->flat_dim, FLAT}}; reg_aligned(alloc, &w->flat);
+    w->fusion = {.shape = {H, w->flat_dim + SETS * 2 * D}}; reg_aligned(alloc, &w->fusion);
 }
 static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) {
     int H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim;
@@ -764,16 +771,16 @@ static void dec_init(void* weights, ulong* seed, cudaStream_t stream) {
 static void dec_reg_params(void* weights, Allocator* alloc) {
     auto* w = (DecWeights*)weights; int H = w->hidden;
     if (w->ffn) {
-        w->ffn_in = {.shape = {w->ffn, H}}; alloc_register(alloc, &w->ffn_in);
-        w->ffn_out = {.shape = {H, w->ffn}}; alloc_register(alloc, &w->ffn_out);
+        w->ffn_in = {.shape = {w->ffn, H}}; reg_aligned(alloc, &w->ffn_in);
+        w->ffn_out = {.shape = {H, w->ffn}}; reg_aligned(alloc, &w->ffn_out);
     }
-    w->actor = {.shape = {w->od, H}}; alloc_register(alloc, &w->actor);
+    w->actor = {.shape = {w->od, H}}; reg_aligned(alloc, &w->actor);
     if (w->cdim) {
-        w->critic_in = {.shape = {w->cdim, H + (w->privileged ? PRIV : 0)}}; alloc_register(alloc, &w->critic_in);
-        w->critic_b1 = {.shape = {w->cdim, w->cdim}}; alloc_register(alloc, &w->critic_b1);
-        w->critic_b2 = {.shape = {w->cdim, w->cdim}}; alloc_register(alloc, &w->critic_b2);
+        w->critic_in = {.shape = {w->cdim, H + (w->privileged ? PRIV : 0)}}; reg_aligned(alloc, &w->critic_in);
+        w->critic_b1 = {.shape = {w->cdim, w->cdim}}; reg_aligned(alloc, &w->critic_b1);
+        w->critic_b2 = {.shape = {w->cdim, w->cdim}}; reg_aligned(alloc, &w->critic_b2);
         /* 1-D: Muon leaves vectors to momentum SGD; the CPU loader reads it as (1, cdim). */
-        w->critic_out = {.shape = {w->cdim}}; alloc_register(alloc, &w->critic_out);
+        w->critic_out = {.shape = {w->cdim}}; reg_aligned(alloc, &w->critic_out);
     }
 }
 static void dec_reg_forward(DecWeights* w, DecActs* a, Allocator* alloc, int B, int pad) {
