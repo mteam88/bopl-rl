@@ -565,8 +565,17 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   serialized one-second shake. The wall then becomes inactive while retaining
   its enabled observation row, its attached rider detaches on the following
   player pass, and the body remains frozen for four seconds before restoring
-  with its queued spring force. Rigid/item/orb targets, active forms, rope and
-  magnet detachment remain open.
+  with its queued spring force.
+  The complete source query now checks muzzle-overlapping rounded rectangles
+  before traversing the serialized wall/Player/Projectile/item/EffectorZone/
+  LethalTerrain/weapon/RigidBodyAffector/orb mask in DetPhysics shape order.
+  A retained generic QuantumTunnel pool freezes movable items, projectiles,
+  pickups, holes, spells and weapons without freeing their gameplay slots;
+  active-form players detach ropes and Magnet-held objects before relocation,
+  and the first hit converts a non-Blink orb. `blink_broad_ab.c` is exact for
+  500 ticks through a released Grenade's immediate hide, frozen body/fuse,
+  strict four-second lifetime and restoration. The remaining target classes
+  are source-ported but do not each have an exact public differential.
   Duplicator uses its exact smaller-radius GunTransform and implements the
   shipped delayed rounded-platform copy path, including overlap forces,
   next-pass spring suppression, fresh-body initialization and locally

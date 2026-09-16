@@ -167,6 +167,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   upward rounded-wall selection, all 61 strict-delta shake samples, delayed
   deactivation, rider detachment, four-second frozen lifetime, restoration and
   resumed spring motion over 600 exact ticks.
+- `blink_broad_ab.c`: a 500-tick generic-target composition in which Blink
+  selects a released Grenade from the complete collider registry, immediately
+  hides it, freezes its body and fuse for the strict four-second tunnel, then
+  restores the unchanged object on tick 493.
 - `growth_airborne_ab.c`: a 500-tick Growth trace that hits an ordinary player
   while rising, then follows the complete ScaleChanger curve, enlarged fall
   and platform contacts.

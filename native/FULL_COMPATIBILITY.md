@@ -3805,3 +3805,33 @@ segment deletion and cooldown ticks remain identical on every map. Unity also
 varies the destroyed hook collider's otherwise-irrelevant ACTIVE bit by map
 (retained on two maps, cleared on three); both backends mark it DESTROYED and
 remove it on the next pass, so the golden masks only that bit on that one frame.
+
+### Complete Blink target routing and generic QuantumTunnel (2026-09-16)
+
+Blink now translates the remaining `ShootQuantum` and `QuantumTunnel` gameplay
+branches as one ability-sized path. The cast first performs the source's
+unmasked rounded-rectangle muzzle point-check, then visits rounded rectangles,
+circles and boxes in DetPhysics order through the complete serialized collision
+mask. Water reflection, the submerged self-target edge, EffectorZone/weapon
+early return, base cooldown restoration, player-hit cooldown, wall delay and
+first-hit orb conversion retain their distinct source branches.
+
+Player victims can be in any live ability form. Entering the tunnel detaches
+both rope endpoints and calls the Magnet form's item-stolen path before the
+victim is disabled. Generic victims use a retained per-world tunnel pool keyed
+by collider identity, so projectiles, thrown items, pickups, Black Holes,
+weapons, spells and other registered rigid bodies remain allocated while their
+GameObject is inactive. Their updaters, integration, contacts, portals,
+boundary checks and lifetime clocks do not run until the strict four-second
+expiry restores the original collider flags. Tunnel clocks continue to use
+player time, so Time Stop freezes both player and generic targets.
+
+`blink_broad_ab.c` compares 500 optimized-Q32 NativeAOT/Rust ticks in a crowded
+released-item composition. Blink selects a live Grenade from the common
+collider registry, hides it on tick 251, preserves its body and fuse for the
+entire inactive interval, and restores it on tick 493. Every public header,
+player/slime record, entity identity, flag, hierarchy, transform, velocity,
+body value and telemetry field matches. The existing grounded-player,
+airborne-player and reflected-wall differentials remain exact. Other translated
+target classes are listed as unmeasured in `rl/ABILITY_PORT_GAPS.md`; they do
+not justify separate narrow probes unless a later broad episode diverges.

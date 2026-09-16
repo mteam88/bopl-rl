@@ -1421,6 +1421,8 @@ pub struct BeamState {
 pub struct BeamOrbState {
     pub active: bool,
     pub enabled: bool,
+    /// Orb.SetOrbType(blink), applied by the first Blink-gun hit.
+    pub blink_converted: bool,
     pub born_tick: u32,
     pub entity: Option<usize>,
     pub hierarchy_base: u32,
@@ -1505,6 +1507,20 @@ pub struct PortalShotState {
     pub position: Vec2,
     pub body: Body,
     pub time_alive: Fix,
+}
+
+/// Allocation-retaining equivalent of one `QuantumTunnel` prefab for a
+/// non-player victim. `ShootQuantum` reuses a tunnel by victim instance; the
+/// entity id guards the pooled observation slot against later reuse.
+#[derive(Clone, Copy, Default)]
+pub struct BlinkObjectTunnel {
+    pub active: bool,
+    pub born_tick: u32,
+    pub entity: usize,
+    pub entity_id: u32,
+    pub age: Fix,
+    pub duration: Fix,
+    pub restore_flags: u32,
 }
 
 /// One invisible Portal endpoint. Portals have no DetPhysics collider or
@@ -1995,6 +2011,7 @@ pub struct RolloutWorld {
     pub revival_marker_pool: Vec<RevivalMarker>,
     pub teleport_marker_pool: Vec<TeleportMarker>,
     pub portal_shots: Vec<PortalShotState>,
+    pub blink_object_tunnels: Vec<BlinkObjectTunnel>,
     pub portals: Vec<PortalEndpoint>,
     pub beam_orbs: Vec<BeamOrbState>,
     pub beam_pool: Vec<BeamPoolSlot>,
@@ -2123,6 +2140,7 @@ impl RolloutWorld {
             revival_marker_pool: Vec::with_capacity(64),
             teleport_marker_pool: Vec::with_capacity(64),
             portal_shots: Vec::with_capacity(32),
+            blink_object_tunnels: Vec::with_capacity(32),
             portals: Vec::with_capacity(32),
             portal_body_inside: Vec::with_capacity(192),
             portal_body_ids: Vec::with_capacity(192),
@@ -2217,6 +2235,8 @@ impl RolloutWorld {
         self.teleport_marker_pool
             .clone_from(&src.teleport_marker_pool);
         self.portal_shots.clone_from(&src.portal_shots);
+        self.blink_object_tunnels
+            .clone_from(&src.blink_object_tunnels);
         self.portals.clone_from(&src.portals);
         self.portal_body_inside.clone_from(&src.portal_body_inside);
         self.portal_body_ids.clone_from(&src.portal_body_ids);
@@ -2302,6 +2322,7 @@ impl RolloutWorld {
             revival_marker_pool: _,
             teleport_marker_pool: _,
             portal_shots: _,
+            blink_object_tunnels: _,
             portals: _,
             portal_body_inside: _,
             portal_body_ids: _,
@@ -2418,6 +2439,7 @@ impl RolloutWorld {
         self.revival_marker_pool.clear();
         self.teleport_marker_pool.clear();
         self.portal_shots.clear();
+        self.blink_object_tunnels.clear();
         self.portals.clear();
         self.portal_body_inside.clear();
         self.portal_body_ids.clear();
@@ -3299,6 +3321,9 @@ impl RolloutWorld {
 
     fn ability_pickup_tick(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let pickup = &data.pickup;
+        if self.blink_object_hidden(self.ability_pickups[index].entity) {
+            return;
+        }
         if self.ability_pickups[index].updater_tick == self.tick {
             return;
         }
@@ -3393,7 +3418,11 @@ impl RolloutWorld {
     }
 
     fn ability_pickups_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
-        for state in &mut self.ability_pickups {
+        for index in 0..self.ability_pickups.len() {
+            if self.blink_object_hidden(self.ability_pickups[index].entity) {
+                continue;
+            }
+            let state = &mut self.ability_pickups[index];
             if !state.active || !state.enabled {
                 continue;
             }
@@ -4161,6 +4190,7 @@ impl RolloutWorld {
         self.teleport_pending_tick(data);
         self.blink_tunnels_tick(data, updater_dt);
         self.blink_platform_tunnels_tick(data, updater_dt);
+        self.blink_object_tunnels_tick(updater_dt);
         self.grenade_explosions_tick(data, updater_dt);
         self.missile_explosions_tick(data, updater_dt);
         self.smoke_tick(data, updater_dt);
@@ -4496,6 +4526,9 @@ impl RolloutWorld {
 
     fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for shot_index in 0..self.portal_shots.len() {
+            if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
+                continue;
+            }
             if self.portal_shots[shot_index].remove_next_tick {
                 if let Some(entity) = self.portal_shots[shot_index].entity {
                     self.entities[entity].flags = E_REMOVED;
@@ -4528,7 +4561,11 @@ impl RolloutWorld {
     }
 
     fn portal_shots_integrate(&mut self, physics_dt: Fix) {
-        for shot in &mut self.portal_shots {
+        for shot_index in 0..self.portal_shots.len() {
+            if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
+                continue;
+            }
+            let shot = &mut self.portal_shots[shot_index];
             if !shot.active || !shot.registered {
                 continue;
             }
@@ -4546,6 +4583,9 @@ impl RolloutWorld {
 
     fn portal_shots_contacts(&mut self, data: &data::RolloutData) {
         for shot_index in 0..self.portal_shots.len() {
+            if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
+                continue;
+            }
             if !self.portal_shots[shot_index].active {
                 continue;
             }
@@ -4853,6 +4893,7 @@ impl RolloutWorld {
         let bit = 1u64 << endpoint_index;
         for arrow in &self.arrows {
             if let Some(entity) = arrow.entity.filter(|_| arrow.active && arrow.registered)
+                && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, arrow.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -4868,6 +4909,7 @@ impl RolloutWorld {
             if let Some(entity) = pickup
                 .entity
                 .filter(|_| pickup.active && pickup.enabled && pickup.body.inverse_mass > Fix::ZERO)
+                && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, pickup.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -4883,6 +4925,7 @@ impl RolloutWorld {
             if let Some(entity) = item
                 .entity
                 .filter(|_| item.active && item.body.inverse_mass > Fix::ZERO)
+                && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, item.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -4897,7 +4940,8 @@ impl RolloutWorld {
         for missile in &self.guided_missiles {
             if let Some(entity) = missile.entity.filter(|_| {
                 missile.active && missile.registered && missile.body.inverse_mass > Fix::ZERO
-            }) && Self::portal_inside(endpoint, missile.position, data)
+            }) && self.entities[entity].flags & E_ACTIVE != 0
+                && Self::portal_inside(endpoint, missile.position, data)
             {
                 Self::mark_portal_body_bit(
                     &mut self.portal_body_inside,
@@ -5023,6 +5067,9 @@ impl RolloutWorld {
             let Some(entity) = arrow.entity.filter(|_| arrow.active && arrow.registered) else {
                 continue;
             };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, arrow.position, data)
             {
@@ -5037,6 +5084,9 @@ impl RolloutWorld {
             }) else {
                 continue;
             };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, pickup.position, data)
             {
@@ -5053,6 +5103,9 @@ impl RolloutWorld {
             else {
                 continue;
             };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, item.position, data)
             {
@@ -5068,6 +5121,9 @@ impl RolloutWorld {
             }) else {
                 continue;
             };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, missile.position, data)
             {
@@ -9374,7 +9430,9 @@ impl RolloutWorld {
     fn black_holes_tick(&mut self, data: &data::RolloutData, dt: Fix) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for hole_index in 0..self.black_holes.len() {
-            if !self.black_holes[hole_index].active {
+            if !self.black_holes[hole_index].active
+                || self.blink_object_hidden(self.black_holes[hole_index].entity)
+            {
                 continue;
             }
             if !stopped {
@@ -9427,7 +9485,12 @@ impl RolloutWorld {
             // DetPhysics integrates it. Projectile circles therefore receive
             // this force in the same pass, including the hole's spawn pass.
             for arrow in &mut self.arrows {
-                if !arrow.active || !arrow.registered {
+                if !arrow.active
+                    || !arrow.registered
+                    || arrow
+                        .entity
+                        .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0)
+                {
                     continue;
                 }
                 let vector = position - arrow.position;
@@ -9498,7 +9561,9 @@ impl RolloutWorld {
         // circle/box groups. A wall is eaten only when it contains the hole's
         // centre, even though the two colliders can overlap much earlier.
         for hole_index in 0..self.black_holes.len() {
-            if !self.black_holes[hole_index].active || self.black_holes[hole_index].mass < Fix::ZERO
+            if !self.black_holes[hole_index].active
+                || self.black_holes[hole_index].mass < Fix::ZERO
+                || self.blink_object_hidden(self.black_holes[hole_index].entity)
             {
                 continue;
             }
@@ -9552,12 +9617,12 @@ impl RolloutWorld {
         // whole projectile object in the callback row.
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
-            if !hole.active || hole.mass < Fix::ZERO {
+            if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
                 continue;
             }
             for arrow_index in 0..self.arrows.len() {
                 let arrow = self.arrows[arrow_index];
-                if !arrow.active || !arrow.registered {
+                if !arrow.active || !arrow.registered || self.blink_object_hidden(arrow.entity) {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -9598,11 +9663,16 @@ impl RolloutWorld {
         // Equal holes use SpriteRenderer.sortingOrder as a deterministic
         // tiebreak: the later-created one consumes the older one.
         for newer in 0..self.black_holes.len() {
-            if !self.black_holes[newer].active || self.black_holes[newer].mass < Fix::ZERO {
+            if !self.black_holes[newer].active
+                || self.black_holes[newer].mass < Fix::ZERO
+                || self.blink_object_hidden(self.black_holes[newer].entity)
+            {
                 continue;
             }
             for older in 0..newer {
-                if !self.black_holes[older].active {
+                if !self.black_holes[older].active
+                    || self.blink_object_hidden(self.black_holes[older].entity)
+                {
                     continue;
                 }
                 let a = self.black_holes[newer];
@@ -9643,7 +9713,7 @@ impl RolloutWorld {
         let mut killers = [0u32; MAX_PLAYERS];
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
-            if !hole.active || hole.mass < Fix::ZERO {
+            if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
                 continue;
             }
             let circle = Circle {
@@ -10149,6 +10219,7 @@ impl RolloutWorld {
         self.beam_orbs.push(BeamOrbState {
             active: true,
             enabled: false,
+            blink_converted: false,
             born_tick: self.tick,
             entity: Some(entity),
             hierarchy_base,
@@ -10594,7 +10665,11 @@ impl RolloutWorld {
     }
 
     fn beam_orbs_tick(&mut self, data: &data::RolloutData) {
-        for orb in &mut self.beam_orbs {
+        for orb_index in 0..self.beam_orbs.len() {
+            if self.blink_object_hidden(self.beam_orbs[orb_index].entity) {
+                continue;
+            }
+            let orb = &mut self.beam_orbs[orb_index];
             if !orb.active {
                 continue;
             }
@@ -12064,6 +12139,9 @@ impl RolloutWorld {
                 continue;
             }
             let entity = explosion.entity.expect("registered grenade explosion");
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if explosion.age >= data.grenade.explosion_animation_ticks {
                 explosion.active = false;
                 explosion.registered = false;
@@ -12089,6 +12167,9 @@ impl RolloutWorld {
                 continue;
             }
             let entity = explosion.entity.expect("registered Missile explosion");
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if explosion.age >= data.missile.explosion_animation_ticks {
                 explosion.active = false;
                 explosion.registered = false;
@@ -12110,6 +12191,9 @@ impl RolloutWorld {
         let mut detonations = [usize::MAX; 64];
         let mut detonation_count = 0;
         for cloud_index in 0..self.smoke_clouds.len() {
+            if self.blink_object_hidden(self.smoke_clouds[cloud_index].entity) {
+                continue;
+            }
             if self.smoke_clouds[cloud_index].active
                 && self.smoke_clouds[cloud_index].registered
                 && self.smoke_clouds[cloud_index].position.y < Fix::from_f32(-11.3)
@@ -12151,6 +12235,9 @@ impl RolloutWorld {
                 continue;
             }
             let entity = explosion.entity.expect("registered smoke explosion");
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
             if explosion.age >= data.smoke.explosion_animation_ticks {
                 explosion.active = false;
                 explosion.registered = false;
@@ -17157,112 +17244,50 @@ impl RolloutWorld {
     ) {
         let max_distance = Fix::from_int(100);
         let mask = data.blink.collision_mask;
-        let terrain = terrain!(self);
-        let wall_hit = (mask & (1 << LAYER_WALL) != 0)
-            .then(|| crate::world::closest(terrain, origin, direction, max_distance, None))
-            .flatten();
-        let mut nearest = wall_hit.map_or(max_distance, |(_, distance, _)| distance);
-        let mut platform_victim = wall_hit.map(|(index, _, _)| index);
-        let mut victim = None;
-        let mut water_hit = false;
-        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
-            let map = &data.maps[self.map];
-            let water = OrientedBox::from_basis(
-                map.water_position,
-                Vec2::RIGHT,
-                data::surface_extents(map.water_extents),
-            );
-            if let Some(hit) = water.raycast(origin, direction)
-                && hit.near < nearest
-                && hit.near <= max_distance
-            {
-                nearest = hit.near;
-                water_hit = true;
-                platform_victim = None;
-            }
+        let excluded = (!already_hit_water)
+            .then_some(self.players[caster].blink_entity)
+            .filter(|&entity| entity != usize::MAX);
+
+        // ShootQuantum checks every rounded rectangle at the muzzle before
+        // applying its layer mask. Registration order is the tie-break.
+        let point_hit = self
+            .entities
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(entity, row)| {
+                row.kind == 2
+                    && row.flags & E_ACTIVE != 0
+                    && excluded != Some(*entity)
+                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
+            })
+            .map(|(entity, _)| DuplicatorRayHit {
+                entity,
+                distance: Fix::ZERO,
+                position: origin,
+            });
+        let hit = point_hit.or_else(|| {
+            self.duplicator_raycast_one(origin, direction, max_distance, mask, excluded, data)
+        });
+
+        // Casting below the water plane deliberately feeds the gun's own
+        // Player-layer body to BlinkObject after drawing the reflected ray.
+        if !already_hit_water
+            && origin.y
+                <= data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y
+        {
+            self.begin_blink_tunnel(caster, caster, data);
+            return;
         }
-        if mask & (1 << LAYER_PLAYER) != 0 {
-            // Registered collider order is player/prefab order. Strictly
-            // closer hits replace the current one, preserving that tie-break.
-            for target in 0..self.players.len() {
-                if !self.playable(target) {
-                    continue;
-                }
-                let slot = &self.players[target];
-                let entity = match slot.active {
-                    ActiveAbility::None => slot.body_entity,
-                    ActiveAbility::Dash => slot.dash_entity,
-                    ActiveAbility::Bow => slot.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => slot.throw_entity,
-                    ActiveAbility::Mine => slot.mine_entity,
-                    ActiveAbility::Rock => slot.rock_entity,
-                    ActiveAbility::Roll => slot.roll_entity,
-                    ActiveAbility::Meteor => slot.meteor_entity,
-                    ActiveAbility::Push => slot.push_entity,
-                    ActiveAbility::Freeze => slot.freeze_entity,
-                    ActiveAbility::Blink => slot.blink_entity,
-                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
-                    ActiveAbility::Duplicator => slot.duplicator_entity,
-                    ActiveAbility::Magnet => slot.magnet_entity,
-                    ActiveAbility::Spike => slot.spike_entity,
-                    ActiveAbility::Engine => slot.engine_entity,
-                    ActiveAbility::Tesla => slot.tesla_entity,
-                    ActiveAbility::TimeStop => slot.time_stop_entity,
-                    ActiveAbility::Gust => slot.gust_entity,
-                    ActiveAbility::Revival => slot.revival_entity,
-                    ActiveAbility::BlackHole => slot.black_hole_entity,
-                    ActiveAbility::Throw => slot.macho_throw_entity,
-                    ActiveAbility::Drill => slot.drill_entity,
-                    ActiveAbility::Beam => slot.beam_entity,
-                    ActiveAbility::Platform => slot.circle_entity,
-                };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let hit = if row.kind == 0 {
-                    Circle {
-                        center,
-                        radius: Fix::from_raw(row.radius),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near)
-                } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    OrientedBox {
-                        center,
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(
-                            Fix::ONE / right.length(),
-                            Fix::ONE / up.length(),
-                        ),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near)
-                };
-                if let Some(distance) = hit
-                    && distance < nearest
-                    && distance <= max_distance
-                {
-                    nearest = distance;
-                    victim = Some(target);
-                    water_hit = false;
-                    platform_victim = None;
-                }
+        let Some(hit) = hit else {
+            return;
+        };
+        if hit.entity == usize::MAX {
+            if already_hit_water {
+                return;
             }
-        }
-        if water_hit {
             self.shoot_blink_ray_pass(
-                origin + direction * nearest,
+                hit.position,
                 Vec2::new(direction.x, -direction.y),
                 caster,
                 data,
@@ -17270,9 +17295,29 @@ impl RolloutWorld {
             );
             return;
         }
-        if let Some(victim) = victim {
+        let entity = hit.entity;
+        let layer = self.entities[entity].layer;
+        // EffectorZone/weapon return before touching Ability.Cooldown. Every
+        // other BlinkObject branch first restores the serialized base value;
+        // a Player victim then replaces it with onPlayerHitCD below.
+        if !matches!(layer, 13 | 19) {
+            let caster_slot = self.players[caster].active_slot;
+            self.players[caster].cooldowns[caster_slot] =
+                data.abilities[ABILITY_BLINK as usize].cooldown;
+        }
+        if let Some(victim) = self
+            .players
+            .iter()
+            .position(|slot| self.playable_slot(slot) && Self::blink_player_entity(slot) == entity)
+        {
             self.begin_blink_tunnel(caster, victim, data);
-        } else if let Some(platform_index) = platform_victim {
+            return;
+        }
+        if let Some(platform_index) = self
+            .platform_entities
+            .iter()
+            .position(|&candidate| candidate == entity)
+        {
             // ShootQuantum creates one QuantumTunnel updater for a newly hit
             // wall, then asks ShakablePlatform for its serialized one-second shake.
             // The map updater already ran this pass, so its first random
@@ -17292,6 +17337,55 @@ impl RolloutWorld {
             dynamics.blink_tunnel_age = Fix::ZERO;
             dynamics.blink_deactivated_tick = None;
             self.platforms_changed();
+            return;
+        }
+        // The first hit converts a non-Blink Orb; a subsequent hit tunnels it.
+        if self.entities[entity].layer == 26
+            && let Some(orb) = self
+                .beam_orbs
+                .iter_mut()
+                .find(|orb| orb.active && orb.entity == Some(entity))
+            && !orb.blink_converted
+        {
+            orb.blink_converted = true;
+            return;
+        }
+        self.begin_blink_object_tunnel(entity, data.blink.wall_duration, data);
+    }
+
+    fn blink_player_entity(slot: &PlayerSlot) -> usize {
+        match slot.active {
+            ActiveAbility::None => slot.body_entity,
+            ActiveAbility::Dash => slot.dash_entity,
+            ActiveAbility::Bow => slot.bow_entity,
+            ActiveAbility::Grenade
+            | ActiveAbility::Smoke
+            | ActiveAbility::Tack
+            | ActiveAbility::Mjolnir
+            | ActiveAbility::PokeBall
+            | ActiveAbility::Missile => slot.throw_entity,
+            ActiveAbility::Mine => slot.mine_entity,
+            ActiveAbility::Rock => slot.rock_entity,
+            ActiveAbility::Roll => slot.roll_entity,
+            ActiveAbility::Meteor => slot.meteor_entity,
+            ActiveAbility::Push => slot.push_entity,
+            ActiveAbility::Freeze => slot.freeze_entity,
+            ActiveAbility::Blink => slot.blink_entity,
+            ActiveAbility::GrowthRay => slot.growth_ray_entity,
+            ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
+            ActiveAbility::Duplicator => slot.duplicator_entity,
+            ActiveAbility::Magnet => slot.magnet_entity,
+            ActiveAbility::Spike => slot.spike_entity,
+            ActiveAbility::Engine => slot.engine_entity,
+            ActiveAbility::Tesla => slot.tesla_entity,
+            ActiveAbility::TimeStop => slot.time_stop_entity,
+            ActiveAbility::Gust => slot.gust_entity,
+            ActiveAbility::Revival => slot.revival_entity,
+            ActiveAbility::BlackHole => slot.black_hole_entity,
+            ActiveAbility::Throw => slot.macho_throw_entity,
+            ActiveAbility::Drill => slot.drill_entity,
+            ActiveAbility::Beam => slot.beam_entity,
+            ActiveAbility::Platform => slot.circle_entity,
         }
     }
 
@@ -17301,11 +17395,101 @@ impl RolloutWorld {
         if !self.players[victim].blink_tunnel_active {
             self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
         }
+        let rope_top = self.players[victim].rope_top;
+        self.attach_player_rope(victim, None, rope_top);
+        if self.players[victim].active == ActiveAbility::Magnet {
+            self.drop_magnet_held_item(victim);
+        }
         let slot = &mut self.players[victim];
         slot.blink_tunnel_active = true;
         slot.blink_tunnel_born_tick = self.tick;
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
+    }
+
+    fn begin_blink_object_tunnel(
+        &mut self,
+        entity: usize,
+        duration: Fix,
+        data: &data::RolloutData,
+    ) {
+        if entity >= self.entities.len() || self.entities[entity].flags & E_ACTIVE == 0 {
+            return;
+        }
+        let entity_id = self.entities[entity].id;
+        if let Some(index) = self.blink_object_tunnels.iter().position(|tunnel| {
+            tunnel.active && tunnel.entity == entity && tunnel.entity_id == entity_id
+        }) {
+            let restore_flags = self.blink_object_tunnels[index].restore_flags;
+            self.blink_object_tunnels[index] = BlinkObjectTunnel {
+                active: true,
+                born_tick: self.tick,
+                entity,
+                entity_id,
+                age: Fix::ZERO,
+                duration,
+                restore_flags,
+            };
+        } else {
+            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+            let tunnel = BlinkObjectTunnel {
+                active: true,
+                born_tick: self.tick,
+                entity,
+                entity_id,
+                age: Fix::ZERO,
+                duration,
+                restore_flags: self.entities[entity].flags,
+            };
+            if let Some(index) = self
+                .blink_object_tunnels
+                .iter()
+                .position(|candidate| !candidate.active)
+            {
+                self.blink_object_tunnels[index] = tunnel;
+            } else {
+                self.blink_object_tunnels.push(tunnel);
+            }
+        }
+        self.entities[entity].flags &= !E_ACTIVE;
+    }
+
+    #[inline]
+    fn blink_object_hidden(&self, entity: Option<usize>) -> bool {
+        let Some(entity) = entity else {
+            return false;
+        };
+        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
+        self.blink_object_tunnels
+            .iter()
+            .any(|tunnel| tunnel.active && tunnel.entity == entity && tunnel.entity_id == entity_id)
+    }
+
+    /// Generic QuantumTunnel victims stay allocated but their GameObject is
+    /// inactive. The pool prevents hidden objects from being mistaken for a
+    /// free gameplay slot and avoids per-cast allocation in vectorized worlds.
+    fn blink_object_tunnels_tick(&mut self, updater_dt: Fix) {
+        for index in 0..self.blink_object_tunnels.len() {
+            let tunnel = self.blink_object_tunnels[index];
+            if !tunnel.active || tunnel.born_tick == self.tick {
+                continue;
+            }
+            if tunnel.entity >= self.entities.len()
+                || self.entities[tunnel.entity].id != tunnel.entity_id
+            {
+                self.blink_object_tunnels[index].active = false;
+                continue;
+            }
+            if tunnel.age > tunnel.duration {
+                if self.entities[tunnel.entity].flags & (E_REMOVED | E_DESTROYED) == 0 {
+                    self.entities[tunnel.entity].flags = tunnel.restore_flags;
+                }
+                self.blink_object_tunnels[index].active = false;
+                continue;
+            }
+            self.blink_object_tunnels[index].age += updater_dt;
+            self.entities[tunnel.entity].flags &= !E_ACTIVE;
+        }
     }
 
     /// QuantumTunnel.UpdateSim for player victims. The visual copy has no
@@ -19156,7 +19340,10 @@ impl RolloutWorld {
 
     fn guided_missiles_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
         for index in 0..self.guided_missiles.len() {
-            if !self.guided_missiles[index].active || !self.guided_missiles[index].registered {
+            if !self.guided_missiles[index].active
+                || !self.guided_missiles[index].registered
+                || self.blink_object_hidden(self.guided_missiles[index].entity)
+            {
                 continue;
             }
             let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
@@ -19232,6 +19419,9 @@ impl RolloutWorld {
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
         for i in 0..self.arrows.len() {
+            if self.blink_object_hidden(self.arrows[i].entity) {
+                continue;
+            }
             if !self.arrows[i].active || !self.arrows[i].registered {
                 if let Some(entity) = self.arrows[i].entity {
                     self.entities[entity].flags = E_REMOVED;
@@ -19292,6 +19482,9 @@ impl RolloutWorld {
 
     fn mines_late_tick(&mut self, data: &data::RolloutData) {
         for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].ability != ABILITY_MINE
                 || self.thrown_items[item_index].entity.is_none()
@@ -19475,7 +19668,11 @@ impl RolloutWorld {
         // BoplBody.UpdateSim decrements the Hold frame count after player
         // prefabs have had a chance to refresh it. A paused/destroyed Magnet
         // therefore releases its item without retaining a stale owner.
-        for item in &mut self.thrown_items {
+        for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
+            let item = &mut self.thrown_items[item_index];
             if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
                 item.magnet_hold_ticks -= 1;
                 if item.magnet_hold_ticks == 0 {
@@ -19488,6 +19685,9 @@ impl RolloutWorld {
         // the manually initialized circle. Its victim search and capture state
         // are fixed-size scans over the player slots.
         for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].ability != ABILITY_POKE_BALL
                 || self.thrown_items[item_index].entity.is_none()
@@ -19580,6 +19780,9 @@ impl RolloutWorld {
         // updater pass after Fire, pins a settled tack before each integration,
         // and performs the armed proximity query without allocating.
         for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].ability != ABILITY_TACK
                 || self.thrown_items[item_index].born_tick >= self.tick
@@ -19654,6 +19857,9 @@ impl RolloutWorld {
         // Mjolnir.UpdateSim also begins one pass after release. The fixed
         // player bitset replaces the source HashSet without allocating.
         for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].ability != ABILITY_MJOLNIR
                 || self.thrown_items[item_index].born_tick >= self.tick
@@ -19755,7 +19961,11 @@ impl RolloutWorld {
         // Gust Shockwave. Its recall update therefore observes the Init
         // impulse above, while the regular Shockwave impulse lands afterward
         // and immediately before DetPhysics integration.
-        for item in &mut self.thrown_items {
+        for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
+            let item = &mut self.thrown_items[item_index];
             if item.active
                 && item.ability == ABILITY_MJOLNIR
                 && item.pending_gust_impulse != Vec2::ZERO
@@ -19767,6 +19977,9 @@ impl RolloutWorld {
         }
 
         for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
             if !self.thrown_items[item_index].active {
                 continue;
             }
@@ -20028,7 +20241,10 @@ impl RolloutWorld {
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
         let radius = data.arrow.radius;
         for i in 0..self.arrows.len() {
-            if !self.arrows[i].active || !self.arrows[i].registered {
+            if !self.arrows[i].active
+                || !self.arrows[i].registered
+                || self.blink_object_hidden(self.arrows[i].entity)
+            {
                 continue;
             }
             let arrow = self.arrows[i];
@@ -20649,6 +20865,7 @@ impl RolloutWorld {
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missiles[missile_index].active
                 || !self.guided_missiles[missile_index].registered
+                || self.blink_object_hidden(self.guided_missiles[missile_index].entity)
             {
                 continue;
             }
@@ -20927,7 +21144,11 @@ impl RolloutWorld {
         let mut all_contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
         all_contacts.clear();
         for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
-            if !item.active || item.entity.is_none() || item.callback_registered_tick == self.tick {
+            if !item.active
+                || item.entity.is_none()
+                || item.callback_registered_tick == self.tick
+                || self.blink_object_hidden(item.entity)
+            {
                 continue;
             }
             let item_radius = thrown_item_radius(data, item);
@@ -20948,6 +21169,7 @@ impl RolloutWorld {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].entity.is_none()
                 || self.thrown_items[item_index].callback_registered_tick == self.tick
+                || self.blink_object_hidden(self.thrown_items[item_index].entity)
             {
                 continue;
             }
@@ -21099,6 +21321,9 @@ impl RolloutWorld {
                 .filter_map(|(index, item)| {
                     (item.active
                         && item.entity.is_some()
+                        && item
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
                         && item.callback_registered_tick != self.tick)
                         .then_some(index)
                 }),
@@ -21464,7 +21689,11 @@ impl RolloutWorld {
     fn grenade_explosion_contacts(&mut self, data: &data::RolloutData) {
         for explosion_index in 0..self.grenade_explosions.len() {
             let explosion = self.grenade_explosions[explosion_index];
-            if !explosion.active || !explosion.registered || explosion.age != 1 {
+            if !explosion.active
+                || !explosion.registered
+                || explosion.age != 1
+                || self.blink_object_hidden(explosion.entity)
+            {
                 continue;
             }
             let hitbox = OrientedBox::from_basis(
@@ -21512,7 +21741,11 @@ impl RolloutWorld {
     fn missile_explosion_contacts(&mut self, data: &data::RolloutData) {
         for explosion_index in 0..self.missile_explosions.len() {
             let explosion = self.missile_explosions[explosion_index];
-            if !explosion.active || !explosion.registered || explosion.age != 1 {
+            if !explosion.active
+                || !explosion.registered
+                || explosion.age != 1
+                || self.blink_object_hidden(explosion.entity)
+            {
                 continue;
             }
             let hitbox = OrientedBox::from_basis(
@@ -21578,6 +21811,9 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
                 let radius = Fix::from_raw(self.entities[entity].radius);
                 if crate::physics::contact::circle_box(
                     Circle {
@@ -21608,6 +21844,9 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
                 let radius = Fix::from_raw(self.entities[entity].radius);
                 if crate::physics::contact::circle_box(
                     Circle {
@@ -21636,6 +21875,9 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
                 let radius = Fix::from_raw(self.entities[entity].radius);
                 if crate::physics::contact::circle_box(
                     Circle {

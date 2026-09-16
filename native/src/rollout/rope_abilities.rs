@@ -214,7 +214,7 @@ impl RolloutWorld {
         index
     }
 
-    fn attach_player_rope(&mut self, player: usize, rope: Option<usize>, top: bool) {
+    pub(super) fn attach_player_rope(&mut self, player: usize, rope: Option<usize>, top: bool) {
         if let Some(old) = self.players[player].rope {
             let old_top = self.players[player].rope_top;
             let old_rope = &mut self.ropes[old].physics;
