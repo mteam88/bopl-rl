@@ -19553,9 +19553,9 @@ impl RolloutWorld {
             // Circle/Circle: released item bodies are resolved before either
             // callback runs. Arrow.OnCollide is queued first for this pair;
             // it parents the visual to the item and destroys Arrow's
-            // FixTransform/Projectile. GrenadeExplode's later callback then
-            // cannot recover an igniting Projectile from that destroyed
-            // transform, so the payload survives with the resolved impulse.
+            // FixTransform/Projectile. Later item callbacks therefore observe
+            // the destroyed transform; in GrenadeExplode's case it can no
+            // longer recover an igniting Projectile, so the payload survives.
             let mut item_contacts = [(usize::MAX, Contact::default()); 64];
             let mut item_contact_count = 0;
             for (item_index, item) in self.thrown_items.iter().enumerate() {
@@ -19566,7 +19566,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let item_radius = data.grenade.item_radius;
+                let item_radius = throw_config(data, item.ability).item_radius;
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
                         center: item.position,
@@ -20173,7 +20173,9 @@ impl RolloutWorld {
                 && !item.settled
                 && item.launched
                 && item.age > Fix::from_f32(0.1)
-                && item.body.velocity.y <= Fix::from_f32(0.5)
+                // BananaPeel.OnCollide runs from DetPhysics' callback queue,
+                // after every platform manifold has resolved this pass.
+                && body.velocity.y <= Fix::from_f32(0.5)
                 && contacts[..contact_count]
                     .iter()
                     .any(|(_, contact)| contact.normal.y < Fix::from_f32(-0.5))

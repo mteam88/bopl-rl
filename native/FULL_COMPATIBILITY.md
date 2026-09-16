@@ -1188,6 +1188,18 @@ ownerless Arrow row, twelve subsequent Grenade passes and the normal timed
 explosion from ticks 348 through 438. Candidate capture uses a fixed stack
 array and adds no allocation to the contact path.
 
+`tack_arrow_ab.c` adds 500 differential ticks for the non-Grenade item path.
+The crossing contact on tick 206 uses Tack's authored 0.5-unit radius rather
+than Grenade's 0.8-unit radius, preserving the source position correction.
+Arrow's queued callback destroys its own physics while Tack keeps the resolved
+impulse. A later rounded-platform contact sees the already-resolved upward
+velocity in `BananaPeel.OnCollide`, so the Tack continues instead of being
+incorrectly pinned from its pre-contact velocity. It remains live and moving
+through tick 500 with the exact final source pose; linear and angular contact
+values differ by at most 41 raw Q32 units from fixed-point normalization, with
+no contact, callback or lifecycle difference. Candidate capture remains the
+same fixed 64-entry stack buffer.
+
 ### Executable Tack throw and trap (2026-09-14)
 
 Catalog id 35 now shares the same allocation-reusing `ThrowItem2` form while

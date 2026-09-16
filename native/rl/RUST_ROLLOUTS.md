@@ -120,7 +120,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   consuming it, matching `Arrow.OnCollide`. A released Grenade composition
   resolves both dynamic circles before Arrow's callback removes its projectile
   components; the later Grenade callback therefore leaves the resolved payload
-  alive until its ordinary timed explosion. Arrow instantiation now reserves
+  alive until its ordinary timed explosion. The same Circle/Circle path uses
+  each item's authored radius: a released Tack keeps the resolved impulse after
+  Arrow destruction, and its later wall callback tests the post-resolution
+  velocity rather than pinning a still-upward body. Arrow instantiation now reserves
   all five prefab updaters and publishes the source collider hierarchy rather
   than an id-derived surrogate. A composed Time Stop golden fires an airborne
   arrow immediately before the stop, holds its position for all 690 frozen
