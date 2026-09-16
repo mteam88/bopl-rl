@@ -3404,6 +3404,13 @@ tick 243; Magnet enters that same pass, catches on tick 245, and fires on tick
 250. The item query, nearest selection, locked angular velocity, two-pass Hold
 refresh, firepoint pinning and 10,000-force launch match every public field.
 
+`magnet_smoke_ab.c`, `magnet_poke_ball_ab.c` and `magnet_tack_ab.c` repeat that
+strict schedule for the other ordinary released ThrowItem2 bodies. All three
+match the same 214/243/243/245/250 cast, release, Magnet entry, catch and fire
+ticks through circular pull, nearest selection, locked pinning and launch.
+Tack keeps its Projectile owner; Smoke and Poke Ball retain their item-root
+ownership rules. No position or velocity allowance is needed.
+
 The allocation-free replacement for `MagnetGun.StaticUpdate` retains one
 pickup circle per player slot, scans pairs in slot order after every player's
 ability update, pauses only magnets still prepulling/pulling, and applies the

@@ -259,6 +259,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   Magnet over 450 ticks, including fuse suppression and holder cleanup.
 - `magnet_grenade_ab.c`: a strict same-player released-Grenade composition
   through item pull, nearest pickup, locked pinning and 10,000-force launch.
+- `magnet_smoke_ab.c`, `magnet_poke_ball_ab.c` and `magnet_tack_ab.c`: the same
+  strict released-item Magnet path for the remaining ordinary ThrowItem2 bodies.
 - `magnet_parry_ab.c`: ordered empty-pickup circles from two Magnet casters,
   the post-update static overlap sweep, pause and symmetric push over 240 ticks.
 - `magnet_time_stop_ab.c`: a held Grenade across 690 frozen passes, retained

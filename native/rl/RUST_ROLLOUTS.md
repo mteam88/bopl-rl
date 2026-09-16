@@ -539,6 +539,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   public state within 64 raw Q32 units after source updater-phase separation.
   A second same-player Grenade composition matches the 214/243/245/250
   cast/release/catch/fire schedule with no positional allowance.
+  Smoke, Poke Ball and Tack repeat that strict released-item schedule, including
+  Tack's distinct Projectile ownership.
   The post-player static parry sweep also uses
   fixed player-slot storage and matches the source's ordered overlap, pause and
   symmetric `AddForce` pushes in a two-Magnet golden. A composed Time Stop
