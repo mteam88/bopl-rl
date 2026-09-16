@@ -158,7 +158,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   aerial form also uses its own extracted `PlayerPhysics`: 0.03-gravity aiming,
   speed clamp, full-gravity release,
   60%-blended horizontal control, body integration and raycast landing are
-  exact. Forced exits and duplication remain open.
+  exact. An Arrow-death composition now matches callback-time manual
+  registration of the still-held payload, its deferred upward impulse, stock
+  clone and later fuse explosion; only NativeAOT's inert destroyed-Arrow spin
+  row is excluded. Lost-support/other-form exits and duplication remain open.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
   the authored translational and rotational home springs, ejection and

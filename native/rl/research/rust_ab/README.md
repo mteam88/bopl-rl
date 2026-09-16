@@ -76,6 +76,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `grenade_multi_kill_ab.c`: the same early contact leaves both players in the
   blast and verifies callback-time hierarchy reservation plus shape-grouped IDs
   for two stock clones registered together.
+- `grenade_forced_exit_ab.c`: an Arrow kills the active held form and verifies
+  callback-time payload registration, next-pass upward impulse, stock clone and
+  the later fuse explosion over 400 ticks.
 - `time_stop_arrow_ab.c`: a live Bow projectile across Time Stop entry, all
   690 frozen physics passes, and its first restored gravity/flight pass; also
   verifies source-derived Arrow prefab hierarchy allocation.

@@ -387,6 +387,9 @@ pub struct ThrownItem {
     pub born_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
+    /// A ManualInit performed from a DetPhysics callback joins the collider
+    /// registry immediately but cannot enter the already-built manifold set.
+    pub callback_registered_tick: u32,
     pub position: Vec2,
     pub body: Body,
     pub fuse: Fix,
@@ -13608,6 +13611,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
+            callback_registered_tick: u32::MAX,
             position,
             body: Body {
                 velocity,
@@ -13847,6 +13851,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
+            callback_registered_tick: u32::MAX,
             position: self.players[index].base.position,
             body: Body {
                 orientation: self.players[index].base.rotation,
@@ -13959,6 +13964,60 @@ impl RolloutWorld {
         state.item = Some(item_index);
         state.phase = 1;
         state.ticks = 0;
+    }
+
+    /// ThrowItem2.ExitAbility releases an already spawned payload when the
+    /// form is interrupted before Fire. PlayerCollision reaches this path in
+    /// its DetPhysics callback, after item integration, so publish the manual
+    /// circle at the held position now and leave its impulse queued for the
+    /// next pass.
+    fn release_held_throw_item_on_exit(&mut self, index: usize, data: &data::RolloutData) {
+        let ability = active_throw_ability(self.players[index].active);
+        if !matches!(
+            ability,
+            ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
+        ) || self.players[index].throw_item.has_fired
+        {
+            return;
+        }
+        let Some(item_index) = self.players[index].throw_item.item else {
+            return;
+        };
+        if !self.thrown_items[item_index].active {
+            return;
+        }
+        let config = throw_config(data, ability);
+        let new_collider_id = self.thrown_items[item_index]
+            .entity
+            .is_none()
+            .then(|| self.next_id());
+        let scale = self.players[index].player_scale;
+        let item = &mut self.thrown_items[item_index];
+        item.hurt_owner_delay = config.hurt_owner_delay * scale;
+        item.body.force += Vec2::UP * (scale * config.min_force * Fix::from_int(60));
+        if item.entity.is_none() {
+            item.id = new_collider_id.expect("forced throw collider id");
+            let entity = self.entities.len();
+            item.entity = Some(entity);
+            self.entities.push(CEntity {
+                id: item.id,
+                kind: 0,
+                layer: config.item_layer,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000 + item.hierarchy_base + config.item_collider_hierarchy,
+                x: item.position.x.raw(),
+                y: item.position.y.raw(),
+                vx: item.body.velocity.x.raw(),
+                vy: item.body.velocity.y.raw(),
+                rotation: item.body.orientation.raw(),
+                angular_velocity: item.body.angular_velocity.raw(),
+                radius: config.item_radius.raw(),
+                inverse_mass: item.body.inverse_mass.raw(),
+                ..CEntity::default()
+            });
+            item.callback_registered_tick = self.tick;
+        }
+        self.players[index].throw_item.has_fired = true;
     }
 
     /// GunTransform.UpdateSim for the ray-gun form. Freeze is the first user:
@@ -19021,7 +19080,7 @@ impl RolloutWorld {
         let mut all_contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
         all_contacts.clear();
         for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
-            if !item.active || item.entity.is_none() {
+            if !item.active || item.entity.is_none() || item.callback_registered_tick == self.tick {
                 continue;
             }
             let item_radius = if item.ability == ABILITY_MINE {
@@ -19045,6 +19104,7 @@ impl RolloutWorld {
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].entity.is_none()
+                || self.thrown_items[item_index].callback_registered_tick == self.tick
             {
                 continue;
             }
@@ -19196,7 +19256,10 @@ impl RolloutWorld {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, item)| {
-                    (item.active && item.entity.is_some()).then_some(index)
+                    (item.active
+                        && item.entity.is_some()
+                        && item.callback_registered_tick != self.tick)
+                        .then_some(index)
                 }),
         );
         order.sort_unstable_by(|&a, &b| {
@@ -19285,6 +19348,7 @@ impl RolloutWorld {
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].entity.is_none()
+                || self.thrown_items[item_index].callback_registered_tick == self.tick
             {
                 continue;
             }
@@ -20740,6 +20804,16 @@ impl RolloutWorld {
             return;
         }
         let players = self.players.len();
+        if matches!(
+            self.players[index].active,
+            ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
+        ) {
+            self.release_held_throw_item_on_exit(index, data::get());
+        }
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
         }

@@ -1166,7 +1166,17 @@ casts the acquired third slot through marker creation and form exit. Pickup
 flight retains the established 100,000-raw-Q32 bound, and the angled Grenade
 form retains a one-raw-unit position bound; identities, selection, contacts and
 all lifecycle ticks are exact. Grenade duplication and grounded-form forced
-exits still require separate goldens before id 3 is complete.
+exits from lost support still require separate goldens before id 3 is complete.
+
+`grenade_forced_exit_ab.c` adds 400 exact gameplay passes for the death exit.
+An Arrow kills the active form on tick 145 while its grenade is held.
+`ThrowItem2.ExitAbility` manually registers that circle in the collision
+callback, queues the minimum upward impulse for the next pass, and leaves the
+already-built DetPhysics manifold set unchanged. The item, victim stock clone,
+choice markers, upward flight and tick-277 fuse explosion match NativeAOT. The
+only excluded field is the pre-existing destroyed-Arrow angular velocity row:
+NativeAOT retains its final spin while Rust publishes zero after destruction;
+the Arrow is ownerless and non-colliding in both backends on that row.
 
 ### Executable Tack throw and trap (2026-09-14)
 
