@@ -25,9 +25,9 @@ seeds = "fixed"
 concurrency = 1
 
 [trial]
-memory_max = "8G"
+memory_max = "10G"
 nice = 10
-max_seconds = 21600                # 024 took 2555 s at hidden 128; v4-full is budgeted at up to ~3x
+max_seconds = 21600                # steps stay 1734936776 (the 024 budget); the comparison is at equal steps (every 20M checkpoint), not equal wall time, so full runs are wanted even at 3x
 poll_seconds = 60
 
 [scoring]
