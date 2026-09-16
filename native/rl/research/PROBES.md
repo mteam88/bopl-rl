@@ -78,7 +78,7 @@ adds another step (`hit_inflight_30` AP 0.28 → 0.32 alone; `fall_30` 0.72 →
 0.79; `squish_60` 0.04 → 0.26, because the second hit sees the platform
 behind the opponent's body or arrow; edge distance R² 0.64 → 0.79; on top of
 raw: `squish_60` 0.25 → 0.33, `any_death_60` 0.39 → 0.42, edge 0.78 → 0.83)
-at no extra CPU cost. Relational per-row features on top of raw add `hit_15` 0.10 → 0.13,
+for +0.4 µs per observation (3.5 → 3.8 µs). Relational per-row features on top of raw add `hit_15` 0.10 → 0.13,
 `fall_30` 0.16 → 0.30 and nothing on the linear probes (the type of the row
 and its geometry still have to be ANDed); on top of raw+rays they add a
 further `hit_15` 0.28 → 0.33 and `squish_60` 0.25 → 0.28. Neither family
@@ -134,8 +134,8 @@ predictive — and it is not under-capacity: the ceiling probes above sit at
    none}, and the hit's velocity relative to the slime along the ray /64
    (negative = closing; for terrain this is −v_self·ray, so the block also
    carries own velocity). 288 floats, 3.5 µs per observation single-threaded
-   (~5% of a decision step); a second hit per ray is free and worth
-   keeping for arrows behind terrain. Feed the block through its own small
+   (~5% of a decision step); three hits per ray cost 0.4 µs more and are
+   worth it (squish, edge distance, arrows behind the opponent's body). Feed the block through its own small
    MLP or a 1-D conv over angle (the ray index is a circular axis) before
    fusion, not through the set encoder. This is the map-invariant geometry
    channel: `raw_nopos+rays32` equals `raw+rays32` on every label.
