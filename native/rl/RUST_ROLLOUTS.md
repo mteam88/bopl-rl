@@ -92,6 +92,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `ThrowItem2` forms for all 690 passes and release on the restored clock.
   Mjolnir waits for `Fire`'s manual collider registration before beginning its
   outbound updater, matching the source `grenade.hasBeenThrown` guard.
+  An attached RocketEngine and its composite platform also freeze for all 690
+  passes, then resume the force animation clock and platform motion exactly.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =

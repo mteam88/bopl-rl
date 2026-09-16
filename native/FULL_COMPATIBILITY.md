@@ -2160,6 +2160,13 @@ released it. Source `Mjolnir.UpdateSim` returns while
 boundary represented by manual collider registration, so the held payload
 remains owned by the form without a lookup or per-tick allocation.
 
+`time_stop_engine_ab.c` plants a RocketEngine shortly before the global stop.
+The live layer-21 child and its composite rounded platform remain fixed for all
+690 zero-scale passes. `RocketEngine.UpdateSim` returns before advancing the
+force animation or applying its point force, and Rust preserves that branch in
+the preallocated attachment pool. The clock, entity rows and platform body
+resume together after restoration; all 1,540 ticks are exact.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback
