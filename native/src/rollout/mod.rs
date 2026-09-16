@@ -14410,10 +14410,37 @@ impl RolloutWorld {
         slot.base.external_velocity *= Fix::from_f64(0.95);
     }
 
-    /// MagnetGun's player form and release flight. Pull/pickup callbacks are
-    /// layered onto the prepulling/pulling section; this keeps the animation
-    /// and movement handoff exact even when the query contains no target.
+    /// Run Magnet's three state-bearing prefab updater phases in hierarchy
+    /// order. Ability.UpdateSim publishes the transform left by MagnetGun,
+    /// before the later PlayerBody integration advances it.
     fn magnet_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        movement_input: Vec2,
+        data: &data::RolloutData,
+        advance_animation: bool,
+    ) {
+        self.magnet_gun_update(index, action, movement_input, data, advance_animation);
+        if self.players[index].active != ActiveAbility::Magnet {
+            return;
+        }
+
+        // Ability.UpdateSim, hierarchy 3. PlayerPhysics at hierarchy 4 only
+        // updates scale for this prefab because ApplyGravity is disabled.
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+
+        // PlayerBody.UpdateSim, hierarchy 8.
+        let slot = &mut self.players[index];
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
+    }
+
+    /// MagnetGun.UpdateSim, hierarchy 2. Pull/pickup callbacks are layered
+    /// onto the prepulling/pulling section; this keeps the animation and
+    /// movement handoff exact even when the query contains no target.
+    fn magnet_gun_update(
         &mut self,
         index: usize,
         action: Action,
@@ -14535,25 +14562,6 @@ impl RolloutWorld {
         if slot.base.velocity.length() > magnet.constants.max_speed {
             slot.base.velocity = slot.base.velocity.normalized() * magnet.constants.max_speed;
         }
-        if !slot.base.grounded {
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        } else {
-            if (slot.magnet.held_item.is_some()
-                || slot.magnet.held_missile.is_some()
-                || slot.magnet.held_arrow.is_some())
-                && let Some(platform) = slot.base.platform(&self.platforms)
-            {
-                // Player.Position follows the late platform-local pose, while
-                // the active collider below observes PlayerBody's pre-late
-                // integration of the newly transferred item velocity.
-                slot.reported_position =
-                    platform.surface.position(slot.base.local, slot.base.radius);
-                slot.reported_tick = self.tick;
-            }
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        }
     }
 
     /// MagnetGun.TryPullItems' rounded-platform branch. The source first
@@ -14613,11 +14621,29 @@ impl RolloutWorld {
             changed = true;
         }
         for player_index in 0..self.players.len() {
-            if player_index == index || !self.playable(player_index) {
+            if !self.playable(player_index) {
                 continue;
             }
             let target = &self.players[player_index];
-            if crate::physics::contact::box_box(query, target.base.collider).is_none() {
+            let collider = if player_index == index {
+                // TryPullItems leaves Magnet's own Player-layer hurtbox
+                // enabled. The forward pull box can overlap it, routing the
+                // caster back through the generic PlayerBody branch. Use the
+                // live FixTransform basis from before this MagnetGun pass;
+                // DetPhysics has not synchronized the new aim yet.
+                let right = target.magnet.body_right;
+                let extents = data::surface_extents(magnet.hurtbox_extents) * target.base.scale;
+                OrientedBox {
+                    center: target.base.position
+                        + right.complex_mul(magnet.collider_offset * target.base.scale),
+                    right: right * extents.x,
+                    up: right.perp() * extents.y,
+                    inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                }
+            } else {
+                target.base.collider
+            };
+            if crate::physics::contact::box_box(query, collider).is_none() {
                 continue;
             }
             // The shipped code accidentally measures closeness from the raw
@@ -15133,6 +15159,26 @@ impl RolloutWorld {
         missile.body.velocity = Vec2::ZERO;
         missile.magnet_holder = Some(index);
         missile.magnet_hold_ticks = 2;
+        // MagnetGun's item branch immediately calls MoveObjectOutOfWalls.
+        // Missile's collider is a box; the source tests rounded platforms in
+        // scene order and applies one full positional correction before the
+        // later DetPhysics pass.
+        let shape = RoundedRect {
+            inner: OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents,
+            ),
+            radius: Fix::ZERO,
+        };
+        if let Some(contact) = self
+            .platforms
+            .iter()
+            .find_map(|platform| crate::physics::contact::rounded_rounded(shape, platform.collider))
+        {
+            missile.position +=
+                positional_correction(contact, missile.body.inverse_mass, Fix::ZERO, true)[0];
+        }
     }
 
     fn magnet_update_held_arrow(
@@ -18721,6 +18767,23 @@ impl RolloutWorld {
                     self.platforms[platform_index].collider.inner.center += correction[1];
                 }
                 self.platforms_changed();
+                if missile.magnet_hold_ticks >= 0 {
+                    // Missile.OnCollide suppresses its callback while held,
+                    // after DetPhysics has resolved the residual slop contact.
+                    let live = &mut self.guided_missiles[missile_index];
+                    live.position = center;
+                    live.body = body;
+                    if let Some(entity) = live.entity {
+                        let row = &mut self.entities[entity];
+                        row.x = center.x.raw();
+                        row.y = center.y.raw();
+                        row.vx = body.velocity.x.raw();
+                        row.vy = body.velocity.y.raw();
+                        row.rotation = body.orientation.raw();
+                        row.angular_velocity = body.angular_velocity.raw();
+                    }
+                    continue;
+                }
                 let owner = missile.owner;
                 self.spawn_missile_explosion(center, owner, false, data);
                 self.destroy_guided_missile(missile_index, true);
@@ -18737,7 +18800,7 @@ impl RolloutWorld {
             }
 
             let hit_player = self.players.iter().enumerate().any(|(index, player)| {
-                if !self.playable(index) {
+                if !self.playable(index) || missile.magnet_holder == Some(index) {
                     return false;
                 }
                 let entity = match player.active {

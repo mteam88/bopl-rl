@@ -10,10 +10,9 @@ static int64_t distance(int64_t a, int64_t b) {
 }
 
 static int entity_equal(const BoplRlEntity *a, const BoplRlEntity *b) {
-    int64_t form_tolerance = a->layer == 8 ? 30000000 : 64;
-    int64_t position_tolerance = (a->layer == 8 || a->layer == 10) ? 100000000 : 64;
-    int64_t rotation_tolerance =
-        a->layer == 8 ? 30000000 : (a->layer == 10 ? 65536 : 64);
+    const int64_t form_tolerance = 64;
+    const int64_t position_tolerance = 64;
+    const int64_t rotation_tolerance = 64;
     return a->id == b->id && a->kind == b->kind && a->layer == b->layer &&
            a->owner == b->owner && a->flags == b->flags &&
            a->hierarchy == b->hierarchy && distance(a->x, b->x) <= position_tolerance &&
@@ -50,7 +49,7 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned tick) {
     }
     for (unsigned i = 0; i < a->header.player_count; i++) {
         BoplRlPlayer ap = a->players[i], bp = b->players[i];
-        int player_position_diff = distance(ap.x, bp.x) > 100000000 || distance(ap.y, bp.y) > 100000000;
+        int player_position_diff = distance(ap.x, bp.x) > 64 || distance(ap.y, bp.y) > 64;
         ap.x = ap.y = bp.x = bp.y = 0;
         if (player_position_diff || memcmp(&ap, &bp, sizeof ap) != 0 ||
             memcmp(&a->telemetry[i], &b->telemetry[i],
@@ -74,7 +73,7 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned tick) {
     }
     for (unsigned i = 0; i < a->header.slime_count; i++) {
         BoplRlSlime as = a->slimes[i], bs = b->slimes[i];
-        int slime_vector_diff = distance(as.x, bs.x) > 100000000 || distance(as.y, bs.y) > 100000000 ||
+        int slime_vector_diff = distance(as.x, bs.x) > 64 || distance(as.y, bs.y) > 64 ||
             distance(as.vx, bs.vx) > 64 || distance(as.vy, bs.vy) > 64;
         as.x = as.y = as.vx = as.vy = bs.x = bs.y = bs.vx = bs.vy = 0;
         if (slime_vector_diff || memcmp(&as, &bs, sizeof as) != 0) {

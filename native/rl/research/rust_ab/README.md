@@ -201,7 +201,13 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   aim and hold refresh, followed by first-restored-pass launch and form exit.
 - `magnet_missile_ab.c`: an airborne Magnet pulls a guided Missile through the
   item-layer branch, catches and pins it with engine thrust suppressed, then
-  launches it at the authored Missile speed while `BoplBody.Hold` expires.
+  launches it at the authored Missile speed while `BoplBody.Hold` expires. The
+  complete 275-tick state is exact within 64 raw Q32 units.
+- `magnet_missile_landing_ab.c`: the same guided Missile remains held while
+  the airborne Magnet lands. It covers MagnetGun/Ability/PlayerBody updater
+  phase publication, the source's self-overlapping pull box,
+  `MoveObjectOutOfWalls`, residual DetPhysics contact and the held Missile's
+  suppressed collision callback over 500 exact ticks.
 - `magnet_arrow_ab.c`: a live layer-9 Bow projectile follows Magnet's stronger
   pull branch, nearest-circle pickup, held spin/pin countdown and doubled
   launch force. Held position inherits the documented Magnet form bound;

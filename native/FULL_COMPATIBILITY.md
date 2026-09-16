@@ -3183,17 +3183,11 @@ canonical player body, pull query, collision decisions or later state.
 It covers circular-item pull force, nearest pickup, holder/fuse suppression,
 the locked angular velocity and zero-velocity pin, repeated held-body momentum
 transfer, release recoil and the 10,000-force launch. Cast, pickup, release,
-form exit and item survival ticks match exactly, as do every item velocity and
-all non-position state. The golden permits at most 100,000,000 raw Q32 units
-(0.0233 world units) in the grounded player, form and held-item positions; the
-observed release-frame maximum is 82,887,626 raw units (0.0193). Unity performs
-the newly transferred item velocity, grounded PlayerPhysics movement,
-PlayerBody integration and late platform-local publication through separate
-updatables in one pass. Rust groups those operations around its shared player
-body and reconstructs the same published transform. The small integration-order
-drift does not alter the aim byte, pickup/lock decision, collision manifold,
-lifecycle tick or exact launch velocity. Holding and duplication remain
-allocation-free, and copied items explicitly discard the source holder.
+form exit, item survival, positions and velocities now match within 64 raw Q32
+units. Rust runs MagnetGun, Ability publication and PlayerBody integration as
+separate source-ordered phases, including the grounded platform-local handoff.
+Holding and duplication remain allocation-free, and copied items explicitly
+discard the source holder.
 
 The allocation-free replacement for `MagnetGun.StaticUpdate` retains one
 pickup circle per player slot, scans pairs in slot order after every player's
@@ -3213,8 +3207,8 @@ the exact 690 frozen passes, the retained input direction, form transform,
 pull/release clocks and physics remain fixed while the locked branch continues
 to pin the zero-velocity item and refresh `BoplBody.Hold(2)`. Releasing and
 changing aim during the stop therefore fires along the retained pre-stop aim
-on the first restored pass, matching NativeAOT through form exit. The golden
-uses the item fixture's 0.0233-world-unit position allowance and matches every
+on the first restored pass, matching NativeAOT through form exit. This stopped
+composition retains a 0.0233-world-unit position allowance and matches every
 axis, velocity, flag and lifecycle tick. The pooled item stores the source's
 three-frame initial/two-frame refreshed hold countdown, so pause, holder death
 and duplication cannot leave a permanent holder reference.
@@ -3229,10 +3223,19 @@ thrust suppression while held. On release the source clears Magnet's item
 reference but leaves `BoplBody.Hold` to expire independently; preserving that
 countdown suppresses Missile's 1,000-force instability thrust on the launch
 pass and leaves the authored speed exactly 75. Cast, catch and release
-boundaries, velocities, axes, flags and entity ordering match. Airborne form
-and held-body positions use a 700,000,000-raw-unit bound (0.163 world units)
-for the already documented grouped player/form update ordering; it does not
-change the selected target or any lifecycle boundary in the fixture.
+boundaries, positions, velocities, axes, flags and entity ordering match within
+64 raw Q32 units.
+
+`magnet_missile_landing_ab.c` extends the held path to 500 ticks while the
+caster lands at tick 296. The source's MagnetGun hierarchy-2 movement publishes
+through Ability at hierarchy 3 before PlayerBody integrates at hierarchy 8.
+Its pull box also overlaps Magnet's own enabled Player-layer hurtbox, applying
+the generic player pull back to the caster. Rust preserves both behaviors.
+While held, the guided Missile follows the item branch's ordered
+`MoveObjectOutOfWalls`, then DetPhysics resolves the residual 0.01-unit slop
+contact before `Missile.OnCollide` suppresses its callback. This reproduces the
+first tiny dynamic-platform impulse on tick 342 and remains exact through tick
+500 without widening the 64-raw-Q32 bound.
 
 `magnet_arrow_ab.c` closes the layer-9 Bow projectile path. Magnet applies
 `ProjectilePullStr`, selects the Arrow circle as the nearest pickup, transfers

@@ -474,9 +474,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   ordinary/Macho player pulls are executable without per-tick allocation.
   Circular thrown items now receive pull force, transfer momentum on nearest
   pickup, pause their fuse while held, track the clamped firepoint and launch
-  with the authored force; a 450-tick Grenade composition golden bounds the
-  grouped grounded-transform drift to 0.0233 world units while lifecycle and
-  item velocities match exactly. The post-player static parry sweep also uses
+  with the authored force; a 450-tick Grenade composition now matches complete
+  public state within 64 raw Q32 units after source updater-phase separation.
+  The post-player static parry sweep also uses
   fixed player-slot storage and matches the source's ordered overlap, pause and
   symmetric `AddForce` pushes in a two-Magnet golden. A composed Time Stop
   golden preserves the retained pre-stop aim and locked item for 690 frozen
@@ -484,10 +484,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   authored Hold countdown. Guided Missiles also use the source's item-layer
   pull strength, nearest pickup and locked motion. Their independent Hold
   countdown suppresses the 1,000-force instability engine on the 75-unit
-  launch pass, matching the composed 275-tick differential. A live Bow arrow
-  also matches the distinct layer-9 projectile pull, pickup, held countdown
-  and `FireForce * 2` launch path. Other projectiles, Boulder/Black Hole bodies,
-  ragdolls, weapon/spell holding and lock loss remain open.
+  launch pass, matching the composed 275-tick differential exactly. A second
+  500-tick differential keeps the Missile held while the caster lands. Magnet's
+  source updater phases, its self-overlapping pull, item
+  `MoveObjectOutOfWalls`, residual platform contact and suppressed held-item
+  callback all match within 64 raw Q32 units. A live Bow arrow also matches the
+  distinct layer-9 projectile pull, pickup, held countdown and `FireForce * 2`
+  launch path. Other projectiles, Boulder/Black Hole bodies, ragdolls,
+  weapon/spell holding and lock loss remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player
