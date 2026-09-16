@@ -3143,10 +3143,19 @@ draw but is destroyed before its collider reaches the public entity rows. The
 three copies, collision responses, randomized clouds, identities, hierarchies
 and removal ticks all match.
 
+`duplicator_tack_ab.c` adds 450 exact ticks for the first non-Grenade item
+copy. Unity's `DuplicateObject` copies serialized prefab fields but starts
+private Tack and physics runtime state fresh: the circle registers one pass
+after the shot, `BananaPeel` joins one further pass later, and the copied body
+starts at zero angular velocity before Tack observes `hasBeenThrown`. Rust now
+models that phase split and the clone-local third-updater collider hierarchy.
+All three fan copies match through ballistic contacts, arming and two trap
+consumptions within 64 raw Q32 units.
+
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. Tack, Mjolnir, Poke Ball and
-Mine use the same allocation-free circular-item clone path but still need
-their own composed goldens.
+attached-terrain and orb branches are integrated. Mjolnir, Poke Ball and Mine
+use the same allocation-free circular-item clone path but still need their own
+composed goldens.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 

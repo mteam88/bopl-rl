@@ -15712,6 +15712,11 @@ impl RolloutWorld {
             (clone_count, spacing, angle, item.item_updatable_count)
         };
         let speed = source.body.velocity.length() + Fix::from_int(10);
+        let prefab_body = if source.ability == ABILITY_MINE {
+            data.mine.item_body
+        } else {
+            throw_config(data, source.ability).item_body
+        };
         for clone_index in 0..clone_count {
             let position = Self::fan_out(
                 clone_count,
@@ -15732,7 +15737,34 @@ impl RolloutWorld {
             clone.magnet_holder = None;
             clone.magnet_hold_ticks = -1;
             clone.position = position;
-            clone.body.velocity = (position - source.position).normalized_safe() * speed;
+            clone.body = Body {
+                velocity: (position - source.position).normalized_safe() * speed,
+                // duplicateBoplBody explicitly copies the live FixTransform
+                // rotation after the cloned BoplBody starts from prefab state.
+                orientation: source.body.orientation,
+                ..prefab_body
+            };
+            // Unity clones only serialized component fields. Runtime state in
+            // the item behaviours starts as a fresh prefab instance even
+            // though the Item owner and BoplBody pose are copied explicitly.
+            clone.age = Fix::ZERO;
+            clone.launched = false;
+            clone.settled = false;
+            clone.owner_clear = false;
+            clone.settle_position = Vec2::ZERO;
+            clone.phase = 0;
+            clone.killed_players = 0;
+            clone.time_since_anticipation = Fix::ZERO;
+            clone.prev_chase_dir = Vec2::RIGHT;
+            clone.prev_rand_vector = Vec2::ZERO;
+            clone.prev_velocity_change = Vec2::ZERO;
+            clone.capture_victim = None;
+            clone.capture_left = Fix::ZERO;
+            clone.random_offset = if source.ability == ABILITY_MINE {
+                Fix::ONE - self.rng.fix_range(Fix::ZERO, Fix::from_int(2)) * data.mine.hover_period
+            } else {
+                Fix::ZERO
+            };
             clone.duplicated = true;
             clone.duplicate_lifespan = 1800;
             clone.duplicate_shake_offset = Vec2::ZERO;
@@ -15792,7 +15824,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let (layer, collider_hierarchy, radius) = if item.ability == ABILITY_MINE {
+            let (layer, mut collider_hierarchy, radius) = if item.ability == ABILITY_MINE {
                 (
                     data.mine.item_layer,
                     data.mine.item_collider_hierarchy,
@@ -15806,6 +15838,18 @@ impl RolloutWorld {
                     config.item_radius,
                 )
             };
+            if item.duplicated
+                && matches!(
+                    item.ability,
+                    ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
+                )
+            {
+                // DuplicateObject temporarily renumbers MonoUpdatables from
+                // one before Instantiate. These three six-updater prefabs put
+                // their circle third in that local order, one slot later than
+                // the collider hierarchy used by a normally spawned item.
+                collider_hierarchy += 1;
+            }
             let id = self.next_id();
             self.entities.push(CEntity {
                 id,
@@ -18040,6 +18084,8 @@ impl RolloutWorld {
                 || self.thrown_items[item_index].ability != ABILITY_POKE_BALL
                 || self.thrown_items[item_index].entity.is_none()
                 || self.thrown_items[item_index].born_tick >= self.tick
+                || (self.thrown_items[item_index].duplicated
+                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
             {
                 continue;
             }
@@ -18154,6 +18200,8 @@ impl RolloutWorld {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].ability != ABILITY_TACK
                 || self.thrown_items[item_index].born_tick >= self.tick
+                || (self.thrown_items[item_index].duplicated
+                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
             {
                 continue;
             }
@@ -18226,6 +18274,8 @@ impl RolloutWorld {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].ability != ABILITY_MJOLNIR
                 || self.thrown_items[item_index].born_tick >= self.tick
+                || (self.thrown_items[item_index].duplicated
+                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
             {
                 continue;
             }

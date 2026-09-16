@@ -151,6 +151,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `duplicator_smoke_ab.c`: Smoke's three-copy fan through cloned-Grenade reset,
   rigid and Water contact detonation, randomized clouds and same-pass removal
   of a cloud born below WaterHeight over 450 ticks.
+- `duplicator_tack_ab.c`: Tack's three-copy fan through fresh prefab runtime
+  state, deferred collider/behavior registration, ballistic contact, arming
+  and two exact trap consumptions over 450 ticks.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.
