@@ -473,8 +473,13 @@ def plan_round(rating, ratings, remaining_games, band, round_games):
 
 def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, band=(.15, .85),
                     round_games=48, workers=4, seed_base=70001, maps=None, library=None,
-                    game=None, bootstrap=1000, name=CANDIDATE, log=None):
-    """Rate one checkpoint against the frozen pool; cached under out or the run's sha8 dir."""
+                    game=None, bootstrap=1000, name=CANDIDATE, log=None, source='band'):
+    """Rate one checkpoint against the frozen pool; cached under out or the run's sha8 dir.
+
+    source labels the record: 'band' for the scorer's full budget, 'in-run' for
+    the eval hook's smaller budget on every evaluation checkpoint (train.py);
+    cache_hit lets a fuller rating replace a smaller one, so the scorer's band
+    rating overwrites the in-run point of the checkpoints it rates."""
     checkpoint = Path(checkpoint).resolve()
     identity = checkpoint_identity(checkpoint)
     maps = list(maps or pool['maps'])
@@ -540,7 +545,7 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
         game_mismatch=game_sha256 != pool.get('game', {}).get('sha256'),
         rating=rating, interval=interval, bootstrap=bootstrap, games=len(all_games),
         draws=sum(1 for g in all_games if g['outcome'] == 'draw'),
-        source='band', records=rating_records(records, rating, ratings),
+        source=source, records=rating_records(records, rating, ratings),
         rounds=rounds, elapsed=time.monotonic() - started,
         note='Bradley-Terry MLE vs fixed pool ratings; timeouts = draws; one virtual draw per member; '
              '95% percentile bootstrap over side-swapped seed pairs')
@@ -848,6 +853,8 @@ def main():
     rate.add_argument('--seed-base', type=int, default=70001)
     rate.add_argument('--library', type=Path, default=None)
     rate.add_argument('--game', type=Path, default=None)
+    rate.add_argument('--source', choices=('band', 'in-run'), default='band',
+                      help="label of the record: 'in-run' for the eval hook's per-checkpoint points")
     runs = commands.add_parser('rate-runs', help='Rate run directories into <run>/reference/<pool_sha8>/')
     runs.add_argument('--pool', type=Path, required=True)
     runs.add_argument('--run', action='append', default=[], type=Path, help='Run directory (repeatable)')
@@ -915,7 +922,8 @@ def main():
         lo, hi = _band(args.band)
         result = rate_checkpoint(args.checkpoint, pool, args.out, games=args.games,
                                  first_pass_games=args.first_pass_games, band=(lo, hi), workers=args.workers,
-                                 seed_base=args.seed_base, library=args.library, game=args.game, log=log)
+                                 seed_base=args.seed_base, library=args.library, game=args.game, log=log,
+                                 source=args.source)
         print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
               f"{result['games']} games ({result['draws']} draws)"
               + (f" in {result['elapsed']:.0f}s" if 'elapsed' in result else ''))

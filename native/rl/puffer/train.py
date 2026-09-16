@@ -11,13 +11,14 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
+sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools'), str(ROOT / 'native/rl/sweep')]
 from common import atomic_json
 from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
 import native_selfplay
+from reference_pool import DEFAULT_POOL
 from native_vector import NativeVector
 import reference
 import scripted_roster
@@ -285,6 +286,10 @@ def arguments():
     p.add_argument('--heldout-games', type=int, default=4)
     p.add_argument('--frozen-games', type=int, default=16)
     p.add_argument('--evaluation-workers', type=int, default=2)
+    p.add_argument('--no-in-run-pool', action='store_true',
+                   help='do not rate every evaluation checkpoint against the pool in-run (reference_pool.py rate, '
+                        'nice 19, 2 workers, CPU only, non-blocking; skipped while the previous one runs)')
+    p.add_argument('--in-run-pool-games', type=int, default=160, help='games of each in-run pool rating')
     p.add_argument('--evaluation-pool', type=Path, default=None,
                    help='reference pool.json the eval hook rates in-run evaluations on (evaluate.py --pool; '
                         'default reference_pool.DEFAULT_POOL, pool v7). The sweep driver passes [scoring].pool.')
@@ -551,6 +556,7 @@ def main():
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
     trainer = None
     pending = []  # background evaluation (process, log) pairs
+    rating = []   # background in-run pool rating, at most one (process, log)
     stop = False
     def request_stop(signum, frame):
         nonlocal stop
@@ -685,6 +691,35 @@ def main():
             log = (output/'evaluation.log').open('a')
             pending.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             evaluated_steps.add(counts['game_steps'])
+            rate_in_run(checkpoint)
+        # In-run pool curve: every evaluation checkpoint also plays the
+        # reference pool through the scorer's own path (reference_pool.py rate,
+        # source 'in-run', 160 games on 2 workers at nice 19, CPU only) into
+        # <run>/reference/<pool_sha8>/, where the dashboard and readout.py read
+        # per-checkpoint points; the scorer's 480-game band rating of the last
+        # checkpoints overwrites theirs. Non-blocking; skipped while the
+        # previous one still runs.
+        def rate_in_run(checkpoint):
+            if a.no_in_run_pool:
+                return
+            if rating and rating[0][0].poll() is None:
+                print(f'in-run pool rating of {checkpoint.name} skipped: the previous one is still running', flush=True)
+                return
+            for process, log in rating:
+                log.close()
+            rating.clear()
+            command = ['nice', '-n', '19', sys.executable, str(ROOT/'native/rl/sweep/reference_pool.py'), 'rate',
+                       '--pool', str(a.evaluation_pool or DEFAULT_POOL), '--checkpoint', str(checkpoint),
+                       '--games', str(a.in_run_pool_games), '--first-pass-games', '10', '--workers', '2',
+                       '--game', str(game), '--source', 'in-run']
+            log = (output/'reference.log').open('a')
+            rating.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
+        def finish_rating():
+            for process, log in rating:
+                if process.wait():
+                    print(f'in-run pool rating exited {process.returncode} (see reference.log)', flush=True)
+                log.close()
+            rating.clear()
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         previous, previous_elapsed = counts, elapsed_before
@@ -845,9 +880,10 @@ def main():
             if not a.no_eval and not stop and counts['game_steps'] not in evaluated_steps:
                 evaluate(final)
             finish_evaluation()
+            finish_rating()
         status('stopped' if stop else 'complete', checkpoint=str(final))
     except BaseException as error:
-        for process, log in pending:
+        for process, log in pending + rating:
             process.terminate()
             log.close()
         status('failed', failure=f'{type(error).__name__}: {error}')
