@@ -1,7 +1,7 @@
 """Loss taxonomy of the human-vs-agent rounds (Matthew on the Mac vs checkpoints/bots).
 
     python human_taxonomy.py facts    --extracted DIR --out facts.json     # per-round terminal facts from the replayed frames
-    python human_taxonomy.py report   --facts facts.json [--sim sim_taxonomy.json] --out HUMAN_LOSS_TAXONOMY.md
+    python human_taxonomy.py tables   --facts facts.json [--sim-facts unity_facts.json] --out tables.md   # markdown tables for the report
 
 Frames come from human_replays.py (Unity Linux build replaying the recorded inputs, one
 frame per level tick). Player 0 is the human, player 1 the agent. The taxonomy is built
@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import statistics
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -377,6 +378,47 @@ def shot_facts(frames, player):
     return out
 
 
+def bow_draw_facts(frames, player):
+    """Every bow morph of `player`: commitment window (morph start -> release or death) and the opponent's
+    range / dash state when the morph was committed. `died` = the drawer died before releasing."""
+    other = 1 - player
+    out = []
+    active = False
+    start = None
+    releases = event_ticks(frames, player, 'arrows_fired', WARMUP)
+    last = len(frames) - 1
+    for i in range(WARMUP, len(frames)):
+        f = frames[i]
+        s = slime_of(f, player)
+        st = ability_state(s, BOW) if s else None
+        now = bool(st and st['active'])
+        alive = bool(f['players'][player]['flags'] & 1)
+        if now and not active:
+            start = i
+        # the active bit stays set after the release until the morph ends, so a draw that is still
+        # "active" when the round ends (the winner's last shot) is flushed at the last frame
+        if active and (not now or not alive or i == last):
+            f0 = frames[start]
+            o0 = slime_of(f0, other)
+            od = ability_state(o0, DASH) if o0 else None
+            rel = [t for t in releases if f0['t'] <= t <= f['t']]
+            # did the opponent dash inside the window, and from how far
+            odash = [t for t in event_ticks(frames, other, 'dash_activations', start - 1, i + 1)]
+            odash_range = dist(pos(frames[odash[0]], player), pos(frames[odash[0]], other)) if odash and slime_of(frames[odash[0]], other) else None
+            out.append(dict(start=f0['t'], end=f['t'], ticks=f['t'] - f0['t'], released=bool(rel), release_ticks=(rel[0] - f0['t']) if rel else None,
+                            died=not alive, distance=dist(pos(f0, player), pos(f0, other)) if o0 else None,
+                            dy=(pos(f0, player)[1] - pos(f0, other)[1]) if o0 else None,
+                            opponent_dash_ready=od['ready'] if od else None, opponent_dash_remaining=od['remaining'] if od else None,
+                            opponent_active=ABILITY_NAMES.get(active_ability(o0)) if o0 else None,
+                            opponent_airborne=bool(o0 and o0['state'] == STATE_FALL), opponent_dashed=bool(odash),
+                            opponent_dash_range=odash_range, opponent_dash_delay=(odash[0] - f0['t']) if odash else None,
+                            opponent_arrows_in_flight=sum(1 for a in f0['arrows'] if a['owner'] == f0['players'][other]['id']),
+                            airborne=bool(slime_of(f0, player) and slime_of(f0, player)['state'] == STATE_FALL)))
+            start = None
+        active = now and alive
+    return out
+
+
 def platform_use_facts(frames, player):
     other = 1 - player
     out = []
@@ -397,7 +439,9 @@ def round_facts(game):
                human_arrows=tel[0]['arrows_fired'], agent_arrows=tel[1]['arrows_fired'], human_dashes=tel[0]['dash_activations'], agent_dashes=tel[1]['dash_activations'],
                human_platforms=tel[0]['platform_activations'], agent_platforms=tel[1]['platform_activations'],
                spawned_platforms=Counter(str(v['owner']) for v in owners.values()),
-               shots=[shot_facts(frames, 0), shot_facts(frames, 1)], platform_uses=[platform_use_facts(frames, 0), platform_use_facts(frames, 1)])
+               shots=[shot_facts(frames, 0), shot_facts(frames, 1)], platform_uses=[platform_use_facts(frames, 0), platform_use_facts(frames, 1)],
+               bow_draws=[bow_draw_facts(frames, 0), bow_draw_facts(frames, 1)],
+               opponent=row.get('opponent'), agent_name=row.get('agent_name'), timeout=row.get('timeout', False))
     # mean separation over the round (both alive)
     ds = [dist(pos(f, 0), pos(f, 1)) for f in frames[WARMUP::4] if slime_of(f, 0) and slime_of(f, 1)]
     out['mean_distance'] = (sum(ds) / len(ds)) if ds else None
@@ -534,6 +578,205 @@ def facts(args):
     print(f'wrote {args.out} ({len(out)} rounds)')
 
 
+STRATA = ('A', 'B', 'C', 'D')
+
+
+def md_table(header, rows):
+    out = ['| ' + ' | '.join(str(h) for h in header) + ' |', '|' + '---|' * len(header)]
+    out += ['| ' + ' | '.join(str(c) for c in row) + ' |' for row in rows]
+    return '\n'.join(out) + '\n'
+
+
+def pct(n, d):
+    return f'{n} ({100 * n / d:.0f}%)' if d else '0'
+
+
+def deaths(rounds, victim):
+    """(round, death, pattern, tags) for every round whose (single) death is of `victim` (0 human, 1 agent)."""
+    out = []
+    for r in rounds:
+        d = r.get('death')
+        if d and d['dead'] == victim:
+            p, tags = classify(d, r['human_abilities'])
+            out.append((r, d, p, tags))
+    return out
+
+
+def pattern_table(rounds, victim, groups=STRATA, group_of=lambda r: r['stratum'], family_only=False):
+    ds = deaths(rounds, victim)
+    key = (lambda p: p.split('/')[0]) if family_only else (lambda p: p)
+    counts = Counter((key(p), group_of(r)) for r, d, p, t in ds)
+    totals = Counter(key(p) for r, d, p, t in ds)
+    per_group = Counter(group_of(r) for r, d, p, t in ds)
+    rows = []
+    for p, n in totals.most_common():
+        rows.append([p, pct(n, len(ds))] + [counts.get((p, g), 0) for g in groups])
+    rows.append(['**all**', len(ds)] + [per_group.get(g, 0) for g in groups])
+    return md_table(['pattern', 'all'] + list(groups), rows)
+
+
+def shots_of(rounds, player):
+    return [s for r in rounds for s in r['shots'][player]]
+
+
+def kill_shots(rounds, victim):
+    return [d['arrow'] for r, d, p, t in deaths(rounds, victim) if d.get('arrow') and d['killer_kind'] == 'opponent']
+
+
+def shot_style(shots, kills):
+    def frac(xs, pred):
+        xs = list(xs)
+        return pct(sum(1 for x in xs if pred(x)), len(xs))
+    return dict(shots=len(shots), kills=len(kills),
+                dash_in_all=frac(shots, lambda s: s['dash_age'] is not None and s['dash_age'] <= DASH_SHOT),
+                airborne_all=frac(shots, lambda s: s['airborne']),
+                close_all=frac(shots, lambda s: s['distance'] is not None and s['distance'] < 10),
+                dash_in_kills=frac(kills, lambda a: a['shooter_dash_to_shot_ticks'] is not None and a['shooter_dash_to_shot_ticks'] <= DASH_SHOT),
+                unreactable_kills=frac(kills, lambda a: a['shooter_dash_to_shot_ticks'] is not None and a['shooter_dash_to_shot_ticks'] <= 13),
+                airborne_kills=frac(kills, lambda a: a['shooter_airborne']),
+                pb_kills=frac(kills, lambda a: a['launch_range'] < POINT_BLANK))
+
+
+def tables(args):
+    F = json.load(open(args.facts))
+    sim = json.load(open(args.sim_facts)) if args.sim_facts else []
+    out = []
+    P = out.append
+    unverified = [r for r in F if not r['verified']]
+    if unverified and not args.all:
+        # a replay that does not reproduce the logged end tick / outcome / causes is a different game: leave it out
+        P(f"_{len(unverified)} of {len(F)} rounds do not reproduce the logged outcome and are excluded: {', '.join(r['name'] for r in unverified)}_\n")
+        F = [r for r in F if r['verified']]
+    P('## Rounds and outcomes by stratum\n')
+    rows = []
+    for g in STRATA:
+        rs = [r for r in F if r['stratum'] == g]
+        hw = sum(r['outcome'] == 'a' for r in rs)
+        strong = [r for r in rs if r['tier'] == 'strong-checkpoint']
+        rows.append([g, len(rs), hw, len(rs) - hw, f'{100 * hw / len(rs):.0f}%' if rs else '-', len(strong), sum(r['outcome'] == 'a' for r in strong),
+                     len({r['map'] for r in rs}), sum(r['verified'] for r in rs)])
+    P(md_table(['stratum', 'rounds', 'human wins', 'agent wins', 'human win %', 'vs strong', 'human wins vs strong', 'maps', 'replay-verified'], rows))
+    P('\n## Per-tier outcomes by stratum\n')
+    rows = []
+    for t in list(TIERS) + ['other-checkpoint', 'bot']:
+        rs = [r for r in F if r['tier'] == t]
+        if not rs:
+            continue
+        rows.append([t, len(rs), pct(sum(r['outcome'] == 'a' for r in rs), len(rs))] + [f"{sum(r['outcome'] == 'a' for r in rs if r['stratum'] == g)}/{sum(r['stratum'] == g for r in rs)}" for g in STRATA])
+    P(md_table(['tier', 'rounds', 'human wins'] + [f'{g} (W/n)' for g in STRATA], rows))
+    P('\n## Agent deaths (human wins) by pattern and stratum\n')
+    P(pattern_table(F, 1))
+    P('\n## Agent deaths by family and stratum\n')
+    P(pattern_table(F, 1, family_only=True))
+    P('\n## Human deaths (agent wins) by pattern and stratum\n')
+    P(pattern_table(F, 0))
+    P('\n## Agent deaths by pattern and agent tier\n')
+    tiers = ('strong-checkpoint', 'mid-checkpoint', 'weak-checkpoint', 'other-checkpoint', 'bot')
+    P(pattern_table(F, 1, groups=tiers, group_of=lambda r: r['tier']))
+    P('\n## Agent deaths per map (stratum B, maps with >= 3 agent deaths)\n')
+    B = [r for r in F if r['stratum'] == 'B']
+    per_map = Counter(r['map'] for r, d, p, t in deaths(B, 1))
+    rows = []
+    for m, n in per_map.most_common():
+        if n < 3:
+            break
+        fam = Counter(p.split('/')[0] for r, d, p, t in deaths(B, 1) if r['map'] == m)
+        rows.append([m, sum(r['map'] == m for r in B), n, ', '.join(f'{k} {v}' for k, v in fam.most_common())])
+    P(md_table(['map', 'rounds', 'agent deaths', 'families'], rows))
+    P('\n## Tags on agent arrow deaths by stratum\n')
+    ads = [(r, d, p, t) for r, d, p, t in deaths(F, 1) if p.startswith('arrow/')]
+    tagc = Counter((tag, r['stratum']) for r, d, p, t in ads for tag in t)
+    tag_all = Counter(tag for r, d, p, t in ads for tag in t)
+    P(md_table(['tag', 'all arrow deaths'] + list(STRATA), [[k, pct(v, len(ads))] + [tagc.get((k, g), 0) for g in STRATA] for k, v in tag_all.most_common()]))
+    P('\n## Pre-death window (120 ticks) of the AGENT: rounds the agent lost vs won\n')
+    rows = []
+    fields = ('distance_mean', 'distance_min', 'airborne_fraction', 'dash_ready_end', 'platform_ready_end', 'bow_ready_end', 'arrows_fired_window', 'opponent_arrows_window',
+              'ticks_since_last_shot', 'ticks_since_last_dash', 'height_advantage_end', 'speed_mean')
+    for g in ('all',) + STRATA:
+        rs = [r for r in F if g == 'all' or r['stratum'] == g]
+        lost = [d['victim_window'] for r, d, p, t in deaths(rs, 1)]
+        won = [d['killer_window'] for r, d, p, t in deaths(rs, 0)]
+        for name, ws in (('agent lost', lost), ('agent won', won)):
+            row = [g, name, len(ws)]
+            for f in fields:
+                xs = [w[f] for w in ws if w.get(f) is not None]
+                if not xs:
+                    row.append('-')
+                elif isinstance(xs[0], bool):
+                    row.append(f'{100 * sum(xs) / len(xs):.0f}%')
+                else:
+                    row.append(f'{statistics.median(xs):.1f}')
+            rows.append(row)
+    P(md_table(['stratum', 'outcome', 'n'] + [f.replace('_', ' ') for f in fields], rows))
+    P('\n## Shot style: every arrow release and every kill shot\n')
+    rows = []
+    def style_row(label, shots, kills):
+        s = shot_style(shots, kills)
+        rows.append([label, s['shots'], s['dash_in_all'], s['airborne_all'], s['close_all'], s['kills'], s['dash_in_kills'], s['unreactable_kills'], s['airborne_kills'], s['pb_kills']])
+    for g in ('all',) + STRATA:
+        rs = [r for r in F if g == 'all' or r['stratum'] == g]
+        std = [r for r in rs if 'Bow' in r['human_abilities']]
+        style_row(f'human ({g})', shots_of(std, 0), kill_shots(std, 1))
+        style_row(f'agent ({g})', shots_of(rs, 1), kill_shots(rs, 0))
+    for opp in sorted({r['opponent'] for r in sim}) if sim else []:
+        rs = [r for r in sim if r['opponent'] == opp]
+        style_row(f'unity: {opp} (seat 0)', shots_of(rs, 0), kill_shots(rs, 1))
+    for ag in sorted({r['agent_name'] for r in sim}) if sim else []:
+        rs = [r for r in sim if r['agent_name'] == ag]
+        style_row(f'unity: {ag} (seat 1)', shots_of(rs, 1), kill_shots(rs, 0))
+    P(md_table(['shooter', 'shots', 'dash<=60 before release', 'airborne', 'range<10', 'kill shots', 'dash<=60', 'dash<=13 (unreactable)', 'airborne', 'point-blank'], rows))
+    P('\n## Bow-draw commitment window\n')
+    rows = []
+    def draw_rows(label, draws):
+        rel = [d for d in draws if d['released']]
+        died = [d for d in draws if d['died']]
+        hist = Counter(min(d['release_ticks'] // 10 * 10, 100) for d in rel)
+        rows.append([label, len(draws), len(rel), f"{statistics.median([d['release_ticks'] for d in rel]):.0f}" if rel else '-',
+                     ' '.join(f'{k}:{hist[k]}' for k in sorted(hist)), len(died),
+                     f"{statistics.median([d['ticks'] for d in died]):.0f}" if died else '-',
+                     f"{statistics.median([d['distance'] for d in died if d['distance'] is not None]):.1f}" if died else '-',
+                     pct(sum(bool(d['opponent_dash_ready']) for d in died), len(died)), pct(sum(d['opponent_dashed'] for d in died), len(died)),
+                     pct(sum(d['opponent_airborne'] for d in died), len(died)), pct(sum(d['opponent_active'] == 'Bow' for d in died), len(died))])
+    for g in ('all',) + STRATA:
+        rs = [r for r in F if g == 'all' or r['stratum'] == g]
+        draw_rows(f'agent ({g})', [d for r in rs for d in r['bow_draws'][1]])
+        draw_rows(f'human ({g})', [d for r in rs for d in r['bow_draws'][0] if 'Bow' in r['human_abilities']])
+    for opp in sorted({r['opponent'] for r in sim}) if sim else []:
+        rs = [r for r in sim if r['opponent'] == opp]
+        draw_rows(f'unity: agents vs {opp}', [d for r in rs for d in r['bow_draws'][1]])
+    P(md_table(['drawer', 'draws', 'released', 'median release tick', 'release histogram (10-tick bins)', 'died drawing', 'median window', 'opp. distance at commit',
+                'opp. dash ready at commit', 'opp. dashed in window', 'opp. airborne at commit', 'opp. drawing at commit'], rows))
+    P('\n## Death rate of a bow draw by opponent distance at commit\n')
+    rows = []
+    for label, draws in (('agent', [d for r in F for d in r['bow_draws'][1]]), ('human', [d for r in F for d in r['bow_draws'][0] if 'Bow' in r['human_abilities']])):
+        for lo, hi in ((0, 6), (6, 10), (10, 15), (15, 25), (25, 99)):
+            sub = [d for d in draws if d['distance'] is not None and lo <= d['distance'] < hi]
+            dr = [d for d in sub if d['opponent_dash_ready']]
+            rows.append([label, f'{lo}-{hi}', len(sub), pct(sum(d['died'] for d in sub), len(sub)), pct(sum(d['died'] for d in dr), len(dr)), pct(sum(d['died'] for d in sub if not d['opponent_dash_ready']), len(sub) - len(dr))])
+    P(md_table(['drawer', 'opp. distance', 'draws', 'died', 'died | opp. dash ready', 'died | opp. dash not ready'], rows))
+    if sim:
+        P('\n## Unity agent-vs-agent rounds (same build, same taxonomy): agent (seat 1) deaths by pattern and opponent\n')
+        opps = sorted({r['opponent'] for r in sim})
+        P(pattern_table(sim, 1, groups=opps, group_of=lambda r: r['opponent']))
+        P('\n### seat-0 opponent deaths by pattern (how the bots / pool members die to the agent)\n')
+        P(pattern_table(sim, 0, groups=opps, group_of=lambda r: r['opponent']))
+        P('\n### agent deaths by family: training maps 0-2 vs unseen maps, per agent\n')
+        rows = []
+        for ag in sorted({r['agent_name'] for r in sim}):
+            for label, pred in (('maps 0-2', lambda r: r['map'] in (0, 1, 2)), ('maps 3-4', lambda r: r['map'] in (3, 4)), ('unseen', lambda r: r['map'] > 4)):
+                rs = [r for r in sim if r['agent_name'] == ag and pred(r)]
+                ds = deaths(rs, 1)
+                fam = Counter(p.split('/')[0] for r, d, p, t in ds)
+                pin = sum(1 for r, d, p, t in ds if p.startswith('squish/own-platform'))
+                rows.append([ag, label, len(rs), pct(sum(r['outcome'] == 'a' for r in rs), len(rs)), sum(r['outcome'] == 'draw' for r in rs), len(ds)] + [pct(fam.get(k, 0), len(ds)) for k in ('arrow', 'squish', 'fall', 'self')] + [pct(pin, len(ds))])
+        P(md_table(['agent', 'maps', 'rounds', 'agent lost', 'draws', 'agent deaths', 'arrow', 'squish', 'fall', 'self', 'own-platform squish'], rows))
+    text = '\n'.join(out)
+    if args.out:
+        args.out.write_text(text)
+    else:
+        print(text)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -541,6 +784,12 @@ def main():
     f.add_argument('--extracted', type=Path, required=True)
     f.add_argument('--out', type=Path, required=True)
     f.set_defaults(func=facts)
+    t = sub.add_parser('tables', help='markdown tables for the report')
+    t.add_argument('--facts', type=Path, required=True)
+    t.add_argument('--sim-facts', type=Path, default=None, help='facts.json of agent_games.py rounds')
+    t.add_argument('--out', type=Path, default=None)
+    t.add_argument('--all', action='store_true', help='keep rounds whose replay does not reproduce the logged outcome')
+    t.set_defaults(func=tables)
     args = parser.parse_args()
     args.func(args)
 
