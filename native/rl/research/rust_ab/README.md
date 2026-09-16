@@ -61,6 +61,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   position, charge/release flags, and deferred arrow registration/flight.
 - `bow_ground_exit_ab.c`: grounded fire/landing callback order and the
   following original-slime movement.
+- `bow_broad_ab.c`: 300 ticks through grounded Bow loading, aim, fire and
+  exit, Arrow rigid-body flight, active-Rock Circle/Circle resolution,
+  BoplBody-sensitive Arrow destruction and Rock's projectile callback.
 - `ability_hitbox_ab.c`: an incoming arrow grazing Bow's larger active
   ability hurtbox after the original slime hurtbox is disabled; also verifies
   post-integration discrete contact and that a PlayerBody kill leaves the

@@ -1107,6 +1107,37 @@ hazard class are source-ported but remain explicitly unverified in
 `ABILITY_PORT_GAPS.md`; that verification distinction keeps Dash at
 `partial`.
 
+### Complete Bow and Arrow source contact path (2026-09-16)
+
+The Bow form already covered its complete authored loading, aim, grounded and
+air movement, fire, landing, scale and Time Stop lifecycle. Arrow contact now
+also covers the complete serialized `StickTo` mask: Player, item, wall,
+LethalTerrain and NonLethalTerrain. The contact walker preserves DetPhysics'
+Circle/RoundedRectangle, Circle/Circle and Circle/Box grouping. It resolves
+released items and guided Missiles, PortalShot, active Rock's `BoplBody`,
+attached Spike/Tesla terrain children and every live player form using its
+last synchronized collider row. Rock follows the source callback quirk where
+`PrepareCollisionCallBacks` passes the same manifold normal to both
+callbacks. The Arrow is destroyed before Rock's `PlayerCollision` can read
+its Projectile, while Rock still receives its tenth-strength projectile
+impulse.
+
+`bow_broad_ab.c` compares 300 optimized-Q32 NativeAOT/Rust ticks. Rock and
+Bow begin on ticks 64 and 74; the Arrow hits Rock on tick 140. Lifecycle,
+identity, flags, owner removal, body velocities, Rock response and all later
+decisions match. The separately grouped contact calculation differs by at
+most two raw Q32 position units and 32,768 raw angular-velocity units
+(0.00000763 radians/second). These continuous values select no different
+contact, callback or lifecycle branch. All existing Bow/Arrow interaction
+differentials remain exact.
+
+The wall manifold list is retained on the world and player victims use a fixed
+six-slot array, so Bow no longer allocates inside the per-arrow contact loop.
+NativeAOT keeps a landed Arrow's render object after destroying its body,
+collider, Projectile and FixTransform, then evicts a visual sibling above 80
+children. That inert visual has no observation row or gameplay callback; Rust
+removes it after publishing the same destroyed-collider pass.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned

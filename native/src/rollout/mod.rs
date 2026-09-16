@@ -1881,6 +1881,9 @@ struct PlatformScratch {
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
+    /// Arrow Circle/RoundedRectangle manifolds. Retained because arrows can
+    /// overlap several composite platforms in one DetPhysics pass.
+    arrow_platform_contacts: Vec<(usize, Contact)>,
     /// Dash.RaycastAll output, retained across casts so the hot rollout never
     /// allocates for the source's sorted collider list.
     dash_hits: Vec<DashRayHit>,
@@ -2054,6 +2057,7 @@ impl RolloutWorld {
                 item_window: Vec::with_capacity(192),
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
+                arrow_platform_contacts: Vec::with_capacity(64),
                 dash_hits: Vec::with_capacity(192),
                 ..PlatformScratch::default()
             },
@@ -18873,6 +18877,22 @@ impl RolloutWorld {
         }
     }
 
+    #[inline]
+    fn destroy_arrow_contact(&mut self, index: usize, position: Vec2, body: Body) {
+        self.destroy_arrow(index);
+        if let Some(entity) = self.arrows[index].entity {
+            let row = &mut self.entities[entity];
+            row.flags = E_DESTROYED;
+            row.owner = 0;
+            row.x = position.x.raw();
+            row.y = position.y.raw();
+            row.vx = body.velocity.x.raw();
+            row.vy = body.velocity.y.raw();
+            row.rotation = body.orientation.raw();
+            row.angular_velocity = body.angular_velocity.raw();
+        }
+    }
+
     fn register_pending_mines(&mut self, data: &data::RolloutData) {
         for index in 0..self.thrown_items.len() {
             let item = self.thrown_items[index];
@@ -19983,15 +20003,15 @@ impl RolloutWorld {
             // platform before the wall callback destroys it. That callback
             // precedes all player shape groups: an arrow overlapping terrain
             // and a player in the same pass never reaches PlayerCollision.
-            let contacts: Vec<_> = self
-                .platforms
-                .iter()
-                .enumerate()
-                .filter_map(|(p, platform)| {
+            let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
+            contacts.clear();
+            for (p, platform) in self.platforms.iter().enumerate() {
+                if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, platform.collider)
-                        .map(|contact| (p, contact))
-                })
-                .collect();
+                {
+                    contacts.push((p, contact));
+                }
+            }
             if !contacts.is_empty() {
                 let mut arrow_body = crate::physics::Body {
                     velocity: arrow.velocity,
@@ -20000,7 +20020,7 @@ impl RolloutWorld {
                     ..data.arrow.body
                 };
                 let mut center = circle.center;
-                for (p, contact) in contacts {
+                for &(p, contact) in &contacts {
                     let platform_body = &mut self.platform_dynamics[p].body;
                     resolve(
                         contact,
@@ -20036,8 +20056,11 @@ impl RolloutWorld {
                     e.rotation = arrow.rotation.raw();
                     e.angular_velocity = arrow_body.angular_velocity.raw();
                 }
+                contacts.clear();
+                self.scratch.arrow_platform_contacts = contacts;
                 continue;
             }
+            self.scratch.arrow_platform_contacts = contacts;
 
             // Circle/Circle: released item bodies are resolved before either
             // callback runs. Arrow.OnCollide is queued first for this pair;
@@ -20123,6 +20146,139 @@ impl RolloutWorld {
                 // SmokeGrenadeExplode2 therefore returns from its later
                 // callback even after the Arrow callback destroys the
                 // projectile components; the released Smoke survives.
+                continue;
+            }
+
+            // Circle/Circle: Rock is the only Player-layer ability form with
+            // a BoplBody. Arrow.OnCollide therefore parents to it and destroys
+            // the Arrow components before Rock's PlayerCollision can inspect
+            // the Projectile. BounceBall still receives its projectile
+            // callback after the physical manifold has resolved.
+            let mut rock_contacts = [(usize::MAX, Contact::default()); MAX_PLAYERS];
+            let mut rock_contact_count = 0;
+            for (player_index, player) in self.players.iter().enumerate() {
+                if rock_contact_count == rock_contacts.len()
+                    || !self.playable(player_index)
+                    || player.active != ActiveAbility::Rock
+                {
+                    continue;
+                }
+                if let Some(contact) = crate::physics::contact::circle_circle(
+                    Circle {
+                        center: player.base.position,
+                        radius: data.rock.radius * player.rock.scale,
+                    },
+                    circle,
+                ) {
+                    rock_contacts[rock_contact_count] = (player_index, contact);
+                    rock_contact_count += 1;
+                }
+            }
+            if rock_contact_count > 0 {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    angular_velocity: arrow.angular_velocity,
+                    ..data.arrow.body
+                };
+                let mut arrow_center = arrow.position;
+                for &(player_index, contact) in &rock_contacts[..rock_contact_count] {
+                    let rock_center = self.players[player_index].base.position;
+                    let mut rock_body = self.players[player_index].rock.body;
+                    resolve(
+                        contact,
+                        &mut rock_body,
+                        &mut arrow_body,
+                        rock_center,
+                        arrow_center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        rock_body.inverse_mass,
+                        arrow_body.inverse_mass,
+                        false,
+                    );
+                    self.players[player_index].base.position += correction[0];
+                    arrow_center += correction[1];
+                    // BounceBall.OnCollide applies a tenth-strength impulse
+                    // for Projectile-layer contacts.
+                    // PrepareCollisionCallBacks passes the manifold normal to
+                    // both callbacks without flipping it. Rock is circle A
+                    // (preallocated before the spawned Arrow), so it receives
+                    // the Rock-to-Arrow normal here.
+                    rock_body.force += contact.normal
+                        * data.rock.player_collision_bounce
+                        * Fix::from_f32(0.1)
+                        * Fix::from_int(60);
+                    self.players[player_index].rock.body = rock_body;
+                }
+                self.destroy_arrow_contact(i, arrow_center, arrow_body);
+                continue;
+            }
+
+            // PortalShot is another live item-layer circle. Its callback only
+            // reacts to walls, so the Arrow is consumed while the shot keeps
+            // the resolved body and continues towards its normal portal
+            // landing/timeout path.
+            let mut portal_contacts = [(usize::MAX, Contact::default()); 64];
+            let mut portal_contact_count = 0;
+            for (shot_index, shot) in self.portal_shots.iter().enumerate() {
+                if portal_contact_count == portal_contacts.len() || !shot.active || !shot.registered
+                {
+                    continue;
+                }
+                if let Some(contact) = crate::physics::contact::circle_circle(
+                    Circle {
+                        center: shot.position,
+                        radius: data.portal_gun.shot_radius,
+                    },
+                    circle,
+                ) {
+                    portal_contacts[portal_contact_count] = (shot_index, contact);
+                    portal_contact_count += 1;
+                }
+            }
+            if portal_contact_count > 0 {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    angular_velocity: arrow.angular_velocity,
+                    ..data.arrow.body
+                };
+                let mut arrow_center = arrow.position;
+                for &(shot_index, contact) in &portal_contacts[..portal_contact_count] {
+                    let shot = self.portal_shots[shot_index];
+                    let mut shot_body = shot.body;
+                    let mut shot_center = shot.position;
+                    resolve(
+                        contact,
+                        &mut shot_body,
+                        &mut arrow_body,
+                        shot_center,
+                        arrow_center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        shot_body.inverse_mass,
+                        arrow_body.inverse_mass,
+                        false,
+                    );
+                    shot_center += correction[0];
+                    arrow_center += correction[1];
+                    let live = &mut self.portal_shots[shot_index];
+                    live.position = shot_center;
+                    live.body = shot_body;
+                    if let Some(entity) = live.entity {
+                        let row = &mut self.entities[entity];
+                        row.x = shot_center.x.raw();
+                        row.y = shot_center.y.raw();
+                        row.vx = shot_body.velocity.x.raw();
+                        row.vy = shot_body.velocity.y.raw();
+                        row.rotation = shot_body.orientation.raw();
+                        row.angular_velocity = shot_body.angular_velocity.raw();
+                    }
+                }
+                self.destroy_arrow_contact(i, arrow_center, arrow_body);
                 continue;
             }
 
@@ -20214,67 +20370,222 @@ impl RolloutWorld {
                 continue;
             }
 
-            let mut victims = Vec::new();
-            // Platform anticipation replaces the original slime box with a
-            // Player-layer circle and is the only supported player circle.
-            for (j, player) in self.players.iter().enumerate() {
-                if !self.playable(j)
-                    || player.active != ActiveAbility::Platform
-                    || player.platform.phase != PLATFORM_ANTICIPATION
-                    || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
+            // The remaining serialized StickTo layers are LethalTerrain and
+            // NonLethalTerrain. Rounded platforms were handled first; this
+            // covers attached Spike/Tesla circle/box children and any future
+            // registered terrain child without ability-specific branching.
+            let mut terrain_contacts = [(usize::MAX, Contact::default(), false); 64];
+            let mut terrain_contact_count = 0;
+            for (entity, row) in self.entities.iter().copied().enumerate() {
+                if terrain_contact_count == terrain_contacts.len()
+                    || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || !matches!(row.layer, 16 | 21)
+                    || self.platform_entities.contains(&entity)
                 {
                     continue;
                 }
-                let hurtbox = Circle {
-                    center: player.base.position,
-                    radius: data.platform.hurtbox_radius,
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let contact = if row.kind == 0 {
+                    crate::physics::contact::circle_circle(
+                        Circle {
+                            center,
+                            radius: Fix::from_raw(row.radius),
+                        },
+                        circle,
+                    )
+                    .map(|contact| (contact, true))
+                } else if row.kind == 1 {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    (right != Vec2::ZERO && up != Vec2::ZERO)
+                        .then(|| {
+                            crate::physics::contact::circle_box(
+                                circle,
+                                OrientedBox {
+                                    center,
+                                    right,
+                                    up,
+                                    inverse_extents: Vec2::new(
+                                        Fix::ONE / right.length(),
+                                        Fix::ONE / up.length(),
+                                    ),
+                                },
+                            )
+                        })
+                        .flatten()
+                        .map(|contact| (contact, false))
+                } else {
+                    None
                 };
-                if crate::physics::contact::circle_circle(circle, hurtbox).is_some() {
-                    victims.push(j);
+                if let Some((contact, target_first)) = contact {
+                    terrain_contacts[terrain_contact_count] = (entity, contact, target_first);
+                    terrain_contact_count += 1;
                 }
             }
+            if terrain_contact_count > 0 {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    angular_velocity: arrow.angular_velocity,
+                    ..data.arrow.body
+                };
+                let mut arrow_center = arrow.position;
+                for &(entity, contact, target_first) in &terrain_contacts[..terrain_contact_count] {
+                    let platform_index = self
+                        .spike_attacks
+                        .iter()
+                        .find(|spike| spike.active && spike.entity == Some(entity))
+                        .map(|spike| spike.platform_index)
+                        .or_else(|| {
+                            self.tesla_nodes
+                                .iter()
+                                .find(|node| {
+                                    node.active
+                                        && (node.entity == Some(entity)
+                                            || node.line_entity == Some(entity))
+                                })
+                                .map(|node| node.platform_index)
+                        });
+                    let Some(platform_index) = platform_index else {
+                        continue;
+                    };
+                    let platform_center = self.platform_dynamics[platform_index].composite_position;
+                    let mut platform_body = self.platform_dynamics[platform_index].body;
+                    let correction = if target_first {
+                        resolve(
+                            contact,
+                            &mut platform_body,
+                            &mut arrow_body,
+                            platform_center,
+                            arrow_center,
+                        );
+                        positional_correction(
+                            contact,
+                            platform_body.inverse_mass,
+                            arrow_body.inverse_mass,
+                            false,
+                        )
+                    } else {
+                        resolve(
+                            contact,
+                            &mut arrow_body,
+                            &mut platform_body,
+                            arrow_center,
+                            platform_center,
+                        );
+                        positional_correction(
+                            contact,
+                            arrow_body.inverse_mass,
+                            platform_body.inverse_mass,
+                            false,
+                        )
+                    };
+                    let (platform_delta, arrow_delta) = if target_first {
+                        (correction[0], correction[1])
+                    } else {
+                        (correction[1], correction[0])
+                    };
+                    self.platform_dynamics[platform_index].body = platform_body;
+                    self.platform_dynamics[platform_index].composite_position += platform_delta;
+                    self.platforms[platform_index].surface.center += platform_delta;
+                    self.platforms[platform_index].collider.inner.center += platform_delta;
+                    arrow_center += arrow_delta;
+                }
+                self.platforms_changed();
+                self.destroy_arrow_contact(i, arrow_center, arrow_body);
+                continue;
+            }
 
-            // Normal, Dash, and Bow hurtboxes are Player-layer boxes. Formed
-            // Platform has no player hurtbox until the original slime exits.
+            let mut victims = [usize::MAX; MAX_PLAYERS];
+            let mut victim_count = 0;
+            // Arrow runs in DetPhysics after every player-form collider was
+            // synchronized. Use the retained row so Circle/Box dispatch,
+            // rotation and scale match every active form. Rock was consumed
+            // above because its BoplBody changes Arrow.OnCollide semantics.
             for (j, player) in self.players.iter().enumerate() {
                 if !self.playable(j)
-                    || matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock)
+                    || player.active == ActiveAbility::Rock
                     || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
                 {
                     continue;
                 }
-                let hurtbox = match player.active {
-                    ActiveAbility::Bow => {
-                        let extents = data.bow.hurtbox_extents;
-                        let up = if player.bow.aim == Vec2::ZERO {
-                            Vec2::UP
-                        } else {
-                            player.bow.aim
-                        };
-                        OrientedBox {
-                            center: player.base.position,
-                            right: up.perp_cw() * extents.x,
-                            up: up * extents.y,
-                            inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-                        }
-                    }
+                let entity = match player.active {
+                    ActiveAbility::None => player.body_entity,
+                    ActiveAbility::Dash => player.dash_entity,
+                    ActiveAbility::Bow => player.bow_entity,
                     ActiveAbility::Grenade
                     | ActiveAbility::Smoke
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall => OrientedBox::from_basis(
-                        player.base.position,
-                        Vec2::angle(player.base.rotation),
-                        throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
-                    ),
-                    _ => player.base.collider,
+                    | ActiveAbility::PokeBall
+                    | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Mine => player.mine_entity,
+                    ActiveAbility::Rock => player.rock_entity,
+                    ActiveAbility::Roll => player.roll_entity,
+                    ActiveAbility::Meteor => player.meteor_entity,
+                    ActiveAbility::Push => player.push_entity,
+                    ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::Blink => player.blink_entity,
+                    ActiveAbility::GrowthRay => player.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Duplicator => player.duplicator_entity,
+                    ActiveAbility::Magnet => player.magnet_entity,
+                    ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::Engine => player.engine_entity,
+                    ActiveAbility::Tesla => player.tesla_entity,
+                    ActiveAbility::TimeStop => player.time_stop_entity,
+                    ActiveAbility::Gust => player.gust_entity,
+                    ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Throw => player.macho_throw_entity,
+                    ActiveAbility::Drill => player.drill_entity,
+                    ActiveAbility::Beam => player.beam_entity,
+                    ActiveAbility::Platform => player.circle_entity,
                 };
-                if crate::physics::contact::circle_box(circle, hurtbox).is_some() {
-                    victims.push(j);
+                let Some(row) = self.entities.get(entity).copied() else {
+                    continue;
+                };
+                if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
+                    continue;
+                }
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let hit = if row.kind == 0 {
+                    crate::physics::contact::circle_circle(
+                        circle,
+                        Circle {
+                            center,
+                            radius: Fix::from_raw(row.radius),
+                        },
+                    )
+                    .is_some()
+                } else if row.kind == 1 {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    right != Vec2::ZERO
+                        && up != Vec2::ZERO
+                        && crate::physics::contact::circle_box(
+                            circle,
+                            OrientedBox {
+                                center,
+                                right,
+                                up,
+                                inverse_extents: Vec2::new(
+                                    Fix::ONE / right.length(),
+                                    Fix::ONE / up.length(),
+                                ),
+                            },
+                        )
+                        .is_some()
+                } else {
+                    false
+                };
+                if hit {
+                    victims[victim_count] = j;
+                    victim_count += 1;
                 }
             }
 
-            for victim in victims {
+            for &victim in &victims[..victim_count] {
                 if !self.players[victim].base.alive {
                     continue;
                 }

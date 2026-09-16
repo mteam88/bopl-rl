@@ -89,6 +89,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   non-Dash form callback through Dash exit with bounded solver geometry. Two
   staggered Dashes cover the remaining active-form callback without a kill or
   push.
+  Bow and Arrow now port the complete source contact path. Arrow consumes the
+  full serialized Player/item/wall/LethalTerrain/NonLethalTerrain mask,
+  distinguishes Rock's `BoplBody` from PlayerBody forms, resolves PortalShot
+  and composite Spike/Tesla bodies, and reads every active form's synchronized
+  collider row. Wall contacts and victims use retained/fixed scratch storage,
+  removing the former per-arrow tick allocations. `bow_broad_ab.c` matches
+  300 ticks through grounded load/fire/exit and an active-Rock hit; other
+  newly reachable mask members remain listed as ported-but-unmeasured.
   A released lethal Roll uses its live circle for the same ray dispatch, kills
   the dasher at the near point and owns the credit; its cosmetic trail consumes
   no updater hierarchy because neither trail component is a `MonoUpdatable`.
