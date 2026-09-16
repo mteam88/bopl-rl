@@ -477,9 +477,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   reusable vector and performs no per-tick allocation. Grounded and rising
   ordinary-player hits match NativeAOT through freeze, thaw, resumed fall and
   landing; an airborne diagonal miss also matches through cast and recovery.
-  Water reflection is source-ported but un-goldened. A measured active-Bow-form
-  hit still differs during original-slime restoration because cross-prefab
-  updater ordering is unresolved.
+  A downward Water-reflected self-hit is exact through direct form cancellation,
+  the exit-pass aimed collider basis, `FrozenSolid`, cooldown reset, thaw flight
+  and airborne timed-ragdoll exit. A measured active-Bow-form hit still differs
+  during original-slime restoration because cross-prefab updater ordering is
+  unresolved.
   Growth and Shrink rays share that `GunTransform` implementation and spawn
   the signed `ScaleChanger` on a player hit. Rust preserves Player.Scale,
   collider scale and PlayerPhysics radius as separate updater-phase values.

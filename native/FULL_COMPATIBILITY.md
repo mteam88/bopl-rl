@@ -2621,17 +2621,27 @@ a capacity-reused vector, so the steady-state update path allocates nothing.
 `freeze_ability_ab.c` compares the grounded player-hit scenario through the
 complete freeze, thaw, ragdoll landing and cooldown restart, plus an airborne
 diagonal cast through recoil and animation exit. The two scenarios cover 1,000
-NativeAOT/Rust Q32 ticks exactly. Water reflection is source-ported but does
-not yet have a differential scenario. A measured hit against an active Bow
-form exposed an unresolved updater-order mismatch while restoring and freezing
-the original slime: ordinary-slime hits are exact, but transformed-player hits
-are not yet compatible. Coverage therefore remains partial.
+NativeAOT/Rust Q32 ticks exactly. A measured hit against an active Bow form
+still has an unresolved updater-order mismatch while restoring and freezing
+the original slime, so transformed-player coverage remains partial.
 
 `freeze_airborne_hit_ab.c` adds a 500-tick ordinary-player hit while the target
 is rising. Release occurs on tick 334, `FrozenSolid` takes control on tick 335,
 the target thaws on tick 445 and the resumed fall and landing remain exact
 through tick 500. This closes the ordinary airborne-victim path independently
 of the unresolved transformed-player restoration order.
+
+`freeze_water_self_ab.c` adds 500 exact ticks for the Water branch. Player zero
+starts from the right-hand lower spawn, runs beyond the wide lower platform,
+jumps, enters Freeze and fires straight down. The beam reaches Water and
+reflects into its own active gun form on tick 334. NativeAOT calls
+`Ability.ExitAbility` directly here, so the disabled gun collider keeps its
+aimed FixTransform basis for the exit-pass DetPhysics publication rather than
+being straightened by `GunTransform.ExitAbility`. The restored slime enters
+`FrozenSolid` on tick 335; after release it remains airborne until its timed
+ragdoll ends on tick 452, where `SlimeController.EnterFall` resets rotation.
+Rust now models both ordering details and matches the full self-freeze,
+cooldown-reset, thaw-flight and resumed-fall trajectory exactly.
 
 ### Executable Growth and Shrink rays on players (2026-09-15)
 

@@ -1181,6 +1181,10 @@ pub struct GunState {
     pub has_fired: bool,
     pub fire_ticks: u32,
     pub collider_up: Vec2,
+    /// Tick on which FreezeRayGun called Ability.ExitAbility directly. That
+    /// bypass retains the gun form's aimed FixTransform basis for its final
+    /// DetPhysics sync instead of zeroing it through GunTransform.ExitAbility.
+    pub forced_exit_tick: u32,
 }
 
 /// MagnetGun's animation and pull-state clocks. Held-object identity is added
@@ -17102,6 +17106,16 @@ impl RolloutWorld {
         // FreezeRayGun calls Ability.ExitAbility directly with a default
         // packet containing only the form position and facing-right flag.
         // The concrete form's normal exit callback does not run.
+        if matches!(
+            slot.active,
+            ActiveAbility::Freeze
+                | ActiveAbility::Blink
+                | ActiveAbility::GrowthRay
+                | ActiveAbility::ShrinkRay
+                | ActiveAbility::Duplicator
+        ) {
+            slot.gun.forced_exit_tick = self.tick;
+        }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         slot.base.radius = data.player.radius;
@@ -17179,6 +17193,10 @@ impl RolloutWorld {
             slot.ragdoll.active = false;
             slot.base.external_velocity += slot.base.velocity;
             slot.base.velocity = Vec2::ZERO;
+            // SlimeController.EnterFall always straightens the ordinary
+            // FixTransform when a timed ragdoll expires in mid-air.
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
             slot.exit_to_fall();
             slot.base
                 .move_only(slot.last_movement_input, terrain!(self));
@@ -22822,7 +22840,8 @@ impl RolloutWorld {
                     freeze_box.owner = slot.base.id;
                 }
                 if (alive && freezing) || was_active {
-                    let (root, rotation) = if freezing {
+                    let forced_exit = slot.gun.forced_exit_tick == self.tick;
+                    let (root, rotation) = if freezing || forced_exit {
                         (synced, slot.gun.aim.normalized_angle())
                     } else {
                         (exit_position, Fix::ZERO)
@@ -22831,7 +22850,7 @@ impl RolloutWorld {
                     // DPhysicsBox translates its authored offset with the
                     // exact FixTransform basis copied/assigned by GunTransform,
                     // while its axes are rebuilt from the scalar angle.
-                    let offset_basis = if freezing {
+                    let offset_basis = if freezing || forced_exit {
                         slot.gun.collider_up.perp_cw()
                     } else {
                         basis
