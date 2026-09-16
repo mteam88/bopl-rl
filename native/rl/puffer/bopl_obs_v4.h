@@ -102,6 +102,12 @@ typedef struct {
 static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const uint32_t *nearest, int count,
                                const uint32_t *nearby_slimes, int slime_count, const BoplRlPlayer *self) {
     BotView *view=&t->view;
+#if BOT_SDF_AVX512
+    /* bot_view's detection, so the SDF dispatch is settled here too: a row
+     * written before any scripted bot has moved (every reset row in a game
+     * without one) otherwise marches the scalar SDF. */
+    if (bot_cpu_avx512<0) bot_cpu_avx512=__builtin_cpu_supports("avx512f")?1:0;
+#endif
     view->wall_count=0; t->has_water=0; t->water_top=-1e9; t->circle_count=0;
     for (uint32_t i=0; i<state->header.entity_count; i++) {
         const BoplRlEntity *e=&state->entities[i];
@@ -212,7 +218,7 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
     }
     return max;
 }
-/* bot_raycast_below for up to BOPL4_MARCH rays from one origin, marched
+/* bot_raycast_below for up to BOPL4_MARCH rays (own origins), marched
  * together: each ray's steps are exactly bot_raycast's (the same SDF calls on
  * the same points, in the same order per ray), interleaved across rays so the
  * core overlaps their independent chains (one step of one ray is a dependent
@@ -228,7 +234,7 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
             if (!(live&(1<<i))) continue; \
             if (!(t[i]<max)) { live&=~(1<<i); continue; }               /* the loop condition t < max: out stays max */ \
             if (t[i]>=limit[i]) { out[i]=limit[i]; live&=~(1<<i); continue; } \
-            double d=SDF(view, x+dx[i]*t[i], y+dy[i]*t[i]); \
+            double d=SDF(view, ox[i]+dx[i]*t[i], oy[i]+dy[i]*t[i]); \
             if (d<0.05) { out[i]=t[i]; live&=~(1<<i); continue; } \
             t[i]+=d; \
         } \
@@ -257,7 +263,7 @@ __attribute__((target("avx512f"), always_inline)) static inline double bopl4_sdf
     }
     return _mm512_reduce_min_pd(best);
 }
-__attribute__((target("avx512f"))) static void bopl4_march_avx512(const BotView *view, double x, double y, int n,
+__attribute__((target("avx512f"))) static void bopl4_march_avx512(const BotView *view, const double *ox, const double *oy, int n,
         const double *dx, const double *dy, double max, const double *limit, double *out) {
     BOPL4_MARCH_BODY(bopl4_sdf_avx512)
 }
@@ -265,10 +271,10 @@ __attribute__((target("avx512f"))) static void bopl4_march_avx512(const BotView 
 #pragma GCC pop_options
 #endif
 #endif
-static void bopl4_march(const BotView *view, double x, double y, int n, const double *dx, const double *dy,
+static void bopl4_march(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
                         double max, const double *limit, double *out) {
 #if BOT_SDF_AVX512
-    if (bot_cpu_avx512>0) { bopl4_march_avx512(view, x, y, n, dx, dy, max, limit, out); return; }
+    if (bot_cpu_avx512>0) { bopl4_march_avx512(view, ox, oy, n, dx, dy, max, limit, out); return; }
 #endif
     BOPL4_MARCH_BODY(bot_sdf_scalar)
 }
@@ -320,14 +326,16 @@ static void bopl4_rays(const Bopl4Terrain *t, double x, double y, double svx, do
     for (int start=0; start<count; start+=BOPL4_MARCH) {
         int n=count-start<BOPL4_MARCH?count-start:BOPL4_MARCH;
         double dx[BOPL4_MARCH], dy[BOPL4_MARCH], best[BOPL4_MARCH], closing[BOPL4_MARCH], limit[BOPL4_MARCH], wall[BOPL4_MARCH];
+        double ox[BOPL4_MARCH], oy[BOPL4_MARCH];
         int class[BOPL4_MARCH];
         for (int i=0; i<n; i++) {
+            ox[i]=x; oy[i]=y;
             bopl4_ray_direction(k[start+i], &dx[i], &dy[i]);
             best[i]=bopl4_ray_other(t, x, y, dx[i], dy[i], svx, svy, &class[i], &closing[i]);
             limit[i]=best[i]+1.0;
             wall[i]=BOPL4_RAY_LENGTH;
         }
-        if (t->view.wall_count) bopl4_march(&t->view, x, y, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
+        if (t->view.wall_count) bopl4_march(&t->view, ox, oy, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
         for (int i=0; i<n; i++)
             bopl4_ray_finish(t, x, y, dx[i], dy[i], best[i], class[i], closing[i], wall[i],
                              obs+BOPL4_OBS_RAY_OFFSET+(size_t)k[start+i]*BOPL4_RAY_FEATURES);
@@ -345,23 +353,73 @@ static int bopl4_drop_exceeds(const Bopl4Terrain *t, double x, double y, double 
     if (t->has_water && y>t->water_top && !(y-t->water_top>limit)) return 0;
     return t->view.wall_count?bot_raycast_exceeds(&t->view, x, y, 0, -1, cap, limit):cap>limit;
 }
-/* The egocentric terrain block (BOPL4_TERRAIN) at body position (x, y). */
+/* The 16 dash directions of the landing test, as bopl4_terrain computed them. */
+static void bopl4_dash_direction(int k, double *dx, double *dy) {
+    static __thread double table[16][2];
+    static __thread int ready=0;
+    if (!ready) {
+        for (int i=0; i<16; i++) { double angle=6.28318530717958647692*i/16.0; table[i][0]=cos(angle); table[i][1]=sin(angle); }
+        ready=1;
+    }
+    *dx=table[k][0]; *dy=table[k][1];
+}
+/* The egocentric terrain block (BOPL4_TERRAIN) at body position (x, y).
+ * Every raycast here is one of bot_raycast's, marched in bopl4_march groups
+ * where the casts are independent; "exceeds" tests march with the limit just
+ * above the threshold (out > threshold then decides: a cut-off march has
+ * t > threshold, a finished one its exact result), and probes the original
+ * stopped before are evaluated without changing what it wrote. */
 static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out) {
     const BotView *view=&t->view;
-    double drop=bopl4_drop(t, x, y, 32.0);
-    double ceiling=view->wall_count?bot_raycast(view, x, y, 0, 1, 32.0):32.0;
+    double drop=32.0, ceiling=32.0;
+    if (view->wall_count) {
+        double ox[2]={x, x}, oy[2]={y, y}, dx[2]={0, 0}, dy[2]={-1, 1}, limit[2]={32.0, 32.0}, d[2];
+        bopl4_march(view, ox, oy, 2, dx, dy, 32.0, limit, d);
+        drop=d[0]; ceiling=d[1];
+    }
+    if (t->has_water && y>t->water_top && y-t->water_top<drop) drop=y-t->water_top;
     out[0]=(float)(drop/32.0); out[1]=(float)(ceiling/32.0);
     /* Edges: walk left/right in 1.5-unit steps to one dash length; the edge
      * is where the floor drops away by more than 4 units (or ends in water),
      * a wall is where the step lands inside terrain. */
-    for (int side=0; side<2; side++) {
-        double sign=side?1.0:-1.0, edge=BOPL4_DASH_LENGTH; int wall=0;
-        for (int k=1; k<=8; k++) {
-            double px=x+sign*1.5*k;
-            if (view->wall_count && bot_sdf(view, px, y)<0.3) { edge=1.5*k; wall=1; break; }
-            if (bopl4_drop_exceeds(t, px, y, 32.0, drop+4.0)) { edge=1.5*k; break; }
+    {
+        int first_wall[2]={9, 9};
+        for (int side=0; side<2 && view->wall_count; side++) {
+            double sign=side?1.0:-1.0;
+            for (int k=1; k<=8; k++) if (bot_sdf(view, x+sign*1.5*k, y)<0.3) { first_wall[side]=k; break; }
         }
-        out[2+side]=(float)(edge/BOPL4_DASH_LENGTH); out[4+side]=wall;
+        int first_drop[2]={9, 9};
+        double threshold=drop+4.0;
+        /* bopl4_drop_exceeds: water within the threshold below this height
+         * settles every probe (no edge by drop); no walls, the cap decides. */
+        if (t->has_water && y>t->water_top && !(y-t->water_top>threshold)) {
+        } else if (!view->wall_count) {
+            if (32.0>threshold) first_drop[0]=first_drop[1]=1;
+        } else {
+            double above=nextafter(threshold, HUGE_VAL);
+            double ox[BOPL4_MARCH], oy[BOPL4_MARCH], dx[BOPL4_MARCH], dy[BOPL4_MARCH], limit[BOPL4_MARCH], d[BOPL4_MARCH];
+            int side_of[BOPL4_MARCH], k_of[BOPL4_MARCH], n=0;
+            for (int side=0; side<2; side++) {
+                double sign=side?1.0:-1.0;
+                for (int k=1; k<first_wall[side]; k++) {
+                    ox[n]=x+sign*1.5*k; oy[n]=y; dx[n]=0; dy[n]=-1; limit[n]=above; side_of[n]=side; k_of[n]=k; n++;
+                    if (n==BOPL4_MARCH || (side==1 && k==first_wall[1]-1)) {
+                        bopl4_march(view, ox, oy, n, dx, dy, 32.0, limit, d);
+                        for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
+                        n=0;
+                    }
+                }
+            }
+            if (n) {
+                bopl4_march(view, ox, oy, n, dx, dy, 32.0, limit, d);
+                for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
+            }
+        }
+        for (int side=0; side<2; side++) {
+            int k=first_wall[side]<first_drop[side]?first_wall[side]:first_drop[side];
+            out[2+side]=(float)((k<=8?1.5*k:BOPL4_DASH_LENGTH)/BOPL4_DASH_LENGTH);
+            out[4+side]=first_wall[side]<=8 && first_wall[side]<=first_drop[side];
+        }
     }
     out[6]=t->has_water?bopl_clip((y-t->water_top)/32.0):1.0f;
     double lethal=16.0;
@@ -370,14 +428,27 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
     }
     out[7]=(float)(lethal/16.0);
     /* Ground within one dash: some dash endpoint (16 directions, stopped at
-     * terrain) has a surface within 4 units below it. */
+     * terrain) has a surface within 4 units below it. Groups of BOPL4_MARCH
+     * directions in order, stopping after the group that lands. */
     int landing=drop<=4.0;
-    for (int k=0; k<16 && !landing; k++) {
-        double angle=6.28318530717958647692*k/16.0, dx=cos(angle), dy=sin(angle);
-        double d=view->wall_count?bot_raycast(view, x, y, dx, dy, BOPL4_DASH_LENGTH):BOPL4_DASH_LENGTH;
-        double ex=x+dx*(d-0.5), ey=y+dy*(d-0.5);
-        if (t->has_water && ey<=t->water_top) continue;
-        landing=!bopl4_drop_exceeds(t, ex, ey, 8.0, 4.0);
+    for (int start=0; start<16 && !landing; start+=BOPL4_MARCH) {
+        int n=16-start<BOPL4_MARCH?16-start:BOPL4_MARCH;
+        double ox[BOPL4_MARCH], oy[BOPL4_MARCH], dx[BOPL4_MARCH], dy[BOPL4_MARCH], limit[BOPL4_MARCH], d[BOPL4_MARCH];
+        for (int i=0; i<n; i++) { bopl4_dash_direction(start+i, &dx[i], &dy[i]); ox[i]=x; oy[i]=y; limit[i]=BOPL4_DASH_LENGTH; d[i]=BOPL4_DASH_LENGTH; }
+        if (view->wall_count) bopl4_march(view, ox, oy, n, dx, dy, BOPL4_DASH_LENGTH, limit, d);
+        double ex[BOPL4_MARCH], ey[BOPL4_MARCH], zero[BOPL4_MARCH], down[BOPL4_MARCH], above[BOPL4_MARCH], fall[BOPL4_MARCH];
+        int m=0;
+        for (int i=0; i<n; i++) {
+            double px=x+dx[i]*(d[i]-0.5), py=y+dy[i]*(d[i]-0.5);
+            if (t->has_water && py<=t->water_top) continue;
+            if (t->has_water && py>t->water_top && !(py-t->water_top>4.0)) { landing=1; continue; }   /* water within 4: a landing */
+            if (!view->wall_count) continue;                                                        /* 8 > 4: no landing */
+            ex[m]=px; ey[m]=py; zero[m]=0; down[m]=-1; above[m]=nextafter(4.0, HUGE_VAL); m++;
+        }
+        if (m && !landing) {
+            bopl4_march(view, ex, ey, m, zero, down, 8.0, above, fall);
+            for (int i=0; i<m; i++) if (!(fall[i]>4.0)) landing=1;
+        }
     }
     out[8]=landing;
     double sdf=view->wall_count?bot_sdf(view, x, y):8.0;
