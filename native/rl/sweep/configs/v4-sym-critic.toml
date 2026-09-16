@@ -26,7 +26,7 @@ concurrency = 1
 
 [trial]
 memory_max = "10G"
-nice = 10
+nice = 0
 max_seconds = 21600                # steps stay 1734936776 (the 024 budget); the comparison is at equal steps (every 20M checkpoint), not equal wall time, so full runs are wanted even at 3x
 poll_seconds = 60
 
