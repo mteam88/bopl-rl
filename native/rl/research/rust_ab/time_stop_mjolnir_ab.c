@@ -178,6 +178,8 @@ int main(int argc, char **argv) {
     config.player[1].abilities[0] = 2;
     config.player[1].abilities[1] = 37;
     config.player[1].abilities[2] = 14;
+    for (unsigned scenario = 0; scenario < 2; scenario++) {
+    const unsigned throw_start = scenario == 0 ? 625 : 680;
     if (reset(world[0], &config, "reference") ||
         reset(world[1], &config, "rust"))
         return 1;
@@ -199,7 +201,8 @@ int main(int argc, char **argv) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
         action[1].angle = 64;
-        if (tick >= 625 && tick <= 632) action[1].buttons = 4;
+        if (tick >= throw_start && tick <= throw_start + 7)
+            action[1].buttons = 4;
         if (!cast_tick && tick > 180 &&
             before->slimes[0].timers[0] > before->slimes[0].cooldowns[0]) {
             cast_tick = tick;
@@ -285,10 +288,11 @@ int main(int argc, char **argv) {
         }
     }
     const BoplRlState *final = bopl_rl_state(world[0]);
+    int expected_phase = scenario == 0 ? froze_returning : froze_outbound;
     if (!cast_tick || !saw_form || !saw_exit || !saw_stopped ||
         !saw_restored || !saw_protection || !saw_protected_cooldown ||
         !saw_hammer_before_stop || !froze_hammer ||
-        !(froze_outbound || froze_returning) || !saw_hammer_motion_after_stop ||
+        !expected_phase || !saw_hammer_motion_after_stop ||
         frozen_ticks < 600 || final->header.player_time_scale != (1LL << 32) ||
         final->players[0].deaths != 0) {
         fprintf(stderr,
@@ -303,8 +307,9 @@ int main(int argc, char **argv) {
                 final->header.player_time_scale, final->players[0].deaths);
         return 1;
     }
-    for (int backend = 0; backend < 2; backend++) bopl_rl_close(world[backend]);
     printf("TIME_STOP_MJOLNIR_GOLDEN_OK ticks=1540 frozen=%u phase=%s\n",
            frozen_ticks, froze_outbound ? "outbound" : "returning");
+    }
+    for (int backend = 0; backend < 2; backend++) bopl_rl_close(world[backend]);
     return 0;
 }

@@ -76,9 +76,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_throw_forms_ab.c`: slot-two Grenade, Smoke, Poke Ball, Tack and
   Mjolnir held forms across all 690 stopped passes, followed by exact restored
   release and item registration.
-- `time_stop_mjolnir_ab.c`: a released Mjolnir already in recall flight across
-  all 690 stopped passes, including frozen position, velocity, spin, owner
-  cooldowns and land-animation state, then resumed recall after restoration.
+- `time_stop_mjolnir_ab.c`: released Mjolnirs in both outbound and recall
+  flight across 690 stopped passes each, including frozen position, velocity,
+  spin, owner cooldowns and land-animation state, then resumed motion after
+  restoration.
 - `time_stop_engine_ab.c`: an attached live RocketEngine and its composite
   platform across all 690 stopped passes, then restored force-clock and body
   motion.
