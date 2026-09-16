@@ -2621,9 +2621,7 @@ a capacity-reused vector, so the steady-state update path allocates nothing.
 `freeze_ability_ab.c` compares the grounded player-hit scenario through the
 complete freeze, thaw, ragdoll landing and cooldown restart, plus an airborne
 diagonal cast through recoil and animation exit. The two scenarios cover 1,000
-NativeAOT/Rust Q32 ticks exactly. A measured hit against an active Bow form
-still has an unresolved updater-order mismatch while restoring and freezing
-the original slime, so transformed-player coverage remains partial.
+NativeAOT/Rust Q32 ticks exactly.
 
 `freeze_airborne_hit_ab.c` adds a 500-tick ordinary-player hit while the target
 is rising. Release occurs on tick 334, `FrozenSolid` takes control on tick 335,
@@ -2642,6 +2640,17 @@ being straightened by `GunTransform.ExitAbility`. The restored slime enters
 ragdoll ends on tick 452, where `SlimeController.EnterFall` resets rotation.
 Rust now models both ordering details and matches the full self-freeze,
 cooldown-reset, thaw-flight and resumed-fall trajectory exactly.
+
+`freeze_bow_ab.c` adds 500 exact ticks for a hit on a grounded active Bow form.
+The ray invokes `Ability.ExitAbility` directly, leaving the inactive Bow box at
+its last aimed basis. `FrozenSolid.Begin` re-enables the original slime after
+its PlayerPhysics position in the updater list: gravity is skipped, but the
+later `SlimeController.Move` applies air control and reattaches with a fresh
+slime surface local. On the next pass the grounded controller moves that local
+once before the newly registered `FrozenSolid` pins it. Thaw applies its new
+ragdoll while the victim is already grounded, so landing cannot cancel it; the
+0.35-second timeout enters Fall without synthesizing another landing callback.
+All form, collider, player, entity and cooldown fields match through tick 500.
 
 ### Executable Growth and Shrink rays on players (2026-09-15)
 

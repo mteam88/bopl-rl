@@ -479,9 +479,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   landing; an airborne diagonal miss also matches through cast and recovery.
   A downward Water-reflected self-hit is exact through direct form cancellation,
   the exit-pass aimed collider basis, `FrozenSolid`, cooldown reset, thaw flight
-  and airborne timed-ragdoll exit. A measured active-Bow-form hit still differs
-  during original-slime restoration because cross-prefab updater ordering is
-  unresolved.
+  and airborne timed-ragdoll exit. A grounded active-Bow-form hit is also exact
+  through the retained inactive-form basis, restored-slime air reattachment,
+  next-pass grounded movement, FrozenSolid pin, grounded thaw and timed-ragdoll
+  exit.
   Growth and Shrink rays share that `GunTransform` implementation and spawn
   the signed `ScaleChanger` on a player hit. Rust preserves Player.Scale,
   collider scale and PlayerPhysics radius as separate updater-phase values.

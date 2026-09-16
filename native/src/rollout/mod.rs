@@ -1216,6 +1216,9 @@ pub struct MagnetState {
 pub struct RagdollState {
     pub active: bool,
     pub skip_physics: bool,
+    /// The effect applied ragdoll while the slime was already grounded, so
+    /// no AttachToGround callback may replace it with Land before timeout.
+    pub hold_on_ground: bool,
     pub time: Fix,
     pub duration: Fix,
 }
@@ -1670,6 +1673,16 @@ pub struct PlayerSlot {
     pub gun: GunState,
     pub magnet: MagnetState,
     pub ragdoll: RagdollState,
+    /// Live FrozenSolid instances pinning this slime. Ground contact does not
+    /// end the refreshed ragdoll while any of them remains active.
+    pub frozen_solid_count: u16,
+    /// A lower-hierarchy transformed form was cancelled by Freeze after this
+    /// pass's Player.UpdatePlayer publication. Keep that earlier publication
+    /// while the restored SlimeController finishes its same-pass movement.
+    pub freeze_form_exit_tick: u32,
+    /// EnterFall after a grounded ragdoll timeout has no new landing callback,
+    /// so its visible state stays Fall until the body detaches.
+    pub ragdoll_grounded_fall: bool,
     /// Index of the Poke Ball that owns this pinned victim.
     pub captured_by_ball: Option<usize>,
     /// PokeBall mutates a victim after RlObservation has sampled the slime's
@@ -2971,6 +2984,9 @@ impl RolloutWorld {
                 gun: GunState::default(),
                 magnet: MagnetState::default(),
                 ragdoll: RagdollState::default(),
+                frozen_solid_count: 0,
+                freeze_form_exit_tick: u32::MAX,
+                ragdoll_grounded_fall: false,
                 captured_by_ball: None,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
@@ -3656,6 +3672,12 @@ impl RolloutWorld {
     /// turn->run); reversals while running pass through `stop`.
     fn update_obs_state(&mut self, index: usize, dir: Vec2) {
         let slot = &mut self.players[index];
+        if slot.ragdoll_grounded_fall {
+            if slot.base.grounded {
+                return;
+            }
+            slot.ragdoll_grounded_fall = false;
+        }
         if !slot.base.alive
             || slot.respawn_ticks > 0
             || slot.revival_clone_pending
@@ -3968,6 +3990,7 @@ impl RolloutWorld {
             // pre-teleport publication until reactivation.
             if !self.players[index].teleport_effect_active
                 && !self.players[index].blink_tunnel_active
+                && self.players[index].freeze_form_exit_tick != self.tick
             {
                 self.players[index].reported_position = self.players[index].base.position;
                 self.players[index].reported_tick = self.tick;
@@ -5224,7 +5247,7 @@ impl RolloutWorld {
             // that an attached Blink wall was disabled. Preserve that value
             // on the one detachment pass; the live slime body already moves
             // away from the wall and is published normally next pass.
-            if !leaving_blink_wall {
+            if !leaving_blink_wall && slot.freeze_form_exit_tick != self.tick {
                 slot.reported_position = slot.base.position;
             }
             for s in 0..3 {
@@ -6693,6 +6716,14 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_step(masked, movement_input, terrain!(self));
+        }
+        if self.players[index].freeze_form_exit_tick == self.tick
+            && self.players[index].base.grounded
+        {
+            // AttachToGround's synchronous callback enters Land after the
+            // restored slime's air Move reaches the Bow's former surface.
+            self.players[index].obs_state = STATE_LAND;
+            self.players[index].state_ticks = LAND_TICKS;
         }
         // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
         // PlayerPhysics observes this FixTransform scale on the next pass.
@@ -12292,6 +12323,9 @@ impl RolloutWorld {
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
+            slot.frozen_solid_count = 0;
+            slot.freeze_form_exit_tick = u32::MAX;
+            slot.ragdoll_grounded_fall = false;
             slot.captured_by_ball = None;
             slot.late_obs_tick = u32::MAX;
             slot.missile = MissileFormState::default();
@@ -12726,6 +12760,9 @@ impl RolloutWorld {
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
+            slot.frozen_solid_count = 0;
+            slot.freeze_form_exit_tick = u32::MAX;
+            slot.ragdoll_grounded_fall = false;
             slot.captured_by_ball = None;
             slot.late_obs_tick = u32::MAX;
             slot.missile = MissileFormState::default();
@@ -17092,16 +17129,20 @@ impl RolloutWorld {
             return;
         }
         if let Some(victim) = victim {
-            if self.players[victim].active != ActiveAbility::None
+            let deferred_bow_exit = if self.players[victim].active != ActiveAbility::None
                 || self.players[victim].base.dash.active
             {
-                self.exit_form_for_freeze(victim, data);
-            }
-            self.begin_freeze(victim, data.freeze.freeze_seconds);
+                self.exit_form_for_freeze(victim, data)
+            } else {
+                false
+            };
+            self.begin_freeze(victim, data.freeze.freeze_seconds, deferred_bow_exit);
         }
     }
 
-    fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) {
+    fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) -> bool {
+        let was_bow = self.players[victim].active == ActiveAbility::Bow;
+        let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
         // FreezeRayGun calls Ability.ExitAbility directly with a default
         // packet containing only the form position and facing-right flag.
@@ -17128,12 +17169,20 @@ impl RolloutWorld {
         slot.base.grounded_speed = Fix::ZERO;
         slot.facing_right = true;
         slot.exit_to_fall();
+        // EnterFall issues its zero-velocity landing rays after the default
+        // exit packet has discarded Bow's grounding information. They do not
+        // reach the old surface; the restored slime attaches in its later
+        // PlayerPhysics pass instead.
         slot.base.collision_rays(terrain!(self));
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
+        if deferred {
+            slot.freeze_form_exit_tick = self.tick;
+        }
+        deferred
     }
 
-    fn begin_freeze(&mut self, victim: usize, duration: Fix) {
+    fn begin_freeze(&mut self, victim: usize, duration: Fix, deferred_form_exit: bool) {
         let freeze_position = self.players[victim].base.position;
         self.next_spawn_hierarchy += data::get().freeze.frozen_updatable_count;
         self.frozen_solids.push(FrozenSolidState {
@@ -17144,14 +17193,28 @@ impl RolloutWorld {
             freeze_position,
         });
         let slot = &mut self.players[victim];
+        slot.frozen_solid_count = slot.frozen_solid_count.saturating_add(1);
         slot.ragdoll = RagdollState {
             active: true,
             skip_physics: true,
+            hold_on_ground: false,
             time: Fix::ZERO,
             duration: duration + Fix::ONE,
         };
         slot.base.velocity = Vec2::ZERO;
         slot.base.force_unground(&self.platforms);
+        if deferred_form_exit {
+            // FrozenSolid.Begin applies ragdoll first, then UnGround invokes
+            // SlimeController.OnNoLongerGrounded and overwrites the visible
+            // state with Fall. PlayerPhysics.skipNextUpdate suppresses gravity
+            // in the restored slime's later updater, but SlimeController.Move
+            // still applies air control and reattaches with a fresh slime
+            // surface local. FrozenSolid does not run until the next pass.
+            slot.ragdoll.active = false;
+            slot.obs_state = STATE_FALL;
+            slot.state_ticks = 0;
+            slot.base.skip_next_gravity = true;
+        }
     }
 
     fn ragdoll_player_tick(&mut self, index: usize, _data: &data::RolloutData) {
@@ -17178,7 +17241,10 @@ impl RolloutWorld {
         // landing ray can move the body before that publication.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
-        if slot.base.grounded {
+        if slot.base.grounded
+            && slot.frozen_solid_count == 0
+            && !slot.ragdoll.hold_on_ground
+        {
             // AttachToGround switches a ragdoll straight into the land state
             // before SlimeController.UpdateSim, which then performs its
             // ordinary grounded Move in this same pass.
@@ -17190,6 +17256,7 @@ impl RolloutWorld {
         }
         slot.ragdoll.time += DT;
         if slot.ragdoll.active && slot.ragdoll.time > slot.ragdoll.duration {
+            let held_on_ground = slot.ragdoll.hold_on_ground && slot.base.grounded;
             slot.ragdoll.active = false;
             slot.base.external_velocity += slot.base.velocity;
             slot.base.velocity = Vec2::ZERO;
@@ -17198,6 +17265,7 @@ impl RolloutWorld {
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
+            slot.ragdoll_grounded_fall = held_on_ground;
             slot.base
                 .move_only(slot.last_movement_input, terrain!(self));
         }
@@ -17213,6 +17281,9 @@ impl RolloutWorld {
             }
             if !self.playable(effect.victim) {
                 self.frozen_solids[effect_index].active = false;
+                self.players[effect.victim].frozen_solid_count = self.players[effect.victim]
+                    .frozen_solid_count
+                    .saturating_sub(1);
                 continue;
             }
             let slot = &mut self.players[effect.victim];
@@ -17222,6 +17293,7 @@ impl RolloutWorld {
             slot.ragdoll = RagdollState {
                 active: true,
                 skip_physics: true,
+                hold_on_ground: false,
                 time: Fix::ZERO,
                 duration: Fix::ONE,
             };
@@ -17229,7 +17301,9 @@ impl RolloutWorld {
             state.freeze_left -= updater_dt;
             if state.freeze_left <= Fix::ZERO {
                 state.active = false;
+                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
                 slot.ragdoll.duration = Fix::from_f32(0.35);
+                slot.ragdoll.hold_on_ground = slot.base.grounded;
                 slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
                 // FixTransform.right = normalized release speed.
                 slot.base.rotation = Vec2::UP.normalized_angle();
@@ -18819,6 +18893,7 @@ impl RolloutWorld {
             slot.ragdoll = RagdollState {
                 active: true,
                 skip_physics: true,
+                hold_on_ground: false,
                 time: Fix::ZERO,
                 duration: data.poke_ball.capture_seconds + Fix::ONE,
             };
@@ -18911,6 +18986,7 @@ impl RolloutWorld {
                     slot.ragdoll = RagdollState {
                         active: true,
                         skip_physics: true,
+                        hold_on_ground: false,
                         time: Fix::ZERO,
                         duration: Fix::ONE,
                     };
@@ -19250,6 +19326,7 @@ impl RolloutWorld {
         slot.ragdoll = RagdollState {
             active: true,
             skip_physics: true,
+            hold_on_ground: false,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
         };
@@ -22600,10 +22677,14 @@ impl RolloutWorld {
                 }
                 if (alive && bowing) || bow_was_active {
                     let extents = data.bow.hurtbox_extents;
-                    // Both exits zero the Bow body's rotation before
-                    // ExitAbility (BowTransform.cs:119, 225).
+                    // Bow's own exits zero its body rotation before
+                    // ExitAbility (BowTransform.cs:119, 225). FreezeRayGun
+                    // invokes Ability.ExitAbility directly, so the disabled
+                    // body retains the last aimed rotation.
                     let (center, rotation) = if alive && bowing {
                         (synced, bow_aim.perp_cw().normalized_angle())
+                    } else if slot.freeze_form_exit_tick == self.tick {
+                        (exit_position, bow_aim.perp_cw().normalized_angle())
                     } else {
                         (exit_position, Fix::ZERO)
                     };
