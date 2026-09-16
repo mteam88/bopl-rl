@@ -357,20 +357,33 @@ def scale_map(src, dst):
 
 def elo_curve(runs, steps, in_run_pool="pool-v7"):
     ratio = runs[0].learner_ratio()
-    logged = next((e.get("pool_sha8") for r in runs for e in r.elo.values()), "?")
     pool = anchor_pool(in_run_pool)
-    logged_pool = anchor_pool("pool-v5") if logged == "ec5bd5ae" else None
     refit = refit_curve(runs, steps, pool)
     members = sorted({g["opponent"] for r in runs for d in r.diagnostics.values() for g in d.get("games", ())}
                      & {m["name"] for m in pool["members"]})
     section(f"2. In-run Elo by evaluation step, refitted on {in_run_pool} from the stored evaluation games"
-            f" (anchors: {', '.join(members)}; the hook logged pool {logged})")
-    mapped = None
-    if logged_pool is not None and logged_pool["pool_sha256"] != pool["pool_sha256"]:
-        slope, shared = scale_map(logged_pool, pool)
-        mapped = slope
-        print(f"  'mapped' = the hook's {len(shared)+1}-anchor rating x {slope:.3f}, the least-squares scale between the two pools'"
-              f" ratings of {len(shared)} shared members (all of the hook's games count; assumes consistent relative strengths)")
+            f" (anchors: {', '.join(members)})")
+    # Per run, the scale from the pool its hook logged on to `pool`: 1 when the
+    # hook already rated on `pool`, the shared-member least-squares slope from
+    # v5, nothing for an unknown pool.
+    known = {"ec5bd5ae": "pool-v5"}
+    scales = {}
+    for r in runs:
+        logged = next((e.get("pool_sha8") for e in r.elo.values()), None)
+        if logged == pool["pool_sha256"][:8]:
+            scales[r.name] = (1.0, logged)
+        elif logged in known:
+            slope, shared = scale_map(anchor_pool(known[logged]), pool)
+            scales[r.name] = (slope, logged)
+            print(f"  {r.name}: hook logged {known[logged]} ({logged}); 'mapped' = its 8-anchor rating x {slope:.3f}, the least-squares"
+                  f" scale between the pools' ratings of {len(shared)} shared members (all 144 games count; assumes consistent relative strengths)")
+        elif logged:
+            print(f"  {r.name}: hook logged pool {logged}, no scale to {in_run_pool} known; 'mapped' left blank")
+    mapped = bool(scales)
+    if mapped:
+        native = [r.name for r in runs if scales.get(r.name, (None,))[0] == 1.0]
+        if native:
+            print(f"  {', '.join(native)}: hook rated on {in_run_pool} natively; 'mapped' is the hook's own rating")
     width = 30 if mapped else 22
     head = f"  {'learner':>9}  " + "  ".join(f"{r.name:>{width}}" for r in runs) + ("   diff vs " + runs[1].name if len(runs) > 1 else "")
     print(head)
@@ -383,8 +396,10 @@ def elo_curve(runs, steps, in_run_pool="pool-v7"):
             cell = f"{fmt(e['rating'], 6, 0)} [{fmt(e['interval'][0], 6, 0)},{fmt(e['interval'][1], 6, 0)}]" if e else f"{'-':>22}"
             if mapped:
                 h = r.elo.get(step)
-                cell += f" {fmt(h['elo'] * mapped, 7, 0)}" if h else f" {'-':>7}"
-                values.append(h["elo"] * mapped if h else None)
+                scale = scales.get(r.name, (None,))[0]
+                value = h["elo"] * scale if h and scale else None
+                cell += f" {fmt(value, 7, 0)}" if value is not None else f" {'-':>7}"
+                values.append(value)
             else:
                 values.append(e["rating"] if e else None)
             cells.append(cell)
