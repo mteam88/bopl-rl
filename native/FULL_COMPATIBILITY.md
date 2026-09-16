@@ -2972,6 +2972,18 @@ that same pass. All 430 NativeAOT/Rust ticks, including Arrow identity,
 position, mapped velocity, destroyed row and later removal, are exact (with the
 standard one-raw-unit normalized-axis bound).
 
+`portal_pickup_ab.c` enables the authored spawner and creates the linked mouths
+before its first pickup. The pickup spawns on episode tick 2161, enables on
+2168 and enters the free-floating mouth on 2233 from matching pre-entry state.
+NativeAOT runs the older `Portal.UpdateSim` before the later-created
+`DynamicAbilityPickup.UpdateSim`; Rust now merges those retained pools by spawn
+hierarchy, maps the body first, and then applies the pickup hover drag and lift.
+The exit state and all subsequent motion match. The maximum difference over
+2,400 ticks is 101 raw Q32 units (2.4e-8 world units), inherited from the
+spawner launch normalization, with identical capture, velocity branch, identity
+and lifecycle. A fixed 64-entry stack bitmap orders recycled portal slots, and
+the pickup pool retains its capacity, so the scheduler adds no tick allocation.
+
 ### Executable Beam forms, pooled graph and damage (2026-09-15)
 
 Catalog id 28 now connects the previously verified Beam kernels to the public

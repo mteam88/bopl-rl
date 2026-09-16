@@ -360,6 +360,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Bow Arrow composition is exact: the arrow enters on tick 363, maps rightward
   momentum to the exit normal and is destroyed by the exit wall on that same
   pass in both backends.
+  An AbilitySpawner pickup composition crosses on tick 2233. Portal and pickup
+  updaters merge by spawn hierarchy without allocation, so the older mouth maps
+  momentum before the later pickup applies its hover drag and lift, matching
+  NativeAOT through continued post-exit motion.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain

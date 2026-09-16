@@ -361,6 +361,8 @@ pub struct Arrow {
 pub struct AbilityPickup {
     pub active: bool,
     pub born_tick: u32,
+    /// Last scheduler pass in which DynamicAbilityPickup.UpdateSim ran.
+    pub updater_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
     /// AbilityIcons index; the full catalog is dense and uses the same ids.
@@ -1446,6 +1448,9 @@ pub struct PortalShotState {
 #[derive(Clone, Copy, Default)]
 pub struct PortalEndpoint {
     pub active: bool,
+    /// Spawn hierarchy of Portal.UpdateSim. Dynamic pickups may be created
+    /// before or after a mouth, so their updater order cannot be hard-coded.
+    pub hierarchy_base: u32,
     pub linked: Option<usize>,
     pub owner: usize,
     pub ability_slot: usize,
@@ -3139,77 +3144,98 @@ impl RolloutWorld {
         }
     }
 
-    fn ability_pickups_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    fn ability_pickup_tick(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let pickup = &data.pickup;
-        for index in 0..self.ability_pickups.len() {
-            if !self.ability_pickups[index].active {
-                if let Some(entity) = self.ability_pickups[index].entity
-                    && self.entities[entity].flags & E_DESTROYED != 0
-                {
-                    self.entities[entity].flags = E_REMOVED;
-                }
-                continue;
+        if self.ability_pickups[index].updater_tick == self.tick {
+            return;
+        }
+        self.ability_pickups[index].updater_tick = self.tick;
+        if !self.ability_pickups[index].active {
+            if let Some(entity) = self.ability_pickups[index].entity
+                && self.entities[entity].flags & E_DESTROYED != 0
+            {
+                self.entities[entity].flags = E_REMOVED;
             }
-            if self.ability_pickups[index].born_tick >= self.tick {
-                continue;
-            }
-            let stopped = self.player_time_scale < Fix::from_f32(0.01);
-            if stopped {
-                self.ability_pickups[index].body.velocity = Vec2::ZERO;
-            } else {
-                self.ability_pickups[index].time_passed += updater_dt;
-                self.ability_pickups[index].time_since_swap += updater_dt;
-            }
-            if self.ability_pickups[index].time_passed >= pickup.disabled_seconds {
-                self.ability_pickups[index].enabled = true;
-            }
-            if self.ability_pickups[index].time_since_swap > pickup.swap_period {
-                self.ability_pickups[index].time_since_swap = Fix::ZERO;
-                let current = self.ability_pickups[index].ability;
-                self.ability_pickups[index].ability = self.random_pickup_ability(current);
-            }
-            let vibration_clock = self.ability_pickups[index]
-                .time_since_swap
-                .checked_rem(pickup.swap_period, true)
-                .expect("positive pickup swap period");
-            if vibration_clock > pickup.swap_period - pickup.vibration_duration {
-                let old = self.ability_pickups[index].previous_vibration;
-                self.ability_pickups[index].position -= old;
-                let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-                let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-                let vibration = Vec2::angle(angle) * radius * pickup.vibration_strength;
-                self.ability_pickups[index].previous_vibration = vibration;
-                self.ability_pickups[index].position += vibration;
-            }
+            return;
+        }
+        if self.ability_pickups[index].born_tick >= self.tick {
+            return;
+        }
+        let stopped = self.player_time_scale < Fix::from_f32(0.01);
+        if stopped {
+            self.ability_pickups[index].body.velocity = Vec2::ZERO;
+        } else {
+            self.ability_pickups[index].time_passed += updater_dt;
+            self.ability_pickups[index].time_since_swap += updater_dt;
+        }
+        if self.ability_pickups[index].time_passed >= pickup.disabled_seconds {
+            self.ability_pickups[index].enabled = true;
+        }
+        if self.ability_pickups[index].time_since_swap > pickup.swap_period {
+            self.ability_pickups[index].time_since_swap = Fix::ZERO;
+            let current = self.ability_pickups[index].ability;
+            self.ability_pickups[index].ability = self.random_pickup_ability(current);
+        }
+        let vibration_clock = self.ability_pickups[index]
+            .time_since_swap
+            .checked_rem(pickup.swap_period, true)
+            .expect("positive pickup swap period");
+        if vibration_clock > pickup.swap_period - pickup.vibration_duration {
+            let old = self.ability_pickups[index].previous_vibration;
+            self.ability_pickups[index].position -= old;
+            let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            let vibration = Vec2::angle(angle) * radius * pickup.vibration_strength;
+            self.ability_pickups[index].previous_vibration = vibration;
+            self.ability_pickups[index].position += vibration;
+        }
 
-            // DPhysicsCircle.position exposes its root FixTransform position,
-            // while the observation collider centre includes `offset`.
-            let center = self.ability_pickups[index].position;
-            let mut height = self.ability_pickups[index].position.y - Fix::from_f32(-11.22);
-            for platform in &self.platforms {
-                if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
-                    && hit.near < height
-                {
-                    height = hit.near;
-                }
+        // DPhysicsCircle.position exposes its root FixTransform position,
+        // while the observation collider centre includes `offset`.
+        let center = self.ability_pickups[index].position;
+        let mut height = self.ability_pickups[index].position.y - Fix::from_f32(-11.22);
+        for platform in &self.platforms {
+            if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
+                && hit.near < height
+            {
+                height = hit.near;
             }
-            if height < Fix::from_f32(0.5) {
-                self.ability_pickups[index].body.velocity *= Fix::from_f32(0.95);
+        }
+        if height < Fix::from_f32(0.5) {
+            self.ability_pickups[index].body.velocity *= Fix::from_f32(0.95);
+        }
+        let divisor = height.max(Fix::ONE);
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let wobble = (sim_time * pickup.wobble_speed).sin() * pickup.wobble_amount;
+        let state = &mut self.ability_pickups[index];
+        state.body.velocity.y -= pickup.gravity * updater_dt;
+        state.body.force.y += wobble + pickup.up_force / divisor;
+        if let Some(entity) = state.entity {
+            let row = &mut self.entities[entity];
+            row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
+            row.x = (state.position + pickup.offset).x.raw();
+            row.y = (state.position + pickup.offset).y.raw();
+            row.vx = state.body.velocity.x.raw();
+            row.vy = state.body.velocity.y.raw();
+        }
+    }
+
+    fn ability_pickups_tick_before(
+        &mut self,
+        hierarchy: u32,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+    ) {
+        for index in 0..self.ability_pickups.len() {
+            if self.ability_pickups[index].hierarchy_base < hierarchy {
+                self.ability_pickup_tick(index, data, updater_dt);
             }
-            let divisor = height.max(Fix::ONE);
-            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-            let wobble = (sim_time * pickup.wobble_speed).sin() * pickup.wobble_amount;
-            let state = &mut self.ability_pickups[index];
-            state.body.velocity.y -= pickup.gravity * updater_dt;
-            state.body.force.y += wobble + pickup.up_force / divisor;
-            if let Some(entity) = state.entity {
-                let row = &mut self.entities[entity];
-                row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
-                row.x = (state.position + pickup.offset).x.raw();
-                row.y = (state.position + pickup.offset).y.raw();
-                row.vx = state.body.velocity.x.raw();
-                row.vy = state.body.velocity.y.raw();
-            }
+        }
+    }
+
+    fn ability_pickups_tick_remaining(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for index in 0..self.ability_pickups.len() {
+            self.ability_pickup_tick(index, data, updater_dt);
         }
     }
 
@@ -3773,7 +3799,6 @@ impl RolloutWorld {
         // both the queued spring force and those later direct impulses below.
         self.platform_updaters_tick(data, updater_dt);
         self.ability_spawner_tick(data, updater_dt);
-        self.ability_pickups_tick(data, updater_dt);
         self.beam_inputs.clear();
         for slot in &mut self.players {
             slot.magnet.parry_registered = false;
@@ -4433,6 +4458,7 @@ impl RolloutWorld {
         };
         let endpoint = PortalEndpoint {
             active: true,
+            hierarchy_base: self.next_spawn_hierarchy,
             owner,
             ability_slot,
             ability_generation: shot.ability_generation,
@@ -4837,10 +4863,20 @@ impl RolloutWorld {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
         }
-        for endpoint_index in 0..self.portals.len() {
-            if !self.portals[endpoint_index].active {
-                continue;
-            }
+        let mut processed = [false; 64];
+        for _ in 0..self.portals.len() {
+            let Some(endpoint_index) = (0..self.portals.len())
+                .filter(|&index| self.portals[index].active && !processed[index])
+                .min_by_key(|&index| self.portals[index].hierarchy_base)
+            else {
+                break;
+            };
+            processed[endpoint_index] = true;
+            self.ability_pickups_tick_before(
+                self.portals[endpoint_index].hierarchy_base,
+                data,
+                updater_dt,
+            );
             self.portals[endpoint_index].time_alive += updater_dt * self.player_time_scale;
             if self.portals[endpoint_index].time_alive > data.portal_gun.lifetime_seconds {
                 if let Some(linked) = self.portals[endpoint_index].linked
@@ -4902,6 +4938,7 @@ impl RolloutWorld {
             }
             self.portal_objects_tick(endpoint_index, data);
         }
+        self.ability_pickups_tick_remaining(data, updater_dt);
     }
 
     fn playable(&self, index: usize) -> bool {
