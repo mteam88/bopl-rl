@@ -43,6 +43,9 @@ def main():
                         help='Comma-separated scripted bot names (kind-level, e.g. mixed-hard,archer-medium); empty disables')
     parser.add_argument('--pool',type=Path,default=None,
                         help='Reference pool.json for in-run Elo (default: reference_pool.DEFAULT_POOL, pool v7, if present)')
+    parser.add_argument('--no-pool-record',action='store_true',
+                        help="print the pool Elo line but do not write the bots-only 'evaluation' record into "
+                             "<run>/reference/<sha8>/ (train.py passes this when its in-run pool rating covers the checkpoint)")
     parser.add_argument('--seed-base',type=int,default=10001)
     parser.add_argument('--heldout-seed-base',type=int,default=20001)
     parser.add_argument('--selfplay-seed',type=int,default=30001)
@@ -211,8 +214,11 @@ def emit_elo(args, report):
     if not pool_path:
         return
     pool = reference_pool.load_pool(pool_path)
-    rating = reference_pool.write_evaluation_rating(
-        args.run, report, pool, args.checkpoint, game=args.game)
+    if args.no_pool_record:
+        rating = reference_pool.rating_from_evaluation(report, pool, args.checkpoint, game=args.game)
+    else:
+        rating = reference_pool.write_evaluation_rating(
+            args.run, report, pool, args.checkpoint, game=args.game)
     if rating:
         print(json.dumps(dict(elo=rating['rating'], interval=rating['interval'],
                               games=rating['games'], source=rating.get('source'),

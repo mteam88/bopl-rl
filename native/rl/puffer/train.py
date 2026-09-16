@@ -688,6 +688,12 @@ def main():
                 command += ['--opponents', str(frozen_manifest)]
             if a.evaluation_pool:
                 command += ['--pool', str(a.evaluation_pool)]
+            if not a.no_in_run_pool:
+                # The run's pool dir then only ever holds in-run and band rows
+                # (never the bots-only 'evaluation' fit, which would otherwise
+                # stand in for a skipped in-run rating and mix sources in the
+                # dashboard's last-3 IQM); the Elo line is still printed.
+                command.append('--no-pool-record')
             log = (output/'evaluation.log').open('a')
             pending.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             evaluated_steps.add(counts['game_steps'])
