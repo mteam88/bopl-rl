@@ -196,6 +196,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `teleport_multi_ab.c`: a three-player two-way portal swap with a teammate at
   each query circle. It also verifies sorted-team spawn assignment, authored
   teammate offsets, two simultaneous effects, and entity order.
+- `portal_arrow_ab.c`: a live Bow Arrow crosses a linked Portal Gun pair,
+  mirrors its momentum and collides at the exit on the same pass.
 - `repr_ab.c`: number-representation A/B between two builds of the Rust
   backend (Q32.32 `--features q32` vs the default f64 `Fix`), or .NET vs Rust:
   gate action stream at repeat 1, every observation field compared per tick,

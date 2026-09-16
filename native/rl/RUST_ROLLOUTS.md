@@ -356,7 +356,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   differential is exact. A composed grenade enters on tick 383 in both
   backends; its mapped velocity differs by under 0.0024 units/s because the
   existing ThrowItem2 launch pose is already 0.0185 units apart before it
-  reaches the portal, without changing capture, exit, or later lifecycle.
+  reaches the portal, without changing capture, exit, or later lifecycle. A
+  Bow Arrow composition is exact: the arrow enters on tick 363, maps rightward
+  momentum to the exit normal and is destroyed by the exit wall on that same
+  pass in both backends.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain

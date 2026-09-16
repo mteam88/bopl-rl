@@ -2961,9 +2961,16 @@ lands at the same exit. Its mapped velocity differs by less than 0.0024
 units/second because the existing ThrowItem2 port creates that grenade 0.0185
 units away from NativeAOT before portal capture; the portal resets its position
 and preserves the already-different incoming components, so no capture,
-branch, or lifecycle decision differs. Interactions with the four catalog
-abilities that remain unimplemented have not yet been exercised, so coverage
-is marked partial.
+branch, or lifecycle decision differs. Other portalable object categories still need dedicated public compositions, so
+coverage remains partial.
+
+`portal_arrow_ab.c` uses a second player to release an upward-right Bow Arrow
+through the free-floating mouth. The layer-9 Arrow registers on tick 361,
+crosses from positive to negative x on tick 363, maps its incoming rightward
+velocity to the exit plane's up-left basis, and collides with the exit wall in
+that same pass. All 430 NativeAOT/Rust ticks, including Arrow identity,
+position, mapped velocity, destroyed row and later removal, are exact (with the
+standard one-raw-unit normalized-axis bound).
 
 ### Executable Beam forms, pooled graph and damage (2026-09-15)
 
