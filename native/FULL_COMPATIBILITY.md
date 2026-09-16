@@ -2187,6 +2187,17 @@ scenario is exact under the same ordinary entity bounds and uses fixed four-row
 scratch in the golden; the runtime already uses its capacity-retained cloud
 pool.
 
+`time_stop_poke_capture_ab.c` uses a third player to start Time Stop after a
+Poke Ball captures its victim on tick 696. The ball's position, velocity and
+spin, the victim's cooldowns, invisible/ragdoll flags and pinned position, and
+the 116-pass capture clock remain paused through all 690 stopped passes. The
+victim releases and ejects on tick 1502, exactly 806 ticks after capture. As in
+the existing capture golden, inherited movement history is bounded to
+750,000,000 raw Q32 units (0.175 world units) while every scalar state and
+lifecycle tick is exact. `Player.Position` performs one publication catch-up on
+the second stopped pass after `PokeBall.UpdateSim` has already pinned the
+physical slime to the frozen ball; it remains fixed thereafter.
+
 `time_stop_engine_ab.c` plants a RocketEngine shortly before the global stop.
 The live layer-21 child and its composite rounded platform remain fixed for all
 690 zero-scale passes. `RocketEngine.UpdateSim` returns before advancing the

@@ -365,6 +365,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Smoke, Poke Ball and Tack bodies likewise freeze all motion and resume their
   updater and physics paths together. All four spawned Smoke clouds also hold
   their enter-animation radii and resume the frame clock after restoration.
+  A live Poke Ball capture pauses its ball, pinned victim, cooldowns and
+  116-pass capture clock for exactly 690 passes before restored ejection.
   Frozen DetPhysics boxes
   retain their stop-entry sync through the restoration pass, matching the
   source updater delta captured at the pass start. Cross-ability interactions

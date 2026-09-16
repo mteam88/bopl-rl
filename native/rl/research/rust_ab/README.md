@@ -86,6 +86,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_smoke_cloud_ab.c`: all four spawned Smoke clouds across 690
   stopped passes, preserving identities, positions and enter-animation radii,
   then resuming radius growth on restoration.
+- `time_stop_poke_capture_ab.c`: a live Poke Ball capture beginning shortly
+  before Time Stop, 690 paused capture passes, exact restored expiry/ejection,
+  and the expected one-pass pinned-player publication handoff.
 - `time_stop_engine_ab.c`: an attached live RocketEngine and its composite
   platform across all 690 stopped passes, then restored force-clock and body
   motion.
