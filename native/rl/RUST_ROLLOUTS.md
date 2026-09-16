@@ -126,7 +126,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   held spin/pin countdown and doubled projectile launch force. Gust captures a
   live Arrow in its fixed target set and applies its full Shockwave curve with
   orientation retained from the authored between-impulse Arrow update. Released
-  Grenade, Smoke, Poke Ball, Tack and Mjolnir bodies also match the fixed-set item
+  Grenade, Smoke, Mine, Poke Ball, Tack and Mjolnir bodies also match the fixed-set item
   branch through both initialization-pass impulses and the complete force curve.
   Mjolnir keeps the source's intervening recall update between those two first-pass
   impulses with a fixed per-item accumulator. Gust

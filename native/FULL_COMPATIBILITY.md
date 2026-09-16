@@ -1304,6 +1304,12 @@ schedule. On tick 310 the initialization impulse precedes Mjolnir's recall
 update, while the regular wave impulse follows it; the full curve and resumed
 recall flight remain exact.
 
+`gust_mine_ab.c` adds the released autonomous Mine branch for 340 exact ticks.
+Mine enters on tick 214, registers its circle after the tick-233 form exit, and
+joins Gust's fixed set on that same cast. Both first-pass impulses, the full
+curve, subsequent rigid-body flight, hover clock and arming remain exact through
+tick 340.
+
 `gust_grenade_form_ab.c` covers the complementary held state for 294 exact
 ticks. Grenade and Gust enter on ticks 214 and 224; the wave pushes the grounded
 ThrowItem2 form on tick 231 while its manually initialized payload remains
