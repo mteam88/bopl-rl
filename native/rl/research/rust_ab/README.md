@@ -74,6 +74,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   exact trigger callback at level tick 2506, third-slot replacement, the
   one-pass destroyed row, and the newly instantiated ability collider that
   joins DetPhysics on tick 2507.
+- `ability_pickup_active_form_ab.c`: holds Bow across the same pursuit to
+  verify that an active ability body cannot collect a pickup, then releases,
+  collects it as the ordinary slime and checks same-pass Arrow/acquired-ability
+  hierarchy and next-pass observation order.
 - `black_hole_ability_ab.c`: BlackHoleClap form entry/exit, persistent hole
   spawn and growth, whole-map rounded-platform pull, center-only platform
   destruction, no-effect player kill, and stock-clone reconstruction over 500

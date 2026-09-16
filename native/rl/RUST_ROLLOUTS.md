@@ -219,8 +219,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   three-item spawner in NativeAOT and Rust. Spawned and death-dropped pickups
   execute registration, delayed activation, launch, hover physics, reroll RNG,
   collection, third-slot replacement and deferred acquired-ability
-  registration. Dedicated collection and final-death goldens cover both
-  origins.
+  registration. Active ability bodies are rejected because the pickup callback
+  requires a `SlimeController`; a Bow composition covers that rejection,
+  post-exit collection and the source hierarchy order between its released
+  Arrow and acquired ability. Dedicated collection and final-death goldens
+  cover both origins.
 - All catalog ids 0..38 now have executable behavior in the public backend,
   although the partial entries below still lack interaction branches. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,

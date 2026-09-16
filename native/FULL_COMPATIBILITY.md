@@ -2611,6 +2611,17 @@ unowned. The registration range is reserved in the collision callback and the
 bounded player state carries only a pending hierarchy scalar; no hot-path
 allocation or global lookup was added.
 
+`ability_pickup_active_form_ab.c` holds Bow while pursuing the pickup. The
+pickup's source callback rejects the active ability body because it has no
+`SlimeController`; both backends retain the live pickup while Bow overlaps it.
+After release, the ordinary slime collects Revival at level tick 2561. Bow's
+Arrow and the acquired ability become public together on tick 2562 as ids 17
+and 18, in updater hierarchy order 100000068 then 100000076. Registering pending
+projectiles before pending pickup abilities preserves that source order without
+sorting or per-tick allocation. Layer-13 flight vectors use the established
+100,000-raw-Q32 bound (less than 0.000024 world units); collection, slot state,
+Arrow state, identities, hierarchy and lifecycle ticks are exact.
+
 `ability_pickup_death_drop_ab.c` keeps a three-player match alive after a
 final elimination and compares the dropped pickup through launch, hover, the
 first strict seven-second reroll, pursuit and collection. Both backends drop

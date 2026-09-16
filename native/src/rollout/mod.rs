@@ -3730,8 +3730,12 @@ impl RolloutWorld {
                 self.remove_platform(platform_index);
             }
         }
-        self.register_pending_picked_abilities(data);
         self.register_pending_arrows();
+        // A projectile fired during the prior updater pass has a lower
+        // allocated hierarchy than an ability prefab instantiated by a later
+        // pickup collision callback. Updater initializes in that hierarchy
+        // order, so expose the Arrow before the replacement ability row.
+        self.register_pending_picked_abilities(data);
         self.register_pending_mines(data);
         self.register_pending_guided_missiles(data);
         self.register_pending_missile_explosions(data);
