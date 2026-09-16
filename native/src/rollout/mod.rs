@@ -12481,6 +12481,69 @@ impl RolloutWorld {
                 }
                 if matches!(
                     self.players[player_index].active,
+                    ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
+                ) {
+                    let target = &self.players[player_index];
+                    let scale = target.base.scale;
+                    let (rotation, offset_basis, offset, extents) = match target.active {
+                        ActiveAbility::Freeze => (
+                            target.gun.aim.normalized_angle(),
+                            target.gun.collider_up.perp_cw(),
+                            data.freeze.collider_offset,
+                            data::surface_extents(data.freeze.hurtbox_extents),
+                        ),
+                        ActiveAbility::Blink => (
+                            target.gun.aim.normalized_angle(),
+                            target.gun.collider_up.perp_cw(),
+                            data.blink.collider_offset * scale,
+                            data::surface_extents(data.blink.hurtbox_extents) * scale,
+                        ),
+                        ActiveAbility::GrowthRay => (
+                            target.gun.aim.normalized_angle(),
+                            target.gun.collider_up.perp_cw(),
+                            data.scale_rays.growth.collider_offset * scale,
+                            data::surface_extents(data.scale_rays.growth.hurtbox_extents) * scale,
+                        ),
+                        ActiveAbility::ShrinkRay => (
+                            target.gun.aim.normalized_angle(),
+                            target.gun.collider_up.perp_cw(),
+                            data.scale_rays.shrink.collider_offset * scale,
+                            data::surface_extents(data.scale_rays.shrink.hurtbox_extents) * scale,
+                        ),
+                        ActiveAbility::Duplicator => (
+                            target.gun.aim.normalized_angle(),
+                            target.gun.collider_up.perp_cw(),
+                            data.duplicator.collider_offset * scale,
+                            data::surface_extents(data.duplicator.hurtbox_extents) * scale,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    let form = OrientedBox::from_basis(
+                        target.base.collider.center + offset_basis.complex_mul(offset),
+                        Vec2::angle(rotation),
+                        extents,
+                    );
+                    if crate::physics::contact::circle_box(query, form).is_some() {
+                        let delta = target.base.position - wave.position;
+                        let distance =
+                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                        let force = data.gust.default_force / distance;
+                        let force = if target.base.grounded {
+                            data.gust.grounded_multiplier * delta * force
+                        } else {
+                            delta * force
+                        };
+                        self.players[player_index].base.external_velocity +=
+                            force * Fix::from_int(35);
+                    }
+                    continue;
+                }
+                if matches!(
+                    self.players[player_index].active,
                     ActiveAbility::Grenade
                         | ActiveAbility::Smoke
                         | ActiveAbility::Tack
@@ -13734,10 +13797,11 @@ impl RolloutWorld {
         if slot.base.velocity.length() > gun.constants.max_speed {
             slot.base.velocity = slot.base.velocity.normalized() * gun.constants.max_speed;
         }
-        if !slot.base.grounded {
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        }
+        // PlayerBody is a separate updater and advances even while
+        // PlayerPhysics remains grounded. LateUpdate later restores the live
+        // surface pose, after DetPhysics has synchronized this position.
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
     }
 
     fn fire_freeze(&mut self, index: usize, data: &data::RolloutData) {
@@ -13872,10 +13936,11 @@ impl RolloutWorld {
         if slot.base.velocity.length() > gun.constants.max_speed {
             slot.base.velocity = slot.base.velocity.normalized() * gun.constants.max_speed;
         }
-        if !slot.base.grounded {
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        }
+        // PlayerBody is a separate updater and advances even while
+        // PlayerPhysics remains grounded. LateUpdate later restores the live
+        // surface pose, after DetPhysics has synchronized this position.
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
     }
 
     fn fire_blink(&mut self, index: usize, data: &data::RolloutData) {
@@ -14008,10 +14073,11 @@ impl RolloutWorld {
         if slot.base.velocity.length() > ray.constants.max_speed {
             slot.base.velocity = slot.base.velocity.normalized() * ray.constants.max_speed;
         }
-        if !slot.base.grounded {
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        }
+        // PlayerBody is a separate updater and advances even while
+        // PlayerPhysics remains grounded. LateUpdate later restores the live
+        // surface pose, after DetPhysics has synchronized this position.
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
     }
 
     fn fire_scale_ray(&mut self, index: usize, growth: bool, data: &data::RolloutData) {
@@ -14140,10 +14206,11 @@ impl RolloutWorld {
         if slot.base.velocity.length() > gun.constants.max_speed {
             slot.base.velocity = slot.base.velocity.normalized() * gun.constants.max_speed;
         }
-        if !slot.base.grounded {
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        }
+        // PlayerBody is a separate updater and advances even while
+        // PlayerPhysics remains grounded. LateUpdate later restores the live
+        // surface pose, after DetPhysics has synchronized this position.
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
     }
 
     /// MagnetGun's player form and release flight. Pull/pickup callbacks are
@@ -21034,11 +21101,7 @@ impl RolloutWorld {
                     mine_box.flags = E_ENABLED | E_TRIGGER;
                 }
                 if (alive && mining) || was_active {
-                    let root = if mining {
-                        synced
-                    } else {
-                        exit_position
-                    };
+                    let root = if mining { synced } else { exit_position };
                     let rotation = slot.throw_item.collider_rotation;
                     let basis = Vec2::angle(rotation);
                     let center = root + data.mine.collider_offset.complex_mul(basis);

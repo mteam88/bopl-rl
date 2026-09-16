@@ -1266,6 +1266,17 @@ prior basis for the pass while the later `PlayerBody` publishes the position
 after the new external velocity. Rust stores that prior scalar rotation and
 uses fixed player state only; the following grounded movement remains exact.
 
+`gust_gun_forms_ab.c` adds five 294-tick exact compositions for active Blink,
+Growth, Shrink and Duplicator forms (cast tick 214, Gust tick 224, push tick
+231), plus Freeze (ticks 274, 284 and 291). Each query uses the form's authored
+offset, scale and oriented DPhysics box. These traces expose an ordering hidden
+by the standalone form goldens: Gust's deferred Shockwave initializes before
+the existing gun form, while the form's separate `PlayerBody` updater advances
+even when `PlayerPhysics` remains grounded. Rust now preserves that split with
+no per-tick allocation or comparator tolerance. Magnet remains outside this
+golden because its simultaneous pull field creates an additional composition
+tracked separately.
+
 
 ## Executable Invisibility and streamed actor verification
 

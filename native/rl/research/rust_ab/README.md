@@ -96,6 +96,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   Mjolnir and Poke Ball, including release and Tack's public projectile owner.
 - `gust_mine_form_ab.c`: Gust's one-shot PlayerPhysics force against Mine's
   older ThrowItem form and its split surface-local/PlayerBody movement phase.
+- `gust_gun_forms_ab.c`: exact Gust pushes on active Blink, Growth, Shrink,
+  Duplicator and Freeze forms, including their separate grounded PlayerBody
+  movement after Shockwave initialization.
 - `gust_arrow_ab.c`: a live Bow Arrow captured by Gust, including the split
   init/Arrow-update/wave-update ordering, force curve and projectile flight.
 - `gust_missile_ab.c`: a live guided Missile box captured by Gust, including

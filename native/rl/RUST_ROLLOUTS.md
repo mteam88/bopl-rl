@@ -147,9 +147,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   exact ability-body boundary death. An airborne charging Roll takes the other
   pushable-form path through `PlayerPhysics.AddForce`; its later boundary check
   observes the pose before the lower-hierarchy `PlayerBody` movement pass. Bow,
-  Missile, Mine and the ThrowItem2 forms use the same force path with their
-  oriented box colliders; Grenade, Smoke, Tack, Mjolnir and Poke Ball are each
-  exact through their measured release boundary.
+  Missile, Mine, the ThrowItem2 forms and the Blink/Growth/Shrink/Duplicator/
+  Freeze gun forms use the same force path with their oriented box colliders.
+  The gun-form slice also preserves the source split where Shockwave initializes
+  before a separate grounded `PlayerBody` movement pass. Grenade, Smoke, Tack,
+  Mjolnir and Poke Ball are each exact through their measured release boundary.
   Revival executes the measured QuickSpell cast and exit, registers the
   `RevivePositionIndicator` on the following updater pass, clamps it with the
   authored camera/water bounds, and replaces the marker owned by the same
