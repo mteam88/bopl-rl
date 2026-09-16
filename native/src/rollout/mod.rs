@@ -17283,7 +17283,7 @@ impl RolloutWorld {
                 };
                 let previous = dynamics.scale;
                 let scale = (previous + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                    .clamp(dynamics.min_scale, Fix::from_int(5));
                 let ratio = (Fix::ONE / previous) * scale;
                 dynamics.scale = scale;
                 dynamics.surface_shape_dirty = true;

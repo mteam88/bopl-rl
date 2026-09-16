@@ -492,8 +492,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   unchanged zero-inertia mass and exact boundary/explosion lifecycle. Growth's
   downward Water reflection now also matches the rounded wall it resizes,
   including incremental collider ratios, next-pass body mass changes and the
-  attached rider's live-radius motion. Shrink reflection, remaining non-player,
-  active-form, BlackHole and orb targets remain open.
+  attached rider's live-radius motion. Shrink's corresponding Water-reflected
+  wall case is exact through its authored minimum-scale clamp and complete
+  signed curve. Remaining non-player, active-form, BlackHole and orb targets
+  remain open.
   Blink gun uses the same exact GunTransform form and hitscan ordering. A
   player hit immediately disables the victim, changes the cast cooldown to
   five seconds, and advances a collider-free QuantumTunnel using player time.

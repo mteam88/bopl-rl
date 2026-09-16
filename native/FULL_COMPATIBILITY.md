@@ -2702,6 +2702,13 @@ The negative ScaleChanger is visible on the same tick 243 boundary, then the
 reduced body, fall and platform contacts remain exact through tick 500. Its
 final scale and live body position are asserted independently from Growth.
 
+`shrink_water_wall_ab.c` independently exercises the signed non-player path
+for another 500 exact ticks. It reaches the same reflected wall on tick 241,
+starts shrinking it on tick 242, and clamps at that wall prefab's serialized
+minimum rather than the generic DPhysics default. Incremental collider ratios,
+the following-pass inverse-mass update, the permanently reduced wall and its
+attached rider all remain exact through tick 500.
+
 ### Executable Roll form (2026-09-15)
 
 Catalog id 16 now runs the source `Roll` form rather than advancing an inert

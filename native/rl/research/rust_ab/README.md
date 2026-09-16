@@ -166,6 +166,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `growth_water_wall_ab.c`: a 500-tick downward Growth cast through Water
   reflection into a rounded wall, including the complete non-player scale
   curve, incremental collider/body-mass changes and attached-rider motion.
+- `shrink_water_wall_ab.c`: the corresponding 500-tick Shrink reflection,
+  including the wall's authored minimum-scale clamp, complete signed curve,
+  inverse-mass updates and attached-rider motion.
 - `shrink_airborne_ab.c`: the corresponding 500-tick Shrink trace through its
   negative ScaleChanger, reduced-body fall and platform contacts.
 - `freeze_airborne_hit_ab.c`: a rising ordinary player caught by Freeze through
