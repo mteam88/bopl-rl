@@ -1048,6 +1048,16 @@ inherited grounded form reprojection requires at
 most 8,192 raw Q32 units (less than 0.000002 world units); all callback choices,
 identities, lifecycles and discrete state are exact.
 
+`dash_grapple_form_ab.c` holds Grappling Hook's layer-8 form active with its
+strand registered, then crosses it with the same tick-159 Dash. The form owns
+the nonlethal `PlayerCollision`, receives no ordinary-slime push and remains
+active through Dash exit. Player, slime, telemetry, form and lifecycle state
+match through tick 165. The iterative rope mesh differs by at most 214,741,546
+raw Q32 units (0.0500 world units), within the established 0.16692-world-unit
+Grappling Hook solver bound. The callback completes before the next independent
+hook/player constraint pass, so that later force path is not attributed to this
+Dash slice.
+
 ### Dash ray collision with active Roll (2026-09-15)
 
 Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden

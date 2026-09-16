@@ -36,6 +36,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_grapple_rope_ab.c`: a close-player Grappling Hook attaches a grounded
   victim at its top endpoint before that victim Dashes; gameplay state and all
   rope lifecycle fields match through exit, with bounded long-strand geometry.
+- `dash_grapple_form_ab.c`: a Dash ray crosses another player's active
+  Grappling Hook form while its strand is live, covering the form's nonlethal
+  no-push callback through Dash exit with bounded rope geometry.
 - `dash_bow_ab.c`: a Dash ray crosses an overlapping active Bow hurtbox and
   verifies the form's nonlethal `PlayerCollision` callback does not receive the
   ordinary slime's one-sided push.

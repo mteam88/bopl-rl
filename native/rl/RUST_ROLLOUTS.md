@@ -77,7 +77,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   180-tick compositions. Eighteen remaining active forms cover Engine, Gust,
   Spike, Time Stop, Platform, Revival, Black Hole, Invisibility, Meteor, Throw,
   Push, Tesla, Teleport, Drill, Beam, Rewind, Web Swing and Portal Gun through
-  the same callback.
+  the same callback. A live Grappling Hook form and its strand cover the final
+  non-Dash form callback through Dash exit with bounded solver geometry.
   A released lethal Roll uses its live circle for the same ray dispatch, kills
   the dasher at the near point and owns the credit; its cosmetic trail consumes
   no updater hierarchy because neither trail component is a `MonoUpdatable`.
