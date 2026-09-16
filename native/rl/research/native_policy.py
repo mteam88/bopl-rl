@@ -49,9 +49,11 @@ def build(output=LIBRARY):
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     include = ROOT / "native/artifacts/rl/dependencies" / f"PufferLib-{REVISION}" / "src"
+    temporary = output.with_name(output.name + ".tmp")   # link then rename: a loaded copy keeps its inode
     subprocess.run(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared",
                     "-I" + str(include), str(ROOT / "native/rl/puffer/policy_eval.c"),
-                    "-lm", "-o", str(output)], check=True)
+                    "-lm", "-o", str(temporary)], check=True)
+    os.replace(temporary, output)
     return output
 
 

@@ -4,6 +4,7 @@ Run with the RL virtualenv Python. CUDA builds target RTX 5070 (sm_120).
 """
 import argparse
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import sysconfig
@@ -45,6 +46,18 @@ subprocess.run(["cc", "-O3", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-I" + st
 subprocess.run(["cc", "-O3", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fPIC", "-c",
                 str(HERE.parent / "bopl_rl.c"), "-o", str(out / "bopl_rl.o")], check=True)
 target = source / "pufferlib" / ("_C" + sysconfig.get_config_var("EXT_SUFFIX"))
+
+
+def link(command, output):
+    """Link to a temporary path, then rename over `output`: a running trainer or
+    evaluator keeps the old inode mapped (GNU ld unlinks and recreates the output
+    too, but that is the linker's habit, not a guarantee); an in-place
+    truncation would crash it."""
+    temporary = output.with_name(output.name + ".tmp")
+    subprocess.run([*command, "-o", str(temporary)], check=True)
+    os.replace(temporary, output)
+
+
 if args.device == "cuda":
     import numpy
     nvidia = Path(sysconfig.get_path("purelib")) / "nvidia"
@@ -75,27 +88,26 @@ if args.device == "cuda":
     links = []
     for name in names:
         links.append(str(next(path / name for path in libraries if (path / name).exists())))
-    subprocess.run(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cuda.o"),
-                    str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), *links,
-                    *["-Wl,-rpath," + str(path) for path in libraries], "-l:libnvidia-ml.so.1",
-                    # Driver API: the trainer partitions the GPU between rollout and
-                    # training streams with green contexts (pufferlib.cu bopl_gpu_split_init).
-                    "-l:libcuda.so.1",
-                    "-lm", "-lpthread", "-o", str(target)], check=True)
+    link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cuda.o"),
+          str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), *links,
+          *["-Wl,-rpath," + str(path) for path in libraries], "-l:libnvidia-ml.so.1",
+          # Driver API: the trainer partitions the GPU between rollout and
+          # training streams with green contexts (pufferlib.cu bopl_gpu_split_init).
+          "-l:libcuda.so.1",
+          "-lm", "-lpthread"], target)
 else:
     subprocess.run(["c++", "-O3", "-std=c++17", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-DENV_NAME=bopl",
                 "-DOBS_TENSOR_T=FloatTensor", "-I" + str(overlay), "-I" + str(source / "src"),
                 "-I" + sysconfig.get_path("include"), "-I" + pybind11.get_include(),
                     "-c", str(source / "src/bindings_cpu.cpp"), "-o", str(out / "puffer_cpu.o")], check=True)
-    subprocess.run(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cpu.o"),
-                str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), "-lm", "-lpthread", "-o", str(target)], check=True)
-subprocess.run(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(HERE.parent),
-                str(HERE / "eval_binding.c"), str(HERE.parent / "bopl_rl.c"), "-lm",
-                "-o", str(out / "libbopl_research.so")], check=True)
+    link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cpu.o"),
+          str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), "-lm", "-lpthread"], target)
+link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(HERE.parent),
+      str(HERE / "eval_binding.c"), str(HERE.parent / "bopl_rl.c"), "-lm"], out / "libbopl_research.so")
 # policy_eval.c is the CPU forward pass evaluate.py / the pool rater load through
 # native_policy.py; it shares the head layout with the trainer, so rebuild it in
 # lockstep (overnight-7 lost 4 trials to a stale copy missing _create_aim).
-subprocess.run(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared", "-I" + str(source / "src"),
-                str(HERE / "policy_eval.c"), "-lm", "-o", str(out / "libbopl_policy_eval.so")], check=True)
+link(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared", "-I" + str(source / "src"),
+      str(HERE / "policy_eval.c"), "-lm"], out / "libbopl_policy_eval.so")
 shutil.copyfile(HERE / "bopl.ini", source / "config/bopl.ini")
 print(target)
