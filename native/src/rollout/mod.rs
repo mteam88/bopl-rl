@@ -1269,8 +1269,12 @@ pub struct ScaleChangerState {
     pub born_tick: u32,
     pub victim: usize,
     /// Zero targets a player slot, one a guided Missile pool slot, two a
-    /// rounded-platform slot, three a thrown item and four a Smoke cloud.
+    /// rounded-platform slot, three a thrown item, four a Smoke cloud and
+    /// five an otherwise modeled collider entity.
     pub target_kind: u8,
+    /// Generic entity identity and shared FixTransform scale at creation.
+    pub entity_id: u32,
+    pub current_scale: Fix,
     pub time: Fix,
     pub growth: bool,
 }
@@ -1421,8 +1425,9 @@ pub struct BeamState {
 pub struct BeamOrbState {
     pub active: bool,
     pub enabled: bool,
-    /// Orb.SetOrbType(blink), applied by the first Blink-gun hit.
-    pub blink_converted: bool,
+    /// Orb.OrbType: zero is the prefab's white/default type, one Blink, two
+    /// Growth and three Shrink. Ray guns mutate this before applying effects.
+    pub orb_type: u8,
     pub born_tick: u32,
     pub entity: Option<usize>,
     pub hierarchy_base: u32,
@@ -10219,7 +10224,7 @@ impl RolloutWorld {
         self.beam_orbs.push(BeamOrbState {
             active: true,
             enabled: false,
-            blink_converted: false,
+            orb_type: 0,
             born_tick: self.tick,
             entity: Some(entity),
             hierarchy_base,
@@ -15250,7 +15255,7 @@ impl RolloutWorld {
             let offset = ray.firepoint_offset * slot.base.scale;
             slot.base.position + slot.base.up * offset.y + aim * offset.x
         };
-        self.shoot_scale_ray(firepoint, aim, growth, data);
+        self.shoot_scale_ray(firepoint, aim, index, growth, data);
 
         let slot = &mut self.players[index];
         if grounded {
@@ -16970,16 +16975,18 @@ impl RolloutWorld {
         &mut self,
         origin: Vec2,
         direction: Vec2,
+        caster: usize,
         growth: bool,
         data: &data::RolloutData,
     ) {
-        self.shoot_scale_ray_pass(origin, direction, growth, data, false);
+        self.shoot_scale_ray_pass(origin, direction, caster, growth, data, false);
     }
 
     fn shoot_scale_ray_pass(
         &mut self,
         origin: Vec2,
         direction: Vec2,
+        caster: usize,
         growth: bool,
         data: &data::RolloutData,
         already_hit_water: bool,
@@ -16995,210 +17002,117 @@ impl RolloutWorld {
         } else {
             ray.collision_mask
         };
-        let terrain = terrain!(self);
-        let wall_hit = (mask & (1 << LAYER_WALL) != 0)
-            .then(|| crate::world::closest(terrain, origin, direction, max_distance, None))
-            .flatten();
-        let mut nearest = wall_hit.map_or(max_distance, |(_, distance, _)| distance);
-        let mut platform_victim = wall_hit.map(|(index, _, _)| index);
-        let mut victim = None;
-        let mut missile_victim = None;
-        let mut item_victim = None;
-        let mut cloud_victim = None;
-        let mut water_hit = false;
-        if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
-            let map = &data.maps[self.map];
-            let water = OrientedBox::from_basis(
-                map.water_position,
-                Vec2::RIGHT,
-                data::surface_extents(map.water_extents),
-            );
-            if let Some(hit) = water.raycast(origin, direction)
-                && hit.near < nearest
-                && hit.near <= max_distance
-            {
-                nearest = hit.near;
-                water_hit = true;
-                platform_victim = None;
-                victim = None;
-                missile_victim = None;
-                item_victim = None;
-                cloud_victim = None;
-            }
+        // ShootScaleChange performs an unmasked rounded-rectangle point
+        // query before its ordinary masked raycast.
+        let point_hit = self
+            .entities
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, row)| {
+                row.kind == 2
+                    && row.flags & E_ACTIVE != 0
+                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
+            })
+            .map(|(entity, _)| DuplicatorRayHit {
+                entity,
+                distance: Fix::ZERO,
+                position: origin,
+            });
+        let hit = point_hit.or_else(|| {
+            self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
+        });
+
+        if !already_hit_water
+            && origin.y
+                <= data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y
+        {
+            self.begin_scale_change(caster, 0, growth, ray.changer_updatable_count);
+            return;
         }
-        if mask & (1 << LAYER_PLAYER) != 0 {
-            for target in 0..self.players.len() {
-                if !self.playable(target) {
-                    continue;
-                }
-                let slot = &self.players[target];
-                let entity = match slot.active {
-                    ActiveAbility::None => slot.body_entity,
-                    ActiveAbility::Dash => slot.dash_entity,
-                    ActiveAbility::Bow => slot.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => slot.throw_entity,
-                    ActiveAbility::Mine => slot.mine_entity,
-                    ActiveAbility::Rock => slot.rock_entity,
-                    ActiveAbility::Roll => slot.roll_entity,
-                    ActiveAbility::Meteor => slot.meteor_entity,
-                    ActiveAbility::Push => slot.push_entity,
-                    ActiveAbility::Freeze => slot.freeze_entity,
-                    ActiveAbility::Blink => slot.blink_entity,
-                    ActiveAbility::GrowthRay => slot.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => slot.shrink_ray_entity,
-                    ActiveAbility::Duplicator => slot.duplicator_entity,
-                    ActiveAbility::Magnet => slot.magnet_entity,
-                    ActiveAbility::Spike => slot.spike_entity,
-                    ActiveAbility::Engine => slot.engine_entity,
-                    ActiveAbility::Tesla => slot.tesla_entity,
-                    ActiveAbility::TimeStop => slot.time_stop_entity,
-                    ActiveAbility::Gust => slot.gust_entity,
-                    ActiveAbility::Revival => slot.revival_entity,
-                    ActiveAbility::BlackHole => slot.black_hole_entity,
-                    ActiveAbility::Throw => slot.macho_throw_entity,
-                    ActiveAbility::Drill => slot.drill_entity,
-                    ActiveAbility::Beam => slot.beam_entity,
-                    ActiveAbility::Platform => slot.circle_entity,
-                };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let hit = if row.kind == 0 {
-                    Circle {
-                        center,
-                        radius: Fix::from_raw(row.radius),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near)
-                } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    OrientedBox {
-                        center,
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(
-                            Fix::ONE / right.length(),
-                            Fix::ONE / up.length(),
-                        ),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near)
-                };
-                if let Some(distance) = hit
-                    && distance < nearest
-                    && distance <= max_distance
-                {
-                    nearest = distance;
-                    victim = Some(target);
-                    missile_victim = None;
-                    item_victim = None;
-                    cloud_victim = None;
-                    platform_victim = None;
-                    water_hit = false;
-                }
-            }
-        }
-        if mask & (1 << data.missile.spark_layer) != 0 {
-            for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-                if !missile.active || !missile.registered {
-                    continue;
-                }
-                let collider = OrientedBox::from_basis(
-                    missile.position,
-                    Vec2::angle(missile.body.orientation),
-                    data.missile.spark_extents * missile.scale,
+        let Some(hit) = hit else {
+            return;
+        };
+        if hit.entity == usize::MAX {
+            if !already_hit_water {
+                self.shoot_scale_ray_pass(
+                    hit.position,
+                    Vec2::new(direction.x, -direction.y),
+                    caster,
+                    growth,
+                    data,
+                    true,
                 );
-                if let Some(hit) = collider.raycast(origin, direction)
-                    && hit.near < nearest
-                    && hit.near <= max_distance
-                {
-                    nearest = hit.near;
-                    victim = None;
-                    missile_victim = Some(missile_index);
-                    item_victim = None;
-                    cloud_victim = None;
-                    platform_victim = None;
-                    water_hit = false;
-                }
+            }
+            return;
+        }
+        let entity = hit.entity;
+        let layer = self.entities[entity].layer;
+
+        if layer == 23 {
+            if let Some(hole_index) = self
+                .black_holes
+                .iter()
+                .position(|hole| hole.active && hole.entity == Some(entity))
+            {
+                let inverse = Fix::from_raw(if growth { 85_899_344 } else { -85_899_344 });
+                Self::black_hole_grow(&mut self.black_holes[hole_index], inverse, Fix::ZERO, data);
+            }
+            return;
+        }
+        if layer == 26
+            && let Some(orb) = self
+                .beam_orbs
+                .iter_mut()
+                .find(|orb| orb.active && orb.entity == Some(entity))
+        {
+            let wanted = if growth { 2 } else { 3 };
+            if orb.orb_type != wanted {
+                orb.orb_type = wanted;
+                return;
             }
         }
-        if mask & (1 << LAYER_ITEM) != 0 {
-            for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
-                if !item.active || item.entity.is_none() {
-                    continue;
-                }
-                if let Some(hit) = (Circle {
-                    center: item.position,
-                    radius: thrown_item_radius(data, item),
-                })
-                .raycast(origin, direction)
-                    && hit.near < nearest
-                    && hit.near <= max_distance
-                {
-                    nearest = hit.near;
-                    victim = None;
-                    missile_victim = None;
-                    item_victim = Some(item_index);
-                    cloud_victim = None;
-                    platform_victim = None;
-                    water_hit = false;
-                }
-            }
-        }
-        if mask & (1 << data.smoke.cloud_layer) != 0 {
-            for (cloud_index, cloud) in self.smoke_clouds.iter().copied().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered Smoke collider");
-                if self.entities[entity].flags & E_ENABLED == 0 {
-                    continue;
-                }
-                if let Some(hit) = (Circle {
-                    center: cloud.position,
-                    radius: Fix::from_raw(self.entities[entity].radius),
-                })
-                .raycast(origin, direction)
-                    && hit.near < nearest
-                    && hit.near <= max_distance
-                {
-                    nearest = hit.near;
-                    victim = None;
-                    missile_victim = None;
-                    item_victim = None;
-                    cloud_victim = Some(cloud_index);
-                    platform_victim = None;
-                    water_hit = false;
-                }
-            }
-        }
-        if water_hit {
-            self.shoot_scale_ray_pass(
-                origin + direction * nearest,
-                Vec2::new(direction.x, -direction.y),
-                growth,
-                data,
-                true,
-            );
-        } else if let Some(victim) = victim {
+        if let Some(victim) = self
+            .players
+            .iter()
+            .position(|slot| self.playable_slot(slot) && Self::blink_player_entity(slot) == entity)
+        {
             self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
-        } else if let Some(victim) = missile_victim {
-            self.begin_scale_change(victim, 1, growth, ray.changer_updatable_count);
-        } else if let Some(victim) = item_victim {
-            self.begin_scale_change(victim, 3, growth, ray.changer_updatable_count);
-        } else if let Some(victim) = cloud_victim {
-            self.begin_scale_change(victim, 4, growth, ray.changer_updatable_count);
-        } else if let Some(victim) = platform_victim {
-            self.begin_scale_change(victim, 2, growth, ray.changer_updatable_count);
+            return;
         }
+        if let Some(victim) = self
+            .guided_missiles
+            .iter()
+            .position(|target| target.active && target.entity == Some(entity))
+        {
+            self.begin_scale_change(victim, 1, growth, ray.changer_updatable_count);
+            return;
+        }
+        if let Some(victim) = self
+            .platform_entities
+            .iter()
+            .position(|&target| target == entity)
+        {
+            self.begin_scale_change(victim, 2, growth, ray.changer_updatable_count);
+            return;
+        }
+        if let Some(victim) = self
+            .thrown_items
+            .iter()
+            .position(|target| target.active && target.entity == Some(entity))
+        {
+            self.begin_scale_change(victim, 3, growth, ray.changer_updatable_count);
+            return;
+        }
+        if let Some(victim) = self
+            .smoke_clouds
+            .iter()
+            .position(|target| target.active && target.entity == Some(entity))
+        {
+            self.begin_scale_change(victim, 4, growth, ray.changer_updatable_count);
+            return;
+        }
+        self.begin_scale_change_entity(entity, growth, ray.changer_updatable_count);
     }
 
     fn begin_scale_change(
@@ -17214,6 +17128,30 @@ impl RolloutWorld {
             born_tick: self.tick,
             victim,
             target_kind,
+            entity_id: 0,
+            current_scale: Fix::ONE,
+            time: Fix::ZERO,
+            growth,
+        };
+        if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
+            self.scale_changers[free] = effect;
+        } else {
+            self.scale_changers.push(effect);
+        }
+    }
+
+    fn begin_scale_change_entity(&mut self, entity: usize, growth: bool, updatable_count: u32) {
+        if entity >= self.entities.len() || self.entities[entity].flags & E_ACTIVE == 0 {
+            return;
+        }
+        self.next_spawn_hierarchy += updatable_count;
+        let effect = ScaleChangerState {
+            active: true,
+            born_tick: self.tick,
+            victim: entity,
+            target_kind: 5,
+            entity_id: self.entities[entity].id,
+            current_scale: Fix::ONE,
             time: Fix::ZERO,
             growth,
         };
@@ -17345,9 +17283,9 @@ impl RolloutWorld {
                 .beam_orbs
                 .iter_mut()
                 .find(|orb| orb.active && orb.entity == Some(entity))
-            && !orb.blink_converted
+            && orb.orb_type != 1
         {
-            orb.blink_converted = true;
+            orb.orb_type = 1;
             return;
         }
         self.begin_blink_object_tunnel(entity, data.blink.wall_duration, data);
@@ -18004,6 +17942,42 @@ impl RolloutWorld {
                 slot.player_scale =
                     (slot.player_scale + delta).clamp(Fix::from_f32(0.3), Fix::from_int(3));
                 self.scale_changers[index].time += DT;
+                continue;
+            }
+            if effect.target_kind == 5 {
+                if effect.victim >= self.entities.len()
+                    || self.entities[effect.victim].id != effect.entity_id
+                    || self.entities[effect.victim].flags & (E_REMOVED | E_DESTROYED) != 0
+                {
+                    self.scale_changers[index].active = false;
+                    continue;
+                }
+                if self.player_time_scale < Fix::from_f32(0.01) {
+                    continue;
+                }
+                let time = effect.time + DT;
+                let row = &mut self.entities[effect.victim];
+                let multiplier = if row.inverse_mass > 0
+                    && Fix::from_raw(row.inverse_mass) * effect.current_scale
+                        > ray.inverse_mass_before_big
+                {
+                    ray.small_non_players_multiplier
+                } else {
+                    ray.multiplier
+                };
+                let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
+                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                let ratio = scale / effect.current_scale;
+                row.radius = (Fix::from_raw(row.radius) * ratio).raw();
+                row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
+                row.right_y = (Fix::from_raw(row.right_y) * ratio).raw();
+                row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
+                row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
+                if row.inverse_mass > 0 {
+                    row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
+                }
+                self.scale_changers[index].time = time;
+                self.scale_changers[index].current_scale = scale;
                 continue;
             }
             if effect.target_kind == 1

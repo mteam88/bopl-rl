@@ -549,8 +549,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   including incremental collider ratios, next-pass body mass changes and the
   attached rider's live-radius motion. Shrink's corresponding Water-reflected
   wall case is exact through its authored minimum-scale clamp and complete
-  signed curve. Remaining non-player, active-form, BlackHole and orb targets
-  remain open.
+  signed curve. The full ray query now also preserves the unmasked rounded-
+  rectangle muzzle check, complete serialized mask, submerged self-hit, Water
+  reflection, all active player forms, generic item/projectile/pickup/weapon/
+  spell targets, first-hit orb conversion and concurrent ScaleChangers. Growth
+  against a live Black Hole is exact through the prefab's 0.0199999998 inverse-
+  mass argument, mass/velocity update and Hermite radius growth over a 520-tick
+  broad differential. Target-specific spell scaling and the remaining translated
+  generic targets are tracked as unmeasured in `ABILITY_PORT_GAPS.md`.
   Blink gun uses the same exact GunTransform form and hitscan ordering. A
   player hit immediately disables the victim, changes the cast cooldown to
   five seconds, and advances a collider-free QuantumTunnel using player time.

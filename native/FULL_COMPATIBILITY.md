@@ -3835,3 +3835,29 @@ body value and telemetry field matches. The existing grounded-player,
 airborne-player and reflected-wall differentials remain exact. Other translated
 target classes are listed as unmeasured in `rl/ABILITY_PORT_GAPS.md`; they do
 not justify separate narrow probes unless a later broad episode diverges.
+
+
+### Complete Growth ray target routing (2026-09-16)
+
+Catalog id 8 now translates the remaining `ShootScaleChange` branches in one
+path. Before its ordinary ray, the cast performs Unity's unmasked rounded-
+rectangle muzzle point-check. The ray then uses the complete serialized mask
+and DetPhysics shape order, reflects once from Water, treats a submerged muzzle
+as a self-hit, and routes every active player form plus modeled items,
+projectiles, pickups, platforms, Smoke clouds, spells, weapons, orbs and rigid
+affectors. Each cast allocates from retained per-world `ScaleChanger` storage;
+concurrent effects retain independent clocks and non-player effects stop under
+Time Stop. Generic collider scaling updates the exported shape and inverse mass
+without allocating in the tick path. Target-specific `ISpell.AddScale` behavior
+for marker-like spells remains explicitly unverified in the gap ledger.
+
+The RigidBodyAffector path calls Black Hole growth directly rather than creating
+a ScaleChanger. Rust uses the prefab's exact raw Q32 inverse-mass argument
+85,899,344 (0.0199999998), then preserves `BlackHole.Grow` mass, momentum, target
+size and growth-clock reset semantics. `growth_broad_ab.c` compares 520
+optimized-Q32 NativeAOT/Rust ticks through independent hole casting, Growth's
+ray hit, and the resulting Hermite radius change from 5,425,903,114 to
+10,957,189,770 raw units. Every compared header, player/slime record, entity
+identity, hierarchy, transform, body value, lifecycle boundary and telemetry
+field matches within the pre-existing Black Hole spatial bound. Existing exact
+player, airborne, Missile and reflected-wall differentials remain unchanged.

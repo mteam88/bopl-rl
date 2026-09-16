@@ -174,6 +174,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `growth_airborne_ab.c`: a 500-tick Growth trace that hits an ordinary player
   while rising, then follows the complete ScaleChanger curve, enlarged fall
   and platform contacts.
+- `growth_broad_ab.c`: a 520-tick combined Growth/Black Hole composition that
+  covers the full RigidBodyAffector ray branch, serialized 0.0199999998 inverse-
+  mass absorption and the resulting Hermite radius growth.
 - `growth_water_wall_ab.c`: a 500-tick downward Growth cast through Water
   reflection into a rounded wall, including the complete non-player scale
   curve, incremental collider/body-mass changes and attached-rider motion.
