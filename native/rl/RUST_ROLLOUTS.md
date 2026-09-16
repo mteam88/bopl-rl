@@ -125,7 +125,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   live Arrow through the source's stronger layer-9 pull, nearest-circle pickup,
   held spin/pin countdown and doubled projectile launch force. Gust captures a
   live Arrow in its fixed target set and applies its full Shockwave curve with
-  orientation retained from the authored between-impulse Arrow update. Gust
+  orientation retained from the authored between-impulse Arrow update. Released
+  Grenade and Smoke bodies also match the fixed-set item branch through both
+  initialization-pass impulses and the complete force curve. Gust
   also queries the live aim-oriented Bow form, the grounded controlling
   Missile form, and the grounded held-Grenade form, applying their one-shot
   PlayerPhysics forces before the later form movement. Missile, Mine and all

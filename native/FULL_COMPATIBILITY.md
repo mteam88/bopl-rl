@@ -1277,6 +1277,14 @@ pooled rigid-body/contact path. Every public field matches within the existing
 64-raw-Q32 grouped transform bound; the first horizontal impulse occurs on the
 same tick and all later item positions and velocities match NativeAOT.
 
+`gust_smoke_ab.c` repeats the released-item path for Smoke over 340 exact ticks.
+Smoke enters on tick 214, releases on tick 243, and is captured when Gust enters
+on that same pass; the first observable horizontal impulse occurs on tick 250.
+The fixed target identity, both initialization-pass impulses, complete force
+curve and later pooled-body flight match NativeAOT. This separately verifies
+that the generic layer-10 item branch is not relying on Grenade's later fuse or
+collision callbacks.
+
 `gust_grenade_form_ab.c` covers the complementary held state for 294 exact
 ticks. Grenade and Gust enter on ticks 214 and 224; the wave pushes the grounded
 ThrowItem2 form on tick 231 while its manually initialized payload remains

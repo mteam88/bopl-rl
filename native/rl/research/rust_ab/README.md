@@ -202,6 +202,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   field for 360 ticks; static authored geometry allows one Q32.32 least bit.
 - `gust_grenade_ab.c`: a released Grenade captured by Gust's fixed target set,
   both time-zero impulses, the complete force curve and subsequent item flight.
+- `gust_smoke_ab.c`: the same fixed-set released-item path for Smoke, including
+  same-pass Gust entry/capture, both initialization impulses and pooled flight.
 - `gust_grenade_form_ab.c`: Gust's one-shot PlayerPhysics force against the
   grounded Grenade form while its manually initialized payload is still held.
 - `gust_throw_forms_ab.c`: the same exact active-form branch for Smoke, Tack,
