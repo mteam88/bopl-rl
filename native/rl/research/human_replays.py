@@ -11,7 +11,7 @@ protocol / state ABI v2; HEAD's bopl_rl.c was moved to v3 for the .NET/Rust sims
 (3721f8a) without a Unity rebuild, so this module compiles the pre-v3 bopl_rl.c from
 git into native/artifacts/rl/libbopl_rl_v2.so and reads the v2 state layout itself.
 
-Output: DIR/games/<session>-r<round>.json.gz, one per round, with the games.jsonl row,
+Output: DIR/games/<session>-r<round>-<N>.json.gz (the archived replay's name), one per round, with the games.jsonl row,
 the replay header and one frame per level tick (players, slimes, arrows, platforms,
 telemetry and the inputs applied that tick); DIR/games.jsonl is the manifest with the
 fidelity check per round.
@@ -219,12 +219,17 @@ def replay_round(lib, row, replay_dir, log):
     return meta, frames, check
 
 
+def round_name(row):
+    """Round numbers restart with every match inside a session; the archived replay name is unique."""
+    return os.path.basename(row['replay'])[:-len('.rep')]
+
+
 def _worker(args):
     out, rows, replay_dir, index = args
     lib = load_lib()
     results = []
     for row in rows:
-        name = f"{row['session']}-r{row['round']}"
+        name = round_name(row)
         started = time.monotonic()
         try:
             meta, frames, check = replay_round(lib, row, replay_dir, out / 'workers' / f'w{index}.log')
@@ -255,7 +260,7 @@ def extract(args):
                     done.add(r['name'])
             except ValueError:
                 pass
-    todo = [r for r in rows if f"{r['session']}-r{r['round']}" not in done]
+    todo = [r for r in rows if round_name(r) not in done]
     print(f'{len(rows)} rounds, {len(todo)} to replay, {args.workers} workers', flush=True)
     build_v2()
     buckets = [todo[i::args.workers] for i in range(args.workers)]
