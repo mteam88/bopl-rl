@@ -57,6 +57,25 @@ def fourier_aim_matrix(harmonics, dtype=torch.float32):
     return m.to(dtype)
 
 
+class _RoundedLinear(torch.autograd.Function):
+    """x @ w.T with both operands rounded to `dtype` (fp32 accumulation), and the
+    backward's operands rounded the same way: what a bf16 tensor-core GEMM
+    with fp32 output computes for the value and both gradients."""
+
+    @staticmethod
+    def forward(ctx, x, w, dtype):
+        ctx.save_for_backward(x, w)
+        ctx.dtype = dtype
+        q = lambda t: t.to(dtype).to(t.dtype)
+        return q(x) @ q(w).t()
+
+    @staticmethod
+    def backward(ctx, grad):
+        x, w = ctx.saved_tensors
+        q = lambda t: t.to(ctx.dtype).to(t.dtype)
+        return q(grad) @ q(w), q(grad).t() @ q(x), None
+
+
 class PolicyV4:
     """Views of one flat weight buffer plus the forward pass. `weights` may be a
     numpy array or a torch tensor; pass a tensor with requires_grad to take
@@ -84,9 +103,19 @@ class PolicyV4:
         # bf16 activations); set to torch.bfloat16 to round the same values so max
         # pooling picks the same winners (puffer/check_v4.py). None: fp32 throughout.
         self.set_dtype = None
+        # The trainer's critic GEMMs (critic_in, critic_b1, critic_b2) take bf16
+        # operands with fp32 accumulation, forward and backward; torch.bfloat16
+        # rounds the same operands (_linear). None: fp32 throughout.
+        self.critic_dtype = None
 
     def _q(self, x):
         return x.to(self.set_dtype).to(x.dtype) if self.set_dtype is not None else x
+
+    def _linear(self, x, w):
+        """x @ w.T, with the operands (and, backward, the gradient) rounded to critic_dtype."""
+        if self.critic_dtype is None:
+            return x @ w.t()
+        return _RoundedLinear.apply(x, w, self.critic_dtype)
 
     @property
     def state_shape(self):
@@ -138,8 +167,8 @@ class PolicyV4:
         z_in = y.detach() if self.shape["critic_detach"] else y
         if self.shape["critic_privileged"]:
             z_in = torch.cat([z_in, obs[:, layout.V4_PRIVILEGED_OFFSET:layout.V4_PRIVILEGED_OFFSET + layout.V4_PRIVILEGED]], -1)
-        z = layer_norm(z_in) @ self.w["critic_in"].t()
-        z = z + torch.relu(layer_norm(z) @ self.w["critic_b1"].t()) @ self.w["critic_b2"].t()
+        z = self._linear(layer_norm(z_in), self.w["critic_in"])
+        z = z + self._linear(torch.relu(self._linear(layer_norm(z), self.w["critic_b1"])), self.w["critic_b2"])
         return layer_norm(z) @ self.w["critic_out"].t()
 
     def step_raw(self, obs, state):

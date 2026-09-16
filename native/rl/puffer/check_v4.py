@@ -111,6 +111,7 @@ def oracle(obs, flat_trainer, hidden, grad_logits, grad_value, budget=None):
     weights = torch.tensor(to_checkpoint(flat_trainer, hidden), requires_grad=True)
     net = policy_v4.PolicyV4(weights, hidden, 1, 4, 0, **SHAPE)
     net.set_dtype = torch.bfloat16
+    net.critic_dtype = torch.bfloat16
     x = torch.from_numpy(obs[:, :layout.V4_OBS_SIZE])
     flat = torch.relu(x[:, :layout.V4_FLAT] @ net.w["flat"].t())
     pools = [net.encode_set(x, *spec) for spec in layout.V4_SETS]
@@ -344,6 +345,28 @@ def cpu_case(rng, hidden=64, layers=2, steps=3, **shape):
     return result
 
 
+def load_library(library_path):
+    """The harness .so with its ctypes signatures."""
+    library = ctypes.CDLL(str(library_path))
+    f32 = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
+    i32 = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
+    library.bopl_v4_check_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    library.bopl_v4_check_create.restype = ctypes.c_void_p
+    library.bopl_v4_check_error.restype = ctypes.c_char_p
+    library.bopl_v4_check_weight_count.argtypes = [ctypes.c_void_p]
+    library.bopl_v4_check_weight_count.restype = ctypes.c_long
+    library.bopl_v4_check_out_width.argtypes = [ctypes.c_void_p]
+    library.bopl_v4_check_param_shapes.argtypes = [ctypes.c_void_p, np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"), ctypes.c_int]
+    library.bopl_v4_check_run.argtypes = [ctypes.c_void_p, *([f32] * 7), i32, ctypes.c_int]
+    library.bopl_v4_check_run.restype = ctypes.c_int
+    library.bopl_v4_check_gather.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, i32]
+    library.bopl_v4_check_profile.argtypes = [ctypes.c_void_p, ctypes.c_char_p, np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS"), ctypes.c_int]
+    library.bopl_v4_check_time.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    library.bopl_v4_check_time.restype = ctypes.c_double
+    library.bopl_v4_check_close.argtypes = [ctypes.c_void_p]
+    return library
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "native/artifacts/rl/native-migration-audit/cuda-v4")
@@ -372,31 +395,17 @@ def main():
             key, value = item.split("=")
             SHAPE[key] = int(value)
             os.environ[env[key]] = value
-    library = ctypes.CDLL(str(library_path))
-    f32 = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
-    i32 = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
-    library.bopl_v4_check_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    library.bopl_v4_check_create.restype = ctypes.c_void_p
-    library.bopl_v4_check_error.restype = ctypes.c_char_p
-    library.bopl_v4_check_weight_count.argtypes = [ctypes.c_void_p]
-    library.bopl_v4_check_weight_count.restype = ctypes.c_long
-    library.bopl_v4_check_out_width.argtypes = [ctypes.c_void_p]
-    library.bopl_v4_check_param_shapes.argtypes = [ctypes.c_void_p, np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS"), ctypes.c_int]
-    library.bopl_v4_check_run.argtypes = [ctypes.c_void_p, *([f32] * 7), i32, ctypes.c_int]
-    library.bopl_v4_check_run.restype = ctypes.c_int
-    library.bopl_v4_check_gather.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, i32]
-    library.bopl_v4_check_profile.argtypes = [ctypes.c_void_p, ctypes.c_char_p, np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS"), ctypes.c_int]
-    library.bopl_v4_check_time.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-    library.bopl_v4_check_time.restype = ctypes.c_double
-    library.bopl_v4_check_close.argtypes = [ctypes.c_void_p]
+    library = load_library(library_path)
     torch.set_num_threads(4)
     rng = np.random.default_rng(73)
     report = dict(schema=1, pass_all=True)
     if args.time_only:
         print(json.dumps(timing(library, rng, batches=[int(b) for b in args.time_only.split(",")]), indent=1))
         return
+    # 1024 rows at density 0.5 puts every set's capacity past bopl_v4.cu's
+    # LT_AUX_MIN_ROWS, covering the RELU_AUX / DRELU epilogue path the trainer runs.
     report["random"] = [compare(library, random_obs(rng, batch, density), hidden, rng)
-                        for batch, hidden, density in ((1, 64, 0.5), (3, 128, 0.5), (65, 64, 0.3), (257, 256, 0.3), (130, 64, 0.6))]
+                        for batch, hidden, density in ((1, 64, 0.5), (3, 128, 0.5), (65, 64, 0.3), (257, 256, 0.3), (130, 64, 0.6), (1024, 256, 0.5))]
     report["empty_sets"] = compare(library, random_obs(rng, 5, density=0.0), 64, rng)
     report["crowded"] = compare(library, crowded_fixture(args.output), 64, rng)
     report["graph"] = compare(library, random_obs(rng, 33), 128, rng, graph=True)
