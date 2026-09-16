@@ -185,6 +185,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   three-copy fan, single deferred `Mine.Init` RNG sample per clone, arming and
   hover trajectories, reverse-order final shake and simultaneous 1,800-pass
   expiry over 2,200 exact ticks.
+- `mine_pickup_ab.c`: the first authored AbilitySpawner pickup across Mine's
+  form and autonomous-item continuation, post-exit collection, slot-three
+  replacement, deferred Revival registration, same-pass held-button cast,
+  marker creation and QuickSpell exit over 2,524 ticks.
 - `duplicator_pickup_ab.c`: deterministic AbilitySpawner collection replaces
   equipped Duplicator in slot three, then the acquired Revival registers,
   casts, creates its marker and exits exactly.

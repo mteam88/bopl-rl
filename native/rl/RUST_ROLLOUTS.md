@@ -314,7 +314,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   hover, arming, scan/chase, player ignition, anticipation, owner-credited
   MineExplosion kill, and stock recovery path. Chase normalization and the
   resulting shockwave response differ only by bounded sub-Q32-vector rounding;
-  duplication, scaling, boundaries, magnet holding, and non-player igniters remain open.
+  the form collider now keeps Unity's direct FixTransform offset basis and no
+  longer needs its former 5,000/8,192-raw positional allowance. A 2,524-tick
+  pickup composition also matches released-Mine continuation, post-exit slot
+  replacement, deferred Revival registration, same-pass held-button activation,
+  marker creation and exit. Scaling, boundaries, magnet holding, active-form
+  pickup overlap and non-player igniters remain open.
   Rock executes the separate rigid circle body, terrain and Rock/Rock impulses,
   same-tick lethal player callbacks, authored pulse and exit curves, and exact
   stock/Revival collider reconstruction. The live collider retains the source

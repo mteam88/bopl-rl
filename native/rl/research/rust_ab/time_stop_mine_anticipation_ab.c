@@ -1,8 +1,8 @@
 /* Time Stop + Mine golden: collision-triggered anticipation, frozen item
  * clock/body, then restored MineExplosion registration.
  *
- * The Mine form collider center is allowed 5,000 raw Q32 units (1.17e-6)
- * because PlayerPhysics.SyncPhysicsTo repeats the grounded surface projection.
+ * The Mine form collider center now preserves FixTransform's exact offset
+ * basis separately from the angle-derived box axes.
  * Other entity position, velocity and rotation fields allow 256 raw units
  * (5.96e-8) after chase normalization and its shockwave; discrete state,
  * collider geometry, discrete player/slime state and telemetry remain exact;
@@ -21,7 +21,7 @@ static int64_t distance(int64_t a, int64_t b) {
 static int entity_equal(const BoplRlEntity *a, const BoplRlEntity *b) {
     return a->id == b->id && a->kind == b->kind && a->layer == b->layer &&
            a->owner == b->owner && a->flags == b->flags &&
-           a->hierarchy == b->hierarchy && distance(a->x, b->x) <= (a->hierarchy == 100000015 ? 5000 : 256) && distance(a->y, b->y) <= (a->hierarchy == 100000015 ? 5000 : 256) &&
+           a->hierarchy == b->hierarchy && distance(a->x, b->x) <= 256 && distance(a->y, b->y) <= 256 &&
            distance(a->vx, b->vx) <= 256 && distance(a->vy, b->vy) <= 256 &&
            distance(a->right_x, b->right_x) <= 1 &&
            distance(a->right_y, b->right_y) <= 1 &&

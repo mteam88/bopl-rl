@@ -654,6 +654,10 @@ pub struct ThrowItemState {
     pub direction: Vec2,
     pub item: Option<usize>,
     pub collider_rotation: Fix,
+    /// FixTransform.right used for the collider offset. Ground alignment
+    /// assigns this vector directly, while DPhysicsBox derives its axes from
+    /// `collider_rotation`; keep both because the angle round trip is lossy.
+    pub collider_right: Vec2,
 }
 
 #[derive(Clone, Copy)]
@@ -5736,6 +5740,7 @@ impl RolloutWorld {
                             grounded,
                             direction: Vec2::UP,
                             collider_rotation: slot.base.rotation,
+                            collider_right: slot.base.up.perp_cw(),
                             ..ThrowItemState::default()
                         };
                         slot.base.position = form_position;
@@ -12858,7 +12863,12 @@ impl RolloutWorld {
                     let target = &self.players[player_index];
                     let basis = Vec2::angle(target.base.rotation);
                     let form = OrientedBox::from_basis(
-                        target.base.position + data.mine.collider_offset.complex_mul(basis),
+                        target.base.position
+                            + target
+                                .base
+                                .up
+                                .perp_cw()
+                                .complex_mul(data.mine.collider_offset),
                         basis,
                         data::surface_extents(data.mine.hurtbox_extents),
                     );
@@ -13758,6 +13768,7 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
+            slot.throw_item.collider_right = slot.base.up.perp_cw();
         } else {
             let this = &mut *self;
             let slot = &mut this.players[index];
@@ -13792,6 +13803,7 @@ impl RolloutWorld {
             } else {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
+                slot.throw_item.collider_right = slot.base.up.perp_cw();
             }
         }
     }
@@ -16244,8 +16256,8 @@ impl RolloutWorld {
                     self.entities[entity].flags = E_REMOVED;
                 }
             } else if missile.duplicate_lifespan < 60 {
-                let progress = Fix::ONE
-                    - Fix::from_int(missile.duplicate_lifespan as i64) / Fix::from_int(60);
+                let progress =
+                    Fix::ONE - Fix::from_int(missile.duplicate_lifespan as i64) / Fix::from_int(60);
                 missile.position -= missile.duplicate_shake_offset;
                 missile.duplicate_shake_offset =
                     Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
@@ -19250,9 +19262,7 @@ impl RolloutWorld {
                     ..data.arrow.body
                 };
                 let mut arrow_center = arrow.position;
-                for &(missile_index, contact) in
-                    &missile_contacts[..missile_contact_count]
-                {
+                for &(missile_index, contact) in &missile_contacts[..missile_contact_count] {
                     let missile = self.guided_missiles[missile_index];
                     let mut missile_body = missile.body;
                     let mut missile_center = missile.position;
@@ -19293,12 +19303,7 @@ impl RolloutWorld {
                         continue;
                     }
                     let missile = self.guided_missiles[missile_index];
-                    self.spawn_missile_explosion(
-                        missile.position,
-                        missile.owner,
-                        false,
-                        data,
-                    );
+                    self.spawn_missile_explosion(missile.position, missile.owner, false, data);
                     self.destroy_guided_missile(missile_index, true);
                     if let Some(entity) = missile.entity {
                         let row = &mut self.entities[entity];
@@ -22406,7 +22411,16 @@ impl RolloutWorld {
                     let root = if mining { synced } else { exit_position };
                     let rotation = slot.throw_item.collider_rotation;
                     let basis = Vec2::angle(rotation);
-                    let center = root + data.mine.collider_offset.complex_mul(basis);
+                    // PlayerPhysics.Move aligns the FixTransform by assigning
+                    // its exact surface normal. DPhysicsBox derives its axes
+                    // from the normalized angle, but applies `offset` with
+                    // FixTransform.right itself; those vectors can differ by
+                    // a few Q32 units after the angle round trip.
+                    let center = root
+                        + slot
+                            .throw_item
+                            .collider_right
+                            .complex_mul(data.mine.collider_offset);
                     let hurtbox = OrientedBox::from_basis(
                         center,
                         basis,

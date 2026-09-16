@@ -1315,9 +1315,10 @@ enters on tick 214, Mine on tick 217, and the wave pushes Mine on tick 221.
 the later `PlayerBody` integrates external velocity; the DetPhysics-synced form
 collider observes that body position while the live transform is snapped back
 to its surface local afterward. The trace preserves this order and the payload
-callback schedule. Mine's existing surface/FixTransform reconstruction allows
-8,192 raw Q32 units (under 0.000002 world units) on the active collider centre;
-axes, force, clocks, lifecycle and every interaction boundary are exact.
+callback schedule. The form stores FixTransform's directly assigned surface
+right vector separately from the angle-derived DPhysicsBox axes, so its collider
+centre now uses the same offset basis as Unity. Centre, axes, force, clocks,
+lifecycle and every interaction boundary use the normal 64-raw-Q32 bound.
 
 `gust_arrow_ab.c` composes a live Bow Arrow with Gust for 400 ticks. Bow begins
 on tick 214; Arrow registration, Bow exit and Gust entry all occur on tick 255;
@@ -2488,14 +2489,24 @@ differential verifies that an early grounded button release selects the source's
 then copies that Mine into three independently initialized bodies. Dynamic
 entity vectors in the original chase scenario are within 64 raw Q32 units
 (1.49e-8 units) after chase-direction normalization and the resulting
-shockwave; the inactive/active Mine form center is within
-5,000 raw units (1.17e-6 units) because `PlayerPhysics.SyncPhysicsTo` repeats a
-grounded surface projection before adding the collider offset. These bounds are
-far below collision or control thresholds and do not change state transitions,
-hits, credit, or timing. `MineExplosion`'s remaining visual lifetime is already
+shockwave. The inactive/active Mine form centre also uses that 64-raw bound:
+Rust retains the directly assigned FixTransform right vector used to rotate the
+collider offset separately from the angle-derived DPhysicsBox axes. This removes
+the earlier 5,000-raw positional allowance without changing the shared surface
+or trigonometric kernels. `MineExplosion`'s remaining visual lifetime is already
 covered exactly by the Missile golden because both abilities reference the same
 prefab. Scaling, boundary effects, magnet holding, and dedicated
 Projectile/Explosion igniter scenarios remain open, so coverage is partial.
+
+`mine_pickup_ab.c` adds 2,524 ticks with the authored AbilitySpawner enabled.
+The first pickup stays live throughout the Mine form while its autonomous item
+registers and continues independently. After the form exits, collection replaces
+slot three with Revival on tick 2506; the replacement collider registers on tick
+2507 while the original button hold is still down, so the source immediately
+enters the acquired ability in that same updater pass. Rust matches that ordering,
+the marker, QuickSpell exit and all discrete public state. The already-established
+AbilitySpawner flight vectors retain their 100,000-raw-Q32 bound; every non-pickup
+entity field in this fixture uses one raw unit.
 
 ### Executable Rock rigid form and bounce contacts (2026-09-14)
 
@@ -3342,8 +3353,8 @@ long-lived hover motion and the final 60-frame shake. Each clone consumes its
 at duplication had advanced the shared generator three extra values. The source
 duplicate manager traverses its list backward during shake, so Rust does the
 same and assigns the shared RNG draws to the same clones before all three expire
-simultaneously on tick 2049. The active Mine form retains only its existing
-5,000-raw-Q32 grounded reprojection bound.
+simultaneously on tick 2049. The active Mine form uses the
+same 64-raw-Q32 bound after preserving its exact FixTransform offset basis.
 
 `duplicator_pickup_ab.c` starts with Duplicator equipped in slot three, enables
 the authored AbilitySpawner diagnostic, and follows the deterministic first

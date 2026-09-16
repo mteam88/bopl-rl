@@ -11,8 +11,7 @@ static int64_t distance(int64_t a, int64_t b) {
 }
 
 static int entity_equal(const BoplRlEntity *a, const BoplRlEntity *b) {
-    int64_t position_tolerance =
-        (a->layer == 8 && a->owner == 2) ? INT64_C(8192) : INT64_C(2048);
+    const int64_t position_tolerance = INT64_C(2048);
     return a->id == b->id && a->kind == b->kind && a->layer == b->layer &&
            a->owner == b->owner && a->flags == b->flags &&
            a->hierarchy == b->hierarchy &&

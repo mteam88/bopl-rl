@@ -1,9 +1,8 @@
 /* Duplicator Mine golden: released low-strength Mine, three-copy fan,
  * deferred Mine.Init RNG, armed hover trajectories, final shake and expiry.
  *
- * The active Mine form uses the existing 5,000-raw-Q32 PlayerPhysics
- * reprojection bound. Spawned Mine bodies and all gameplay state use 64 raw
- * Q32 units; no trajectory or hover tolerance is widened. */
+ * The active Mine form preserves FixTransform's exact offset basis. Spawned
+ * Mine bodies and all gameplay state use 64 raw Q32 units. */
 #include "bopl_rl.h"
 #include <inttypes.h>
 #include <math.h>
@@ -15,9 +14,8 @@ static int64_t distance(int64_t a, int64_t b) {
 }
 
 static int entity_equal(const BoplRlEntity *a, const BoplRlEntity *b) {
-    int64_t form_tolerance = a->layer == 8 ? 5000 : 64;
-    int64_t rotation_tolerance =
-        a->layer == 8 ? 5000 : 64;
+    const int64_t form_tolerance = 64;
+    const int64_t rotation_tolerance = 64;
     return a->id == b->id && a->kind == b->kind && a->layer == b->layer &&
            a->owner == b->owner && a->flags == b->flags &&
            a->hierarchy == b->hierarchy && distance(a->x, b->x) <= form_tolerance &&
