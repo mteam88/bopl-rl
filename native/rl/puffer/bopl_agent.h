@@ -105,6 +105,9 @@ const float *bopl_agent_logits(const BoplAgent *agent);
 void bopl_agent_decision(const BoplAgent *agent, int out[3]);
 int bopl_agent_decisions(const BoplAgent *agent);
 int bopl_agent_obs_size(void);
+/* Width of this agent's observation row (bopl_agent_observation): the policy's
+ * layout, BOPL4_OBS_SIZE for v4 checkpoints, else bopl_agent_obs_size(). */
+int bopl_agent_observation_size(const BoplAgent *agent);
 int bopl_agent_logits_size(void);
 
 #ifdef __cplusplus

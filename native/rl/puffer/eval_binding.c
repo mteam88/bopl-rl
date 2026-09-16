@@ -33,7 +33,12 @@ int research_set_layout(BoplPuffer *env, int player, int layout) {
     memset(row, 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_forget_row(env, row);
     const BoplRlState *now=bopl_rl_state(env->world);
     if (layout==BOPL4_LAYOUT_VERSION) bopl_encode_v4_row(env, now, player, 0); else bopl_encode_v3_row(env, now, player, 0);
-    row[bopl_previous_offset(env, player)]=1;
+    /* The neutral own-action tail exactly as bopl_reset_observations primes it:
+     * no-aim on the previous decision and, for v4, on both history slots (the
+     * in-game shim's first row, which check_agent_fidelity.py compares to this). */
+    float *previous=row+bopl_previous_offset(env, player);
+    previous[0]=1;
+    if (layout==BOPL4_LAYOUT_VERSION) for (int h=0; h<BOPL4_HISTORY; h++) previous[BOPL_PREVIOUS_FEATURES+BOPL4_HISTORY_FEATURES*h]=1;
     bopl_encode_privileged(env, now, NULL);
     return 0;
 }
