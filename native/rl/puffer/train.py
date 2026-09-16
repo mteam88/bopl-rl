@@ -431,6 +431,13 @@ def main():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir(exist_ok=True)
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
+    # Policy v4 wants the whole GPU shared on stream priority: its training
+    # pass and its rollout chain are both several times v3's, and on the 24/24
+    # green-context split of 'auto' each is SM-bound (v4-lite, w128 b4: train
+    # 0.107 -> 0.090 s, rollout 0.120 -> 0.114 s, +5% sps when shared; 32/16
+    # and 16/32 are worse either way). v3 keeps the measured 'auto'
+    # (THROUGHPUT.md 3.B). Scheduling only: the numbers do not change.
+    os.environ.setdefault('BOPL_GPU_SPLIT', '0' if a.encoder == 'v4' else 'auto')
     v4_shape = a.v4_shape
     if a.encoder == 'v4':
         for name, (variable, key) in V4_SHAPE.items():

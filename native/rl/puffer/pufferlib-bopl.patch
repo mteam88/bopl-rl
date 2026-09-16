@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
---- pristine-src/bindings.cu	2026-09-16 11:36:00.985995487 -0400
-+++ puffer-overlay/bindings.cu	2026-09-16 15:12:13.140296265 -0400
+--- pristine-src/bindings.cu	2026-09-16 18:31:54.835509749 -0400
++++ puffer-overlay/bindings.cu	2026-09-16 18:33:34.606700625 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -246,8 +246,8 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
---- pristine-src/kernels.cu	2026-09-16 11:36:00.985995487 -0400
-+++ puffer-overlay/kernels.cu	2026-09-16 15:10:15.684049223 -0400
+--- pristine-src/kernels.cu	2026-09-16 18:31:54.835509749 -0400
++++ puffer-overlay/kernels.cu	2026-09-16 18:33:34.610061096 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -505,8 +505,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      long offset = 0;
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
---- pristine-src/models.cu	2026-09-16 11:36:00.986995498 -0400
-+++ puffer-overlay/models.cu	2026-09-16 15:10:15.686289480 -0400
+--- pristine-src/models.cu	2026-09-16 18:31:54.835509749 -0400
++++ puffer-overlay/models.cu	2026-09-16 18:33:34.612337492 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -838,8 +838,8 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
---- pristine-src/muon.cu	2026-09-16 11:36:00.986995498 -0400
-+++ puffer-overlay/muon.cu	2026-09-16 15:10:15.687601576 -0400
+--- pristine-src/muon.cu	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/muon.cu	2026-09-16 18:33:34.614868327 -0400
 @@ -83,6 +83,68 @@
      {2.8366, -3.0525, 1.2012},
  };
@@ -1180,8 +1180,8 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
---- pristine-src/ocean.cu	2026-09-16 11:36:00.986995498 -0400
-+++ puffer-overlay/ocean.cu	2026-09-16 15:10:15.689040211 -0400
+--- pristine-src/ocean.cu	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/ocean.cu	2026-09-16 18:33:34.617128512 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1218,8 +1218,8 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 +    }
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
---- pristine-src/pufferlib.cu	2026-09-16 11:36:01.272632962 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-16 15:10:15.690010710 -0400
+--- pristine-src/pufferlib.cu	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-16 18:33:34.617697398 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3250,8 +3250,8 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
---- pristine-src/vecenv.h	2026-09-16 11:36:01.048996195 -0400
-+++ puffer-overlay/vecenv.h	2026-09-16 15:10:15.693063192 -0400
+--- pristine-src/vecenv.h	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/vecenv.h	2026-09-16 18:40:44.776542737 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
@@ -3328,7 +3328,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
  #define OMP_WAITING 5
  #define OMP_RUNNING 6
-@@ -217,13 +256,156 @@
+@@ -217,13 +256,163 @@
  #endif
  
  
@@ -3345,6 +3345,9 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +//     with one fetch_add (dynamic scheduling, no straggler partition);
 +//   - the buffer thread publishes its job, steps envs itself, and can step other
 +//     buffers' envs while its own GPU forward runs (BOPL_ENV_STEAL=1);
++//   - workers and thieves claim from the earliest-published open job
++//     (BOPL_ENV_OLDEST=1, see bopl_pool_oldest) so the buffers pipeline
++//     through the GPU instead of stepping in lockstep; 0 = round-robin;
 +//   - claim order per step is longest-last-step first (BOPL_ENV_LPT=1): the
 +//     scripted-bot envs (lookahead rollouts) are the stragglers otherwise;
 +//   - BOPL_ENV_DRIVER=k (default 0) instead runs k threads that each drive
@@ -3423,6 +3426,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    atomic_uint* claimed; // affinity mode: per env offset, generation of its last claim
 +    _Alignas(64) atomic_uint gen;  // affinity mode: publish generation (claimable while claimed[e] == gen - 1)
 +    int64_t* last_ns;    // per env offset: duration of its last c_step (LPT input)
++    _Alignas(64) atomic_llong seq;  // publish order (BOPL_ENV_OLDEST: claim the earliest-published open job first)
 +    int64_t t_launch;    // driver mode: forward launched (eval_gpu start)
 +    int64_t t_publish;   // driver mode: job published (eval_env start)
 +    int t;               // driver mode: step index within the rollout
@@ -3444,6 +3448,9 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    BoplEnvJob* jobs;
 +    _Alignas(64) atomic_int work_seq;   // bumped on every publish; the workers' futex word
 +    _Alignas(64) atomic_int sleepers;   // workers parked in futex_wait
++    _Alignas(64) atomic_llong publish_seq;  // BOPL_ENV_OLDEST: next job sequence number
++    int oldest;          // BOPL_ENV_OLDEST: workers and thieves claim from the earliest-published open job (default 1)
++    int straggle_steal;  // BOPL_ENV_STRAGGLE_STEAL: the buffer thread steps other buffers' envs while waiting for its stragglers
 +    int num_workers;
 +    pthread_t* workers;
 +    int spin_ns;
@@ -3486,7 +3493,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +417,262 @@
+@@ -235,7 +424,311 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -3593,10 +3600,47 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    return 1;
 +}
 +
++// Does job `buf` still have unclaimed envs (both claim modes)?
++static inline int bopl_pool_open(StaticThreading* th, int buf) {
++    BoplEnvJob* job = &th->jobs[buf];
++    if (th->affinity) return atomic_load_explicit(&job->gen, memory_order_acquire) != 0
++        && atomic_load_explicit(&job->done, memory_order_relaxed) < job->env_count;
++    return atomic_load_explicit(&job->next, memory_order_acquire) < job->env_count;
++}
++
++// The open job published earliest (BOPL_ENV_OLDEST=1), or -1. With several
++// buffers in their env phase at once, every thread converging on the oldest
++// job finishes it (and launches its forward) soonest, so the buffers spread
++// out in phase and one buffer's GPU forward overlaps the others' env steps.
++// Round-robin claiming (BOPL_ENV_OLDEST=0, the previous order) advances the
++// buffers together, and with a forward longer than an env phase (policy v4:
++// 340 us forward vs 170 us of 8-thread stepping per buffer) they fall into
++// lockstep: all four wait on the GPU while the CPU idles, then all four step
++// while the GPU idles, so the rollout costs forward + env instead of the
++// larger of the two. Which thread steps an env does not affect what it
++// computes, so the schedule changes nothing numerically.
++static inline int bopl_pool_oldest(StaticThreading* th, int exclude) {
++    int nb = th->num_buffers, best = -1;
++    int64_t best_seq = INT64_MAX;
++    for (int b = 0; b < nb; b++) {
++        if (b == exclude || !bopl_pool_open(th, b)) continue;
++        int64_t seq = atomic_load_explicit(&th->jobs[b].seq, memory_order_relaxed);
++        if (seq < best_seq) { best_seq = seq; best = b; }
++    }
++    return best;
++}
++
 +// Step one env of any buffer other than `self` (buffer threads while their GPU
 +// forward runs).
 +static inline int bopl_pool_steal(StaticThreading* th, Env* envs, int self, int participant) {
 +    int nb = th->num_buffers;
++    if (th->oldest) {
++        for (;;) {
++            int b = bopl_pool_oldest(th, self);
++            if (b < 0) return 0;
++            if (bopl_pool_try(th, envs, b, 2, participant)) return 1;
++        }
++    }
 +    for (int k = 1; k <= nb; k++) {
 +        int b = (self + k) % nb;
 +        if (b == self) continue;
@@ -3607,6 +3651,10 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +
 +static void bopl_pool_publish(StaticThreading* th, int buf) {
 +    BoplEnvJob* job = &th->jobs[buf];
++    // Publish order for the oldest-first claim; stored before the job opens
++    // (the release below), so a claimer that sees the job open sees its seq.
++    atomic_store_explicit(&job->seq, (int64_t)atomic_fetch_add_explicit(&th->publish_seq, 1, memory_order_relaxed),
++                          memory_order_relaxed);
 +    if (th->lpt) {
 +        // Longest-processing-time first: insertion sort of <= a few dozen
 +        // offsets by last step's duration (the scripted-bot envs, which run
@@ -3646,9 +3694,17 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    while (!atomic_load_explicit(&th->shutdown, memory_order_relaxed)) {
 +        int seen = atomic_load_explicit(&th->work_seq, memory_order_acquire);
 +        int did = 0;
-+        for (int k = 0; k < nb; k++) {
-+            int b = (rr + k) % nb;
-+            while (bopl_pool_try(th, envs, b, 1, nb + index)) did++;
++        if (th->oldest) {
++            for (;;) {
++                int b = bopl_pool_oldest(th, -1);
++                if (b < 0) break;
++                if (bopl_pool_try(th, envs, b, 1, nb + index)) did++;
++            }
++        } else {
++            for (int k = 0; k < nb; k++) {
++                int b = (rr + k) % nb;
++                while (bopl_pool_try(th, envs, b, 1, nb + index)) did++;
++            }
 +        }
 +        if (did) continue;
 +        // Nothing to do: spin on work_seq for spin_ns, then park.
@@ -3750,7 +3806,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,98 +683,259 @@
+@@ -246,98 +739,264 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -3769,6 +3825,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    BoplEnvJob* job = &threading->jobs[buf];
 +    int env_count = job->env_count;
 +    int steal = threading->steal;
++    int straggle_steal = steal && threading->straggle_steal;
 +    int gpu_wait = threading->gpu_wait;
 +    int poll_pause = threading->poll_pause;
 +    int prof = threading->prof;
@@ -3852,19 +3909,10 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -            #pragma omp parallel for schedule(static) num_threads(num_workers)
 -            for (int i = env_start; i < env_start + env_count; i++) {
 -                c_step(&envs[i]);
-+            bopl_pool_publish(threading, buf);
-+            while (bopl_pool_try(threading, envs, buf, 0, buf)) {}
-+            // Stragglers: at most one env step of latency.
-+            int64_t ts = prof ? bopl_now_ns() : 0;
-+            while (atomic_load_explicit(&job->done, memory_order_acquire) < env_count) {
-+                bopl_cpu_relax();
-             }
+-            }
 -            clock_gettime(CLOCK_MONOTONIC, &t1);
 -            my_accum[EVAL_ENV_STEP] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
-+            int64_t t2 = bopl_now_ns();
-+            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
-+            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
- 
+-
 -            cudaMemcpyAsync(
 -                (char*)vec->gpu_observations + agent_start * OBS_SIZE * obs_element_size(),
 -                (char*)vec->observations + agent_start * OBS_SIZE * obs_element_size(),
@@ -3887,6 +3935,21 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -                agents_per_buffer * MY_ACTION_MASK * sizeof(unsigned char),
 -                cudaMemcpyHostToDevice, stream);
 -#endif
++            bopl_pool_publish(threading, buf);
++            while (bopl_pool_try(threading, envs, buf, 0, buf)) {}
++            // Stragglers: at most one env step of latency. With
++            // BOPL_ENV_STRAGGLE_STEAL=1 the wait steps other buffers' envs
++            // (one more c_step of latency at worst, ~40 us against a ~100 us
++            // wait) instead of spinning.
++            int64_t ts = prof ? bopl_now_ns() : 0;
++            while (atomic_load_explicit(&job->done, memory_order_acquire) < env_count) {
++                if (straggle_steal && bopl_pool_steal(threading, envs, buf, buf)) continue;
++                bopl_cpu_relax();
++            }
++            int64_t t2 = bopl_now_ns();
++            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
++            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
++
 +            if (gpu_prof) cudaEventRecord(ev[0], stream);
 +            bopl_upload(vec, buf, stream);
          }
@@ -4019,32 +4082,32 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      for (int buf = 0; buf < vec->buffers; buf++) {
 -        atomic_store(&threading->buffer_states[buf], OMP_RUNNING);
 +        atomic_store_explicit(&threading->buffer_states[buf], OMP_RUNNING, memory_order_seq_cst);
-+    }
-+    for (int buf = 0; buf < vec->buffers; buf++) {
+     }
+     for (int buf = 0; buf < vec->buffers; buf++) {
+-        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
 +        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
      }
-+}
-+
+ }
+ 
 +double static_vec_omp_wait(StaticVec* vec) {
 +    StaticThreading* threading = vec->threading;
 +    double last = 0.0;
-     for (int buf = 0; buf < vec->buffers; buf++) {
--        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
++    for (int buf = 0; buf < vec->buffers; buf++) {
 +        for (;;) {
 +            int s = atomic_load_explicit(&threading->buffer_states[buf], memory_order_acquire);
 +            if (s == OMP_WAITING) break;
 +            bopl_futex_wait(&threading->buffer_states[buf], s);
 +        }
 +        if (threading->done_at[buf] > last) last = threading->done_at[buf];
-     }
++    }
 +    return last;
 +}
 +
 +void static_vec_omp_step(StaticVec* vec) {
 +    static_vec_omp_start(vec);
 +    static_vec_omp_wait(vec);
- }
- 
++}
++
  void static_vec_seq_step(StaticVec* vec) {
      StaticThreading* threading = vec->threading;
      for (int buf = 0; buf < vec->buffers; buf++) {
@@ -4060,7 +4123,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -418,11 +1016,17 @@
+@@ -418,11 +1077,17 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -4082,7 +4145,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
          cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
          cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1053,11 @@
+@@ -449,9 +1114,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
@@ -4095,7 +4158,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1182,7 @@
+@@ -576,6 +1243,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -4103,7 +4166,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1198,84 @@
+@@ -591,6 +1259,88 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -4130,6 +4193,8 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    th->num_workers = total_stepping - gpu_threads;
 +    th->spin_ns = bopl_env_int("BOPL_ENV_SPIN_US", 100) * 1000;
 +    th->steal = bopl_env_int("BOPL_ENV_STEAL", 1);
++    th->oldest = bopl_env_int("BOPL_ENV_OLDEST", 1);
++    th->straggle_steal = bopl_env_int("BOPL_ENV_STRAGGLE_STEAL", 1);
 +    {
 +        const char* spec = getenv("BOPL_GPU_WAIT");
 +        th->gpu_wait = (spec && strcmp(spec, "sync") == 0) ? 0 : 1;
@@ -4173,10 +4238,12 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +        atomic_store(&th->jobs[b].gen, 0);  // idle: nothing claimable until the first publish
 +        atomic_store(&th->jobs[b].next, th->jobs[b].env_count);  // idle: nothing claimable
 +        atomic_store(&th->jobs[b].done, th->jobs[b].env_count);
++        atomic_store(&th->jobs[b].seq, INT64_MAX);
 +    }
++    atomic_store(&th->publish_seq, 0);
 +    th->participants = gpu_threads + th->num_workers;
-+    fprintf(stderr, "bopl env pool: %d %s + %d workers (%d CPUs), spin %d us, steal %d, gpu_wait %s, lpt %d, affinity %d, pin %d\n",
-+        gpu_threads, th->driver ? "driver threads" : "buffer threads", th->num_workers, ncpu, th->spin_ns / 1000, th->steal,
++    fprintf(stderr, "bopl env pool: %d %s + %d workers (%d CPUs), spin %d us, steal %d, oldest %d, straggle_steal %d, gpu_wait %s, lpt %d, affinity %d, pin %d\n",
++        gpu_threads, th->driver ? "driver threads" : "buffer threads", th->num_workers, ncpu, th->spin_ns / 1000, th->steal, th->oldest, th->straggle_steal,
 +        th->gpu_wait ? "poll" : "sync", th->lpt, th->affinity, th->pin);
 +    th->workers = (pthread_t*)calloc(th->num_workers > 0 ? th->num_workers : 1, sizeof(pthread_t));
 +    BoplWorkerArg* wargs = (BoplWorkerArg*)calloc(th->num_workers > 0 ? th->num_workers : 1, sizeof(BoplWorkerArg));
@@ -4188,7 +4255,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1288,11 @@
+@@ -603,7 +1353,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -4201,7 +4268,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1300,21 @@
+@@ -611,10 +1365,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -4212,12 +4279,12 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 -            pthread_join(vec->threading->threads[i], NULL);
 +            bopl_futex_wake(&th->buffer_states[i], INT_MAX);
 +            if (!th->driver || i < th->driver) pthread_join(th->threads[i], NULL);
-+        }
+         }
 +        atomic_fetch_add(&th->work_seq, 1);
 +        bopl_futex_wake(&th->work_seq, INT_MAX);
 +        for (int i = 0; i < th->num_workers; i++) {
 +            pthread_join(th->workers[i], NULL);
-         }
++        }
 +        free(th->workers);
 +        for (int b = 0; b < vec->buffers; b++) { free(th->jobs[b].order); free(th->jobs[b].last_ns); free(th->jobs[b].claimed); }
 +        free(th->jobs);
@@ -4225,7 +4292,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1328,7 @@
+@@ -628,6 +1393,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -4233,7 +4300,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1424,48 @@
+@@ -723,6 +1489,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
