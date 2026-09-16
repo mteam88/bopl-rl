@@ -201,6 +201,11 @@ def arguments():
     for name, (_, key) in V4_SHAPE.items():
         p.add_argument('--v4-' + name.replace('_', '-'), type=int, default=layout.V4_DEFAULTS[key], dest='v4_' + name,
                        help=f'policy v4 shape (encoder v4 only; default {layout.V4_DEFAULTS[key]})')
+    p.add_argument('--dump-rows', type=Path, default=None, metavar='NPZ',
+                   help='after the first rollout, save the observations and the trainer\'s own decoder rows for '
+                        '64 learner rows of buffer 0 at step 0 (zero recurrent state; _C.bopl_policy_rows) next to '
+                        'the initial checkpoint and stop: the fixture puffer/check_dump.py holds the CPU evaluator '
+                        'and the torch reference to')
     p.add_argument('--v4-row-budget', default=None, metavar='P,S,E,L',
                    help='policy v4: packed rows per sample the set MLPs hold for players, slots, entities, slimes '
                         '(bopl_v4.cu DEFAULT_BUDGET 6,12,20,8); rows past the budget are dropped and counted (set_overflow)')
@@ -694,9 +699,25 @@ def main():
         # not counted, and every update still accounts for exactly one batch.
         overlap = _C.num_rollout_slots(trainer) > 1
         more, ready, rollout_seconds = False, None, None
+        def dump_rows():
+            # The trainer's own decoder rows on its first observations, from
+            # the weights the initial checkpoint holds (nothing has trained yet).
+            nonlocal stop
+            if a.dump_rows is None or stop:
+                return
+            if resume or 0 not in saved:
+                raise RuntimeError('--dump-rows needs a fresh run with the initial checkpoint saved')
+            import numpy as np
+            observations, rows = _C.bopl_policy_rows(trainer, 0, 64)
+            a.dump_rows.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(a.dump_rows, observations=observations, rows=rows, checkpoint=str(saved[0].resolve()),
+                     obs_size=obs_size, architecture=architecture)
+            print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}', flush=True)
+            stop = True
         if overlap:
             rollout_seconds = _C.rollouts(trainer)  # bootstrap: the first slot before the loop
             ready = offset_counters(vector.snapshot(), base_counts)
+            dump_rows()
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
             while counts['learner_steps'] < a.steps and not stop:
@@ -711,6 +732,7 @@ def main():
                         _C.rollouts_start(trainer)
                 else:
                     rollout_seconds = _C.rollouts(trainer)
+                    dump_rows()
                 rolled = time.monotonic()
                 # Configure the native loss before training. Native train_impl
                 # copies this scalar into a device buffer each update, so CUDA

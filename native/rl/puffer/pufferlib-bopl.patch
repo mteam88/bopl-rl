@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-16 11:36:00.985995487 -0400
-+++ puffer-overlay/bindings.cu	2026-09-16 12:16:28.825290382 -0400
++++ puffer-overlay/bindings.cu	2026-09-16 15:12:13.140296265 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -94,7 +94,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
  pybind11::dict train(pybind11::object pufferl_obj) {
-@@ -167,11 +184,22 @@
+@@ -167,16 +184,67 @@
      {
          pybind11::gil_scoped_release no_gil;
          train_impl(pufferl);
@@ -117,7 +117,52 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  void puf_close(pybind11::object pufferl_obj) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      close_impl(pufferl);
-@@ -188,6 +216,23 @@
+ }
+ 
++// Bopl: the learner's own decoder rows (logits then value) for the first
++// `count` learner rows of buffer 0 at rollout step t of the slot last
++// collected, recomputed from a zero recurrent state with policy_forward (the
++// per-bank chain the trainer trains against), together with the observations
++// they were computed from. puffer/check_dump.py holds the CPU evaluator and
++// the torch reference to these rows on a checkpoint the trainer wrote, so a
++// reader that walks the dump in another order than create_params registers
++// it (encoder, decoder, recurrent core) fails a test instead of an evaluation.
++// t = 0 right after the first rollout is the only step whose state is zero.
++pybind11::tuple bopl_policy_rows(pybind11::object pufferl_obj, int t, int count) {
++    PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
++    HypersT& hypers = pufferl.hypers;
++    RolloutBuf rollouts = rollout_slot_view(pufferl.rollouts, pufferl.ready_slot, hypers.horizon);
++    int apb = pufferl.vec->total_agents / hypers.num_buffers, frozen_total = 0;
++    for (int b = 0; b < pufferl.num_frozen_banks; b++) frozen_total += pufferl.frozen_banks[b].slice_size;
++    int primary = pufferl.primary_rows > 0 ? pufferl.primary_rows : apb - frozen_total;
++    if (t < 0 || t >= hypers.horizon || count < 1) throw std::runtime_error("bopl_policy_rows: step or count out of range");
++    if (count > primary) count = primary;
++    cudaStream_t stream = 0;
++    PrecisionTensor obs = puf_slice(rollouts.observations, t, 0, count);
++    // The state keeps the buffer state's full row count (the rollout
++    // activations' next_state is sized for it); the observations, as in the
++    // per-bank rollout loop, cover the learner's rows only.
++    PrecisionTensor* s0 = &pufferl.buffer_states[0];
++    long layers = s0->shape[0], H = s0->shape[2];
++    PrecisionTensor state = {.shape = {layers, s0->shape[1], H}};
++    size_t state_bytes = (size_t)numel(state.shape) * sizeof(float);
++    if (cudaMalloc((void**)&state.data, state_bytes) != cudaSuccess)
++        throw std::runtime_error("bopl_policy_rows: state allocation failed");
++    cudaMemset(state.data, 0, state_bytes);
++    PrecisionTensor dec = policy_forward(&pufferl.policy, pufferl.weights, pufferl.buffer_activations[0], obs, state, stream);
++    cudaStreamSynchronize(stream);
++    long F = obs.shape[1], od1 = dec.shape[1];
++    pybind11::array_t<float> obs_out({(long)count, F}), dec_out({(long)count, od1});
++    cudaMemcpy(obs_out.mutable_data(), obs.data, (size_t)count * F * sizeof(float), cudaMemcpyDeviceToHost);
++    cudaMemcpy(dec_out.mutable_data(), dec.data, (size_t)count * od1 * sizeof(float), cudaMemcpyDeviceToHost);
++    cudaFree(state.data);
++    return pybind11::make_tuple(obs_out, dec_out);
++}
++
+ void save_weights(pybind11::object pufferl_obj, const std::string& path) {
+     PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
+     int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
+@@ -188,6 +256,23 @@
      fclose(f);
  }
  
@@ -141,7 +186,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  void load_weights(pybind11::object pufferl_obj, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
-@@ -209,12 +254,15 @@
+@@ -209,12 +294,15 @@
          throw std::runtime_error("Failed to read weight file");
      }
      fclose(f);
@@ -157,7 +202,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
  int py_add_frozen_bank(py::object pufferl_obj, int slice_size,
-@@ -225,6 +273,9 @@
+@@ -225,6 +313,9 @@
  
  void py_load_frozen_bank(py::object pufferl_obj, int bank_idx, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
@@ -167,7 +212,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      pufferl_load_frozen_bank(&pufferl, bank_idx, path.c_str());
  }
  
-@@ -517,10 +568,22 @@
+@@ -517,10 +608,23 @@
      m.def("eval_log", &puf_eval_log);
      m.def("render", &render);
      m.def("rollouts", &rollouts);
@@ -178,6 +223,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      m.def("train", &train);
      m.def("close", &puf_close);
      m.def("save_weights", &save_weights);
++    m.def("bopl_policy_rows", &bopl_policy_rows);
 +    // Bopl policy v4: rows the packed set buffers dropped in the last training forward
 +    // (players, slots, entities, slimes); empty before the first update or for other encoders.
 +    m.def("bopl_v4_overflow", []() {
@@ -190,7 +236,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      m.def("add_frozen_bank", &py_add_frozen_bank);
      m.def("load_frozen_bank", &py_load_frozen_bank);
      m.def("set_agent_perm", &py_set_agent_perm);
-@@ -626,7 +689,7 @@
+@@ -626,7 +730,7 @@
          .def_readwrite("hypers", &PuffeRL::hypers)
          .def_readwrite("rollouts", &PuffeRL::rollouts)
          .def_readonly("epoch", &PuffeRL::epoch)
@@ -201,7 +247,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-16 11:36:00.985995487 -0400
-+++ puffer-overlay/kernels.cu	2026-09-16 12:18:39.952770195 -0400
++++ puffer-overlay/kernels.cu	2026-09-16 15:10:15.684049223 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -460,7 +506,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-16 11:36:00.986995498 -0400
-+++ puffer-overlay/models.cu	2026-09-16 12:16:28.832290461 -0400
++++ puffer-overlay/models.cu	2026-09-16 15:10:15.686289480 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -793,7 +839,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-16 11:36:00.986995498 -0400
-+++ puffer-overlay/muon.cu	2026-09-16 12:16:28.834242734 -0400
++++ puffer-overlay/muon.cu	2026-09-16 15:10:15.687601576 -0400
 @@ -83,6 +83,68 @@
      {2.8366, -3.0525, 1.2012},
  };
@@ -1135,7 +1181,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-16 11:36:00.986995498 -0400
-+++ puffer-overlay/ocean.cu	2026-09-16 12:16:28.836290506 -0400
++++ puffer-overlay/ocean.cu	2026-09-16 15:10:15.689040211 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1173,7 +1219,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-16 11:36:01.272632962 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-16 12:18:39.951665430 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-16 15:10:15.690010710 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3205,7 +3251,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-16 11:36:01.048996195 -0400
-+++ puffer-overlay/vecenv.h	2026-09-16 12:16:28.844586923 -0400
++++ puffer-overlay/vecenv.h	2026-09-16 15:10:15.693063192 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
