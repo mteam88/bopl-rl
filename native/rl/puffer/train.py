@@ -285,6 +285,9 @@ def arguments():
     p.add_argument('--heldout-games', type=int, default=4)
     p.add_argument('--frozen-games', type=int, default=16)
     p.add_argument('--evaluation-workers', type=int, default=2)
+    p.add_argument('--evaluation-pool', type=Path, default=None,
+                   help='reference pool.json the eval hook rates in-run evaluations on (evaluate.py --pool; '
+                        'default reference_pool.DEFAULT_POOL, pool v7). The sweep driver passes [scoring].pool.')
     a = p.parse_args()
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
                  'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
@@ -677,6 +680,8 @@ def main():
                        '--scripted-opponents', a.scripted_opponents]
             if frozen_manifest:
                 command += ['--opponents', str(frozen_manifest)]
+            if a.evaluation_pool:
+                command += ['--pool', str(a.evaluation_pool)]
             log = (output/'evaluation.log').open('a')
             pending.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             evaluated_steps.add(counts['game_steps'])

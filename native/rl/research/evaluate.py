@@ -42,7 +42,7 @@ def main():
     parser.add_argument('--scripted-opponents',type=scripted_names,default=DEFAULT_EVAL_SCRIPTED,
                         help='Comma-separated scripted bot names (kind-level, e.g. mixed-hard,archer-medium); empty disables')
     parser.add_argument('--pool',type=Path,default=None,
-                        help='Reference pool.json for in-run Elo (default: pool-v5 if present)')
+                        help='Reference pool.json for in-run Elo (default: reference_pool.DEFAULT_POOL, pool v7, if present)')
     parser.add_argument('--seed-base',type=int,default=10001)
     parser.add_argument('--heldout-seed-base',type=int,default=20001)
     parser.add_argument('--selfplay-seed',type=int,default=30001)

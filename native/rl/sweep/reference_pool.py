@@ -48,7 +48,11 @@ from evaluation_protocol import checkpoint_identity, opponents, scripted_names  
 
 SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
-DEFAULT_POOL = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v5/pool.json'
+# The pool evaluate.py rates in-run evaluations on when --pool is not given.
+# Pool v7 since 2026-09-16 (v4-lite onwards); runs before that (024, the
+# seed-024-s7x floor, v4-full) logged pool v5 (sha8 ec5bd5ae): research/
+# readout.py refits their stored games on v7 so curves stay comparable.
+DEFAULT_POOL = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v7/pool.json'
 DEFAULT_HUMAN = ROOT / 'native/artifacts/rl/human/mac'
 CANDIDATE = 'candidate'
 
