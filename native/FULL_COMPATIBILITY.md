@@ -2127,6 +2127,16 @@ The differential covers 1,540 ticks with the established Roll pose bound of
 first reaches Roll's separately open platform-hop behavior; that later branch
 is not attributed to Time Stop coverage.
 
+`time_stop_missile_ab.c` equips Missile in slot two and holds its controller
+and guided box across the same 690 stopped passes. This exposed a hard-coded
+slot-zero release test: Rust entered Missile's exit animation after its enter
+sequence even though the slot-two button remained held. Release now derives
+its button from `active_slot`. During the stop, `SparkShot` still calls
+`Stabilize` and rewrites velocity along the retained up vector with a zero turn
+angle; Rust preserves that component behavior without advancing either body.
+The controlling form, projectile, cooldowns, all public rows, restored
+steering, release and subsequent flight match for 1,700 ticks.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback

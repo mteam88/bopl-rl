@@ -3806,6 +3806,14 @@ impl RolloutWorld {
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+                if self.players[index].active == ActiveAbility::Missile {
+                    // SparkShot still runs while frozen. Its turn angle uses
+                    // the owner's zero FixedDeltaTime, but it nevertheless
+                    // calls Stabilize and rewrites velocity along the current
+                    // missile up vector. This matters on the pass where the
+                    // later TimeStop effect restores time before DetPhysics.
+                    self.steer_active_missile(index, packet.aim_action(), Fix::ZERO, data);
+                }
                 if self.players[index].active == ActiveAbility::Magnet {
                     // Player's frozen input keeps MagnetGun's retained aim,
                     // while its locked branch still pins and refreshes Hold.
@@ -13113,6 +13121,41 @@ impl RolloutWorld {
         }
     }
 
+    fn steer_active_missile(
+        &mut self,
+        index: usize,
+        action: Action,
+        turn_dt: Fix,
+        data: &data::RolloutData,
+    ) {
+        if self.players[index].missile.phase == 3 {
+            return;
+        }
+        let Some(projectile) = self.players[index].missile.projectile else {
+            return;
+        };
+        if !self.guided_missiles[projectile].active || !self.guided_missiles[projectile].registered
+        {
+            return;
+        }
+        let missile = &mut self.guided_missiles[projectile];
+        missile.instability_ticks = 0;
+        let aim = action.direction();
+        let forward = missile.body.velocity.normalized_safe();
+        let signed_turn = if forward.cross(aim) > Fix::ZERO {
+            turn_dt * data.missile.rotation_speed
+        } else {
+            -turn_dt * data.missile.rotation_speed
+        };
+        let mut next_up = Vec2::angle(signed_turn).complex_mul(missile.up);
+        if aim.length_squared() < Fix::from_f32(0.4) * Fix::from_f32(0.4) {
+            next_up = missile.up;
+        }
+        missile.body.velocity = next_up * missile.body.velocity.length();
+        missile.up = next_up;
+        missile.body.orientation = next_up.perp_cw().normalized_angle();
+    }
+
     fn missile_form_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         // DPhysicsBox publishes the basis from the start of SparkShot's pass;
         // PlayerPhysics may align the live transform later in that pass.
@@ -13140,34 +13183,13 @@ impl RolloutWorld {
             _ => {}
         }
 
-        if self.players[index].missile.phase == 2 && action.buttons & 2 == 0 {
+        let button = 2u8 << self.players[index].active_slot;
+        if self.players[index].missile.phase == 2 && action.buttons & button == 0 {
             self.players[index].missile.phase = 3;
             self.players[index].missile.ticks = 0;
         }
 
-        let projectile = self.players[index].missile.projectile;
-        if self.players[index].missile.phase != 3
-            && let Some(projectile) = projectile
-            && self.guided_missiles[projectile].active
-            && self.guided_missiles[projectile].registered
-        {
-            let missile = &mut self.guided_missiles[projectile];
-            missile.instability_ticks = 0;
-            let aim = action.direction();
-            let forward = missile.body.velocity.normalized_safe();
-            let signed_turn = if forward.cross(aim) > Fix::ZERO {
-                DT * data.missile.rotation_speed
-            } else {
-                -DT * data.missile.rotation_speed
-            };
-            let mut next_up = Vec2::angle(signed_turn).complex_mul(missile.up);
-            if aim.length_squared() < Fix::from_f32(0.4) * Fix::from_f32(0.4) {
-                next_up = missile.up;
-            }
-            missile.body.velocity = next_up * missile.body.velocity.length();
-            missile.up = next_up;
-            missile.body.orientation = next_up.perp_cw().normalized_angle();
-        }
+        self.steer_active_missile(index, action, DT, data);
 
         if self.players[index].base.grounded {
             self.players[index]

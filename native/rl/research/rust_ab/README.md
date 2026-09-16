@@ -66,6 +66,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_roll_ab.c`: an unprotected charging Roll across all 690 stopped
   passes, then restored release and ground motion up to the separately open
   platform-hop boundary.
+- `time_stop_missile_ab.c`: a slot-two Missile controller and its guided box
+  projectile across all 690 stopped passes, zero-delta stabilization, restored
+  steering, release and subsequent flight.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass

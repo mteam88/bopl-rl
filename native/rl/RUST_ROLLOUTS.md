@@ -82,6 +82,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   scale addition at zero delta; rigid-body motion resumes on restoration.
   Charging Roll also freezes for all 690 passes and exactly resumes charge,
   lethal release and ground motion; its later platform-hop branch remains open.
+  A slot-two Missile holds its controlling form and guided projectile fixed
+  across the same window, including zero-delta stabilization, then resumes
+  steering, release and flight on the restored clock.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
