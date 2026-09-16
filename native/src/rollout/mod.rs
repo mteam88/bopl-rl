@@ -392,6 +392,11 @@ pub struct ThrownItem {
     pub callback_registered_tick: u32,
     pub position: Vec2,
     pub body: Body,
+    /// Live DPhysicsCircle/FixTransform scale. `body_scale` is the value the
+    /// earlier BoplBody updater has consumed; a late ScaleChanger mutation is
+    /// reflected in mass on the following updater pass, as in the source.
+    pub scale: Fix,
+    pub body_scale: Fix,
     pub fuse: Fix,
     pub hurt_owner_delay: Fix,
     pub detonates_on_owner: bool,
@@ -489,9 +494,18 @@ pub struct SmokeCloud {
     pub scale: Fix,
     pub owner: usize,
     pub ability_slot: usize,
+    /// The ThrowItem2 instance owns a 40-entry effect ring. A later cast gets
+    /// a fresh ring even when it occupies the same ability slot.
+    pub source_group: u32,
     pub age_ticks: u32,
     pub ignition_time: Fix,
     pub ignition_delay: Fix,
+    /// Smoke born from a duplicated grenade is independently placed on
+    /// DetPhysics' 1,200-frame deletion list; a directly duplicated cloud uses
+    /// the ordinary 1,800-frame lifetime.
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -816,6 +830,16 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             item_body: d.item_body,
         }
     }
+}
+
+#[inline]
+fn thrown_item_radius(data: &data::RolloutData, item: ThrownItem) -> Fix {
+    let authored = if item.ability == ABILITY_MINE {
+        data.mine.item_radius
+    } else {
+        throw_config(data, item.ability).item_radius
+    };
+    authored * item.scale
 }
 
 const REWIND_CAPACITY: usize = 188;
@@ -1242,8 +1266,8 @@ pub struct ScaleChangerState {
     pub active: bool,
     pub born_tick: u32,
     pub victim: usize,
-    /// Zero targets a player slot, one a guided Missile pool slot, and two a
-    /// rounded-platform slot.
+    /// Zero targets a player slot, one a guided Missile pool slot, two a
+    /// rounded-platform slot, three a thrown item and four a Smoke cloud.
     pub target_kind: u8,
     pub time: Fix,
     pub growth: bool,
@@ -8750,6 +8774,25 @@ impl RolloutWorld {
                     Fix::ONE / data.spike.attack_extents.y,
                 ),
             };
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & E_ENABLED != 0
+                    && crate::physics::contact::circle_box(
+                        Circle {
+                            center: cloud.position,
+                            radius: Fix::from_raw(self.entities[entity].radius),
+                        },
+                        attack_box,
+                    )
+                    .is_some()
+                {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
+                }
+            }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if *victim || !self.playable(player_index) {
                     continue;
@@ -8879,7 +8922,7 @@ impl RolloutWorld {
                 }
                 let mine_circle = Circle {
                     center: mine.position,
-                    radius: data.mine.item_radius,
+                    radius: thrown_item_radius(data, *mine),
                 };
                 if crate::physics::contact::circle_circle(node_circle, mine_circle).is_some()
                     || line.is_some_and(|line| {
@@ -11710,11 +11753,7 @@ impl RolloutWorld {
                 if !item.active || item.entity.is_none() {
                     continue;
                 }
-                let radius = if item.ability == ABILITY_MINE {
-                    data::get().mine.item_radius
-                } else {
-                    throw_config(data::get(), item.ability).item_radius
-                };
+                let radius = thrown_item_radius(data::get(), *item);
                 if crate::physics::contact::circle_circle(
                     query,
                     Circle {
@@ -11936,6 +11975,13 @@ impl RolloutWorld {
         let mut detonations = [usize::MAX; 64];
         let mut detonation_count = 0;
         for cloud_index in 0..self.smoke_clouds.len() {
+            if self.smoke_clouds[cloud_index].active
+                && self.smoke_clouds[cloud_index].registered
+                && self.smoke_clouds[cloud_index].position.y < Fix::from_f32(-11.3)
+            {
+                self.remove_smoke_cloud(cloud_index);
+                continue;
+            }
             let cloud = &mut self.smoke_clouds[cloud_index];
             if !cloud.active || !cloud.registered {
                 continue;
@@ -12969,16 +13015,11 @@ impl RolloutWorld {
                 if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
                     == wave.platform_ids.len()
                     || !item.active
-                    || item.ability != ABILITY_GRENADE
                     || item.entity.is_none()
                 {
                     continue;
                 }
-                let radius = if item.ability == ABILITY_MINE {
-                    data.mine.item_radius
-                } else {
-                    throw_config(data, item.ability).item_radius
-                };
+                let radius = thrown_item_radius(data, *item);
                 if crate::physics::contact::circle_circle(
                     query,
                     Circle {
@@ -14079,6 +14120,8 @@ impl RolloutWorld {
                 velocity,
                 ..data.mine.item_body
             },
+            scale: self.players[index].player_scale,
+            body_scale: Fix::ONE,
             fuse: Fix::MAX,
             hurt_owner_delay: Fix::ZERO,
             detonates_on_owner: false,
@@ -14320,6 +14363,8 @@ impl RolloutWorld {
                 orientation: self.players[index].base.rotation,
                 ..config.item_body
             },
+            scale: self.players[index].player_scale,
+            body_scale: Fix::ONE,
             fuse: match ability {
                 ABILITY_GRENADE => data.grenade.detonation_time,
                 ABILITY_SMOKE => data.smoke.detonation_time,
@@ -14418,7 +14463,7 @@ impl RolloutWorld {
                 },
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
-                radius: gd.item_radius.raw(),
+                radius: (gd.item_radius * item.scale).raw(),
                 inverse_mass: item.body.inverse_mass.raw(),
                 ..CEntity::default()
             };
@@ -14475,7 +14520,7 @@ impl RolloutWorld {
                 vy: item.body.velocity.y.raw(),
                 rotation: item.body.orientation.raw(),
                 angular_velocity: item.body.angular_velocity.raw(),
-                radius: config.item_radius.raw(),
+                radius: (config.item_radius * item.scale).raw(),
                 inverse_mass: item.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
@@ -15255,11 +15300,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let radius = if item.ability == ABILITY_MINE {
-                data.mine.item_radius
-            } else {
-                throw_config(data, item.ability).item_radius
-            };
+            let radius = thrown_item_radius(data, *item);
             if crate::physics::contact::circle_box(
                 Circle {
                     center: item.position,
@@ -15406,11 +15447,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let item_radius = if item.ability == ABILITY_MINE {
-                data.mine.item_radius
-            } else {
-                throw_config(data, item.ability).item_radius
-            };
+            let item_radius = thrown_item_radius(data, *item);
             if crate::physics::contact::circle_circle(
                 Circle {
                     center: firepoint,
@@ -16130,6 +16167,14 @@ impl RolloutWorld {
             .position(|missile| missile.active && missile.entity == Some(hit.entity))
         {
             self.duplicate_guided_missile(missile_index, direction, data);
+            return;
+        }
+        if let Some(cloud_index) = self
+            .smoke_clouds
+            .iter()
+            .position(|cloud| cloud.active && cloud.entity == Some(hit.entity))
+        {
+            self.duplicate_smoke_cloud(cloud_index, data);
         }
     }
 
@@ -16336,6 +16381,10 @@ impl RolloutWorld {
                 orientation: source.body.orientation,
                 ..prefab_body
             };
+            // duplicateBoplBody applies the copied collider scale after the
+            // prefab BoplBody is constructed. Its mass updater observes that
+            // scale on the following pass.
+            clone.body_scale = Fix::ONE;
             // Unity clones only serialized component fields. Runtime state in
             // the item behaviours starts as a fresh prefab instance even
             // though the Item owner and BoplBody pose are copied explicitly.
@@ -16430,6 +16479,37 @@ impl RolloutWorld {
         }
     }
 
+    fn duplicate_smoke_cloud(&mut self, source_index: usize, data: &data::RolloutData) {
+        let source = self.smoke_clouds[source_index];
+        for _ in 0..data.smoke.cloud_clone_count {
+            let direction = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU));
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.smoke.cloud_updatable_count;
+            let clone = SmokeCloud {
+                active: true,
+                born_tick: self.tick,
+                hierarchy_base,
+                position: source.position
+                    + direction * data.smoke.cloud_duplicate_spacing * source.scale,
+                rotation: source.rotation,
+                scale: source.scale,
+                owner: source.owner,
+                ability_slot: source.ability_slot,
+                source_group: 0,
+                ignition_time: -Fix::ONE,
+                duplicated: true,
+                duplicate_lifespan: 1800,
+                ..SmokeCloud::default()
+            };
+            if let Some(free) = self.smoke_clouds.iter().position(|cloud| !cloud.active) {
+                let entity = self.smoke_clouds[free].entity;
+                self.smoke_clouds[free] = SmokeCloud { entity, ..clone };
+            } else {
+                self.smoke_clouds.push(clone);
+            }
+        }
+    }
+
     fn duplicated_objects_tick(&mut self) {
         if self.player_time_scale < Fix::from_f32(0.01) {
             return;
@@ -16437,6 +16517,29 @@ impl RolloutWorld {
         // DetPhysics.UpdateDuplicatedObjects walks its List from Count-1 to
         // zero. The order becomes observable during the last 60 frames because
         // every live duplicate consumes one RandomUnitVector for its shake.
+        for cloud_index in (0..self.smoke_clouds.len()).rev() {
+            if !self.smoke_clouds[cloud_index].active || !self.smoke_clouds[cloud_index].duplicated
+            {
+                continue;
+            }
+            self.smoke_clouds[cloud_index].duplicate_lifespan -= 1;
+            if self.smoke_clouds[cloud_index].duplicate_lifespan < 0 {
+                self.remove_smoke_cloud(cloud_index);
+            } else if self.smoke_clouds[cloud_index].duplicate_lifespan < 60 {
+                let cloud = &mut self.smoke_clouds[cloud_index];
+                let progress =
+                    Fix::ONE - Fix::from_int(cloud.duplicate_lifespan as i64) / Fix::from_int(60);
+                cloud.position -= cloud.duplicate_shake_offset;
+                cloud.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                cloud.position += cloud.duplicate_shake_offset;
+                if let Some(entity) = cloud.entity {
+                    self.entities[entity].x = cloud.position.x.raw();
+                    self.entities[entity].y = cloud.position.y.raw();
+                }
+            }
+        }
         for item_index in (0..self.thrown_items.len()).rev() {
             let item = &mut self.thrown_items[item_index];
             if !item.active || !item.duplicated {
@@ -16530,7 +16633,7 @@ impl RolloutWorld {
                 y: item.position.y.raw(),
                 vx: item.body.velocity.x.raw(),
                 vy: item.body.velocity.y.raw(),
-                radius: radius.raw(),
+                radius: (radius * item.scale).raw(),
                 rotation: item.body.orientation.raw(),
                 angular_velocity: item.body.angular_velocity.raw(),
                 inverse_mass: item.body.inverse_mass.raw(),
@@ -16585,6 +16688,8 @@ impl RolloutWorld {
         let mut platform_victim = wall_hit.map(|(index, _, _)| index);
         let mut victim = None;
         let mut missile_victim = None;
+        let mut item_victim = None;
+        let mut cloud_victim = None;
         let mut water_hit = false;
         if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
             let map = &data.maps[self.map];
@@ -16600,6 +16705,10 @@ impl RolloutWorld {
                 nearest = hit.near;
                 water_hit = true;
                 platform_victim = None;
+                victim = None;
+                missile_victim = None;
+                item_victim = None;
+                cloud_victim = None;
             }
         }
         if mask & (1 << LAYER_PLAYER) != 0 {
@@ -16675,6 +16784,8 @@ impl RolloutWorld {
                     nearest = distance;
                     victim = Some(target);
                     missile_victim = None;
+                    item_victim = None;
+                    cloud_victim = None;
                     platform_victim = None;
                     water_hit = false;
                 }
@@ -16697,6 +16808,58 @@ impl RolloutWorld {
                     nearest = hit.near;
                     victim = None;
                     missile_victim = Some(missile_index);
+                    item_victim = None;
+                    cloud_victim = None;
+                    platform_victim = None;
+                    water_hit = false;
+                }
+            }
+        }
+        if mask & (1 << LAYER_ITEM) != 0 {
+            for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
+                if !item.active || item.entity.is_none() {
+                    continue;
+                }
+                if let Some(hit) = (Circle {
+                    center: item.position,
+                    radius: thrown_item_radius(data, item),
+                })
+                .raycast(origin, direction)
+                    && hit.near < nearest
+                    && hit.near <= max_distance
+                {
+                    nearest = hit.near;
+                    victim = None;
+                    missile_victim = None;
+                    item_victim = Some(item_index);
+                    cloud_victim = None;
+                    platform_victim = None;
+                    water_hit = false;
+                }
+            }
+        }
+        if mask & (1 << data.smoke.cloud_layer) != 0 {
+            for (cloud_index, cloud) in self.smoke_clouds.iter().copied().enumerate() {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered Smoke collider");
+                if self.entities[entity].flags & E_ENABLED == 0 {
+                    continue;
+                }
+                if let Some(hit) = (Circle {
+                    center: cloud.position,
+                    radius: Fix::from_raw(self.entities[entity].radius),
+                })
+                .raycast(origin, direction)
+                    && hit.near < nearest
+                    && hit.near <= max_distance
+                {
+                    nearest = hit.near;
+                    victim = None;
+                    missile_victim = None;
+                    item_victim = None;
+                    cloud_victim = Some(cloud_index);
                     platform_victim = None;
                     water_hit = false;
                 }
@@ -16714,6 +16877,10 @@ impl RolloutWorld {
             self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
         } else if let Some(victim) = missile_victim {
             self.begin_scale_change(victim, 1, growth, ray.changer_updatable_count);
+        } else if let Some(victim) = item_victim {
+            self.begin_scale_change(victim, 3, growth, ray.changer_updatable_count);
+        } else if let Some(victim) = cloud_victim {
+            self.begin_scale_change(victim, 4, growth, ray.changer_updatable_count);
         } else if let Some(victim) = platform_victim {
             self.begin_scale_change(victim, 2, growth, ray.changer_updatable_count);
         }
@@ -17434,12 +17601,64 @@ impl RolloutWorld {
                 self.scale_changers[index].active = false;
                 continue;
             }
+            if effect.target_kind == 3
+                && (effect.victim >= self.thrown_items.len()
+                    || !self.thrown_items[effect.victim].active)
+            {
+                self.scale_changers[index].active = false;
+                continue;
+            }
+            if effect.target_kind == 4
+                && (effect.victim >= self.smoke_clouds.len()
+                    || !self.smoke_clouds[effect.victim].active)
+            {
+                self.scale_changers[index].active = false;
+                continue;
+            }
             // Non-player ScaleChanger targets are unprotected and pause
             // before advancing their curve while global time is stopped.
             if self.player_time_scale < Fix::from_f32(0.01) {
                 continue;
             }
             let time = effect.time + DT;
+            if effect.target_kind == 3 {
+                let item = &mut self.thrown_items[effect.victim];
+                let multiplier = if item.body.inverse_mass > Fix::ZERO
+                    && item.body.inverse_mass * item.scale > ray.inverse_mass_before_big
+                {
+                    ray.small_non_players_multiplier
+                } else {
+                    ray.multiplier
+                };
+                item.scale = (item.scale + ray.scale_curve.evaluate(time) * multiplier)
+                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                if let Some(entity) = item.entity {
+                    self.entities[entity].radius = thrown_item_radius(data, *item).raw();
+                }
+                self.scale_changers[index].time = time;
+                continue;
+            }
+            if effect.target_kind == 4 {
+                let cloud = &mut self.smoke_clouds[effect.victim];
+                let multiplier = if data.smoke.cloud_body.inverse_mass > Fix::ZERO
+                    && data.smoke.cloud_body.inverse_mass * cloud.scale
+                        > ray.inverse_mass_before_big
+                {
+                    ray.small_non_players_multiplier
+                } else {
+                    ray.multiplier
+                };
+                let previous = cloud.scale;
+                cloud.scale = (cloud.scale + ray.scale_curve.evaluate(time) * multiplier)
+                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                if let Some(entity) = cloud.entity {
+                    self.entities[entity].radius =
+                        (Fix::from_raw(self.entities[entity].radius) / previous * cloud.scale)
+                            .raw();
+                }
+                self.scale_changers[index].time = time;
+                continue;
+            }
             if effect.target_kind == 2 {
                 if effect.victim >= self.platforms.len() {
                     self.scale_changers[index].active = false;
@@ -18504,7 +18723,7 @@ impl RolloutWorld {
                 y: item.position.y.raw(),
                 vx: item.body.velocity.x.raw(),
                 vy: item.body.velocity.y.raw(),
-                radius: data.mine.item_radius.raw(),
+                radius: (data.mine.item_radius * item.scale).raw(),
                 rotation: item.body.orientation.raw(),
                 angular_velocity: item.body.angular_velocity.raw(),
                 inverse_mass: item.body.inverse_mass.raw(),
@@ -19307,6 +19526,18 @@ impl RolloutWorld {
             if !self.thrown_items[item_index].active {
                 continue;
             }
+            {
+                let item = &mut self.thrown_items[item_index];
+                if item.scale != item.body_scale
+                    && item.body.inverse_mass != Fix::ZERO
+                    && item.body.inverse_inertia != Fix::ZERO
+                {
+                    let ratio = item.body_scale / item.scale;
+                    item.body.inverse_mass *= ratio;
+                    item.body.inverse_inertia *= ratio;
+                    item.body_scale = item.scale;
+                }
+            }
             let ability = self.thrown_items[item_index].ability;
             // DestroyIfOutsideSceneBounds precedes Grenade/Item updaters.
             // Grenade, Smoke and Mine instantiate the two-updatable water
@@ -19319,11 +19550,6 @@ impl RolloutWorld {
                 self.remove_thrown_item(item_index, false);
                 continue;
             }
-            let item_inverse_mass = if ability == ABILITY_MINE {
-                data.mine.item_body.inverse_mass
-            } else {
-                throw_config(data, ability).item_body.inverse_mass
-            };
             let timed_out = {
                 let item = &mut self.thrown_items[item_index];
                 if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
@@ -19363,7 +19589,8 @@ impl RolloutWorld {
             row.vy = item.body.velocity.y.raw();
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
-            row.inverse_mass = item_inverse_mass.raw();
+            row.radius = thrown_item_radius(data, *item).raw();
+            row.inverse_mass = item.body.inverse_mass.raw();
         }
     }
 
@@ -19453,24 +19680,25 @@ impl RolloutWorld {
             let noise_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
             let noise = Vec2::angle(noise_angle) * noise_radius * data.smoke.noise;
             let rotation = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-            let offset = (authored_offset + noise) * data.smoke.spread;
+            let offset = (authored_offset + noise) * data.smoke.spread * item.scale;
 
-            let active_for_form = self
+            let active_for_cast = self
                 .smoke_clouds
                 .iter()
                 .filter(|cloud| {
-                    cloud.active && cloud.owner == item.owner && cloud.ability_slot == ability_slot
+                    cloud.active && !cloud.duplicated && cloud.source_group == item.hierarchy_base
                 })
                 .count();
-            if active_for_form >= 40
+            if !item.duplicated
+                && active_for_cast >= 40
                 && let Some((oldest, _)) = self
                     .smoke_clouds
                     .iter()
                     .enumerate()
                     .filter(|(_, cloud)| {
                         cloud.active
-                            && cloud.owner == item.owner
-                            && cloud.ability_slot == ability_slot
+                            && !cloud.duplicated
+                            && cloud.source_group == item.hierarchy_base
                     })
                     .min_by_key(|(_, cloud)| cloud.hierarchy_base)
             {
@@ -19485,10 +19713,13 @@ impl RolloutWorld {
                 hierarchy_base,
                 position: item.position + offset,
                 rotation,
-                scale: Fix::ONE,
+                scale: item.scale,
                 owner: item.owner,
                 ability_slot,
+                source_group: item.hierarchy_base,
                 ignition_time: -Fix::ONE,
+                duplicated: item.duplicated,
+                duplicate_lifespan: if item.duplicated { 1200 } else { 0 },
                 ..SmokeCloud::default()
             };
             if let Some(free) = self.smoke_clouds.iter().position(|cloud| !cloud.active) {
@@ -19583,6 +19814,7 @@ impl RolloutWorld {
                 let mut arrow_body = crate::physics::Body {
                     velocity: arrow.velocity,
                     orientation: arrow.rotation,
+                    angular_velocity: arrow.angular_velocity,
                     ..data.arrow.body
                 };
                 let mut center = circle.center;
@@ -19620,6 +19852,7 @@ impl RolloutWorld {
                     e.vx = arrow_body.velocity.x.raw();
                     e.vy = arrow_body.velocity.y.raw();
                     e.rotation = arrow.rotation.raw();
+                    e.angular_velocity = arrow_body.angular_velocity.raw();
                 }
                 continue;
             }
@@ -19640,7 +19873,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let item_radius = throw_config(data, item.ability).item_radius;
+                let item_radius = thrown_item_radius(data, *item);
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
                         center: item.position,
@@ -19704,6 +19937,10 @@ impl RolloutWorld {
                     row.rotation = arrow_body.orientation.raw();
                     row.angular_velocity = arrow_body.angular_velocity.raw();
                 }
+                // Arrow.prefab serializes Projectile.IgnitesExplosives=false.
+                // SmokeGrenadeExplode2 therefore returns from its later
+                // callback even after the Arrow callback destroys the
+                // projectile components; the released Smoke survives.
                 continue;
             }
 
@@ -19986,11 +20223,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let radius = if item.ability == ABILITY_MINE {
-                    data.mine.item_radius
-                } else {
-                    throw_config(data, item.ability).item_radius
-                };
+                let radius = thrown_item_radius(data, item);
                 if let Some(contact) = crate::physics::contact::circle_box(
                     Circle {
                         center: item.position,
@@ -20041,6 +20274,12 @@ impl RolloutWorld {
                     let live = &mut self.guided_missiles[missile_index];
                     live.position = missile_center;
                     live.body = missile_body;
+                }
+                for &(item_index, _) in &item_contacts[..item_contact_count] {
+                    let item = self.thrown_items[item_index];
+                    if item.active && item.ability == ABILITY_SMOKE && item.detonates_on_owner {
+                        self.detonate_smoke(item_index, true, data);
+                    }
                 }
                 if missile.magnet_hold_ticks >= 0 {
                     if let Some(entity) = missile.entity {
@@ -20156,11 +20395,7 @@ impl RolloutWorld {
             if !item.active || item.entity.is_none() || item.callback_registered_tick == self.tick {
                 continue;
             }
-            let item_radius = if item.ability == ABILITY_MINE {
-                data.mine.item_radius
-            } else {
-                throw_config(data, item.ability).item_radius
-            };
+            let item_radius = thrown_item_radius(data, item);
             let circle = Circle {
                 center: item.position,
                 radius: item_radius,
@@ -20277,13 +20512,7 @@ impl RolloutWorld {
 
     /// Item circles participate in ordinary rigid-body contacts.
     fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
-        let radius = |item: ThrownItem| {
-            if item.ability == ABILITY_MINE {
-                data.mine.item_radius
-            } else {
-                throw_config(data, item.ability).item_radius
-            }
-        };
+        let radius = |item: ThrownItem| thrown_item_radius(data, item);
 
         // Circle/Circle pairs follow DetPhysics' global sort-and-sweep order,
         // not component registration order. Pair orientation is observable:
@@ -20419,6 +20648,27 @@ impl RolloutWorld {
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
         }
+        // SmokeGrenadeExplode2 accepts every non-projectile collision once
+        // its owner gate is open. Manifolds were all constructed before this
+        // callback phase, so destroying one Smoke does not erase later pairs.
+        let mut smoke_callbacks = [usize::MAX; 64];
+        let mut smoke_callback_count = 0;
+        for &(a_index, b_index, _) in contacts.iter() {
+            for item_index in [a_index, b_index] {
+                let item = self.thrown_items[item_index];
+                if item.active
+                    && item.ability == ABILITY_SMOKE
+                    && item.detonates_on_owner
+                    && smoke_callback_count < smoke_callbacks.len()
+                {
+                    smoke_callbacks[smoke_callback_count] = item_index;
+                    smoke_callback_count += 1;
+                }
+            }
+        }
+        for &item_index in &smoke_callbacks[..smoke_callback_count] {
+            self.detonate_smoke(item_index, true, data);
+        }
     }
 
     fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
@@ -20430,11 +20680,7 @@ impl RolloutWorld {
                 continue;
             }
             let item = self.thrown_items[item_index];
-            let item_radius = if item.ability == ABILITY_MINE {
-                data.mine.item_radius
-            } else {
-                throw_config(data, item.ability).item_radius
-            };
+            let item_radius = thrown_item_radius(data, item);
             let circle = Circle {
                 center: item.position,
                 radius: item_radius,
@@ -20545,7 +20791,7 @@ impl RolloutWorld {
             {
                 let mine_circle = Circle {
                     center: self.thrown_items[item_index].position,
-                    radius: data.mine.item_radius,
+                    radius: thrown_item_radius(data, self.thrown_items[item_index]),
                 };
                 let hit_player = self.players.iter().any(|player| {
                     self.playable_slot(player)
@@ -20791,6 +21037,36 @@ impl RolloutWorld {
                 explosion.position,
                 Vec2::RIGHT,
                 data.grenade.explosion_extents,
+            );
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                let radius = Fix::from_raw(self.entities[entity].radius);
+                if crate::physics::contact::circle_box(
+                    Circle {
+                        center: cloud.position,
+                        radius,
+                    },
+                    hitbox,
+                )
+                .is_some()
+                {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
+                }
+            }
+        }
+
+        for explosion in self.missile_explosions.iter().copied() {
+            if !explosion.active || !explosion.registered || explosion.age != 1 {
+                continue;
+            }
+            let hitbox = OrientedBox::from_basis(
+                explosion.position,
+                Vec2::RIGHT,
+                data.missile.explosion_extents,
             );
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {

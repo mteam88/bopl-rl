@@ -927,6 +927,10 @@ struct RawSmokeCloud {
     collider_hierarchy: u32,
     base_radius: i64,
     body: RawBody,
+    clone_count: u32,
+    duplicate_pattern: u32,
+    duplicate_spacing: i64,
+    duplicate_angle: i64,
     radii: Vec<i64>,
     enter_frames: Vec<i32>,
     min_ignition_delay: i64,
@@ -2049,6 +2053,10 @@ pub struct SmokeData {
     pub cloud_collider_hierarchy: u32,
     pub cloud_base_radius: Fix,
     pub cloud_body: crate::physics::Body,
+    pub cloud_clone_count: u32,
+    pub cloud_duplicate_pattern: u32,
+    pub cloud_duplicate_spacing: Fix,
+    pub cloud_duplicate_angle: Fix,
     pub cloud_radii: Vec<Fix>,
     pub cloud_enter_frame_ticks: Vec<u32>,
     pub min_ignition_delay: Fix,
@@ -3240,6 +3248,10 @@ pub fn get() -> &'static RolloutData {
                     cloud_collider_hierarchy: smoke.cloud.collider_hierarchy,
                     cloud_base_radius: Fix::from_raw(smoke.cloud.base_radius),
                     cloud_body: body(&smoke.cloud.body, Fix::ZERO),
+                    cloud_clone_count: smoke.cloud.clone_count,
+                    cloud_duplicate_pattern: smoke.cloud.duplicate_pattern,
+                    cloud_duplicate_spacing: Fix::from_raw(smoke.cloud.duplicate_spacing),
+                    cloud_duplicate_angle: Fix::from_raw(smoke.cloud.duplicate_angle),
                     cloud_radii: smoke
                         .cloud
                         .radii

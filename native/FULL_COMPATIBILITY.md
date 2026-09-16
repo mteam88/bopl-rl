@@ -2197,12 +2197,34 @@ uses retained vectors and fixed arrays; it does not allocate per tick.
 The implemented interaction path also disables a cloud collider when an
 ignite-capable grenade or smoke explosion overlaps it, waits the cloud's sampled
 strict delay, and spawns the owner-attributed first-frame lethal explosion.
-Per-form cloud retention is capped at the source's 40-effect ring size.
+Per-cast cloud retention is capped at the source's 40-effect ring size.
 `smoke_ability_ab.c` compares 800 exact NativeAOT/Q32 ticks through a grounded
 charged throw, ballistic item flight, timed removal, exact randomized placement,
 radius animation, and persistence of all four cloud entities. Ignition chaining,
 scale changes, ring eviction, and `Item.Duplicate` remain to be exercised by
 dedicated goldens, so the catalog entry remains partial.
+
+The remaining reachable Smoke source branches are now translated as well.
+`FixTransform` scale follows the held form into the released item and each cloud;
+the item collider and BoplBody mass update in the source's separate updater
+passes. Growth and Shrink can select both released items and clouds. Each cast
+owns its own 40-cloud ring, duplicated Smoke items place each emitted cloud on
+the 1,200-frame deletion list, and directly duplicated clouds use the prefab's
+three-copy random-circle pattern and ordinary 1,800-frame lifetime. Missile,
+Mine, Spike, Engine, Tesla, Grenade and Smoke explosions all enter the common
+flammable-cloud delay and recursive owner-credit path. Bounds removal continues
+while duplicate shake moves a cloud, and all of these clocks pause under Time
+Stop.
+
+`smoke_broad_ab.c` is the single broad per-ability differential. It matches 500
+optimized-Q32 ticks exactly (one raw Q32 unit on vector components) through an
+airborne charged release on tick 151, item registration on tick 186, Bow Arrow
+registration on tick 192, their tick-218 contact, twelve asserted post-contact
+Smoke passes, later ordinary-contact detonation, and four cloud registrations on
+tick 266. `Arrow.prefab` serializes `IgnitesExplosives` false, so this contact
+destroys the Arrow but deliberately leaves Smoke alive. Dedicated differentials
+are still absent for the translated scale, direct-cloud-duplicate, ignition,
+cross-cast ring and Portal branches; those remain listed as verification gaps.
 
 ### Executable Time Stop and global simulation clock (2026-09-14)
 

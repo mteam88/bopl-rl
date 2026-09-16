@@ -429,9 +429,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   ordinary player crosses on tick 1811, after the pair would have reached its
   25-second lifetime on an unfrozen clock.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
-  cloud spawns, radius animation, and persistent collider export. Its ignition
-  chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain
-  without dedicated differential goldens.
+  cloud spawns, radius animation, and persistent collider export. A broad
+  airborne composition also exactly covers charged release, Bow's non-igniting
+  Arrow callback, later contact detonation and all four cloud registrations.
+  Source behavior for item/cloud scale, per-cast ring eviction, duplicated-item
+  and directly duplicated-cloud lifetimes, bounds cleanup, and every currently
+  ported igniter is implemented; those branches and Portal motion remain
+  without dedicated differential coverage.
   Time Stop is exact through grounded channeling, casting, team protection,
   the 10-second hold plus exit-alpha lifetime, restoration, protected-caster
   cooldowns/motion, and global DetPhysics freezing for the currently ported

@@ -176,6 +176,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `duplicator_smoke_ab.c`: Smoke's three-copy fan through cloned-Grenade reset,
   rigid and Water contact detonation, randomized clouds and same-pass removal
   of a cloud born below WaterHeight over 450 ticks.
+- `smoke_broad_ab.c`: one 500-tick Smoke composition covering an airborne
+  charged release, a post-owner-gate contact with Bow's non-igniting Arrow,
+  later ordinary-contact detonation, all four randomized cloud registrations
+  and persistent cloud animation.
 - `duplicator_tack_ab.c`: Tack's three-copy fan through fresh prefab runtime
   state, deferred collider/behavior registration, ballistic contact, arming
   and two exact trap consumptions over 450 ticks.
