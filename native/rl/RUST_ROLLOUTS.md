@@ -471,10 +471,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Poke Ball copies match registration, launch initialization, DetPhysics sweep
   ordering, the first shared dynamic-platform contact, later bounces and all
   four boundary/fizzle removals over 900 ticks. Capture by a duplicated ball
-  remains open.
+  remains open. Mine copies now match the source's low-strength button-release
+  throw, three-copy fan, deferred single `Mine.Init` RNG sample, arming and
+  hover trajectories for 1,500 ticks.
   Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
-  open; Mine, copied-object lifetime expiry, duplicated Poke capture and the
-  Mjolnir late tail need composed goldens.
+  open; copied-object lifetime expiry, duplicated Poke capture and the Mjolnir
+  late tail need composed goldens.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
   Pulling is live on the cast pass as in the modified source. Its rounded-wall

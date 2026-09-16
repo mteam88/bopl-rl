@@ -13400,8 +13400,31 @@ impl RolloutWorld {
         let button = 2u8 << self.players[index].active_slot;
         let released = action.buttons & button == 0;
         let aim = action.direction();
-        if released {
-            self.players[index].throw_item.has_inputted_fire = true;
+        let local_up = if self.players[index].base.grounded {
+            self.players[index]
+                .base
+                .ground
+                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                .map_or(self.players[index].base.up, |platform| {
+                    platform.surface.normal(self.players[index].base.position)
+                })
+        } else {
+            Vec2::UP
+        };
+        let state = &mut self.players[index].throw_item;
+        if !state.has_inputted_fire {
+            // ThrowItem.OldUpdate follows the live stick until the button is
+            // released. The release pass always replaces that direction with
+            // -LocalUp, even though Mine's authored onlyThrowUp later forces
+            // the launch vector itself back along +LocalUp.
+            state.direction = if released {
+                -local_up
+            } else if aim == Vec2::ZERO || aim.dot(local_up) > Fix::from_f32(-0.3) {
+                local_up
+            } else {
+                -local_up
+            };
+            state.has_inputted_fire = released;
         }
 
         self.players[index].reported_position = self.players[index].base.position;
@@ -13537,12 +13560,18 @@ impl RolloutWorld {
             + side * data.mine.throw_position.x
             + up * data.mine.throw_position.y;
         let velocity = if grounded {
-            // onlyThrowUp is authored true. Retain the branch so extraction
-            // guards a future source update rather than silently changing it.
-            if data.mine.only_throw_up {
-                up * data.mine.throw_strength
+            let strength = if self.players[index].throw_item.direction.dot(up) < Fix::ZERO {
+                data.mine.min_throw_strength
             } else {
-                up * data.mine.min_throw_strength
+                data.mine.throw_strength
+            };
+            // onlyThrowUp controls the vector independently of the strength.
+            // It is authored true for Mine; preserve that source distinction
+            // so releasing downward still selects minThrowStrength.
+            if data.mine.only_throw_up {
+                up * strength
+            } else {
+                self.players[index].throw_item.direction * strength
             }
         } else {
             Vec2::UP * data.mine.aerial_throw_strength
@@ -15770,11 +15799,10 @@ impl RolloutWorld {
             clone.prev_velocity_change = Vec2::ZERO;
             clone.capture_victim = None;
             clone.capture_left = Fix::ZERO;
-            clone.random_offset = if source.ability == ABILITY_MINE {
-                Fix::ONE - self.rng.fix_range(Fix::ZERO, Fix::from_int(2)) * data.mine.hover_period
-            } else {
-                Fix::ZERO
-            };
+            // Mine.Init is deferred with the cloned MonoUpdatables. Its hover
+            // RNG sample is taken by register_pending_mines next pass, once,
+            // in the same global Updater order as the source.
+            clone.random_offset = Fix::ZERO;
             clone.duplicated = true;
             clone.duplicate_lifespan = 1800;
             clone.duplicate_shake_offset = Vec2::ZERO;

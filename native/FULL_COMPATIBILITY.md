@@ -2369,15 +2369,19 @@ fifth opposing team wraps onto the owner's map spawn, jumps into scan range, and
 exercises the two-second arm, chase, collision ignition, random anticipation,
 deferred destroyed-item row, credited lethal explosion, hitbox disable, and
 stock recovery. IDs, ordering, layers, flags, radii, axes, inverse masses,
-players, slime state, kill credit, and telemetry match. Dynamic entity vectors
-are within 64 raw Q32 units (1.49e-8 units) after chase-direction normalization
-and the resulting shockwave; the inactive/active Mine form center is within
+players, slime state, kill credit, and telemetry match. A second composed
+differential verifies that an early grounded button release selects the source's
+2-unit low throw strength even though `onlyThrowUp` fixes the launch direction,
+then copies that Mine into three independently initialized bodies. Dynamic
+entity vectors in the original chase scenario are within 64 raw Q32 units
+(1.49e-8 units) after chase-direction normalization and the resulting
+shockwave; the inactive/active Mine form center is within
 5,000 raw units (1.17e-6 units) because `PlayerPhysics.SyncPhysicsTo` repeats a
 grounded surface projection before adding the collider offset. These bounds are
 far below collision or control thresholds and do not change state transitions,
 hits, credit, or timing. `MineExplosion`'s remaining visual lifetime is already
 covered exactly by the Missile golden because both abilities reference the same
-prefab. Duplication, scaling, boundary effects, magnet holding, and dedicated
+prefab. Scaling, boundary effects, magnet holding, and dedicated
 Projectile/Explosion igniter scenarios remain open, so coverage is partial.
 
 ### Executable Rock rigid form and bounce contacts (2026-09-14)
@@ -3171,9 +3175,20 @@ Circle/RoundedRectangle manifold before resolving the first one, matching the
 source phase that prevents an earlier ball's platform correction from changing
 a later ball's already-queued contact.
 
+`duplicator_mine_ab.c` adds 1,500 ticks for Mine's distinct original
+`ThrowItem` path and duplicate initialization. Releasing during grounded
+anticipation records the source's down direction and selects the 2-unit
+`minThrowStrength`, while authored `onlyThrowUp` independently keeps the launch
+vector on the surface normal. The resulting Mine and all three fan copies match
+within 64 raw Q32 units through deferred collider registration, arming and
+long-lived hover motion. Each clone consumes its `Mine.Init` hover RNG sample
+once during deferred registration; sampling eagerly at duplication had advanced
+the shared generator three extra values. The active Mine form retains only its
+existing 5,000-raw-Q32 grounded reprojection bound.
+
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. Mine still needs its composed
-golden; Poke Ball capture by a duplicated ball and Mjolnir's later tail remain
+attached-terrain and orb branches are integrated. Poke Ball capture by a
+duplicated ball, copied-object lifetime expiry and Mjolnir's later tail remain
 unmeasured.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
