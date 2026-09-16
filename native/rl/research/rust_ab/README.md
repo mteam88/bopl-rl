@@ -153,6 +153,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `grenade_pickup_ab.c`: overlaps the first pickup with an active Grenade form,
   verifies rejection and released-item continuation, then collects after exit
   and casts the acquired Revival through marker creation and exit.
+- `grenade_broad_ab.sh`: one broad gate over 16 optimized-Q32 scenarios for the
+  complete Grenade source surface: grounded/airborne casts, fuse, bounces,
+  owner gates, multi-kill, forced release, pickup replacement, Arrow, Gust,
+  Magnet, Time Stop, Duplicator and Dash.
 - `black_hole_ability_ab.c`: BlackHoleClap form entry/exit, persistent hole
   spawn and growth, whole-map rounded-platform pull, center-only platform
   destruction, no-effect player kill, and stock-clone reconstruction over 500

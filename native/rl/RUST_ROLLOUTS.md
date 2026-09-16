@@ -308,9 +308,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
 - All catalog ids 0..38 now have executable behavior in the public backend,
   although the partial entries below still lack interaction branches. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,
-  while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade is
-  exact through grounded and aerial release, owner-impact or timed-fuse
-  detonation, and stock recovery; duplication and forced-exit paths remain absent.
+  while Dash/Grenade/Bow/Gust/Time Stop/Platform/Revival/Teleport/Rewind execute casts. Grenade's
+  complete `ThrowItem2`/`Grenade`/`GrenadeExplode` source surface is ported,
+  including grounded/aerial release, scale, owner-impact or timed-fuse
+  detonation, projectile/explosion ignition, forced exits, duplication, Time
+  Stop, water/bounds cleanup and stock recovery. Its 16-scenario broad gate is
+  green.
   Tack is exact through throw, settling, arming, owner-clear re-entry, kill and
   expiry; its shared `Item.Duplicate` path remains absent.
   Mjolnir is exact through outbound flight, platform clangs, return and catch;

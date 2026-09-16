@@ -1220,8 +1220,7 @@ and the replacement collider registers one pass later. The fixture immediately
 casts the acquired third slot through marker creation and form exit. Pickup
 flight retains the established 100,000-raw-Q32 bound, and the angled Grenade
 form retains a one-raw-unit position bound; identities, selection, contacts and
-all lifecycle ticks are exact. Grenade duplication and grounded-form forced
-exits from lost support still require separate goldens before id 3 is complete.
+all lifecycle ticks are exact.
 
 `grenade_forced_exit_ab.c` adds 400 exact gameplay passes for the death exit.
 An Arrow kills the active form on tick 145 while its grenade is held.
@@ -1242,6 +1241,21 @@ preserves the corrected positions and linear/angular velocities, the destroyed
 ownerless Arrow row, twelve subsequent Grenade passes and the normal timed
 explosion from ticks 348 through 438. Candidate capture uses a fixed stack
 array and adds no allocation to the contact path.
+
+A final source audit covers every branch in `ThrowItem2`, `Grenade` and
+`GrenadeExplode`: grounded and airborne form transitions, scale propagation,
+held-payload loss, normal and callback-time forced release, owner-delay and
+Magnet-holder rejection, Time Stop clocks, projectile and explosion ignition,
+dynamic contacts, water/bounds cleanup, timed detonation, startup shockwaves,
+lethal callbacks and duplication. `grenade_broad_ab.sh` runs 16 existing
+optimized-Q32 NativeAOT/Rust scenarios as one gate. It combines grounded and
+airborne casts, held fuse, four platform bounces and a wall reversal, immediate
+non-owner contact, simultaneous owner/opponent death, Arrow-forced release,
+pickup-driven Revival replacement and cast, Arrow contact, Gust, Magnet, Time
+Stop, Duplicator and Dash. Every scenario passes. The only excluded field is
+the already documented angular velocity on an inert destroyed Arrow row after
+the forced-release contact; the row has no collider, owner or later callback in
+either backend. Catalog id 3 is therefore marked `ported`.
 
 `tack_arrow_ab.c` adds 500 differential ticks for the non-Grenade item path.
 The crossing contact on tick 206 uses Tack's authored 0.5-unit radius rather
