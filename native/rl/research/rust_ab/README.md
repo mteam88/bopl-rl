@@ -42,6 +42,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_gun_forms_ab.c`: the same overlapping ray callback across live Blink,
   Growth, Missile, Shrink, Duplicator, Magnet and Freeze forms, covering seven
   more nonlethal `PlayerCollision` owners without an ordinary-slime push.
+- `dash_throw_forms_ab.c`: the same callback across held Grenade, Smoke, Mine,
+  Poke Ball, Tack and Mjolnir forms through each Dash exit.
 - `grapple_player_attach_ab.c`: a close-player Grappling Hook flight attaches
   its top endpoint to the grounded third player after physics, deferring the
   grounded correction until the next pass exactly as `PlayerPhysics` does.

@@ -1031,6 +1031,12 @@ slime push must not run. All seven 240-tick scenarios match with a 64-raw-Q32
 vector bound (less than 0.000000015 world units); identities, form lifecycles,
 cooldowns and all discrete fields are exact.
 
+`dash_throw_forms_ab.c` repeats the same tick-159 callback with held Grenade,
+Smoke, Mine, Poke Ball, Tack and Mjolnir forms. Each scenario continues through
+Dash exit while the target form stays live. All six 180-tick scenarios match
+with the same 64-raw-Q32 vector bound; no held-item lifecycle starts early and
+no ordinary-slime overlap push reaches the form body.
+
 ### Dash ray collision with active Roll (2026-09-15)
 
 Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden

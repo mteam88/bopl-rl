@@ -72,7 +72,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Bow target now dispatches its own nonlethal `PlayerCollision` callback and
   remains stationary rather than receiving the ordinary slime's overlap push.
   Blink, Growth, Missile, Shrink, Duplicator, Magnet and Freeze forms match the
-  same callback boundary in seven exact 240-tick compositions.
+  same callback boundary in seven exact 240-tick compositions. Held Grenade,
+  Smoke, Mine, Poke Ball, Tack and Mjolnir forms match it through six more
+  180-tick compositions.
   A released lethal Roll uses its live circle for the same ray dispatch, kills
   the dasher at the near point and owns the credit; its cosmetic trail consumes
   no updater hierarchy because neither trail component is a `MonoUpdatable`.
