@@ -1036,6 +1036,16 @@ pub struct PlatformDynamics {
     pub shake_amount: Fix,
     pub shake_previous: Vec2,
     pub meteor_shake_curve: bool,
+    /// A wall QuantumTunnel is registered on the shot pass, waits one strict
+    /// second, disables its victim for four seconds, then restores it.
+    pub blink_tunnel_active: bool,
+    pub blink_tunnel_born_tick: u32,
+    pub blink_tunnel_initialized: bool,
+    pub blink_tunnel_delay: Fix,
+    pub blink_tunnel_age: Fix,
+    /// The deactivation pass still receives the rider's scheduled LateUpdate,
+    /// but DetPhysics freezes the inactive platform body immediately.
+    pub blink_deactivated_tick: Option<u32>,
     /// `(orientation, Vec2::angle(orientation))` from the last integration:
     /// a platform that translates without rotating (sudden death, a spring
     /// settling) keeps its basis instead of consulting the sine table twice.
@@ -2810,6 +2820,12 @@ impl RolloutWorld {
                 shake_amount: Fix::ZERO,
                 shake_previous: Vec2::ZERO,
                 meteor_shake_curve: false,
+                blink_tunnel_active: false,
+                blink_tunnel_born_tick: 0,
+                blink_tunnel_initialized: false,
+                blink_tunnel_delay: Fix::ZERO,
+                blink_tunnel_age: Fix::ZERO,
+                blink_deactivated_tick: None,
                 basis: None,
             });
             self.platforms_changed();
@@ -4025,6 +4041,7 @@ impl RolloutWorld {
         self.teleport_effects_tick(data);
         self.teleport_pending_tick(data);
         self.blink_tunnels_tick(data, updater_dt);
+        self.blink_platform_tunnels_tick(data, updater_dt);
         self.grenade_explosions_tick(data, updater_dt);
         self.missile_explosions_tick(data, updater_dt);
         self.smoke_tick(data, updater_dt);
@@ -4234,6 +4251,26 @@ impl RolloutWorld {
             {
                 continue;
             }
+            let ground_index = slot.base.ground.and_then(|ground| {
+                self.platforms
+                    .iter()
+                    .position(|platform| platform.id == ground)
+            });
+            if let Some(platform_index) = ground_index
+                && !self.platforms[platform_index].active
+            {
+                // QuantumTunnel disables a wall after its updater phase, but
+                // the rider's already scheduled LateUpdate still follows the
+                // transform written by the final ShakablePlatform sample.
+                if self.platform_dynamics[platform_index].blink_deactivated_tick == Some(self.tick)
+                {
+                    let platform = &self.platforms[platform_index];
+                    let base = &mut self.players[index].base;
+                    base.position = platform.surface.position(base.local, base.radius);
+                    base.align(platform);
+                }
+                continue;
+            }
             let live_radius = slot.base.ground.and_then(|ground| {
                 self.platforms
                     .iter()
@@ -4253,6 +4290,21 @@ impl RolloutWorld {
         self.macho_late_tick(data);
         self.mines_late_tick(data);
         self.rocks_late_tick(data);
+        // On the following player-updater pass, an attached rider observes
+        // that its StickyRoundedRectangle GameObject is inactive and exits
+        // the ground with the wall's last surface normal.
+        for platform_index in 0..self.platforms.len() {
+            if self.platform_dynamics[platform_index].blink_deactivated_tick != Some(self.tick) {
+                continue;
+            }
+            let id = self.platforms[platform_index].id;
+            let surface = self.platforms[platform_index].surface.clone();
+            for slot in &mut self.players {
+                if slot.base.alive && slot.base.ground == Some(id) {
+                    slot.removed_ground_normal = Some(surface.normal(slot.base.position));
+                }
+            }
+        }
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -5088,6 +5140,16 @@ impl RolloutWorld {
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
+        let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
+            self.platforms
+                .iter()
+                .position(|platform| platform.id == ground)
+                .is_some_and(|platform_index| {
+                    !self.platforms[platform_index].active
+                        && self.platform_dynamics[platform_index].blink_tunnel_active
+                        && self.platform_dynamics[platform_index].blink_tunnel_initialized
+                })
+        });
         let in_ability = {
             let slot = &self.players[index];
             slot.active != ActiveAbility::None || slot.base.dash.active
@@ -5153,7 +5215,13 @@ impl RolloutWorld {
             if !slot.base.grounded {
                 slot.base.gravity_step(terrain!(self));
             }
-            slot.reported_position = slot.base.position;
+            // Player.UpdatePlayer published before SlimeController discovers
+            // that an attached Blink wall was disabled. Preserve that value
+            // on the one detachment pass; the live slime body already moves
+            // away from the wall and is published normally next pass.
+            if !leaving_blink_wall {
+                slot.reported_position = slot.base.position;
+            }
             for s in 0..3 {
                 // A protected player otherwise receives an unscaled delta,
                 // but abilities opting into CooldownStoppedDuringTimeStop
@@ -10860,6 +10928,12 @@ impl RolloutWorld {
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
             meteor_shake_curve: false,
+            blink_tunnel_active: false,
+            blink_tunnel_born_tick: 0,
+            blink_tunnel_initialized: false,
+            blink_tunnel_delay: Fix::ZERO,
+            blink_tunnel_age: Fix::ZERO,
+            blink_deactivated_tick: None,
             basis: None,
         });
         self.platform_defs.push(usize::MAX);
@@ -16679,12 +16753,20 @@ impl RolloutWorld {
             // wall, then asks ShakablePlatform for its serialized one-second shake.
             // The map updater already ran this pass, so its first random
             // displacement is sampled on the next pass.
-            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+            if !self.platform_dynamics[platform_index].blink_tunnel_active {
+                self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+            }
             let dynamics = &mut self.platform_dynamics[platform_index];
             dynamics.shake_time = Fix::ZERO;
             dynamics.shake_duration = data.blink.wall_delay;
             dynamics.shake_amount = data.blink.wall_shake;
             dynamics.meteor_shake_curve = false;
+            dynamics.blink_tunnel_active = true;
+            dynamics.blink_tunnel_born_tick = self.tick;
+            dynamics.blink_tunnel_initialized = false;
+            dynamics.blink_tunnel_delay = Fix::ZERO;
+            dynamics.blink_tunnel_age = Fix::ZERO;
+            dynamics.blink_deactivated_tick = None;
             self.platforms_changed();
         }
     }
@@ -16731,6 +16813,41 @@ impl RolloutWorld {
         }
     }
 
+    /// QuantumTunnel.UpdateSim for rounded-wall victims. The tunnel updater is
+    /// created after map and player updaters, so its strict delay begins on
+    /// the following pass. Inactive colliders remain registered for public
+    /// observation while queries and later physics passes ignore them.
+    fn blink_platform_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for platform_index in 0..self.platforms.len() {
+            let state = &self.platform_dynamics[platform_index];
+            if !state.blink_tunnel_active || state.blink_tunnel_born_tick == self.tick {
+                continue;
+            }
+            if !state.blink_tunnel_initialized {
+                let delay = state.blink_tunnel_delay + updater_dt;
+                self.platform_dynamics[platform_index].blink_tunnel_delay = delay;
+                if delay <= data.blink.wall_delay {
+                    continue;
+                }
+                self.platforms[platform_index].active = false;
+                let state = &mut self.platform_dynamics[platform_index];
+                state.blink_tunnel_initialized = true;
+                state.blink_deactivated_tick = Some(self.tick);
+                self.platforms_changed();
+            }
+            let reactivated =
+                self.platform_dynamics[platform_index].blink_tunnel_age > data.blink.wall_duration;
+            if reactivated {
+                self.platforms[platform_index].active = true;
+                let state = &mut self.platform_dynamics[platform_index];
+                state.blink_tunnel_active = false;
+                state.blink_deactivated_tick = None;
+                self.platforms_changed();
+            }
+            self.platform_dynamics[platform_index].blink_tunnel_age += updater_dt;
+        }
+    }
+
     fn release_grounded_blink_player(&mut self, victim: usize) {
         let old_position = self.players[victim].base.position;
         let water_limit = Fix::from_f32(-11.3) + Fix::from_f32(0.5);
@@ -16739,6 +16856,7 @@ impl RolloutWorld {
         let mut count = 0usize;
         for (index, platform) in self.platforms.iter().enumerate() {
             if count == candidates.len()
+                || !platform.active
                 || platform.surface.center.x < Fix::from_f32(-97.27)
                 || platform.surface.center.x > Fix::from_f32(97.6)
                 || platform.surface.center.y < Fix::from_int(-26)
@@ -16766,7 +16884,7 @@ impl RolloutWorld {
             let player_point =
                 surface_point + self.platforms[selected].surface.normal(surface_point) * radius;
             let blocked = self.platforms.iter().enumerate().any(|(index, platform)| {
-                index != selected && platform.collider.overlaps(player_point)
+                index != selected && platform.active && platform.collider.overlaps(player_point)
             });
             let in_bounds = surface_point.x >= Fix::from_f32(-97.27)
                 && surface_point.x <= Fix::from_f32(97.6)
@@ -16797,7 +16915,9 @@ impl RolloutWorld {
         let mut left = Fix::from_f32(131.25);
         let mut count = 0;
         for platform in &self.platforms {
-            if (platform.collider.inner.center.x - old_position.x).abs() > Fix::from_f32(72.5) {
+            if !platform.active
+                || (platform.collider.inner.center.x - old_position.x).abs() > Fix::from_f32(72.5)
+            {
                 continue;
             }
             count += 1;
@@ -16824,7 +16944,7 @@ impl RolloutWorld {
             if !self
                 .platforms
                 .iter()
-                .any(|platform| platform.collider.overlaps(position))
+                .any(|platform| platform.active && platform.collider.overlaps(position))
             {
                 break;
             }
@@ -17861,6 +17981,12 @@ impl RolloutWorld {
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
             meteor_shake_curve: false,
+            blink_tunnel_active: false,
+            blink_tunnel_born_tick: 0,
+            blink_tunnel_initialized: false,
+            blink_tunnel_delay: Fix::ZERO,
+            blink_tunnel_age: Fix::ZERO,
+            blink_deactivated_tick: None,
             basis: None,
         });
         self.next_platform_id += 1;
@@ -19858,8 +19984,10 @@ impl RolloutWorld {
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
         for platform in &self.platforms {
-            mean += platform.surface.center;
-            active_count += 1;
+            if platform.active {
+                mean += platform.surface.center;
+                active_count += 1;
+            }
         }
         for entity in self
             .entities
@@ -20467,13 +20595,17 @@ impl RolloutWorld {
                 .filter_map(|(p, active)| active.then_some(p)),
         );
         let mut mean = Vec2::ZERO;
+        let mut active_platforms = 0usize;
         for platform in &self.platforms {
-            mean += platform.surface.center;
+            if platform.active {
+                mean += platform.surface.center;
+                active_platforms += 1;
+            }
         }
         for p in others.iter() {
             mean += *p;
         }
-        mean = mean / Fix::from_int((self.platforms.len() + others.len()) as i64);
+        mean = mean / Fix::from_int((active_platforms + others.len()) as i64);
         let mut variance = Vec2::ZERO;
         for platform in &self.platforms {
             let delta = mean - platform.surface.center;
@@ -20503,7 +20635,12 @@ impl RolloutWorld {
         let bounds = &*bounds;
         let active = &mut scratch.active;
         active.clear();
-        active.extend(0..self.platforms.len());
+        active.extend(
+            self.platforms
+                .iter()
+                .enumerate()
+                .filter_map(|(index, platform)| platform.active.then_some(index)),
+        );
         active.sort_by(|&a, &b| {
             (axis(bounds[a][0]) - axis(bounds[b][0]))
                 .sign()
@@ -20537,6 +20674,9 @@ impl RolloutWorld {
     /// before Gust or another later ability applies a direct impulse.
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for i in 0..self.platforms.len() {
+            if !self.platforms[i].active {
+                continue;
+            }
             let previous = self.platform_dynamics[i].body_scale;
             let scale = self.platform_dynamics[i].scale;
             if !self.platform_dynamics[i].body_resizable && previous != scale {
@@ -20568,6 +20708,9 @@ impl RolloutWorld {
             let map = &data.maps[self.map];
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
             for i in 0..self.platforms.len() {
+                if !self.platforms[i].active {
+                    continue;
+                }
                 let def_index = self.platform_defs[i];
                 let (speed_scale, accel, delay, curve) = if def_index == usize::MAX {
                     let Some(spawn) = self
@@ -20607,6 +20750,9 @@ impl RolloutWorld {
         // rounding is observable over long-running springs (notably map 2's
         // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         for i in 0..self.platforms.len() {
+            if !self.platforms[i].active {
+                continue;
+            }
             let position = self.platforms[i].surface.center;
             if self.platform_dynamics[i].init_tick == Some(self.tick) {
                 // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on
@@ -20652,6 +20798,9 @@ impl RolloutWorld {
         // successive samples replace the previous random offset.
         let mut shook = false;
         for i in 0..self.platforms.len() {
+            if !self.platforms[i].active {
+                continue;
+            }
             let duration = self.platform_dynamics[i].shake_duration;
             if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
                 continue;
@@ -20693,6 +20842,9 @@ impl RolloutWorld {
             let map = &data.maps[self.map];
             for orbit in &mut self.orbits {
                 let platform_index = orbit.0;
+                if !self.platforms[platform_index].active {
+                    continue;
+                }
                 let def = &map.platforms[self.platform_defs[platform_index]];
                 let Some(o) = def.orbit.as_ref() else {
                     continue;
@@ -21081,10 +21233,11 @@ impl RolloutWorld {
         let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
         let orbit_running = !self.sudden_death
             && self.orbits.iter().any(|orbit| {
-                data.maps[self.map].platforms[self.platform_defs[orbit.0]]
-                    .orbit
-                    .as_ref()
-                    .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
+                self.platforms[orbit.0].active
+                    && data.maps[self.map].platforms[self.platform_defs[orbit.0]]
+                        .orbit
+                        .as_ref()
+                        .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
             });
         // Bodies and homes only change through paths that bump
         // `platform_epoch`, so a level found quiet stays quiet until then.
@@ -21092,12 +21245,13 @@ impl RolloutWorld {
             self.quiet_epoch != self.platform_epoch
                 && self.platforms.iter().zip(&self.platform_dynamics).any(
                     |(platform, dynamics)| {
-                        platform.surface.center != dynamics.home_position
-                            || dynamics.body.force != Vec2::ZERO
-                            || dynamics.body.velocity != Vec2::ZERO
-                            || dynamics.body.angular_velocity != Fix::ZERO
-                            || dynamics.body.orientation != dynamics.home_rotation
-                            || dynamics.transform_rotation.is_some()
+                        platform.active
+                            && (platform.surface.center != dynamics.home_position
+                                || dynamics.body.force != Vec2::ZERO
+                                || dynamics.body.velocity != Vec2::ZERO
+                                || dynamics.body.angular_velocity != Fix::ZERO
+                                || dynamics.body.orientation != dynamics.home_rotation
+                                || dynamics.transform_rotation.is_some())
                     },
                 );
         if !disturbed {
@@ -21129,6 +21283,9 @@ impl RolloutWorld {
         // contacts. All rollout platforms have gravityScale=0, but pass the
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
+            if !self.platforms[i].active {
+                continue;
+            }
             let dynamics = &mut self.platform_dynamics[i];
             if dynamics.attached_children != 0 {
                 // SyncAllPhysicsObjectsToFixTransformPosition discards any
@@ -23310,8 +23467,8 @@ impl RolloutWorld {
                 &dynamics.root_body
             };
             if e.flags & E_DESTROYED == 0 {
-                e.flags = E_ACTIVE
-                    | E_ENABLED
+                e.flags = E_ENABLED
+                    | if platform.active { E_ACTIVE } else { 0 }
                     | if dynamics.attached_children == 0 {
                         0
                     } else {
@@ -23543,6 +23700,7 @@ impl Default for RolloutWorld {
 fn make_platform(id: u32, surface: &Surface, collider_extents: Vec2) -> Platform {
     Platform {
         id,
+        active: true,
         surface: surface.clone(),
         collider: RoundedRect {
             inner: OrientedBox::from_basis(surface.center, surface.right, collider_extents),

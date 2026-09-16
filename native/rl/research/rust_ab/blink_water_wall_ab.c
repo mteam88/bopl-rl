@@ -1,4 +1,4 @@
-/* Downward Blink shot reflects from Water and shakes the rounded wall hit on the upward pass. */
+/* Downward Blink shot reflects from Water, tunnels a rounded wall, then restores it. */
 #include "bopl_rl.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -158,7 +158,9 @@ static int run_case(BoplRl **world, BoplRlConfig *config, unsigned ability,
     int64_t initial_wall_x = initial->entities[10].x;
     int64_t initial_wall_y = initial->entities[10].y;
     unsigned cast_tick = 0, exit_tick = 0, held = 0, first_shake_tick = 0;
-    for (unsigned tick = 1; tick <= 301; tick++) {
+    unsigned inactive_tick = 0, restored_tick = 0;
+    BoplRlEntity inactive_wall = {0}, restored_wall = {0};
+    for (unsigned tick = 1; tick <= 600; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
         if (!cast_tick && tick > 180 && !(before->slimes[0].ability_flags[0] & 8) &&
@@ -183,16 +185,36 @@ static int run_case(BoplRl **world, BoplRlConfig *config, unsigned ability,
             (reference->entities[10].x != initial_wall_x ||
              reference->entities[10].y != initial_wall_y))
             first_shake_tick = tick;
+        if (!inactive_tick && !(reference->entities[10].flags & 1)) {
+            inactive_tick = tick;
+            inactive_wall = reference->entities[10];
+        } else if (inactive_tick && !restored_tick &&
+                   (reference->entities[10].flags & 1)) {
+            restored_tick = tick;
+            restored_wall = reference->entities[10];
+        }
     }
-    const BoplRlState *final = bopl_rl_state(world[0]);
-    const BoplRlEntity *wall = &final->entities[10];
     if (cast_tick != 181 || exit_tick != 241 || first_shake_tick != 242 ||
-        wall->kind != 2 || wall->layer != 11 || wall->flags != 3 ||
-        wall->x != INT64_C(-59382796186) || wall->y != INT64_C(12126718569)) {
+        inactive_tick != 302 || restored_tick != 543 ||
+        inactive_wall.kind != 2 || inactive_wall.layer != 11 ||
+        inactive_wall.flags != 2 ||
+        inactive_wall.x != INT64_C(-60678191844) ||
+        inactive_wall.y != INT64_C(12851687313) ||
+        inactive_wall.vx != INT64_C(214175208) ||
+        inactive_wall.vy != INT64_C(-233636434) ||
+        restored_wall.flags != 3 ||
+        restored_wall.x != INT64_C(-60675562684) ||
+        restored_wall.y != INT64_C(12849497611) ||
+        restored_wall.vx != INT64_C(157749609) ||
+        restored_wall.vy != INT64_C(-131382088)) {
         fprintf(stderr, "%s lifecycle differs cast=%u exit=%u shake=%u "
-                "wall=%u/%u/%u (%" PRId64 ",%" PRId64 ")\n", label,
-                cast_tick, exit_tick, first_shake_tick, wall->kind, wall->layer,
-                wall->flags, wall->x, wall->y);
+                "inactive=%u (%" PRId64 ",%" PRId64 ") (%" PRId64
+                ",%" PRId64 ") restored=%u (%" PRId64 ",%" PRId64
+                ") (%" PRId64 ",%" PRId64 ")\n", label, cast_tick,
+                exit_tick, first_shake_tick, inactive_tick, inactive_wall.x,
+                inactive_wall.y, inactive_wall.vx, inactive_wall.vy,
+                restored_tick, restored_wall.x, restored_wall.y,
+                restored_wall.vx, restored_wall.vy);
         return 1;
     }
     *cast_out = cast_tick;
@@ -227,7 +249,9 @@ int main(int argc, char **argv) {
     config.player[1].abilities[2] = 14;
     unsigned cast_tick, exit_tick;
     if (run_case(world, &config, 6, "blink", &cast_tick, &exit_tick)) return 1;
-    printf("BLINK_WATER_WALL_GOLDEN_OK ticks=301 cast=%u exit=%u shake=242..301\n", cast_tick, exit_tick);
+    printf("BLINK_WATER_WALL_GOLDEN_OK ticks=600 cast=%u exit=%u "
+           "shake=242..302 inactive=302..542 restored=543\n",
+           cast_tick, exit_tick);
     for (int i = 0; i < 2; i++) bopl_rl_close(world[i]);
     return 0;
 }

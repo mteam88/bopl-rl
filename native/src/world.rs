@@ -14,9 +14,19 @@ pub const DT: Fix = Fix::from_raw(71_582_788);
 fn default_scale() -> Fix {
     Fix::ONE
 }
+fn default_true() -> bool {
+    true
+}
+fn is_true(value: &bool) -> bool {
+    *value
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Platform {
     pub id: u32,
+    /// Unity keeps inactive platform colliders registered, but excludes them
+    /// from queries and simulation until their GameObject is reactivated.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub active: bool,
     pub surface: Surface,
     pub collider: RoundedRect,
     pub ice: bool,
@@ -421,7 +431,7 @@ pub(crate) fn closest_among(
         let index = candidates.trailing_zeros() as usize;
         candidates &= candidates - 1;
         let platform = &platforms[index];
-        if exclude == Some(platform.id) {
+        if !platform.active || exclude == Some(platform.id) {
             continue;
         }
         if let Some(hit) = platform.collider.raycast(origin, direction)
@@ -469,7 +479,7 @@ impl Player {
         platforms
             .iter()
             .enumerate()
-            .find(|(_, p)| Some(p.id) == self.ground)
+            .find(|(_, p)| p.active && Some(p.id) == self.ground)
     }
     /// `input.normalized_safe()`, memoized on the exact input vector.
     fn normalized_input(&mut self, input: Vec2) -> Vec2 {

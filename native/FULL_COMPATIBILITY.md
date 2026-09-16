@@ -2770,15 +2770,20 @@ tick 315 and publishes the new position on tick 316. The remaining fall and
 landing are compared through tick 500; every public row matches with the same
 64-raw-Q32 dynamic-vector allowance, and the final live body position is exact.
 
-`blink_water_wall_ab.c` adds 301 exact ticks for the reflected-wall branch. A
+`blink_water_wall_ab.c` adds 600 exact ticks for the reflected-wall branch. A
 downward release on tick 241 selects Water before terrain, mirrors the vertical
 ray direction, and selects the rounded wall on the recursive no-Water pass.
 The hit creates the tunnel updater and schedules the prefab's 0.3-unit,
 one-second `ShakablePlatform` displacement after that platform updater has
-already run. All 60 seeded random samples from ticks 242 through 301, the rider
-motion and every public row match. The fixture deliberately ends before the
-delayed tunnel initializes on tick 302; wall deactivation, lifetime and
-restoration remain open.
+already run. Because Q32 `DT` is slightly below 1/60, the strict one-second
+comparison takes 61 seeded random samples from ticks 242 through 302. On tick
+302 the final sample is synchronized, the wall's GameObject becomes inactive,
+its entity row retains `E_ENABLED` without `E_ACTIVE`, and its queued spring
+force is held. The attached rider follows the final wall transform that pass,
+then detaches on tick 303 with the source's one-pass `Player.Position`
+publication lag. The wall remains frozen through tick 542 and reactivates on
+tick 543, when the queued spring force integrates and normal motion resumes.
+The rider fall, wall state and every public row remain exact through tick 600.
 
 ### Executable Engine and attached thrust body (2026-09-15)
 
