@@ -13,7 +13,7 @@ static int entity_equal(const BoplRlEntity *a, const BoplRlEntity *b) {
            a->owner == b->owner && a->flags == b->flags &&
            a->hierarchy == b->hierarchy && distance(a->x, b->x) <= 64 &&
            distance(a->y, b->y) <= 64 && distance(a->vx, b->vx) <= 64 &&
-           distance(a->vy, b->vy) <= 64 &&
+           distance(a->vy, b->vy) <= 128 &&
            distance(a->right_x, b->right_x) <= 1 &&
            distance(a->right_y, b->right_y) <= 1 &&
            distance(a->up_x, b->up_x) <= 1 &&

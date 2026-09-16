@@ -2992,6 +2992,27 @@ on tick 1811 in both backends. All 2,200 ticks match with only the standard
 one-raw-unit transformed-axis/position bound; capture, mapped velocity and the
 post-exit state are otherwise exact.
 
+`portal_rock_ab.c` covers the missing dynamic collision between a live
+PortalShot and an active Rock. DetPhysics captures all manifolds before
+resolution, resolves Rock/rounded-platform first, and then resolves the
+circle/circle pair; Rust preserves that group order without allocating contact
+storage. The Rock collider now carries DPhysicsCircle's live radius through
+each `Scale = Player.Scale` ratio and the later BounceBall pulse instead of
+reconstructing it as base radius times the displayed scale. That retains the
+source's Q32 division residue. At tick 244 both backends therefore produce the
+same shot and Rock positions, linear velocities and angular velocities down to
+the raw integer (`PortalShot.vx = -6357891049`,
+`PortalShot.angularVelocity = -1259594354027`). PortalShot is on the item layer,
+so BounceBall adds no callback force beyond the ordinary rigid-body impulse.
+
+The same 500-tick differential also exercises collider re-registration: a
+recast reuses the fixed PortalShot state slot but appends a fresh observation
+row after retained circles, matching `DestroyCircle` followed by `ManualInit`.
+The Rock form exits with its exact retained collider radius and the restored
+player crosses the linked mouths on tick 367. Every compared public field is
+exact, apart from the standard one-raw-unit normalized-axis allowance in the
+shared comparator.
+
 ### Executable Beam forms, pooled graph and damage (2026-09-15)
 
 Catalog id 28 now connects the previously verified Beam kernels to the public

@@ -198,6 +198,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   teammate offsets, two simultaneous effects, and entity order.
 - `portal_arrow_ab.c`: a live Bow Arrow crosses a linked Portal Gun pair,
   mirrors its momentum and collides at the exit on the same pass.
+- `portal_rock_ab.c`: a flying PortalShot resolves an ordinary circle/circle
+  impact against an active Rock exactly, then the former Rock player crosses
+  the linked pair after leaving the form.
 - `portal_pickup_ab.c`: an authored AbilitySpawner pickup crosses an older
   linked portal pair, covering hierarchy-ordered hover physics and mapped exit
   momentum.

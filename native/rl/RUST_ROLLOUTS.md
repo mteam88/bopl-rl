@@ -279,10 +279,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   duplication, scaling, boundaries, magnet holding, and non-player igniters remain open.
   Rock executes the separate rigid circle body, terrain and Rock/Rock impulses,
   same-tick lethal player callbacks, authored pulse and exit curves, and exact
-  stock/Revival collider reconstruction. Gust's active-form BoplBody force,
-  ensuing flight and lower-boundary death are exact. Ordered fixed-point curve
-  and contact math differ by at most 64 raw Q32 units without changing any
-  collision or state decision. Other Shockwaves, scale changes, arrow
+  stock/Revival collider reconstruction. The live collider retains the source
+  DPhysicsCircle scale-ratio residue instead of rebuilding radius from the
+  display scale; this makes the PortalShot impact and subsequent rigid motion
+  raw-Q32 exact. Gust's active-form BoplBody force, ensuing flight and
+  lower-boundary death are exact. Other Shockwaves, scale changes, arrow
   attachment, projectile/item detonation, and mixed transformed-form contacts
   still need dedicated goldens.
   Meteor executes its grounded anticipation and jump, direct airborne entry,
@@ -359,7 +360,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   reaches the portal, without changing capture, exit, or later lifecycle. A
   Bow Arrow composition is exact: the arrow enters on tick 363, maps rightward
   momentum to the exit normal and is destroyed by the exit wall on that same
-  pass in both backends.
+  pass in both backends. A PortalShot/Rock composition is exact for all 500
+  ticks: the dynamic circle pair resolves on tick 244 after Rock's terrain
+  contact, including position, linear and angular velocity; a recast collider
+  is registered after retained circles and the former Rock traverses on tick
+  367.
   An AbilitySpawner pickup composition crosses on tick 2233. Portal and pickup
   updaters merge by spawn hierarchy without allocation, so the older mouth maps
   momentum before the later pickup applies its hover drag and lift, matching
