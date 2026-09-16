@@ -146,10 +146,18 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   detonation before manual collider initialization, stable ID allocation and
   the resulting death/respawn path. A 260-tick horizontal throw is exact through
   four rounded-platform bounces, a wall reversal and its timed explosion. The
+  immediate non-owner branch is exact through an airborne tick-85 contact,
+  deferred blast, owner credit and the victim's complete stock respawn. A
+  second 120-tick composition keeps both players in that blast and matches the
+  callback-time hierarchy reservation plus global circle-before-box public IDs
+  for both stock clones and all six choice markers. Byte-16 aiming leaves only
+  a one-raw-Q32-unit form-position rounding difference, with identical contacts
+  and lifecycle boundaries. The
   aerial form also uses its own extracted `PlayerPhysics`: 0.03-gravity aiming,
   speed clamp, full-gravity release,
   60%-blended horizontal control, body integration and raycast landing are
-  exact. Forced exits and duplication remain open.
+  exact. Owner re-entry after the delay, forced exits and duplication remain
+  open.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
   the authored translational and rotational home springs, ejection and

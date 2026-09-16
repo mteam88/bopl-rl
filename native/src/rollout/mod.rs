@@ -1681,6 +1681,12 @@ pub struct PlayerSlot {
     /// A stock death instantiates its replacement in the callback, but the
     /// new prefab's colliders and SlimeController register next pass.
     pub stock_clone_pending: bool,
+    /// Spawn hierarchies are claimed when SpawnClone runs inside the death
+    /// callback. This matters when one explosion kills multiple players: the
+    /// first clone is instantiated before the second death effect exists.
+    pub stock_clone_player_hierarchy: u32,
+    pub stock_clone_ability_hierarchy: [u32; 3],
+    pub stock_indicator_hierarchy: [u32; 3],
     pub revival_target_marker: Option<usize>,
     pub revival_effect_ticks: u32,
     pub revival_particle_ticks: u32,
@@ -2950,6 +2956,9 @@ impl RolloutWorld {
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
                 stock_clone_pending: false,
+                stock_clone_player_hierarchy: u32::MAX,
+                stock_clone_ability_hierarchy: [u32::MAX; 3],
+                stock_indicator_hierarchy: [u32::MAX; 3],
                 revival_target_marker: None,
                 revival_effect_ticks: 0,
                 revival_particle_ticks: 0,
@@ -12055,6 +12064,14 @@ impl RolloutWorld {
     }
 
     fn register_pending_stock_clones(&mut self, data: &data::RolloutData) {
+        // DetPhysics stores circles and boxes in separate registries.
+        // RlObservation first encounters every new circle, then every new
+        // box, even when several stock clones were instantiated in one
+        // explosion callback pass. Assign public ids in that same order.
+        let mut new_circle_entities = [usize::MAX; MAX_PLAYERS * 6];
+        let mut new_circle_count = 0usize;
+        let mut new_box_entities = [usize::MAX; MAX_PLAYERS * 4];
+        let mut new_box_count = 0usize;
         for index in 0..self.players.len() {
             if !self.players[index].stock_clone_pending {
                 continue;
@@ -12094,14 +12111,10 @@ impl RolloutWorld {
 
             let abilities = self.players[index].abilities;
             let position = self.players[index].base.position;
-            let player_hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += 8;
-            let mut ability_hierarchy = [0u32; 3];
-            for (slot, hierarchy) in ability_hierarchy.iter_mut().enumerate() {
-                *hierarchy = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy +=
-                    data.abilities[abilities[slot] as usize].updatable_count;
-            }
+            let player_hierarchy = self.players[index].stock_clone_player_hierarchy;
+            let ability_hierarchy = self.players[index].stock_clone_ability_hierarchy;
+            let stock_indicator_hierarchy = self.players[index].stock_indicator_hierarchy;
+            debug_assert_ne!(player_hierarchy, u32::MAX);
 
             let mut platform_entity = usize::MAX;
             let mut roll_entity = usize::MAX;
@@ -12147,10 +12160,8 @@ impl RolloutWorld {
                     ),
                     _ => continue,
                 };
-                let id = self.next_id();
                 *target = self.entities.len();
                 self.entities.push(CEntity {
-                    id,
                     kind: 0,
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER,
@@ -12161,17 +12172,16 @@ impl RolloutWorld {
                     inverse_mass: -Fix::ONE.raw(),
                     ..CEntity::default()
                 });
+                new_circle_entities[new_circle_count] = *target;
+                new_circle_count += 1;
             }
 
             let mut indicator_entities = [usize::MAX; 3];
             for (indicator, target) in indicator_entities.iter_mut().enumerate() {
-                let hierarchy_base = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy += data.revival.marker_updatable_count;
-                let id = self.next_id();
+                let hierarchy_base = stock_indicator_hierarchy[indicator];
                 *target = self.entities.len();
                 let indicator_position = data.maps[self.map].respawn_points[indicator];
                 self.entities.push(CEntity {
-                    id,
                     kind: 0,
                     layer: data.revival.marker_layer,
                     owner: index as u32 + 1,
@@ -12185,14 +12195,14 @@ impl RolloutWorld {
                     inverse_mass: data.revival.marker_body.inverse_mass.raw(),
                     ..CEntity::default()
                 });
+                new_circle_entities[new_circle_count] = *target;
+                new_circle_count += 1;
             }
 
             let body_entity = self.entities.len();
-            let body_id = self.next_id();
             let body_collider =
                 OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
             self.entities.push(CEntity {
-                id: body_id,
                 kind: 1,
                 layer: LAYER_PLAYER,
                 owner: index as u32 + 1,
@@ -12207,6 +12217,8 @@ impl RolloutWorld {
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
+            new_box_entities[new_box_count] = body_entity;
+            new_box_count += 1;
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
             let mut throw_entity = usize::MAX;
@@ -12321,11 +12333,9 @@ impl RolloutWorld {
                     ),
                     _ => continue,
                 };
-                let id = self.next_id();
                 *target = self.entities.len();
                 let collider = OrientedBox::from_basis(Vec2::ZERO, Vec2::RIGHT, extents);
                 self.entities.push(CEntity {
-                    id,
                     kind: 1,
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER,
@@ -12409,6 +12419,8 @@ impl RolloutWorld {
                     inverse_mass: -Fix::ONE.raw(),
                     ..CEntity::default()
                 });
+                new_box_entities[new_box_count] = *target;
+                new_box_count += 1;
             }
 
             let slot = &mut self.players[index];
@@ -12483,6 +12495,16 @@ impl RolloutWorld {
             slot.beam_entity = beam_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
+            slot.stock_clone_player_hierarchy = u32::MAX;
+            slot.stock_clone_ability_hierarchy = [u32::MAX; 3];
+            slot.stock_indicator_hierarchy = [u32::MAX; 3];
+        }
+        for entity in new_circle_entities[..new_circle_count]
+            .iter()
+            .chain(&new_box_entities[..new_box_count])
+        {
+            let id = self.next_id();
+            self.entities[*entity].id = id;
         }
     }
 
@@ -20848,6 +20870,20 @@ impl RolloutWorld {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
+            let abilities = slot.abilities;
+            let stock_clone_player_hierarchy = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += 8;
+            let mut stock_clone_ability_hierarchy = [0u32; 3];
+            for (ability_slot, hierarchy) in stock_clone_ability_hierarchy.iter_mut().enumerate() {
+                *hierarchy = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy +=
+                    data::get().abilities[abilities[ability_slot] as usize].updatable_count;
+            }
+            let mut stock_indicator_hierarchy = [0u32; 3];
+            for hierarchy in &mut stock_indicator_hierarchy {
+                *hierarchy = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy += data::get().revival.marker_updatable_count;
+            }
             for entity in [
                 slot.body_entity,
                 slot.dash_entity,
@@ -20887,6 +20923,9 @@ impl RolloutWorld {
             }
             slot.stocks -= 1;
             slot.stock_clone_pending = true;
+            slot.stock_clone_player_hierarchy = stock_clone_player_hierarchy;
+            slot.stock_clone_ability_hierarchy = stock_clone_ability_hierarchy;
+            slot.stock_indicator_hierarchy = stock_indicator_hierarchy;
             slot.respawn_ticks = 360;
             slot.respawn_spawn_ticks = 0;
             slot.respawn_selected = 1;

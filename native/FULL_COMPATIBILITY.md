@@ -1135,7 +1135,22 @@ before map home springs, and reuse existing fixed arrays/entity pools.
 `grenade_bounce_ab.c` adds a strict 260-tick horizontal throw through rounded
 platform bounces on ticks 71, 115, 148 and 163, a later wall reversal and the
 timed explosion. Every public field is exact without adding a tolerance.
-Non-owner hits, grenade duplication and grounded-form forced exits still require
+
+`grenade_non_owner_ab.c` adds 700 optimized-Q32 ticks in which the opponent
+crosses under the caster, jumps into an upward throw and triggers contact on
+tick 85, before the grenade can hurt its owner. The caster retreats outside the
+deferred explosion, receives the kill, and the victim completes stock choice,
+fast spawn and landing. Public state is exact except for the active form's
+one-raw-Q32-unit position rounding while aiming at byte 16 (less than
+0.00000000024 world units); it does not change a query, contact or phase.
+
+`grenade_multi_kill_ab.c` retains the caster inside the same blast for 120
+ticks. Both PlayerCollision callbacks kill in one DetPhysics pass. Stock clone
+hierarchies are now reserved at each callback, including the intervening death
+effect and choice-marker prefabs, while observation IDs are assigned across the
+global circle registry before the box registry. Both callback-created clones,
+their copied ability colliders and all six choice markers match exactly on the
+next pass. Grenade duplication and grounded-form forced exits still require
 separate goldens before id 3 is complete.
 
 ### Executable Tack throw and trap (2026-09-14)

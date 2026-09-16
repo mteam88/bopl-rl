@@ -70,6 +70,12 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `grenade_bounce_ab.c`: a horizontal Grenade release through four exact
   rounded-platform bounces, a wall reversal and the later timed explosion over
   260 ticks.
+- `grenade_non_owner_ab.c`: an upward Grenade throw hits an airborne opponent
+  before the owner gate opens, then verifies deferred blast credit and the
+  victim's complete stock respawn over 700 ticks.
+- `grenade_multi_kill_ab.c`: the same early contact leaves both players in the
+  blast and verifies callback-time hierarchy reservation plus shape-grouped IDs
+  for two stock clones registered together.
 - `time_stop_arrow_ab.c`: a live Bow projectile across Time Stop entry, all
   690 frozen physics passes, and its first restored gravity/flight pass; also
   verifies source-derived Arrow prefab hierarchy allocation.
