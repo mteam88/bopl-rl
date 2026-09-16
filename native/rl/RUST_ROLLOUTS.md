@@ -57,7 +57,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   resolved during player spawning with the reference RNG sequence, full-catalog
   selection range, and the all-Random offensive fallback. Dash, Bow, and
   Platform are ported from `sim/Gameplay`
-  with measured timings. Dash's non-wall ray dispatch now includes the active
+  with measured timings. Dash now ports its full serialized RaycastAll mask:
+  Player, Projectile, wall, LethalTerrain, Explosion, RigidBodyAffector and
+  orb shapes are collected into retained scratch storage, sorted by source
+  near-distance/hierarchy order and dispatched until the first wall. Owner
+  immunity/credit, Beam deaths and positive-Black-Hole consumption follow the
+  target component callbacks. The broad active-form differentials and focused
+  Arrow/Rock/Roll/player/rope cases remain exact; the newly reachable spawned
+  hazard classes are listed as ported-but-unmeasured in
+  `ABILITY_PORT_GAPS.md`. Dash's non-wall ray dispatch includes the active
   Rock circle: `BounceBall.OnCollide` receives its authored impulse before
   Rock's contact-kill flag kills the dasher at the ray near point. A five-player
   composition matches that same-pass death, owner credit and stock clone for

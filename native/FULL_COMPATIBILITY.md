@@ -1083,6 +1083,30 @@ following stock clone match. Curved-surface pose values retain Roll's existing
 2,048-raw-Q32 bound (less than 0.0000005 world units); all discrete state and
 contact decisions are identical.
 
+### Complete Dash RaycastAll source path (2026-09-16)
+
+Dash now translates the remainder of `Dash.performDash`'s serialized collision
+mask rather than special-casing only walls, players and Arrows. A retained
+scratch vector collects Player, Projectile, wall, LethalTerrain, Explosion,
+RigidBodyAffector and orb rows, then sorts them by near distance and
+`PhysicsParent` hierarchy before walking callbacks until the first wall.
+Player-form geometry comes from the collider pose last synchronized by
+DetPhysics, preserving each form's circle/box choice, rotation and scale.
+The dispatch covers projectile owner immunity, explosion owner credit and
+accidents, Beam's Beamed cause, and positive Black Hole consumption/growth.
+Meteor smears retain their caster so this path can credit their source owner.
+The vector is allocated with the world and reused across casts.
+
+The broad `dash_gun_forms_ab.c`, `dash_throw_forms_ab.c` and
+`dash_remaining_forms_ab.c` compositions still match across every live player
+form, while `dash_arrow_ab.c`, `dash_player_ab.c`, `dash_rock_ab.c`,
+`dash_roll_ab.c`, `dash_rope_ab.c` and `dash_grapple_rope_ab.c` preserve
+their exact callback, death and handoff boundaries. The complete existing
+golden suite also passes. Live crossings against each newly reachable spawned
+hazard class are source-ported but remain explicitly unverified in
+`ABILITY_PORT_GAPS.md`; that verification distinction keeps Dash at
+`partial`.
+
 ### Executable Grenade throw and flight (2026-09-14)
 
 Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned

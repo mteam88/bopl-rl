@@ -8,7 +8,7 @@
 //! byte-exactness; the .NET sim stays the reference (native/rl/RUST_ROLLOUTS.md).
 use crate::{
     fixed::Fix,
-    geometry::{Circle, OrientedBox, RoundedRect},
+    geometry::{Circle, OrientedBox, RayHit, RoundedRect},
     physics::{Body, Contact, positional_correction, resolve},
     random::Random,
     surface::Surface,
@@ -268,6 +268,7 @@ const LAYER_WATER: u32 = 4;
 const CAUSE_OTHER: u32 = 0;
 const CAUSE_SQUISHED: u32 = 1;
 const CAUSE_ACCIDENT: u32 = 2;
+const CAUSE_BEAMED: u32 = 4;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
 const ENVIRONMENT: u32 = 0xFFFF_FFFF;
@@ -1154,6 +1155,7 @@ pub struct MeteorSmear {
     pub born_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
+    pub owner: usize,
     pub age: u32,
     pub center: Vec2,
     pub right: Vec2,
@@ -1879,6 +1881,18 @@ struct PlatformScratch {
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
+    /// Dash.RaycastAll output, retained across casts so the hot rollout never
+    /// allocates for the source's sorted collider list.
+    dash_hits: Vec<DashRayHit>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DashRayHit {
+    distance: Fix,
+    hierarchy: u32,
+    /// 0 wall, 1 player slot, 2 non-player entity row.
+    kind: u8,
+    index: usize,
 }
 
 pub struct RolloutWorld {
@@ -2040,6 +2054,7 @@ impl RolloutWorld {
                 item_window: Vec::with_capacity(192),
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
+                dash_hits: Vec::with_capacity(192),
                 ..PlatformScratch::default()
             },
             platform_dynamics: Vec::with_capacity(64),
@@ -7096,13 +7111,13 @@ impl RolloutWorld {
             && water_distance >= Fix::ZERO
             && water_distance < nearest
         {
-            self.spawn_meteor_smear(start, Vec2::new(start.x, water), data);
+            self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
             self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(20));
             self.exit_meteor_air(index, data);
             return;
         }
         let Some((platform_index, near)) = hit else {
-            self.spawn_meteor_smear(start, Vec2::new(start.x, water), data);
+            self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
             self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(10));
             self.exit_meteor_air(index, data);
             return;
@@ -7136,7 +7151,7 @@ impl RolloutWorld {
         self.platforms_changed();
 
         self.spawn_meteor_wave(near, platform_index, index, force_scale, data);
-        self.spawn_meteor_smear(start, near, data);
+        self.spawn_meteor_smear(start, near, index, data);
 
         let landing = self.platforms[platform_index]
             .surface
@@ -7182,7 +7197,7 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
     }
 
-    fn spawn_meteor_smear(&mut self, from: Vec2, to: Vec2, data: &data::RolloutData) {
+    fn spawn_meteor_smear(&mut self, from: Vec2, to: Vec2, owner: usize, data: &data::RolloutData) {
         let distance = (to - from).length();
         let extents = Vec2::new(data.meteor.smear_extents.x, distance * Fix::from_f32(0.5));
         let offset = Vec2::new(
@@ -7211,6 +7226,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             hierarchy_base,
             entity: Some(entity_index),
+            owner,
             age: 0,
             center: to + offset,
             right: Vec2::new(extents.x, Fix::ZERO),
@@ -13592,138 +13608,304 @@ impl RolloutWorld {
         };
         if let Some((origin, direction, caster_id)) = dash_cast {
             let data = data::get();
-            let wall =
-                crate::world::closest(terrain!(self), origin, direction, Fix::from_int(13), None)
-                    .map(|(_, distance, _)| distance);
+            let distance_limit = Fix::from_int(13);
+            self.scratch.dash_hits.clear();
 
-            // Dash.performDash raycasts the Projectile layer too. It first
-            // calls Arrow.OnCollide with Dash's Player-layer hitbox. Dash has
-            // PlayerBody rather than BoplBody, so Arrow returns without
-            // landing or destroying itself. PlayerCollision then kills the
-            // dasher unless this is an owner-safe young arrow.
-            let mut arrow_hits: Vec<_> = self
-                .arrows
-                .iter()
-                .enumerate()
-                .filter(|(_, arrow)| arrow.active && arrow.registered)
-                .filter_map(|(arrow_index, arrow)| {
-                    (Circle {
-                        center: arrow.position,
-                        radius: data.arrow.radius,
-                    })
-                    .raycast(origin, direction)
-                    .filter(|hit| {
-                        hit.near <= Fix::from_int(13)
-                            && wall.is_none_or(|distance| hit.near < distance)
-                    })
-                    .map(|hit| (arrow_index, hit.near.max(Fix::ZERO)))
-                })
-                .collect();
-            arrow_hits.sort_by_key(|&(arrow_index, distance)| (distance, arrow_index));
-            for (arrow_index, distance) in arrow_hits {
-                let arrow = self.arrows[arrow_index];
-                let lethal = arrow.owner != caster_id || arrow.can_hurt_owner;
-                if lethal {
-                    let cause = if arrow.owner == caster_id {
-                        CAUSE_ACCIDENT
-                    } else {
-                        CAUSE_OTHER
-                    };
-                    // The dasher dies where the ray met the arrow: Dash moves
-                    // its body to nearPos before KillPlayerOnCollision and
-                    // never restores it on a kill (Dash.cs:177-183).
-                    let slot = &mut self.players[index];
-                    slot.base.position = origin + direction * distance;
-                    slot.reported_position = slot.base.position;
-                    self.kill(index, arrow.owner, cause, false, false);
-                    if arrow.owner != caster_id && arrow.owner >= 1 {
-                        self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
-                    }
-                    return;
-                }
+            // DetPhysics.RaycastAll sorts every shape by near distance and
+            // then PhysicsParent hierarchy. The first wall terminates Dash's
+            // callback walk, while non-wall hits before it all receive their
+            // callbacks. Retain one preallocated list so mixed compositions
+            // preserve that ordering without allocating on a cast.
+            if let Some((platform_index, distance, _)) =
+                crate::world::closest(terrain!(self), origin, direction, distance_limit, None)
+            {
+                let hierarchy = self.entities[self.platform_entities[platform_index]].hierarchy;
+                self.scratch.dash_hits.push(DashRayHit {
+                    distance,
+                    hierarchy,
+                    kind: 0,
+                    index: platform_index,
+                });
             }
 
-            let mut targets = [(usize::MAX, Fix::MAX); MAX_PLAYERS];
-            let mut target_count = 0;
             for (target, player) in self.players.iter().enumerate() {
-                if target == index || !player.base.alive || player.base.dash.active {
-                    continue;
-                }
-                let hit = match player.active {
-                    ActiveAbility::Rock => Circle {
-                        center: player.base.position,
-                        radius: data.rock.radius * player.rock.scale,
-                    }
-                    .raycast(origin, direction),
-                    ActiveAbility::Roll => Circle {
-                        center: player.base.position,
-                        radius: data.roll.radius,
-                    }
-                    .raycast(origin, direction),
-                    _ => player
-                        .base
-                        .collider
-                        .raycast_within(origin, direction, Fix::from_int(13)),
-                };
-                let Some(hit) = hit.filter(|hit| {
-                    hit.near <= Fix::from_int(13) && wall.is_none_or(|distance| hit.near < distance)
-                }) else {
-                    continue;
-                };
-                targets[target_count] = (target, hit.near.max(Fix::ZERO));
-                target_count += 1;
-            }
-            targets[..target_count].sort_unstable_by_key(|&(target, distance)| (distance, target));
-            for &(target, distance) in &targets[..target_count] {
-                if self.players[target].active == ActiveAbility::Rock {
-                    // Dash.performDash invokes the hit PhysicsParent callback
-                    // before its own PlayerCollision. BounceBall first queues
-                    // its Player-layer impulse; Rock's KillPlayersOnContact
-                    // flag then kills the dasher at the ray's near point.
-                    self.players[target].rock.body.force +=
-                        direction * data.rock.player_collision_bounce * Fix::from_int(60);
-                    let slot = &mut self.players[index];
-                    slot.base.position = origin + direction * distance;
-                    slot.reported_position = slot.base.position;
-                    self.kill(
-                        index,
-                        self.players[target].base.id,
-                        CAUSE_OTHER,
-                        false,
-                        true,
-                    );
-                    return;
-                }
-                if self.players[target].active == ActiveAbility::Roll
-                    && self.players[target].roll.lethal
+                if target == index
+                    || !player.base.alive
+                    || player.base.dash.active
+                    || (player.active == ActiveAbility::Platform
+                        && player.platform.phase != PLATFORM_ANTICIPATION)
                 {
-                    // A released Roll sets its owning Ability's
-                    // KillPlayersOnContact flag. Dash temporarily moves to
-                    // the ray near point before invoking its PlayerCollision,
-                    // so a lethal Roll kills it there and owns the credit.
-                    let slot = &mut self.players[index];
-                    slot.base.position = origin + direction * distance;
-                    slot.reported_position = slot.base.position;
-                    self.kill(
-                        index,
-                        self.players[target].base.id,
-                        CAUSE_OTHER,
-                        false,
-                        true,
-                    );
-                    return;
+                    continue;
                 }
-                if self.players[target].active == ActiveAbility::None {
-                    // An ordinary target dispatches SlimeController.OnCollide
-                    // and receives its one-sided overlap push. Active forms
-                    // own PlayerCollision instead; a nonlethal Dash has no
-                    // push callback for them.
-                    self.players[target].base.push_from(origin, target < index);
+                let entity = match player.active {
+                    ActiveAbility::None => player.body_entity,
+                    ActiveAbility::Dash => player.dash_entity,
+                    ActiveAbility::Bow => player.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
+                    | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Mine => player.mine_entity,
+                    ActiveAbility::Rock => player.rock_entity,
+                    ActiveAbility::Roll => player.roll_entity,
+                    ActiveAbility::Meteor => player.meteor_entity,
+                    ActiveAbility::Push => player.push_entity,
+                    ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::Blink => player.blink_entity,
+                    ActiveAbility::GrowthRay => player.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Duplicator => player.duplicator_entity,
+                    ActiveAbility::Magnet => player.magnet_entity,
+                    ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::Engine => player.engine_entity,
+                    ActiveAbility::Tesla => player.tesla_entity,
+                    ActiveAbility::TimeStop => player.time_stop_entity,
+                    ActiveAbility::Gust => player.gust_entity,
+                    ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Throw => player.macho_throw_entity,
+                    ActiveAbility::Drill => player.drill_entity,
+                    ActiveAbility::Beam => player.beam_entity,
+                    ActiveAbility::Platform => player.circle_entity,
+                };
+                // Dash runs before the DetPhysics stage. Its RaycastAll sees
+                // the collider pose last synchronized by DetPhysics, exactly
+                // the pose retained in the entity row. This also preserves
+                // each form's authored circle/box choice, rotation and scale.
+                let Some(row) = self.entities.get(entity).copied() else {
+                    continue;
+                };
+                let Some(hit) = Self::raycast_entity_row(row, origin, direction)
+                    .filter(|hit| hit.near <= distance_limit)
+                else {
+                    continue;
+                };
+                self.scratch.dash_hits.push(DashRayHit {
+                    distance: hit.near.max(Fix::ZERO),
+                    hierarchy: row.hierarchy,
+                    kind: 1,
+                    index: target,
+                });
+            }
+
+            // The shipped mask is Player, Projectile, wall, LethalTerrain,
+            // Explosion, RigidBodyAffector and orb. Player and wall shapes are
+            // handled above; every registered non-player circle/box can be
+            // read directly from the retained DetPhysics observation row.
+            const DASH_NON_PLAYER_MASK: u32 =
+                (1 << LAYER_PROJECTILE) | (1 << 16) | (1 << 18) | (1 << 23) | (1 << 26);
+            for (entity_index, row) in self.entities.iter().copied().enumerate() {
+                if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || DASH_NON_PLAYER_MASK & (1u32 << row.layer) == 0
+                {
+                    continue;
+                }
+                let hit = Self::raycast_entity_row(row, origin, direction);
+                let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
+                    continue;
+                };
+                self.scratch.dash_hits.push(DashRayHit {
+                    distance: hit.near.max(Fix::ZERO),
+                    hierarchy: row.hierarchy,
+                    kind: 2,
+                    index: entity_index,
+                });
+            }
+            self.scratch
+                .dash_hits
+                .sort_unstable_by_key(|hit| (hit.distance, hit.hierarchy));
+
+            for hit_index in 0..self.scratch.dash_hits.len() {
+                let hit = self.scratch.dash_hits[hit_index];
+                match hit.kind {
+                    0 => break,
+                    1 => {
+                        let target = hit.index;
+                        if !self.playable(target) {
+                            continue;
+                        }
+                        if self.players[target].active == ActiveAbility::Rock {
+                            // PhysicsParent callback precedes the caster's
+                            // PlayerCollision callback.
+                            self.players[target].rock.body.force +=
+                                direction * data.rock.player_collision_bounce * Fix::from_int(60);
+                            let slot = &mut self.players[index];
+                            slot.base.position = origin + direction * hit.distance;
+                            slot.reported_position = slot.base.position;
+                            self.kill(
+                                index,
+                                self.players[target].base.id,
+                                CAUSE_OTHER,
+                                false,
+                                true,
+                            );
+                            return;
+                        }
+                        if self.players[target].active == ActiveAbility::Roll
+                            && self.players[target].roll.lethal
+                        {
+                            let slot = &mut self.players[index];
+                            slot.base.position = origin + direction * hit.distance;
+                            slot.reported_position = slot.base.position;
+                            self.kill(
+                                index,
+                                self.players[target].base.id,
+                                CAUSE_OTHER,
+                                false,
+                                true,
+                            );
+                            return;
+                        }
+                        if self.players[target].active == ActiveAbility::None {
+                            self.players[target].base.push_from(origin, target < index);
+                        }
+                    }
+                    2 => {
+                        let entity = hit.index;
+                        let row = self.entities[entity];
+
+                        // RigidBodyAffector is not itself lethal in
+                        // PlayerCollision. Positive BlackHole consumes the
+                        // swept Dash body in its own callback and grows from
+                        // the ability body's infinite-mass sentinel.
+                        if row.layer == 23 {
+                            if let Some(hole_index) = self.black_holes.iter().position(|hole| {
+                                hole.active && hole.entity == Some(entity) && hole.mass >= Fix::ZERO
+                            }) {
+                                let killer = self.black_holes[hole_index].owner as u32 + 1;
+                                Self::black_hole_grow(
+                                    &mut self.black_holes[hole_index],
+                                    -Fix::ONE,
+                                    Fix::ZERO,
+                                    data,
+                                );
+                                let slot = &mut self.players[index];
+                                slot.base.position = origin + direction * hit.distance;
+                                slot.reported_position = slot.base.position;
+                                self.kill(index, killer, CAUSE_OTHER, false, false);
+                                return;
+                            }
+                            continue;
+                        }
+
+                        let mut killer = row.owner;
+                        let mut can_hurt_owner = matches!(row.layer, 16 | 18);
+                        let mut cause = CAUSE_OTHER;
+                        let mut arrow_owner = None;
+                        if let Some(arrow) = self
+                            .arrows
+                            .iter()
+                            .find(|arrow| arrow.active && arrow.entity == Some(entity))
+                        {
+                            killer = arrow.owner;
+                            can_hurt_owner = arrow.can_hurt_owner;
+                            arrow_owner = Some(arrow.owner);
+                        } else if let Some(explosion) = self
+                            .grenade_explosions
+                            .iter()
+                            .find(|explosion| explosion.active && explosion.entity == Some(entity))
+                        {
+                            killer = explosion.owner as u32 + 1;
+                            can_hurt_owner = true;
+                        } else if let Some(explosion) = self
+                            .missile_explosions
+                            .iter()
+                            .find(|explosion| explosion.active && explosion.entity == Some(entity))
+                        {
+                            killer = if explosion.credited_owner {
+                                explosion.owner as u32 + 1
+                            } else {
+                                0
+                            };
+                            can_hurt_owner = true;
+                        } else if let Some(explosion) = self
+                            .smoke_explosions
+                            .iter()
+                            .find(|explosion| explosion.active && explosion.entity == Some(entity))
+                        {
+                            killer = explosion.owner as u32 + 1;
+                            can_hurt_owner = true;
+                        } else if let Some(smear) = self
+                            .meteor_smears
+                            .iter()
+                            .find(|smear| smear.active && smear.entity == Some(entity))
+                        {
+                            killer = smear.owner as u32 + 1;
+                            can_hurt_owner = true;
+                        } else if let Some(orb) = self
+                            .beam_orbs
+                            .iter()
+                            .find(|orb| orb.active && orb.entity == Some(entity))
+                        {
+                            killer = orb.owner as u32 + 1;
+                            can_hurt_owner = false;
+                        } else if let Some(beam) = self
+                            .beam_pool
+                            .iter()
+                            .find(|beam| beam.active && beam.entity == Some(entity))
+                        {
+                            killer = beam.hitbox.owner_id as u32;
+                            can_hurt_owner = true;
+                            cause = CAUSE_BEAMED;
+                        }
+                        if killer == caster_id && !can_hurt_owner {
+                            continue;
+                        }
+                        let cause = if killer == caster_id && can_hurt_owner {
+                            CAUSE_ACCIDENT
+                        } else {
+                            cause
+                        };
+                        let slot = &mut self.players[index];
+                        slot.base.position = origin + direction * hit.distance;
+                        slot.reported_position = slot.base.position;
+                        self.kill(index, killer, cause, false, false);
+                        if let Some(owner) = arrow_owner
+                            && owner != caster_id
+                            && owner >= 1
+                        {
+                            self.players[owner as usize - 1].telemetry.arrow_hits += 1;
+                        }
+                        return;
+                    }
+                    _ => unreachable!(),
                 }
             }
         }
         if !self.players[index].base.dash.active {
             self.players[index].active = ActiveAbility::None;
+        }
+    }
+
+    #[inline]
+    fn raycast_entity_row(row: CEntity, origin: Vec2, direction: Vec2) -> Option<RayHit> {
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        match row.kind {
+            0 => Circle {
+                center,
+                radius: Fix::from_raw(row.radius),
+            }
+            .raycast(origin, direction),
+            1 => {
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                let right_length = right.length();
+                let up_length = up.length();
+                if right_length == Fix::ZERO || up_length == Fix::ZERO {
+                    None
+                } else {
+                    OrientedBox {
+                        center,
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(Fix::ONE / right_length, Fix::ONE / up_length),
+                    }
+                    .raycast(origin, direction)
+                }
+            }
+            _ => None,
         }
     }
 
