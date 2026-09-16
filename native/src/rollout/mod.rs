@@ -488,6 +488,10 @@ pub struct MissileExplosion {
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
     pub position: Vec2,
+    /// Live collider scale for the shared MineExplosion prefab. Mine copies
+    /// its IPhysicsCollider scale; Missile reads its separate FixTransform
+    /// scale (normally one). The sibling Shockwave keeps its own scale one.
+    pub scale: Fix,
     pub owner: usize,
     pub credited_owner: bool,
     pub age: u32,
@@ -20552,7 +20556,7 @@ impl RolloutWorld {
             let collider = OrientedBox::from_basis(
                 explosion.position,
                 Vec2::RIGHT,
-                data.missile.explosion_extents,
+                data.missile.explosion_extents * explosion.scale,
             );
             self.entities[entity] = CEntity {
                 id,
@@ -20581,6 +20585,7 @@ impl RolloutWorld {
         position: Vec2,
         owner: usize,
         credited_owner: bool,
+        scale: Fix,
         data: &data::RolloutData,
     ) {
         let hierarchy_base = self.next_spawn_hierarchy;
@@ -20590,6 +20595,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             hierarchy_base,
             position,
+            scale,
             owner,
             credited_owner,
             ..MissileExplosion::default()
@@ -20647,8 +20653,14 @@ impl RolloutWorld {
                 boundary_explosion = Some(Vec2::new(Fix::from_f64(131.25), position.y));
             }
             if let Some(explosion_position) = boundary_explosion {
-                let owner = self.guided_missiles[index].owner;
-                self.spawn_missile_explosion(explosion_position, owner, false, data);
+                let missile = self.guided_missiles[index];
+                self.spawn_missile_explosion(
+                    explosion_position,
+                    missile.owner,
+                    false,
+                    Fix::ONE,
+                    data,
+                );
                 self.destroy_guided_missile(index, false);
                 continue;
             }
@@ -20760,6 +20772,128 @@ impl RolloutWorld {
         }
     }
 
+    #[inline]
+    fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
+        let row = self.entities[entity];
+        if row.flags & E_ACTIVE == 0 {
+            return false;
+        }
+        if row.kind == 0 {
+            crate::physics::contact::circle_circle(
+                query,
+                Circle {
+                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                    radius: Fix::from_raw(row.radius),
+                },
+            )
+            .is_some()
+        } else {
+            let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+            let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+            crate::physics::contact::circle_box(
+                query,
+                OrientedBox {
+                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                    right,
+                    up,
+                    inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                },
+            )
+            .is_some()
+        }
+    }
+
+    /// Mine.ScanForPlayers uses DetPhysics' fixed four-entry CircleCastAll
+    /// buffer. Hits are written in collider-registry order (circles, boxes,
+    /// rounded rectangles) before Mine filters owners, teams or invisibility.
+    fn mine_scan_target(&self, item_index: usize, data: &data::RolloutData) -> Option<Vec2> {
+        const MAX_CANDIDATES: usize = MAX_PLAYERS * 17;
+        let mine = self.thrown_items[item_index];
+        let query = Circle {
+            center: mine.position,
+            radius: data.mine.scan_radius * mine.scale,
+        };
+        let mut candidates = [(0u32, 0u32, usize::MAX, usize::MAX); MAX_CANDIDATES];
+        let mut count = 0;
+        for (player_index, player) in self.players.iter().enumerate() {
+            if !self.playable_slot(player) {
+                continue;
+            }
+            let entity = Self::blink_player_entity(player);
+            if entity == usize::MAX
+                || self.entities[entity].layer != LAYER_PLAYER
+                || self.entities[entity].flags & E_ACTIVE == 0
+            {
+                continue;
+            }
+            if count < candidates.len() {
+                let row = self.entities[entity];
+                candidates[count] = (row.kind, row.id, entity, player_index);
+                count += 1;
+            }
+        }
+        for clone in &self.abilityless_clones {
+            let Some(entity) = clone.entity.filter(|_| clone.active) else {
+                continue;
+            };
+            if self.entities[entity].layer != LAYER_PLAYER
+                || self.entities[entity].flags & E_ACTIVE == 0
+            {
+                continue;
+            }
+            if count < candidates.len() {
+                let row = self.entities[entity];
+                candidates[count] = (row.kind, row.id, entity, clone.owner);
+                count += 1;
+            }
+        }
+        candidates[..count].sort_unstable_by_key(|&(kind, id, _, _)| (kind, id));
+
+        let owner_team = self.players[mine.owner].team;
+        let mut written = 0;
+        for &(_, _, entity, player_index) in &candidates[..count] {
+            if !self.circle_overlaps_entity(query, entity) {
+                continue;
+            }
+            written += 1;
+            let player = &self.players[player_index];
+            if player_index != mine.owner && !player.invisible && player.team != owner_team {
+                let row = self.entities[entity];
+                return Some(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)));
+            }
+            if written == 4 {
+                break;
+            }
+        }
+        None
+    }
+
+    /// OnCollide accepts every Player-layer collider except the current
+    /// Magnet holder's own hurtbox while the mine is held.
+    fn mine_hits_player_layer(&self, query: Circle, holder: Option<usize>) -> bool {
+        let ignored = holder.map(|index| Self::blink_player_entity(&self.players[index]));
+        for player in &self.players {
+            if !self.playable_slot(player) {
+                continue;
+            }
+            let entity = Self::blink_player_entity(player);
+            if entity != usize::MAX
+                && Some(entity) != ignored
+                && self.entities[entity].layer == LAYER_PLAYER
+                && self.circle_overlaps_entity(query, entity)
+            {
+                return true;
+            }
+        }
+        self.abilityless_clones.iter().any(|clone| {
+            clone.active
+                && clone.entity.is_some_and(|entity| {
+                    self.entities[entity].layer == LAYER_PLAYER
+                        && self.circle_overlaps_entity(query, entity)
+                })
+        })
+    }
+
     fn mines_late_tick(&mut self, data: &data::RolloutData) {
         for item_index in 0..self.thrown_items.len() {
             if self.blink_object_hidden(self.thrown_items[item_index].entity) {
@@ -20777,6 +20911,7 @@ impl RolloutWorld {
             }
 
             let phase = self.thrown_items[item_index].phase;
+            let being_held = self.thrown_items[item_index].magnet_holder.is_some();
             {
                 let mine = &mut self.thrown_items[item_index];
                 mine.age += DT;
@@ -20791,24 +20926,8 @@ impl RolloutWorld {
             if phase == 0 {
                 continue;
             }
-            let scan_target = if matches!(phase, 1 | 2) {
-                let position = self.thrown_items[item_index].position;
-                let scan = Circle {
-                    center: position,
-                    radius: data.mine.scan_radius,
-                };
-                self.players
-                    .iter()
-                    .enumerate()
-                    .find(|(player_index, player)| {
-                        *player_index != owner
-                            && self.playable_slot(player)
-                            && !player.invisible
-                            && player.team != self.players[owner].team
-                            && crate::physics::contact::circle_box(scan, player.base.collider)
-                                .is_some()
-                    })
-                    .map(|(_, player)| player.base.position)
+            let scan_target = if matches!(phase, 1 | 2) && !being_held {
+                self.mine_scan_target(item_index, data)
             } else {
                 None
             };
@@ -20823,6 +20942,9 @@ impl RolloutWorld {
             }
 
             if phase == 2 {
+                if being_held {
+                    continue;
+                }
                 let mut detonate = false;
                 {
                     let mine = &mut self.thrown_items[item_index];
@@ -20932,7 +21054,7 @@ impl RolloutWorld {
         // Mine and Missile both reference the same MineExplosion prefab. Mine
         // supplies Explosion.PlayerOwnerId for lethal attribution; the
         // co-located Shockwave/IPlayerIdHolder remains owner zero.
-        self.spawn_missile_explosion(item.position, item.owner, true, data);
+        self.spawn_missile_explosion(item.position, item.owner, true, item.scale, data);
         // Detonation runs in LateUpdateSim, after DetPhysics has already
         // built this observation's collider arrays. DestroyFix therefore
         // leaves one destroyed row until the next Simulate pass removes it.
@@ -21286,6 +21408,25 @@ impl RolloutWorld {
                 }
                 self.remove_thrown_item(item_index, false);
                 continue;
+            }
+            if ability == ABILITY_MINE {
+                let item = self.thrown_items[item_index];
+                let boundary_position = if item.position.y > Fix::from_f64(72.5) {
+                    Some(Vec2::new(item.position.x, Fix::from_f64(72.5)))
+                } else if item.position.x < Fix::from_f64(-131.25) {
+                    Some(Vec2::new(Fix::from_f64(-131.25), item.position.y))
+                } else if item.position.x > Fix::from_f64(131.25) {
+                    Some(Vec2::new(Fix::from_f64(131.25), item.position.y))
+                } else {
+                    None
+                };
+                if let Some(position) = boundary_position {
+                    // DestroyIfOutsideSceneBounds instantiates MineExplosion
+                    // without assigning Explosion.PlayerOwnerId.
+                    self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
+                    self.remove_thrown_item(item_index, false);
+                    continue;
+                }
             }
             let timed_out = {
                 let item = &mut self.thrown_items[item_index];
@@ -21893,7 +22034,13 @@ impl RolloutWorld {
                         continue;
                     }
                     let missile = self.guided_missiles[missile_index];
-                    self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+                    self.spawn_missile_explosion(
+                        missile.position,
+                        missile.owner,
+                        false,
+                        Fix::ONE,
+                        data,
+                    );
                     self.destroy_guided_missile(missile_index, true);
                     if let Some(entity) = missile.entity {
                         let row = &mut self.entities[entity];
@@ -22214,7 +22361,7 @@ impl RolloutWorld {
                 continue;
             }
             let missile = self.guided_missiles[index];
-            self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+            self.spawn_missile_explosion(missile.position, missile.owner, false, Fix::ONE, data);
             self.destroy_guided_missile(index, true);
         }
 
@@ -22336,7 +22483,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let owner = missile.owner;
-                self.spawn_missile_explosion(center, owner, false, data);
+                self.spawn_missile_explosion(center, owner, false, Fix::ONE, data);
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
                     let row = &mut self.entities[entity];
@@ -22362,7 +22509,13 @@ impl RolloutWorld {
             if crate::physics::contact::box_box(missile_box, water).is_some()
                 && missile.magnet_hold_ticks < 0
             {
-                self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+                self.spawn_missile_explosion(
+                    missile.position,
+                    missile.owner,
+                    false,
+                    Fix::ONE,
+                    data,
+                );
                 self.destroy_guided_missile(missile_index, true);
                 continue;
             }
@@ -22453,7 +22606,7 @@ impl RolloutWorld {
                     }
                     continue;
                 }
-                self.spawn_missile_explosion(missile_center, missile.owner, false, data);
+                self.spawn_missile_explosion(missile_center, missile.owner, false, Fix::ONE, data);
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
                     let row = &mut self.entities[entity];
@@ -22475,7 +22628,13 @@ impl RolloutWorld {
             if missile.magnet_hold_ticks < 0
                 && self.guided_missile_hits_trigger(missile, missile_box)
             {
-                self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+                self.spawn_missile_explosion(
+                    missile.position,
+                    missile.owner,
+                    false,
+                    Fix::ONE,
+                    data,
+                );
                 self.destroy_guided_missile(missile_index, true);
                 continue;
             }
@@ -22549,7 +22708,13 @@ impl RolloutWorld {
                 }
             });
             if hit_player {
-                self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+                self.spawn_missile_explosion(
+                    missile.position,
+                    missile.owner,
+                    false,
+                    Fix::ONE,
+                    data,
+                );
                 self.destroy_guided_missile(missile_index, true);
             }
         }
@@ -22952,7 +23117,7 @@ impl RolloutWorld {
                             OrientedBox::from_basis(
                                 explosion.position,
                                 Vec2::RIGHT,
-                                data.missile.explosion_extents,
+                                data.missile.explosion_extents * explosion.scale,
                             ),
                         )
                         .is_some()
@@ -22974,12 +23139,11 @@ impl RolloutWorld {
                     center: self.thrown_items[item_index].position,
                     radius: thrown_item_radius(data, self.thrown_items[item_index]),
                 };
-                let hit_player = self.players.iter().any(|player| {
-                    self.playable_slot(player)
-                        && crate::physics::contact::circle_box(mine_circle, player.base.collider)
-                            .is_some()
-                });
-                let hit_projectile = self.arrows.iter().any(|arrow| {
+                let hit_player = self.mine_hits_player_layer(
+                    mine_circle,
+                    self.thrown_items[item_index].magnet_holder,
+                );
+                let hit_arrow = self.arrows.iter().any(|arrow| {
                     arrow.active
                         && arrow.registered
                         && crate::physics::contact::circle_circle(
@@ -22991,6 +23155,24 @@ impl RolloutWorld {
                         )
                         .is_some()
                 });
+                let hit_tack = self
+                    .thrown_items
+                    .iter()
+                    .enumerate()
+                    .any(|(other_index, tack)| {
+                        other_index != item_index
+                            && tack.active
+                            && tack.ability == ABILITY_TACK
+                            && tack.entity.is_some()
+                            && crate::physics::contact::circle_circle(
+                                mine_circle,
+                                Circle {
+                                    center: tack.position,
+                                    radius: thrown_item_radius(data, *tack),
+                                },
+                            )
+                            .is_some()
+                    });
                 let hit_grenade_explosion = self.grenade_explosions.iter().any(|explosion| {
                     explosion.active
                         && explosion.registered
@@ -23014,12 +23196,17 @@ impl RolloutWorld {
                             OrientedBox::from_basis(
                                 explosion.position,
                                 Vec2::RIGHT,
-                                data.mine.explosion_extents,
+                                data.mine.explosion_extents * explosion.scale,
                             ),
                         )
                         .is_some()
                 });
-                if hit_player || hit_projectile || hit_grenade_explosion || hit_mine_explosion {
+                if hit_player
+                    || hit_arrow
+                    || hit_tack
+                    || hit_grenade_explosion
+                    || hit_mine_explosion
+                {
                     let mine = &mut self.thrown_items[item_index];
                     mine.time_since_anticipation =
                         data.mine.anticipation_duration * Fix::from_f32(0.8);
@@ -23172,7 +23359,7 @@ impl RolloutWorld {
             let hitbox = OrientedBox::from_basis(
                 explosion.position,
                 Vec2::RIGHT,
-                data.missile.explosion_extents,
+                data.missile.explosion_extents * explosion.scale,
             );
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
@@ -23258,7 +23445,7 @@ impl RolloutWorld {
             let hitbox = OrientedBox::from_basis(
                 explosion.position,
                 Vec2::RIGHT,
-                data.missile.explosion_extents,
+                data.missile.explosion_extents * explosion.scale,
             );
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {

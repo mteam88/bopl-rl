@@ -360,8 +360,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   longer needs its former 5,000/8,192-raw positional allowance. A 2,524-tick
   pickup composition also matches released-Mine continuation, post-exit slot
   replacement, deferred Revival registration, same-pass held-button activation,
-  marker creation and exit. Scaling, boundaries, magnet holding, active-form
-  pickup overlap and non-player igniters remain open.
+  marker creation and exit. The remaining source pass adds scale-aware fixed-four-hit
+  scans across active forms and abilityless clones, exact held-Magnet pause and
+  holder exclusion, Arrow/Tack/Explosion igniters, scaled direct explosions and
+  upper/side boundary effects. `mine_broad_ab.sh` keeps eight optimized-Q32
+  compositions green; those added branches are source-ported but not each isolated
+  by a public differential.
   Rock executes the separate rigid circle body, terrain and Rock/Rock impulses,
   same-tick lethal player callbacks, authored pulse and exit curves, and exact
   stock/Revival collider reconstruction. The live collider retains the source

@@ -2700,8 +2700,29 @@ collider offset separately from the angle-derived DPhysicsBox axes. This removes
 the earlier 5,000-raw positional allowance without changing the shared surface
 or trigonometric kernels. `MineExplosion`'s remaining visual lifetime is already
 covered exactly by the Missile golden because both abilities reference the same
-prefab. Scaling, boundary effects, magnet holding, and dedicated
-Projectile/Explosion igniter scenarios remain open, so coverage is partial.
+prefab.
+
+A source-complete follow-up ports the remaining `Mine`, `ThrowItem`,
+`DestroyIfOutsideSceneBounds`, and shared-explosion branches. The autonomous
+scan now multiplies its radius by collider scale, preserves the source's
+four-hit capacity and collider-type/registration order, and includes active
+player forms plus abilityless clones before owner/team/invisibility filtering.
+Magnet-held Mines keep hovering but pause arming scans and chase time/force;
+their collision callback ignores only the holder's current hurtbox. The
+igniter mask now covers Player, Arrow/Tack Projectile and Grenade/MineExplosion
+contacts. Direct Mine detonation copies `physicsCollider.Scale` to the lethal
+box, while upper/side boundary effects and Missile explosions remain at prefab
+scale: Missile reads its unchanged `FixTransform.Scale`, even when
+ScaleChanger has grown the separate physics collider. Water still produces
+only the authored splash/removal path. These scans use a fixed stack buffer and
+the pooled explosion state, adding no per-tick allocation.
+
+`mine_broad_ab.sh` runs eight optimized-Q32 scenarios spanning ordinary
+cast/chase/detonation, held and released Gust, held/released/anticipation Time
+Stop, Duplicator fan copies and Dash against every ThrowItem form. All pass,
+as do the Q32 tests and 6,821-step base golden corpus. The newly ported
+scan/contact/bounds branches do not each have a standalone differential;
+catalog id 24 is marked `ported` after the wholesale source audit.
 
 `mine_pickup_ab.c` adds 2,524 ticks with the authored AbilitySpawner enabled.
 The first pickup stays live throughout the Mine form while its autonomous item

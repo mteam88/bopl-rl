@@ -298,6 +298,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `missile_broad_ab.sh`: one broad gate over 16 optimized-Q32 Missile
   scenarios spanning entry variants, steering/instability, players/forms,
   Arrow, Grenade, Water, Gust, Time Stop, duplication, scale, Magnet and Dash.
+- `mine_broad_ab.sh`: one broad gate over eight optimized-Q32 Mine scenarios
+  spanning ordinary chase/detonation, held and released Gust, held/released/
+  anticipation Time Stop, Duplicator fan copies and Dash against all shared
+  ThrowItem forms.
 - `duplicator_missile_ab.c`: a live guided Missile receives three
   velocity-aligned fan copies with fresh engine state, then all four projectiles
   match boundary destruction, deferred explosions and visual expiry over 450 ticks.
