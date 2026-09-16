@@ -449,6 +449,12 @@ def main():
           f" training maps {c.get('training_maps')}, held-out {c.get('heldout_maps')}, v4 shape {c.get('v4_shape')}")
     for r in runs:
         throughput(r)
+        for resumed in r.config.get('resumed', []):
+            # train.py --resume restores weights, pool, frozen banks, counters and
+            # schedules; Muon's momentum buffers and the recurrent state restart cold.
+            print(f"  {r.name}: resumed at {resumed['at_learner_steps']/1e6:.0f}M learner steps from"
+                  f" {Path(resumed['checkpoint']).name} (steps {resumed['steps']}); the optimizer momentum"
+                  f" restarted cold there, the one discontinuity of the recipe")
     pool_scores(runs, a.pool)
     if steps:
         elo_curve(runs, steps)
