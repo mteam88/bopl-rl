@@ -479,7 +479,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   allocation-free circular-item fan copies are also live, including deferred
   collider registration, copied body state, 1,800-pass expiry, grenade reset
   fields, ordinary rigid contacts, explosion shockwaves and water-boundary
-  cleanup. A Smoke-copy differential additionally covers its cloned-Grenade
+  cleanup. The Grenade fixture asserts every source/copy removal plus the
+  original and copied explosion registrations; held payloads are unreachable
+  because their circles are not registered until release. A Smoke-copy
+  differential additionally covers its cloned-Grenade
   reset, wall/Water contact detonation and same-pass removal of clouds born
   below WaterHeight. Tack copies now match fresh prefab runtime state, delayed
   behavior registration, arming and two trap consumptions over 450 ticks.

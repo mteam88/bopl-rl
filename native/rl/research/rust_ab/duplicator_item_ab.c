@@ -171,6 +171,16 @@ static unsigned active_items(const BoplRlState *state) {
     return count;
 }
 
+static unsigned active_grenade_explosions(const BoplRlState *state) {
+    unsigned count = 0;
+    for (unsigned i = 0; i < state->header.entity_count; i++) {
+        const BoplRlEntity *entity = &state->entities[i];
+        if (entity->layer == 18 && (entity->flags & 1))
+            count++;
+    }
+    return count;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3)
         return 2;
@@ -207,7 +217,9 @@ int main(int argc, char **argv) {
 
     unsigned grenade_cast = 0, grenade_exit = 0, duplicator_cast = 0;
     unsigned duplicator_release = 0, max_items = 0;
-    unsigned first_loss = 0, second_loss = 0, previous_items = 0;
+    unsigned first_loss = 0, second_loss = 0, third_loss = 0, fourth_loss = 0;
+    unsigned first_explosion = 0, copied_explosion = 0;
+    unsigned previous_items = 0, previous_explosions = 0;
     for (unsigned tick = 1; tick <= 450; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
@@ -268,23 +280,41 @@ int main(int argc, char **argv) {
             first_loss = tick;
         if (previous_items == 3 && items == 2 && !second_loss)
             second_loss = tick;
+        if (previous_items == 2 && items == 1 && !third_loss)
+            third_loss = tick;
+        if (previous_items == 1 && items == 0 && !fourth_loss)
+            fourth_loss = tick;
         previous_items = items;
+
+        unsigned explosions = active_grenade_explosions(reference);
+        if (!previous_explosions && explosions) {
+            if (!first_explosion)
+                first_explosion = tick;
+            else if (!copied_explosion)
+                copied_explosion = tick;
+        }
+        previous_explosions = explosions;
     }
 
     for (int backend = 0; backend < 2; backend++)
         bopl_rl_close(world[backend]);
     if (grenade_cast != 154 || grenade_exit != 183 ||
         duplicator_cast != 183 || duplicator_release != 228 ||
-        max_items != 4 || first_loss != 236 || second_loss != 378) {
+        max_items != 4 || first_loss != 236 || second_loss != 378 ||
+        third_loss != 384 || fourth_loss != 391 || first_explosion != 237 ||
+        copied_explosion != 392) {
         fprintf(stderr,
-                "unexpected stages %u/%u/%u/%u items %u losses %u/%u\n",
+                "unexpected stages %u/%u/%u/%u items %u losses %u/%u/%u/%u "
+                "explosions %u/%u\n",
                 grenade_cast, grenade_exit, duplicator_cast,
-                duplicator_release, max_items, first_loss, second_loss);
+                duplicator_release, max_items, first_loss, second_loss,
+                third_loss, fourth_loss, first_explosion, copied_explosion);
         return 1;
     }
     printf("DUPLICATOR_ITEM_GOLDEN_OK ticks=450 stages=%u/%u/%u/%u "
-           "items=%u losses=%u/%u\n",
+           "items=%u losses=%u/%u/%u/%u explosions=%u/%u\n",
            grenade_cast, grenade_exit, duplicator_cast, duplicator_release,
-           max_items, first_loss, second_loss);
+           max_items, first_loss, second_loss, third_loss, fourth_loss,
+           first_explosion, copied_explosion);
     return 0;
 }

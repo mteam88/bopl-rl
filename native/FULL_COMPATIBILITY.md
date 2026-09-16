@@ -3170,9 +3170,13 @@ thrower, owner-hit and staggered-fuse reset.
 compares 450 optimized-Q32 NativeAOT/Rust ticks. All copy positions and
 velocities match within one raw unit through overlapping Circle/Circle
 manifolds, the source grenade's two startup shockwaves, a water-boundary
-removal, a stock clone, and a later copied-grenade explosion. Fresh explosion
-colliders append in DetPhysics box order even when their fixed native state
-slot is reused. The only accepted item difference is 32,722 raw Q32 rotation
+removal, a stock clone, and a later copied-grenade explosion. The fixture
+explicitly asserts all four item-removal ticks and both the original and copied
+explosion-registration ticks. A held ThrowItem2 payload cannot be duplicated
+in the source: its circle is absent from DetPhysics until `ManualInit` on
+release, so the ray has no selectable item row. Fresh explosion colliders
+append in DetPhysics box order even when their fixed native state slot is
+reused. The only accepted item difference is 32,722 raw Q32 rotation
 units (7.62e-6 radians): Unity copies the source `BoplBody.rotation`
 accumulator, while Rust retains the previously published circular collider
 orientation. Rotation has no geometric or collision meaning for these circle
