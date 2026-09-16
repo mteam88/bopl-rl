@@ -3159,10 +3159,18 @@ to recall, homing acceleration and the original hammer's removal. All public
 state remains within 64 raw Q32 units through tick 420. The later sensitive
 recall/contact tail and duplicated-object expiry remain open.
 
+`duplicator_poke_ab.c` verifies the same serialized-versus-runtime reset for a
+Poke Ball. Its three fan copies, clone-local collider hierarchies, delayed
+`PokeBall` launch initialization, owner publication, angular velocity and 89
+ballistic passes match within 64 raw Q32 units through tick 317. Tick 318 is
+the first rounded-platform contact; a one-raw-unit fan-position difference is
+amplified by the dynamic manifold, so that contact, capture and expiry remain
+explicitly open rather than being hidden behind a wider golden tolerance.
+
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. Poke Ball and Mine use the
-same allocation-free circular-item clone path but still need exact composed
-goldens, and Mjolnir's later tail remains unmeasured.
+attached-terrain and orb branches are integrated. Mine still needs its composed
+golden; Poke Ball's contact/capture tail and Mjolnir's later tail remain
+unmeasured.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 

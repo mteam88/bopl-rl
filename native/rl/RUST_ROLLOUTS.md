@@ -468,8 +468,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   behavior registration, arming and two trap consumptions over 450 ticks.
   Mjolnir copies match the same clone initialization, outbound damping, recall
   and original-hammer removal over 420 ticks.
+  Poke Ball copies match registration, launch initialization and 89 ballistic
+  passes through the pass before their first dynamic-platform contact; that
+  sensitive contact and later capture/expiry remain open.
   Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
-  open; Poke Ball, Mine, copied-object expiry and Mjolnir's late tail need
+  open; Mine, copied-object expiry and the Poke/Mjolnir late tails need
   composed goldens.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
