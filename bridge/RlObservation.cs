@@ -23,6 +23,7 @@ internal static class RlObservation
     private static readonly FieldInfo timeStopElapsed = typeof(TimeStop).GetField("secondsElapsed", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly FieldInfo timeStopDuration = typeof(TimeStop).GetField("duration", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly FieldInfo timeStopExitAlpha = typeof(TimeStop).GetField("ExitAlpha", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo platformBuffer = typeof(PlatformTransform).GetField("srrBuffer", BindingFlags.Instance | BindingFlags.NonPublic);
     private static uint nextId;
 
     internal static void Reset()
@@ -151,12 +152,44 @@ internal static class RlObservation
         return ticks > uint.MaxValue ? uint.MaxValue : (uint)ticks;
     }
 
+    // Spawned platforms (ResizablePlatform.prefab, held in PlatformTransform.srrBuffer)
+    // carry no owner. As the Rust sim, credit them to the platform ability: the slot
+    // whose buffer holds this platform, else any platform slot (a platform being
+    // removed has already left its spawner's buffer).
+    private static uint PlatformAbility(ResizablePlatform platform)
+    {
+        uint any = 0;
+        foreach (var slime in slimes) {
+            if (slime == null || slime.IsDestroyed || slime.abilities == null) continue;
+            int count = Math.Min(3, slime.abilities.Count);
+            for (int slot = 0; slot < count; slot++) {
+                var ability = slime.abilities[slot];
+                if (ability == null || ability.IsDestroyed) continue;
+                var spawner = ability.GetComponent<PlatformTransform>();
+                if (spawner == null) continue;
+                uint id = SlimeAbilityId(slime, slot);
+                if (id == 0) continue;
+                var held = (ResizablePlatform[])platformBuffer.GetValue(spawner);
+                if (held != null)
+                    for (int i = 0; i < held.Length; i++)
+                        if (held[i] == platform) return id;
+                if (any == 0) any = id;
+            }
+        }
+        return any;
+    }
+
     private static uint SourceAbility(FixTransform transform, int owner, DynamicAbilityPickup pickup, Grenade grenade,
-        FlammableSmoke smoke, SimpleSparkNode spark)
+        FlammableSmoke smoke, SimpleSparkNode spark, Projectile projectile)
     {
         if (pickup != null) {
             var renderer = pickup.GetComponent<SpriteRenderer>();
             if (renderer != null && renderer.sprite != null && icons.TryGetValue(renderer.sprite, out uint granted)) return granted;
+        }
+        var resizable = transform.GetComponent<ResizablePlatform>();
+        if (resizable != null) {
+            uint platform = PlatformAbility(resizable);
+            if (platform != 0) return platform;
         }
         var direct = transform.GetComponent<AbilityMonoBehaviour>();
         if (direct == null) direct = transform.GetComponentInParent<AbilityMonoBehaviour>();
@@ -168,6 +201,8 @@ internal static class RlObservation
         }
         // Smoke objects retain an exact reference in their casting ThrowItem2's
         // effect buffer. Spark nodes can be tied to an owner's live spark ability.
+        // Arrows (BowTransform.InstantiateFixed(Arrow)) carry only their owner's
+        // id, so they are credited to the owner's bow slot, as the Rust sim does.
         foreach (var slime in slimes) {
             if (slime == null || slime.IsDestroyed || slime.abilities == null || slime.GetPlayerId() != owner) continue;
             int count = Math.Min(3, slime.abilities.Count);
@@ -182,6 +217,8 @@ internal static class RlObservation
                             if (effects[i] == smoke) return SlimeAbilityId(slime, slot);
                 }
                 if (spark != null && (ability.GetComponent<PlaceSparkNode>() != null || ability.GetComponent<SparkShot>() != null))
+                    return SlimeAbilityId(slime, slot);
+                if (projectile != null && ability.GetComponent<BowTransform>() != null)
                     return SlimeAbilityId(slime, slot);
             }
         }
@@ -214,7 +251,7 @@ internal static class RlObservation
                 flags |= 1u << 14;
                 if (contact.KillPlayersOnContact) flags |= 1u << 13;
             }
-            source = SourceAbility(transform, owner, pickup, grenade, smoke, spark);
+            source = SourceAbility(transform, owner, pickup, grenade, smoke, spark, projectile);
             if (grenade != null && grenade.selfDestructDelay >= Fix.Zero) {
                 remaining = RemainingTicks(grenade.selfDestructDelay); clockRate = GameTime.PlayerTimeScale; flags |= 1u << 6;
             } else if (pickup != null) {
