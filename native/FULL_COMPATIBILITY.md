@@ -3726,9 +3726,29 @@ most 48,225,412 raw Q32 units (0.01123 world units) because it inherits the
 documented grouped Magnet form pose; target selection, wall handling, release
 and later flight are unchanged.
 
-Magnet remains partial while other projectiles, Boulder and Black Hole pickup,
-player ragdoll holding, spell/weapon handling and lock loss are integrated and
-goldened.
+A source-completion pass replaces the three optional held-object fields with one
+fixed tagged handle and extends the same query/update/release path to every
+modeled `onlyPull`/`onlyPickup` target: ordinary and active-form players, active
+Rock bodies, positive Black Holes, Macho boulders, ability pickups and
+PortalShots. It preserves the authored per-scale, Rock and Boulder firepoint
+offsets, strict nearest-centre selection, `MagnetSteal` pause, wall-clamped
+spherical interpolation, held-player ragdoll refresh and rope endpoint pinning,
+item `MoveObjectOutOfWalls`, signed Black-Hole force, and the distinct player,
+Rock, Missile, Boulder, Black-Hole, projectile and ordinary-item fire forces.
+Timeout, distance, target destruction, holder death and ability-exit paths all
+clear the tagged reference while each BoplBody-like pool keeps its independent
+short Hold countdown. The scans reuse the existing pools and do not allocate in
+the tick path.
+
+`magnet_broad_ab.sh` is the single broad Magnet gate. It compiles and runs 12
+NativeAOT/Rust scenarios covering both form entries, walls and player pulls,
+parry, every ordinary ThrowItem2 body, Arrow, guided Missile including the
+updater-sensitive landing, Time Stop and Gust. All pass with their existing
+bounds. The newly translated Rock, ragdoll-player, Black-Hole, boulder, pickup,
+PortalShot, steal and lock-loss branches remain source-ported but unclaimed by
+an exact public differential. Generic weapon/spell bodies other than the modeled
+PortalShot still depend on those objects acquiring native rigid-body state, so
+Magnet remains `partial`.
 
 ### Executable Web Swing and observed rope rows (2026-09-15)
 

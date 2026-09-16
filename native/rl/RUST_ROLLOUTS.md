@@ -651,8 +651,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   `MoveObjectOutOfWalls`, residual platform contact and suppressed held-item
   callback all match within 64 raw Q32 units. A live Bow arrow also matches the
   distinct layer-9 projectile pull, pickup, held countdown and `FireForce * 2`
-  launch path. Other projectiles, Boulder/Black Hole bodies, ragdolls,
-  weapon/spell holding and lock loss remain open.
+  launch path. The remaining represented source targets now share one fixed
+  tagged held-object path: ordinary/active-form players, active Rocks, positive
+  Black Holes, Macho boulders, ability pickups and PortalShots. Their nearest
+  selection, authored offsets, pull, stealing, wall-clamped holding, ragdoll and
+  rope refresh, object-out-of-wall correction, target-specific firing and all
+  loss/exit cleanup are allocation-free. `magnet_broad_ab.sh` runs the 12 exact
+  Magnet compositions above as one gate. Exact episodes for those newly ported
+  targets and generic weapon/spell rigid bodies remain open.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

@@ -299,6 +299,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   Roll, subsequent form motion and correctly phased lower-boundary death.
 - `gust_bow_ab.c`: Gust's one-shot PlayerPhysics force against a live
   aim-oriented Bow form and its subsequent charging-form motion.
+- `magnet_broad_ab.sh`: the broad Magnet gate; compiles and runs 12 exact
+  differentials spanning grounded/airborne form use, walls and players, parry,
+  all ordinary ThrowItem2 bodies, Arrow, guided Missile/landing, Time Stop and
+  Gust with one command.
 - `magnet_ability_ab.c`: Magnet's first-pass pull, rounded-platform impulses,
   player pull, grounded and airborne form motion, release recoil, landing and
   animation exits over 1,000 optimized-Q32 ticks. The active form centre allows
