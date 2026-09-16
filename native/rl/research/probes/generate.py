@@ -50,8 +50,11 @@ for name in ("archer-hard", "pursuer-hard", "evasive-hard", "mixed-hard", "mixed
 INDEX = {c["name"]: i for i, c in enumerate(CONTROLLERS)}
 
 
-def schedule():
-    """The game list: (game id, controller index per player, map, seed). Side-swapped seed pairs."""
+def schedule(maps=MAPS, scale=1.0, base_game=0, base_seed=500_000):
+    """The game list: (game id, controller index per player, map, seed). Side-swapped seed pairs.
+
+    The default is the training-map set (maps 0-2). `heldout_schedule` is the same plan at a quarter
+    of the volume on maps 3-4, which 024 never trained on, for the map-memorisation probes."""
     games = []
     pool_names = [c["name"] for c in CONTROLLERS if c["kind"] == "checkpoint" and c["name"].startswith("v3b")]
     scripted = ["archer-hard", "pursuer-hard", "evasive-hard", "mixed-hard", "mixed-medium"]
@@ -61,14 +64,20 @@ def schedule():
              ("024-final", "024-early-320m", 192)]
     plan += [("024-early-320m", name, 24) for name in pool_names]
     plan += [("024-early-320m", name, 24) for name in scripted]
-    seed = 500_000
+    seed = base_seed
     for focal, other, count in plan:
+        count = max(2, int(round(count * scale / 2)) * 2)
         for i in range(count):
             side = i % 2
             controllers = [INDEX[focal], INDEX[other]] if side == 0 else [INDEX[other], INDEX[focal]]
-            games.append(dict(game=len(games), controllers=controllers, map=MAPS[(i // 2) % 3], seed=seed + i // 2, focal=focal, other=other))
+            games.append(dict(game=base_game + len(games), controllers=controllers, map=maps[(i // 2) % len(maps)],
+                              seed=seed + i // 2, focal=focal, other=other))
         seed += 1000
     return games
+
+
+def heldout_schedule():
+    return schedule(maps=(3, 4), scale=0.25, base_game=10_000, base_seed=900_000)
 
 
 class Runner:
@@ -239,12 +248,14 @@ def main():
     parser.add_argument("--out", type=Path, default=OUT)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=0, help="only the first N games of the schedule")
+    parser.add_argument("--heldout", action="store_true", help="the maps 3-4 supplement (game ids from 10000)")
     args = parser.parse_args()
-    games = schedule()
+    games = heldout_schedule() if args.heldout else schedule()
     if args.limit:
         games = games[:args.limit]
     (args.out / "games").mkdir(parents=True, exist_ok=True)
-    (args.out / "schedule.json").write_text(json.dumps(dict(controllers=CONTROLLERS, games=games), indent=1))
+    name = "schedule-heldout.json" if args.heldout else "schedule.json"
+    (args.out / name).write_text(json.dumps(dict(controllers=CONTROLLERS, games=games), indent=1))
     processes = [Process(target=worker, args=(i, args.workers, games, args.out)) for i in range(args.workers)]
     for p in processes:
         p.start()
