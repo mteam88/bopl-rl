@@ -161,6 +161,53 @@ already width-invariant in Hilton's sense and the default is to keep 024's
 (hidden/128)^p for anyone wanting the Adam rule (p = -0.5); it is recorded in
 the sidecar config.
 
+## 3b. Critic training, not just critic width
+
+Probes (2026-09-16, 024-final, gamma 0.995, gae_lambda 0.9, horizon 128,
+vtrace clip 1.0): the value head's explained variance against the realised
+gamma-discounted return over 906k of its own decisions is 0.11 (corr 0.33,
+value std 0.16 against return std 0.54, sign accuracy 0.60 with a 0.51
+majority). Against the full-episode TD(lambda=0.9) target it is 0.57, against
+TD(0) 0.88: the head predicts its own next value, not who wins, and train.py's
+`explained_variance` of 0.63 measures exactly that bootstrap target. Width
+alone does not fix a target that is ~90% the critic's own output, so the
+critic work in v4 has four parts:
+
+1. In-run realised-return EV. The evaluation games train.py already plays
+   record a value per decision; at episode end the realised discounted return
+   of every decision is known, and the run logs `value_ev_realised` (EV),
+   `value_corr_realised` and `value_std / return_std` next to the bootstrapped
+   `explained_variance`. This is the number that has to move; the bootstrapped
+   EV is kept only for continuity.
+2. The target. GAE lambda trades bias for variance (Schulman et al. 2016,
+   section 3): at gamma 0.995 and lambda 0.9 the effective horizon of the
+   target is 1/(1-lambda) = 10 decisions, so the target is almost entirely
+   bootstrap and the critic can be self-consistent while blind to outcomes.
+   `v4-full` trains at lambda 0.95 (target horizon 20); the ablation sweep
+   holds lambda at 0.9, 0.95 and 0.98 (horizon 50, closer to the ~90-decision
+   half-life of gamma 0.995) with the realised EV as the readout. Longer
+   horizons cost variance in the advantage too, so the actor's lambda and the
+   critic's target lambda are separate flags (`--gae-lambda`,
+   `--value-lambda`, the latter defaulting to the former): the critic can
+   regress on a longer-horizon target than the one that forms the advantage.
+3. The scale. Value std 0.16 against return std 0.54 is under-fitting the
+   target's scale. Options, in the order they will be tried: raise the value
+   loss coefficient (`vf_coef`, 0.5 in 024) to 1.0 and 2.0; PopArt (van Hasselt
+   et al. 2016): normalise the value target by running mean and std and
+   rescale the head's last layer so the output is preserved, which keeps the
+   regression well-conditioned whatever the return scale (used by IMPALA and
+   by the OpenAI Five critic); a separate, higher learning rate for the critic
+   tensors (Muon's per-tensor update makes this one multiplier on the critic's
+   registered tensors). The ceiling the probes thread is measuring (an MLP
+   from raw or privileged observations to realised return) says how much of
+   the 0.11 -> ? gap is target/optimisation and how much is information.
+4. `v4-critic-shared` stays in the ablation list as the most informative one
+   (section 7): if a wide privileged critic with a longer target does not
+   move realised EV, the problem is not the head.
+
+Realised-return EV also gets computed offline for every checkpoint by the
+probes thread's tool, so the in-run number can be checked against it.
+
 ## 4. Compatibility
 
 - Wire ABI unchanged (`bopl_rl.h` version 3).
