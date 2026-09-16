@@ -78,6 +78,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   verify that an active ability body cannot collect a pickup, then releases,
   collects it as the ordinary slime and checks same-pass Arrow/acquired-ability
   hierarchy and next-pass observation order.
+- `ability_pickup_cast_ab.c`: collects the deterministic Revival pickup while
+  airborne, activates the newly instantiated third slot on the following pass,
+  and follows its QuickSpell form, marker creation and exit exactly.
 - `black_hole_ability_ab.c`: BlackHoleClap form entry/exit, persistent hole
   spawn and growth, whole-map rounded-platform pull, center-only platform
   destruction, no-effect player kill, and stock-clone reconstruction over 500

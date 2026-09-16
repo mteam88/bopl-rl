@@ -127,7 +127,7 @@
       "prefab": "Assets/GameObject/Revival.prefab",
       "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
       "native_status": "partial",
-      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred RevivePositionIndicator registration, exact shape-group observation order, marker replacement, and camera/water clamp; revival_ability_ab compares 650 complete NativeAOT/Rust ticks exactly. revival_death_ab compares 900 exact ticks through boundary death, hidden copied clone registration, distance-derived wisp/particle delay, marker removal, spawn animation and launch. Multiple simultaneous markers still require the general multi-clone rollout representation."
+      "verification": "Public rollout executes the measured QuickSpell cast/exit, active circle, deferred RevivePositionIndicator registration, exact shape-group observation order, marker replacement, and camera/water clamp; revival_ability_ab compares 650 complete NativeAOT/Rust ticks exactly. ability_pickup_cast_ab additionally covers deterministic pickup replacement, deferred prefab registration and immediate airborne activation of the acquired third-slot Revival through marker creation and exit. revival_death_ab compares 900 exact ticks through boundary death, hidden copied clone registration, distance-derived wisp/particle delay, marker removal, spawn animation and launch. Multiple simultaneous markers still require the general multi-clone rollout representation."
     },
     {
       "id": 16,

@@ -290,8 +290,8 @@ fn clamp_revival_position(mut position: Vec2) -> Vec2 {
 }
 
 fn retained_ground(player: &PlayerSlot, platforms: &[Platform]) -> Option<u32> {
-    if let Some(ground) = player.base.ground {
-        return Some(ground);
+    if player.base.grounded {
+        return player.base.ground;
     }
     // The ordinary controller can finish a landing animation with its public
     // Idle state one pass before this slice restores `ground`. PlayerInfo in

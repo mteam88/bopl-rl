@@ -222,8 +222,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   registration. Active ability bodies are rejected because the pickup callback
   requires a `SlimeController`; a Bow composition covers that rejection,
   post-exit collection and the source hierarchy order between its released
-  Arrow and acquired ability. Dedicated collection and final-death goldens
-  cover both origins.
+  Arrow and acquired ability. The deterministic acquired Revival is also cast
+  directly from the replaced slot, covering airborne entry, marker creation
+  and exit. Dedicated collection and final-death goldens cover both origins.
 - All catalog ids 0..38 now have executable behavior in the public backend,
   although the partial entries below still lack interaction branches. NullAbility is an
   intentionally rejected placeholder, Random is a spawn-time replacement,

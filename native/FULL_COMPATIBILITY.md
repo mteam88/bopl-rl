@@ -2622,6 +2622,16 @@ sorting or per-tick allocation. Layer-13 flight vectors use the established
 100,000-raw-Q32 bound (less than 0.000024 world units); collection, slot state,
 Arrow state, identities, hierarchy and lifecycle ticks are exact.
 
+`ability_pickup_cast_ab.c` continues the ordinary collection path and presses
+the replaced third slot as soon as its Revival collider is registered. The
+source player is airborne at level tick 2508, so `QuickSpell.SyncPhysicsTo`
+must ignore the ordinary body's retained ground reference when
+`PlayerInfo.isGrounded` is false. Rust previously inferred a ground from that
+stale reference and added a false 0.05-unit detach. Ground retention now first
+checks the grounded flag, while preserving the measured landing-animation
+recovery for genuinely grounded casts. The acquired Revival form, marker
+creation, exit, telemetry and every public row are observation-identical.
+
 `ability_pickup_death_drop_ab.c` keeps a three-player match alive after a
 final elimination and compares the dropped pickup through launch, hover, the
 first strict seven-second reroll, pursuit and collection. Both backends drop
