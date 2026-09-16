@@ -149,8 +149,10 @@ class GroupedMLP(torch.nn.Module):
         self.b2 = torch.nn.Parameter(torch.zeros(L))
 
     def forward(self, x):
-        h = torch.relu(torch.einsum("nd,ldh->nlh", x, self.w1) + self.b1)
-        return torch.einsum("nlh,lh->nl", h, self.w2) + self.b2
+        L, d, hidden = self.w1.shape
+        # one matmul against the (d, L*hidden) weight: no per-label copy of x
+        h = torch.relu((x @ self.w1.permute(1, 0, 2).reshape(d, L * hidden)).view(-1, L, hidden) + self.b1)
+        return (h * self.w2).sum(-1) + self.b2
 
 
 def auc(score, y):
