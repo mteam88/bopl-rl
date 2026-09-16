@@ -31,6 +31,12 @@ class Model:
         self.name=name; self.kind=kind; self.step=step; self.path=Path(path)
         self.policy,self.meta=load(self.path,**(dict(library=library) if library else {}))
         self.sha256=hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.layout=layout.layout_of(self.meta.get('architecture'))
+
+    def attach(self,env,side):
+        # The environment writes this player's row in the checkpoint's observation layout
+        # (v3 or v4, layout.py), so v3 pool members and v4 candidates share a game.
+        env.set_layout(side,self.layout)
 
     def start(self,task,side,rng):
         import torch
@@ -42,8 +48,12 @@ class Model:
             return rng.choice(len(part),p=weights)
         def act(observation,mask):
             nonlocal state
+            # observation: both rows at the padded stride; only this side's row is in this
+            # checkpoint's layout (the other row is zero here, its state is never read).
+            batch=np.zeros((2,policy.obs_size),dtype=np.float32)
+            batch[side]=observation[side,:policy.obs_size]
             with torch.no_grad():
-                batch=torch.from_numpy(np.ascontiguousarray(observation,dtype=np.float32))
+                batch=torch.from_numpy(batch)
                 rows,state=policy.step_raw(batch,state)
                 logits,_=policy.game_logits(rows)
             # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices;
@@ -281,7 +291,7 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
                 actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
                         1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
                 while not env.ended:
-                    observation=env.obs.copy(); mask=env.mask.copy()
+                    observation=env.rows.copy(); mask=env.mask.copy()
                     env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
                 final=env.frame()
                 timeout=bool(final['flags']&2)

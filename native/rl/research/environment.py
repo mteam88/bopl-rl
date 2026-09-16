@@ -150,6 +150,11 @@ class Environment:
         if LIB.research_set_layout(self.handle,player,int(version)): raise ValueError('Bad observation layout selection')
         self._layouts[player]=int(version); self._view()
     def layout_of(self,player): return LIB.research_get_layout(self.handle,player)
+    @property
+    def rows(self):
+        """Both players' observation rows at the padded stride (players x OBS_STRIDE), each in
+        its own layout; slice row p to layout.obs_size_of(self.layout_of(p))."""
+        return self._rows
     def obs_row(self,player):
         """Player's observation row in its own layout's width."""
         return self._rows[player,:layout.obs_size_of(self._layouts[player])]
