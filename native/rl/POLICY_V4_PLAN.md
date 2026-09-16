@@ -223,6 +223,17 @@ Consequences for v4:
 - v3 bit-identity: `research/check_policy_golden.py` verifies 409 recorded
   decisions of pool v7's v3b-007-final (observations, raw decoder rows,
   recurrent state, sampled actions) after every change on this branch.
+- Dump round trip: `puffer/check_dump.py` trains one rollout at a tiny shape
+  for v3 (set) and v4 (`train.py --dump-rows`, `_C.bopl_policy_rows`) and
+  asserts the CPU evaluator and the torch reference reproduce the trainer's
+  own decoder rows from the checkpoint it wrote (v3 4e-5, v4 2e-3 relative;
+  TF32/bf16 against fp32). Added after v4-full's first seven in-run
+  evaluations read the MinGRU before the decoder (the trainer registers
+  encoder, decoder, recurrent core): the trial's Elo read 250 at 560M learner
+  steps with the swapped weights and 827 with the fixed reader. The swapped
+  order is off by 1.4 relative here; nothing in the trainer consumed the bad
+  evaluations (frozen banks are trainer-internal snapshots, the pool Elo is
+  the trainer's own games, the driver scores after the run).
 
 ## 5. Implementation
 
