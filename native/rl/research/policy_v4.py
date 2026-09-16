@@ -80,6 +80,13 @@ class PolicyV4:
             self.w[name] = flat[offset:offset + rows * cols].view(rows, cols)
             offset += layout.aligned(rows * cols)
         self.obs_size = layout.V4_OBS_SIZE
+        # The trainer runs the row MLPs in bf16 on tensor cores (fp32 accumulation,
+        # bf16 activations); set to torch.bfloat16 to round the same values so max
+        # pooling picks the same winners (puffer/check_v4.py). None: fp32 throughout.
+        self.set_dtype = None
+
+    def _q(self, x):
+        return x.to(self.set_dtype).to(x.dtype) if self.set_dtype is not None else x
 
     @property
     def state_shape(self):
@@ -98,11 +105,11 @@ class PolicyV4:
             x = rows[:, :, :id_column]
         else:
             x = rows
-        h = x @ self.w[f"{name}_w1"].t()
+        h = self._q(x) @ self._q(self.w[f"{name}_w1"]).t()
         if name in SETS_WITH_EMBEDDING:
-            h = h + self.w["embedding"][ids_int]
-        h = torch.relu(h)
-        h = torch.relu(h @ self.w[f"{name}_w2"].t())
+            h = h + self._q(self.w["embedding"])[ids_int]
+        h = self._q(torch.relu(h))
+        h = self._q(torch.relu(h @ self._q(self.w[f"{name}_w2"]).t()))
         h = h * valid.unsqueeze(-1).to(h.dtype)
         pooled_max = h.max(1).values  # rows are >= 0 and invalid rows are 0, so an empty set pools to 0
         n = valid.sum(1, keepdim=True).to(h.dtype).clamp(min=1)

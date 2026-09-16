@@ -66,8 +66,18 @@ constexpr int MAX_KPAD = 48;
 static_assert(SPEC[0].kpad <= MAX_KPAD && SPEC[1].kpad <= MAX_KPAD && SPEC[2].kpad <= MAX_KPAD && SPEC[3].kpad <= MAX_KPAD, "kpad");
 constexpr int DEFAULT_BUDGET[SETS] = {6, 12, 20, 8};   /* average valid rows per sample the packed buffers hold */
 constexpr int TILE = 64, BK = 16;                      /* WMMA block tile: 64 x 64, K step 16, 4 warps */
-constexpr int CHUNK = 2048;                            /* rows per weight-gradient partial */
+constexpr int CHUNK = 512;                             /* rows per weight-gradient partial (one block column each) */
 constexpr float LN_EPS = 1e-5f;
+
+/* Stage timing for the harness (check_v4.cu): when enabled, an event per
+ * mark() on the stream; never under graph capture. */
+struct Prof { bool on = false; int n = 0; const char* name[64]; cudaEvent_t ev[64]; };
+static Prof g_prof;
+static void prof_mark(const char* name, cudaStream_t stream) {
+    if (!g_prof.on || g_prof.n >= 64) return;
+    if (!g_prof.ev[g_prof.n]) cudaEventCreate(&g_prof.ev[g_prof.n]);
+    g_prof.name[g_prof.n] = name; cudaEventRecord(g_prof.ev[g_prof.n], stream); g_prof.n++;
+}
 
 struct Gather { const float* obs; const int* idx; int T, B_total; };
 __device__ __forceinline__ const float* row_ptr(const float* input, const Gather& g, int row) {
@@ -176,6 +186,8 @@ __global__ void to_bf16_padded(const float* src, bf16* dst, int rows, int cols, 
  * (m, n, value) for every element of the tile within M and N. */
 struct EpiRelu {            /* h = ReLU(v + E[id[m]][n]) -> bf16 */
     bf16* out; int ldo; const bf16* E; const int* ids; int ldE;
+    static constexpr bool store_zero = false;
+    __device__ void chunk(int) {}
     __device__ void operator()(int m, int n, float v) const {
         if (E) v += bf(E[(long)ids[m] * ldE + n]);
         out[(long)m * ldo + n] = tobf(v > 0.0f ? v : 0.0f);
@@ -183,25 +195,32 @@ struct EpiRelu {            /* h = ReLU(v + E[id[m]][n]) -> bf16 */
 };
 struct EpiMask {            /* g = v where act > 0 else 0 -> bf16 */
     bf16* out; int ldo; const bf16* act;
+    static constexpr bool store_zero = false;
+    __device__ void chunk(int) {}
     __device__ void operator()(int m, int n, float v) const {
         out[(long)m * ldo + n] = tobf(bf(act[(long)m * ldo + n]) > 0.0f ? v : 0.0f);
     }
 };
-struct EpiStore {           /* fp32 partial */
-    float* out; int ldo;
+struct EpiStore {           /* fp32 partial of chunk blockIdx.z: out + z * per_chunk; an empty chunk stores zeros */
+    float* out; int ldo; long per_chunk;
+    static constexpr bool store_zero = true;
+    __device__ void chunk(int z) { out += z * per_chunk; }
     __device__ void operator()(int m, int n, float v) const { out[(long)m * ldo + n] = v; }
 };
 template<bool A_COL, bool B_COL, class Epi>
 __global__ void __launch_bounds__(128) wmma_gemm(const bf16* __restrict__ A, int lda, const bf16* __restrict__ B, int ldb,
                                                  int M, const int* m_count, int N, int k_begin, int k_end, const int* k_count,
-                                                 Epi epi) {
+                                                 int k_chunk, Epi epi) {
     __shared__ __align__(32) bf16 sA[TILE][BK + 8];
     __shared__ __align__(32) bf16 sB[BK][TILE + 8];
     __shared__ __align__(32) float sC[TILE][TILE + 4];
     int m0 = blockIdx.x * TILE, n0 = blockIdx.y * TILE;
     int m_valid = m_count ? min(M, *m_count) : M;
     if (m0 >= m_valid) return;
+    if (k_chunk) { k_begin += blockIdx.z * k_chunk; k_end = min(k_end, k_begin + k_chunk); }
     if (k_count) k_end = min(k_end, *k_count);
+    epi.chunk(blockIdx.z);
+    if (k_begin >= k_end && !epi.store_zero) return;   /* an empty chunk of a partial stores zeros */
     int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     int wm = (warp >> 1) * 32, wn = (warp & 1) * 32;
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[2][2];
@@ -209,12 +228,13 @@ __global__ void __launch_bounds__(128) wmma_gemm(const bf16* __restrict__ A, int
     for (int k0 = k_begin; k0 < k_end; k0 += BK) {
         /* A tile (TILE x BK) and B tile (BK x TILE): 1024 elements each, 8 per thread. */
         for (int e = threadIdx.x; e < TILE * BK; e += 128) {
-            int am = e / BK, ak = e - am * BK;
+            /* consecutive threads read consecutive addresses of the source layout */
+            int am = A_COL ? e % TILE : e / BK, ak = A_COL ? e / TILE : e % BK;
             int m = m0 + am, k = k0 + ak;
             bf16 v = tobf(0.0f);
             if (m < m_valid && k < k_end) v = A_COL ? A[(long)k * lda + m] : A[(long)m * lda + k];
             sA[am][ak] = v;
-            int bk = e / TILE, bn = e - bk * TILE;
+            int bk = B_COL ? e % BK : e / TILE, bn = B_COL ? e / BK : e % TILE;
             int kk = k0 + bk, n = n0 + bn;
             bf16 w = tobf(0.0f);
             if (kk < k_end && n < N) w = B_COL ? B[(long)n * ldb + kk] : B[(long)kk * ldb + n];
@@ -242,7 +262,7 @@ template<bool A_COL, bool B_COL, class Epi>
 static void gemm(const bf16* A, int lda, const bf16* B, int ldb, int M, const int* m_count, int N,
                  int k_begin, int k_end, const int* k_count, Epi epi, cudaStream_t stream) {
     dim3 grid((M + TILE - 1) / TILE, (N + TILE - 1) / TILE);
-    wmma_gemm<A_COL, B_COL, Epi><<<grid, 128, 0, stream>>>(A, lda, B, ldb, M, m_count, N, k_begin, k_end, k_count, epi);
+    wmma_gemm<A_COL, B_COL, Epi><<<grid, 128, 0, stream>>>(A, lda, B, ldb, M, m_count, N, k_begin, k_end, k_count, 0, epi);
 }
 /* Weight gradient dW (N x K) = sum over packed rows m of dY[m][n] X[m][k],
  * as fixed-order chunk partials then one reduction. dY (rows, N) bf16, X
@@ -260,11 +280,10 @@ static void weight_gradient(const bf16* dY, int N, const bf16* X, int K, int cap
                             float* partials, float* out, int k_keep, int accumulate, cudaStream_t stream) {
     int chunks = (cap + CHUNK - 1) / CHUNK;
     long per_chunk = (long)N * K;
-    for (int ch = 0; ch < chunks; ch++) {
-        /* C[n][k] over m in this chunk: A(n, m) = dY[m][n] (A_COL, lda N), B(m, k) = X[m][k] (ldb K). */
-        gemm<true, false>(dY, N, X, K, N, nullptr, K, ch * CHUNK, min(cap, (ch + 1) * CHUNK), row_count,
-                          EpiStore{partials + ch * per_chunk, K}, stream);
-    }
+    /* C[n][k] over m: A(n, m) = dY[m][n] (A_COL, lda N), B(m, k) = X[m][k] (ldb K); one z block per chunk of rows. */
+    dim3 grid((N + TILE - 1) / TILE, (K + TILE - 1) / TILE, chunks);
+    wmma_gemm<true, false, EpiStore><<<grid, 128, 0, stream>>>(dY, N, X, K, N, nullptr, K, 0, cap, row_count, CHUNK,
+                                                              EpiStore{partials, K, per_chunk});
     reduce_partials<<<grid_size(N * k_keep), BLOCK_SIZE, 0, stream>>>(partials, chunks, per_chunk, N, K, k_keep, out, accumulate);
 }
 
@@ -442,8 +461,10 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     /* flat block and privileged block */
     pack_flat<<<grid_size(B * (FLAT + PRIV)), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->flat_input.data, a->priv.data);
     g_v4_privileged = a->priv.data; g_v4_privileged_rows = B;
+    prof_mark("enc.pack_flat", stream);
     puf_mm(&a->flat_input, &w->flat, &a->flat_pre, stream);
     relu_into<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->flat_pre.data, a->joined.data, B, FD, LDJ);
+    prof_mark("enc.flat_gemm", stream);
     /* sets */
     count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
     scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
@@ -451,6 +472,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     scatter_rows<1><<<grid_size(B * SPEC[1].rows), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data);
     scatter_rows<2><<<grid_size(B * SPEC[2].rows), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
     scatter_rows<3><<<grid_size(B * SPEC[3].rows), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data);
+    prof_mark("enc.count_scan_scatter", stream);
     for (int s = 0; s < SETS; s++) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad;
@@ -464,9 +486,11 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
             g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
         pool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, a->cap[s], s,
                                        a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
+        prof_mark("enc.set_mlp_pool", stream);
     }
     puf_mm(&a->joined, &w->fusion, &a->fused, stream);
     ln_forward<<<B, 256, 0, stream>>>(a->fused.data, a->out.data, a->ln_mean.data, a->ln_rstd.data, H);
+    prof_mark("enc.fusion_ln", stream);
     return a->out;
 }
 
@@ -478,6 +502,7 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     puf_mm_nn(&a->grad_fused, &w->fusion, &a->grad_joined, stream);
     relu_grad_from<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
     puf_mm_tn(&a->grad_flat, &a->flat_input, &a->wgrad_flat, stream);
+    prof_mark("bwd.enc.fusion_flat", stream);
     for (int s = SETS - 1; s >= 0; s--) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, cap = a->cap[s];
@@ -486,18 +511,23 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
                                            a->winner[s].data, w->mean_pool);
         if (g_set_stage.backward)
             g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
+        prof_mark("bwd.enc.unpool", stream);
         /* dW2 = dh2^T h1 */
         weight_gradient(bfp(a->dh2[s]), D, bfp(a->h1[s]), I, cap, total, a->partials.data, a->wgrad_w2[s].data, I, 0, stream);
+        prof_mark("bwd.enc.dW2", stream);
         /* dh1 = (dh2 W2) * ReLU'(h1), written over h2 (no longer needed) */
         bf16* dh1 = bfp(a->h2[s]);
         gemm<false, false>(bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, cap, total, I, 0, D, nullptr, EpiMask{dh1, I, bfp(a->h1[s])}, stream);
+        prof_mark("bwd.enc.dh1", stream);
         /* dW1 = dh1^T X (keep the first `features` of the padded K) */
         weight_gradient(dh1, I, bfp(a->xpack[s]), K, cap, total, a->partials.data, a->wgrad_w1[s].data, SPEC[s].features, 0, stream);
+        prof_mark("bwd.enc.dW1", stream);
         if (SPEC[s].id_col >= 0) {
             int chunks = (cap + CHUNK - 1) / CHUNK;
             embedding_partials<<<chunks, I, IDS * I * sizeof(float), stream>>>(dh1, I, a->ids[s].data, a->totals.data, s, cap, a->partials.data);
             reduce_partials<<<grid_size(IDS * I), BLOCK_SIZE, 0, stream>>>(a->partials.data, chunks, (long)IDS * I, IDS, I, I,
                                                                           a->wgrad_embedding.data, s != 2 /* entity set first (s=2), slot adds */);
+            prof_mark("bwd.enc.embedding", stream);
         }
     }
 }
@@ -633,6 +663,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
     auto* w = (DecWeights*)weights; auto* a = (DecActs*)activations;
     int B = a->B, H = w->hidden, od1 = a->od1, pad = a->base.od1_pad > 0 ? a->base.od1_pad : od1;
     if (a->base.saved_input.data) puf_copy(&a->base.saved_input, &input, stream);
+    prof_mark("dec.start", stream);
     PrecisionTensor h = input;
     PrecisionTensor vout = {.data = w->critic_out.data, .shape = {1, w->cdim}};
     /* y = h + FFN(LN(h)) */
@@ -666,6 +697,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
         puf_mm(&a->ln3, &vout, &a->value, stream);
         write_column<<<grid_size(B), BLOCK_SIZE, 0, stream>>>(a->base.out.data, pad, w->od, a->value.data, B);
     }
+    prof_mark("dec.done", stream);
     return a->base.out;
 }
 static PrecisionTensor dec_backward(void* weights, void* activations, FloatTensor grad_logits, FloatTensor grad_logstd,
@@ -674,6 +706,7 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
     int B = a->B, H = w->hidden, od = w->od, pad = a->base.od1_pad;
     if (!g_bopl_decoder_grad_fused)
         assemble_decoder_grad<<<grid_size(B * pad), BLOCK_SIZE, 0, stream>>>(a->base.grad_out.data, grad_logits.data, grad_value.data, B, od, pad);
+    prof_mark("bwd.dec.start", stream);
     /* actor */
     puf_mm_tn(&a->base.grad_out, &a->y, &a->wgrad_actor_pad, stream);
     cudaMemcpyAsync(a->wgrad_actor.data, a->wgrad_actor_pad.data, (size_t)od * H * sizeof(float), cudaMemcpyDeviceToDevice, stream);
@@ -713,6 +746,7 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         ln_backward<<<B, 256, 0, stream>>>(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, a->base.grad_input.data, H, 1);
     }
     (void)grad_logstd;
+    prof_mark("bwd.dec.done", stream);
     return a->base.grad_input;
 }
 static void dec_init(void* weights, ulong* seed, cudaStream_t stream) {

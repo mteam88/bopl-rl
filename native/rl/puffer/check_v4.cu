@@ -148,4 +148,20 @@ extern "C" double bopl_v4_check_time(void* context, int iterations, int forward_
     cudaEventDestroy(start); cudaEventDestroy(stop);
     return ms / iterations;
 }
+// Stage times of one forward+backward pass (ms since the previous mark); names into `names` (64 chars each).
+extern "C" int bopl_v4_check_profile(void* context, char* names, double* ms, int max_marks) {
+    auto* c = (V4Check*)context;
+    c->pass(); cudaStreamSynchronize(c->stream);
+    v4::g_prof.on = true; v4::g_prof.n = 0;
+    v4::prof_mark("start", c->stream);
+    c->pass();
+    cudaStreamSynchronize(c->stream);
+    v4::g_prof.on = false;
+    int n = 0;
+    for (int i = 1; i < v4::g_prof.n && n < max_marks; i++, n++) {
+        float t = 0; cudaEventElapsedTime(&t, v4::g_prof.ev[i - 1], v4::g_prof.ev[i]);
+        ms[n] = t; strncpy(names + 64 * n, v4::g_prof.name[i], 63); names[64 * n + 63] = 0;
+    }
+    return n;
+}
 extern "C" void bopl_v4_check_close(void* context) { delete (V4Check*)context; }
