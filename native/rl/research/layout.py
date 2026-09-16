@@ -78,6 +78,100 @@ def policy_weights(hidden, num_layers, architecture, aim_fourier=0, aim_ar=0):
     return encoder + (decoder_logits(aim_fourier, aim_ar) + 1) * hidden + num_layers * 3 * hidden ** 2
 
 
+# ---- Observation layout v4 (native/rl/puffer/bopl_layout_v4.h, POLICY_V4_PLAN.md) ----
+V4_ARCHITECTURE = "bopl-v4-mingru"
+V4_LAYOUT_VERSION = 4
+V4_GLOBAL = 66
+V4_BODY = 24
+V4_SELF = PLAYER_FEATURES + V4_BODY            # 44
+V4_RELATION = 12
+V4_OPPONENT = V4_SELF + V4_RELATION            # 56
+V4_PREVIOUS = PREVIOUS_FEATURES
+V4_RAYS, V4_RAY_FEATURES = 0, 4
+V4_FLAT = V4_GLOBAL + V4_SELF + V4_OPPONENT + V4_PREVIOUS + V4_RAYS * V4_RAY_FEATURES   # 178
+V4_PLAYERS, V4_PLAYER_FEATURES = 6, PLAYER_FEATURES + V4_RELATION   # 32
+V4_SLOTS, V4_SLOT_FEATURES = 24, 18
+V4_ENTITIES, V4_ENTITY_FEATURES = 48, 48
+V4_SLIMES, V4_SLIME_FEATURES = 32, 42
+V4_PRIVILEGED = 48
+V4_SELF_OFFSET = V4_GLOBAL
+V4_OPPONENT_OFFSET = V4_SELF_OFFSET + V4_SELF
+V4_PREVIOUS_OFFSET = V4_OPPONENT_OFFSET + V4_OPPONENT
+V4_RAY_OFFSET = V4_PREVIOUS_OFFSET + V4_PREVIOUS
+V4_PLAYER_OFFSET = V4_FLAT
+V4_SLOT_OFFSET = V4_PLAYER_OFFSET + V4_PLAYERS * V4_PLAYER_FEATURES
+V4_ENTITY_OFFSET = V4_SLOT_OFFSET + V4_SLOTS * V4_SLOT_FEATURES
+V4_SLIME_OFFSET = V4_ENTITY_OFFSET + V4_ENTITIES * V4_ENTITY_FEATURES
+V4_PRIVILEGED_OFFSET = V4_SLIME_OFFSET + V4_SLIMES * V4_SLIME_FEATURES
+V4_OBS_SIZE = V4_PRIVILEGED_OFFSET + V4_PRIVILEGED   # 4498
+V4_SLOT_ABILITY_ID = V4_SLOT_FEATURES - 1
+V4_ENTITY_ABILITY_ID = V4_ENTITY_FEATURES - 1
+OBS_STRIDE = max(OBS_SIZE, V4_OBS_SIZE)
+assert V4_OBS_SIZE == 4498
+V4_LAYOUT_FIELDS = (V4_OBS_SIZE, V4_GLOBAL, V4_SELF, V4_OPPONENT, V4_PREVIOUS, V4_RAYS, V4_RAY_FEATURES,
+                    V4_FLAT, V4_PLAYERS, V4_PLAYER_FEATURES, V4_SLOTS, V4_SLOT_FEATURES,
+                    V4_ENTITIES, V4_ENTITY_FEATURES, V4_SLIMES, V4_SLIME_FEATURES, V4_PRIVILEGED,
+                    V4_SELF_OFFSET, V4_OPPONENT_OFFSET, V4_PREVIOUS_OFFSET, V4_RAY_OFFSET,
+                    V4_PLAYER_OFFSET, V4_SLOT_OFFSET, V4_ENTITY_OFFSET, V4_SLIME_OFFSET,
+                    V4_PRIVILEGED_OFFSET, V4_SLOT_ABILITY_ID, V4_ENTITY_ABILITY_ID, OBS_STRIDE)
+# Sets in the order the encoder pools them: (name, row offset, rows, width, id column or None).
+V4_SETS = (("player", V4_PLAYER_OFFSET, V4_PLAYERS, V4_PLAYER_FEATURES, None),
+           ("slot", V4_SLOT_OFFSET, V4_SLOTS, V4_SLOT_FEATURES, V4_SLOT_ABILITY_ID),
+           ("entity", V4_ENTITY_OFFSET, V4_ENTITIES, V4_ENTITY_FEATURES, V4_ENTITY_ABILITY_ID),
+           ("slime", V4_SLIME_OFFSET, V4_SLIMES, V4_SLIME_FEATURES, None))
+V4_DEFAULTS = dict(set_dim=128, set_inner=128, flat_dim=256, ffn_dim=512, critic_dim=512,
+                   critic_privileged=1, critic_detach=0, mean_pool=1)
+
+
+def obs_size_of(layout_version):
+    return V4_OBS_SIZE if layout_version == V4_LAYOUT_VERSION else OBS_SIZE
+
+
+def layout_of(architecture):
+    """Observation layout version a checkpoint architecture reads."""
+    return V4_LAYOUT_VERSION if architecture == V4_ARCHITECTURE else 3
+
+
+def aligned(count):
+    """Every tensor in a native flat weight buffer starts on an 8-float boundary."""
+    return (count + 7) & ~7
+
+
+def policy_v4_tensors(hidden, num_layers, aim_fourier=4, aim_ar=0, set_dim=128, set_inner=128,
+                      flat_dim=256, ffn_dim=512, critic_dim=512, critic_privileged=1, **_):
+    """(name, shape) of every v4 tensor in flat-buffer order (bopl_v4.h / bopl_v4_encoder.cu).
+
+    Row MLPs: W1 (inner, features_without_id) then W2 (set_dim, inner) per set; the
+    embedding (ids, inner) is added before the first ReLU. Pooled width per set is
+    2*set_dim (max || mean). ffn_dim 0 drops the FFN block; critic_dim 0 the critic.
+    """
+    tensors = []
+    for name, _, _, width, id_column in V4_SETS:
+        features = width - (1 if id_column is not None else 0)
+        tensors += [(f"{name}_w1", (set_inner, features)), (f"{name}_w2", (set_dim, set_inner))]
+    tensors += [("embedding", (EMBEDDING_IDS, set_inner)),
+                ("flat", (flat_dim, V4_FLAT)),
+                ("fusion", (hidden, flat_dim + 4 * 2 * set_dim))]
+    for layer in range(num_layers):
+        tensors.append((f"mingru{layer}", (3 * hidden, hidden)))
+    if ffn_dim:
+        tensors += [("ffn_in", (ffn_dim, hidden)), ("ffn_out", (hidden, ffn_dim))]
+    tensors.append(("actor", (decoder_logits(aim_fourier, aim_ar), hidden)))
+    if critic_dim:
+        tensors += [("critic_in", (critic_dim, hidden + (V4_PRIVILEGED if critic_privileged else 0))),
+                    ("critic_b1", (critic_dim, critic_dim)), ("critic_b2", (critic_dim, critic_dim)),
+                    ("critic_out", (1, critic_dim))]
+    return tensors
+
+
+def policy_v4_weights(hidden, num_layers, **shape):
+    """Flat float count of a v4 checkpoint (every tensor 8-aligned, like the trainer's allocator)."""
+    total = 0
+    for _, (rows, cols) in policy_v4_tensors(hidden, num_layers, **shape):
+        total += aligned(rows * cols)
+    return total
+
+
 LAYOUT_FIELDS = (OBS_SIZE, OBS_PREFIX, SELF_FEATURES,
                  OBS_PLAYERS, PLAYER_FEATURES, OBS_SLOTS, SLOT_FEATURES,
                  OBS_ENTITIES, ENTITY_FEATURES, OBS_SLIMES, SLIME_FEATURES,

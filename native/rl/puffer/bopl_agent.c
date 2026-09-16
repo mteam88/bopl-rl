@@ -153,13 +153,13 @@ static int bopl_agent_env_alloc(BoplAgent *a) {
     bopl_rl_default_config(&env->config, (uint32_t)n);
     env->config.stocks=0; env->config.max_episode_ticks=(uint32_t)a->limit; env->config.warmup_ticks=(uint32_t)a->warmup;
     for (int i=0; i<n; i++) for (int s=0; s<3; s++) env->config.player[i].abilities[s]=(uint32_t)a->ability[s];
-    env->observations=calloc((size_t)n*BOPL_OBS_SIZE, sizeof(float));
+    env->observations=calloc((size_t)n*BOPL_OBS_STRIDE, sizeof(float));
     env->actions=calloc((size_t)n*BOPL_NUM_ATNS, sizeof(float));
     env->rewards=calloc((size_t)n, sizeof(float)); env->terminals=calloc((size_t)n, sizeof(float));
     env->action_mask=calloc((size_t)n*BOPL_LOGITS, 1);
     if (!env->observations || !env->actions || !env->rewards || !env->terminals || !env->action_mask) return -1;
     for (int s=0; s<n; s++) {
-        env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_SIZE; env->action_ptr[s]=env->actions+BOPL_NUM_ATNS*s;
+        env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_STRIDE; env->action_ptr[s]=env->actions+BOPL_NUM_ATNS*s;
         env->reward_ptr[s]=env->rewards+s; env->terminal_ptr[s]=env->terminals+s;
         env->mask_ptr[s]=env->action_mask+(size_t)s*BOPL_LOGITS;
     }
@@ -390,7 +390,7 @@ static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
     BoplPuffer *env=&a->env;
     memset(env->actions, 0, (size_t)a->players*BOPL_NUM_ATNS*sizeof(float));
     if (a->is_policy) {
-        float *obs=env->observations+(size_t)a->player*BOPL_OBS_SIZE;
+        float *obs=env->observations+(size_t)a->player*BOPL_OBS_STRIDE;
         const unsigned char *mask=env->action_mask+(size_t)a->player*BOPL_LOGITS;
         bopl_policy_eval_step_raw(a->policy, obs, a->rstate, a->row, a->rnext);
         float *swap=a->rstate; a->rstate=a->rnext; a->rnext=swap;
@@ -490,7 +490,7 @@ int bopl_agent_observation_delay(const BoplAgent *a) { return a?a->delay:-1; }
 int bopl_agent_max_episode_ticks(const BoplAgent *a) { return a?a->limit:-1; }
 const char *bopl_agent_id(const BoplAgent *a) { return a?a->id:""; }  /* a roster reports "roster:<name>"; the round's member is in the roster log */
 int bopl_agent_is_policy(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->is_policy:0; }
-const float *bopl_agent_observation(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.observations+(size_t)a->player*BOPL_OBS_SIZE:NULL; }
+const float *bopl_agent_observation(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.observations+(size_t)a->player*BOPL_OBS_STRIDE:NULL; }
 const unsigned char *bopl_agent_mask(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.action_mask+(size_t)a->player*BOPL_LOGITS:NULL; }
 const float *bopl_agent_logits(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->decoder:NULL; }
 void bopl_agent_decision(const BoplAgent *a, int out[3]) { a=BOPL_MEMBER(a); if (a && out) memcpy(out, a->decision, sizeof(a->decision)); else if (out) memset(out, 0, 3*sizeof(int)); }

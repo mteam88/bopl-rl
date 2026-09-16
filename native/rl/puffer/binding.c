@@ -1,7 +1,9 @@
 /* vecenv.h's env pool pins threads (pthread_setaffinity_np, sched_getaffinity). */
 #define _GNU_SOURCE 1
 #include "bopl_puffer.h"
-#define OBS_SIZE BOPL_OBS_SIZE
+/* Row memory fits either observation layout (bopl_layout_v4.h); the obs_layout
+ * kwarg selects which one every player of the vector is encoded in. */
+#define OBS_SIZE BOPL_OBS_STRIDE
 #define NUM_ATNS BOPL_NUM_ATNS
 #define ACT_SIZES {BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD}
 #define OBS_TENSOR_T FloatTensor
@@ -79,6 +81,9 @@ void my_init(Env *env, Dict *kwargs) {
     env->scripted_kinds=(uint32_t)option(kwargs, "scripted_kinds", 0);
     env->scripted_level=option(kwargs, "scripted_level", BOPL_BOT_HARD);
     if (env->players<1 || env->players>6 || env->repeat<1 || env->repeat>16) abort();
+    int obs_layout=option(kwargs, "obs_layout", 3);
+    if (obs_layout!=3 && obs_layout!=BOPL4_LAYOUT_VERSION) { fprintf(stderr, "Bopl RL: unknown obs_layout %d\n", obs_layout); abort(); }
+    for (int i=0; i<BOPL_MAX_PLAYERS; i++) env->layout[i]=obs_layout;
     for (int i=0; i<env->players; i++) {
         env->config.player[i].abilities[0]=(uint32_t)option(kwargs, "ability1", 2);
         env->config.player[i].abilities[1]=(uint32_t)option(kwargs, "ability2", 4);

@@ -30,9 +30,14 @@ static int valid_rows(float *obs, int offset, int count, int width) {
     return valid;
 }
 
+/* A row changes layout only with its written-record dropped and its memory
+ * cleared (research_set_layout does the same). */
+#define SWITCH_LAYOUT(v) do { env.layout[0]=env.layout[1]=(v); bopl_written_forget(&env); \
+    memset(env.observations, 0, 2*BOPL_OBS_STRIDE*sizeof(float)); compute_observations(&env); obs=env.observations; } while (0)
 int main(int argc, char **argv) {
     BoplPuffer env={0}; env.num_agents=2; env.players=2; env.config.max_episode_ticks=3600;
-    env.observations=calloc(2*BOPL_OBS_SIZE, sizeof(float)); env.scratch=env.observations;
+    env.observations=calloc(2*BOPL_OBS_STRIDE, sizeof(float)); env.scratch=env.observations;
+    float *v4_rows=calloc(2*BOPL4_OBS_SIZE, sizeof(float)); assert(v4_rows);
     BoplRlEntity entities[96]={{0}}; BoplRlSlime slimes[17]={{0}};
     state.header.version=3; state.header.player_count=2; state.header.slime_count=17;
     state.header.episode_ticks=900; state.header.simulation_time=Q(15);
@@ -86,6 +91,16 @@ int main(int argc, char **argv) {
     compute_observations(&env);
     float *obs=env.observations;
     assert(env.log.observation_overflow==2);
+    /* The same state in layout v4 (player 0's row), for the v4 encoder parity harness. */
+    SWITCH_LAYOUT(BOPL4_LAYOUT_VERSION);
+    memcpy(v4_rows, obs, BOPL4_OBS_SIZE*sizeof(float));
+    assert(env.log.observation_overflow==4);
+    assert(valid_rows(obs,BOPL4_OBS_SLOT_OFFSET,BOPL4_SLOTS,BOPL4_SLOT_FEATURES)==BOPL4_SLOTS);
+    assert(valid_rows(obs,BOPL4_OBS_ENTITY_OFFSET,BOPL4_ENTITIES,BOPL4_ENTITY_FEATURES)==BOPL4_ENTITIES);
+    assert(obs[BOPL4_OBS_OPPONENT_OFFSET+16]==1);   /* opponent position known while mid-ability */
+    assert(obs[BOPL4_OBS_OPPONENT_OFFSET+BOPL4_SELF]>0); /* its distance */
+    SWITCH_LAYOUT(3);
+    env.log.observation_overflow=2;
     float *fixture_rows=calloc(2*BOPL_OBS_SIZE, sizeof(float));
     assert(fixture_rows); memcpy(fixture_rows, obs, BOPL_OBS_SIZE*sizeof(float));
     assert(BOPL_OBS_SIZE==3690 && BOPL_OBS_ENTITY_OFFSET==542);
@@ -118,7 +133,19 @@ int main(int argc, char **argv) {
     assert(obs[BOPL_OBS_PLAYER_OFFSET+BOPL_PLAYER_FEATURES+16]==0);
     assert(entity_with_source(obs,3)==NULL && entity_with_source(obs,12)!=NULL);
     assert(valid_rows(obs,BOPL_OBS_SLIME_OFFSET,BOPL_OBS_SLIMES,BOPL_SLIME_FEATURES)==16);
-    if (argc==3 && !strcmp(argv[1], "--dump")) {
+    SWITCH_LAYOUT(BOPL4_LAYOUT_VERSION);
+    memcpy(v4_rows+BOPL4_OBS_SIZE, obs, BOPL4_OBS_SIZE*sizeof(float));
+    assert(obs[BOPL4_OBS_OPPONENT_OFFSET+16]==0 && obs[BOPL4_OBS_OPPONENT_OFFSET+BOPL4_SELF]==0); /* hidden: relation zero */
+    assert(valid_rows(obs,BOPL4_OBS_SLIME_OFFSET,BOPL4_SLIMES,BOPL4_SLIME_FEATURES)==16);
+    /* The hidden opponent's controlling slime keeps its slot rows, position unknown. */
+    { int enemy_slots=0; for (int i=0; i<BOPL4_SLOTS; i++) { float *row=obs+BOPL4_OBS_SLOT_OFFSET+(size_t)i*BOPL4_SLOT_FEATURES;
+        if (row[0] && row[15]) { enemy_slots++; assert(row[14]==0 && row[11]==0 && row[12]==0); } }
+      assert(enemy_slots==3); }
+    if (argc==3 && !strcmp(argv[1], "--dump-v4")) {
+        FILE *file=fopen(argv[2], "wb"); assert(file);
+        assert(fwrite(v4_rows, sizeof(float), 2*BOPL4_OBS_SIZE, file)==2*BOPL4_OBS_SIZE);
+        assert(fclose(file)==0);
+    } else if (argc==3 && !strcmp(argv[1], "--dump")) {
         FILE *file=fopen(argv[2], "wb"); assert(file);
         assert(fwrite(fixture_rows, sizeof(float), 2*BOPL_OBS_SIZE, file)==2*BOPL_OBS_SIZE);
         assert(fclose(file)==0);

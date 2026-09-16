@@ -2,6 +2,7 @@
 #define BOPL_PUFFER_H
 #include "bopl_rl.h"
 #include "bopl_layout.h"
+#include "bopl_layout_v4.h"
 #include "bopl_bots.h"
 #include <math.h>
 #include <pthread.h>
@@ -172,6 +173,10 @@ typedef struct {
      * memory may have been written by anything else (a routing change). */
     struct { float *row; int players, slots, entities, slimes; } written[BOPL_MAX_SLOTS];
     int written_count;
+    /* Observation layout version of each player's row (3 or 4, bopl_layout_v4.h).
+     * Training sets one for every player (obs_layout kwarg); evaluation selects
+     * per player from the checkpoint's architecture (research_set_layout). */
+    int layout[BOPL_MAX_PLAYERS];
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
     float *telemetry;
@@ -330,7 +335,13 @@ static int bopl_slot(const BoplPuffer *env, int player) {
 }
 /* Where player p's observation row is encoded. */
 static float *bopl_obs_row(BoplPuffer *env, int player) {
-    return env->scratch?env->scratch+(size_t)player*BOPL_OBS_SIZE:env->obs_ptr[bopl_slot(env, player)];
+    return env->scratch?env->scratch+(size_t)player*BOPL_OBS_STRIDE:env->obs_ptr[bopl_slot(env, player)];
+}
+/* Layout version of player p's row: 4 (bopl_layout_v4.h) or 3 (the default). */
+static int bopl_layout_of(const BoplPuffer *env, int player) { return env->layout[player]==BOPL4_LAYOUT_VERSION?4:3; }
+static int bopl_obs_size_of(const BoplPuffer *env, int player) { return bopl_layout_of(env, player)==4?BOPL4_OBS_SIZE:BOPL_OBS_SIZE; }
+static int bopl_previous_offset(const BoplPuffer *env, int player) {
+    return bopl_layout_of(env, player)==4?BOPL4_OBS_PREVIOUS_OFFSET:BOPL_OBS_PREVIOUS_OFFSET;
 }
 /* The policy sees the nearest BOPL_OBS_ENTITIES entities plus the overflow
  * fraction (obs[5]/obs[7]); the count is logged per episode. Crowded Platform
@@ -414,13 +425,13 @@ static void bopl_player_features(float *out, const BoplRlState *state,
     out[18]=bopl_clip(bopl_fix(player->ability_time)/5.0);
     out[19]=bopl_clip(bodies/(double)BOPL_OBS_SLIMES);
 }
-/* Encode `state` into every player's row (bopl_obs_row), writing each row
+/* Encode `state` into player a's layout-v3 row (bopl_obs_row), writing the row
  * exactly once: every feature is stored, the unused entity/slime slots and
- * the own-action tail are zeroed. A NULL state encodes as all zeros. */
-static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
-    for (int a=0; a<env->players; a++) {
+ * the own-action tail are zeroed. (The body of the former bopl_encode loop;
+ * bopl_encode dispatches per player's layout.) */
+static void bopl_encode_v3_row(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow) {
+    {
         float *obs=bopl_obs_row(env, a);
-        if (!state) { memset(obs, 0, BOPL_OBS_SIZE*sizeof(float)); bopl_written_forget_row(env, obs); continue; }
         int w=-1;
         for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) { w=i; break; }
         int prev_players=w<0?-1:env->written[w].players;
@@ -600,6 +611,9 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
         env->written[w].entities=count; env->written[w].slimes=slime_count;
     }
 }
+/* Encode `state` into every player's row in that player's layout. A NULL
+ * state encodes as all zeros. Defined after the v4 writer below. */
+static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow);
 /* The undelayed encoder: the state as observed now, overflow counted. */
 static void compute_observations_from(BoplPuffer *env, const BoplRlState *state) { bopl_encode(env, state, 1); }
 static void compute_observations(BoplPuffer *env) { compute_observations_from(env, bopl_rl_state(env->world)); }
@@ -622,6 +636,28 @@ static void bopl_previous_action(float *previous, BoplRlAction action, int hold_
     for (int bit=0; bit<4; bit++) previous[3+bit]=(action.buttons&(1<<bit))!=0;
     previous[7]=bopl_clip((double)hold_left/BOPL_HOLD_MAX);
     for (int bit=0; bit<4; bit++) previous[8+bit]=bopl_clip((hold_run?hold_run[bit]:0)/(double)BOPL_HOLD_MAX);
+}
+#include "bopl_obs_v4.h"
+static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
+    for (int a=0; a<env->players; a++) {
+        if (!state) {
+            float *obs=bopl_obs_row(env, a);
+            memset(obs, 0, bopl_obs_size_of(env, a)*sizeof(float)); bopl_written_forget_row(env, obs);
+        } else if (bopl_layout_of(env, a)==4) bopl_encode_v4_row(env, state, a, count_overflow);
+        else bopl_encode_v3_row(env, state, a, count_overflow);
+    }
+}
+/* The critic-only block of every v4 row from the undelayed state `now`
+ * (bopl4_privileged); `actions` may be NULL (episode start). */
+static void bopl_encode_privileged(BoplPuffer *env, const BoplRlState *now, const BoplRlAction *actions) {
+    for (int a=0; a<env->players; a++) {
+        if (bopl_layout_of(env, a)!=4) continue;
+        int enemy=-1;
+        if (now) for (int i=0; i<env->players && enemy<0; i++)
+            if (i!=a && now->players[i].team!=now->players[a].team) enemy=i;
+        bopl4_privileged(env, now, a, enemy>=0 && actions?&actions[enemy]:NULL,
+                         enemy>=0?&env->hold_left[enemy]:NULL, enemy>=0?&env->held[enemy]:NULL);
+    }
 }
 /* Apply the hold head: a free button state adopts the head's buttons and
  * latches them for BOPL_HOLD_LENGTHS[hold] decisions; a latched one ignores
@@ -764,7 +800,8 @@ static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
     for (int i=0; i<2; i++) bopl_state_copy(&env->delayed[i], state);
     env->delay_cursor=0;
     memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
-    for (int i=0; i<env->players; i++) { bopl_obs_row(env, i)[BOPL_OBS_PREVIOUS_OFFSET]=1; bopl_write_mask(env, i); }
+    for (int i=0; i<env->players; i++) { bopl_obs_row(env, i)[bopl_previous_offset(env, i)]=1; bopl_write_mask(env, i); }
+    bopl_encode_privileged(env, state, NULL);
 }
 /* Weighted roster draw from the bot stream. Same LCG as the share coin-flip
  * so (seed, map, weights) still determine the opponent. */
@@ -819,7 +856,7 @@ static void c_reset(BoplPuffer *env) {
          * trainer's agent permutation was installed (create_pufferl resets
          * under identity routing). */
         for (int bank=0; bank<env->banks; bank++) {
-            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_SIZE*sizeof(float)); bopl_written_forget_row(env, env->obs_ptr[1+bank]);
+            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_forget_row(env, env->obs_ptr[1+bank]);
             if (env->mask_ptr[1+bank]) memset(env->mask_ptr[1+bank], 1, BOPL_LOGITS);
         }
         env->side=(int)(bopl_side_random(env)&1u);
@@ -1007,9 +1044,12 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     } else compute_observations_from(env, state);
     if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
-        bopl_previous_action(bopl_obs_row(env, i)+BOPL_OBS_PREVIOUS_OFFSET, actions[i], env->hold_left[i], env->hold_run[i]);
+        bopl_previous_action(bopl_obs_row(env, i)+bopl_previous_offset(env, i), actions[i], env->hold_left[i], env->hold_run[i]);
         bopl_write_mask(env, i);
     }
+    /* The critic's privileged block sees the world as it is now, not as the
+     * actor's delayed rows do. */
+    bopl_encode_privileged(env, state, actions);
 }
 static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
     bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
