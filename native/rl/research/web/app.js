@@ -225,6 +225,33 @@
     famSel.replaceChildren(new Option("All", ""));
     for (const f of families) famSel.append(new Option(`${f.name} (${f.count})`, f.name));
     famSel.value = keep || familyFilter;
+    // Frozen-pool columns: the primary pool plus the two most-used others, newest pool first
+    // (run pages show every pool; the board stays as wide as it was with two columns).
+    const primaryLabel = index.primary?.label;
+    const rated = (label) => runs.filter((row) => poolScore(row, label)).length;
+    const poolLabels = (index.pools || []).map((p) => p.label).filter((label) => rated(label))
+      .sort((a, b) => (b === primaryLabel) - (a === primaryLabel) || rated(b) - rated(a))
+      .slice(0, 3)
+      .sort((a, b) => index.pools.findIndex((p) => p.label === b) - index.pools.findIndex((p) => p.label === a));
+    for (const [sel, prefix] of [[$("filterRating"), "Has pool "], [$("runSort"), "Pool "]]) {
+      const value = sel.value;
+      for (const o of [...sel.options]) if (o.dataset.pool) o.remove();
+      const before = sel.id === "runSort" ? sel.options[1] : sel.options[sel.options.length - 1];
+      for (const label of poolLabels) {
+        const o = new Option(prefix + label, "pool:" + label);
+        o.dataset.pool = label;
+        sel.insertBefore(o, before);
+      }
+      if ([...sel.options].some((o) => o.value === value)) sel.value = value;
+    }
+    const head = $("poolHead");
+    head.parentElement.querySelectorAll("th.pool").forEach((th) => th.remove());
+    for (const label of [...poolLabels].reverse()) {
+      const th = document.createElement("th");
+      th.className = "num wide pool";
+      th.textContent = `Pool ${label}`;
+      head.after(th);
+    }
     $("families").replaceChildren(...families.map((f) => {
       const b = document.createElement("button");
       b.type = "button";
@@ -247,8 +274,7 @@
       if (status === "other" && ["running", "complete", "interrupted"].includes(row.status)) return false;
       if (status && status !== "other" && row.status !== status) return false;
       if (rating === "joint" && !row.joint) return false;
-      if (rating === "v6" && !poolScore(row, "v6")) return false;
-      if (rating === "v5" && !poolScore(row, "v5")) return false;
+      if (rating.startsWith("pool:") && !poolScore(row, rating.slice(5))) return false;
       if (rating === "none" && row.has_rating) return false;
       if (q) {
         const blob = [row.name, row.family, row.sweep, row.status, ...(row.flags || [])].join(" ").toLowerCase();
@@ -260,8 +286,7 @@
       if (sort === "name") return row.name;
       if (sort === "steps") return row.steps ?? -1;
       if (sort === "updated") return row.updated ?? 0;
-      if (sort === "v6") return poolScore(row, "v6")?.rating ?? -1e9;
-      if (sort === "v5") return poolScore(row, "v5")?.rating ?? -1e9;
+      if (sort.startsWith("pool:")) return poolScore(row, sort.slice(5))?.rating ?? -1e9;
       return row.joint?.rating ?? -1e9;
     };
     items.sort((a, b) => sort === "name" ? String(a.name).localeCompare(b.name) : val(b) - val(a));
@@ -292,12 +317,13 @@
       const joint = document.createElement("td");
       joint.className = "num";
       joint.textContent = row.joint ? elo(row.joint.rating) : "—";
-      const v6 = document.createElement("td");
-      v6.className = "num wide";
-      v6.textContent = poolScore(row, "v6") ? elo(poolScore(row, "v6").rating) : "—";
-      const v5 = document.createElement("td");
-      v5.className = "num wide";
-      v5.textContent = poolScore(row, "v5") ? elo(poolScore(row, "v5").rating) : "—";
+      const poolCells = poolLabels.map((label) => {
+        const td = document.createElement("td");
+        td.className = "num wide";
+        const score = poolScore(row, label);
+        td.textContent = score && !score.unrated ? elo(score.rating) : "—";
+        return td;
+      });
       const banks = document.createElement("td");
       banks.className = "wide";
       const share = (row.share_min != null || row.share_max != null)
@@ -309,10 +335,10 @@
       for (const f of row.flags || []) {
         const s = document.createElement("span"); s.textContent = f; s.className = "warn"; flags.append(s);
       }
-      tr.append(name, family, st, steps, joint, v6, v5, banks, flags);
+      tr.append(name, family, st, steps, joint, ...poolCells, banks, flags);
       body.append(tr);
     }
-    $("indexNote").textContent = "Joint Elo is the last well-played checkpoint on the joint fit (random = 0). Pool v5 / v6 columns are IQM3 on that frozen pool and are not comparable to each other or to joint Elo.";
+    $("indexNote").textContent = `Joint Elo is the last well-played checkpoint on the joint fit (random = 0). Each pool column is IQM3 on that frozen pool${primaryLabel ? ` (pool ${primaryLabel} is the sweep objective)` : ""}; pools are separate scales, not comparable to each other or to joint Elo.`;
     setSweepNav();
     live();
   }
@@ -413,7 +439,7 @@
         return tr;
       }));
     }
-    $("ladderNote").textContent = "Joint MLE, random pinned at 0, one virtual draw per played pair. 95% CI is a diagonal Wald interval on the observed information — not a pool-v5 or pool-v6 number.";
+    $("ladderNote").textContent = "Joint MLE, random pinned at 0, one virtual draw per played pair. 95% CI is a diagonal Wald interval on the observed information — not a frozen-pool number.";
     const firstSweep = (index?.families || []).find((f) => f.sweep)?.sweep;
     setSweepNav(firstSweep);
     live();
