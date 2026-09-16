@@ -199,14 +199,21 @@ class Check:
         if self.lib.bopl_v4_check_gather(self.context, ticks, total, indices):
             raise RuntimeError(self.lib.bopl_v4_check_error().decode())
 
-    def profile(self):
-        names = np.zeros(64 * 64, np.uint8); ms = np.zeros(64, np.float64)
-        n = self.lib.bopl_v4_check_profile(self.context, names.ctypes.data_as(ctypes.c_char_p), ms, 64)
-        out = {}
-        for i in range(n):
-            name = bytes(names[64 * i:64 * i + 64]).split(b"\0")[0].decode()
-            out[name] = out.get(name, 0.0) + float(ms[i])
-        return out
+    def profile(self, passes=1):
+        """Per-stage ms of one forward + backward; with passes > 1 the per-stage
+        minimum over that many passes (the GPU is usually shared, and the
+        contention is bursty, so the minimum approximates the uncontended time)."""
+        best = {}
+        for _ in range(passes):
+            names = np.zeros(64 * 64, np.uint8); ms = np.zeros(64, np.float64)
+            n = self.lib.bopl_v4_check_profile(self.context, names.ctypes.data_as(ctypes.c_char_p), ms, 64)
+            out = {}
+            for i in range(n):
+                name = bytes(names[64 * i:64 * i + 64]).split(b"\0")[0].decode()
+                out[name] = out.get(name, 0.0) + float(ms[i])
+            for k, v in out.items():
+                best[k] = min(best.get(k, v), v)
+        return best
 
     def time(self, iterations, forward_only=False):
         return self.lib.bopl_v4_check_time(self.context, iterations, int(forward_only))
@@ -291,15 +298,19 @@ def overflow_case(library, rng, hidden=64):
         del os.environ["BOPL4_ROW_BUDGET"]
 
 
-def timing(library, rng, hidden=256):
+def timing(library, rng, hidden=256, batches=(4096, 8192)):
+    """Best of three 20-iteration timings per batch (the GPU is usually shared)."""
     out = {}
-    for batch in (4096, 8192):
+    for batch in batches:
         obs = random_obs(rng, batch, density=0.4)
         check = Check(library, batch, hidden)
         try:
             weights = init_weights(rng, hidden)
             check.run(weights, obs, np.zeros((batch, OD), np.float32), np.zeros(batch, np.float32))
-            out[str(batch)] = dict(forward_ms=check.time(20, True), forward_backward_ms=check.time(20), stages_ms=check.profile())
+            forward = min(check.time(20, True) for _ in range(3))
+            both = min(check.time(20) for _ in range(3))
+            stages = check.profile(passes=15)
+            out[str(batch)] = dict(forward_ms=forward, forward_backward_ms=both, stages_sum_ms=sum(stages.values()), stages_ms=stages)
         finally:
             check.close()
     return out
@@ -341,6 +352,7 @@ def main():
     parser.add_argument("--build-only", action="store_true")
     parser.add_argument("--cuda-host-compiler", default="g++-15")
     parser.add_argument("--time", action="store_true")
+    parser.add_argument("--time-only", default="", help="skip the parity cases; time these comma-separated batch sizes")
     parser.add_argument("--shape", default="", help="v4 shape overrides, e.g. critic_dim=0,ffn_dim=0 (layout.V4_DEFAULTS keys); "
                         "sets the BOPL4_* variables the CUDA module reads")
     args = parser.parse_args()
@@ -380,6 +392,9 @@ def main():
     torch.set_num_threads(4)
     rng = np.random.default_rng(73)
     report = dict(schema=1, pass_all=True)
+    if args.time_only:
+        print(json.dumps(timing(library, rng, batches=[int(b) for b in args.time_only.split(",")]), indent=1))
+        return
     report["random"] = [compare(library, random_obs(rng, batch, density), hidden, rng)
                         for batch, hidden, density in ((1, 64, 0.5), (3, 128, 0.5), (65, 64, 0.3), (257, 256, 0.3), (130, 64, 0.6))]
     report["empty_sets"] = compare(library, random_obs(rng, 5, density=0.0), 64, rng)
