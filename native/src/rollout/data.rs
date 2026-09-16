@@ -1567,6 +1567,7 @@ pub struct GrenadeData {
 }
 pub struct MissileData {
     pub hurtbox_extents: Vec2,
+    pub physics_radius: Fix,
     pub projectile_offset: Vec2,
     pub projectile_start_speed: Fix,
     pub rotation_speed: Fix,
@@ -2783,6 +2784,7 @@ pub fn get() -> &'static RolloutData {
                 let missile = &raw.prefabs.missile;
                 MissileData {
                     hurtbox_extents: missile.hurtbox_extents.get(),
+                    physics_radius: Fix::from_raw(missile.physics.radius),
                     projectile_offset: missile.projectile_offset.get(),
                     projectile_start_speed: Fix::from_raw(missile.projectile_start_speed),
                     rotation_speed: Fix::from_raw(missile.rotation_speed),

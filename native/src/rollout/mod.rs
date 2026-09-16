@@ -5401,20 +5401,119 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_MISSILE => {
-                        let slot = &mut self.players[index];
-                        slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Missile;
-                        slot.active_slot = s;
-                        slot.ability_entry_action = action;
-                        slot.telemetry.ability_activations[s] += 1;
-                        slot.missile = MissileFormState {
-                            collider_rotation: slot.base.rotation,
-                            ..MissileFormState::default()
+                        let grounded = self.players[index].base.grounded;
+                        let form_position = if grounded {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|ground| {
+                                    self.platforms.iter().find(|platform| platform.id == ground)
+                                })
+                                .map_or(base.position, |platform| {
+                                    platform
+                                        .surface
+                                        .position(base.local, data.missile.physics_radius)
+                                })
+                        } else {
+                            self.players[index].base.position
                         };
-                        if slot.base.grounded {
-                            slot.base.velocity = Vec2::ZERO;
-                            slot.base.external_velocity = Vec2::ZERO;
+                        {
+                            let slot = &mut self.players[index];
+                            slot.timers[s] = Fix::ZERO;
+                            slot.active = ActiveAbility::Missile;
+                            slot.active_slot = s;
+                            slot.ability_entry_action = action;
+                            slot.telemetry.ability_activations[s] += 1;
+                            slot.missile = MissileFormState {
+                                collider_rotation: slot.base.rotation,
+                                ..MissileFormState::default()
+                            };
+                            slot.base.position = form_position;
+                            slot.base.radius = data.missile.physics_radius;
+                            if grounded {
+                                // PlayerPhysics.SyncPhysicsTo clears only the
+                                // self-imposed velocity. PlayerInfo's external
+                                // velocity survives into the enabled form.
+                                slot.base.velocity = Vec2::ZERO;
+                            }
                         }
+                        if grounded {
+                            // Missile's PlayerPhysics and PlayerBody follow
+                            // SlimeController in the updater hierarchy and
+                            // therefore run on the entry pass. The former
+                            // advances the saved surface local; the latter
+                            // applies and damps the inherited external force.
+                            self.players[index]
+                                .base
+                                .move_only(Vec2::ZERO, terrain!(self));
+                            let slot = &mut self.players[index];
+                            slot.base.position += slot.base.external_velocity * DT;
+                            slot.base.external_velocity *= Fix::from_f64(0.95);
+                        } else {
+                            // The form's own PlayerPhysics is later than the
+                            // entering SlimeController. It applies a second
+                            // gravity/raycast pass before SparkShot, then the
+                            // form PlayerBody advances the surviving body.
+                            {
+                                let slot = &mut self.players[index];
+                                crate::player_physics::apply_gravity(
+                                    &mut slot.base.velocity,
+                                    data.missile.constants.gravity_accel,
+                                    data.missile.constants.gravity_modifier,
+                                    data.missile.constants.gravity_max_fall_speed,
+                                    false,
+                                )
+                                .expect("valid Missile gravity constants");
+                                slot.base.collision_rays(terrain!(self));
+                                if slot.base.grounded {
+                                    slot.missile.collider_rotation = slot.base.rotation;
+                                }
+                            }
+                            if self.players[index].base.grounded {
+                                self.players[index]
+                                    .base
+                                    .move_only(Vec2::ZERO, terrain!(self));
+                                let slot = &mut self.players[index];
+                                slot.base.position += slot.base.external_velocity * DT;
+                                slot.base.external_velocity *= Fix::from_f64(0.95);
+                            } else {
+                                // SparkShot performs its own landing query
+                                // before calling PlayerPhysics.Move. Only a
+                                // landing in this middle query exits the form;
+                                // a landing in the earlier standalone
+                                // PlayerPhysics updater keeps it active.
+                                self.players[index].base.collision_rays(terrain!(self));
+                                if self.players[index].base.grounded {
+                                    let slot = &mut self.players[index];
+                                    slot.active = ActiveAbility::None;
+                                    slot.obs_state = STATE_LAND;
+                                    slot.state_ticks = LAND_TICKS + 2;
+                                    slot.reported_position = slot.base.position;
+                                    slot.reported_tick = self.tick;
+                                    slot.base.sync_collider();
+                                    return;
+                                }
+                                let slot = &mut self.players[index];
+                                // PlayerPhysics.Move(zero) decelerates air
+                                // motion and issues the third landing query.
+                                crate::player_physics::air_movement(
+                                    &mut slot.base.velocity,
+                                    Fix::ZERO,
+                                    data.missile.constants.air_accel,
+                                    data.missile.constants.max_speed,
+                                )
+                                .expect("valid Missile air constants");
+                                slot.base.collision_rays(terrain!(self));
+                                if !slot.base.grounded {
+                                    slot.base.position +=
+                                        (slot.base.velocity + slot.base.external_velocity) * DT;
+                                }
+                                slot.base.external_velocity *= Fix::from_f64(0.95);
+                            }
+                        }
+                        // SparkShot.OnEnterAbility explicitly syncs its
+                        // hurtbox, and DetPhysics sees the later PlayerBody
+                        // position from this same updater pass.
+                        self.players[index].base.sync_collider();
                         return;
                     }
                     ABILITY_PUSH => {
@@ -13457,6 +13556,28 @@ impl RolloutWorld {
             3 if state.ticks > data.missile.idle_ticks => {
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
+                // SparkShot.Finish exits without `justlanded`. The ordinary
+                // SlimeController therefore enters Idle when the form is
+                // attached, even if the form originally entered in Fall.
+                // SyncPhysicsTo keeps the form body's surface position while
+                // rebuilding LocalPlatformPos for the ordinary slime radius.
+                if slot.base.grounded {
+                    if let Some(platform) = slot.base.platform(&self.platforms)
+                        && let Ok(local) = platform
+                            .surface
+                            .local_position(slot.base.position, data.player.radius)
+                    {
+                        slot.base.local = local;
+                        slot.base.align(platform);
+                    }
+                    slot.base.radius = data.player.radius;
+                    slot.obs_state = STATE_IDLE;
+                    slot.state_ticks = 0;
+                } else {
+                    slot.base.radius = data.player.radius;
+                    slot.exit_to_fall();
+                    slot.base.collision_rays(terrain!(self));
+                }
                 slot.reported_position = slot.base.position;
                 slot.reported_tick = self.tick;
                 return;
@@ -13483,23 +13604,50 @@ impl RolloutWorld {
             slot.base.position += slot.base.external_velocity * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
-            let slot = &mut self.players[index];
-            crate::player_physics::apply_gravity(
-                &mut slot.base.velocity,
-                data.missile.constants.gravity_accel,
-                data.missile.constants.gravity_modifier,
-                data.missile.constants.gravity_max_fall_speed,
-                false,
-            )
-            .expect("valid Missile gravity constants");
-            slot.base.collision_rays(terrain!(self));
-            if slot.base.grounded {
-                slot.active = ActiveAbility::None;
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
-                slot.reported_position = slot.base.position;
+            {
+                let slot = &mut self.players[index];
+                crate::player_physics::apply_gravity(
+                    &mut slot.base.velocity,
+                    data.missile.constants.gravity_accel,
+                    data.missile.constants.gravity_modifier,
+                    data.missile.constants.gravity_max_fall_speed,
+                    false,
+                )
+                .expect("valid Missile gravity constants");
+                slot.base.collision_rays(terrain!(self));
+                if slot.base.grounded {
+                    slot.missile.collider_rotation = slot.base.rotation;
+                }
+            }
+            if self.players[index].base.grounded {
+                self.players[index]
+                    .base
+                    .move_only(Vec2::ZERO, terrain!(self));
+                let slot = &mut self.players[index];
+                slot.base.position += slot.base.external_velocity * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
             } else {
-                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                self.players[index].base.collision_rays(terrain!(self));
+                if self.players[index].base.grounded {
+                    let slot = &mut self.players[index];
+                    slot.active = ActiveAbility::None;
+                    slot.obs_state = STATE_LAND;
+                    slot.state_ticks = LAND_TICKS + 2;
+                    slot.reported_position = slot.base.position;
+                    return;
+                }
+                let slot = &mut self.players[index];
+                crate::player_physics::air_movement(
+                    &mut slot.base.velocity,
+                    Fix::ZERO,
+                    data.missile.constants.air_accel,
+                    data.missile.constants.max_speed,
+                )
+                .expect("valid Missile air constants");
+                slot.base.collision_rays(terrain!(self));
+                if !slot.base.grounded {
+                    slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+                }
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
         }

@@ -2389,6 +2389,18 @@ box/rounded manifold and platform response, callback destruction, deferred
 explosion, first-frame hitbox flags, Shockwave, and the full 82-tick visual
 lifetime. The observed explosion collider axes differ from the serialized
 extents only by the source's `One / (One / extent)` fixed-point scale round trip.
+`missile_delayed_ground_entry_ab.c` adds a second 430-tick grounded entry after
+the ordinary player has accumulated residual external velocity. The form is
+placed with its authored physics radius, clears only self-imposed velocity,
+then runs its later `PlayerPhysics` and `PlayerBody` phases in the entry pass;
+the inherited force integration and 0.95 damping match through projectile spawn.
+`missile_airborne_entry_ab.c` adds 500 exact ticks starting one pass after a
+jump. It covers the newly enabled form's standalone gravity/raycast phase,
+SparkShot's explicit landing query, `Move(Vec2.zero)` air deceleration and third
+query, form-body integration, platform alignment, continued grounded control,
+and the normal grounded exit to Idle. These are scheduler-order differences
+from ordinary entry, rather than numeric approximations; no positional tolerance
+is used for either player's public state.
 `gust_missile_ab.c` adds exact oriented-box Shockwave capture, the complete Gust
 force curve, right-boundary destruction and the deferred explosion's hierarchy.
 `missile_player_ab.c` compares another 500 ticks bit exactly. A guided box hits

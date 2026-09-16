@@ -288,6 +288,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and isolated boundary/time-stop interactions remain open.
   Missile is exact through the guided form, steering, stabilization, release into
   instability thrust, rounded-platform collision, and its MineExplosion lifecycle.
+  Delayed grounded entry additionally preserves residual external velocity through
+  the form's later updater phases, while airborne entry matches the standalone
+  gravity query, SparkShot landing query, zero-input Move query, platform alignment,
+  continued grounded control and normal Idle exit.
   Direct ordinary-player and active-Bow hits additionally match callback destruction,
   ownerless explosion lethality and telemetry, stock reconstruction, hitbox disable
   and visual expiry. The Bow case uses the registered form for Shockwave selection and
