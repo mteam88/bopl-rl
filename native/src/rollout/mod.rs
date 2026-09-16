@@ -449,6 +449,7 @@ pub struct GuidedMissile {
     pub position: Vec2,
     pub body: Body,
     pub up: Vec2,
+    pub scale: Fix,
     pub instability_ticks: u32,
     /// `DetPhysics.duplicatedObjects` state for Missile copies. Keeping this
     /// on the pooled projectile avoids a side allocation in the hot path.
@@ -1216,6 +1217,8 @@ pub struct ScaleChangerState {
     pub active: bool,
     pub born_tick: u32,
     pub victim: usize,
+    /// Zero targets a player slot; one targets a guided Missile pool slot.
+    pub target_kind: u8,
     pub time: Fix,
     pub growth: bool,
 }
@@ -11463,7 +11466,7 @@ impl RolloutWorld {
                 let collider = OrientedBox::from_basis(
                     missile.position,
                     Vec2::angle(missile.body.orientation),
-                    data::get().missile.spark_extents,
+                    data::get().missile.spark_extents * missile.scale,
                 );
                 if crate::physics::contact::circle_box(query, collider).is_none() {
                     continue;
@@ -12714,7 +12717,7 @@ impl RolloutWorld {
                 let collider = OrientedBox::from_basis(
                     missile.position,
                     Vec2::angle(missile.body.orientation),
-                    data.missile.spark_extents,
+                    data.missile.spark_extents * missile.scale,
                 );
                 if crate::physics::contact::circle_box(query, collider).is_some() {
                     wave.missile_indices[wave.missile_count] = missile_index;
@@ -13382,6 +13385,7 @@ impl RolloutWorld {
                 + data.missile.projectile_offset.complex_mul(right),
             body,
             up,
+            scale: Fix::ONE,
             ..GuidedMissile::default()
         };
         if let Some(free) = self
@@ -14907,7 +14911,7 @@ impl RolloutWorld {
             let collider = OrientedBox::from_basis(
                 missile.position,
                 Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents,
+                data.missile.spark_extents * missile.scale,
             );
             if crate::physics::contact::box_box(query, collider).is_none() {
                 continue;
@@ -15061,7 +15065,7 @@ impl RolloutWorld {
             let collider = OrientedBox::from_basis(
                 missile.position,
                 Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents,
+                data.missile.spark_extents * missile.scale,
             );
             if crate::physics::contact::circle_box(
                 Circle {
@@ -15372,7 +15376,7 @@ impl RolloutWorld {
             inner: OrientedBox::from_basis(
                 missile.position,
                 Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents,
+                data.missile.spark_extents * missile.scale,
             ),
             radius: Fix::ZERO,
         };
@@ -16033,6 +16037,7 @@ impl RolloutWorld {
                 position,
                 body,
                 up,
+                scale: Fix::ONE,
                 duplicated: true,
                 duplicate_lifespan: 1800,
                 ..GuidedMissile::default()
@@ -16205,6 +16210,7 @@ impl RolloutWorld {
             max_distance
         };
         let mut victim = None;
+        let mut missile_victim = None;
         let mut water_hit = false;
         if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
             let map = &data.maps[self.map];
@@ -16293,6 +16299,28 @@ impl RolloutWorld {
                 {
                     nearest = distance;
                     victim = Some(target);
+                    missile_victim = None;
+                    water_hit = false;
+                }
+            }
+        }
+        if mask & (1 << data.missile.spark_layer) != 0 {
+            for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
+                if !missile.active || !missile.registered {
+                    continue;
+                }
+                let collider = OrientedBox::from_basis(
+                    missile.position,
+                    Vec2::angle(missile.body.orientation),
+                    data.missile.spark_extents * missile.scale,
+                );
+                if let Some(hit) = collider.raycast(origin, direction)
+                    && hit.near < nearest
+                    && hit.near <= max_distance
+                {
+                    nearest = hit.near;
+                    victim = None;
+                    missile_victim = Some(missile_index);
                     water_hit = false;
                 }
             }
@@ -16306,16 +16334,25 @@ impl RolloutWorld {
                 true,
             );
         } else if let Some(victim) = victim {
-            self.begin_scale_change(victim, growth, ray.changer_updatable_count);
+            self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
+        } else if let Some(victim) = missile_victim {
+            self.begin_scale_change(victim, 1, growth, ray.changer_updatable_count);
         }
     }
 
-    fn begin_scale_change(&mut self, victim: usize, growth: bool, updatable_count: u32) {
+    fn begin_scale_change(
+        &mut self,
+        victim: usize,
+        target_kind: u8,
+        growth: bool,
+        updatable_count: u32,
+    ) {
         self.next_spawn_hierarchy += updatable_count;
         let effect = ScaleChangerState {
             active: true,
             born_tick: self.tick,
             victim,
+            target_kind,
             time: Fix::ZERO,
             growth,
         };
@@ -16891,16 +16928,46 @@ impl RolloutWorld {
                 self.scale_changers[index].active = false;
                 continue;
             }
-            if self.player_time_scale < Fix::from_f32(0.01)
-                && !self.time_stop_protected[effect.victim]
-            {
+            if effect.target_kind == 0 {
+                if self.player_time_scale < Fix::from_f32(0.01)
+                    && !self.time_stop_protected[effect.victim]
+                {
+                    continue;
+                }
+                let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
+                let slot = &mut self.players[effect.victim];
+                slot.player_scale =
+                    (slot.player_scale + delta).clamp(Fix::from_f32(0.3), Fix::from_int(3));
+                self.scale_changers[index].time += DT;
                 continue;
             }
-            let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
-            let slot = &mut self.players[effect.victim];
-            slot.player_scale =
-                (slot.player_scale + delta).clamp(Fix::from_f32(0.3), Fix::from_int(3));
-            self.scale_changers[index].time += DT;
+            if effect.victim >= self.guided_missiles.len()
+                || !self.guided_missiles[effect.victim].active
+            {
+                self.scale_changers[index].active = false;
+                continue;
+            }
+            // Non-player ScaleChanger targets are unprotected and pause
+            // before advancing their curve while global time is stopped.
+            if self.player_time_scale < Fix::from_f32(0.01) {
+                continue;
+            }
+            let time = effect.time + DT;
+            let missile = &mut self.guided_missiles[effect.victim];
+            // Spark's authored momentOfInertia is zero. BoplBody gates its
+            // scale-driven mass update on both mass and inertia being nonzero,
+            // so the Missile keeps its original inverse mass as the box grows
+            // or shrinks.
+            let multiplier = if missile.body.inverse_mass > Fix::ZERO
+                && missile.body.inverse_mass * missile.scale > ray.inverse_mass_before_big
+            {
+                ray.small_non_players_multiplier
+            } else {
+                ray.multiplier
+            };
+            missile.scale = (missile.scale + ray.scale_curve.evaluate(time) * multiplier)
+                .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+            self.scale_changers[index].time = time;
         }
     }
 
@@ -17976,7 +18043,7 @@ impl RolloutWorld {
             let collider = OrientedBox::from_basis(
                 missile.position,
                 Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents,
+                data.missile.spark_extents * missile.scale,
             );
             self.entities[entity] = CEntity {
                 id,
@@ -18138,7 +18205,7 @@ impl RolloutWorld {
             let collider = OrientedBox::from_basis(
                 missile.position,
                 Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents,
+                data.missile.spark_extents * missile.scale,
             );
             let row = &mut self.entities[entity];
             row.x = missile.position.x.raw();
@@ -19020,7 +19087,7 @@ impl RolloutWorld {
                 let missile_box = OrientedBox::from_basis(
                     missile.position,
                     Vec2::angle(missile.body.orientation),
-                    data.missile.spark_extents,
+                    data.missile.spark_extents * missile.scale,
                 );
                 if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
                     missile_contacts[missile_contact_count] = (missile_index, contact);
@@ -19187,7 +19254,7 @@ impl RolloutWorld {
             let missile_box = OrientedBox::from_basis(
                 missile.position,
                 Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents,
+                data.missile.spark_extents * missile.scale,
             );
             let missile_shape = RoundedRect {
                 inner: missile_box,

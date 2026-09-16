@@ -291,13 +291,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Direct ordinary-player and active-Bow hits additionally match callback destruction,
   ownerless explosion lethality and telemetry, stock reconstruction, hitbox disable
   and visual expiry. The Bow case uses the registered form for Shockwave selection and
-  reproduces its callback-time rotation reset and surface-normal death exit. Projectile,
-  other active-form contacts, remaining projectile/item types, scale interactions,
-  Portal traversal remain open. A crossing Arrow additionally matches dynamic
+  reproduces its callback-time rotation reset and surface-normal death exit. Other
+  active-form contacts, remaining projectile/item types and Portal traversal remain
+  open. A crossing Arrow additionally matches dynamic
   Circle/Box resolution, both callback destructions and the complete ownerless
   explosion lifecycle using a fixed stack contact set. Duplicator's Missile branch
   matches three velocity-aligned fan copies with fresh engine state, pooled duplicate
-  lifetimes, boundary destruction and four independent explosions. A released Grenade matches the
+  lifetimes, boundary destruction and four independent explosions. Growth and Shrink
+  also match their signed non-player curves on the live box, unchanged inverse mass,
+  boundary destruction and explosion expiry. A released Grenade matches the
   complementary callback split: dynamic correction, Missile-only destruction,
   next-pass blast ignition, chained Grenade explosion and independent visual expiry.
   Mine executes the separate original `ThrowItem` form and exact autonomous
@@ -470,8 +472,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   non-unit scale continues to round them each tick in Q32. Grounded ordinary-
   player hits match through the complete resize and later movement. Growth and
   Shrink each also match an ordinary player hit while rising, including the
-  complete signed resize, changed-body fall and platform contacts; water,
-  non-player, active-form, BlackHole and orb targets remain open.
+  complete signed resize, changed-body fall and platform contacts. Both rays now
+  resize a live guided-Missile box through their signed non-player curves,
+  unchanged zero-inertia mass and exact boundary/explosion lifecycle; water,
+  remaining non-player, active-form, BlackHole and orb targets remain open.
   Blink gun uses the same exact GunTransform form and hitscan ordering. A
   player hit immediately disables the victim, changes the cast cooldown to
   five seconds, and advances a collider-free QuantumTunnel using player time.

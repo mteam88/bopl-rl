@@ -2416,6 +2416,11 @@ lifetimes, followed by exact boundary destruction, four deferred explosions and
 their independent expiry. The 450-tick comparison is bit exact outside the
 standard one-raw-unit box-basis reconstruction allowance.
 
+`scale_missile_ab.c` covers both signed ScaleChanger paths on the live item
+box through resized collision geometry, unchanged zero-inertia mass and the same
+boundary/explosion lifecycle. The only difference is at most three raw Q32 units
+in Shrink's basis from direct reconstruction versus Unity's incremental ratios.
+
 `missile_grenade_ab.c` adds 500 differential ticks for a released Grenade. The
 circle and guided box resolve dynamically on tick 246; Missile's callback queues
 its explosion while Grenade's item-layer callback intentionally leaves the
@@ -2594,9 +2599,22 @@ shape.
 `scale_rays_ab.c` compares 500 Growth and 500 Shrink ticks exactly through
 form entry and exit, ScaleChanger registration, the complete curve, collider
 and radius phase lags, and subsequent scaled movement. Water reflection,
-non-player targets, active transformed-player targets, BlackHole growth and
-orb conversion still require their concrete entity implementations and
-differential scenarios, so both abilities remain partial.
+remaining non-player targets, active transformed-player targets, BlackHole
+growth and orb conversion still require their concrete entity implementations
+and differential scenarios, so both abilities remain partial.
+
+`scale_missile_ab.c` adds 900 differential ticks across Growth and Shrink on a
+live item-layer Missile box. The non-player branch increments time before curve
+evaluation, applies the authored 1.4 small-body multiplier, clamps box scale to
+`[0.1, 5]`, and resizes every subsequent query. Spark's zero moment of inertia
+prevents `BoplBody` from changing its inverse mass, exactly matching the source
+gate. Both signed curves start on tick 252 and preserve bit-exact trajectory,
+boundary destruction, explosion registration/disable and tick-344 expiry. Rust
+reconstructs each scaled basis from orientation and total scale while Unity
+multiplies the prior basis by each scale ratio; Shrink accumulates at most three
+raw Q32 units (6.99e-10 world units) of basis-only rounding. Positions,
+velocities, scale-driven hit extents to that bound, mass and all lifecycle
+outcomes are otherwise exact.
 
 `growth_airborne_ab.c` adds 500 exact ticks for an ordinary target that jumps
 on tick 240 and is still rising when the ray releases on tick 241. The
