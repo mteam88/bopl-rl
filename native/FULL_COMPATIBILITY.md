@@ -2984,6 +2984,14 @@ spawner launch normalization, with identical capture, velocity branch, identity
 and lifecycle. A fixed 64-entry stack bitmap orders recycled portal slots, and
 the pickup pool retains its capacity, so the scheduler adds no tick allocation.
 
+`time_stop_portal_ab.c` creates and links both mouths before casting Time Stop.
+The global clock reaches zero on tick 857 and restores on 1547, leaving both
+endpoint lifetimes unchanged for 690 passes. An ordinary opponent begins moving
+after tick 1800, later than the pair's tick-1770 unfrozen expiry, and traverses
+on tick 1811 in both backends. All 2,200 ticks match with only the standard
+one-raw-unit transformed-axis/position bound; capture, mapped velocity and the
+post-exit state are otherwise exact.
+
 ### Executable Beam forms, pooled graph and damage (2026-09-15)
 
 Catalog id 28 now connects the previously verified Beam kernels to the public

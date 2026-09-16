@@ -364,6 +364,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   updaters merge by spawn hierarchy without allocation, so the older mouth maps
   momentum before the later pickup applies its hover drag and lift, matching
   NativeAOT through continued post-exit motion.
+  Time Stop also freezes both endpoint clocks for all 690 stopped passes; an
+  ordinary player crosses on tick 1811, after the pair would have reached its
+  25-second lifetime on an unfrozen clock.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. Its ignition
   chain, scale-change, ring-eviction, and shared `Item.Duplicate` paths remain

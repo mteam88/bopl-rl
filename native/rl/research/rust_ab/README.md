@@ -201,6 +201,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `portal_pickup_ab.c`: an authored AbilitySpawner pickup crosses an older
   linked portal pair, covering hierarchy-ordered hover physics and mapped exit
   momentum.
+- `time_stop_portal_ab.c`: Time Stop pauses both linked-mouth lifetime clocks
+  for 690 passes, then an ordinary player traverses after their unfrozen expiry.
 - `repr_ab.c`: number-representation A/B between two builds of the Rust
   backend (Q32.32 `--features q32` vs the default f64 `Fix`), or .NET vs Rust:
   gate action stream at repeat 1, every observation field compared per tick,
