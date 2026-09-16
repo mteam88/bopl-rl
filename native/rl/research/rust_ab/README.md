@@ -99,6 +99,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `gust_gun_forms_ab.c`: exact Gust pushes on active Blink, Growth, Shrink,
   Duplicator and Freeze forms, including their separate grounded PlayerBody
   movement after Shockwave initialization.
+- `gust_magnet_form_ab.c`: the corresponding exact active-Magnet push with its
+  live pull field aimed through already-covered player and platform targets.
 - `gust_arrow_ab.c`: a live Bow Arrow captured by Gust, including the split
   init/Arrow-update/wave-update ordering, force curve and projectile flight.
 - `gust_missile_ab.c`: a live guided Missile box captured by Gust, including

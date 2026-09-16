@@ -12486,6 +12486,7 @@ impl RolloutWorld {
                         | ActiveAbility::GrowthRay
                         | ActiveAbility::ShrinkRay
                         | ActiveAbility::Duplicator
+                        | ActiveAbility::Magnet
                 ) {
                     let target = &self.players[player_index];
                     let scale = target.base.scale;
@@ -12519,6 +12520,12 @@ impl RolloutWorld {
                             target.gun.collider_up.perp_cw(),
                             data.duplicator.collider_offset * scale,
                             data::surface_extents(data.duplicator.hurtbox_extents) * scale,
+                        ),
+                        ActiveAbility::Magnet => (
+                            target.magnet.body_right.normalized_angle(),
+                            target.magnet.body_right,
+                            data.magnet.collider_offset * scale,
+                            data::surface_extents(data.magnet.hurtbox_extents) * scale,
                         ),
                         _ => unreachable!(),
                     };

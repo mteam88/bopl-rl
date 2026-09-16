@@ -1273,9 +1273,15 @@ offset, scale and oriented DPhysics box. These traces expose an ordering hidden
 by the standalone form goldens: Gust's deferred Shockwave initializes before
 the existing gun form, while the form's separate `PlayerBody` updater advances
 even when `PlayerPhysics` remains grounded. Rust now preserves that split with
-no per-tick allocation or comparator tolerance. Magnet remains outside this
-golden because its simultaneous pull field creates an additional composition
-tracked separately.
+no per-tick allocation or comparator tolerance.
+
+`gust_magnet_form_ab.c` isolates Magnet's additional live pull field by placing
+it at its standalone-golden spawn and Gust on the lower-left player. Magnet
+casts on tick 214, Gust on 224, and the form's pushed trajectory becomes visible
+on tick 232. All public fields compare exactly through tick 250 with the normal
+64-raw bound, including Magnet's simultaneous player/platform pull. The trace
+ends before tick 271, when the field reaches an ability pickup; that separate
+pickup interaction remains explicitly open.
 
 
 ## Executable Invisibility and streamed actor verification

@@ -148,7 +148,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   pushable-form path through `PlayerPhysics.AddForce`; its later boundary check
   observes the pose before the lower-hierarchy `PlayerBody` movement pass. Bow,
   Missile, Mine, the ThrowItem2 forms and the Blink/Growth/Shrink/Duplicator/
-  Freeze gun forms use the same force path with their oriented box colliders.
+  Freeze/Magnet gun forms use the same force path with their oriented boxes.
   The gun-form slice also preserves the source split where Shockwave initializes
   before a separate grounded `PlayerBody` movement pass. Grenade, Smoke, Tack,
   Mjolnir and Poke Ball are each exact through their measured release boundary.
