@@ -57,7 +57,7 @@ then a pure function of the weights (nothing to export, nothing to drift).
 |---|---|---|
 | global | 66 | v3 prefix with columns 8-9 (absolute self x/64, y/64) zeroed: clocks, time scale, counts, 39 per-ability entity counts, sector counts, time stop. No absolute position anywhere in the row (see "Map invariance" below) |
 | self | 44 | v3 self 20 (id/team/alive/stocks/kills/deaths/pos/scale/flags/timers) + controlling slime: vx, vy, speed, rotation sin/cos, state one-hot 11, in-ability, input-suppressed, spawned, abilityless, scale, grounded (vy==0 and vx==0 is the sim's grounded encoding), pickup slot |
-| opponent | 56 | the primary enemy (nearest visible enemy player's controlling slime): the same 44 as self, plus relative: dx, dy, distance, bearing sin/cos, dvx, dvy, closing speed, tangential speed, time to closest approach, miss distance, position-known flag. Zero with known=0 while invisible. A fixed slot for the one opponent that matters in 1v1, so the policy does not depend on pooling to find it |
+| opponent | 56 | the primary enemy (nearest visible enemy player's controlling slime): the same 44 as self, plus relative: dx, dy, distance, bearing sin/cos, dvx, dvy, closing speed, tangential speed, time to closest approach, miss distance, position-known flag. Zero with known=0 while invisible. A fixed slot for the one opponent that matters in 1v1, read by the flat linear straight into fusion, never through a pooled set: the probes measured the v3 set path losing exactly this (foe dash cooldown R2 0.87 in the raw row vs 0.65 at the GRU, platform-ready AUC 0.997 vs 0.945, foe velocity 0.49 vs 0.32) |
 | previous | 26 | v3 own-action tail (the decision as applied, latch left, hold runs) + the two decisions applied before it (no-aim flag, aim cos/sin, four buttons each). The observation is 9 ticks old and a decision is 4 ticks, so the last three applied decisions are exactly what the agent knows about its own inputs inside the delay window; the probes measured own velocity R2 0.72 delayed vs 1.00 undelayed (PROBES.md), and own inputs let the network dead-reckon its own state exactly and the foe's approximately |
 | terrain | 12 | egocentric, from the static-collider SDF the scripted bots use (`bot_wall_sdf`): drop to the surface below /32, ceiling above /32, distance to the edge left and right (floor falls away by more than 4 units within one dash, 13 units) /13 with a wall-blocks flag per side, height above the water /32, distance to lethal terrain /16, ground within one dash (some of 16 dash endpoints has a surface within 4 units below), SDF at the body /8 and its gradient |
 | rays | 36 x 8 | the primary geometry channel: 32 rays from the body at 11.25 degree steps plus 4 in a 120 degree fan about straight down (-135, -105, -75, -45 degrees), length 40: distance /40 (1 = nothing), hit class one-hot wall / lethal wall / water or blast plane / hostile projectile or object / opponent body / own object, closing speed of a body or object hit along the ray. Walls by sphere-marching the SDF, water and the blast planes as planes, projectiles and enemy bodies as circles of their radius. The probes' ray study (PROBES.md section 5) fixed the count: 32+4 rays alone beat the whole 1458-float v3 observation on falls and geometry (fall_30 AP 0.72 vs 0.16, drop-to-surface R2 0.94 vs 0.56, lands_dry AUC 0.98 vs 0.93) and 16+4 rays did not (hit_inflight_30 AP 0.18 vs 0.28); 0.1 us per ray. 16 rays is the `v4-rays16` ablation |
@@ -274,7 +274,20 @@ if the measured smoke is above 2x: critic width 384, set inner width 64
 section 8 name the shapes.
 
 Rollout inference: the v3 batched chain is 0.095 ms per step; the per-bank
-fallback 0.21 ms. v4 adds LN, FFN and critic launches. Measured in the smoke.
+fallback 0.21 ms. v4's per-bank path is a chain of ~60 launches per bank per
+buffer step, so with the learner and three frozen banks it was launch-bound
+(5x v3's eval_gpu at 96 rows per buffer). The batched multi-bank v4 forward
+(`bopl_rollout_v4.cu`, hooked into `bopl_rollout.cu`'s plan) runs every bank
+in one chain of ~18 launches per buffer step: a block-per-(sample, set) kernel
+for the per-row MLPs with bf16-rounded operands like the trainer's WMMA path,
+the grouped GEMM for flat / fusion / MinGRU / FFN / actor / critic, and
+row-wise LayerNorm / residual / privileged-concat glue; `br_gate` and
+`br_sample` are v3's. `BOPL_BR_CHECK=1` compares its decoder rows with the
+per-bank chain on eager steps (max |diff| ~7e-4 on logits of order 1, the
+bf16 / TF32 rounding order); `BOPL_BATCHED_FWD=0` keeps the per-bank path as
+the reference. At a quarter of 024's shape (32 workers, 1 buffer) the rollout
+went from 0.224 s to 0.183 s per update; the full-shape number comes from the
+smoke.
 
 ## 7. Ablation plan (sweep configs, `sweep/configs/v4-*.toml`)
 
