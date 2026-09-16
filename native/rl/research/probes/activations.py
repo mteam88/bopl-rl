@@ -15,6 +15,8 @@ writes <dataset>/acts-<tag>.npy with, per row:
     [640:768) MinGRU output (the decoder input)
     [768]     value head
 
+The file is float16 (the f32 online value is labels.value_online).
+
 `--check` also runs the native CPU policy on a few sequences and reports the
 largest value / state difference (float16 storage of the observations bounds it).
 
@@ -139,11 +141,14 @@ def run(dataset, checkpoint, tag, device, obs_key="obs", batch=8192, zero_pos=Fa
     W = Weights(checkpoint)
     w = {k: torch.as_tensor(getattr(W, k), device=device) for k in ("flat", "player", "slot", "entity", "slime", "embedding", "fusion", "decoder")}
     gru = [torch.as_tensor(g, device=device) for g in W.gru]
-    out = np.lib.format.open_memmap(dataset / f"acts-{tag}.npy", mode="w+", dtype=np.float32, shape=(rows, ACT_WIDTH))
-    # Stage 1: the feedforward encoder in big batches.
+    out = np.lib.format.open_memmap(dataset / f"acts-{tag}.npy", mode="w+", dtype=np.float16, shape=(rows, ACT_WIDTH))
+    # Stage 1: the feedforward encoder in big batches. The fused block feeding the
+    # recurrence is kept in float32 in RAM (the file is float16).
+    fused32 = np.empty((rows, 128), dtype=np.float32)
     for start in range(0, rows, batch):
-        enc = encode(obs[start:start + batch], w, device)
-        out[start:start + batch, :512] = enc.cpu().numpy()
+        enc = encode(obs[start:start + batch], w, device).cpu().numpy()
+        out[start:start + batch, :512] = enc
+        fused32[start:start + batch] = enc[:, 384:512]
     # Stage 2: the recurrent scan, per (game, player) sequence. Sequences are
     # contiguous (player-major inside a game) so each is one slice; scan many
     # sequences in lockstep to keep the matmuls wide.
@@ -160,7 +165,7 @@ def run(dataset, checkpoint, tag, device, obs_key="obs", batch=8192, zero_pos=Fa
         L = int(lengths[sel].max())
         H = W.hidden
         state = torch.zeros(len(sel), H, device=device)
-        fused_all = [torch.as_tensor(out[s[i]:e[i], 384:512], device=device) for i in range(len(sel))]
+        fused_all = [torch.as_tensor(fused32[s[i]:e[i]], device=device) for i in range(len(sel))]
         result = [np.zeros((e[i] - s[i], ACT_WIDTH - 512), dtype=np.float32) for i in range(len(sel))]
         for t in range(L):
             active = np.flatnonzero(lengths[sel] > t)
@@ -217,6 +222,9 @@ def main():
     parser.add_argument("--zero-pos", action="store_true", help="zero obs[8:10] (absolute self position) before the encoder")
     args = parser.parse_args()
     torch.set_num_threads(2)
+    if str(args.checkpoint) == "early":
+        from generate import EARLY
+        args.checkpoint = EARLY
     run(args.dataset, args.checkpoint, args.tag, args.device, args.obs, zero_pos=args.zero_pos)
     if args.check:
         print(json.dumps(check(args.dataset, args.checkpoint, args.tag)))

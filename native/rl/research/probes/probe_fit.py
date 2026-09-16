@@ -48,10 +48,16 @@ REGRESSION = {
     "real_opp_dx32": "real_opp_x32 - opp_x", "real_opp_dy32": "real_opp_y32 - opp_y",
     "vx": "vx", "vy": "vy", "foe_vx": "foe_vx", "foe_vy": "foe_vy",
     "foe_dash_cd": "foe_dash_cd", "foe_bow_cd": "foe_bow_cd", "foe_platform_cd": "foe_platform_cd",
-    "return_disc": "return_disc", "log_ticks_to_end": "log1p(ticks_to_end)",
+    "return_disc": "return_disc", "outcome_sign": "2 * win - 1", "log_ticks_to_end": "log1p(ticks_to_end)",
     "abs_x": "x", "abs_y": "y",
 }
 MULTICLASS = {"map": ("map", 5)}  # one-vs-rest binary heads, reported as argmax accuracy
+# Privileged inputs for the critic-ceiling probe (`priv` feature part): idle-fork futures, live geometry, opponent state.
+PRIV_FEATURES = ["hit_15", "hit_30", "hit_60", "fall_30", "fall_60", "squish_60", "any_death_60", "my_shot_hits_60", "own_arrow_in_flight",
+                 "idle_death_tick / 60", "(idle_x30 - x) / 32", "(idle_y30 - y) / 32", "(idle_opp_x30 - opp_x) / 32", "(idle_opp_y30 - opp_y) / 32",
+                 "grounded", "clip(drop, 0, 64) / 64", "clip(edge_distance, -32, 32) / 32", "lands_dry", "terrain_within_dash",
+                 "vx / 64", "vy / 64", "foe_vx / 64", "foe_vy / 64", "foe_grounded", "foe_dash_ready", "foe_bow_ready", "foe_platform_ready",
+                 "foe_dash_cd", "foe_bow_cd", "foe_platform_cd", "x / 64", "y / 64", "opp_x / 64", "opp_y / 64", "opp_alive", "tick / 1800"]
 POS_COLS = (schema.COMPACT_OFFSETS["prefix"] + 8, schema.COMPACT_OFFSETS["prefix"] + 9)
 
 
@@ -111,14 +117,21 @@ class Data:
                 x = self.obs[rows].astype(np.float32); x[:, list(POS_COLS)] = 0; parts.append(x)
             elif part == "pos":
                 parts.append(self.obs[rows][:, list(POS_COLS)].astype(np.float32))
+            elif part == "opp_id":  # one-hot of the opponent controller (never observable; the outcome-variance decomposition)
+                ids = self.meta[rows, self.meta_cols["opponent_controller"]]
+                parts.append((ids[:, None] == np.arange(16)[None]).astype(np.float32))
+            elif part == "priv":  # the privileged labels themselves as inputs (the critic-ceiling experiment)
+                env = self.table(rows)
+                cols = [np.clip(eval(e, {}, env), -4, 4) for e in PRIV_FEATURES]
+                parts.append(np.nan_to_num(np.stack(cols, 1), nan=0.0).astype(np.float32))
             elif part == "rel":
                 parts.append(F.relational_features(self.obs[rows]))
             elif part in self.rays:
                 parts.append(self.rays[part][rows].astype(np.float32))
             elif part == "pooled":
-                parts.append(self.acts[rows, 128:384])
+                parts.append(self.acts[rows, 128:384].astype(np.float32))
             elif part in SLICES:
-                parts.append(self.acts[rows, SLICES[part]])
+                parts.append(self.acts[rows, SLICES[part]].astype(np.float32))
             else:
                 raise KeyError(part)
         return np.concatenate(parts, 1) if len(parts) > 1 else parts[0]
@@ -227,7 +240,7 @@ def fit(data, feature_name, label_names, device, epochs=6, batch=4096, chunk=327
                 for model, opt, sched in zip((linear, mlp), opts, scheds):
                     loss = loss_fn(model(xb), yb)
                     opt.zero_grad(set_to_none=True); loss.backward(); opt.step(); sched.step()
-                    total += float(loss); count += 1
+                    total += float(loss.detach()); count += 1
         log(f"  {feature_name} epoch {epoch + 1}/{epochs} loss {total / max(count, 1):.4f} ({time.time() - started:.0f}s)")
     # evaluation on the test games
     preds = {"linear": [], "mlp": []}; ys_all = []
