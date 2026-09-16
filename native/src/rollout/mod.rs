@@ -1798,6 +1798,10 @@ struct PlatformScratch {
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     squished: Vec<usize>,
+    item_order: Vec<usize>,
+    item_window: Vec<usize>,
+    item_contacts: Vec<(usize, usize, Contact)>,
+    item_platform_contacts: Vec<(usize, usize, Contact)>,
 }
 
 pub struct RolloutWorld {
@@ -1954,7 +1958,13 @@ impl RolloutWorld {
             bounds_epoch: 0,
             platform_rows_epoch: 0,
             quiet_epoch: 0,
-            scratch: PlatformScratch::default(),
+            scratch: PlatformScratch {
+                item_order: Vec::with_capacity(192),
+                item_window: Vec::with_capacity(192),
+                item_contacts: Vec::with_capacity(256),
+                item_platform_contacts: Vec::with_capacity(256),
+                ..PlatformScratch::default()
+            },
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
@@ -18928,13 +18938,15 @@ impl RolloutWorld {
     /// Keep this separate from item callbacks so all physical contacts finish
     /// before GrenadeExplode observes Player-layer overlaps.
     fn thrown_item_platform_contacts(&mut self, data: &data::RolloutData) {
-        for item_index in 0..self.thrown_items.len() {
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].entity.is_none()
-            {
+        // DetPhysics constructs every Circle/RoundedRectangle manifold before
+        // it resolves the first pair. A correction from an earlier item must
+        // therefore not change the manifold already queued for a later item.
+        let mut all_contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
+        all_contacts.clear();
+        for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
+            if !item.active || item.entity.is_none() {
                 continue;
             }
-            let item = self.thrown_items[item_index];
             let item_radius = if item.ability == ABILITY_MINE {
                 data.mine.item_radius
             } else {
@@ -18944,18 +18956,33 @@ impl RolloutWorld {
                 center: item.position,
                 radius: item_radius,
             };
-            let mut contacts = [(0usize, Contact::default()); 64];
-            let mut contact_count = 0;
             for (platform_index, platform) in self.platforms.iter().enumerate() {
-                if contact_count == contacts.len() {
-                    break;
-                }
                 if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, platform.collider)
                 {
-                    contacts[contact_count] = (platform_index, contact);
-                    contact_count += 1;
+                    all_contacts.push((item_index, platform_index, contact));
                 }
+            }
+        }
+
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].entity.is_none()
+            {
+                continue;
+            }
+            let item = self.thrown_items[item_index];
+            let mut contacts = [(0usize, Contact::default()); 64];
+            let mut contact_count = 0;
+            for &(_, platform_index, contact) in all_contacts
+                .iter()
+                .filter(|(contact_item, _, _)| *contact_item == item_index)
+            {
+                if contact_count == contacts.len() {
+                    break;
+                }
+                contacts[contact_count] = (platform_index, contact);
+                contact_count += 1;
             }
             if contact_count == 0 {
                 continue;
@@ -19033,64 +19060,135 @@ impl RolloutWorld {
                 self.detonate_smoke(item_index, true, data);
             }
         }
+        self.scratch.item_platform_contacts = all_contacts;
     }
 
     /// Item circles participate in ordinary rigid-body contacts.
     fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
-        let mut contacts = [(0usize, 0usize, Contact::default()); 256];
-        let mut contact_count = 0usize;
-        for newer in 0..self.thrown_items.len() {
-            if !self.thrown_items[newer].active || self.thrown_items[newer].entity.is_none() {
-                continue;
+        let radius = |item: ThrownItem| {
+            if item.ability == ABILITY_MINE {
+                data.mine.item_radius
+            } else {
+                throw_config(data, item.ability).item_radius
             }
-            for older in 0..newer {
-                if !self.thrown_items[older].active || self.thrown_items[older].entity.is_none() {
+        };
+
+        // Circle/Circle pairs follow DetPhysics' global sort-and-sweep order,
+        // not component registration order. Pair orientation is observable:
+        // fixed-point positional correction gives the remainder to a
+        // different body when A and B are exchanged. Compute the same global
+        // sweep axis, then retain only the item circles from that ordering.
+        let mut mean = Vec2::ZERO;
+        let mut active_count = 0usize;
+        for platform in &self.platforms {
+            mean += platform.surface.center;
+            active_count += 1;
+        }
+        for entity in self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind != 2 && entity.flags & 3 == 3)
+        {
+            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            active_count += 1;
+        }
+        if active_count != 0 {
+            mean = mean / Fix::from_int(active_count as i64);
+        }
+        let mut variance = Vec2::ZERO;
+        for platform in &self.platforms {
+            let delta = mean - platform.surface.center;
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        for entity in self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind != 2 && entity.flags & E_REMOVED == 0)
+        {
+            let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        let sweep_x = variance.x > variance.y;
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
+
+        let order = &mut self.scratch.item_order;
+        order.clear();
+        order.extend(
+            self.thrown_items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    (item.active && item.entity.is_some()).then_some(index)
+                }),
+        );
+        order.sort_unstable_by(|&a, &b| {
+            let a_min = axis(self.thrown_items[a].position) - radius(self.thrown_items[a]);
+            let b_min = axis(self.thrown_items[b].position) - radius(self.thrown_items[b]);
+            a_min.cmp(&b_min).then(a.cmp(&b))
+        });
+
+        let window = &mut self.scratch.item_window;
+        let contacts = &mut self.scratch.item_contacts;
+        window.clear();
+        contacts.clear();
+        for &current in order.iter() {
+            let current_item = self.thrown_items[current];
+            let current_radius = radius(current_item);
+            let current_min = axis(current_item.position) - current_radius;
+            window.retain(|&prior| {
+                axis(self.thrown_items[prior].position) + radius(self.thrown_items[prior])
+                    > current_min
+            });
+            for &prior in window.iter() {
+                let prior_item = self.thrown_items[prior];
+                let prior_radius = radius(prior_item);
+                if other(prior_item.position) + prior_radius
+                    <= other(current_item.position) - current_radius
+                    || other(prior_item.position) - prior_radius
+                        >= other(current_item.position) + current_radius
+                {
                     continue;
                 }
-                let radius = |item: ThrownItem| {
-                    if item.ability == ABILITY_MINE {
-                        data.mine.item_radius
-                    } else {
-                        throw_config(data, item.ability).item_radius
-                    }
-                };
-                let a = self.thrown_items[older];
-                let b = self.thrown_items[newer];
-                let Some(contact) = crate::physics::contact::circle_circle(
+                if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
-                        center: a.position,
-                        radius: radius(a),
+                        center: prior_item.position,
+                        radius: prior_radius,
                     },
                     Circle {
-                        center: b.position,
-                        radius: radius(b),
+                        center: current_item.position,
+                        radius: current_radius,
                     },
-                ) else {
-                    continue;
-                };
-                if contact_count == contacts.len() {
-                    break;
+                ) {
+                    contacts.push((prior, current, contact));
                 }
-                contacts[contact_count] = (older, newer, contact);
-                contact_count += 1;
             }
+            window.push(current);
         }
         // DetPhysics builds every narrow-phase manifold before resolving any
         // of them. In particular the three overlapping fan copies must all
         // use their initial positions rather than a prior pair's correction.
-        for &(older, newer, contact) in &contacts[..contact_count] {
-            let a = self.thrown_items[older];
-            let b = self.thrown_items[newer];
+        for &(a_index, b_index, contact) in contacts.iter() {
+            let a = self.thrown_items[a_index];
+            let b = self.thrown_items[b_index];
             let mut body_a = a.body;
             let mut body_b = b.body;
             resolve(contact, &mut body_a, &mut body_b, a.position, b.position);
             let correction =
                 positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-            let (left, right) = self.thrown_items.split_at_mut(newer);
-            left[older].body = body_a;
-            left[older].position += correction[0];
-            right[0].body = body_b;
-            right[0].position += correction[1];
+            if a_index < b_index {
+                let (left, right) = self.thrown_items.split_at_mut(b_index);
+                left[a_index].body = body_a;
+                left[a_index].position += correction[0];
+                right[0].body = body_b;
+                right[0].position += correction[1];
+            } else {
+                let (left, right) = self.thrown_items.split_at_mut(a_index);
+                right[0].body = body_a;
+                right[0].position += correction[0];
+                left[b_index].body = body_b;
+                left[b_index].position += correction[1];
+            }
         }
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {

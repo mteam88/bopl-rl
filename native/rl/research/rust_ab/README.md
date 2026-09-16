@@ -158,8 +158,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   physics/runtime state, deferred launch initialization, outbound damping,
   recall and the original hammer's removal over 420 exact ticks.
 - `duplicator_poke_ab.c`: Poke Ball's three-copy fan through fresh prefab
-  physics/runtime state, split collider/behavior registration and 89 exact
-  ballistic passes ending immediately before the first platform contact.
+  physics/runtime state, split collider/behavior registration, global
+  Circle/Circle sweep ordering, shared dynamic-platform contacts, later
+  bounces and all boundary/fizzle removals over 900 exact ticks.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

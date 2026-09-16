@@ -1,4 +1,4 @@
-/* Duplicator Poke Ball fan-copy and pre-contact flight golden. */
+/* Duplicator Poke Ball fan-copy, rigid contacts, and fizzle golden. */
 #include "bopl_rl.h"
 #include <inttypes.h>
 #include <math.h>
@@ -207,8 +207,9 @@ int main(int argc, char **argv) {
 
     unsigned poke_cast = 0, poke_exit = 0, duplicator_cast = 0;
     unsigned duplicator_release = 0, max_items = 0;
-    unsigned first_loss = 0, second_loss = 0, previous_items = 0;
-    for (unsigned tick = 1; tick <= 317; tick++) {
+    unsigned first_loss = 0, second_loss = 0, third_loss = 0, fourth_loss = 0;
+    unsigned previous_items = 0;
+    for (unsigned tick = 1; tick <= 900; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
 
@@ -268,6 +269,10 @@ int main(int argc, char **argv) {
             first_loss = tick;
         if (previous_items == 3 && items == 2 && !second_loss)
             second_loss = tick;
+        if (previous_items == 2 && items == 1 && !third_loss)
+            third_loss = tick;
+        if (previous_items == 1 && items == 0 && !fourth_loss)
+            fourth_loss = tick;
         previous_items = items;
     }
 
@@ -275,16 +280,19 @@ int main(int argc, char **argv) {
         bopl_rl_close(world[backend]);
     if (poke_cast != 154 || poke_exit != 183 ||
         duplicator_cast != 183 || duplicator_release != 228 ||
-        max_items != 4 || first_loss != 0 || second_loss != 0) {
+        max_items != 4 || first_loss != 337 || second_loss != 342 ||
+        third_loss != 470 || fourth_loss != 530 || previous_items != 0) {
         fprintf(stderr,
-                "unexpected stages %u/%u/%u/%u items %u losses %u/%u\n",
+                "unexpected stages %u/%u/%u/%u items %u losses %u/%u/%u/%u "
+                "final %u\n",
                 poke_cast, poke_exit, duplicator_cast,
-                duplicator_release, max_items, first_loss, second_loss);
+                duplicator_release, max_items, first_loss, second_loss,
+                third_loss, fourth_loss, previous_items);
         return 1;
     }
-    printf("DUPLICATOR_POKE_GOLDEN_OK ticks=317 stages=%u/%u/%u/%u "
-           "items=%u losses=%u/%u\n",
+    printf("DUPLICATOR_POKE_GOLDEN_OK ticks=900 stages=%u/%u/%u/%u "
+           "items=%u losses=%u/%u/%u/%u\n",
            poke_cast, poke_exit, duplicator_cast, duplicator_release,
-           max_items, first_loss, second_loss);
+           max_items, first_loss, second_loss, third_loss, fourth_loss);
     return 0;
 }

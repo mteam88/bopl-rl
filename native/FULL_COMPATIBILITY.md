@@ -3161,15 +3161,19 @@ recall/contact tail and duplicated-object expiry remain open.
 
 `duplicator_poke_ab.c` verifies the same serialized-versus-runtime reset for a
 Poke Ball. Its three fan copies, clone-local collider hierarchies, delayed
-`PokeBall` launch initialization, owner publication, angular velocity and 89
-ballistic passes match within 64 raw Q32 units through tick 317. Tick 318 is
-the first rounded-platform contact; a one-raw-unit fan-position difference is
-amplified by the dynamic manifold, so that contact, capture and expiry remain
-explicitly open rather than being hidden behind a wider golden tolerance.
+`PokeBall` launch initialization, owner publication and angular velocity now
+continue through all 900 ticks. The differential covers the overlapping-copy
+Circle/Circle manifolds in DetPhysics sweep order, the first shared dynamic
+platform contact at tick 318, repeated platform bounces, boundary losses at
+ticks 337, 342 and 470, and the last ball's five-second fizzle at tick 530.
+All positions remain within the existing 64-raw-Q32 bound. Rust builds every
+Circle/RoundedRectangle manifold before resolving the first one, matching the
+source phase that prevents an earlier ball's platform correction from changing
+a later ball's already-queued contact.
 
 Duplicator remains partial while its player, projectile, weapon, Black Hole,
 attached-terrain and orb branches are integrated. Mine still needs its composed
-golden; Poke Ball's contact/capture tail and Mjolnir's later tail remain
+golden; Poke Ball capture by a duplicated ball and Mjolnir's later tail remain
 unmeasured.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
