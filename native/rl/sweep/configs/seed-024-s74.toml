@@ -1,0 +1,88 @@
+# Seed-noise floor (2026-09-16): overnight-9 024's exact recipe and shape (hidden 128, one
+# MinGRU layer, 1.73B learner steps) at seed 74; 024 itself is seed 73 (pool v7 641/614/621,
+# IQM 625). Every sweep so far used one seed, so the spread between trials of the same recipe
+# (600-625) has never been separated from seed noise; three seeds give the floor that every
+# architecture comparison (capacity-*, policy v4) is judged against. Scored on pool v7.
+# Runs from the pinned rift child v3-sweep via the GPU queue (~/.local/share/
+# bopl-null-hypothesis/gpu-queue).
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+fixed_cost = true
+max_suggestion_cost = 1.75e9
+max_runs = 1
+num_random_samples = 1
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "6G"
+nice = 10
+max_seconds = 7200
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+last_k = 3
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+# overnight-9 024, verbatim, except the seed
+hidden = 128
+layers = 1
+steps = 1734936776
+workers = 128
+buffers = 4
+banks = 4
+seed = 74
+encoder = "set"
+horizon = 128
+learner_passes = 4
+aim_fourier = 4
+learning_rate = 0.0003431012662975937
+entropy = 0.01532588085540654
+entropy_floor = 0.001
+entropy_half_life = 718611646
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+scripted_roster = "default"
+scripted_banks = 3
+scripted_share_max = 1.0
+scripted_share_min = 0.11048204896277423
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+# sweep_config requires one swept parameter; at its default this is [fixed].learning_rate.
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+default = 0.0003431012662975937
