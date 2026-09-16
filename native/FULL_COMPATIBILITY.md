@@ -2421,6 +2421,12 @@ box through resized collision geometry, unchanged zero-inertia mass and the same
 boundary/explosion lifecycle. The only difference is at most three raw Q32 units
 in Shrink's basis from direct reconstruction versus Unity's incremental ratios.
 
+`missile_water_ab.c` adds 430 bit-exact ticks for the Water-trigger path. The
+Missile integrates across the surface on tick 304; Water is a trigger, so it
+does not resolve the body but invokes `Missile.OnCollide` before the next
+bounds-updater pass can silently remove it. The destroyed row, tick-305
+explosion registration, first-frame disable and tick-387 expiry all match.
+
 `missile_grenade_ab.c` adds 500 differential ticks for a released Grenade. The
 circle and guided box resolve dynamically on tick 246; Missile's callback queues
 its explosion while Grenade's item-layer callback intentionally leaves the

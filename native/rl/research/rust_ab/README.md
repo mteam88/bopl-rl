@@ -231,6 +231,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `missile_grenade_ab.c`: a released Grenade and guided Missile resolve as
   dynamic bodies; only Missile dies in the first callback, its next-pass explosion
   ignites Grenade, and both chained explosion lifetimes match over 500 ticks.
+- `missile_water_ab.c`: a downward guided Missile crosses the Water trigger,
+  dies in the same callback pass and matches deferred explosion registration,
+  first-frame disable and visual expiry over 430 bit-exact ticks.
 - `duplicator_missile_ab.c`: a live guided Missile receives three
   velocity-aligned fan copies with fresh engine state, then all four projectiles
   match boundary destruction, deferred explosions and visual expiry over 450 ticks.

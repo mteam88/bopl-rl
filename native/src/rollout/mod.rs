@@ -19323,6 +19323,23 @@ impl RolloutWorld {
                 continue;
             }
 
+            // Water is a trigger box. It does not resolve the Missile body,
+            // but its collision callback runs after integration and before
+            // the next pass's DestroyIfOutsideSceneBounds updater.
+            let map = &data.maps[self.map];
+            let water = OrientedBox::from_basis(
+                map.water_position,
+                Vec2::RIGHT,
+                data::surface_extents(map.water_extents),
+            );
+            if crate::physics::contact::box_box(missile_box, water).is_some()
+                && missile.magnet_hold_ticks < 0
+            {
+                self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+                self.destroy_guided_missile(missile_index, true);
+                continue;
+            }
+
             // Circle/Box item contacts are resolved before Missile.OnCollide
             // consumes the guided box. Ordinary Grenade's callback ignores
             // the item layer, so the corrected circle continues after the

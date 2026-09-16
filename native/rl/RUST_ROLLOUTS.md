@@ -302,6 +302,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   boundary destruction and explosion expiry. A released Grenade matches the
   complementary callback split: dynamic correction, Missile-only destruction,
   next-pass blast ignition, chained Grenade explosion and independent visual expiry.
+  A downward Water-trigger hit also matches callback destruction before the next
+  bounds pass, deferred explosion registration, disable and expiry.
   Mine executes the separate original `ThrowItem` form and exact autonomous
   hover, arming, scan/chase, player ignition, anticipation, owner-credited
   MineExplosion kill, and stock recovery path. Chase normalization and the
