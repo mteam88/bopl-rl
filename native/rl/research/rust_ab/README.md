@@ -39,6 +39,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_bow_ab.c`: a Dash ray crosses an overlapping active Bow hurtbox and
   verifies the form's nonlethal `PlayerCollision` callback does not receive the
   ordinary slime's one-sided push.
+- `dash_gun_forms_ab.c`: the same overlapping ray callback across live Blink,
+  Growth, Missile, Shrink, Duplicator, Magnet and Freeze forms, covering seven
+  more nonlethal `PlayerCollision` owners without an ordinary-slime push.
 - `grapple_player_attach_ab.c`: a close-player Grappling Hook flight attaches
   its top endpoint to the grounded third player after physics, deferring the
   grounded correction until the next pass exactly as `PlayerPhysics` does.

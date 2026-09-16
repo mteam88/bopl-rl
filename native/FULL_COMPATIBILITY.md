@@ -1024,6 +1024,13 @@ hurtbox on tick 159. All 240 optimized-Q32 NativeAOT/Rust ticks and every public
 field are bit-identical; Bow's horizontal velocity remains exactly zero in both
 backends after the Dash callback.
 
+`dash_gun_forms_ab.c` repeats that overlap for Blink, Growth, Missile, Shrink,
+Duplicator, Magnet and Freeze. Every target has a live layer-8 form at the
+tick-159 Dash cast, so its `PlayerCollision` owns the callback and the ordinary
+slime push must not run. All seven 240-tick scenarios match with a 64-raw-Q32
+vector bound (less than 0.000000015 world units); identities, form lifecycles,
+cooldowns and all discrete fields are exact.
+
 ### Dash ray collision with active Roll (2026-09-15)
 
 Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden
