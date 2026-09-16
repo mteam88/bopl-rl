@@ -336,10 +336,42 @@ not listed are `layout.V4_DEFAULTS`):
    map-invariance claim is that the v4 gap between maps 0-2 and 3-4 is
    smaller than 024's 12 points.
 
-Queue order: `v4-full`, `v4-lite`, `v4-sym-critic`, `v4-no-relational`,
-`v4-critic-shared`, `v4-maxpool`, `v4-no-rays`, `v4-rays16`; if the smoke
-measures `v4-full` above ~2.5x overall (environment plus update, sps, not the
-GEMM projection of section 6) `v4-lite` goes first. Both smokes report sps.
+Queue order (set 2026-09-16 after `v4-full`, gpu-queue jobs 11-18): `v4-lite`,
+`v4-no-rays`, `v4-full-s74` (10: `v4-full` verbatim at seed 74, v4's own seed
+noise, which reads the ablations better than more v3 seeds), `v4-sym-critic`,
+`v4-no-relational`, `v4-rays16`, `v4-critic-shared`, `v4-maxpool`; the v3 seed
+job stays behind them and the v3 capacity study is parked. All eight run at
+nice 0 (the queue runner too), `max_seconds` 21600, 024's 1734936776 steps,
+scored on pool v7. The in-run eval hook rates every evaluation checkpoint on
+pool v7 as it goes (160 games, `source` in-run, train.py) so the curve is on
+the score's scale from the first checkpoint.
+
+### 7b. Layout v4.1: the aim ray and line of sight (next increment, ablation 19)
+
+Matthew played ~25 rounds against `v4-full` policy-1813348352 (maps 0-4,
+2026-09-16): clearly better than v3 and fun, but "pretty bad at aiming and
+situational awareness, it often tries to shoot through platforms". The 36-ray
+fan (32 around, 4 down) has no ray along the aim direction: the policy has no
+direct line-of-sight signal for its own shot and has to infer the platform
+between it and the target from the terrain block and the fan. Next layout
+increment, behind a `v4_ablate` bit so it runs as ablation 19 on the same
+encoder build (rows stay `BOPL4_OBS_SIZE`; the bit selects what the writer
+puts in the reserved/zeroed slots or replaces the least useful down rays):
+
+- (a) aim ray: cast from the bow origin along the current aim angle (the
+  previous decision's aim, which is what the next arrow would follow), the
+  fan's 8 fields plus one bit "the opponent is the first hit".
+- (b) line of sight to the opponent: blocked/unblocked, distance to the
+  blocker, blocker class (terrain, platform, entity), computed as one cast
+  from own centre to the opponent's centre.
+- (c) candidate: the same for the opponent's aim toward us (their arrow
+  path): first hit is us, distance, so the policy can read incoming shots.
+
+Evidence check before building: the human replays are on the Mac at
+`~/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/human/.excluded/20260916-1717*.rep`
+(excluded from the ladder at Matthew's request); the taxonomy tooling can
+count arrows fired with a platform on the own-to-opponent segment, per game,
+against the same count for pool-v7 members.
 
 Success criterion: not a fixed Elo. The 024 recipe is being re-run at seeds
 74/75/76 ahead of v4 in the queue; the spread of those three on pool v7 is
