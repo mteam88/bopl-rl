@@ -1,7 +1,6 @@
 """Quality dashboard: every run under --root, joint-fit Elo plus labelled pool scores."""
 import argparse
 from collections import OrderedDict
-import glob
 import gzip
 import hashlib
 import io
@@ -34,6 +33,8 @@ CHART_KEYS = (
 )
 CHART_POINTS = 360
 LAST_K = 3
+# The sweep objective's pool (sweeps/anchors/pool-v7, sha8 d48f4b64); labels only, never the joint scale.
+PRIMARY_POOL = 'v7'
 
 
 def read_json(path, default=None):
@@ -199,24 +200,8 @@ def latest_report(directory, pattern):
     return compact_report(reports[-1]) if reports else None
 
 
-def named_runs(extra_runs, run_globs):
-    found = dict(extra_runs)
-    for prefix, pattern in run_globs.items():
-        for match in sorted(glob.glob(pattern)):
-            directory = Path(match)
-            if directory.is_dir() and re.fullmatch(r'[A-Za-z0-9_.-]+', directory.name):
-                found.setdefault(f'{prefix}-{directory.name}', directory.resolve())
-    return found
-
-
-def discover_sweeps(root, extra_runs, run_globs):
+def discover_sweeps(root, extra_runs):
     found = dict(joint_ladder.discover_sweeps(root))
-    for prefix, pattern in run_globs.items():
-        for match in glob.glob(pattern):
-            parent = Path(match).resolve().parent
-            if (parent / 'sweep.json').is_file():
-                found.setdefault(prefix, parent)
-                break
     for path in extra_runs.values():
         parent = Path(path).resolve().parent
         if (parent / 'sweep.json').is_file():
@@ -412,25 +397,19 @@ def main():
     parser.add_argument('--port', type=int, default=8876)
     parser.add_argument('--run-root', action='append', default=[], metavar='NAME=PATH',
                         help='Read a live training run directory from an isolated workspace')
-    parser.add_argument('--run-root-glob', action='append', default=[], metavar='NAME=GLOB',
-                        help='Register every run directory matching GLOB as NAME-<dirname>')
     parser.add_argument('--pool', type=Path, default=None,
-                        help='Primary frozen pool.json for labels (not the joint scale). Default: pool v6 if present, else the last discovered pool')
+                        help='Primary frozen pool.json for labels (not the joint scale). '
+                             f'Default: pool {PRIMARY_POOL} if present, else the last discovered pool')
     parser.add_argument('--human', type=Path, default=reference_pool.DEFAULT_HUMAN,
                         help='human/mac directory (games.jsonl + excluded.json)')
     args = parser.parse_args()
     root = args.root.resolve()
-    extra_runs, run_globs = {}, {}
+    extra_runs = {}
     for value in args.run_root:
         name, separator, path = value.partition('=')
         if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+', name):
             parser.error('run_root requires NAME=PATH')
         extra_runs[name] = Path(path).resolve()
-    for value in args.run_root_glob:
-        name, separator, path = value.partition('=')
-        if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+', name):
-            parser.error('run_root_glob requires NAME=GLOB')
-        run_globs[name] = path
 
     cache_lock = threading.RLock()
     catalog_state = [None, None]
@@ -459,7 +438,7 @@ def main():
             want = str(args.pool.resolve())
             primary = next((item for item in pools if item.get('path') == want), None)
         if primary is None:
-            primary = next((item for item in pools if item.get('label') == 'v6'), None)
+            primary = next((item for item in pools if item.get('label') == PRIMARY_POOL), None)
         if primary is None and pools:
             primary = pools[-1]
         with cache_lock:
@@ -467,9 +446,8 @@ def main():
         return pools, primary
 
     def catalog(force=False):
-        extras = dict(named_runs(extra_runs, run_globs))
-        extra_sig = (tuple((name, str(path), stamp(path)) for name, path in extras.items()),
-                     tuple((name, pattern, stamp(Path(pattern).parent)) for name, pattern in run_globs.items()))
+        extras = dict(extra_runs)
+        extra_sig = tuple((name, str(path), stamp(path)) for name, path in extras.items())
         with cache_lock:
             if not force and catalog_state[0] == extra_sig and catalog_state[1] is not None:
                 return catalog_state[1]
@@ -616,7 +594,7 @@ def main():
         known = catalog()
         fit = joint_fit()
         pools, primary = load_pools()
-        sweep_names = set(discover_sweeps(root, extra_runs, run_globs))
+        sweep_names = set(discover_sweeps(root, extra_runs))
         rows = [index_row(info, fit) for info in known.values()]
         families = {}
         for row in rows:
@@ -855,7 +833,7 @@ def main():
             load_pools()
             joint_rebuild()
             index_rebuild()
-            for name, directory in discover_sweeps(root, extra_runs, run_globs).items():
+            for name, directory in discover_sweeps(root, extra_runs).items():
                 sweep_rebuild(name, directory)
         except Exception:
             traceback.print_exc()
@@ -912,10 +890,10 @@ def main():
                 return self.send_snapshot(index_rebuild())
             if path == '/api/sweeps':
                 return self.json([{'name': name, 'path': str(directory)}
-                                  for name, directory in sorted(discover_sweeps(root, extra_runs, run_globs).items())])
+                                  for name, directory in sorted(discover_sweeps(root, extra_runs).items())])
             if path.startswith('/api/sweep/'):
                 name = path[len('/api/sweep/'):]
-                directory = discover_sweeps(root, extra_runs, run_globs).get(name)
+                directory = discover_sweeps(root, extra_runs).get(name)
                 if directory is None:
                     return self.send_error(404)
                 joint_rebuild()

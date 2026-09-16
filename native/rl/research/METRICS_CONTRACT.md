@@ -212,8 +212,10 @@ There are two families of numbers. They never share an axis.
 frozen `pool.json` (members held fixed, random = 0), summarised as the IQM of
 the last three rated checkpoints with a 95% interval. `evaluate.py` and
 `rate-runs` write `<run>/reference/<pool_sha8>/<stem>.json`. The dashboard
-labels each such curve (`pool v5 IQM3`, `pool v6 IQM3`, …) and will not mix
-pools.
+labels each such curve by the pool directory name (`pool v7 IQM3`, `pool v6 IQM3`,
+…) and will not mix pools. The primary label (`--pool`, default pool v7 =
+`sweeps/anchors/pool-v7`, the sweep objective) only picks which curve is the
+run page's headline `iqm`; the index shows one column per pool that rated a run.
 
 **Joint Elo** is one Bradley-Terry over every pool round-robin `matches[]`,
 every on-disk band-rated candidate `records` dict, and human games (excluded
