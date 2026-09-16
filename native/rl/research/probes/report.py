@@ -46,6 +46,23 @@ def table(results, features, labels, model, title, extra=None):
     return "\n".join(lines) + "\n"
 
 
+RARE = ["hit_15", "hit_30", "hit_60", "hit_inflight_30", "hit_inflight_60", "my_shot_hits_60", "fall_30", "fall_60", "squish_60", "any_death_60"]
+
+
+def ap_table(results, features, model, title):
+    feats = [f for f in features if f in results]
+    lines = [f"**{title}** ({model} probe; test average precision; random = the positive rate)", "",
+             "| label | positive rate | " + " | ".join(feats) + " |", "|---" * (len(feats) + 2) + "|"]
+    for lab in RARE:
+        m0 = results[feats[0]]["labels"].get(lab, {}).get(model, {})
+        row = [lab, f"{m0.get('positive_rate', float('nan')):.4f}"]
+        for f in feats:
+            m = results[f]["labels"].get(lab, {}).get(model, {})
+            row.append(f"{m['average_precision']:.3f}" if "average_precision" in m else "")
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def base_rates(results, feature, labels):
     def f(lab):
         m = results[feature]["labels"].get(lab, {}).get("linear", {})
@@ -114,6 +131,8 @@ def main():
     position = ["raw", "raw_nopos", "pos", "raw_nopos+rays32", "raw_nopos+rel", "fused", "gru_state"]
     out = []
     for model in ("linear", "mlp"):
+        out.append(ap_table(results, encoder, model, "Input vs encoder: rare labels, average precision"))
+        out.append(ap_table(results, families + ["raw_nopos+rays32"], model, "Feature families: rare labels, average precision"))
         out.append(table(results, encoder, KEY_BINARY + ["map"], model, f"Input vs encoder: binary labels", base_rates(results, "raw", KEY_BINARY + ["map"])))
         out.append(table(results, encoder, KEY_REGRESSION, model, f"Input vs encoder: regression labels", base_rates(results, "raw", KEY_REGRESSION)))
         out.append(table(results, families, KEY_BINARY, model, f"Feature families: binary labels"))

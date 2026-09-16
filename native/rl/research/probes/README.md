@@ -75,8 +75,10 @@ Realised future along the actual rollout: `real_x12/y12`, `real_opp_x12/y12`,
 
 Per ray, 8 fields: distance/range (1 if nothing), one-hot hit type over 6
 classes [terrain/wall, water/kill zone, hostile projectile, opponent body, own
-slime or own object, nothing within range], hit velocity along the ray (/64,
-clipped). Rays start at the player's centre;
+slime or own object, nothing within range], the hit's velocity *relative to the
+observer's slime* projected on the ray (/64, clipped; negative = closing). For
+static terrain this is minus the observer's own velocity along the ray, so the
+ray set also encodes own velocity. Rays start at the player's centre;
 the N uniform rays start at angle 0 and the extra downward rays are spread
 around -90 degrees; range 40 world units. `--hits 3` records the first three
 distinct hits along each ray.
