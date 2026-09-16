@@ -141,6 +141,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `blink_airborne_ab.c`: a second 500-tick Blink trace that catches the target
   immediately after a jump and compares its inactive airborne relocation,
   reactivation, fall and landing.
+- `growth_airborne_ab.c`: a 500-tick Growth trace that hits an ordinary player
+  while rising, then follows the complete ScaleChanger curve, enlarged fall
+  and platform contacts.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

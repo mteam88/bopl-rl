@@ -439,8 +439,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   collider scale and PlayerPhysics radius as separate updater-phase values.
   It also retains DPhysicsBox inverse extents because assigning an unchanged
   non-unit scale continues to round them each tick in Q32. Grounded ordinary-
-  player hits match through the complete resize and later movement; water,
-  non-player, active-form, BlackHole and orb targets remain open.
+  player hits match through the complete resize and later movement. Growth
+  also matches an ordinary player hit while rising, including the complete
+  resize, enlarged-body fall and platform contacts; water, non-player,
+  active-form, BlackHole and orb targets remain open.
   Blink gun uses the same exact GunTransform form and hitscan ordering. A
   player hit immediately disables the victim, changes the cast cooldown to
   five seconds, and advances a collider-free QuantumTunnel using player time.

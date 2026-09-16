@@ -2513,6 +2513,13 @@ non-player targets, active transformed-player targets, BlackHole growth and
 orb conversion still require their concrete entity implementations and
 differential scenarios, so both abilities remain partial.
 
+`growth_airborne_ab.c` adds 500 exact ticks for an ordinary target that jumps
+on tick 240 and is still rising when the ray releases on tick 241. The
+ScaleChanger becomes publicly visible on tick 243; its full curve, enlarged
+airborne body, fall, platform contacts and final live position remain exact
+through tick 500. This isolates airborne player scaling from the separate
+active-form target path.
+
 ### Executable Roll form (2026-09-15)
 
 Catalog id 16 now runs the source `Roll` form rather than advancing an inert
