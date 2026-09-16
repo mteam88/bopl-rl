@@ -1836,6 +1836,10 @@ pub struct PlayerSlot {
     /// Last movement input accepted by Player.ForceSetInputProfile. New
     /// packets are ignored for an unprotected player during Time Stop.
     pub last_movement_input: Vec2,
+    /// Last complete input accepted by Player.ForceSetInputProfile. Active
+    /// ability updaters still read this retained profile during Time Stop,
+    /// even though new network/replay packets are ignored.
+    pub last_action: Action,
     pub telemetry: CTelemetry,
     // Fixed entity table indices.
     pub circle_entity: usize,
@@ -3113,6 +3117,7 @@ impl RolloutWorld {
                 stock_indicator_entities: [usize::MAX; 3],
                 input_jump_was_down: false,
                 last_movement_input: Vec2::ZERO,
+                last_action: Action::default(),
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
                 rock_entity: usize::MAX,
@@ -4021,6 +4026,19 @@ impl RolloutWorld {
                     slot.drill.hitbox_rotation = slot.base.rotation;
                     continue;
                 }
+                if self.players[index].active == ActiveAbility::Meteor {
+                    // MeteorSmash itself does not return during Time Stop.
+                    // Its clock and animator freeze, but the airborne jump
+                    // velocity assignment and the vibration branch still run
+                    // from the retained Player input. In particular,
+                    // vibration consumes both RandomInsideUnitCircle draws
+                    // and moves the FixTransform directly while DetPhysics'
+                    // integration delta is zero.
+                    self.players[index].reported_position = self.players[index].base.position;
+                    self.players[index].reported_tick = self.tick;
+                    self.meteor_time_stop_tick(index, data);
+                    continue;
+                }
                 // PlayerPhysics and SlimeController still run. Their motion
                 // helpers apply unscaled gravity and air damping, but every
                 // position/raycast delta receives GameTime.FixedDeltaTime=0.
@@ -4070,6 +4088,7 @@ impl RolloutWorld {
                 self.players[index].reported_tick = self.tick;
             }
             let action = packet.aim_action();
+            self.players[index].last_action = action;
             // Updater updates Player's frame-dependent button edges before
             // any MonoUpdatable, including while its slime is parked for a
             // stock choice.
@@ -7030,6 +7049,72 @@ impl RolloutWorld {
         }
         slot.reported_position = exit_position;
         slot.reported_tick = self.tick;
+    }
+
+    fn meteor_time_stop_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let phase = self.players[index].meteor.phase;
+        match phase {
+            // Anticipation remains grounded. PlayerPhysics.Move receives a
+            // zero FixedDeltaTime, leaving only its grounded friction and the
+            // later PlayerBody external-velocity damping observable.
+            0 => {
+                let slot = &mut self.players[index];
+                if slot.last_movement_input == Vec2::ZERO {
+                    slot.base.grounded_speed *= slot.base.constants.friction;
+                }
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+            }
+            // The jump curve is evaluated at the frozen clock on every raw
+            // MeteorSmash.UpdateSim. PlayerBody then damps external velocity,
+            // but integrates with FixedDeltaTime == 0.
+            1 => {
+                let slot = &mut self.players[index];
+                slot.base.velocity = Vec2::UP
+                    * data.meteor.speed_curve.evaluate(slot.meteor.time)
+                    * data.meteor.jump_speed;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+                slot.meteor.velocity = slot.base.velocity;
+                slot.meteor.external_velocity = slot.base.external_velocity;
+            }
+            2 => {
+                let button = 2u8 << self.players[index].active_slot;
+                let time = self.players[index].meteor.time;
+                let minimum = self.players[index].meteor.true_min_hold_time;
+                let retained = self.players[index].last_action;
+                if time > data.meteor.max_hold_time
+                    || (time > minimum && retained.buttons & button == 0)
+                {
+                    self.meteor_dash(index, data);
+                    return;
+                }
+
+                // Updater.RandomInsideUnitCircle samples angle and radius;
+                // Meteor immediately normalizes the vector, so radius has no
+                // numerical effect but its RNG draw remains observable.
+                let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+                let _radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+                let offset = Vec2::angle(angle)
+                    * data.meteor.vibration_strength
+                    * time.max(Fix::from_f32(0.5));
+                let slot = &mut self.players[index];
+                slot.base.position += offset - slot.meteor.prev_offset;
+                slot.meteor.prev_offset = offset;
+                slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
+                slot.base.external_velocity *= Fix::from_f32(0.8);
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+                slot.base.sync_collider();
+                slot.meteor.position = slot.base.position;
+                slot.meteor.velocity = slot.base.velocity;
+                slot.meteor.external_velocity = slot.base.external_velocity;
+            }
+            // The source counts raw updater passes in Dash even while time is
+            // stopped. Rust exits the form in `meteor_dash`, so this branch is
+            // retained for source completeness if a future callback exposes
+            // the intermediate state.
+            _ => {
+                self.players[index].meteor.dash_updates += 1;
+            }
+        }
     }
 
     fn meteor_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {

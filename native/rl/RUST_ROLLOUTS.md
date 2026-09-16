@@ -488,6 +488,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   retain their stop-entry sync through the restoration pass, matching the
   source updater delta captured at the pass start. Cross-ability interactions
   with catalog entries that remain absent inherit those entries' open scope.
+  A whole-source audit now also preserves the source distinction between a
+  frozen per-player clock and raw `MonoUpdatable` execution. In particular,
+  an unprotected airborne Meteor keeps its clock and animator fixed while its
+  vibration branch consumes both random draws, moves the form directly and
+  rewrites velocity on each of the 690 stopped passes; rigid-body integration
+  remains zero. `time_stop_broad_ab.c` matches that crowded lifecycle for
+  1,540 ticks through restored release. The retained input is stored once per
+  player and the branch reuses the existing fixed state, so it adds no tick
+  allocation.
   Spike is exact through its grounded cast and recovery, opposite-surface
   rounded-rectangle raycast, persistent down-thrust attack, platform-composite
   mass and inertia, cast impulse, and box/wall collision response. Recast

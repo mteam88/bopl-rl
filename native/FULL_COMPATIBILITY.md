@@ -2339,6 +2339,26 @@ clock restoration. Interactions with ability entity types that have not yet
 been ported remain part of those abilities' open scope, so coverage is marked
 partial until the catalog is complete.
 
+A whole-source clock audit (2026-09-16) covers every modeled use of
+`GameTime.IsTimeStopped`, `FixedDeltaTime`, `PlayerTimeScale`, and raw updater
+delta across active forms, items, projectiles, attachments, scale effects,
+pickups, duplicate lifetimes and DetPhysics. It exposed one semantic omission:
+`MeteorSmash.UpdateSim` does not return for an unprotected player. Its clock and
+animator freeze, but the vibration state still consumes both
+`RandomInsideUnitCircle` draws, changes the `FixTransform` directly, assigns its
+hold velocity and applies both Meteor and PlayerBody damping while physics
+integration receives zero delta. Rust now retains the last accepted complete
+input profile and executes that branch without allocation.
+
+`time_stop_broad_ab.c` composes this path with the full Time Stop lifecycle for
+1,540 optimized-Q32 ticks. The differential is exact within Meteor's existing
+50,000-raw-Q32 pose bound (0.0000117 world units): 690 stopped passes contain
+observable Meteor vibration with a frozen ability clock and published player
+position, the caster remains protected and advances allowed cooldowns, the
+opponent ignores new input, and restoration resumes release. Remaining entries
+in `ABILITY_PORT_GAPS.md` are translated paths lacking a broad public
+composition rather than known source omissions.
+
 `time_stop_arrow_ab.c` composes Bow and Time Stop through the public rollout
 ABI. Bow releases an upward arrow on tick 702; the stop begins on tick 738,
 holds the projectile position bit-exactly for 690 passes, then restores its

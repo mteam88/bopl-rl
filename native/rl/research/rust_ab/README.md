@@ -95,6 +95,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_roll_ab.c`: an unprotected charging Roll across all 690 stopped
   passes, then restored release and ground motion up to the separately open
   platform-hop boundary.
+- `time_stop_broad_ab.c`: the complete cast, team protection and restoration
+  lifecycle overlapping an unprotected airborne Meteor; verifies 690 raw
+  vibration/RNG updater passes with a frozen ability clock and zero-delta
+  physics, retained input, protected cooldown progress and restored release.
 - `time_stop_missile_ab.c`: a slot-two Missile controller and its guided box
   projectile across all 690 stopped passes, zero-delta stabilization, restored
   steering, release and subsequent flight.
