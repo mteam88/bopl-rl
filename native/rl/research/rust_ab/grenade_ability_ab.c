@@ -168,10 +168,11 @@ int main(int argc, char **argv) {
         return 1;
     if (compare(bopl_rl_state(world[0]), bopl_rl_state(world[1]), 0)) return 1;
 
-    unsigned cast_tick = 0;
+    unsigned cast_tick = 0, item_tick = 0, explosion_tick = 0;
     int saw_item = 0, saw_form_exit = 0, saw_destroyed_item = 0;
     int saw_explosion = 0, saw_disabled_explosion = 0, saw_explosion_end = 0;
     int saw_death = 0, saw_choice = 0, saw_respawn = 0;
+    int saw_safe_owner_overlap = 0, saw_owner_clear = 0, saw_owner_reentry = 0;
     for (unsigned tick = 1; tick <= 700; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
@@ -195,11 +196,29 @@ int main(int argc, char **argv) {
         for (unsigned i = 0; i < reference->header.entity_count; i++) {
             const BoplRlEntity *entity = &reference->entities[i];
             if (entity->kind == 0 && entity->layer == 10) {
-                if (entity->flags & 1) saw_item = 1;
+                if (entity->flags & 1) {
+                    saw_item = 1;
+                    if (!item_tick) item_tick = tick;
+                    const int64_t owner_distance =
+                        distance(entity->x, reference->players[0].x) +
+                        distance(entity->y, reference->players[0].y);
+                    if (tick < item_tick + 60 &&
+                        owner_distance < INT64_C(3) * INT64_C(4294967296)) {
+                        saw_safe_owner_overlap = 1;
+                    }
+                    if (owner_distance > INT64_C(7) * INT64_C(4294967296)) {
+                        saw_owner_clear = 1;
+                    }
+                    if (saw_owner_clear && tick >= item_tick + 60 &&
+                        owner_distance < INT64_C(5) * INT64_C(4294967296)) {
+                        saw_owner_reentry = 1;
+                    }
+                }
                 if (entity->flags == 4) saw_destroyed_item = 1;
             }
             if (entity->kind == 1 && entity->layer == 18) {
                 saw_explosion = 1;
+                if (!explosion_tick) explosion_tick = tick;
                 if (entity->flags == 9) saw_disabled_explosion = 1;
             }
             if (entity->kind == 0 && entity->layer == 27) saw_choice = 1;
@@ -225,15 +244,20 @@ int main(int argc, char **argv) {
     for (int backend = 0; backend < 2; backend++) bopl_rl_close(world[backend]);
     if (!cast_tick || !saw_item || !saw_form_exit || !saw_destroyed_item ||
         !saw_explosion || !saw_disabled_explosion || !saw_explosion_end ||
-        !saw_death || !saw_choice || !saw_respawn) {
+        !saw_death || !saw_choice || !saw_respawn || !saw_safe_owner_overlap ||
+        !saw_owner_clear || !saw_owner_reentry || !item_tick ||
+        !explosion_tick || explosion_tick - item_tick < 60) {
         fprintf(stderr,
                 "incomplete cast=%u item=%d exit=%d destroyed=%d explosion=%d "
-                "disabled=%d ended=%d death=%d choice=%d respawn=%d\n",
+                "disabled=%d ended=%d death=%d choice=%d respawn=%d "
+                "safe_overlap=%d clear=%d reentry=%d item=%u explosion=%u\n",
                 cast_tick, saw_item, saw_form_exit, saw_destroyed_item,
                 saw_explosion, saw_disabled_explosion, saw_explosion_end,
-                saw_death, saw_choice, saw_respawn);
+                saw_death, saw_choice, saw_respawn, saw_safe_owner_overlap,
+                saw_owner_clear, saw_owner_reentry, item_tick, explosion_tick);
         return 1;
     }
-    printf("GRENADE_ABILITY_GOLDEN_OK ticks=700\n");
+    printf("GRENADE_ABILITY_GOLDEN_OK ticks=700 owner_reentry=%u\n",
+           explosion_tick);
     return 0;
 }

@@ -1112,6 +1112,11 @@ and copied-ability hierarchy, DetPhysics circle-before-box IDs, three stock
 choice indicators, their 360-tick timeout, fast spawn and subsequent landing
 all match.
 
+The same fixture now asserts the owner-gate geometry directly: the released
+circle overlaps its owner while the delay is closed, clears beyond seven Q32
+world units, falls back inside five units after 60 passes, and detonates on the
+re-entry callback. The first explosion row remains tick 132 in both backends.
+
 `grenade_fuse_ab.c` adds a separate 700-tick exact comparison which never
 releases the cast button. It covers the authored three-second fuse while held,
 the prefab child's local-x-only facing mirror, detonation before the manually

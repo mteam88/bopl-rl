@@ -141,7 +141,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   the delayed owner gate and queues the layer-18 explosion for the following
   pass. Both startup shockwaves, the first-frame lethal box, its 90-frame visual
   lifetime, self-kill accounting, stock clone, three choice indicators and the
-  complete respawn interval are exact. A second exact golden holds the grenade
+  complete respawn interval are exact. The base golden also asserts safe owner
+  overlap before the one-second gate, clearance and tick-132 contact detonation
+  after re-entry. A second exact golden holds the grenade
   through its three-second fuse, including child-local held positioning,
   detonation before manual collider initialization, stable ID allocation and
   the resulting death/respawn path. A 260-tick horizontal throw is exact through
@@ -156,8 +158,7 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   aerial form also uses its own extracted `PlayerPhysics`: 0.03-gravity aiming,
   speed clamp, full-gravity release,
   60%-blended horizontal control, body integration and raycast landing are
-  exact. Owner re-entry after the delay, forced exits and duplication remain
-  open.
+  exact. Forced exits and duplication remain open.
   Platform: anticipation, aim rotation,
   cursor sizing under the area cap, geometry-dependent mass/inertia,
   the authored translational and rotational home springs, ejection and
