@@ -2520,6 +2520,11 @@ airborne body, fall, platform contacts and final live position remain exact
 through tick 500. This isolates airborne player scaling from the separate
 active-form target path.
 
+`shrink_airborne_ab.c` repeats that 500-tick rising-player path for Shrink.
+The negative ScaleChanger is visible on the same tick 243 boundary, then the
+reduced body, fall and platform contacts remain exact through tick 500. Its
+final scale and live body position are asserted independently from Growth.
+
 ### Executable Roll form (2026-09-15)
 
 Catalog id 16 now runs the source `Roll` form rather than advancing an inert
