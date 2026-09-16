@@ -281,9 +281,10 @@ def rating_files(run_dir):
                 # In-run evaluation fits: ~144 games with no band matching, mostly
                 # against the scripted training roster the learner exploits. In a
                 # joint fit they rate a mid-run checkpoint 900+ through the bots
-                # alone (the pool-v5 Goodhart, again). Only band ratings and pool
-                # round-robins carry transitive information; leave these to the
-                # run page's dashed in-run curve.
+                # alone (the pool-v5 Goodhart, again). Only band and in-run pool
+                # ratings (rate_checkpoint's uniform games against every member)
+                # and pool round-robins carry transitive information; leave these
+                # to the run page's dashed in-run curve.
                 continue
             key = (sha, pool_sha)
             previous = grouped.get(key)
