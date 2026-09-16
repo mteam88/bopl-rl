@@ -16560,12 +16560,11 @@ impl RolloutWorld {
         let max_distance = Fix::from_int(100);
         let mask = data.blink.collision_mask;
         let terrain = terrain!(self);
-        let mut nearest = if mask & (1 << LAYER_WALL) != 0 {
-            crate::world::closest(terrain, origin, direction, max_distance, None)
-                .map_or(max_distance, |(_, distance, _)| distance)
-        } else {
-            max_distance
-        };
+        let wall_hit = (mask & (1 << LAYER_WALL) != 0)
+            .then(|| crate::world::closest(terrain, origin, direction, max_distance, None))
+            .flatten();
+        let mut nearest = wall_hit.map_or(max_distance, |(_, distance, _)| distance);
+        let mut platform_victim = wall_hit.map(|(index, _, _)| index);
         let mut victim = None;
         let mut water_hit = false;
         if !already_hit_water && mask & (1 << LAYER_WATER) != 0 {
@@ -16581,6 +16580,7 @@ impl RolloutWorld {
             {
                 nearest = hit.near;
                 water_hit = true;
+                platform_victim = None;
             }
         }
         if mask & (1 << LAYER_PLAYER) != 0 {
@@ -16658,6 +16658,7 @@ impl RolloutWorld {
                     nearest = distance;
                     victim = Some(target);
                     water_hit = false;
+                    platform_victim = None;
                 }
             }
         }
@@ -16673,6 +16674,18 @@ impl RolloutWorld {
         }
         if let Some(victim) = victim {
             self.begin_blink_tunnel(caster, victim, data);
+        } else if let Some(platform_index) = platform_victim {
+            // ShootQuantum creates one QuantumTunnel updater for a newly hit
+            // wall, then asks ShakablePlatform for its serialized one-second shake.
+            // The map updater already ran this pass, so its first random
+            // displacement is sampled on the next pass.
+            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+            let dynamics = &mut self.platform_dynamics[platform_index];
+            dynamics.shake_time = Fix::ZERO;
+            dynamics.shake_duration = data.blink.wall_delay;
+            dynamics.shake_amount = data.blink.wall_shake;
+            dynamics.meteor_shake_curve = false;
+            self.platforms_changed();
         }
     }
 

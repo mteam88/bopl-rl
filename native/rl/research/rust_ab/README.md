@@ -156,6 +156,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `blink_airborne_ab.c`: a second 500-tick Blink trace that catches the target
   immediately after a jump and compares its inactive airborne relocation,
   reactivation, fall and landing.
+- `blink_water_wall_ab.c`: a downward Blink shot through Water reflection,
+  upward rounded-wall selection and all 60 next-pass samples of the serialized
+  one-second platform shake over 301 exact ticks.
 - `growth_airborne_ab.c`: a 500-tick Growth trace that hits an ordinary player
   while rising, then follows the complete ScaleChanger curve, enlarged fall
   and platform contacts.

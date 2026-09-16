@@ -1151,6 +1151,7 @@ def main():
         "min_player_duration": fix(blink_payload, "minPlayerDuration"),
         "wall_duration": fix(blink_payload, "WallDuration"),
         "wall_delay": fix(blink_payload, "WallDelay"),
+        "wall_shake": fix(blink_payload, "WallShake"),
         "on_player_hit_cooldown": fix(blink_payload, "onPlayerHitCD"),
         "tunnel_release_duration": blink_tunnel["ScaleAnim"]["keys"][-1]["time"],
         "tunnel_updatable_count": updater_count(blink_tunnel_prefab),

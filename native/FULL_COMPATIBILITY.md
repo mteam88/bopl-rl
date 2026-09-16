@@ -2759,9 +2759,9 @@ tick 295 at raw position `(125472406545, -43290835442)`, the victim remains
 inactive through tick 314, reactivates on tick 315, and publishes the moved
 `Player.Position` on tick 316. Header, player, slime, telemetry and every entity
 row match, with the comparator allowing 64 raw Q32 units for dynamic vectors
-but observing the exact measured landing. Wall, rigid-body, item and orb
-tunnels, water reflection, transformed victims, rope/magnet detachment and a
-pickup-changed platform set remain open, so coverage is partial.
+but observing the exact measured landing. Rigid-body, item and orb tunnels,
+transformed victims, rope/magnet detachment and a pickup-changed platform set
+remain open, so coverage is partial.
 
 `blink_airborne_ab.c` adds a second exact 500-tick trace for the common
 airborne-victim path. Player two jumps immediately before the tick-241 release,
@@ -2769,6 +2769,16 @@ is hidden while airborne in that pass, relocates on tick 295, reactivates on
 tick 315 and publishes the new position on tick 316. The remaining fall and
 landing are compared through tick 500; every public row matches with the same
 64-raw-Q32 dynamic-vector allowance, and the final live body position is exact.
+
+`blink_water_wall_ab.c` adds 301 exact ticks for the reflected-wall branch. A
+downward release on tick 241 selects Water before terrain, mirrors the vertical
+ray direction, and selects the rounded wall on the recursive no-Water pass.
+The hit creates the tunnel updater and schedules the prefab's 0.3-unit,
+one-second `ShakablePlatform` displacement after that platform updater has
+already run. All 60 seeded random samples from ticks 242 through 301, the rider
+motion and every public row match. The fixture deliberately ends before the
+delayed tunnel initializes on tick 302; wall deactivation, lifetime and
+restoration remain open.
 
 ### Executable Engine and attached thrust body (2026-09-15)
 
