@@ -79,6 +79,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_engine_ab.c`: an attached live RocketEngine and its composite
   platform across all 690 stopped passes, then restored force-clock and body
   motion.
+- `time_stop_tesla_ab.c`: two connected Tesla nodes and their lightning across
+  all 690 stopped passes, including paused flicker animation, restored
+  `UnFlicker` callback order and the next complete flicker cycle.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass

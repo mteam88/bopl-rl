@@ -2167,6 +2167,18 @@ force animation or applying its point force, and Rust preserves that branch in
 the preallocated attachment pool. The clock, entity rows and platform body
 resume together after restoration; all 1,540 ticks are exact.
 
+`time_stop_tesla_ab.c` plants and connects two Tesla nodes before the stop,
+then compares their composite circles and lightning line through 690 frozen
+passes and the following flicker cycle. It exposed a one-pass callback-order
+error after a paused flicker: source `SpriteAnimator` invokes `UnFlicker`,
+which resets and enables the line, before the later `StretchableLightning`
+updater advances the new cycle in that same restored pass. Rust had reset the
+clock without the later advance, making the next five-second flicker one tick
+late. Each pooled Tesla parent now retains whether its flicker animation was
+stopped and applies that same callback/update handoff. The 1,900-tick scenario
+is exact with the established 2,048-raw-Q32 attachment bound (less than
+0.0000005 world units) and no allocation in the tick path.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback

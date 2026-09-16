@@ -612,6 +612,7 @@ pub struct SpawnedTeslaNode {
     pub line_rotation: Fix,
     pub flicker_time: Fix,
     pub flicker_ticks: u32,
+    pub flicker_was_stopped: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -8267,8 +8268,13 @@ impl RolloutWorld {
             if !self.tesla_nodes[node_index].lethal {
                 // The line still follows its endpoints during the load-in.
             } else {
+                let owner = self.tesla_nodes[node_index].owner;
+                if self.player_time_scale < Fix::from_f32(0.01)
+                    && self.tesla_nodes[node_index].flicker_ticks != 0
+                {
+                    self.tesla_nodes[node_index].flicker_was_stopped = true;
+                }
                 if self.tesla_nodes[node_index].flicker_ticks == 0 {
-                    let owner = self.tesla_nodes[node_index].owner;
                     let dt = if self.time_stop_protected[owner] {
                         DT
                     } else {
@@ -8283,7 +8289,17 @@ impl RolloutWorld {
                     self.tesla_nodes[node_index].flicker_ticks += 1;
                     if self.tesla_nodes[node_index].flicker_ticks > data.tesla.flicker_ticks + 1 {
                         self.tesla_nodes[node_index].line_collider_enabled = true;
-                        self.tesla_nodes[node_index].flicker_time = Fix::ZERO;
+                        // SpriteAnimator invokes UnFlicker before the later
+                        // StretchableLightning updater. If that animation was
+                        // paused by Time Stop, the restoration pass both
+                        // re-enables the line and advances its new cycle.
+                        self.tesla_nodes[node_index].flicker_time = if core::mem::take(
+                            &mut self.tesla_nodes[node_index].flicker_was_stopped,
+                        ) {
+                            DT
+                        } else {
+                            Fix::ZERO
+                        };
                         self.tesla_nodes[node_index].flicker_ticks = 0;
                     }
                 }

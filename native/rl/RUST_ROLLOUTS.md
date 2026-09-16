@@ -94,6 +94,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   outbound updater, matching the source `grenade.hasBeenThrown` guard.
   An attached RocketEngine and its composite platform also freeze for all 690
   passes, then resume the force animation clock and platform motion exactly.
+  Connected Tesla nodes retain their composite and lightning rows throughout
+  the stop; a paused flicker resumes with the source's `UnFlicker` callback
+  before the later lightning clock update, so the next cycle remains exact.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
