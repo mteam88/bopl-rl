@@ -579,11 +579,20 @@ static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) 
     }
     a->embb = {.shape = {IDS, I / 2}}; alloc_register(alloc, &a->embb);
 }
+/* BOPL_V4_MEMLOG=1: print what each registration adds to the activation allocator. */
+static void memlog(const char* what, int B, const Allocator* alloc, long before) {
+    static int on = -1;
+    if (on < 0) { const char* f = getenv("BOPL_V4_MEMLOG"); on = f && atoi(f) ? 1 : 0; }
+    if (on) fprintf(stderr, "bopl v4 memory: %s B=%d %.1f MB (%.1f KB/row)\n", what, B, (alloc->total_elems - before) * 4.0 / 1048576, (alloc->total_elems - before) * 4.0 / 1024 / B);
+}
 static void enc_reg_rollout(void* weights, void* activations, Allocator* alloc, int B) {
+    long before = alloc->total_elems;
     enc_reg_forward((EncWeights*)weights, (EncActs*)activations, alloc, B);
+    memlog("encoder rollout activations", B, alloc, before);
 }
 static void enc_reg_train(void* weights, void* activations, Allocator* acts, Allocator* grads, int B) {
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations; int H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim;
+    long before = acts->total_elems;
     enc_reg_forward(w, a, acts, B);
     a->grad_fused = {.shape = {B, H}}; a->grad_joined = {.shape = {B, FD + SETS * 2 * D}}; a->grad_flat = {.shape = {B, FD}};
     for (auto* t : {&a->grad_fused, &a->grad_joined, &a->grad_flat}) alloc_register(acts, t);
@@ -604,6 +613,7 @@ static void enc_reg_train(void* weights, void* activations, Allocator* acts, All
     a->wgrad_flat = {.shape = {FD, FLAT}}; alloc_register(grads, &a->wgrad_flat);
     a->wgrad_fusion = {.shape = {H, FD + SETS * 2 * D}}; alloc_register(grads, &a->wgrad_fusion);
     g_v4_overflow = &a->overflow;
+    memlog("encoder train activations", B, acts, before);
 }
 static void* enc_create(void* self) {
     auto* encoder = (Encoder*)self;
@@ -810,6 +820,7 @@ static void dec_reg_train(void* weights, void* activations, Allocator* acts, All
     auto* w = (DecWeights*)weights; auto* a = (DecActs*)activations; int H = w->hidden, C = w->cdim, W = H + (w->privileged ? PRIV : 0);
     int pad = decoder_padded_width(w->od + 1);
     a->base.od1_pad = pad;
+    long before = acts->total_elems;
     dec_reg_forward(w, a, acts, B, pad);
     a->base.grad_out = {.shape = {B, pad}}; a->base.saved_input = {.shape = {B, H}}; a->base.grad_input = {.shape = {B, H}};
     a->wgrad_actor_pad = {.shape = {pad, H}}; a->g_y = {.shape = {B, H}}; a->g_ln1 = {.shape = {B, H}};
@@ -832,6 +843,7 @@ static void dec_reg_train(void* weights, void* activations, Allocator* acts, All
         a->wgrad_b2 = {.shape = {C, C}}; alloc_register(grads, &a->wgrad_b2);
         a->wgrad_critic_out = {.shape = {1, C}}; alloc_register(grads, &a->wgrad_critic_out);
     }
+    memlog("decoder train activations", B, acts, before);
 }
 static void* dec_create(void* self) {
     auto* d = (Decoder*)self;
