@@ -67,6 +67,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   arrow flying.
 - `arrow_bounds_ab.c`: `Arrow.prefab` side-boundary destruction phase and
   removal from the live projectile observation.
+- `grenade_bounce_ab.c`: a horizontal Grenade release through four exact
+  rounded-platform bounces, a wall reversal and the later timed explosion over
+  260 ticks.
 - `time_stop_arrow_ab.c`: a live Bow projectile across Time Stop entry, all
   690 frozen physics passes, and its first restored gravity/flight pass; also
   verifies source-derived Arrow prefab hierarchy allocation.

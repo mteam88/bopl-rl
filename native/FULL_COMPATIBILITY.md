@@ -1131,9 +1131,12 @@ position integration/external-velocity damping. Moving ability-body deaths
 also publish the source death position before parking a stock replacement.
 
 The two shockwaves use the authored masks, radii and forces, apply their impulses
-before map home springs, and reuse existing fixed arrays/entity pools. Grenade
-terrain bounce, non-owner hits, grenade duplication and grounded-form forced
-exits still require separate goldens before id 3 is complete.
+before map home springs, and reuse existing fixed arrays/entity pools.
+`grenade_bounce_ab.c` adds a strict 260-tick horizontal throw through rounded
+platform bounces on ticks 71, 115, 148 and 163, a later wall reversal and the
+timed explosion. Every public field is exact without adding a tolerance.
+Non-owner hits, grenade duplication and grounded-form forced exits still require
+separate goldens before id 3 is complete.
 
 ### Executable Tack throw and trap (2026-09-14)
 
