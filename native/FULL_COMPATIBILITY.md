@@ -2685,6 +2685,18 @@ airborne body, fall, platform contacts and final live position remain exact
 through tick 500. This isolates airborne player scaling from the separate
 active-form target path.
 
+`growth_water_wall_ab.c` adds 500 exact ticks for the downward Water branch.
+The release on tick 241 selects Water before terrain, mirrors the vertical ray
+and hits the rounded wall on the no-Water pass. The non-player ScaleChanger
+starts on tick 242, increments its clock before curve evaluation, and applies
+each Q32 old-to-new scale ratio directly to the retained radius, box axes and
+inverse extents. The wall's `BoplBody` observes the new FixTransform scale on
+the following platform-updater pass, while the attached rider's late update
+uses the new live radius immediately and the prior cached extents. The complete
+curve, inverse-mass changes, rider motion and every public row match through
+tick 500. The ten-second enlarged-platform return boundary is outside this
+fixture and remains open.
+
 `shrink_airborne_ab.c` repeats that 500-tick rising-player path for Shrink.
 The negative ScaleChanger is visible on the same tick 243 boundary, then the
 reduced body, fall and platform contacts remain exact through tick 500. Its

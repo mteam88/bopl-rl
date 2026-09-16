@@ -1235,7 +1235,8 @@ pub struct ScaleChangerState {
     pub active: bool,
     pub born_tick: u32,
     pub victim: usize,
-    /// Zero targets a player slot; one targets a guided Missile pool slot.
+    /// Zero targets a player slot, one a guided Missile pool slot, and two a
+    /// rounded-platform slot.
     pub target_kind: u8,
     pub time: Fix,
     pub growth: bool,
@@ -16453,12 +16454,11 @@ impl RolloutWorld {
             ray.collision_mask
         };
         let terrain = terrain!(self);
-        let mut nearest = if mask & (1 << LAYER_WALL) != 0 {
-            crate::world::closest(terrain, origin, direction, max_distance, None)
-                .map_or(max_distance, |(_, distance, _)| distance)
-        } else {
-            max_distance
-        };
+        let wall_hit = (mask & (1 << LAYER_WALL) != 0)
+            .then(|| crate::world::closest(terrain, origin, direction, max_distance, None))
+            .flatten();
+        let mut nearest = wall_hit.map_or(max_distance, |(_, distance, _)| distance);
+        let mut platform_victim = wall_hit.map(|(index, _, _)| index);
         let mut victim = None;
         let mut missile_victim = None;
         let mut water_hit = false;
@@ -16475,6 +16475,7 @@ impl RolloutWorld {
             {
                 nearest = hit.near;
                 water_hit = true;
+                platform_victim = None;
             }
         }
         if mask & (1 << LAYER_PLAYER) != 0 {
@@ -16550,6 +16551,7 @@ impl RolloutWorld {
                     nearest = distance;
                     victim = Some(target);
                     missile_victim = None;
+                    platform_victim = None;
                     water_hit = false;
                 }
             }
@@ -16571,6 +16573,7 @@ impl RolloutWorld {
                     nearest = hit.near;
                     victim = None;
                     missile_victim = Some(missile_index);
+                    platform_victim = None;
                     water_hit = false;
                 }
             }
@@ -16587,6 +16590,8 @@ impl RolloutWorld {
             self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
         } else if let Some(victim) = missile_victim {
             self.begin_scale_change(victim, 1, growth, ray.changer_updatable_count);
+        } else if let Some(victim) = platform_victim {
+            self.begin_scale_change(victim, 2, growth, ray.changer_updatable_count);
         }
     }
 
@@ -17250,8 +17255,9 @@ impl RolloutWorld {
                 self.scale_changers[index].time += DT;
                 continue;
             }
-            if effect.victim >= self.guided_missiles.len()
-                || !self.guided_missiles[effect.victim].active
+            if effect.target_kind == 1
+                && (effect.victim >= self.guided_missiles.len()
+                    || !self.guided_missiles[effect.victim].active)
             {
                 self.scale_changers[index].active = false;
                 continue;
@@ -17262,6 +17268,39 @@ impl RolloutWorld {
                 continue;
             }
             let time = effect.time + DT;
+            if effect.target_kind == 2 {
+                if effect.victim >= self.platforms.len() {
+                    self.scale_changers[index].active = false;
+                    continue;
+                }
+                let dynamics = &mut self.platform_dynamics[effect.victim];
+                let multiplier = if dynamics.body.inverse_mass > Fix::ZERO
+                    && dynamics.body.inverse_mass * dynamics.scale > ray.inverse_mass_before_big
+                {
+                    ray.small_non_players_multiplier
+                } else {
+                    ray.multiplier
+                };
+                let previous = dynamics.scale;
+                let scale = (previous + ray.scale_curve.evaluate(time) * multiplier)
+                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                let ratio = (Fix::ONE / previous) * scale;
+                dynamics.scale = scale;
+                dynamics.surface_shape_dirty = true;
+                // DetPhysics resynchronizes the collider from FixTransform at
+                // the end of this pass even though the body did not rotate.
+                // Force the quiet-platform path to rebuild the scaled axes
+                // from the retained body orientation as the source does.
+                dynamics.transform_rotation = Some(dynamics.body.orientation);
+                let collider = &mut self.platforms[effect.victim].collider;
+                collider.radius *= ratio;
+                collider.inner.right *= ratio;
+                collider.inner.up *= ratio;
+                collider.inner.inverse_extents = collider.inner.inverse_extents / ratio;
+                self.scale_changers[index].time = time;
+                self.platforms_changed();
+                continue;
+            }
             let missile = &mut self.guided_missiles[effect.victim];
             // Spark's authored momentOfInertia is zero. BoplBody gates its
             // scale-driven mass update on both mass and inertia being nonzero,
@@ -18101,6 +18140,16 @@ impl RolloutWorld {
                 }
             } else if self.macho_boulders[boulder_index].platform_index > index {
                 self.macho_boulders[boulder_index].platform_index -= 1;
+            }
+        }
+        for effect in &mut self.scale_changers {
+            if !effect.active || effect.target_kind != 2 {
+                continue;
+            }
+            if effect.victim == index {
+                effect.active = false;
+            } else if effect.victim > index {
+                effect.victim -= 1;
             }
         }
         self.platforms.remove(index);
