@@ -2148,7 +2148,17 @@ backends keep its item collider at the exact frozen position for all 690
 passes, while the unprotected owner's body and cooldowns also remain fixed.
 After restoration its hover clock, force and body motion resume on the same
 pass. This scenario is exact under the same established form bound and does
-not claim the still-unmeasured chasing, anticipation or explosion-entry phases.
+not claim the still-unmeasured chasing phase.
+
+`time_stop_mine_anticipation_ab.c` lets a player collision trigger the Mine's
+authored anticipation before the stop begins. Its jittered pose, velocity,
+spin, opponent position and opponent cooldowns remain unchanged for all 690
+zero-scale passes, with no early explosion registration. On restoration the
+remaining anticipation clock resumes and the disabled-first `MineExplosion`
+row appears exactly five active ticks later in both backends. The 1,460-tick
+composition uses a measured 256-raw-Q32 bound (less than 0.00000006 world
+units) for post-jump and post-shockwave vector grouping; every discrete field,
+identity and lifecycle boundary remains exact.
 
 `time_stop_throw_forms_ab.c` runs Grenade, Smoke, Poke Ball, Tack and Mjolnir
 from slot two through 1,540 ticks each. Every held form, position, collider,

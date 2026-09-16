@@ -364,7 +364,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   animation state no longer advances until restoration. Released Grenade,
   Smoke, Poke Ball and Tack bodies likewise freeze all motion and resume their
   updater and physics paths together; Tack pauses 43 ticks into its 48-tick
-  arming delay and later completes its owner re-entry kill. All four spawned Smoke clouds also hold
+  arming delay and later completes its owner re-entry kill. A Mine triggered
+  into anticipation retains its jitter pose, body state and detonation clock
+  across the same 690 passes, then registers `MineExplosion` five active ticks
+  after restoration. All four spawned Smoke clouds also hold
   their enter-animation radii and resume the frame clock after restoration.
   A live Poke Ball capture pauses its ball, pinned victim, cooldowns and
   116-pass capture clock for exactly 690 passes before restored ejection.
