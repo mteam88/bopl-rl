@@ -1178,6 +1178,16 @@ only excluded field is the pre-existing destroyed-Arrow angular velocity row:
 NativeAOT retains its final spin while Rust publishes zero after destruction;
 the Arrow is ownerless and non-colliding in both backends on that row.
 
+`grenade_arrow_ab.c` adds a separate 500-tick exact crossing shot. On tick 206
+DetPhysics resolves the released Grenade and Arrow circles before dispatching
+callbacks. Arrow's callback runs first, parents its inert visual to the item and
+destroys its physics, `Projectile` and `FixTransform`; the Grenade callback can
+therefore no longer recover an igniting projectile and does not detonate. Rust
+preserves the corrected positions and linear/angular velocities, the destroyed
+ownerless Arrow row, twelve subsequent Grenade passes and the normal timed
+explosion from ticks 348 through 438. Candidate capture uses a fixed stack
+array and adds no allocation to the contact path.
+
 ### Executable Tack throw and trap (2026-09-14)
 
 Catalog id 35 now shares the same allocation-reusing `ThrowItem2` form while

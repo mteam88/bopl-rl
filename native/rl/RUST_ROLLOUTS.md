@@ -117,7 +117,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   20-arrow owner cap, projectile collision during a dash raycast, and
   post-integration discrete circle contacts in DetPhysics group order.
   Terrain consumes an arrow; PlayerBody-backed hurtboxes kill without
-  consuming it, matching `Arrow.OnCollide`. Arrow instantiation now reserves
+  consuming it, matching `Arrow.OnCollide`. A released Grenade composition
+  resolves both dynamic circles before Arrow's callback removes its projectile
+  components; the later Grenade callback therefore leaves the resolved payload
+  alive until its ordinary timed explosion. Arrow instantiation now reserves
   all five prefab updaters and publishes the source collider hierarchy rather
   than an id-derived surrogate. A composed Time Stop golden fires an airborne
   arrow immediately before the stop, holds its position for all 690 frozen

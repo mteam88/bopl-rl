@@ -12887,6 +12887,7 @@ impl RolloutWorld {
                 if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
                     == wave.platform_ids.len()
                     || !item.active
+                    || item.ability != ABILITY_GRENADE
                     || item.entity.is_none()
                 {
                     continue;
@@ -19540,6 +19541,89 @@ impl RolloutWorld {
                     e.vx = arrow_body.velocity.x.raw();
                     e.vy = arrow_body.velocity.y.raw();
                     e.rotation = arrow.rotation.raw();
+                }
+                continue;
+            }
+
+            // Circle/Circle: released item bodies are resolved before either
+            // callback runs. Arrow.OnCollide is queued first for this pair;
+            // it parents the visual to the item and destroys Arrow's
+            // FixTransform/Projectile. GrenadeExplode's later callback then
+            // cannot recover an igniting Projectile from that destroyed
+            // transform, so the payload survives with the resolved impulse.
+            let mut item_contacts = [(usize::MAX, Contact::default()); 64];
+            let mut item_contact_count = 0;
+            for (item_index, item) in self.thrown_items.iter().enumerate() {
+                if item_contact_count == item_contacts.len()
+                    || !item.active
+                    || item.entity.is_none()
+                    || item.callback_registered_tick == self.tick
+                {
+                    continue;
+                }
+                let item_radius = data.grenade.item_radius;
+                if let Some(contact) = crate::physics::contact::circle_circle(
+                    Circle {
+                        center: item.position,
+                        radius: item_radius,
+                    },
+                    circle,
+                ) {
+                    item_contacts[item_contact_count] = (item_index, contact);
+                    item_contact_count += 1;
+                }
+            }
+            if item_contact_count > 0 {
+                let mut arrow_body = crate::physics::Body {
+                    velocity: arrow.velocity,
+                    orientation: arrow.rotation,
+                    angular_velocity: arrow.angular_velocity,
+                    ..data.arrow.body
+                };
+                let mut arrow_center = arrow.position;
+                for &(item_index, contact) in &item_contacts[..item_contact_count] {
+                    let item = self.thrown_items[item_index];
+                    let mut item_body = item.body;
+                    let mut item_center = item.position;
+                    resolve(
+                        contact,
+                        &mut item_body,
+                        &mut arrow_body,
+                        item_center,
+                        arrow_center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        item_body.inverse_mass,
+                        arrow_body.inverse_mass,
+                        false,
+                    );
+                    item_center += correction[0];
+                    arrow_center += correction[1];
+                    let live = &mut self.thrown_items[item_index];
+                    live.position = item_center;
+                    live.body = item_body;
+                    if let Some(entity) = live.entity {
+                        let row = &mut self.entities[entity];
+                        row.x = item_center.x.raw();
+                        row.y = item_center.y.raw();
+                        row.vx = item_body.velocity.x.raw();
+                        row.vy = item_body.velocity.y.raw();
+                        row.rotation = item_body.orientation.raw();
+                        row.angular_velocity = item_body.angular_velocity.raw();
+                    }
+                }
+                self.destroy_arrow(i);
+                if let Some(entity) = self.arrows[i].entity {
+                    let row = &mut self.entities[entity];
+                    row.flags = E_DESTROYED;
+                    row.owner = 0;
+                    row.x = arrow_center.x.raw();
+                    row.y = arrow_center.y.raw();
+                    row.vx = arrow_body.velocity.x.raw();
+                    row.vy = arrow_body.velocity.y.raw();
+                    row.rotation = arrow_body.orientation.raw();
+                    row.angular_velocity = arrow_body.angular_velocity.raw();
                 }
                 continue;
             }
