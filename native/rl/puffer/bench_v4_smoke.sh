@@ -18,11 +18,13 @@
 # Meant to run from the GPU queue (one job at a time):
 #   bash native/rl/puffer/bench_v4_smoke.sh [updates]
 #   WORKERS=16 BUFFERS=1 NEED_MB=1500 bash ... 10     scaled-down end-to-end check
+#   ONLY="v4-full v4-lite" bash ...                    a subset of the configurations
 set -uo pipefail
 UPDATES=${1:-600}
 WORKERS=${WORKERS:-128}
 BUFFERS=${BUFFERS:-4}
 NEED_MB=${NEED_MB:-7000}
+ONLY=${ONLY:-}                     # space-separated configuration names to run (default: all)
 WAIT_S=${WAIT_S:-600}
 R=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$R"
@@ -54,6 +56,7 @@ wait_for_memory() {
   done
 }
 run() {
+  if [ -n "$ONLY" ] && ! [[ " $ONLY " == *" $1 "* ]]; then return; fi
   local name=$1; shift
   local dir="$OUT/$name" rc=0
   rm -rf "$dir" "$dir.log"
