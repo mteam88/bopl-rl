@@ -50,7 +50,10 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
                'frozen_games', 'evaluation_workers', 'scripted_bots', 'scripted_level',
                'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
-               'scripted_opponents', 'aim_fourier', 'aim_ar')
+               'scripted_opponents', 'aim_fourier', 'aim_ar',
+               # policy v4 (POLICY_V4_PLAN.md): --encoder v4 shape flags and the writer ablation
+               'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
+               'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate', 'v4_row_budget')
 STORE_TRUE = ('no_eval',)
 # Virtual swept parameters for the scripted-bot curriculum (SCRIPTED_BOTS.md):
 # scripted_banks = how many banks draw from [fixed].scripted_roster (passed
@@ -64,6 +67,8 @@ HEAD_SCALE = {'head_scale_aim': 0, 'head_scale_buttons': 1, 'head_scale_hold': 2
 # Parameters that must be integers on the command line even when the space
 # yields floats (log_normal steps, for example).
 ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'aim_fourier', 'aim_ar',
+                  'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
+                  'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate',
                   'scripted_banks', 'scripted_level_index',
                   'horizon', 'learner_passes', 'entropy_half_life', 'episode_ticks',
                   'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout',

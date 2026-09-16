@@ -281,25 +281,41 @@ fallback 0.21 ms. v4 adds LN, FFN and critic launches. Measured in the smoke.
 All at overnight-9 024's recipe and steps, scored on pool v7 (v3 opponents
 via the per-player layout), against `capacity-h256` as the width-only control:
 
+Configs are `sweep/configs/v4-*.toml` (capacity-h256's form: one Protein
+trial, 024's recipe verbatim, `encoder = "v4"`, the shape flags below; flags
+not listed are `layout.V4_DEFAULTS`):
+
 1. `v4-full`: everything above, privileged critic on.
 2. `v4-sym-critic`: privileged block off (is the asymmetric critic worth it).
+   `v4_critic_privileged = 0`.
 3. `v4-no-relational`: relational columns zeroed in the writer (same shapes;
-   isolates the feature work from the encoder work).
-4. `v4-maxpool`: mean pool off (max only, v3 style).
+   isolates the feature work from the encoder work). `v4_ablate = 1`
+   (`BOPL4_ABLATE` bit 1, bopl_obs_v4.h `bopl4_ablation`; recorded in the
+   checkpoint's `v4_shape` so the evaluator writes the same rows).
+4. `v4-maxpool`: mean pool off (max only, v3 style). `v4_mean_pool = 0`.
 5. `v4-lite`: critic 384, set inner 64, FFN off: the within-2x shape.
-6. `v4-critic-shared`: critic reads the trunk through the actor's small
-   decoder row as v3 does (is the wide separate critic the gain).
+   `v4_set_inner = 64`, `v4_ffn_dim = 0`, `v4_critic_dim = 384`.
+6. `v4-critic-shared`: the v3-style value, one extra row of the actor linear
+   from the trunk, no separate critic and no privileged block (is the wide
+   separate critic the gain). `v4_critic_dim = 0`, `v4_critic_privileged = 0`;
+   critic_dim 0 means exactly this in the trainer, the batched rollout, the
+   CPU evaluator and the torch reference.
 7. `v4-no-rays`: terrain block and rays zeroed in the writer (same shapes):
    is the egocentric geometry channel what carries held-out-map play.
-8. Held-out maps: every v4 config is also scored on maps 3-4 against the
-   scripted bots (the in-run evaluation already does it); the map-invariance
-   claim is that the v4 gap between maps 0-2 and 3-4 is smaller than 024's
-   12 points.
+   `v4_ablate = 2`.
+8. `v4-rays16`: 16 of the 32 rays (every other one) and none of the down
+   fan, same shapes: the probes' 16+4 vs 32+4 gap, in play. `v4_ablate = 4`.
+9. Held-out maps: every v4 config is also scored on maps 3-4 against the
+   scripted bots (the in-run evaluation already does it; evaluate.py and
+   elo_ladder.py write each side's row in its checkpoint's layout, so v4
+   candidates meet pool v7's v3 members and v3 frozen opponents); the
+   map-invariance claim is that the v4 gap between maps 0-2 and 3-4 is
+   smaller than 024's 12 points.
 
 Queue order: `v4-full`, `v4-lite`, `v4-sym-critic`, `v4-no-relational`,
-`v4-critic-shared`, `v4-maxpool`, `v4-no-rays`; if the smoke measures
-`v4-full` above ~2.5x overall (environment plus update, sps, not the GEMM
-projection of section 6) `v4-lite` goes first. Both smokes report sps.
+`v4-critic-shared`, `v4-maxpool`, `v4-no-rays`, `v4-rays16`; if the smoke
+measures `v4-full` above ~2.5x overall (environment plus update, sps, not the
+GEMM projection of section 6) `v4-lite` goes first. Both smokes report sps.
 
 Success criterion: not a fixed Elo. The 024 recipe is being re-run at seeds
 74/75/76 ahead of v4 in the queue; the spread of those three on pool v7 is
