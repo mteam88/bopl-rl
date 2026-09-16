@@ -163,7 +163,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   bounces and all boundary/fizzle removals over 900 exact ticks.
 - `duplicator_mine_ab.c`: a released low-strength Mine followed by its
   three-copy fan, single deferred `Mine.Init` RNG sample per clone, arming and
-  long-lived hover trajectories over 1,500 exact ticks.
+  hover trajectories, reverse-order final shake and simultaneous 1,800-pass
+  expiry over 2,200 exact ticks.
 - `duplicator_pickup_ab.c`: deterministic AbilitySpawner collection replaces
   equipped Duplicator in slot three, then the acquired Revival registers,
   casts, creates its marker and exits exactly.

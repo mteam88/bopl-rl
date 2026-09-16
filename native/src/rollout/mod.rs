@@ -15830,7 +15830,11 @@ impl RolloutWorld {
         if self.player_time_scale < Fix::from_f32(0.01) {
             return;
         }
-        for item in &mut self.thrown_items {
+        // DetPhysics.UpdateDuplicatedObjects walks its List from Count-1 to
+        // zero. The order becomes observable during the last 60 frames because
+        // every live duplicate consumes one RandomUnitVector for its shake.
+        for item_index in (0..self.thrown_items.len()).rev() {
+            let item = &mut self.thrown_items[item_index];
             if !item.active || !item.duplicated {
                 continue;
             }

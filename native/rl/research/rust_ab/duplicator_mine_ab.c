@@ -1,5 +1,5 @@
 /* Duplicator Mine golden: released low-strength Mine, three-copy fan,
- * deferred Mine.Init RNG, and long-lived armed hover trajectories.
+ * deferred Mine.Init RNG, armed hover trajectories, final shake and expiry.
  *
  * The active Mine form uses the existing 5,000-raw-Q32 PlayerPhysics
  * reprojection bound. Spawned Mine bodies and all gameplay state use 64 raw
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
     config.map = 0;
     config.stocks = 5;
     config.warmup_ticks = 240;
-    config.max_episode_ticks = 1800;
+    config.max_episode_ticks = 2400;
     config.player[0].abilities[0] = 24; /* Mine */
     config.player[0].abilities[1] = 29; /* Duplicator */
     config.player[0].abilities[2] = 14;
@@ -213,8 +213,9 @@ int main(int argc, char **argv) {
     unsigned mine_cast = 0, mine_exit = 0, duplicator_cast = 0;
     unsigned duplicator_release = 0, max_items = 0;
     unsigned first_loss = 0, second_loss = 0, third_loss = 0, fourth_loss = 0;
+    unsigned expiry_tick = 0;
     unsigned previous_items = 0;
-    for (unsigned tick = 1; tick <= 1500; tick++) {
+    for (unsigned tick = 1; tick <= 2200; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
 
@@ -270,6 +271,8 @@ int main(int argc, char **argv) {
         unsigned items = active_items(reference);
         if (items > max_items)
             max_items = items;
+        if (previous_items == 4 && items == 1 && !expiry_tick)
+            expiry_tick = tick;
         if (previous_items == 4 && items == 3 && !first_loss)
             first_loss = tick;
         if (previous_items == 3 && items == 2 && !second_loss)
@@ -284,16 +287,18 @@ int main(int argc, char **argv) {
     for (int backend = 0; backend < 2; backend++)
         bopl_rl_close(world[backend]);
     if (mine_cast != 184 || mine_exit != 203 || duplicator_cast != 203 ||
-        duplicator_release != 248 || max_items != 4 || previous_items != 4 ||
+        duplicator_release != 248 || max_items != 4 || expiry_tick != 2049 ||
+        previous_items != 1 ||
         first_loss || second_loss || third_loss || fourth_loss) {
         fprintf(stderr,
                 "incomplete mine=%u exit=%u duplicator=%u release=%u "
-                "max=%u final=%u losses=%u,%u,%u,%u\n",
+                "max=%u expiry=%u final=%u losses=%u,%u,%u,%u\n",
                 mine_cast, mine_exit, duplicator_cast, duplicator_release,
-                max_items, previous_items, first_loss, second_loss, third_loss,
-                fourth_loss);
+                max_items, expiry_tick, previous_items, first_loss, second_loss,
+                third_loss, fourth_loss);
         return 1;
     }
-    printf("DUPLICATOR_MINE_GOLDEN_OK ticks=1500 copies=3\n");
+    printf("DUPLICATOR_MINE_GOLDEN_OK ticks=2200 copies=3 expiry=%u\n",
+           expiry_tick);
     return 0;
 }
