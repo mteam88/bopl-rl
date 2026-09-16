@@ -411,6 +411,12 @@ def main():
     report["graph"] = compare(library, random_obs(rng, 33), 128, rng, graph=True)
     report["gather"] = gather_case(library, rng)
     report["overflow"] = overflow_case(library, rng)
+    # The evaluators read the trainer's dump, which is encoder, decoder, then the
+    # recurrent core (models.cu); a reader that expects the MinGRU before the
+    # decoder loads every v4 checkpoint scrambled (v4-full's first seven in-run
+    # evaluations: 50% vs random, falls in 45% of games, value EV -3).
+    names = [n for n, _ in layout.policy_v4_tensors(256, 1)]
+    assert names.index("actor") < names.index("mingru0") and names[-1] == "mingru0", names
     report["cpu"] = [cpu_case(rng), cpu_case(rng, hidden=128, layers=1, set_inner=64, ffn_dim=0, critic_dim=384),
                      cpu_case(rng, critic_privileged=0, mean_pool=0), cpu_case(rng, critic_dim=0)]
     if args.time:

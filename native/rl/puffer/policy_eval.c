@@ -98,8 +98,8 @@ void *bopl_policy_eval_create_v4(const float *data, size_t count, int batch, int
     eval->v4 = bopl_v4_create(eval->weights, batch, hidden, width, &v4_shape);
     if (!eval->net || !eval->v4) { bopl_v4_free(eval->v4); free(eval->net); free(eval->weights); free(eval); return NULL; }
     eval->net->num_agents = batch;
-    eval->net->mingru = make_mingru(eval->weights, batch, hidden, layers);   /* between the encoder and the decoder in the dump */
     bopl_v4_read_decoder(eval->v4, eval->weights);
+    eval->net->mingru = make_mingru(eval->weights, batch, hidden, layers);   /* the dump is encoder, decoder, recurrent core, as for v3 */
     if (eval->weights->idx != (int)count) { bopl_policy_eval_close(eval); return NULL; }
     eval->state_size = states;
     return eval;

@@ -149,7 +149,11 @@ def aligned(count):
 
 def policy_v4_tensors(hidden, num_layers, aim_fourier=4, aim_ar=0, set_dim=128, set_inner=128,
                       flat_dim=256, ffn_dim=512, critic_dim=512, critic_privileged=1, **_):
-    """(name, shape) of every v4 tensor in flat-buffer order (bopl_v4.h / bopl_v4_encoder.cu).
+    """(name, shape) of every v4 tensor in flat-buffer order: the trainer's dump is
+    encoder, decoder, then the recurrent core (models.cu create_params registers
+    encoder.reg_params, decoder.reg_params, network.reg_params), the same order
+    the v3 evaluator reads (policy_eval.c). check_v4.py's cpu_case and
+    check_v4_dump.py hold the readers to it.
 
     Row MLPs: W1 (inner, features_without_id) then W2 (set_dim, inner) per set; the
     embedding (ids, inner) is added before the first ReLU. Pooled width per set is
@@ -162,8 +166,6 @@ def policy_v4_tensors(hidden, num_layers, aim_fourier=4, aim_ar=0, set_dim=128, 
     tensors += [("embedding", (EMBEDDING_IDS, set_inner)),
                 ("flat", (flat_dim, V4_FLAT)),
                 ("fusion", (hidden, flat_dim + 4 * 2 * set_dim))]
-    for layer in range(num_layers):
-        tensors.append((f"mingru{layer}", (3 * hidden, hidden)))
     if ffn_dim:
         tensors += [("ffn_in", (ffn_dim, hidden)), ("ffn_out", (hidden, ffn_dim))]
     # critic_dim 0: v3-style shared value, one extra actor row (the v4-critic-shared ablation)
@@ -172,6 +174,8 @@ def policy_v4_tensors(hidden, num_layers, aim_fourier=4, aim_ar=0, set_dim=128, 
         tensors += [("critic_in", (critic_dim, hidden + (V4_PRIVILEGED if critic_privileged else 0))),
                     ("critic_b1", (critic_dim, critic_dim)), ("critic_b2", (critic_dim, critic_dim)),
                     ("critic_out", (1, critic_dim))]
+    for layer in range(num_layers):
+        tensors.append((f"mingru{layer}", (3 * hidden, hidden)))
     return tensors
 
 
