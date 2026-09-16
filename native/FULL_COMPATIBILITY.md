@@ -1037,6 +1037,16 @@ Dash exit while the target form stays live. All six 180-tick scenarios match
 with the same 64-raw-Q32 vector bound; no held-item lifecycle starts early and
 no ordinary-slime overlap push reaches the form body.
 
+`dash_remaining_forms_ab.c` covers Engine, Gust, Spike, Time Stop, Revival,
+Black Hole, Invisibility, Meteor, Throw, Push, Tesla, Teleport, Drill, Beam,
+Rewind, Web Swing and Portal Gun. Push uses neutral aim so its supporting
+platform stays still and the scenario isolates the form callback. The other
+target inputs are held normally. All seventeen 180-tick scenarios preserve the
+active layer-8 form
+through Dash exit. Meteor's inherited grounded form reprojection requires at
+most 8,192 raw Q32 units (less than 0.000002 world units); all callback choices,
+identities, lifecycles and discrete state are exact.
+
 ### Dash ray collision with active Roll (2026-09-15)
 
 Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden

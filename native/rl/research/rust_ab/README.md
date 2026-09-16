@@ -44,6 +44,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   more nonlethal `PlayerCollision` owners without an ordinary-slime push.
 - `dash_throw_forms_ab.c`: the same callback across held Grenade, Smoke, Mine,
   Poke Ball, Tack and Mjolnir forms through each Dash exit.
+- `dash_remaining_forms_ab.c`: seventeen more active forms (Engine, Gust,
+  Spike, Time Stop, Revival, Black Hole, Invisibility, Meteor, Throw, Push,
+  Tesla, Teleport, Drill, Beam, Rewind, Web Swing and Portal Gun) through the
+  same callback.
 - `grapple_player_attach_ab.c`: a close-player Grappling Hook flight attaches
   its top endpoint to the grounded third player after physics, deferring the
   grounded correction until the next pass exactly as `PlayerPhysics` does.
