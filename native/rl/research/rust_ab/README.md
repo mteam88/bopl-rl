@@ -58,6 +58,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   verifies source-derived Arrow prefab hierarchy allocation.
 - `time_stop_bow_ab.c`: an unprotected Bow form charging across all 690 Time
   Stop passes, followed by restored release, form exit and Arrow registration.
+- `time_stop_gun_forms_ab.c`: active Blink, Growth, Shrink, Duplicator and
+  Freeze forms across all 690 stopped passes, first restored sync and exit.
 - `time_stop_rock_ab.c`: an unprotected active Rock across all 690 stopped
   passes, including Unity's repeated zero-delta entry-scale update and the
   first restored rigid-body motion.

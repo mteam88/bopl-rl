@@ -3747,6 +3747,7 @@ impl RolloutWorld {
         // the start of the pass. DetPhysics observes any scale written by the
         // effect later in this same pass.
         let updater_dt = DT * self.player_time_scale;
+        let time_stop_protected_at_pass_start = self.time_stop_protected;
         // Updater initializes every prefab queued during the prior pass
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
@@ -4025,7 +4026,13 @@ impl RolloutWorld {
         // moves to its new surface local in PlayerPhysics.LateUpdateSim
         // (PlayerPhysics.cs:138-146), after the contacts below.
         for (index, action) in actions.iter().enumerate() {
-            if self.playable(index) {
+            // The TimeStop effect can restore the global scale later in this
+            // updater pass. DetPhysics still observes the zero delta that was
+            // captured at the pass start and retains frozen colliders once
+            // more; they resume synchronization on the following pass.
+            let frozen =
+                updater_dt < DT * Fix::from_f32(0.01) && !time_stop_protected_at_pass_start[index];
+            if self.playable(index) && !frozen {
                 if self.players[index].active == ActiveAbility::Push {
                     self.players[index].push.collider_up = self.players[index].base.up;
                 } else if matches!(

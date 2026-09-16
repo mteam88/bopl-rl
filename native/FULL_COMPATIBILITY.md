@@ -2100,6 +2100,16 @@ public collider field remain exact and fixed through the 690-pass stop. Bow
 then resumes on the first restored clock, releases, exits and registers its
 Arrow with exact source ordering during the remainder of the 1,600-tick trace.
 
+`time_stop_gun_forms_ab.c` adds five exact 1,600-tick cases for grounded Blink,
+Growth, Shrink, Duplicator and Freeze forms. Each enters on tick 680, remains
+active and motionless for all 690 zero-scale passes, resumes on the first live
+clock and exits after release. The second frozen pass exposed that DetPhysics
+must retain the form's stop-entry box instead of rebuilding it from the live
+post-LateUpdate surface pose. The restoration pass retains it once more because
+the updater delta was captured while the global scale was still zero; collider
+synchronization resumes on the following pass. No comparator bound or hot-path
+allocation is used.
+
 `time_stop_rock_ab.c` covers an active Rock across the same 690 stopped passes.
 Unity continues calling `BounceBall.LateUpdateSim`: the unprotected owner's
 activation clock receives zero delta, but the entry curve is evaluated at that
