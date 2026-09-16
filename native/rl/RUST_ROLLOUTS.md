@@ -429,8 +429,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Freeze ray executes the shared `GunTransform` form, its authored slow-motion
   aiming and recoil physics, hitscan, one-pass water reflection, and
   `FrozenSolid` pin/ragdoll/thaw lifecycle. The frozen effect is stored in a
-  reusable vector and performs no per-tick allocation. Grounded player hits and
-  airborne misses match NativeAOT through the complete cast and recovery.
+  reusable vector and performs no per-tick allocation. Grounded and rising
+  ordinary-player hits match NativeAOT through freeze, thaw, resumed fall and
+  landing; an airborne diagonal miss also matches through cast and recovery.
   Water reflection is source-ported but un-goldened. A measured active-Bow-form
   hit still differs during original-slime restoration because cross-prefab
   updater ordering is unresolved.

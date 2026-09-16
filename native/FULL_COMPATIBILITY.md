@@ -2481,6 +2481,12 @@ form exposed an unresolved updater-order mismatch while restoring and freezing
 the original slime: ordinary-slime hits are exact, but transformed-player hits
 are not yet compatible. Coverage therefore remains partial.
 
+`freeze_airborne_hit_ab.c` adds a 500-tick ordinary-player hit while the target
+is rising. Release occurs on tick 334, `FrozenSolid` takes control on tick 335,
+the target thaws on tick 445 and the resumed fall and landing remain exact
+through tick 500. This closes the ordinary airborne-victim path independently
+of the unresolved transformed-player restoration order.
+
 ### Executable Growth and Shrink rays on players (2026-09-15)
 
 Catalog ids 8 and 17 now execute the same serialized `GunTransform` used by
