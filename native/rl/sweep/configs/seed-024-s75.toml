@@ -22,7 +22,7 @@ concurrency = 1
 
 [trial]
 memory_max = "6G"
-nice = 10
+nice = 0
 max_seconds = 7200
 poll_seconds = 60
 

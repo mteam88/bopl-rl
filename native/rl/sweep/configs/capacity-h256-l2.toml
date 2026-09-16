@@ -31,7 +31,7 @@ concurrency = 1
 
 [trial]
 memory_max = "8G"
-nice = 10
+nice = 0
 max_seconds = 14400                # 024 took 2555 s at hidden 128; wide/deep shapes are slower
 poll_seconds = 60
 
