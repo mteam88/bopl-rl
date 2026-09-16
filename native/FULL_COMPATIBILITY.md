@@ -1200,6 +1200,14 @@ values differ by at most 41 raw Q32 units from fixed-point normalization, with
 no contact, callback or lifecycle difference. Candidate capture remains the
 same fixed 64-entry stack buffer.
 
+`poke_ball_arrow_ab.c` compares 500 ticks at a one-raw-Q32-unit vector bound.
+The Ball and Arrow register on ticks 186 and 192 and collide on tick 206.
+DetPhysics resolves both circles before Arrow's callback destroys its own
+physics; `PokeBall.OnCollide` ignores the projectile layer, so the Ball keeps
+the resolved impulse. It remains live for the next twelve asserted passes and
+follows the exact trajectory to its lower-boundary removal on tick 410, before
+the five-second fizzle could fire.
+
 ### Executable Tack throw and trap (2026-09-14)
 
 Catalog id 35 now shares the same allocation-reusing `ThrowItem2` form while

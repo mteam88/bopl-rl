@@ -123,7 +123,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   alive until its ordinary timed explosion. The same Circle/Circle path uses
   each item's authored radius: a released Tack keeps the resolved impulse after
   Arrow destruction, and its later wall callback tests the post-resolution
-  velocity rather than pinning a still-upward body. Arrow instantiation now reserves
+  velocity rather than pinning a still-upward body. A released Poke Ball also
+  keeps its resolved impulse, ignores the projectile callback and later exits
+  through the ordinary lower-boundary path. Arrow instantiation now reserves
   all five prefab updaters and publishes the source collider hierarchy rather
   than an id-derived surrogate. A composed Time Stop golden fires an airborne
   arrow immediately before the stop, holds its position for all 690 frozen
