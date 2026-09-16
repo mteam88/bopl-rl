@@ -134,7 +134,7 @@ class PolicyV4:
 
     def value(self, y, obs):
         if not self.shape["critic_dim"]:
-            return torch.zeros(y.shape[0], 1, dtype=y.dtype)
+            raise ValueError("critic_dim 0: the value is the actor's last row (step_raw)")
         z_in = y.detach() if self.shape["critic_detach"] else y
         if self.shape["critic_privileged"]:
             z_in = torch.cat([z_in, obs[:, layout.V4_PRIVILEGED_OFFSET:layout.V4_PRIVILEGED_OFFSET + layout.V4_PRIVILEGED]], -1)
@@ -147,7 +147,9 @@ class PolicyV4:
         if obs.shape[1] != self.obs_size:
             raise ValueError(f"policy v4 reads {self.obs_size} observation floats, got {obs.shape[1]}")
         y, new_state = self.trunk(obs, state)
-        logits = y @ self.w["actor"].t()
+        logits = y @ self.w["actor"].t()   # (B, width + 1) already when critic_dim is 0
+        if not self.shape["critic_dim"]:
+            return logits, new_state
         return torch.cat([logits, self.value(y, obs)], -1), new_state
 
     def game_logits(self, rows, buttons=None):

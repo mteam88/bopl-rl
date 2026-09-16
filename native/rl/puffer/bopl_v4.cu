@@ -648,6 +648,7 @@ struct DecWeights {
     DecoderWeights base;       /* the trainer casts decoder weights to DecoderWeights to read .continuous */
     PrecisionTensor ffn_in, ffn_out, actor, critic_in, critic_b1, critic_b2, critic_out;
     int hidden, od, ffn, cdim, privileged, detach;
+    int arows;                 /* actor rows: od, or od + 1 when cdim == 0 (v3-style shared linear value, the v4-critic-shared ablation) */
 };
 struct DecActs {
     DecoderActivations base;   /* out, grad_out, saved_input, grad_input, ..., od1_pad: read by the trainer */
@@ -699,7 +700,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
         puf_copy(&a->y, &h, stream);
     }
     /* logits: actor rows then zero rows to the padded width */
-    pad_rows<<<grid_size(pad * H), BLOCK_SIZE, 0, stream>>>(a->actor_pad.data, w->actor.data, w->od, pad, H);
+    pad_rows<<<grid_size(pad * H), BLOCK_SIZE, 0, stream>>>(a->actor_pad.data, w->actor.data, w->arows, pad, H);
     puf_mm(y, &a->actor_pad, &a->base.out, stream);
     /* value */
     if (w->cdim) {
@@ -730,8 +731,8 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
     prof_mark("bwd.dec.start", stream);
     /* actor */
     puf_mm_tn(&a->base.grad_out, &a->y, &a->wgrad_actor_pad, stream);
-    cudaMemcpyAsync(a->wgrad_actor.data, a->wgrad_actor_pad.data, (size_t)od * H * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    puf_mm_nn(&a->base.grad_out, &a->actor_pad, &a->g_y, stream);   /* rows >= od of actor_pad are zero */
+    cudaMemcpyAsync(a->wgrad_actor.data, a->wgrad_actor_pad.data, (size_t)w->arows * H * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    puf_mm_nn(&a->base.grad_out, &a->actor_pad, &a->g_y, stream);   /* rows >= arows of actor_pad are zero */
     /* critic */
     if (w->cdim) {
         int C = w->cdim, P = w->privileged ? PRIV : 0, W = H + P;
@@ -788,7 +789,8 @@ static void dec_reg_params(void* weights, Allocator* alloc) {
         w->ffn_in = {.shape = {w->ffn, H}}; reg_aligned(alloc, &w->ffn_in);
         w->ffn_out = {.shape = {H, w->ffn}}; reg_aligned(alloc, &w->ffn_out);
     }
-    w->actor = {.shape = {w->od, H}}; reg_aligned(alloc, &w->actor);
+    w->arows = w->od + (w->cdim ? 0 : 1);
+    w->actor = {.shape = {w->arows, H}}; reg_aligned(alloc, &w->actor);
     if (w->cdim) {
         w->critic_in = {.shape = {w->cdim, H + (w->privileged ? PRIV : 0)}}; reg_aligned(alloc, &w->critic_in);
         w->critic_b1 = {.shape = {w->cdim, w->cdim}}; reg_aligned(alloc, &w->critic_b1);
@@ -840,7 +842,7 @@ static void dec_reg_train(void* weights, void* activations, Allocator* acts, All
         a->wgrad_ffn_in = {.shape = {w->ffn, H}}; alloc_register(grads, &a->wgrad_ffn_in);
         a->wgrad_ffn_out = {.shape = {H, w->ffn}}; alloc_register(grads, &a->wgrad_ffn_out);
     }
-    a->wgrad_actor = {.shape = {w->od, H}}; alloc_register(grads, &a->wgrad_actor);
+    a->wgrad_actor = {.shape = {w->arows, H}}; alloc_register(grads, &a->wgrad_actor);
     if (C) {
         a->wgrad_critic_in = {.shape = {C, W}}; alloc_register(grads, &a->wgrad_critic_in);
         a->wgrad_b1 = {.shape = {C, C}}; alloc_register(grads, &a->wgrad_b1);

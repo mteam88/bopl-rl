@@ -277,7 +277,7 @@ static void br4_prepare(PuffeRL* pufferl, BrPlan& p, cudaStream_t stream) {
     br_transpose_launch(p, s_fus, d_fus, p.g.n, H, q.JW, H, stream);
     for (int l = 0; l < p.layers; l++) br_transpose_launch(p, s_gru[l], d_gru[l], p.g.n, 3 * H, H, 3 * H, stream);
     if (q.F) { br_transpose_launch(p, s_fi, d_fi, p.g.n, q.F, H, q.F, stream); br_transpose_launch(p, s_fo, d_fo, p.g.n, H, q.F, H, stream); }
-    br_transpose_launch(p, s_act, d_act, p.g.n, p.dec_cols, H, p.ld_dec, stream);
+    br_transpose_launch(p, s_act, d_act, p.g.n, p.dec_cols + (q.C ? 0 : 1), H, p.ld_dec, stream);   /* cdim 0: the value is the actor's last row */
     if (q.C) {
         br_transpose_launch(p, s_cin, d_cin, p.g.n, q.C, q.W, q.C, stream);
         br_transpose_launch(p, s_b1, d_b1, p.g.n, q.C, q.C, q.C, stream);
@@ -359,7 +359,7 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
     br4_rows<<<rows, 256, 0, stream>>>(ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
-    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols, p.ld_dec, 0, w_act, stream);
+    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
         br_gemm_launch(p, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
         ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
@@ -371,8 +371,6 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
         ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
         br4_rows<<<rows, 256, 0, stream>>>(ra);
-    } else {
-        cudaMemset2DAsync(A.dec + p.dec_cols, (size_t)p.ld_dec * sizeof(float), 0, sizeof(float), rows, stream);
     }
 }
 

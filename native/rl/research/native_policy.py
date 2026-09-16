@@ -21,6 +21,7 @@ aim_ar the aim logits of step() are those of button combo 0; decide() samples
 the way the trainer does (buttons, then the aim block of the sampled combo,
 then hold) and returns the logits it sampled from.
 """
+import os
 import argparse
 import ctypes
 import hashlib
@@ -38,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[3]
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 LIBRARY = ROOT / "native/artifacts/rl/libbopl_policy_eval.so"
 ARCHITECTURES = {"puffernet-mingru", layout.ARCHITECTURE, layout.V4_ARCHITECTURE}
+_V4_ABLATE_APPLIED = [None]   # the BOPL4_ABLATE value this process's v4 policies run under
 V4_SHAPE_KEYS = ("set_dim", "set_inner", "flat_dim", "ffn_dim", "critic_dim", "critic_privileged", "critic_detach", "mean_pool")
 HEAD_BOUNDS = [sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS + 1)]  # logits row offsets per head
 
@@ -120,6 +122,16 @@ class NativePolicy:
             self.v4_shape = {**layout.V4_DEFAULTS, **{k: int(v) for k, v in (v4_shape or {}).items() if k in layout.V4_DEFAULTS}}
             expected = layout.policy_v4_weights(self.hidden, self.num_layers, aim_fourier=self.aim_fourier, aim_ar=self.aim_ar,
                                                 **self.v4_shape)
+            # The writer ablation is a process-wide switch of the observation writer
+            # (bopl_obs_v4.h bopl4_ablation, read once): apply this checkpoint's, refuse
+            # to share a process with a v4 checkpoint that was trained under another.
+            ablate = str(self.v4_shape["ablate"])
+            current = os.environ.get("BOPL4_ABLATE", "0") or "0"
+            if current != ablate:
+                if _V4_ABLATE_APPLIED[0] is not None:
+                    raise ValueError(f"v4 checkpoints with writer ablations {_V4_ABLATE_APPLIED[0]} and {ablate} cannot share a process")
+                os.environ["BOPL4_ABLATE"] = ablate
+            _V4_ABLATE_APPLIED[0] = ablate
         else:
             # layout.policy_weights for the set encoder; the linear encoder accepts any obs width.
             encoder_weights = (layout.set_encoder_weights(self.hidden) if self.architecture == layout.ARCHITECTURE

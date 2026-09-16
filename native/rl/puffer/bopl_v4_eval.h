@@ -45,7 +45,7 @@ static size_t bopl_v4_weight_count(const BoplV4Shape *s, int hidden, int width) 
     for (int i=0; i<4; i++) n+=(size_t)s->set_inner*BOPL_V4_SETS[i].features+(size_t)s->set_dim*s->set_inner;
     n+=(size_t)BOPL_EMBEDDING_IDS*s->set_inner+(size_t)s->flat_dim*BOPL4_FLAT+(size_t)hidden*(s->flat_dim+8*s->set_dim);
     if (s->ffn_dim) n+=2*(size_t)s->ffn_dim*hidden;
-    n+=(size_t)width*hidden;
+    n+=(size_t)(width+(s->critic_dim?0:1))*hidden;   /* cdim 0: the value is the actor's last row */
     if (s->critic_dim) n+=(size_t)s->critic_dim*(hidden+(s->critic_privileged?BOPL4_PRIVILEGED:0))+2*(size_t)s->critic_dim*s->critic_dim+(size_t)s->critic_dim;
     return n;
 }
@@ -81,7 +81,7 @@ static BoplV4Eval *bopl_v4_create(Weights *weights, int batch, int hidden, int w
 static void bopl_v4_read_decoder(BoplV4Eval *e, Weights *weights) {
     int H=e->hidden, C=e->shape.critic_dim, W=H+(e->shape.critic_privileged?BOPL4_PRIVILEGED:0);
     if (e->shape.ffn_dim) { e->ffn_in=get_weights(weights, e->shape.ffn_dim*H); e->ffn_out=get_weights(weights, H*e->shape.ffn_dim); }
-    e->actor=get_weights(weights, e->width*H);
+    e->actor=get_weights(weights, (e->width+(C?0:1))*H);   /* cdim 0: the value is the actor's last row */
     if (C) {
         e->critic_in=get_weights(weights, C*W); e->critic_b1=get_weights(weights, C*C);
         e->critic_b2=get_weights(weights, C*C); e->critic_out=get_weights(weights, C);
@@ -168,8 +168,8 @@ static void bopl_v4_decode(BoplV4Eval *e, const float *h, const float *observati
             bopl_v4_matvec(e->ln, e->ffn_out, e->f, H, F);
             for (int i=0; i<H; i++) y[i]+=e->ln[i];
         }
-        bopl_v4_matvec(row, e->actor, y, e->width, H);
-        float value=0.0f;
+        bopl_v4_matvec(row, e->actor, y, e->width+(C?0:1), H);
+        float value=C?0.0f:row[e->width];
         if (C) {
             memcpy(e->zin, y, H*sizeof(float));
             if (P) memcpy(e->zin+H, observations+(size_t)b*BOPL4_OBS_SIZE+BOPL4_OBS_PRIVILEGED_OFFSET, P*sizeof(float));

@@ -118,9 +118,10 @@ def oracle(obs, flat_trainer, hidden, grad_logits, grad_value, budget=None):
     y = u
     if SHAPE["ffn_dim"]:
         y = y + torch.relu(policy_v4.layer_norm(y) @ net.w["ffn_in"].t()) @ net.w["ffn_out"].t()
-    logits = y @ net.w["actor"].t()
-    value = net.value(y, x)
-    rows = torch.cat([logits, value], -1)
+    rows = y @ net.w["actor"].t()
+    if SHAPE["critic_dim"]:
+        rows = torch.cat([rows, net.value(y, x)], -1)
+    logits, value = rows[:, :-1], rows[:, -1:]
     (logits * torch.from_numpy(grad_logits)).sum().add((value[:, 0] * torch.from_numpy(grad_value)).sum()).backward()
     return u.detach().numpy(), rows.detach().numpy(), from_checkpoint_grad(weights.grad.numpy(), hidden)
 
@@ -177,7 +178,8 @@ class Check:
         shapes = np.zeros(2 * 64, np.int64)
         n = library.bopl_v4_check_param_shapes(self.context, shapes, 64)
         expected = [tuple(s) for _, s in trainer_tensors(hidden)]
-        expected[-1] = (expected[-1][1], 1)   # critic_out is registered 1-D
+        if SHAPE["critic_dim"]:
+            expected[-1] = (expected[-1][1], 1)   # critic_out is registered 1-D
         assert [tuple(shapes[2 * i:2 * i + 2]) for i in range(n)] == expected, list(shapes[:2 * n])
         self.width = library.bopl_v4_check_out_width(self.context)
 
@@ -339,6 +341,8 @@ def main():
     parser.add_argument("--build-only", action="store_true")
     parser.add_argument("--cuda-host-compiler", default="g++-15")
     parser.add_argument("--time", action="store_true")
+    parser.add_argument("--shape", default="", help="v4 shape overrides, e.g. critic_dim=0,ffn_dim=0 (layout.V4_DEFAULTS keys); "
+                        "sets the BOPL4_* variables the CUDA module reads")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     library_path = args.output / "check_v4.so"
@@ -348,6 +352,14 @@ def main():
         print(library_path)
         return
     os.environ.setdefault("BOPL_TF32", "0")
+    if args.shape:
+        env = dict(set_dim="BOPL4_SET_DIM", set_inner="BOPL4_SET_INNER", flat_dim="BOPL4_FLAT_DIM", ffn_dim="BOPL4_FFN_DIM",
+                   critic_dim="BOPL4_CRITIC_DIM", critic_privileged="BOPL4_CRITIC_PRIVILEGED",
+                   critic_detach="BOPL4_CRITIC_DETACH", mean_pool="BOPL4_MEAN_POOL")
+        for item in args.shape.split(","):
+            key, value = item.split("=")
+            SHAPE[key] = int(value)
+            os.environ[env[key]] = value
     library = ctypes.CDLL(str(library_path))
     f32 = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
     i32 = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")

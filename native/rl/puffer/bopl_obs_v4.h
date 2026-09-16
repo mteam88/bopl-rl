@@ -6,6 +6,17 @@
 #ifndef BOPL_OBS_V4_H
 #define BOPL_OBS_V4_H
 
+/* Writer ablations (POLICY_V4_PLAN.md section 7), a bitmask in BOPL4_ABLATE
+ * read once per process (train.py --v4-ablate, recorded in the checkpoint's
+ * v4_shape so the evaluator applies the same one). The row keeps its shape;
+ * the ablated block is zero. */
+enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4 };
+static int bopl4_ablation(void) {
+    static int value=-1;
+    if (value<0) { const char *v=getenv("BOPL4_ABLATE"); value=v&&v[0]?atoi(v):0; }
+    return value;
+}
+
 /* Relational block (BOPL4_RELATION) of a body at relative position r moving
  * at relative velocity v (both versus the observer), with `radius` taken off
  * the distance. `ballistic` adds the gravity-arc closest approach (projectiles). */
@@ -34,6 +45,7 @@ static void bopl4_relation(float *out, double dx, double dy, double dvx, double 
         }
         out[10]=bopl_clip(best/16.0); out[11]=bopl_clip(best_t/BOPL4_HORIZON);
     }
+    if (bopl4_ablation()&BOPL4_ABLATE_RELATIONAL) memset(out, 0, BOPL4_RELATION*sizeof(float));
 }
 /* Controlling-slime block (BOPL4_BODY); NULL or hidden bodies are all zero. */
 static void bopl4_body(float *out, const BoplRlSlime *slime) {
@@ -354,13 +366,18 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     }
     memset(obs+BOPL4_OBS_PREVIOUS_OFFSET, 0, BOPL4_PREVIOUS*sizeof(float));
     /* Terrain and rays: the egocentric view of the map from the body. */
-    {
+    if (bopl4_ablation()&BOPL4_ABLATE_RAYS) {
+        memset(obs+BOPL4_OBS_TERRAIN_OFFSET, 0, (BOPL4_TERRAIN+BOPL4_RAYS*BOPL4_RAY_FEATURES)*sizeof(float));
+    } else {
         Bopl4Terrain terrain;
+        int rays16=bopl4_ablation()&BOPL4_ABLATE_RAYS16;   /* every other of the 32, none of the down fan */
         bopl4_terrain_fill(&terrain, state, nearest, count, nearby_slimes, slime_count, self);
         bopl4_terrain(&terrain, self_x, self_y, obs+BOPL4_OBS_TERRAIN_OFFSET);
         for (int k=0; k<BOPL4_RAYS; k++) {
+            float *ray=obs+BOPL4_OBS_RAY_OFFSET+(size_t)k*BOPL4_RAY_FEATURES;
+            if (rays16 && (k>=BOPL4_RAYS_AROUND || (k&1))) { memset(ray, 0, BOPL4_RAY_FEATURES*sizeof(float)); continue; }
             double dx, dy; bopl4_ray_direction(k, &dx, &dy);
-            bopl4_ray(&terrain, self_x, self_y, dx, dy, self_vx, self_vy, obs+BOPL4_OBS_RAY_OFFSET+(size_t)k*BOPL4_RAY_FEATURES);
+            bopl4_ray(&terrain, self_x, self_y, dx, dy, self_vx, self_vy, ray);
         }
     }
 

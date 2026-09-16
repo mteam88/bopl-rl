@@ -124,7 +124,8 @@ V4_SETS = (("player", V4_PLAYER_OFFSET, V4_PLAYERS, V4_PLAYER_FEATURES, None),
            ("entity", V4_ENTITY_OFFSET, V4_ENTITIES, V4_ENTITY_FEATURES, V4_ENTITY_ABILITY_ID),
            ("slime", V4_SLIME_OFFSET, V4_SLIMES, V4_SLIME_FEATURES, None))
 V4_DEFAULTS = dict(set_dim=128, set_inner=128, flat_dim=256, ffn_dim=512, critic_dim=512,
-                   critic_privileged=1, critic_detach=0, mean_pool=1)
+                   critic_privileged=1, critic_detach=0, mean_pool=1,
+                   ablate=0)   # writer ablation bitmask (bopl_obs_v4.h): 1 relational, 2 terrain + rays, 4 rays16
 
 
 def obs_size_of(layout_version):
@@ -165,7 +166,8 @@ def policy_v4_tensors(hidden, num_layers, aim_fourier=4, aim_ar=0, set_dim=128, 
         tensors.append((f"mingru{layer}", (3 * hidden, hidden)))
     if ffn_dim:
         tensors += [("ffn_in", (ffn_dim, hidden)), ("ffn_out", (hidden, ffn_dim))]
-    tensors.append(("actor", (decoder_logits(aim_fourier, aim_ar), hidden)))
+    # critic_dim 0: v3-style shared value, one extra actor row (the v4-critic-shared ablation)
+    tensors.append(("actor", (decoder_logits(aim_fourier, aim_ar) + (0 if critic_dim else 1), hidden)))
     if critic_dim:
         tensors += [("critic_in", (critic_dim, hidden + (V4_PRIVILEGED if critic_privileged else 0))),
                     ("critic_b1", (critic_dim, critic_dim)), ("critic_b2", (critic_dim, critic_dim)),
