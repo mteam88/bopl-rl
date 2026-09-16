@@ -1534,6 +1534,9 @@ pub struct GustWave {
     pub registered: bool,
     pub born_tick: u32,
     pub position: Vec2,
+    /// QuickSpell scales the spawned collider and Shockwave independently.
+    /// The latter affects query radius and every retained-target force.
+    pub scale: Fix,
     pub time: Fix,
     pub target_count: usize,
     pub platform_ids: [u32; 50],
@@ -1543,6 +1546,10 @@ pub struct GustWave {
     pub arrow_indices: [usize; 50],
     pub missile_count: usize,
     pub missile_indices: [usize; 50],
+    pub portal_shot_count: usize,
+    pub portal_shot_indices: [usize; 50],
+    pub black_hole_count: usize,
+    pub black_hole_indices: [usize; 50],
 }
 impl Default for GustWave {
     fn default() -> Self {
@@ -1551,6 +1558,7 @@ impl Default for GustWave {
             registered: false,
             born_tick: 0,
             position: Vec2::ZERO,
+            scale: Fix::ONE,
             time: Fix::ZERO,
             target_count: 0,
             platform_ids: [0; 50],
@@ -1560,7 +1568,28 @@ impl Default for GustWave {
             arrow_indices: [usize::MAX; 50],
             missile_count: 0,
             missile_indices: [usize::MAX; 50],
+            portal_shot_count: 0,
+            portal_shot_indices: [usize::MAX; 50],
+            black_hole_count: 0,
+            black_hole_indices: [usize::MAX; 50],
         }
+    }
+}
+
+impl GustWave {
+    #[inline]
+    fn retained_count(&self) -> usize {
+        self.target_count
+            + self.item_count
+            + self.arrow_count
+            + self.missile_count
+            + self.portal_shot_count
+            + self.black_hole_count
+    }
+
+    #[inline]
+    fn retained_full(&self) -> bool {
+        self.retained_count() == self.platform_ids.len()
     }
 }
 
@@ -4106,7 +4135,7 @@ impl RolloutWorld {
         {
             self.gold_mushroom_tick(index, jump_pressed, data);
         }
-        self.gust_waves_update(data);
+        self.gust_waves_update(data, updater_dt);
         self.meteor_waves_update(data);
         self.revival_effects_tick(data);
         self.teleport_effects_tick(data);
@@ -7555,7 +7584,8 @@ impl RolloutWorld {
             self.gust_waves[wave] = GustWave {
                 active: true,
                 born_tick: self.tick,
-                position: slot.base.position + data.gust.shockwave_offset,
+                position: slot.base.position + data.gust.shockwave_offset * slot.base.scale,
+                scale: slot.base.scale,
                 ..GustWave::default()
             };
             slot.gust.phase = 1;
@@ -13011,12 +13041,10 @@ impl RolloutWorld {
             wave.registered = true;
             let query = Circle {
                 center: wave.position,
-                radius: data.gust.radius,
+                radius: data.gust.radius * wave.scale,
             };
             for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
-                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
-                    == wave.platform_ids.len()
-                {
+                if wave.retained_full() {
                     break;
                 }
                 if crate::physics::contact::circle_rounded(query, platform.collider)
@@ -13032,11 +13060,7 @@ impl RolloutWorld {
             // Thrown items are pooled, so retain stable pool indices rather
             // than allocating a per-wave object set.
             for (item_index, item) in self.thrown_items.iter().enumerate() {
-                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
-                    == wave.platform_ids.len()
-                    || !item.active
-                    || item.entity.is_none()
-                {
+                if wave.retained_full() || !item.active || item.entity.is_none() {
                     continue;
                 }
                 let radius = thrown_item_radius(data, *item);
@@ -13054,11 +13078,7 @@ impl RolloutWorld {
                 }
             }
             for (arrow_index, arrow) in self.arrows.iter().enumerate() {
-                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
-                    == wave.platform_ids.len()
-                    || !arrow.active
-                    || !arrow.registered
-                {
+                if wave.retained_full() || !arrow.active || !arrow.registered {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -13075,11 +13095,7 @@ impl RolloutWorld {
                 }
             }
             for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-                if wave.target_count + wave.item_count + wave.arrow_count + wave.missile_count
-                    == wave.platform_ids.len()
-                    || !missile.active
-                    || !missile.registered
-                {
+                if wave.retained_full() || !missile.active || !missile.registered {
                     continue;
                 }
                 let collider = OrientedBox::from_basis(
@@ -13092,254 +13108,147 @@ impl RolloutWorld {
                     wave.missile_count += 1;
                 }
             }
+            // Layer 10 (`spell`) is in AirWave_Shockwave's serialized mask.
+            // PortalShot is the only live rigid spell collider in the source
+            // catalog; retain its pooled index exactly as for other bodies.
+            for (shot_index, shot) in self.portal_shots.iter().enumerate() {
+                if wave.retained_full() || !shot.active || !shot.registered {
+                    continue;
+                }
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: shot.position,
+                        radius: data.portal_gun.shot_radius,
+                    },
+                )
+                .is_some()
+                {
+                    wave.portal_shot_indices[wave.portal_shot_count] = shot_index;
+                    wave.portal_shot_count += 1;
+                }
+            }
+            // RigidBodyAffector bypasses IPhysicsCollider and calls
+            // BlackHole.AddForce during every curve sample.
+            for (hole_index, hole) in self.black_holes.iter().enumerate() {
+                if wave.retained_full() || !hole.active {
+                    continue;
+                }
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: hole.position,
+                        radius: hole.radius,
+                    },
+                )
+                .is_some()
+                {
+                    wave.black_hole_indices[wave.black_hole_count] = hole_index;
+                    wave.black_hole_count += 1;
+                }
+            }
             // Player-layer colliders are processed during activation and are
             // deliberately excluded from the persistent target set.
             for player_index in 0..self.players.len() {
                 if player_index == wave_index / 3 || !self.playable(player_index) {
                     continue;
                 }
-                if self.players[player_index].active == ActiveAbility::Missile {
-                    let target = &self.players[player_index];
-                    let missile = OrientedBox::from_basis(
-                        target.base.position,
-                        Vec2::angle(target.base.rotation),
-                        data.missile.hurtbox_extents,
-                    );
-                    if crate::physics::contact::circle_box(query, missile).is_some() {
-                        // The controlling Missile form is a pushable
-                        // PlayerPhysics-backed Ability, independently of the
-                        // layer-10 guided projectile it owns.
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        let force = data.gust.default_force / distance;
-                        let force = if target.base.grounded {
-                            data.gust.grounded_multiplier * delta * force
-                        } else {
-                            delta * force
-                        };
-                        self.players[player_index].base.external_velocity +=
-                            force * Fix::from_int(35);
-                    }
-                    continue;
-                }
-                if self.players[player_index].active == ActiveAbility::Mine {
-                    let target = &self.players[player_index];
-                    let basis = Vec2::angle(target.base.rotation);
-                    let form = OrientedBox::from_basis(
-                        target.base.position
-                            + target
-                                .base
-                                .up
-                                .perp_cw()
-                                .complex_mul(data.mine.collider_offset),
-                        basis,
-                        data::surface_extents(data.mine.hurtbox_extents),
-                    );
-                    if crate::physics::contact::circle_box(query, form).is_some() {
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        let force = data.gust.default_force / distance;
-                        let force = if target.base.grounded {
-                            data.gust.grounded_multiplier * delta * force
-                        } else {
-                            delta * force
-                        };
-                        self.players[player_index].base.external_velocity +=
-                            force * Fix::from_int(35);
-                    }
-                    continue;
-                }
                 if matches!(
                     self.players[player_index].active,
-                    ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                        | ActiveAbility::Magnet
+                    ActiveAbility::Dash
+                        | ActiveAbility::Gust
+                        | ActiveAbility::Meteor
+                        | ActiveAbility::Platform
+                        | ActiveAbility::Push
+                        | ActiveAbility::Revival
                 ) {
-                    let target = &self.players[player_index];
-                    let scale = target.base.scale;
-                    let (rotation, offset_basis, offset, extents) = match target.active {
-                        ActiveAbility::Freeze => (
-                            target.gun.aim.normalized_angle(),
-                            target.gun.collider_up.perp_cw(),
-                            data.freeze.collider_offset,
-                            data::surface_extents(data.freeze.hurtbox_extents),
-                        ),
-                        ActiveAbility::Blink => (
-                            target.gun.aim.normalized_angle(),
-                            target.gun.collider_up.perp_cw(),
-                            data.blink.collider_offset * scale,
-                            data::surface_extents(data.blink.hurtbox_extents) * scale,
-                        ),
-                        ActiveAbility::GrowthRay => (
-                            target.gun.aim.normalized_angle(),
-                            target.gun.collider_up.perp_cw(),
-                            data.scale_rays.growth.collider_offset * scale,
-                            data::surface_extents(data.scale_rays.growth.hurtbox_extents) * scale,
-                        ),
-                        ActiveAbility::ShrinkRay => (
-                            target.gun.aim.normalized_angle(),
-                            target.gun.collider_up.perp_cw(),
-                            data.scale_rays.shrink.collider_offset * scale,
-                            data::surface_extents(data.scale_rays.shrink.hurtbox_extents) * scale,
-                        ),
-                        ActiveAbility::Duplicator => (
-                            target.gun.aim.normalized_angle(),
-                            target.gun.collider_up.perp_cw(),
-                            data.duplicator.collider_offset * scale,
-                            data::surface_extents(data.duplicator.hurtbox_extents) * scale,
-                        ),
-                        ActiveAbility::Magnet => (
-                            target.magnet.body_right.normalized_angle(),
-                            target.magnet.body_right,
-                            data.magnet.collider_offset * scale,
-                            data::surface_extents(data.magnet.hurtbox_extents) * scale,
-                        ),
-                        _ => unreachable!(),
-                    };
-                    let form = OrientedBox::from_basis(
-                        target.base.collider.center + offset_basis.complex_mul(offset),
-                        Vec2::angle(rotation),
-                        extents,
-                    );
-                    if crate::physics::contact::circle_box(query, form).is_some() {
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        let force = data.gust.default_force / distance;
-                        let force = if target.base.grounded {
-                            data.gust.grounded_multiplier * delta * force
-                        } else {
-                            delta * force
-                        };
-                        self.players[player_index].base.external_velocity +=
-                            force * Fix::from_int(35);
-                    }
+                    // These prefabs serialize Ability.isPushable=false.
+                    // Shockwave returns before examining their body type.
                     continue;
                 }
-                if matches!(
-                    self.players[player_index].active,
+
+                // Read the collider synchronized by the source-equivalent
+                // ability updater. This covers every circle/box form without
+                // rebuilding its offset, aim basis or scale a second time.
+                let player = &self.players[player_index];
+                let entity = match player.active {
+                    ActiveAbility::None => player.body_entity,
+                    ActiveAbility::Dash => player.dash_entity,
+                    ActiveAbility::Bow => player.bow_entity,
                     ActiveAbility::Grenade
-                        | ActiveAbility::Smoke
-                        | ActiveAbility::Tack
-                        | ActiveAbility::Mjolnir
-                        | ActiveAbility::PokeBall
-                ) {
-                    let target = &self.players[player_index];
-                    let config = throw_config(data, active_throw_ability(target.active));
-                    let form = OrientedBox::from_basis(
-                        target.base.position,
-                        Vec2::angle(target.base.rotation),
-                        config.hurtbox_extents,
-                    );
-                    if crate::physics::contact::circle_box(query, form).is_some() {
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        let force = data.gust.default_force / distance;
-                        let force = if target.base.grounded {
-                            data.gust.grounded_multiplier * delta * force
-                        } else {
-                            delta * force
-                        };
-                        self.players[player_index].base.external_velocity +=
-                            force * Fix::from_int(35);
-                    }
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
+                    | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Mine => player.mine_entity,
+                    ActiveAbility::Rock => player.rock_entity,
+                    ActiveAbility::Roll => player.roll_entity,
+                    ActiveAbility::Meteor => player.meteor_entity,
+                    ActiveAbility::Push => player.push_entity,
+                    ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::Blink => player.blink_entity,
+                    ActiveAbility::GrowthRay => player.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Duplicator => player.duplicator_entity,
+                    ActiveAbility::Magnet => player.magnet_entity,
+                    ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::Engine => player.engine_entity,
+                    ActiveAbility::Tesla => player.tesla_entity,
+                    ActiveAbility::TimeStop => player.time_stop_entity,
+                    ActiveAbility::Gust => player.gust_entity,
+                    ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Throw => player.macho_throw_entity,
+                    ActiveAbility::Drill => player.drill_entity,
+                    ActiveAbility::Beam => player.beam_entity,
+                    ActiveAbility::Platform => player.circle_entity,
+                };
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
                     continue;
                 }
-                if self.players[player_index].active == ActiveAbility::Bow {
-                    let target = &self.players[player_index];
-                    let up = if target.bow.aim == Vec2::ZERO {
-                        Vec2::UP
-                    } else {
-                        target.bow.aim
-                    };
-                    let extents = data.bow.hurtbox_extents;
-                    let bow = OrientedBox {
-                        center: target.base.position,
-                        right: up.perp_cw() * extents.x,
-                        up: up * extents.y,
-                        inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-                    };
-                    if crate::physics::contact::circle_box(query, bow).is_some() {
-                        // Bow is another pushable PlayerPhysics-backed form;
-                        // use its live aim-oriented box for CircleCastAll.
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        let force = data.gust.default_force / distance;
-                        let force = if target.base.grounded {
-                            data.gust.grounded_multiplier * delta * force
-                        } else {
-                            delta * force
-                        };
-                        self.players[player_index].base.external_velocity +=
-                            force * Fix::from_int(35);
-                    }
+                let row = self.entities[entity];
+                let overlaps = if row.kind == 0 {
+                    crate::physics::contact::circle_circle(
+                        query,
+                        Circle {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            radius: Fix::from_raw(row.radius),
+                        },
+                    )
+                    .is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    crate::physics::contact::circle_box(
+                        query,
+                        OrientedBox {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            right,
+                            up,
+                            inverse_extents: Vec2::new(
+                                Fix::ONE / right.length(),
+                                Fix::ONE / up.length(),
+                            ),
+                        },
+                    )
+                    .is_some()
+                };
+                if !overlaps {
                     continue;
                 }
-                if self.players[player_index].active == ActiveAbility::Roll {
-                    let target = &self.players[player_index];
-                    let roll = Circle {
-                        center: target.base.position,
-                        radius: data.roll.radius,
-                    };
-                    if crate::physics::contact::circle_circle(query, roll).is_some() {
-                        // Roll is a pushable Player-layer Ability with its own
-                        // PlayerPhysics, so activation takes the same
-                        // inverseMass01=35 force path as an ordinary slime.
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        let force = data.gust.default_force / distance;
-                        let force = if target.base.grounded {
-                            data.gust.grounded_multiplier * delta * force
-                        } else {
-                            delta * force
-                        };
-                        self.players[player_index].base.external_velocity +=
-                            force * Fix::from_int(35);
-                    }
-                    continue;
-                }
-                if self.players[player_index].active == ActiveAbility::Rock {
-                    let target = &self.players[player_index];
-                    let rock = Circle {
-                        center: target.base.position,
-                        radius: data.rock.radius * target.rock.scale,
-                    };
-                    if crate::physics::contact::circle_circle(query, rock).is_some() {
-                        // Rock's Player-layer Ability is pushable, but it has
-                        // neither PlayerPhysics nor PlayerBody. Shockwave's
-                        // activation therefore takes the BoplBody fallback:
-                        // an unnormalized centre force multiplied by 9000.
-                        let delta = target.base.position - wave.position;
-                        let distance =
-                            (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                        self.players[player_index].rock.body.force +=
-                            delta * (data.gust.default_force / distance) * Fix::from_int(9000);
-                    }
-                    continue;
-                }
+
                 let target = &mut self.players[player_index];
-                if target.active != ActiveAbility::None {
-                    continue;
-                }
-                // CircleCastAll performs the real circle/box narrow phase.
-                // A radius-only approximation incorrectly includes the other
-                // map-0 spawn in this golden: its centre is within the sum of
-                // broad-phase radii, but the wave misses the oriented slime
-                // box's corner.
-                if crate::physics::contact::circle_box(query, target.base.collider).is_none() {
-                    continue;
-                }
                 let delta = target.base.position - wave.position;
                 let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                let force = data.gust.default_force / distance;
+                let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
+                let force = scale_force * data.gust.default_force / distance;
+                if target.active == ActiveAbility::Rock {
+                    // Rock has BoplBody but neither PlayerPhysics nor
+                    // PlayerBody, selecting Shockwave's 9000-force fallback.
+                    target.rock.body.force += delta * force * Fix::from_int(9000);
+                    continue;
+                }
                 let force = if target.base.grounded {
                     data.gust.grounded_multiplier * delta * force
                 } else {
@@ -13352,10 +13261,12 @@ impl RolloutWorld {
         }
     }
 
-    fn gust_waves_update(&mut self, data: &data::RolloutData) {
+    fn gust_waves_update(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for wave_index in 0..self.gust_waves.len() {
             if self.gust_waves[wave_index].active && self.gust_waves[wave_index].registered {
-                self.gust_wave_apply(wave_index, DT, true, data);
+                // Shockwave still calls UpdateHitObjects while stopped; only
+                // its curve clock receives GameTime.FixedDeltaTime == zero.
+                self.gust_wave_apply(wave_index, updater_dt, true, data);
             }
         }
     }
@@ -13392,7 +13303,15 @@ impl RolloutWorld {
             let direction = -platform.surface.normal(point);
             let distance = ((wave.position - point).length_squared() / Fix::from_int(10))
                 .max(Fix::from_f64(1.5));
-            let force = data.gust.platform_force / distance;
+            let boulder = self
+                .macho_boulders
+                .iter()
+                .any(|boulder| boulder.active && boulder.platform_index == platform_index);
+            let force = if boulder {
+                data.gust.default_force / distance
+            } else {
+                data.gust.platform_force / distance
+            } * wave.scale;
             let impulse = direction.normalized_safe() * force * strength * Fix::from_int(60);
             let arm = (point - platform.surface.center).normalized_safe();
             self.platform_dynamics[platform_index]
@@ -13412,6 +13331,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 * (data.gust.default_force / distance)
+                * wave.scale
                 * strength
                 * Fix::from_int(60);
             if defer_mjolnir && item.ability == ABILITY_MJOLNIR {
@@ -13443,6 +13363,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 * (data.gust.default_force / distance)
+                * wave.scale
                 * strength
                 * Fix::from_int(60);
             arrow.velocity += impulse * data.arrow.body.inverse_mass;
@@ -13459,9 +13380,45 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 * (data.gust.default_force / distance)
+                * wave.scale
                 * strength
                 * Fix::from_int(60);
             missile.body.apply_impulse(impulse, Vec2::ZERO);
+        }
+        for target in 0..wave.portal_shot_count {
+            let shot_index = wave.portal_shot_indices[target];
+            let Some(shot) = self.portal_shots.get_mut(shot_index) else {
+                continue;
+            };
+            if !shot.active || !shot.registered {
+                continue;
+            }
+            let direction = shot.position - wave.position;
+            let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+            let impulse = direction.normalized_safe()
+                * (data.gust.default_force / distance)
+                * wave.scale
+                * strength
+                * Fix::from_int(60);
+            shot.body.apply_impulse(impulse, Vec2::ZERO);
+        }
+        for target in 0..wave.black_hole_count {
+            let hole_index = wave.black_hole_indices[target];
+            let Some(hole) = self.black_holes.get_mut(hole_index) else {
+                continue;
+            };
+            if !hole.active {
+                continue;
+            }
+            let direction = hole.position - wave.position;
+            let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+            let force = direction.normalized_safe()
+                * (data.gust.default_force / distance)
+                * wave.scale
+                * strength;
+            // BlackHole.AddForce divides by signed mass and deliberately does
+            // not apply ForceMode2D's sixty-fold impulse conversion.
+            hole.velocity += force / hole.mass;
         }
         self.gust_waves[wave_index] = wave;
         if applied {

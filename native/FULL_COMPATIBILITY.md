@@ -1351,6 +1351,20 @@ again. A center-radius player
 approximation was rejected during measurement: the map-0 opponent passes that
 broad phase but misses the actual oriented box.
 
+The source-complete pass expands that retained set across the complete
+serialized mask. QuickSpell multiplies its spawn offset by the caster scale;
+Shockwave multiplies query radius and every persistent force by the same scale,
+while one-shot player forces use `(scale + 1) / 2`. All pushable active forms
+are queried from their already synchronized circle or box rows, and the six
+prefabs serialized with `isPushable=false` return before body dispatch. Rock
+keeps the separate 9,000-fold BoplBody path. Tagged Macho boulders use
+`defaultForce` instead of `platformForce`; spell-layer PortalShots receive
+ordinary `ForceMode2D.Impulse`; RigidBodyAffector Black Holes receive the
+source's direct signed-mass `AddForce` without the 60-fold conversion. During
+Time Stop the wave still applies the current curve sample on each updater pass,
+but zero delta freezes its curve clock. All handles and the 50-slot capacity
+remain inline in `GustWave`, so none of these paths allocate per cast or tick.
+
 `gust_ability_ab.c` compares NativeAOT with optimized Q32 Rust for 360 complete
 ticks, including initial loadout rows, cast and public position arbitration, the
 active Gust circle, deferred wave registration, all six map-platform trajectories,
@@ -1360,6 +1374,18 @@ lifecycle match. Static authored collider vectors allow one Q32.32 least bit;
 the observed case is Dash's inactive half-extent imported through a Unity float
 path and has no semantic effect. Cross-ability targets beyond the currently
 executable public forms remain part of those abilities' later integration.
+
+`gust_broad_ab.c` adds one 430-tick four-player comparison containing a
+released Black Hole, a live PortalShot, ordinary player/platform targets and a
+spawned Macho boulder. It verifies the boulder's tag-selected default-force
+branch and the crowded public lifecycle within the existing measured
+Black-Hole/form spatial bound. Direct in-wave PortalShot and Black Hole
+capture, non-unit Gust scale, a wave overlapping Time Stop, layer-26 orbs,
+projectile-layer MeteorSmear capacity accounting and cross-shape truncation at 50 hits are
+still unmeasured, so catalog id 7 moves from `slice-only` to `partial` rather
+than `ported`. Spike children are intentionally ignored through the source
+`IPlatformAttachable` return; Engine, Tesla and rope hooks are outside the
+serialized mask.
 
 `gust_grenade_ab.c` composes a released Grenade with Gust for 340 ticks. The
 item enters the wave's captured set on tick 250, receives the initialization

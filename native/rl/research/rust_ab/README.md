@@ -221,6 +221,11 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   impulses around the map spring updater, force-curve platform trajectories,
   and recovery. It compares every public player, slime, telemetry, and entity
   field for 360 ticks; static authored geometry allows one Q32.32 least bit.
+- `gust_broad_ab.c`: one 430-tick four-player composition with a released Black
+  Hole, live PortalShot, ordinary player/platform targets and a spawned Macho
+  boulder. The boulder takes Shockwave's tag-selected default-force branch;
+  the full crowded state stays within the existing Black-Hole/form spatial
+  bound without any lifecycle or interaction difference.
 - `gust_grenade_ab.c`: a released Grenade captured by Gust's fixed target set,
   both time-zero impulses, the complete force curve and subsequent item flight.
 - `gust_smoke_ab.c`: the same fixed-set released-item path for Smoke, including

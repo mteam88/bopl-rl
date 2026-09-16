@@ -161,7 +161,17 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   while PlayerBody publishes the newly forced position. Mine's older ThrowItem
   path advances its surface local separately from that body move. Tack's
   released payload also exports the Projectile owner which the other item
-  roots do not expose.
+  roots do not expose. The complete Gust source pass now scales the spawned
+  offset, query radius and all persistent forces, dispatches every pushable
+  active form through its already-synchronized collider row, preserves every
+  serialized `isPushable=false` early return, selects default force for tagged
+  Macho boulders, and retains spell-layer PortalShots and signed-mass Black
+  Holes in the fixed target set. A stopped wave continues applying its current
+  curve sample while the zero delta freezes curve time, matching
+  `Shockwave.UpdateSim`. `gust_broad_ab.c` compares a crowded 430-tick cast
+  with Black Hole, PortalShot and boulder state in one run; direct capture of
+  the first two, non-unit scale, layer-26 orbs and the 50-hit boundary remain
+  differential gaps.
   Grenade currently covers the grounded `ThrowItem2` form through its exact
   enter/exit animations, held-object lifecycle, charged release, recoil and
   the thrown item's Q32 body integration. Its layer-10 circle is registered in
