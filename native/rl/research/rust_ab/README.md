@@ -135,6 +135,12 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   spawn and growth, whole-map rounded-platform pull, center-only platform
   destruction, no-effect player kill, and stock-clone reconstruction over 500
   NativeAOT/Rust ticks.
+- `blink_ability_ab.c`: grounded Blink entry, player hitscan and the complete
+  QuantumTunnel hide, seeded relocation, reactivation and delayed publication
+  lifecycle over 500 ticks.
+- `blink_airborne_ab.c`: a second 500-tick Blink trace that catches the target
+  immediately after a jump and compares its inactive airborne relocation,
+  reactivation, fall and landing.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

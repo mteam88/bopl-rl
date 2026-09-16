@@ -448,8 +448,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   platform and sample its perimeter without allocating in the tick path.
   Relocation, inactive collider synchronization, strict 1.2-second lifetime,
   reactivation and the one-pass Player.Position publication lag all match the
-  oracle. Wall/rigid/item/orb targets, water reflection, active forms, rope and
-  magnet detachment, and airborne placement remain open.
+  oracle. A second 500-tick differential catches an opponent immediately after
+  jumping, then matches inactive airborne relocation, reactivation, delayed
+  position publication, fall and landing. Wall/rigid/item/orb targets, water
+  reflection, active forms, rope and magnet detachment remain open.
   Duplicator uses its exact smaller-radius GunTransform and implements the
   shipped delayed rounded-platform copy path, including overlap forces,
   next-pass spring suppression, fresh-body initialization and locally

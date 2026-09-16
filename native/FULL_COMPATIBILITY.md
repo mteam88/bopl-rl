@@ -2584,7 +2584,14 @@ inactive through tick 314, reactivates on tick 315, and publishes the moved
 row match, with the comparator allowing 64 raw Q32 units for dynamic vectors
 but observing the exact measured landing. Wall, rigid-body, item and orb
 tunnels, water reflection, transformed victims, rope/magnet detachment and a
-dedicated airborne-release differential remain open, so coverage is partial.
+pickup-changed platform set remain open, so coverage is partial.
+
+`blink_airborne_ab.c` adds a second exact 500-tick trace for the common
+airborne-victim path. Player two jumps immediately before the tick-241 release,
+is hidden while airborne in that pass, relocates on tick 295, reactivates on
+tick 315 and publishes the new position on tick 316. The remaining fall and
+landing are compared through tick 500; every public row matches with the same
+64-raw-Q32 dynamic-vector allowance, and the final live body position is exact.
 
 ### Executable Engine and attached thrust body (2026-09-15)
 
