@@ -147,8 +147,8 @@ value  = W_v LN(z + W_b2 ReLU(W_b1 LN(z))),  z = W_z LN([y, privileged])  304 ->
 - Heads: unchanged Fourier aim head (K=4, `bopl_aim.h`), buttons, hold; the
   entropy head-scale plumbing is untouched because the decoder row format
   (logits then value) is exactly v3's.
-- Parameters: actor path 0.93M (sets 88k, embedding 5k, flat 46k, fusion 328k,
-  MinGRU 197k, FFN 262k, heads 8k); critic 0.68M; total 1.61M. v3 at hidden
+- Parameters: actor path 0.96M (sets 88k, embedding 5k, flat 73k, fusion 328k,
+  MinGRU 197k, FFN 262k, heads 8k); critic 0.68M; total 1.64M. v3 at hidden
   128: 0.15M.
 
 Learning rate. Hilton et al. 2023 keep the Adam learning rate proportional to
