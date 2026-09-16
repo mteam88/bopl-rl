@@ -2179,6 +2179,20 @@ stopped and applies that same callback/update handoff. The 1,900-tick scenario
 is exact with the established 2,048-raw-Q32 attachment bound (less than
 0.0000005 world units) and no allocation in the tick path.
 
+`time_stop_black_hole_ab.c` releases `BlackHoleClap` on the wider map 2 and
+waits for its form to exit before Time Stop takes effect. The persistent
+layer-23 hole, its Hermite radius, the unprotected slime and all three cooldown
+timers remain fixed for every one of the 690 zero-scale passes; growth resumes
+after restoration. The differential retains the standalone Black Hole form's
+0.0163-world-unit pose bound and a 256-raw-Q32 radius bound. Map 2's authored
+static hierarchy labels are 101 in NativeAOT and 146 in the extracted rollout
+inventory; both schedule before the 100,000,000+ runtime prefabs, while every
+dynamic hierarchy, identity, field and lifecycle boundary is compared. A
+single `Player.Position` publication immediately after form exit is allowed to
+replace the stale form value, after which both the physical slime and published
+position must remain fixed. This is publication ordering rather than movement:
+the slime and Black Hole position are unchanged on that pass.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback
@@ -2733,8 +2747,10 @@ at most 70,000,000 raw units (0.0163 world units); grounded exit reprojects to
 the exact same platform pose and no collision or lifecycle decision differs.
 Standalone projectile/item force and consumption paths remain to be exercised
 as their catalog abilities are composed with Black Hole, so coverage is marked
-partial. Hole and contact state reuse capacity-retained vectors and fixed player
-arrays; the tick path adds no allocation.
+partial. `time_stop_black_hole_ab.c` separately covers an already released
+hole through all 690 stopped passes and restored growth. Hole and contact state
+reuse capacity-retained vectors and fixed player arrays; the tick path adds no
+allocation.
 
 ### Executable Throw form and Macho boulders (2026-09-15)
 

@@ -298,6 +298,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   matches every lifecycle boundary; attraction while the cast form is active
   differs by at most 70,000,000 raw Q32 units (0.0163 world units) before the
   grounded exit reprojects both backends to the exact same platform pose.
+  A map-2 composition also freezes an already released hole for all 690 Time
+  Stop passes and resumes its growth afterward. Map 2's serialized low
+  hierarchy labels differ between the oracle and rollout inventory, but both
+  remain before all runtime prefabs and every dynamic identity, trajectory and
+  lifecycle boundary matches.
   Forces and consumption for standalone projectile/item prefabs still need
   composed differential scenarios as those catalog ports are completed.
   Throw executes its separate MachoThrow2 form, animation callbacks, movement,
@@ -352,7 +357,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   projectile, item, smoke, explosion and platform bodies. Arrow entry, active
   Bow charge, active Rock scale/clock behavior, charging Roll, and active
   Blink/Growth/Shrink/Duplicator/Freeze forms are exact across all 690 frozen
-  passes and the first restored form/projectile passes. Frozen DetPhysics boxes
+  passes and the first restored form/projectile passes. A released persistent
+  Black Hole also holds its position and Hermite radius for all 690 passes and
+  resumes growth on restoration. Frozen DetPhysics boxes
   retain their stop-entry sync through the restoration pass, matching the
   source updater delta captured at the pass start. Cross-ability interactions
   with catalog entries that remain absent inherit those entries' open scope.
