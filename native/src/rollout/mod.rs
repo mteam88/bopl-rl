@@ -4076,8 +4076,10 @@ impl RolloutWorld {
                     collider.collider_basis = basis;
                 }
             }
-            let input = action.input_direction(self.players[index].keyboard);
-            self.update_obs_state(index, input);
+            if !frozen {
+                let input = action.input_direction(self.players[index].keyboard);
+                self.update_obs_state(index, input);
+            }
         }
         let physics_dt = DT * self.player_time_scale;
         self.arrows_integrate(data, updater_dt, physics_dt);

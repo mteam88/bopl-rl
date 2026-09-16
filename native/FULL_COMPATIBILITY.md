@@ -2160,6 +2160,16 @@ released it. Source `Mjolnir.UpdateSim` returns while
 boundary represented by manual collider registration, so the held payload
 remains owned by the form without a lookup or per-tick allocation.
 
+`time_stop_mjolnir_ab.c` releases Mjolnir early enough to enter its recall
+phase before the stop. Position, linear velocity, angular velocity, opponent
+cooldowns and the owner's `land` animation state remain unchanged through all
+690 zero-scale passes, then recall motion resumes after restoration. This
+scenario exposed that Rust's late observable-state update still decremented
+`land` once per simulation pass while the player clock was stopped. The late
+state machine now uses the same pass-start protection and time-scale gate as
+collider synchronization, matching `SpriteAnimator` without adding work or
+state to the tick path.
+
 `time_stop_engine_ab.c` plants a RocketEngine shortly before the global stop.
 The live layer-21 child and its composite rounded platform remain fixed for all
 690 zero-scale passes. `RocketEngine.UpdateSim` returns before advancing the
