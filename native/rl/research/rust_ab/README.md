@@ -82,7 +82,8 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   restoration.
 - `time_stop_released_items_ab.c`: released Grenade, Smoke, Poke Ball and Tack
   bodies across all 690 stopped passes, restored motion, and Tack's later exact
-  owner-clear/re-entry self-kill and stock transition.
+  owner-clear/re-entry self-kill and stock transition; Tack enters the stop 43
+  ticks into its 48-tick arming delay.
 - `time_stop_smoke_cloud_ab.c`: all four spawned Smoke clouds across 690
   stopped passes, preserving identities, positions and enter-animation radii,
   then resuming radius growth on restoration.

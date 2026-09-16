@@ -2175,7 +2175,9 @@ Tack bodies through the same stop. Their position, linear velocity, angular
 velocity,
 owner cooldowns and opponent state remain fixed for all 690 passes, then body
 motion resumes on the restored clock. Tack continues far enough to cover its
-owner-clear/re-entry self-kill and stock transition after restoration. All
+owner-clear/re-entry self-kill and stock transition after restoration. Its
+item registers on tick 695 and the stop begins on 738, 43 ticks into the
+authored 48-tick arming delay; the restored self-kill occurs on tick 1459. All
 four 1,540-tick scenarios are exact with the ordinary 2,048-raw-Q32 body bound;
 this does not claim Poke Ball's capture state.
 

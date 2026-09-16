@@ -191,6 +191,8 @@ int main(int argc, char **argv) {
     int saw_protection = 0, saw_protected_cooldown = 0;
     int saw_item_before_stop = 0, froze_item = 0, saw_item_motion_after_stop = 0;
     int saw_opponent_death_after_stop = 0;
+    unsigned item_spawn_tick = 0, stop_tick = 0, restore_tick = 0;
+    unsigned opponent_death_tick = 0;
     unsigned frozen_ticks = 0;
     int64_t frozen_x = 0, frozen_y = 0, frozen_timers[3] = {0};
     int64_t frozen_form_x = 0, frozen_form_y = 0;
@@ -220,7 +222,10 @@ int main(int argc, char **argv) {
         if (compare(reference, bopl_rl_state(world[1]), tick)) return 1;
         const BoplRlSlime *caster = slime_for(reference, 1);
         const BoplRlSlime *opponent = slime_for(reference, 2);
-        if (!opponent && saw_restored) saw_opponent_death_after_stop = 1;
+        if (!opponent && saw_restored) {
+            saw_opponent_death_after_stop = 1;
+            if (!opponent_death_tick) opponent_death_tick = tick;
+        }
         if (!caster || (!opponent && !saw_restored)) {
             fprintf(stderr, "tick %u missing caster or opponent slime\n", tick);
             return 1;
@@ -235,6 +240,7 @@ int main(int argc, char **argv) {
                 item = &reference->entities[i];
                 break;
             }
+        if (item && !item_spawn_tick) item_spawn_tick = tick;
         if (!saw_stopped && item) saw_item_before_stop = 1;
         if (reference->header.player_time_scale == 0) {
             if (!saw_stopped) {
@@ -243,6 +249,7 @@ int main(int argc, char **argv) {
                     return 1;
                 }
                 saw_stopped = 1;
+                stop_tick = tick;
                 frozen_x = opponent->x;
                 frozen_y = opponent->y;
                 frozen_form_x = reference->players[1].x;
@@ -278,6 +285,7 @@ int main(int argc, char **argv) {
                 saw_protected_cooldown = 1;
         } else if (saw_stopped) {
             saw_restored = 1;
+            if (!restore_tick) restore_tick = tick;
             if (item && (item->x != frozen_item_x || item->y != frozen_item_y))
                 saw_item_motion_after_stop = 1;
         }
@@ -287,6 +295,7 @@ int main(int argc, char **argv) {
         !saw_restored || !saw_protection || !saw_protected_cooldown ||
         !saw_item_before_stop || !froze_item || !saw_item_motion_after_stop ||
         (scenario == 3 && !saw_opponent_death_after_stop) ||
+        (scenario == 3 && stop_tick - item_spawn_tick >= 48) ||
         frozen_ticks < 600 || final->header.player_time_scale != (1LL << 32) ||
         final->players[0].deaths != 0) {
         fprintf(stderr,
@@ -302,6 +311,11 @@ int main(int argc, char **argv) {
     }
     printf("TIME_STOP_RELEASED_ITEM_OK ability=%u name=%s ticks=1540 frozen=%u\n",
            abilities[scenario], names[scenario], frozen_ticks);
+    if (scenario == 3)
+        printf("TIME_STOP_TACK_TIMING spawn=%u stop=%u restore=%u death=%u active_before_stop=%u post_restore=%u\n",
+               item_spawn_tick, stop_tick, restore_tick, opponent_death_tick,
+               stop_tick - item_spawn_tick,
+               opponent_death_tick - restore_tick);
     }
     for (int backend = 0; backend < 2; backend++) bopl_rl_close(world[backend]);
     return 0;
