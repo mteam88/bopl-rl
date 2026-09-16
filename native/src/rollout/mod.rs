@@ -340,6 +340,9 @@ pub struct Arrow {
     pub owner: u32,
     pub entity: Option<usize>,
     pub position: Vec2,
+    /// Live FixTransform scale. Ordinary Bow arrows start at one; Duplicator
+    /// copies the source transform scale exactly.
+    pub scale: Fix,
     pub velocity: Vec2,
     pub force: Vec2,
     pub angular_velocity: Fix,
@@ -354,6 +357,9 @@ pub struct Arrow {
     pub can_hurt_owner: bool,
     pub magnet_holder: Option<usize>,
     pub magnet_hold_ticks: i8,
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 /// A live `DynamicAbilityPickup`. The vector is bounded by the authored three
@@ -370,11 +376,15 @@ pub struct AbilityPickup {
     pub ability: u32,
     /// Root FixTransform position. The collider centre includes `pickup.offset`.
     pub position: Vec2,
+    pub scale: Fix,
     pub body: Body,
     pub enabled: bool,
     pub time_passed: Fix,
     pub time_since_swap: Fix,
     pub previous_vibration: Vec2,
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 /// Shared `ThrowItem2` payload state. Grenade is the first consumer; Smoke,
@@ -545,8 +555,12 @@ pub struct SpawnedSpike {
     pub relative_center: Vec2,
     pub relative_rotation: Fix,
     pub surface_offset: Fix,
+    pub scale: Fix,
     pub time: Fix,
     pub body: Body,
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -604,6 +618,9 @@ pub struct SpawnedEngine {
     pub phase: u32,
     pub ticks: u32,
     pub body: Body,
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 /// One SimpleSparkNode circle and the optional lightning owned by the newer
@@ -643,6 +660,9 @@ pub struct SpawnedTeslaNode {
     pub flicker_time: Fix,
     pub flicker_ticks: u32,
     pub flicker_was_stopped: bool,
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1380,6 +1400,38 @@ pub struct BlackHoleState {
     pub previous_target_size: Fix,
     pub target_size: Fix,
     pub radius: Fix,
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
+}
+
+/// Rock_noPlayer spawned when Duplicator hits an active Rock form. It is a
+/// lethal-terrain rigid circle with the source owner's material/credit, not a
+/// player controller or an ability form.
+#[derive(Clone, Copy, Default)]
+pub struct DuplicatedRock {
+    pub active: bool,
+    pub born_tick: u32,
+    pub entity: Option<usize>,
+    pub owner: usize,
+    pub position: Vec2,
+    pub body: Body,
+    pub scale: Fix,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
+}
+
+/// Empty-player prefab created by PlayerCollision.SpawnAbilityLessClone.
+/// It shares the owning player's input but has no ability instances.
+#[derive(Clone)]
+pub struct AbilitylessClone {
+    pub active: bool,
+    pub born_tick: u32,
+    pub hierarchy_base: u32,
+    pub entity: Option<usize>,
+    pub owner: usize,
+    pub base: Player,
+    pub obs_state: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2012,6 +2064,8 @@ pub struct RolloutWorld {
     pub arrows: Vec<Arrow>,
     pub ability_pickups: Vec<AbilityPickup>,
     pub black_holes: Vec<BlackHoleState>,
+    pub duplicated_rocks: Vec<DuplicatedRock>,
+    pub abilityless_clones: Vec<AbilitylessClone>,
     pub macho_boulders: Vec<MachoBoulder>,
     pub thrown_items: Vec<ThrownItem>,
     pub guided_missiles: Vec<GuidedMissile>,
@@ -2141,6 +2195,8 @@ impl RolloutWorld {
             arrows: Vec::with_capacity(64),
             ability_pickups: Vec::with_capacity(4),
             black_holes: Vec::with_capacity(16),
+            duplicated_rocks: Vec::with_capacity(MAX_PLAYERS * 8),
+            abilityless_clones: Vec::with_capacity(MAX_PLAYERS * 16),
             macho_boulders: Vec::with_capacity(16),
             thrown_items: Vec::with_capacity(64),
             guided_missiles: Vec::with_capacity(64),
@@ -2188,11 +2244,11 @@ impl RolloutWorld {
             next_entity_id: 0,
             next_spawn_hierarchy: 0,
             entities: Vec::with_capacity(192),
-            slimes: Vec::with_capacity(MAX_PLAYERS),
+            slimes: Vec::with_capacity(MAX_PLAYERS * 17),
             state: empty_state(),
             state_entities: Vec::with_capacity(192),
             sample_entities: Vec::with_capacity(192),
-            sample_slimes: Vec::with_capacity(MAX_PLAYERS),
+            sample_slimes: Vec::with_capacity(MAX_PLAYERS * 17),
             sample: empty_state(),
             sample_valid: false,
             recording: Vec::new(),
@@ -2233,6 +2289,8 @@ impl RolloutWorld {
         self.arrows.clone_from(&src.arrows);
         self.ability_pickups.clone_from(&src.ability_pickups);
         self.black_holes.clone_from(&src.black_holes);
+        self.duplicated_rocks.clone_from(&src.duplicated_rocks);
+        self.abilityless_clones.clone_from(&src.abilityless_clones);
         self.macho_boulders.clone_from(&src.macho_boulders);
         self.thrown_items.clone_from(&src.thrown_items);
         self.guided_missiles.clone_from(&src.guided_missiles);
@@ -2323,6 +2381,8 @@ impl RolloutWorld {
             arrows: _,
             ability_pickups: _,
             black_holes: _,
+            duplicated_rocks: _,
+            abilityless_clones: _,
             macho_boulders: _,
             thrown_items: _,
             guided_missiles: _,
@@ -2438,6 +2498,8 @@ impl RolloutWorld {
         self.arrows.clear();
         self.ability_pickups.clear();
         self.black_holes.clear();
+        self.duplicated_rocks.clear();
+        self.abilityless_clones.clear();
         self.macho_boulders.clear();
         self.thrown_items.clear();
         self.guided_missiles.clear();
@@ -3317,6 +3379,7 @@ impl RolloutWorld {
             entity: Some(self.entities.len() - 1),
             ability,
             position,
+            scale: Fix::ONE,
             body,
             ..AbilityPickup::default()
         });
@@ -3420,8 +3483,8 @@ impl RolloutWorld {
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
-            row.x = (state.position + pickup.offset).x.raw();
-            row.y = (state.position + pickup.offset).y.raw();
+            row.x = (state.position + pickup.offset * state.scale).x.raw();
+            row.y = (state.position + pickup.offset * state.scale).y.raw();
             row.vx = state.body.velocity.x.raw();
             row.vy = state.body.velocity.y.raw();
         }
@@ -3458,7 +3521,7 @@ impl RolloutWorld {
             state.position += state.body.integrate(physics_dt, Fix::ZERO);
             if let Some(entity) = state.entity {
                 let row = &mut self.entities[entity];
-                let center = state.position + data.pickup.offset;
+                let center = state.position + data.pickup.offset * state.scale;
                 row.x = center.x.raw();
                 row.y = center.y.raw();
                 row.vx = state.body.velocity.x.raw();
@@ -3477,8 +3540,8 @@ impl RolloutWorld {
                 continue;
             }
             let circle = Circle {
-                center: pickup.position + data.pickup.offset,
-                radius: data.pickup.radius,
+                center: pickup.position + data.pickup.offset * pickup.scale,
+                radius: data.pickup.radius * pickup.scale,
             };
             let mut collector = None;
             for player_index in 0..self.players.len() {
@@ -3978,6 +4041,7 @@ impl RolloutWorld {
             }
         }
         self.register_pending_arrows();
+        self.register_pending_duplicated_pickups(data);
         // A projectile fired during the prior updater pass has a lower
         // allocated hierarchy than an ability prefab instantiated by a later
         // pickup collision callback. Updater initializes in that hierarchy
@@ -4343,6 +4407,7 @@ impl RolloutWorld {
                 self.update_obs_state(index, input);
             }
         }
+        self.abilityless_clones_tick(actions);
         let physics_dt = DT * self.player_time_scale;
         self.arrows_integrate(data, updater_dt, physics_dt);
         self.ability_pickups_integrate(data, physics_dt);
@@ -4350,6 +4415,7 @@ impl RolloutWorld {
         self.thrown_items_integrate(data, updater_dt, physics_dt);
         self.portal_shots_integrate(physics_dt);
         self.rocks_integrate(physics_dt);
+        self.duplicated_rocks_integrate(physics_dt, data);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -4421,6 +4487,7 @@ impl RolloutWorld {
         self.smoke_contacts(data);
         self.spike_contacts(data);
         self.tesla_contacts(data);
+        self.abilityless_clone_contacts();
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -8369,6 +8436,9 @@ impl RolloutWorld {
             phase: 0,
             ticks: 0,
             body: data.engine.rocket_body,
+            duplicated: false,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
         };
         if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
             self.engines[free] = engine;
@@ -8483,6 +8553,7 @@ impl RolloutWorld {
             return false;
         };
         let surface_position = body_position - normal * hit.far;
+        let scale = self.players[index].player_scale;
 
         let ability_slot = self.players[index].active_slot;
         if let Some(old) = self.players[index].spike_attacks[ability_slot].take() {
@@ -8513,7 +8584,8 @@ impl RolloutWorld {
             + data
                 .spike
                 .attack_collider_offset
-                .complex_mul(relative_right);
+                .complex_mul(relative_right)
+                * scale;
         let relative_rotation = spike_rotation - parent_rotation;
 
         self.attach_spike_body(platform_index, data.spike.attack_body);
@@ -8539,8 +8611,12 @@ impl RolloutWorld {
             relative_center,
             relative_rotation,
             surface_offset,
+            scale,
             time: Fix::ZERO,
             body: data.spike.attack_body,
+            duplicated: false,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
         };
         let attack_index = if let Some(free) = self.spike_attacks.iter().position(|s| !s.active) {
             // A pooled collider receives a fresh DetPhysics id on ManualInit;
@@ -8697,7 +8773,8 @@ impl RolloutWorld {
                 + data
                     .spike
                     .attack_collider_offset
-                    .complex_mul(relative_right);
+                    .complex_mul(relative_right)
+                    * attack.scale;
         }
     }
 
@@ -8990,14 +9067,15 @@ impl RolloutWorld {
                 + spike
                     .relative_center
                     .complex_mul(self.platforms[spike.platform_index].surface.right);
-            let extents = data::surface_extents(data.spike.attack_extents);
+            let scaled_extents = data.spike.attack_extents * spike.scale;
+            let extents = data::surface_extents(scaled_extents);
             let attack_box = OrientedBox {
                 center,
                 right: basis * extents.x,
                 up: basis.perp() * extents.y,
                 inverse_extents: Vec2::new(
-                    Fix::ONE / data.spike.attack_extents.x,
-                    Fix::ONE / data.spike.attack_extents.y,
+                    Fix::ONE / scaled_extents.x,
+                    Fix::ONE / scaled_extents.y,
                 ),
             };
             for cloud in &mut self.smoke_clouds {
@@ -9434,6 +9512,9 @@ impl RolloutWorld {
             previous_target_size: Fix::from_int(100),
             target_size,
             radius: data.black_hole.start_radius,
+            duplicated: false,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
         };
         if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
             self.black_holes[free] = hole;
@@ -9667,7 +9748,7 @@ impl RolloutWorld {
                     },
                     Circle {
                         center: arrow.position,
-                        radius: data.arrow.radius,
+                        radius: data.arrow.radius * arrow.scale,
                     },
                 )
                 .is_none()
@@ -12028,7 +12109,7 @@ impl RolloutWorld {
                         query,
                         Circle {
                             center: arrow.position,
-                            radius: arrow_radius,
+                            radius: arrow_radius * arrow.scale,
                         },
                     )
                     .is_none()
@@ -13304,7 +13385,7 @@ impl RolloutWorld {
                     query,
                     Circle {
                         center: arrow.position,
-                        radius: data.arrow.radius,
+                        radius: data.arrow.radius * arrow.scale,
                     },
                 )
                 .is_some()
@@ -15721,7 +15802,7 @@ impl RolloutWorld {
             let contact = crate::physics::contact::circle_box(
                 Circle {
                     center: arrow.position,
-                    radius: data.arrow.radius,
+                    radius: data.arrow.radius * arrow.scale,
                 },
                 query,
             );
@@ -15742,8 +15823,8 @@ impl RolloutWorld {
                 continue;
             }
             let collider = Circle {
-                center: pickup.position + data.pickup.offset,
-                radius: data.pickup.radius,
+                center: pickup.position + data.pickup.offset * pickup.scale,
+                radius: data.pickup.radius * pickup.scale,
             };
             if crate::physics::contact::circle_box(collider, query).is_none() {
                 continue;
@@ -15928,7 +16009,7 @@ impl RolloutWorld {
                     pickup_circle,
                     Circle {
                         center: arrow.position,
-                        radius: data.arrow.radius,
+                        radius: data.arrow.radius * arrow.scale,
                     },
                 )
                 .is_some(),
@@ -15958,7 +16039,7 @@ impl RolloutWorld {
             if !pickup.active || self.blink_object_hidden(pickup.entity) {
                 continue;
             }
-            let center = pickup.position + data.pickup.offset;
+            let center = pickup.position + data.pickup.offset * pickup.scale;
             consider(
                 MagnetHeld::AbilityPickup(pickup_index),
                 pickup.position,
@@ -15966,7 +16047,7 @@ impl RolloutWorld {
                     pickup_circle,
                     Circle {
                         center,
-                        radius: data.pickup.radius,
+                        radius: data.pickup.radius * pickup.scale,
                     },
                 )
                 .is_some(),
@@ -16404,11 +16485,12 @@ impl RolloutWorld {
             }
             MagnetHeld::Arrow(i) => {
                 let velocity = self.arrows[i].velocity;
+                let scale = self.arrows[i].scale;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let correction = self.magnet_circle_out_of_walls(
                     Circle {
                         center: position,
-                        radius: data.arrow.radius,
+                        radius: data.arrow.radius * scale,
                     },
                     data.arrow.body.inverse_mass,
                 );
@@ -16491,11 +16573,12 @@ impl RolloutWorld {
             }
             MagnetHeld::AbilityPickup(i) => {
                 let velocity = self.ability_pickups[i].body.velocity;
+                let scale = self.ability_pickups[i].scale;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let correction = self.magnet_circle_out_of_walls(
                     Circle {
-                        center: position + data.pickup.offset,
-                        radius: data.pickup.radius,
+                        center: position + data.pickup.offset * scale,
+                        radius: data.pickup.radius * scale,
                     },
                     self.ability_pickups[i].body.inverse_mass,
                 );
@@ -16873,12 +16956,26 @@ impl RolloutWorld {
             );
             return;
         }
+        if let Some(victim) = self.players.iter().position(|slot| {
+            self.playable_slot(slot) && Self::blink_player_entity(slot) == hit.entity
+        }) {
+            self.duplicate_player_target(victim, hit.position, direction, data);
+            return;
+        }
         if let Some(platform_index) = self
             .platform_entities
             .iter()
             .position(|&entity| entity == hit.entity)
         {
             self.begin_duplicate_platform(platform_index, hit.position, direction, caster, data);
+            return;
+        }
+        if let Some(arrow_index) = self
+            .arrows
+            .iter()
+            .position(|arrow| arrow.active && arrow.registered && arrow.entity == Some(hit.entity))
+        {
+            self.duplicate_arrow(arrow_index, direction, data);
             return;
         }
         if let Some(item_index) = self
@@ -16903,6 +17000,63 @@ impl RolloutWorld {
             .position(|cloud| cloud.active && cloud.entity == Some(hit.entity))
         {
             self.duplicate_smoke_cloud(cloud_index, data);
+            return;
+        }
+        if let Some(pickup_index) = self
+            .ability_pickups
+            .iter()
+            .position(|pickup| pickup.active && pickup.entity == Some(hit.entity))
+        {
+            self.duplicate_ability_pickup(pickup_index, direction, data);
+            return;
+        }
+        if let Some(hole_index) = self
+            .black_holes
+            .iter()
+            .position(|hole| hole.active && hole.entity == Some(hit.entity))
+        {
+            self.duplicate_black_hole(hole_index, direction, data);
+            return;
+        }
+        if let Some(rock_index) = self
+            .duplicated_rocks
+            .iter()
+            .position(|rock| rock.active && rock.entity == Some(hit.entity))
+        {
+            self.duplicate_lethal_rock(rock_index, direction, data);
+            return;
+        }
+        if let Some(spike_index) = self
+            .spike_attacks
+            .iter()
+            .position(|spike| spike.active && spike.entity == Some(hit.entity))
+        {
+            self.duplicate_attached_spike(spike_index, direction, data);
+            return;
+        }
+        if let Some(engine_index) = self
+            .engines
+            .iter()
+            .position(|engine| engine.active && engine.entity == Some(hit.entity))
+        {
+            self.duplicate_attached_engine(engine_index, direction, caster, data);
+            return;
+        }
+        if let Some(node_index) = self
+            .tesla_nodes
+            .iter()
+            .position(|node| node.active && node.entity == Some(hit.entity))
+        {
+            self.duplicate_attached_tesla(node_index, direction, caster, data);
+            return;
+        }
+        if self.entities[hit.entity].layer == 26
+            && let Some(orb) = self
+                .beam_orbs
+                .iter_mut()
+                .find(|orb| orb.active && orb.entity == Some(hit.entity))
+        {
+            orb.orb_type = 4;
         }
     }
 
@@ -17029,6 +17183,615 @@ impl RolloutWorld {
             _ => Fix::ZERO,
         };
         position + direction.complex_mul(Vec2::angle(turn)) * offset
+    }
+
+    fn duplicate_arrow(&mut self, source_index: usize, direction: Vec2, data: &data::RolloutData) {
+        let source = self.arrows[source_index];
+        let speed = source.velocity.length() + Fix::from_int(10);
+        for clone_index in 0..4 {
+            let position = Self::fan_out(
+                4,
+                direction,
+                source.position,
+                Fix::from_int(7) * source.scale,
+                Fix::from_f32(0.32),
+                clone_index,
+            );
+            let velocity = (position - source.position).normalized_safe() * speed;
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.arrow.updatable_count;
+            let free = self.arrows.iter().position(|arrow| !arrow.active);
+            let entity = free.and_then(|index| self.arrows[index].entity);
+            let id = self.next_id();
+            let clone = Arrow {
+                active: true,
+                born_tick: self.tick,
+                hierarchy_base,
+                registered: false,
+                id,
+                // Projectile.playerOwnerId is private and not serialized;
+                // Instantiate therefore creates an environmental copy.
+                owner: 0,
+                entity,
+                position,
+                scale: source.scale,
+                velocity,
+                force: Vec2::ZERO,
+                angular_velocity: source.angular_velocity,
+                updater_tick: u32::MAX,
+                rotation: source.rotation,
+                time_passed: source.time_passed,
+                hurt_owner_after: -Fix::ONE,
+                can_hurt_owner: source.can_hurt_owner,
+                magnet_holder: None,
+                magnet_hold_ticks: -1,
+                duplicated: true,
+                duplicate_lifespan: 1800,
+                duplicate_shake_offset: Vec2::ZERO,
+            };
+            if let Some(free) = free {
+                self.arrows[free] = clone;
+            } else {
+                self.arrows.push(clone);
+            }
+        }
+    }
+
+    fn duplicate_ability_pickup(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let source = self.ability_pickups[source_index];
+        let speed = source.body.velocity.length() + Fix::from_int(15);
+        for clone_index in 0..3 {
+            let position = Self::fan_out(
+                3,
+                direction,
+                source.position,
+                Fix::from_int(2) * source.scale,
+                Fix::ONE,
+                clone_index,
+            );
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.pickup.updatable_count;
+            let mut body = data.pickup.body;
+            body.velocity = (position - source.position).normalized_safe() * speed;
+            body.orientation = source.body.orientation;
+            let clone = AbilityPickup {
+                active: true,
+                born_tick: self.tick,
+                updater_tick: u32::MAX,
+                hierarchy_base,
+                entity: None,
+                ability: source.ability,
+                position,
+                scale: source.scale,
+                body,
+                enabled: false,
+                time_passed: Fix::ZERO,
+                time_since_swap: Fix::ZERO,
+                previous_vibration: Vec2::ZERO,
+                duplicated: true,
+                duplicate_lifespan: 1800,
+                duplicate_shake_offset: Vec2::ZERO,
+            };
+            if let Some(free) = self
+                .ability_pickups
+                .iter()
+                .position(|pickup| !pickup.active)
+            {
+                self.ability_pickups[free] = clone;
+            } else {
+                self.ability_pickups.push(clone);
+            }
+        }
+    }
+
+    fn duplicate_black_hole(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let source = self.black_holes[source_index];
+        let position = source.position + direction * source.radius * Fix::from_int(2);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.black_hole.updatable_count;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.black_hole.layer,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000 + hierarchy_base + data.black_hole.hole_collider_hierarchy,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            radius: source.radius.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        let clone = BlackHoleState {
+            active: true,
+            born_tick: self.tick,
+            entity: Some(entity),
+            hierarchy_base,
+            owner: 0,
+            position,
+            // SetMass(source), then AddForce(mass * dir * 6).
+            velocity: direction * Fix::from_int(6),
+            mass: source.mass,
+            time_since_growth: Fix::ZERO,
+            previous_target_size: Fix::from_f32(0.1),
+            target_size: Fix::from_int(100) + source.mass.abs() * data.black_hole.growth,
+            radius: source.radius,
+            duplicated: true,
+            duplicate_lifespan: 1800,
+            duplicate_shake_offset: Vec2::ZERO,
+        };
+        if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
+            self.black_holes[free] = clone;
+        } else {
+            self.black_holes.push(clone);
+        }
+    }
+
+    fn duplicate_player_target(
+        &mut self,
+        victim: usize,
+        _hit_position: Vec2,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        if self.players[victim].active == ActiveAbility::Rock {
+            let source_position = self.players[victim].base.position;
+            let source = self.players[victim].rock;
+            let position = source_position + direction * Fix::from_int(4) * source.scale;
+            let mut body = data.rock.body;
+            body.velocity = (position - source_position).normalized_safe()
+                * (source.body.velocity.length() + Fix::from_int(15));
+            body.orientation = source.body.orientation;
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: 16,
+                owner: self.players[victim].base.id,
+                flags: E_ACTIVE | E_ENABLED,
+                hierarchy: 100_000_000 + self.next_spawn_hierarchy + 3,
+                x: position.x.raw(),
+                y: position.y.raw(),
+                vx: body.velocity.x.raw(),
+                vy: body.velocity.y.raw(),
+                radius: (data.rock.radius * source.scale).raw(),
+                rotation: body.orientation.raw(),
+                angular_velocity: body.angular_velocity.raw(),
+                inverse_mass: body.inverse_mass.raw(),
+                ..CEntity::default()
+            });
+            self.next_spawn_hierarchy += 4;
+            let clone = DuplicatedRock {
+                active: true,
+                born_tick: self.tick,
+                entity: Some(entity),
+                owner: victim,
+                position,
+                body,
+                scale: source.scale,
+                duplicate_lifespan: 1800,
+                duplicate_shake_offset: Vec2::ZERO,
+            };
+            if let Some(free) = self.duplicated_rocks.iter().position(|rock| !rock.active) {
+                self.duplicated_rocks[free] = clone;
+            } else {
+                self.duplicated_rocks.push(clone);
+            }
+            return;
+        }
+
+        // SpawnAbilityLessClone rejects the seventeenth clone for an owner.
+        if self
+            .abilityless_clones
+            .iter()
+            .filter(|clone| clone.active && clone.owner == victim)
+            .count()
+            >= 16
+        {
+            return;
+        }
+        let source = self.players[victim].base.clone();
+        let current_normal = source
+            .ground
+            .and_then(|ground| {
+                self.platforms
+                    .iter()
+                    .find(|platform| platform.id == ground)
+                    .map(|platform| platform.surface.normal(source.position))
+            })
+            .unwrap_or(Vec2::UP);
+        let launch_direction = if direction == current_normal {
+            direction
+        } else {
+            slerp(direction, current_normal, Fix::from_f32(0.3))
+        };
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += 8;
+        let position = source.position;
+        let collider = OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: LAYER_PLAYER,
+            owner: source.id,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000 + hierarchy_base + 6,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            right_x: collider.right.x.raw(),
+            right_y: collider.right.y.raw(),
+            up_x: collider.up.x.raw(),
+            up_y: collider.up.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        let base = Player {
+            alive: true,
+            id: source.id,
+            position,
+            rotation: Fix::ZERO,
+            up: Vec2::UP,
+            velocity: launch_direction * Fix::from_f32(1.3) * data.player.constants.jump_strength,
+            external_velocity: Vec2::ZERO,
+            radius: data.player.radius,
+            scale: Fix::ONE,
+            grounded: false,
+            ground: None,
+            local: Fix::ZERO,
+            grounded_speed: Fix::ZERO,
+            previous_jump: false,
+            skip_next_gravity: false,
+            jumped_this_frame: false,
+            constants: data.player.constants.clone(),
+            cooldown: Fix::ZERO,
+            dash: DashState::default(),
+            collider,
+            collider_rotation: Fix::ZERO,
+            collider_basis: Vec2::RIGHT,
+            aligned: None,
+            input_normalized: None,
+        };
+        let clone = AbilitylessClone {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: Some(entity),
+            owner: victim,
+            base,
+            obs_state: STATE_FALL,
+        };
+        if let Some(free) = self
+            .abilityless_clones
+            .iter()
+            .position(|clone| !clone.active)
+        {
+            self.abilityless_clones[free] = clone;
+        } else {
+            self.abilityless_clones.push(clone);
+        }
+    }
+
+    fn duplicate_lethal_rock(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let source = self.duplicated_rocks[source_index];
+        let position = source.position + direction * Fix::from_int(4) * source.scale;
+        let mut body = data.rock.body;
+        body.velocity =
+            direction.normalized_safe() * (source.body.velocity.length() + Fix::from_int(15));
+        body.orientation = source.body.orientation;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: 16,
+            owner: source.owner as u32 + 1,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + self.next_spawn_hierarchy + 3,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            vx: body.velocity.x.raw(),
+            vy: body.velocity.y.raw(),
+            radius: (data.rock.radius * source.scale).raw(),
+            rotation: body.orientation.raw(),
+            angular_velocity: body.angular_velocity.raw(),
+            inverse_mass: body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        self.next_spawn_hierarchy += 4;
+        let clone = DuplicatedRock {
+            active: true,
+            born_tick: self.tick,
+            entity: Some(entity),
+            owner: source.owner,
+            position,
+            body,
+            scale: source.scale,
+            duplicate_lifespan: 1800,
+            duplicate_shake_offset: Vec2::ZERO,
+        };
+        if let Some(free) = self.duplicated_rocks.iter().position(|rock| !rock.active) {
+            self.duplicated_rocks[free] = clone;
+        } else {
+            self.duplicated_rocks.push(clone);
+        }
+    }
+
+    fn duplicate_attached_local(
+        &self,
+        platform_index: usize,
+        source_local: Fix,
+        source_rotation: Fix,
+        orientation_sign: Fix,
+        distance: Fix,
+        direction: Vec2,
+    ) -> Fix {
+        let platform_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let source_right = Vec2::angle(platform_rotation + source_rotation) * orientation_sign;
+        let sign = Fix::from_int(source_right.dot(direction).sign2());
+        (Fix::from_int(1000)
+            + source_local
+            + distance * sign / self.platforms[platform_index].surface.circumference())
+        .checked_rem(Fix::ONE, true)
+        .expect("positive platform circumference")
+    }
+
+    fn duplicate_attached_spike(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let source = self.spike_attacks[source_index];
+        if source.platform_index >= self.platforms.len() {
+            return;
+        }
+        let platform_index = source.platform_index;
+        let local = self.duplicate_attached_local(
+            platform_index,
+            source.local,
+            source.relative_rotation,
+            -Fix::ONE,
+            Fix::from_int(7),
+            direction,
+        );
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let surface_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO);
+        let up = -self.platforms[platform_index]
+            .surface
+            .normal(surface_position);
+        let right = up.perp_cw();
+        let rotation = right.normalized_angle();
+        let relative_right = right.complex_mul(inverse_basis);
+        let surface_offset = Fix::from_f32(0.75);
+        let root_position = surface_position + up * surface_offset;
+        let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
+            + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.spike.attack_updatable_count;
+        self.attach_spike_body(platform_index, data.spike.attack_body);
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: data.spike.attack_layer,
+            flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+            hierarchy: 100_000_000 + hierarchy_base + data.spike.attack_collider_hierarchy,
+            inverse_mass: data.spike.attack_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let clone = SpawnedSpike {
+            active: true,
+            born_tick: self.tick,
+            hierarchy_base,
+            entity: Some(entity),
+            platform_index,
+            local,
+            relative_center,
+            relative_rotation: rotation - parent_rotation,
+            surface_offset,
+            scale: source.scale,
+            time: Fix::ZERO,
+            body: data.spike.attack_body,
+            duplicated: true,
+            duplicate_lifespan: 1800,
+            duplicate_shake_offset: Vec2::ZERO,
+        };
+        if let Some(free) = self.spike_attacks.iter().position(|spike| !spike.active) {
+            self.spike_attacks[free] = clone;
+        } else {
+            self.spike_attacks.push(clone);
+        }
+        self.platforms_changed();
+    }
+
+    fn duplicate_attached_engine(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+    ) {
+        let source = self.engines[source_index];
+        if source.platform_index >= self.platforms.len() {
+            return;
+        }
+        let platform_index = source.platform_index;
+        let local = self.duplicate_attached_local(
+            platform_index,
+            source.local,
+            source.relative_rotation,
+            Fix::ONE,
+            Fix::from_f32(0.3),
+            direction,
+        );
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let surface_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO);
+        let up = self.platforms[platform_index]
+            .surface
+            .normal(surface_position);
+        let right = up.perp_cw();
+        let rotation = right.normalized_angle();
+        let relative_right = right.complex_mul(inverse_basis);
+        let surface_offset = Fix::from_f32(0.3);
+        let root_position = surface_position + up * surface_offset;
+        let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
+            + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
+        self.attach_engine_body(platform_index, data.engine.rocket_body);
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: data.engine.rocket_layer,
+            flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+            hierarchy: 100_000_000 + hierarchy_base + data.engine.rocket_collider_hierarchy,
+            inverse_mass: data.engine.rocket_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let clone = SpawnedEngine {
+            active: true,
+            born_tick: self.tick,
+            owner: caster,
+            ability_slot: self.players[caster].active_slot,
+            ability_generation: self.players[caster].ability_generation,
+            hierarchy_base,
+            entity: Some(entity),
+            platform_index,
+            local,
+            relative_center,
+            relative_rotation: rotation - parent_rotation,
+            collider_center: parent_position
+                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_rotation: rotation,
+            surface_offset,
+            scale: source.scale,
+            time: Fix::ZERO,
+            phase: 0,
+            ticks: 0,
+            body: data.engine.rocket_body,
+            duplicated: true,
+            duplicate_lifespan: 1800,
+            duplicate_shake_offset: Vec2::ZERO,
+        };
+        if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
+            self.engines[free] = clone;
+        } else {
+            self.engines.push(clone);
+        }
+        self.platforms_changed();
+    }
+
+    fn duplicate_attached_tesla(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+    ) {
+        let source = self.tesla_nodes[source_index];
+        if source.platform_index >= self.platforms.len() {
+            return;
+        }
+        let platform_index = source.platform_index;
+        let local = self.duplicate_attached_local(
+            platform_index,
+            source.local,
+            source.relative_rotation,
+            Fix::ONE,
+            Fix::from_int(5),
+            direction,
+        );
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let surface_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO);
+        let up = self.platforms[platform_index]
+            .surface
+            .normal(surface_position);
+        let right = up.perp_cw();
+        let rotation = right.normalized_angle();
+        let relative_right = right.complex_mul(inverse_basis);
+        let surface_offset = Fix::from_f32(2.2);
+        let root_position = surface_position + up * surface_offset;
+        let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
+            + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.tesla.node_updatable_count;
+        self.attach_engine_body(platform_index, data.tesla.node_body);
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.tesla.node_layer,
+            owner: caster as u32 + 1,
+            flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+            hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
+            radius: (data.tesla.node_radius * source.scale).raw(),
+            inverse_mass: data.tesla.node_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let clone = SpawnedTeslaNode {
+            active: true,
+            born_tick: self.tick,
+            owner: caster,
+            ability_slot: self.players[caster].active_slot,
+            ability_generation: self.players[caster].ability_generation,
+            hierarchy_base,
+            entity: Some(entity),
+            platform_index,
+            local,
+            relative_center,
+            relative_rotation: rotation - parent_rotation,
+            collider_center: parent_position
+                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_rotation: rotation,
+            surface_offset,
+            scale: source.scale,
+            body: data.tesla.node_body,
+            duplicated: true,
+            duplicate_lifespan: 1800,
+            duplicate_shake_offset: Vec2::ZERO,
+            ..SpawnedTeslaNode::default()
+        };
+        if let Some(free) = self.tesla_nodes.iter().position(|node| !node.active) {
+            self.tesla_nodes[free] = clone;
+        } else {
+            self.tesla_nodes.push(clone);
+        }
+        self.platforms_changed();
     }
 
     fn duplicate_thrown_item(
@@ -17245,6 +18008,88 @@ impl RolloutWorld {
         // DetPhysics.UpdateDuplicatedObjects walks its List from Count-1 to
         // zero. The order becomes observable during the last 60 frames because
         // every live duplicate consumes one RandomUnitVector for its shake.
+        for arrow_index in (0..self.arrows.len()).rev() {
+            if !self.arrows[arrow_index].active || !self.arrows[arrow_index].duplicated {
+                continue;
+            }
+            self.arrows[arrow_index].duplicate_lifespan -= 1;
+            if self.arrows[arrow_index].duplicate_lifespan < 0 {
+                self.destroy_arrow(arrow_index);
+            } else if self.arrows[arrow_index].duplicate_lifespan < 60 {
+                let arrow = &mut self.arrows[arrow_index];
+                let progress =
+                    Fix::ONE - Fix::from_int(arrow.duplicate_lifespan as i64) / Fix::from_int(60);
+                arrow.position -= arrow.duplicate_shake_offset;
+                arrow.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                arrow.position += arrow.duplicate_shake_offset;
+            }
+        }
+        for pickup_index in (0..self.ability_pickups.len()).rev() {
+            let pickup = &mut self.ability_pickups[pickup_index];
+            if !pickup.active || !pickup.duplicated {
+                continue;
+            }
+            pickup.duplicate_lifespan -= 1;
+            if pickup.duplicate_lifespan < 0 {
+                pickup.active = false;
+                if let Some(entity) = pickup.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if pickup.duplicate_lifespan < 60 {
+                let progress =
+                    Fix::ONE - Fix::from_int(pickup.duplicate_lifespan as i64) / Fix::from_int(60);
+                pickup.position -= pickup.duplicate_shake_offset;
+                pickup.duplicate_shake_offset =
+                    Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                        * progress
+                        * Fix::from_f32(0.25);
+                pickup.position += pickup.duplicate_shake_offset;
+            }
+        }
+        for hole_index in (0..self.black_holes.len()).rev() {
+            let hole = &mut self.black_holes[hole_index];
+            if !hole.active || !hole.duplicated {
+                continue;
+            }
+            hole.duplicate_lifespan -= 1;
+            if hole.duplicate_lifespan < 0 {
+                hole.active = false;
+                if let Some(entity) = hole.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if hole.duplicate_lifespan < 60 {
+                let progress =
+                    Fix::ONE - Fix::from_int(hole.duplicate_lifespan as i64) / Fix::from_int(60);
+                hole.position -= hole.duplicate_shake_offset;
+                hole.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                hole.position += hole.duplicate_shake_offset;
+            }
+        }
+        for rock_index in (0..self.duplicated_rocks.len()).rev() {
+            let rock = &mut self.duplicated_rocks[rock_index];
+            if !rock.active {
+                continue;
+            }
+            rock.duplicate_lifespan -= 1;
+            if rock.duplicate_lifespan < 0 {
+                rock.active = false;
+                if let Some(entity) = rock.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if rock.duplicate_lifespan < 60 {
+                let progress =
+                    Fix::ONE - Fix::from_int(rock.duplicate_lifespan as i64) / Fix::from_int(60);
+                rock.position -= rock.duplicate_shake_offset;
+                rock.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                rock.position += rock.duplicate_shake_offset;
+            }
+        }
         for cloud_index in (0..self.smoke_clouds.len()).rev() {
             if !self.smoke_clouds[cloud_index].active || !self.smoke_clouds[cloud_index].duplicated
             {
@@ -17311,6 +18156,108 @@ impl RolloutWorld {
                         * Fix::from_f32(0.25);
                 missile.position += missile.duplicate_shake_offset;
             }
+        }
+        for spike_index in (0..self.spike_attacks.len()).rev() {
+            if !self.spike_attacks[spike_index].active
+                || !self.spike_attacks[spike_index].duplicated
+            {
+                continue;
+            }
+            self.spike_attacks[spike_index].duplicate_lifespan -= 1;
+            if self.spike_attacks[spike_index].duplicate_lifespan < 0 {
+                self.remove_spike(spike_index);
+            } else if self.spike_attacks[spike_index].duplicate_lifespan < 60 {
+                let progress = Fix::ONE
+                    - Fix::from_int(self.spike_attacks[spike_index].duplicate_lifespan as i64)
+                        / Fix::from_int(60);
+                let old = self.spike_attacks[spike_index].duplicate_shake_offset;
+                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                let platform = self.spike_attacks[spike_index].platform_index;
+                let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
+                self.spike_attacks[spike_index].relative_center += (new - old).complex_mul(inverse);
+                self.spike_attacks[spike_index].duplicate_shake_offset = new;
+            }
+        }
+        for engine_index in (0..self.engines.len()).rev() {
+            if !self.engines[engine_index].active || !self.engines[engine_index].duplicated {
+                continue;
+            }
+            self.engines[engine_index].duplicate_lifespan -= 1;
+            if self.engines[engine_index].duplicate_lifespan < 0 {
+                self.remove_engine(engine_index);
+            } else if self.engines[engine_index].duplicate_lifespan < 60 {
+                let progress = Fix::ONE
+                    - Fix::from_int(self.engines[engine_index].duplicate_lifespan as i64)
+                        / Fix::from_int(60);
+                let old = self.engines[engine_index].duplicate_shake_offset;
+                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                let platform = self.engines[engine_index].platform_index;
+                let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
+                self.engines[engine_index].relative_center += (new - old).complex_mul(inverse);
+                self.engines[engine_index].duplicate_shake_offset = new;
+            }
+        }
+        for node_index in (0..self.tesla_nodes.len()).rev() {
+            if !self.tesla_nodes[node_index].active || !self.tesla_nodes[node_index].duplicated {
+                continue;
+            }
+            self.tesla_nodes[node_index].duplicate_lifespan -= 1;
+            if self.tesla_nodes[node_index].duplicate_lifespan < 0 {
+                self.remove_tesla_node(node_index);
+            } else if self.tesla_nodes[node_index].duplicate_lifespan < 60 {
+                let progress = Fix::ONE
+                    - Fix::from_int(self.tesla_nodes[node_index].duplicate_lifespan as i64)
+                        / Fix::from_int(60);
+                let old = self.tesla_nodes[node_index].duplicate_shake_offset;
+                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                let platform = self.tesla_nodes[node_index].platform_index;
+                let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
+                self.tesla_nodes[node_index].relative_center += (new - old).complex_mul(inverse);
+                self.tesla_nodes[node_index].duplicate_shake_offset = new;
+            }
+        }
+    }
+
+    fn register_pending_duplicated_pickups(&mut self, data: &data::RolloutData) {
+        for index in 0..self.ability_pickups.len() {
+            let pickup = self.ability_pickups[index];
+            if !pickup.active
+                || !pickup.duplicated
+                || pickup.entity.is_some()
+                || pickup.born_tick >= self.tick
+            {
+                continue;
+            }
+            let entity = self.entities.len();
+            let id = self.next_id();
+            let center = pickup.position + data.pickup.offset * pickup.scale;
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: data.pickup.layer,
+                flags: E_ACTIVE,
+                hierarchy: 100_000_000 + pickup.hierarchy_base + data.pickup.collider_hierarchy,
+                x: center.x.raw(),
+                y: center.y.raw(),
+                vx: pickup.body.velocity.x.raw(),
+                vy: pickup.body.velocity.y.raw(),
+                radius: (data.pickup.radius * pickup.scale).raw(),
+                rotation: pickup.body.orientation.raw(),
+                angular_velocity: pickup.body.angular_velocity.raw(),
+                inverse_mass: pickup.body.inverse_mass.raw(),
+                ..CEntity::default()
+            });
+            let pickup = &mut self.ability_pickups[index];
+            pickup.entity = Some(entity);
+            // DynamicAbilityPickup.initSelf calls InitPickup(..., Vec2.up)
+            // when the cloned updater initializes.
+            pickup.body.force += Vec2::UP * data.pickup.launch_force * Fix::from_int(60);
         }
     }
 
@@ -19398,6 +20345,7 @@ impl RolloutWorld {
             owner,
             entity,
             position,
+            scale: Fix::ONE,
             velocity,
             force: Vec2::ZERO,
             angular_velocity: Fix::ZERO,
@@ -19408,6 +20356,9 @@ impl RolloutWorld {
             can_hurt_owner: false,
             magnet_holder: None,
             magnet_hold_ticks: -1,
+            duplicated: false,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
         };
         match free {
             Some(i) => self.arrows[i] = arrow,
@@ -19514,7 +20465,7 @@ impl RolloutWorld {
                 hierarchy: 100_000_000
                     + arrow.hierarchy_base
                     + data::get().arrow.collider_hierarchy,
-                radius: radius.raw(),
+                radius: (radius * arrow.scale).raw(),
                 inverse_mass: Fix::from_f64(0.2).raw(),
                 ..CEntity::default()
             };
@@ -20573,7 +21524,7 @@ impl RolloutWorld {
             let arrow = self.arrows[i];
             let circle = Circle {
                 center: arrow.position,
-                radius,
+                radius: radius * arrow.scale,
             };
 
             // Circle/RR: DetPhysics tests every pair first, then applies the
@@ -21826,7 +22777,7 @@ impl RolloutWorld {
                             circle,
                             Circle {
                                 center: arrow.position,
-                                radius: data.arrow.radius,
+                                radius: data.arrow.radius * arrow.scale,
                             },
                         )
                         .is_some()
@@ -21888,7 +22839,7 @@ impl RolloutWorld {
                             mine_circle,
                             Circle {
                                 center: arrow.position,
-                                radius: data.arrow.radius,
+                                radius: data.arrow.radius * arrow.scale,
                             },
                         )
                         .is_some()
@@ -22553,6 +23504,204 @@ impl RolloutWorld {
         }
     }
 
+    fn abilityless_clones_tick(&mut self, actions: &[CAction]) {
+        for clone_index in 0..self.abilityless_clones.len() {
+            if !self.abilityless_clones[clone_index].active
+                || self.abilityless_clones[clone_index].born_tick >= self.tick
+            {
+                continue;
+            }
+            let owner = self.abilityless_clones[clone_index].owner;
+            if owner >= actions.len() {
+                continue;
+            }
+            if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner] {
+                self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
+            } else {
+                let action = actions[owner].aim_action();
+                let movement = actions[owner].input_direction(self.players[owner].keyboard);
+                let terrain = Terrain {
+                    platforms: &self.platforms,
+                    bounds: &self.bounds,
+                };
+                self.abilityless_clones[clone_index]
+                    .base
+                    .step_with_input(action, movement, terrain);
+            }
+            if !self.abilityless_clones[clone_index].base.alive {
+                self.kill_abilityless_clone(clone_index, 0);
+                continue;
+            }
+            self.abilityless_clones[clone_index].base.sync_collider();
+            let clone = &self.abilityless_clones[clone_index];
+            if let Some(entity) = clone.entity {
+                let collider = clone.base.collider;
+                self.entities[entity] = CEntity {
+                    id: self.entities[entity].id,
+                    kind: 1,
+                    layer: LAYER_PLAYER,
+                    owner: clone.base.id,
+                    flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                    hierarchy: self.entities[entity].hierarchy,
+                    x: collider.center.x.raw(),
+                    y: collider.center.y.raw(),
+                    right_x: (collider.right * clone.base.scale).x.raw(),
+                    right_y: (collider.right * clone.base.scale).y.raw(),
+                    up_x: (collider.up * clone.base.scale).x.raw(),
+                    up_y: (collider.up * clone.base.scale).y.raw(),
+                    rotation: clone.base.rotation.raw(),
+                    inverse_mass: -Fix::ONE.raw(),
+                    ..CEntity::default()
+                };
+            }
+        }
+    }
+
+    fn kill_abilityless_clone(&mut self, clone_index: usize, killer: u32) {
+        if !self.abilityless_clones[clone_index].active {
+            return;
+        }
+        let owner = self.abilityless_clones[clone_index].owner;
+        self.abilityless_clones[clone_index].active = false;
+        self.abilityless_clones[clone_index].base.alive = false;
+        if let Some(entity) = self.abilityless_clones[clone_index].entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+        self.players[owner].deaths += 1;
+        if killer == ENVIRONMENT {
+            self.players[owner].telemetry.deaths_environment += 1;
+        } else if killer == self.players[owner].base.id {
+            self.players[owner].telemetry.deaths_self += 1;
+        } else if killer >= 1 && killer <= self.players.len() as u32 {
+            self.players[owner].telemetry.deaths_opponent += 1;
+        } else {
+            self.players[owner].telemetry.deaths_other += 1;
+        }
+        if killer > 0
+            && let Some(killer_index) = self.players.iter().position(|slot| slot.base.id == killer)
+        {
+            self.players[killer_index].kills += 1;
+        }
+    }
+
+    fn abilityless_clone_contacts(&mut self) {
+        for clone_index in 0..self.abilityless_clones.len() {
+            if !self.abilityless_clones[clone_index].active {
+                continue;
+            }
+            let clone_entity = self.abilityless_clones[clone_index].entity;
+            let clone_owner = self.abilityless_clones[clone_index].base.id;
+            let clone_box = self.abilityless_clones[clone_index].base.collider;
+            let mut killer = None;
+            for (entity, row) in self.entities.iter().copied().enumerate() {
+                if Some(entity) == clone_entity
+                    || row.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
+                    || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
+                {
+                    continue;
+                }
+                if row.layer == LAYER_PROJECTILE
+                    && let Some(arrow) = self
+                        .arrows
+                        .iter()
+                        .find(|arrow| arrow.active && arrow.entity == Some(entity))
+                    && arrow.owner == clone_owner
+                    && !arrow.can_hurt_owner
+                {
+                    continue;
+                }
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let overlaps = if row.kind == 0 {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center,
+                            radius: Fix::from_raw(row.radius),
+                        },
+                        clone_box,
+                    )
+                    .is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    right != Vec2::ZERO
+                        && up != Vec2::ZERO
+                        && crate::physics::contact::box_box(
+                            OrientedBox {
+                                center,
+                                right,
+                                up,
+                                inverse_extents: Vec2::new(
+                                    Fix::ONE / right.length(),
+                                    Fix::ONE / up.length(),
+                                ),
+                            },
+                            clone_box,
+                        )
+                        .is_some()
+                };
+                if overlaps {
+                    killer = Some(row.owner);
+                    break;
+                }
+            }
+            if let Some(killer) = killer {
+                self.kill_abilityless_clone(clone_index, killer);
+            }
+        }
+    }
+
+    fn duplicated_rocks_integrate(&mut self, physics_dt: Fix, data: &data::RolloutData) {
+        for rock_index in 0..self.duplicated_rocks.len() {
+            if !self.duplicated_rocks[rock_index].active {
+                continue;
+            }
+            let shift = self.duplicated_rocks[rock_index]
+                .body
+                .integrate(physics_dt, Fix::from_int(-40));
+            self.duplicated_rocks[rock_index].position += shift;
+            let mut circle = Circle {
+                center: self.duplicated_rocks[rock_index].position,
+                radius: data.rock.radius * self.duplicated_rocks[rock_index].scale,
+            };
+            for wall_index in 0..self.platforms.len() {
+                let Some(contact) = crate::physics::contact::circle_rounded(
+                    circle,
+                    self.platforms[wall_index].collider,
+                ) else {
+                    continue;
+                };
+                let rock_position = self.duplicated_rocks[rock_index].position;
+                let wall_position = self.platforms[wall_index].surface.center;
+                let (rock_body, wall_body) = (
+                    &mut self.duplicated_rocks[rock_index].body,
+                    &mut self.platform_dynamics[wall_index].body,
+                );
+                resolve(contact, rock_body, wall_body, rock_position, wall_position);
+                let correction = positional_correction(
+                    contact,
+                    rock_body.inverse_mass,
+                    wall_body.inverse_mass,
+                    false,
+                );
+                self.duplicated_rocks[rock_index].position += correction[0];
+                self.platforms[wall_index].surface.center += correction[1];
+                self.platforms[wall_index].collider.inner.center += correction[1];
+                circle.center = self.duplicated_rocks[rock_index].position;
+                self.platforms_changed();
+            }
+            let rock = self.duplicated_rocks[rock_index];
+            if let Some(entity) = rock.entity {
+                let row = &mut self.entities[entity];
+                row.x = rock.position.x.raw();
+                row.y = rock.position.y.raw();
+                row.vx = rock.body.velocity.x.raw();
+                row.vy = rock.body.velocity.y.raw();
+                row.rotation = rock.body.orientation.raw();
+                row.angular_velocity = rock.body.angular_velocity.raw();
+            }
+        }
+    }
+
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
     fn rocks_integrate(&mut self, physics_dt: Fix) {
         for slot in &mut self.players {
@@ -23098,7 +24247,6 @@ impl RolloutWorld {
         // SpikeAttack boxes are composite children, so impulses and
         // positional correction move their attached platform body.
         scratch.spike_wall_contacts.clear();
-        let spike_extents = data::surface_extents(data.spike.attack_extents);
         for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
             if !spike.active || spike.platform_index >= self.platforms.len() {
                 continue;
@@ -23110,13 +24258,15 @@ impl RolloutWorld {
                 + spike
                     .relative_center
                     .complex_mul(self.platforms[parent_index].surface.right);
+            let scaled_extents = data.spike.attack_extents * spike.scale;
+            let spike_extents = data::surface_extents(scaled_extents);
             let attack_box = OrientedBox {
                 center,
                 right: basis * spike_extents.x,
                 up: basis.perp() * spike_extents.y,
                 inverse_extents: Vec2::new(
-                    Fix::ONE / data.spike.attack_extents.x,
-                    Fix::ONE / data.spike.attack_extents.y,
+                    Fix::ONE / scaled_extents.x,
+                    Fix::ONE / scaled_extents.y,
                 ),
             };
             let attack_rr = RoundedRect {
@@ -23785,6 +24935,7 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.state,
             &self.players,
+            &self.abilityless_clones,
             &self.time_stop_protected,
             &self.state_entities,
             &self.slimes,
@@ -23810,6 +24961,7 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.sample,
             &self.players,
+            &self.abilityless_clones,
             &self.time_stop_protected,
             &self.sample_entities,
             &self.sample_slimes,
@@ -23976,7 +25128,7 @@ impl RolloutWorld {
             let basis = Vec2::angle(rotation);
             let center = self.platform_dynamics[spike.platform_index].composite_position
                 + spike.relative_center.complex_mul(platform.surface.right);
-            let extents = data::surface_extents(data.spike.attack_extents);
+            let extents = data::surface_extents(data.spike.attack_extents * spike.scale);
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
                 kind: 1,
@@ -25310,12 +26462,45 @@ impl RolloutWorld {
                 ],
             });
         }
+        let mut clone_order = [usize::MAX; MAX_PLAYERS * 16];
+        let mut clone_count = 0usize;
+        for (index, clone) in self.abilityless_clones.iter().enumerate() {
+            if clone.active {
+                clone_order[clone_count] = index;
+                clone_count += 1;
+            }
+        }
+        clone_order[..clone_count].sort_unstable_by_key(|&index| {
+            self.abilityless_clones[index]
+                .entity
+                .map_or(u32::MAX, |entity| self.entities[entity].hierarchy)
+        });
+        for &index in &clone_order[..clone_count] {
+            let clone = &self.abilityless_clones[index];
+            slimes.push(CSlime {
+                id: clone.entity.map_or(0, |entity| self.entities[entity].id),
+                owner: clone.base.id,
+                flags: S_ACTIVE | S_SPAWNED | S_SIMULATED,
+                state: clone.obs_state,
+                x: clone.base.position.x.raw(),
+                y: clone.base.position.y.raw(),
+                vx: (clone.base.velocity + clone.base.external_velocity).x.raw(),
+                vy: (clone.base.velocity + clone.base.external_velocity).y.raw(),
+                rotation: clone.base.rotation.raw(),
+                scale: clone.base.scale.raw(),
+                abilities: [0; 3],
+                ability_flags: [0; 3],
+                cooldowns: [0; 3],
+                timers: [0; 3],
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn write_state(
         state: &mut CState,
         players: &[PlayerSlot],
+        abilityless_clones: &[AbilitylessClone],
         time_stop_protected: &[bool; MAX_PLAYERS],
         entities: &[CEntity],
         slimes: &[CSlime],
@@ -25369,7 +26554,11 @@ impl RolloutWorld {
                 id: slot.base.id,
                 team: slot.team,
                 flags: player_flags,
-                alive_bodies: u32::from(slot.base.alive),
+                alive_bodies: u32::from(slot.base.alive)
+                    + abilityless_clones
+                        .iter()
+                        .filter(|clone| clone.active && clone.owner == i)
+                        .count() as u32,
                 stocks: slot.stocks,
                 kills: slot.kills,
                 deaths: slot.deaths,

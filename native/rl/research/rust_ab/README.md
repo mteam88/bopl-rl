@@ -226,6 +226,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `duplicator_pickup_ab.c`: deterministic AbilitySpawner collection replaces
   equipped Duplicator in slot three, then the acquired Revival registers,
   casts, creates its marker and exits exactly.
+- `duplicator_broad_ab.sh`: one broad gate over 13 optimized-Q32 Duplicator
+  scenarios spanning grounded/airborne form use, platform and item families,
+  guided Missile, Poke Ball capture, pickup-driven loadout replacement, Gust,
+  Time Stop and Dash.
 - `ability_push_ab.c`: one-sided overlap push on a normal slime touching an
   active Bow ability hurtbox.
 - `aim_map.c`: full-charge arrow velocity per angle byte.

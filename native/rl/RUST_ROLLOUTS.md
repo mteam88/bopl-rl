@@ -622,8 +622,16 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   expiry for 2,200 ticks. The pickup diagnostic also replaces an
   equipped Duplicator with Revival and matches deferred registration, acquired
   cast, marker creation and exit.
-  Player/projectile/weapon/Black Hole, attached-terrain and orb targets remain
-  open, as does duplicated Poke Ball multi-captor expiry/ejection.
+  The remaining source target branches are live: four-way Projectile/Arrow
+  copies, three-way DynamicAbilityPickup copies, positive Black Holes, active
+  Rock to `Rock_noPlayer`, abilityless shared-input player clones with the
+  authored 16-clone cap, layer-26 orb conversion, and attached Spike/Engine/
+  Tesla copies. The broad Duplicator gate runs 13 optimized-Q32 differential
+  scenarios and all pass. Newly represented target classes still lack one
+  public capture each; mixed-type duplicate expiry uses per-pool reverse order
+  instead of one global Unity list, and clone-only rope/portal/pickup contacts
+  remain outside the dedicated clone traversal. Duplicated Poke Ball
+  multi-captor expiry/ejection is also unmeasured.
   Magnet uses its authored smaller-radius player form, animation clocks,
   grounded/airborne release and recoil, and strict landing/animation exits.
   Pulling is live on the cast pass as in the modified source. Its rounded-wall

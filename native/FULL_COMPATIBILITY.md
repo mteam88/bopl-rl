@@ -3609,10 +3609,36 @@ pickup through collection. The pickup replaces Duplicator with Revival on tick
 2508, creates the owner marker and completes the QuickSpell exit. The complete
 2,600-tick public state matches NativeAOT exactly.
 
-Duplicator remains partial while its player, projectile, weapon, Black Hole,
-attached-terrain and orb branches are integrated. The later simultaneous or
-one-pass-staggered expiry/ejection of multiple Poke Balls holding one victim
-remains unmeasured.
+The remaining `ShootDuplicator.ApplyDuplicationEffect` branches are now ported
+from the source in one pass. Projectile targets create the authored four-copy
+fan, including live Arrow scale, ownership reset and deferred registration.
+Dynamic ability pickups use the three-copy weapon fan and rerun `initSelf` on
+registration. Positive Black Holes copy mass and start at the source's
+radius-derived offset with the exact `AddForce(mass * direction * 6)` result.
+Active Rocks become owner-credited layer-16 `Rock_noPlayer` bodies. Ordinary
+and transformed player targets create fresh empty-loadout, shared-input player
+bodies with the source's 16-clone cap, normal interpolation and `PopIntoAir`
+launch. Layer-26 orbs select Duplicator type, while platform-attached Spike,
+Engine and Tesla targets copy on the same perimeter with their authored
+offsets, fresh runtime state and duplicate lifetime. Every new hot path uses
+retained vectors and fixed contact buffers; duplication allocates only when a
+cast actually creates an object.
+
+`duplicator_broad_ab.sh` runs the 13 existing optimized-Q32 NativeAOT/Rust
+scenarios as one gate. It covers grounded and airborne use, platform cloning,
+all previously represented item families, guided Missile, pickup-driven slot
+replacement, Poke Ball capture and the Gust, Time Stop and Dash interactions.
+All scenarios pass. The new player, Arrow, pickup, Black-Hole, orb and attached
+terrain branches are direct source ports but do not yet each have a standalone
+public capture. Native duplicate expiry is grouped by fixed entity pool rather
+than one cross-type Unity destruction list, so an exact same-tick mixed-type
+final-shake RNG order is not claimed. Abilityless clones currently implement
+movement, lethal contact, death accounting and observation rows; ordinary
+player shove, rope, portal and pickup interactions still use the base-player
+paths only where those systems already enumerate the clone pool. The later
+multi-captor Poke Ball expiry/ejection boundary also remains unmeasured. These
+limits affect rare compositions rather than the translated branch selection,
+so catalog id 29 is marked `ported`.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 
