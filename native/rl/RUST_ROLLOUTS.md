@@ -361,7 +361,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Black Hole also holds its position and Hermite radius for all 690 passes and
   resumes growth on restoration. Released outbound and returning Mjolnirs hold
   position, velocity and spin for the same interval, and frozen ordinary-slime
-  animation state no longer advances until restoration. Frozen DetPhysics boxes
+  animation state no longer advances until restoration. Released Smoke, Poke
+  Ball and Tack bodies likewise freeze all motion and resume their updater and
+  physics paths together. Frozen DetPhysics boxes
   retain their stop-entry sync through the restoration pass, matching the
   source updater delta captured at the pass start. Cross-ability interactions
   with catalog entries that remain absent inherit those entries' open scope.

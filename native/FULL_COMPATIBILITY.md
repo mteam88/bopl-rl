@@ -2170,6 +2170,14 @@ state machine now uses the same pass-start protection and time-scale gate as
 collider synchronization, matching `SpriteAnimator` without adding work or
 state to the tick path.
 
+`time_stop_released_items_ab.c` runs released Smoke, Poke Ball and Tack bodies
+through the same stop. Their position, linear velocity, angular velocity,
+owner cooldowns and opponent state remain fixed for all 690 passes, then body
+motion resumes on the restored clock. Tack continues far enough to cover its
+owner-clear/re-entry self-kill and stock transition after restoration. All
+three 1,540-tick scenarios are exact with the ordinary 2,048-raw-Q32 body bound;
+this does not claim Smoke's later cloud state or Poke Ball capture state.
+
 `time_stop_engine_ab.c` plants a RocketEngine shortly before the global stop.
 The live layer-21 child and its composite rounded platform remain fixed for all
 690 zero-scale passes. `RocketEngine.UpdateSim` returns before advancing the
