@@ -3861,3 +3861,22 @@ ray hit, and the resulting Hermite radius change from 5,425,903,114 to
 identity, hierarchy, transform, body value, lifecycle boundary and telemetry
 field matches within the pre-existing Black Hole spatial bound. Existing exact
 player, airborne, Missile and reflected-wall differentials remain unchanged.
+
+
+### Complete Shrink ray target routing (2026-09-16)
+
+Catalog id 17 uses the same complete `ShootScaleChange` query and retained
+`ScaleChanger` machinery as Growth, with its independently serialized negative
+curve, player/non-player multipliers, orb type and Black Hole inverse-mass
+argument. The direct rigid-affector branch passes raw Q32 -85,899,344
+(-0.0199999998) to `BlackHole.Grow`; from the default positive mass this crosses
+zero, changes the hole to negative mass, preserves the signed momentum update
+and derives size from absolute mass exactly as the source does.
+
+`shrink_broad_ab.c` compares 520 optimized-Q32 NativeAOT/Rust ticks through an
+independently cast Black Hole, the Shrink ray and the resulting white-hole
+Hermite radius evolution from 5,425,903,114 to 7,894,150,044 raw units. Every
+compared public field matches within the existing Black Hole spatial bound. The
+airborne-player, reflected-wall and live-Missile Shrink differentials remain
+exact; unmeasured generic target classes and target-specific spell internals stay
+listed in `rl/ABILITY_PORT_GAPS.md`.

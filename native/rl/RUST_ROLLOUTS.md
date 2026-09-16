@@ -555,7 +555,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   spell targets, first-hit orb conversion and concurrent ScaleChangers. Growth
   against a live Black Hole is exact through the prefab's 0.0199999998 inverse-
   mass argument, mass/velocity update and Hermite radius growth over a 520-tick
-  broad differential. Target-specific spell scaling and the remaining translated
+  broad differential. Shrink's separate 520-tick broad composition is exact
+  through the negative inverse-mass call, white-hole conversion and absolute-
+  mass radius path. Target-specific spell scaling and the remaining translated
   generic targets are tracked as unmeasured in `ABILITY_PORT_GAPS.md`.
   Blink gun uses the same exact GunTransform form and hitscan ordering. A
   player hit immediately disables the victim, changes the cast cooldown to

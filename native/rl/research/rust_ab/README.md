@@ -183,6 +183,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `shrink_water_wall_ab.c`: the corresponding 500-tick Shrink reflection,
   including the wall's authored minimum-scale clamp, complete signed curve,
   inverse-mass updates and attached-rider motion.
+- `shrink_broad_ab.c`: a 520-tick combined Shrink/Black Hole composition
+  covering negative serialized inverse-mass absorption, white-hole conversion
+  and the absolute-mass Hermite radius path.
 - `shrink_airborne_ab.c`: the corresponding 500-tick Shrink trace through its
   negative ScaleChanger, reduced-body fall and platform contacts.
 - `freeze_airborne_hit_ab.c`: a rising ordinary player caught by Freeze through
