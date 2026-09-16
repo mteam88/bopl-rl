@@ -303,6 +303,34 @@ def timing(library, rng, hidden=256):
     return out
 
 
+def cpu_case(rng, hidden=64, layers=2, steps=3, **shape):
+    """The CPU evaluator (policy_eval.c + bopl_v4_eval.h, what the pool rater and the
+    in-game agent run) against the torch reference, fp32 both, on random weights
+    and rows: raw decoder rows, game logits, value and recurrent state."""
+    import native_policy
+    full = {**layout.V4_DEFAULTS, **shape}
+    weights = policy_v4.init_weights(hidden, layers, aim_fourier=4, seed=int(rng.integers(1 << 30)), **full)
+    ref = policy_v4.PolicyV4(weights, hidden, layers, 4, 0, **full)
+    policy = native_policy.NativePolicy(weights, layout.V4_OBS_SIZE, hidden, layers, architecture=layout.V4_ARCHITECTURE,
+                                        aim_fourier=4, v4_shape=full)
+    state = torch.zeros(layers, 6, hidden)
+    worst = dict(rows=0.0, state=0.0, logits=0.0, value=0.0)
+    for _ in range(steps):
+        obs = torch.from_numpy(random_obs(rng, 6, 0.4)[:, :layout.V4_OBS_SIZE].copy())
+        rows_c, state_c = policy.step_raw(obs, state)
+        rows_t, state_t = ref.step_raw(obs, state)
+        logits_c, value_c = policy.game_logits(rows_c)
+        logits_t, value_t = ref.game_logits(rows_t)
+        worst["rows"] = max(worst["rows"], (rows_c - rows_t).abs().max().item())
+        worst["state"] = max(worst["state"], (state_c - state_t).abs().max().item())
+        worst["logits"] = max(worst["logits"], (logits_c - logits_t).abs().max().item())
+        worst["value"] = max(worst["value"], (value_c - value_t).abs().max().item())
+        state = state_c
+    result = dict(hidden=hidden, layers=layers, shape=full, max_abs=worst, pass_all=max(worst.values()) < 1e-4)
+    assert result["pass_all"], result
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "native/artifacts/rl/native-migration-audit/cuda-v4")
@@ -347,6 +375,8 @@ def main():
     report["graph"] = compare(library, random_obs(rng, 33), 128, rng, graph=True)
     report["gather"] = gather_case(library, rng)
     report["overflow"] = overflow_case(library, rng)
+    report["cpu"] = [cpu_case(rng), cpu_case(rng, hidden=128, layers=1, set_inner=64, ffn_dim=0, critic_dim=384),
+                     cpu_case(rng, critic_privileged=0, mean_pool=0), cpu_case(rng, critic_dim=0)]
     if args.time:
         report["timing"] = timing(library, rng)
     (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")

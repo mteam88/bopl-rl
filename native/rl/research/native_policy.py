@@ -37,7 +37,8 @@ import layout
 ROOT = Path(__file__).resolve().parents[3]
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 LIBRARY = ROOT / "native/artifacts/rl/libbopl_policy_eval.so"
-ARCHITECTURES = {"puffernet-mingru", layout.ARCHITECTURE}
+ARCHITECTURES = {"puffernet-mingru", layout.ARCHITECTURE, layout.V4_ARCHITECTURE}
+V4_SHAPE_KEYS = ("set_dim", "set_inner", "flat_dim", "ffn_dim", "critic_dim", "critic_privileged", "critic_detach", "mean_pool")
 HEAD_BOUNDS = [sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS + 1)]  # logits row offsets per head
 
 
@@ -65,6 +66,8 @@ def _library(path):
     ints = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
     lib.bopl_policy_eval_create_aim.argtypes = [array, ctypes.c_size_t, *([ctypes.c_int] * 7)]
     lib.bopl_policy_eval_create_aim.restype = ctypes.c_void_p
+    lib.bopl_policy_eval_create_v4.argtypes = [array, ctypes.c_size_t, *([ctypes.c_int] * 5), ints]
+    lib.bopl_policy_eval_create_v4.restype = ctypes.c_void_p
     lib.bopl_policy_eval_step_raw.argtypes = [ctypes.c_void_p, array, array, array, array]
     lib.bopl_policy_eval_step_raw.restype = None
     lib.bopl_policy_eval_game_logits.argtypes = [ctypes.c_void_p, array, ints, array]
@@ -75,10 +78,14 @@ def _library(path):
 
 
 class _Context:
-    def __init__(self, lib, weights, batch, observations, hidden, layers, use_set, aim_fourier, aim_ar):
+    def __init__(self, lib, weights, batch, observations, hidden, layers, use_set, aim_fourier, aim_ar, v4_shape=None):
         self.lib = lib
-        self.handle = lib.bopl_policy_eval_create_aim(weights, weights.size, batch, observations, hidden, layers,
-                                                      use_set, aim_fourier, aim_ar)
+        if v4_shape is not None:
+            shape = np.array([v4_shape[key] for key in V4_SHAPE_KEYS], dtype=np.int32)
+            self.handle = lib.bopl_policy_eval_create_v4(weights, weights.size, batch, hidden, layers, aim_fourier, aim_ar, shape)
+        else:
+            self.handle = lib.bopl_policy_eval_create_aim(weights, weights.size, batch, observations, hidden, layers,
+                                                          use_set, aim_fourier, aim_ar)
         if not self.handle:
             raise ValueError("Invalid native policy dimensions or weights")
 
@@ -89,7 +96,7 @@ class _Context:
 
 class NativePolicy:
     def __init__(self, weights, obs_size, hidden=128, num_layers=1, library=LIBRARY,
-                 architecture="puffernet-mingru", aim_fourier=0, aim_ar=0):
+                 architecture="puffernet-mingru", aim_fourier=0, aim_ar=0, v4_shape=None):
         if architecture not in ARCHITECTURES:
             raise ValueError(f"Unsupported native checkpoint architecture: {architecture!r}")
         self.architecture = architecture
@@ -104,11 +111,20 @@ class NativePolicy:
             raise ValueError(f"Unsupported aim head parameterisation: aim_fourier={aim_fourier!r} aim_ar={aim_ar!r}")
         if self.architecture == layout.ARCHITECTURE and self.obs_size != layout.OBS_SIZE:
             raise ValueError(f"Bopl set checkpoints require {layout.OBS_SIZE} observation features")
-        # layout.policy_weights for the set encoder; the linear encoder accepts any obs width.
-        encoder_weights = (layout.set_encoder_weights(self.hidden) if self.architecture == layout.ARCHITECTURE
-                           else self.hidden * self.obs_size)
         self.width = layout.decoder_logits(self.aim_fourier, self.aim_ar)  # decoder logit columns; the row is width + 1
-        expected = encoder_weights + self.hidden * (self.width + 1) + self.num_layers * 3 * self.hidden**2
+        self.v4_shape = None
+        if self.architecture == layout.V4_ARCHITECTURE:
+            # Policy v4 (POLICY_V4_PLAN.md): layout v4 rows, the sidecar's v4_shape sizes the network.
+            if self.obs_size != layout.V4_OBS_SIZE:
+                raise ValueError(f"Bopl v4 checkpoints require {layout.V4_OBS_SIZE} observation features")
+            self.v4_shape = {**layout.V4_DEFAULTS, **{k: int(v) for k, v in (v4_shape or {}).items() if k in layout.V4_DEFAULTS}}
+            expected = layout.policy_v4_weights(self.hidden, self.num_layers, aim_fourier=self.aim_fourier, aim_ar=self.aim_ar,
+                                                **self.v4_shape)
+        else:
+            # layout.policy_weights for the set encoder; the linear encoder accepts any obs width.
+            encoder_weights = (layout.set_encoder_weights(self.hidden) if self.architecture == layout.ARCHITECTURE
+                               else self.hidden * self.obs_size)
+            expected = encoder_weights + self.hidden * (self.width + 1) + self.num_layers * 3 * self.hidden**2
         self.weights = np.asarray(weights, dtype=np.float32).reshape(-1).copy()
         if self.weights.size != expected or not np.isfinite(self.weights).all():
             raise ValueError(f"Expected {expected} finite native weights, got {self.weights.size}")
@@ -130,7 +146,7 @@ class NativePolicy:
         if batch not in self.local.contexts:
             self.local.contexts[batch] = _Context(self.lib, self.weights, batch, self.obs_size, self.hidden,
                                                 self.num_layers, int(self.architecture == layout.ARCHITECTURE),
-                                                self.aim_fourier, self.aim_ar)
+                                                self.aim_fourier, self.aim_ar, self.v4_shape)
         return self.local.contexts[batch]
 
     def step_raw(self, observations, state):
@@ -237,7 +253,8 @@ def load(path, device="cpu", metadata=None, library=LIBRARY):
             raise ValueError(f"Invalid native checkpoint {key}")
     policy = NativePolicy(np.frombuffer(data, dtype="<f4"), meta["obs_size"], meta["hidden"],
                           meta["num_layers"], library=library, architecture=meta.get("architecture"),
-                          aim_fourier=meta.get("aim_fourier", 0), aim_ar=meta.get("aim_ar", 0))
+                          aim_fourier=meta.get("aim_fourier", 0), aim_ar=meta.get("aim_ar", 0),
+                          v4_shape=meta.get("v4_shape"))
     return policy, meta
 
 
