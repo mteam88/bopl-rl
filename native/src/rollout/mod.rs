@@ -2006,6 +2006,10 @@ struct PlatformScratch {
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
+    /// Guided-Missile Box/Box manifolds. Every manifold is captured before
+    /// either Missile callback destroys a participant.
+    missile_contacts: Vec<(usize, usize, Contact)>,
+    missile_detonations: Vec<usize>,
     /// Arrow Circle/RoundedRectangle manifolds. Retained because arrows can
     /// overlap several composite platforms in one DetPhysics pass.
     arrow_platform_contacts: Vec<(usize, Contact)>,
@@ -2185,6 +2189,8 @@ impl RolloutWorld {
                 item_window: Vec::with_capacity(192),
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
+                missile_contacts: Vec::with_capacity(256),
+                missile_detonations: Vec::with_capacity(128),
                 arrow_platform_contacts: Vec::with_capacity(64),
                 dash_hits: Vec::with_capacity(192),
                 ..PlatformScratch::default()
@@ -22135,7 +22141,135 @@ impl RolloutWorld {
         }
     }
 
+    fn guided_missile_pair_contacts(&mut self, data: &data::RolloutData) {
+        let mut contacts = std::mem::take(&mut self.scratch.missile_contacts);
+        let mut detonations = std::mem::take(&mut self.scratch.missile_detonations);
+        contacts.clear();
+        detonations.clear();
+
+        // DetPhysics builds the complete Box/Box manifold batch before it
+        // dispatches Missile.OnCollide. Capture it first so the first callback
+        // cannot hide another same-pass Missile contact.
+        for first in 0..self.guided_missiles.len() {
+            let a = self.guided_missiles[first];
+            if !a.active || !a.registered || self.blink_object_hidden(a.entity) {
+                continue;
+            }
+            let a_box = OrientedBox::from_basis(
+                a.position,
+                Vec2::angle(a.body.orientation),
+                data.missile.spark_extents * a.scale,
+            );
+            for second in first + 1..self.guided_missiles.len() {
+                let b = self.guided_missiles[second];
+                if !b.active || !b.registered || self.blink_object_hidden(b.entity) {
+                    continue;
+                }
+                let b_box = OrientedBox::from_basis(
+                    b.position,
+                    Vec2::angle(b.body.orientation),
+                    data.missile.spark_extents * b.scale,
+                );
+                if let Some(contact) = crate::physics::contact::box_box(a_box, b_box) {
+                    contacts.push((first, second, contact));
+                }
+            }
+        }
+
+        for &(first, second, contact) in &contacts {
+            let a = self.guided_missiles[first];
+            let b = self.guided_missiles[second];
+            let mut a_body = a.body;
+            let mut b_body = b.body;
+            let mut a_position = a.position;
+            let mut b_position = b.position;
+            resolve(contact, &mut a_body, &mut b_body, a_position, b_position);
+            let correction =
+                positional_correction(contact, a_body.inverse_mass, b_body.inverse_mass, false);
+            a_position += correction[0];
+            b_position += correction[1];
+            self.guided_missiles[first].position = a_position;
+            self.guided_missiles[first].body = a_body;
+            self.guided_missiles[second].position = b_position;
+            self.guided_missiles[second].body = b_body;
+            for index in [first, second] {
+                let missile = self.guided_missiles[index];
+                if let Some(entity) = missile.entity {
+                    let row = &mut self.entities[entity];
+                    row.x = missile.position.x.raw();
+                    row.y = missile.position.y.raw();
+                    row.vx = missile.body.velocity.x.raw();
+                    row.vy = missile.body.velocity.y.raw();
+                    row.rotation = missile.body.orientation.raw();
+                    row.angular_velocity = missile.body.angular_velocity.raw();
+                }
+                if missile.magnet_hold_ticks < 0 && !detonations.contains(&index) {
+                    detonations.push(index);
+                }
+            }
+        }
+
+        for &index in &detonations {
+            if !self.guided_missiles[index].active {
+                continue;
+            }
+            let missile = self.guided_missiles[index];
+            self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+            self.destroy_guided_missile(index, true);
+        }
+
+        self.scratch.missile_contacts = contacts;
+        self.scratch.missile_detonations = detonations;
+    }
+
+    fn guided_missile_hits_trigger(
+        &self,
+        missile: GuidedMissile,
+        missile_box: OrientedBox,
+    ) -> bool {
+        self.entities.iter().enumerate().any(|(entity, row)| {
+            if Some(entity) == missile.entity
+                || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                || !matches!(row.layer, 18 | 19 | 22 | 26)
+            {
+                return false;
+            }
+            let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+            if row.kind == 0 {
+                crate::physics::contact::circle_box(
+                    Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    },
+                    missile_box,
+                )
+                .is_some()
+            } else if row.kind == 1 {
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                right != Vec2::ZERO
+                    && up != Vec2::ZERO
+                    && crate::physics::contact::box_box(
+                        OrientedBox {
+                            center,
+                            right,
+                            up,
+                            inverse_extents: Vec2::new(
+                                Fix::ONE / right.length(),
+                                Fix::ONE / up.length(),
+                            ),
+                        },
+                        missile_box,
+                    )
+                    .is_some()
+            } else {
+                false
+            }
+        })
+    }
+
     fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
+        self.guided_missile_pair_contacts(data);
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missiles[missile_index].active
                 || !self.guided_missiles[missile_index].registered
@@ -22330,6 +22464,19 @@ impl RolloutWorld {
                     row.rotation = missile_body.orientation.raw();
                     row.angular_velocity = missile_body.angular_velocity.raw();
                 }
+                continue;
+            }
+
+            // Item-layer boxes also collide with Explosion, EffectorZone,
+            // Smoke and orb layers. Their colliders are triggers, so the body
+            // does not resolve; Missile.OnCollide simply creates its own
+            // explosion. RigidBodyAffector and Rope are deliberately absent:
+            // those are Missile's two explicit callback exclusions.
+            if missile.magnet_hold_ticks < 0
+                && self.guided_missile_hits_trigger(missile, missile_box)
+            {
+                self.spawn_missile_explosion(missile.position, missile.owner, false, data);
+                self.destroy_guided_missile(missile_index, true);
                 continue;
             }
 

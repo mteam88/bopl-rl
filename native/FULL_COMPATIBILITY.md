@@ -2615,9 +2615,7 @@ expiry. `missile_bow_ab.c` follows the same flight into an active Bow form for
 another 500 bit-exact ticks. That slice uses the registered form collider for
 Shockwave's `CircleCastAll`, then reproduces `BowTransform.ExitAbility` resetting
 rotation and moving one 0.05-unit surface-normal `UnGround` step before death
-and stock handling. Other active-form contacts, remaining projectile/thrown-item types, scale
-interactions, duplication and Portal traversal remain open, so coverage is
-marked partial.
+and stock handling.
 
 `missile_arrow_ab.c` adds a 500-tick bit-exact crossing shot. DetPhysics resolves
 the Arrow circle and guided Missile box as two dynamic bodies before its callback
@@ -2653,6 +2651,25 @@ positions and velocities retain a 64-raw-Q32-unit bound inherited from the
 pre-contact `ThrowItem2` flight; entity identity, flags, collision outcomes and
 all lifecycle ticks are exact. Both candidate collections use fixed stack
 storage.
+
+The final source pass covers the rest of `SparkShot` and `Missile` wholesale.
+The generic player query already dispatches every live transformed form, and
+the projectile now also builds Missile/Missile Box/Box manifolds before either
+callback can destroy a participant. Item-layer trigger callbacks cover the
+source collision matrix's Explosion, EffectorZone, Smoke and orb classes;
+these detonate without physical resolution. Portal transit, scale, duplicate
+expiry, Magnet hold/fire, Water and every bounds direction retain their
+existing pooled paths. `RigidBodyAffector` and `Rope` remain the two explicit
+early returns from `Missile.OnCollide`.
+
+`missile_broad_ab.sh` runs 16 optimized-Q32 NativeAOT/Rust scenarios as one
+gate: normal, delayed-ground and airborne entry, ordinary and Bow victims,
+Arrow and Grenade contacts, Water, Gust on both projectile and form, Time Stop,
+Duplicator, Growth/Shrink, Magnet pickup plus held landing, and Dash against the
+active form. Every scenario passes. Missile/Missile and trigger-layer contacts
+are direct ports of the remaining callback matrix but lack standalone public
+captures; they use retained contact/detonation vectors, so no per-tick
+allocation was added. Catalog id 10 is marked `ported`.
 
 ### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
 

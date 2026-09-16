@@ -295,6 +295,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `missile_water_ab.c`: a downward guided Missile crosses the Water trigger,
   dies in the same callback pass and matches deferred explosion registration,
   first-frame disable and visual expiry over 430 bit-exact ticks.
+- `missile_broad_ab.sh`: one broad gate over 16 optimized-Q32 Missile
+  scenarios spanning entry variants, steering/instability, players/forms,
+  Arrow, Grenade, Water, Gust, Time Stop, duplication, scale, Magnet and Dash.
 - `duplicator_missile_ab.c`: a live guided Missile receives three
   velocity-aligned fan copies with fresh engine state, then all four projectiles
   match boundary destruction, deferred explosions and visual expiry over 450 ticks.

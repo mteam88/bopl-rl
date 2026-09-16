@@ -336,9 +336,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Direct ordinary-player and active-Bow hits additionally match callback destruction,
   ownerless explosion lethality and telemetry, stock reconstruction, hitbox disable
   and visual expiry. The Bow case uses the registered form for Shockwave selection and
-  reproduces its callback-time rotation reset and surface-normal death exit. Other
-  active-form contacts, remaining projectile/item types and Portal traversal remain
-  open. A crossing Arrow additionally matches dynamic
+  reproduces its callback-time rotation reset and surface-normal death exit. The
+  remaining source collision matrix is ported for every active form,
+  Missile/Missile Box contacts and Explosion/EffectorZone/Smoke/orb triggers;
+  RigidBodyAffector and Rope retain the source's explicit no-detonation return.
+  A crossing Arrow additionally matches dynamic
   Circle/Box resolution, both callback destructions and the complete ownerless
   explosion lifecycle using a fixed stack contact set. Duplicator's Missile branch
   matches three velocity-aligned fan copies with fresh engine state, pooled duplicate
@@ -348,7 +350,8 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   complementary callback split: dynamic correction, Missile-only destruction,
   next-pass blast ignition, chained Grenade explosion and independent visual expiry.
   A downward Water-trigger hit also matches callback destruction before the next
-  bounds pass, deferred explosion registration, disable and expiry.
+  bounds pass, deferred explosion registration, disable and expiry. The broad
+  Missile gate runs 16 optimized-Q32 scenarios and is green.
   Mine executes the separate original `ThrowItem` form and exact autonomous
   hover, arming, scan/chase, player ignition, anticipation, owner-credited
   MineExplosion kill, and stock recovery path. Chase normalization and the
