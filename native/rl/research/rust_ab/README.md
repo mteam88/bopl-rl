@@ -306,6 +306,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   scenarios spanning aerial flight/recall, grounded wall clang and platform
   push, released Gust, both Time Stop phases, duplication and Dash against all
   shared ThrowItem forms.
+- `rock_broad_ab.sh`: one broad gate over six optimized-Q32 Rock scenarios
+  spanning rigid cast/terrain motion, lethal player contact, Gust, Time Stop,
+  PortalShot plus later portal transit, and Dash.
 - `duplicator_missile_ab.c`: a live guided Missile receives three
   velocity-aligned fan copies with fresh engine state, then all four projectiles
   match boundary destruction, deferred explosions and visual expiry over 450 ticks.

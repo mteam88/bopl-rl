@@ -1133,6 +1133,7 @@ pub struct RockState {
     pub scale_last_frame: Fix,
     pub scale: Fix,
     pub exiting: bool,
+    pub previous_player_velocity: Vec2,
 }
 
 /// Roll.cs state. The swept centres are the source's `extraHurtBoxesPos`;
@@ -5958,6 +5959,10 @@ impl RolloutWorld {
                         };
                         body.angular_velocity =
                             velocity.length() * direction * data.rock.radius * Fix::from_f32(0.2);
+                        body.angular_velocity /= slot.player_scale;
+                        if slot.rope.is_some() {
+                            body.angular_velocity = Fix::ZERO;
+                        }
                         slot.timers[s] = Fix::ZERO;
                         slot.active = ActiveAbility::Rock;
                         slot.active_slot = s;
@@ -5977,6 +5982,7 @@ impl RolloutWorld {
                             exit_scale: Fix::ONE,
                             scale_last_frame: Fix::ONE,
                             scale: Fix::ONE,
+                            previous_player_velocity: body.velocity,
                             ..RockState::default()
                         };
                         return;
@@ -6799,6 +6805,7 @@ impl RolloutWorld {
             let st = &mut self.players[index].rock;
             st.collider_radius *= Fix::ONE / st.scale;
             st.scale = Fix::ONE;
+            self.rock_rope_update(index, jump_pressed, data);
             // Rock's DestroyIfOutsideSceneBounds runs after BounceBall and
             // before its BoplBody, observing the previous physics pass's
             // position. Exiting an ability body uses cause Other.
@@ -12251,6 +12258,15 @@ impl RolloutWorld {
             let target = &mut self.players[player_index];
             let delta = target.base.position - position;
             let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+            if target.active == ActiveAbility::Rock {
+                // Rock has a BoplBody but no PlayerPhysics/PlayerBody. The
+                // one-shot Shockwave fallback applies ordinary force with
+                // the source's 9000 multiplier instead of player velocity.
+                target.rock.body.force += delta
+                    * (wave.default_force / distance / Fix::from_int(7))
+                    * Fix::from_int(9000);
+                continue;
+            }
             let mut force = delta * (wave.default_force / distance / Fix::from_int(7));
             if target.base.grounded {
                 force *= wave.grounded_player_multiplier;
@@ -20773,10 +20789,10 @@ impl RolloutWorld {
     }
 
     #[inline]
-    fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
+    fn circle_entity_contact(&self, query: Circle, entity: usize) -> Option<Contact> {
         let row = self.entities[entity];
         if row.flags & E_ACTIVE == 0 {
-            return false;
+            return None;
         }
         if row.kind == 0 {
             crate::physics::contact::circle_circle(
@@ -20786,7 +20802,6 @@ impl RolloutWorld {
                     radius: Fix::from_raw(row.radius),
                 },
             )
-            .is_some()
         } else {
             let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
             let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
@@ -20799,8 +20814,12 @@ impl RolloutWorld {
                     inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
                 },
             )
-            .is_some()
         }
+    }
+
+    #[inline]
+    fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
+        self.circle_entity_contact(query, entity).is_some()
     }
 
     /// Mine.ScanForPlayers uses DetPhysics' fixed four-entry CircleCastAll
@@ -23349,7 +23368,16 @@ impl RolloutWorld {
                         },
                     )
                     .is_some()
-                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
+                } else if player.active == ActiveAbility::Rock {
+                    crate::physics::contact::circle_circle(
+                        circle,
+                        Circle {
+                            center: player.base.position,
+                            radius: player.rock.collider_radius,
+                        },
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
                     let hurtbox = match player.active {
@@ -23430,7 +23458,16 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
+                } else if player.active == ActiveAbility::Rock {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: player.base.position,
+                            radius: player.rock.collider_radius,
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
@@ -23482,7 +23519,16 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
+                } else if player.active == ActiveAbility::Rock {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: player.base.position,
+                            radius: player.rock.collider_radius,
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
@@ -23622,7 +23668,16 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if matches!(player.active, ActiveAbility::Platform | ActiveAbility::Rock) {
+                } else if player.active == ActiveAbility::Rock {
+                    crate::physics::contact::circle_box(
+                        Circle {
+                            center: player.base.position,
+                            radius: player.rock.collider_radius,
+                        },
+                        hitbox,
+                    )
+                    .is_some()
+                } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
@@ -24141,6 +24196,69 @@ impl RolloutWorld {
     }
 
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
+    fn rock_rope_update(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+        let Some(rope_index) = self.players[index].rope else {
+            return;
+        };
+        if rope_index >= self.ropes.len() || !self.ropes[rope_index].physics.enabled {
+            return;
+        }
+        let top = self.players[index].rope_top;
+        let endpoint = if top {
+            0
+        } else {
+            self.ropes[rope_index].physics.count - 1
+        };
+        if jump_pressed {
+            let rope = &self.ropes[rope_index].physics;
+            self.players[index].rock.body.velocity =
+                (rope.segment[endpoint] - rope.previous[endpoint]) / DT;
+            self.attach_player_rope(index, None, top);
+            return;
+        }
+
+        let scale = self.players[index].rock.scale;
+        let velocity = self.players[index].rock.body.velocity;
+        let previous = self.players[index].rock.previous_player_velocity;
+        let position = self.players[index].base.position;
+        let stopped = self.player_time_scale < Fix::from_f32(0.01);
+        {
+            let rope = &mut self.ropes[rope_index];
+            if top {
+                rope.time_air_start = Fix::from_int(100);
+            } else {
+                rope.time_air_end = Fix::from_int(100);
+            }
+            rope.physics
+                .set_mass(data.rock.rope_player_mass, top, scale);
+            if top {
+                rope.physics.force_start = velocity - previous;
+            } else {
+                rope.physics.force_end = velocity - previous;
+            }
+            if !rope.physics.detached {
+                let other = rope.physics.segment[rope.physics.count - 1 - endpoint];
+                self.players[index].base.up = -(position - other).normalized_safe();
+            }
+            if rope.physics.time_since_hook_arrived >= Fix::ZERO
+                && !stopped
+                && !rope.physics.detached
+            {
+                let mut delta = position - rope.physics.segment[endpoint];
+                if delta.length_squared() > data.rock.squared_max_rope_separation {
+                    delta = delta.normalized_safe() * data.rock.squared_max_rope_separation;
+                }
+                self.players[index]
+                    .rock
+                    .body
+                    .apply_impulse(delta * data.rock.rope_pull_strength * scale, Vec2::ZERO);
+            }
+            rope.physics.segment[endpoint] = position;
+        }
+        self.players[index].rock.previous_player_velocity = velocity;
+    }
+
+    /// Rounded-platform rigid-body stage. The order matches DetPhysics after
     fn rocks_integrate(&mut self, physics_dt: Fix) {
         for slot in &mut self.players {
             if slot.active != ActiveAbility::Rock || !slot.base.alive {
@@ -24211,9 +24329,9 @@ impl RolloutWorld {
             self.platforms_changed();
         }
 
-        // Circle/Circle callbacks between Rock forms apply the authored bounce
-        // impulse on the following integration pass. Neither form owns a
-        // PlayerCollision component, so Rock-vs-Rock is nonlethal.
+        // Circle/Circle between Rock forms first resolves both BoplBodies,
+        // then queues the same manifold normal to both BounceBall callbacks.
+        // Neither form owns a PlayerCollision component, so it is nonlethal.
         for a in 0..self.players.len() {
             if self.players[a].active != ActiveAbility::Rock || !self.playable(a) {
                 continue;
@@ -24231,19 +24349,42 @@ impl RolloutWorld {
                     radius: self.players[b].rock.collider_radius,
                 };
                 if let Some(contact) = crate::physics::contact::circle_circle(ca, cb) {
+                    let (left, right) = self.players.split_at_mut(b);
+                    let a_position = left[a].base.position;
+                    let b_position = right[0].base.position;
+                    resolve(
+                        contact,
+                        &mut left[a].rock.body,
+                        &mut right[0].rock.body,
+                        a_position,
+                        b_position,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        left[a].rock.body.inverse_mass,
+                        right[0].rock.body.inverse_mass,
+                        false,
+                    );
+                    left[a].base.position += correction[0];
+                    right[0].base.position += correction[1];
                     let impulse =
                         contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                    let (left, right) = self.players.split_at_mut(b);
                     left[a].rock.body.force += impulse;
-                    right[0].rock.body.force -= impulse;
+                    right[0].rock.body.force += impulse;
+                    left[a].base.velocity = left[a].rock.body.velocity;
+                    right[0].base.velocity = right[0].rock.body.velocity;
                 }
             }
         }
 
-        // A normal slime's PlayerCollision callback sees Rock's Player-layer
-        // Ability and credits its owner. The Rock callback queues its bounce.
+        // Every live Player-layer slime/form callback sees Rock's Ability and
+        // credits its owner. BounceBall independently queues its bounce force.
         let mut victims = [usize::MAX; MAX_PLAYERS];
+        let mut killers = [0u32; MAX_PLAYERS];
         let mut victim_count = 0usize;
+        let mut clone_victims = [usize::MAX; MAX_PLAYERS * 16];
+        let mut clone_killers = [0u32; MAX_PLAYERS * 16];
+        let mut clone_victim_count = 0usize;
         for rock_index in 0..self.players.len() {
             if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
             {
@@ -24257,39 +24398,55 @@ impl RolloutWorld {
                 if victim == rock_index
                     || !self.playable(victim)
                     || self.players[victim].active == ActiveAbility::Rock
-                    || self.players[victim].active == ActiveAbility::Platform
+                    || self.players[victim].captured_by_ball.is_some()
                 {
                     continue;
                 }
-                if let Some(contact) =
-                    crate::physics::contact::circle_box(rock, self.players[victim].base.collider)
-                {
+                let entity = Self::blink_player_entity(&self.players[victim]);
+                if entity == usize::MAX || self.entities[entity].layer != LAYER_PLAYER {
+                    continue;
+                }
+                if let Some(contact) = self.circle_entity_contact(rock, entity) {
                     self.players[rock_index].rock.body.force +=
                         contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
                     if !victims[..victim_count].contains(&victim) {
                         victims[victim_count] = victim;
+                        killers[victim_count] = self.players[rock_index].base.id;
                         victim_count += 1;
                     }
                 }
             }
+            for clone_index in 0..self.abilityless_clones.len() {
+                if !self.abilityless_clones[clone_index].active
+                    || self.abilityless_clones[clone_index].owner == rock_index
+                {
+                    continue;
+                }
+                let Some(entity) = self.abilityless_clones[clone_index].entity else {
+                    continue;
+                };
+                if let Some(contact) = self.circle_entity_contact(rock, entity) {
+                    self.players[rock_index].rock.body.force +=
+                        contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    if !clone_victims[..clone_victim_count].contains(&clone_index) {
+                        clone_victims[clone_victim_count] = clone_index;
+                        clone_killers[clone_victim_count] = self.players[rock_index].base.id;
+                        clone_victim_count += 1;
+                    }
+                }
+            }
         }
-        for &victim in &victims[..victim_count] {
+        for victim_offset in 0..victim_count {
+            let victim = victims[victim_offset];
             if self.playable(victim) {
-                let killer = (0..self.players.len())
-                    .find(|&rock_index| {
-                        self.players[rock_index].active == ActiveAbility::Rock
-                            && rock_index != victim
-                            && crate::physics::contact::circle_box(
-                                Circle {
-                                    center: self.players[rock_index].base.position,
-                                    radius: self.players[rock_index].rock.collider_radius,
-                                },
-                                self.players[victim].base.collider,
-                            )
-                            .is_some()
-                    })
-                    .map_or(0, |i| self.players[i].base.id);
-                self.kill(victim, killer, CAUSE_OTHER, true, true);
+                self.kill(victim, killers[victim_offset], CAUSE_OTHER, true, true);
+            }
+        }
+        for clone_offset in 0..clone_victim_count {
+            let clone = clone_victims[clone_offset];
+            if self.abilityless_clones[clone].active {
+                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+                self.kill_abilityless_clone(clone, clone_killers[clone_offset]);
             }
         }
     }
@@ -24299,6 +24456,31 @@ impl RolloutWorld {
             if self.players[index].active != ActiveAbility::Rock || !self.players[index].base.alive
             {
                 continue;
+            }
+            if let Some(rope_index) = self.players[index].rope
+                && rope_index < self.ropes.len()
+                && self.ropes[rope_index].physics.enabled
+            {
+                let top = self.players[index].rope_top;
+                let endpoint = if top {
+                    0
+                } else {
+                    self.ropes[rope_index].physics.count - 1
+                };
+                let overstretched = (0..self.ropes[rope_index].physics.count.saturating_sub(2))
+                    .any(|segment| {
+                        (self.ropes[rope_index].physics.segment[segment]
+                            - self.ropes[rope_index].physics.segment[segment + 1])
+                            .length_squared()
+                            > data.ropes.max_stretch
+                    });
+                if overstretched {
+                    self.players[index].rock.body.velocity =
+                        (self.ropes[rope_index].physics.segment[endpoint]
+                            - self.ropes[rope_index].physics.previous[endpoint])
+                            / DT;
+                    self.attach_player_rope(index, None, top);
+                }
             }
             // BounceBall.LateUpdateSim continues to run during Time Stop.
             // GameTime.FixedDeltaTime freezes an unprotected owner's clocks,

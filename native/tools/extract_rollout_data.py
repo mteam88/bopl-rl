@@ -945,6 +945,10 @@ def main():
         "exit_scale": curve(rock, "ScaleOnExit"),
         "player_collision_bounce": fix(rock, "playerCollisionBounce"),
         "shockwave_force": fix(rock, "shockwaveForce"),
+        "min_rope_length": fix(rock, "minRopeLength"),
+        "rope_pull_strength": fix(rock, "ropePullStr"),
+        "squared_max_rope_separation": fix(rock, "sqrdMaxRopeSeparation"),
+        "rope_player_mass": fix(rock, "RopePlayerMass01"),
     }
 
     # ---- Roll player form ----

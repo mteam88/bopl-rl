@@ -377,9 +377,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   DPhysicsCircle scale-ratio residue instead of rebuilding radius from the
   display scale; this makes the PortalShot impact and subsequent rigid motion
   raw-Q32 exact. Gust's active-form BoplBody force, ensuing flight and
-  lower-boundary death are exact. Other Shockwaves, scale changes, arrow
-  attachment, projectile/item detonation, and mixed transformed-form contacts
-  still need dedicated goldens.
+  lower-boundary death are exact. The source-complete pass adds rope endpoint
+  mass/force/pull/jump/stretch transfer, two-body Rock/Rock resolution, current
+  transformed-form and abilityless-clone contacts, Grenade/explosion hits and
+  BoplBody Shockwave force. The six-scenario broad gate is green; those added
+  rope/mixed-contact branches remain without individual public differentials.
   Meteor executes its grounded anticipation and jump, direct airborne entry,
   normalized random vibration, short and maximum-charge downward release,
   charge-scaled platform impact, deferred Shockwave impulses, one-second

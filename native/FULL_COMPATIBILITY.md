@@ -2793,9 +2793,24 @@ Player-layer Shockwave branch. The BoplBody force begins on tick 231 and carries
 Rock below the scene bound, where its own `DestroyIfOutsideSceneBounds` kills
 the ability body on tick 284 with the exact effect hierarchy and stock result.
 
-Other Shockwave, scale-change, arrow-attachment, projectile/item-detonation and
-mixed transformed-form contact scenarios remain open, so coverage is marked
-partial.
+A whole-source follow-up completes the remaining `BounceBall` callbacks. Rope
+entry now zeroes spin, updates the endpoint's mass/time/force, applies the
+authored pull and orientation, transfers endpoint Verlet velocity on jump, and
+detaches with that velocity when any segment exceeds the shared stretch limit.
+Rock/Rock contacts perform full two-body impulse and positional resolution
+before both callbacks receive the source's shared manifold normal. Player-layer
+contacts use each current collider and include transformed forms and
+abilityless clones; Arrow Projectile callbacks, Grenade impact, Grenade/
+Mine/Smoke explosion boxes, Black Hole, Magnet, portals, scale rays and
+one-shot Shockwaves all operate on the live Rock circle/BoplBody. The sibling
+`Rock_noPlayer` duplication path remains pooled and allocation free.
+
+`rock_broad_ab.sh` runs six optimized-Q32 scenarios covering rigid cast and
+terrain motion, lethal ordinary-player contact, Gust, Time Stop, PortalShot
+resolution and later portal transit, and Dash. All pass. Rope, transformed
+form/clone, dual-Rock and dedicated explosion branches are source-ported but
+do not each have a standalone public differential; catalog id 9 is marked
+`ported`.
 
 
 ### Executable Push platform control (2026-09-14)

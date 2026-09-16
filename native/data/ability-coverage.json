@@ -78,8 +78,8 @@
       "name": "Rock",
       "prefab": "Assets/GameObject/Rock.prefab",
       "prefab_guid": "44115a8eb36b70448af81e1d922e7e12",
-      "native_status": "partial",
-      "verification": "rock_ability_ab matches 500 NativeAOT/Rust Q32 ticks through grounded transformation, rigid circle gravity/bounce/friction, authored pulse scale, strict 2.5-second lifetime, exit shrink, and slime restoration. rock_contact_ab matches 360 ticks and the same-tick lethal player callback, ownership, telemetry, and stock recovery. time_stop_rock_ab adds 1,600 ticks through a frozen active Rock, including its zero-delta activation clock, repeated entry-curve scale update and first restored rigid-body motion. gust_rock_ab adds 300 ticks through Gust BoplBody force, rigid flight and exact lower-boundary ability death. portal_rock_ab adds 500 exact ticks through tick-244 PortalShot circle/circle resolution after Rock terrain contact, live Q32 collider-scale residue, recast registration order, form exit and tick-367 linked-mouth transit. Other Shockwaves, projectile/item detonation, Growth/Shrink changes, arrows attaching to Rock, Magnet/Black Hole contacts and mixed transformed-form contacts remain to be separately goldened."
+      "native_status": "ported",
+      "verification": "BounceBall/Rock is source-ported wholesale: grounded/airborne entry, pulse and timed exit, bounds death, dynamic circle/platform and Rock/Rock resolution, Player-layer callbacks across ordinary slimes, active forms and abilityless clones, Arrow/Projectile bounce, Grenade and lethal explosion contacts, BoplBody Shockwaves, Magnet/Black Hole/Portal/scale interactions, Duplicator Rock_noPlayer copies, Time Stop and full rope endpoint mass/force/pull/jump/stretch-detach transfer. rock_broad_ab.sh runs six optimized-Q32 NativeAOT/Rust scenarios covering rigid cast/motion, lethal ordinary-player contact, Gust, Time Stop, PortalShot collision plus later portal transit, and Dash; all pass. Rope, transformed-form/clone, dual-Rock and dedicated explosion branches are source-ported but do not each have a standalone public differential."
     },
     {
       "id": 10,

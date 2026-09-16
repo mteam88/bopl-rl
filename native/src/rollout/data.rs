@@ -634,6 +634,10 @@ struct RawRock {
     exit_scale: Curve,
     player_collision_bounce: i64,
     shockwave_force: i64,
+    min_rope_length: i64,
+    rope_pull_strength: i64,
+    squared_max_rope_separation: i64,
+    rope_player_mass: i64,
 }
 
 #[derive(Deserialize)]
@@ -1730,6 +1734,10 @@ pub struct RockData {
     pub exit_scale: Curve,
     pub player_collision_bounce: Fix,
     pub shockwave_force: Fix,
+    pub min_rope_length: Fix,
+    pub rope_pull_strength: Fix,
+    pub squared_max_rope_separation: Fix,
+    pub rope_player_mass: Fix,
 }
 
 pub struct PushData {
@@ -2994,6 +3002,12 @@ pub fn get() -> &'static RolloutData {
                 exit_scale: raw.prefabs.rock.exit_scale,
                 player_collision_bounce: Fix::from_raw(raw.prefabs.rock.player_collision_bounce),
                 shockwave_force: Fix::from_raw(raw.prefabs.rock.shockwave_force),
+                min_rope_length: Fix::from_raw(raw.prefabs.rock.min_rope_length),
+                rope_pull_strength: Fix::from_raw(raw.prefabs.rock.rope_pull_strength),
+                squared_max_rope_separation: Fix::from_raw(
+                    raw.prefabs.rock.squared_max_rope_separation,
+                ),
+                rope_player_mass: Fix::from_raw(raw.prefabs.rock.rope_player_mass),
             },
             roll: RollData {
                 physics_radius: Fix::from_raw(raw.prefabs.roll.physics.radius),
