@@ -228,6 +228,9 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `missile_arrow_ab.c`: a crossing Arrow and guided Missile resolve as two dynamic
   bodies, then both callbacks destroy their colliders before the deferred ownerless
   explosion runs to expiry over 500 bit-exact ticks.
+- `missile_grenade_ab.c`: a released Grenade and guided Missile resolve as
+  dynamic bodies; only Missile dies in the first callback, its next-pass explosion
+  ignites Grenade, and both chained explosion lifetimes match over 500 ticks.
 - `gust_rock_ab.c`: Gust's one-shot push of a pushable active Rock through the
   BoplBody fallback, subsequent rigid flight and lower-boundary death.
 - `gust_roll_ab.c`: Gust's one-shot PlayerPhysics force on an airborne charging

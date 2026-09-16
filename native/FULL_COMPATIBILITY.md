@@ -2399,7 +2399,7 @@ expiry. `missile_bow_ab.c` follows the same flight into an active Bow form for
 another 500 bit-exact ticks. That slice uses the registered form collider for
 Shockwave's `CircleCastAll`, then reproduces `BowTransform.ExitAbility` resetting
 rotation and moving one 0.05-unit surface-normal `UnGround` step before death
-and stock handling. Projectile, thrown-item and other active-form contacts, scale
+and stock handling. Other active-form contacts, remaining projectile/thrown-item types, scale
 interactions, duplication and Portal traversal remain open, so coverage is
 marked partial.
 
@@ -2409,6 +2409,17 @@ queue destroys both; the corrected positions, linear/angular velocities, Arrow
 owner clearing, same-tick destroyed rows, deferred ownerless explosion, hitbox
 disable and visual expiry all match. The candidate scan uses a fixed 64-entry
 stack buffer and adds no per-tick allocation.
+
+`missile_grenade_ab.c` adds 500 differential ticks for a released Grenade. The
+circle and guided box resolve dynamically on tick 246; Missile's callback queues
+its explosion while Grenade's item-layer callback intentionally leaves the
+corrected body alive. The explosion registers on tick 247 and ignites Grenade in
+the source's next contact pass, then the chained Grenade explosion registers on
+tick 248 and the two visuals expire independently on ticks 329 and 338. Public
+positions and velocities retain a 64-raw-Q32-unit bound inherited from the
+pre-contact `ThrowItem2` flight; entity identity, flags, collision outcomes and
+all lifecycle ticks are exact. Both candidate collections use fixed stack
+storage.
 
 ### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
 

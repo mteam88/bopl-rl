@@ -292,10 +292,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   ownerless explosion lethality and telemetry, stock reconstruction, hitbox disable
   and visual expiry. The Bow case uses the registered form for Shockwave selection and
   reproduces its callback-time rotation reset and surface-normal death exit. Projectile,
-  item and other active-form contacts, scale interactions, duplication and Portal
-  traversal remain open. A crossing Arrow additionally matches dynamic Circle/Box
-  resolution, both callback destructions and the complete ownerless explosion
-  lifecycle using a fixed stack contact set.
+  other active-form contacts, remaining projectile/item types, scale interactions,
+  duplication and Portal traversal remain open. A crossing Arrow additionally matches
+  dynamic Circle/Box resolution, both callback destructions and the complete ownerless
+  explosion lifecycle using a fixed stack contact set. A released Grenade matches the
+  complementary callback split: dynamic correction, Missile-only destruction,
+  next-pass blast ignition, chained Grenade explosion and independent visual expiry.
   Mine executes the separate original `ThrowItem` form and exact autonomous
   hover, arming, scan/chase, player ignition, anticipation, owner-credited
   MineExplosion kill, and stock recovery path. Chase normalization and the

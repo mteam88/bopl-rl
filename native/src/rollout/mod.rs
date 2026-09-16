@@ -19170,6 +19170,104 @@ impl RolloutWorld {
                 continue;
             }
 
+            // Circle/Box item contacts are resolved before Missile.OnCollide
+            // consumes the guided box. Ordinary Grenade's callback ignores
+            // the item layer, so the corrected circle continues after the
+            // Missile has queued its explosion.
+            let mut item_contacts = [(usize::MAX, Contact::default()); 64];
+            let mut item_contact_count = 0;
+            for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
+                if item_contact_count == item_contacts.len() {
+                    break;
+                }
+                if !item.active
+                    || item.entity.is_none()
+                    || item.callback_registered_tick == self.tick
+                {
+                    continue;
+                }
+                let radius = if item.ability == ABILITY_MINE {
+                    data.mine.item_radius
+                } else {
+                    throw_config(data, item.ability).item_radius
+                };
+                if let Some(contact) = crate::physics::contact::circle_box(
+                    Circle {
+                        center: item.position,
+                        radius,
+                    },
+                    missile_box,
+                ) {
+                    item_contacts[item_contact_count] = (item_index, contact);
+                    item_contact_count += 1;
+                }
+            }
+            if item_contact_count > 0 {
+                let mut missile_body = missile.body;
+                let mut missile_center = missile.position;
+                for &(item_index, contact) in &item_contacts[..item_contact_count] {
+                    let item = self.thrown_items[item_index];
+                    let mut item_body = item.body;
+                    let mut item_center = item.position;
+                    resolve(
+                        contact,
+                        &mut item_body,
+                        &mut missile_body,
+                        item_center,
+                        missile_center,
+                    );
+                    let correction = positional_correction(
+                        contact,
+                        item_body.inverse_mass,
+                        missile_body.inverse_mass,
+                        false,
+                    );
+                    item_center += correction[0];
+                    missile_center += correction[1];
+                    let live = &mut self.thrown_items[item_index];
+                    live.position = item_center;
+                    live.body = item_body;
+                    if let Some(entity) = live.entity {
+                        let row = &mut self.entities[entity];
+                        row.x = item_center.x.raw();
+                        row.y = item_center.y.raw();
+                        row.vx = item_body.velocity.x.raw();
+                        row.vy = item_body.velocity.y.raw();
+                        row.rotation = item_body.orientation.raw();
+                        row.angular_velocity = item_body.angular_velocity.raw();
+                    }
+                }
+                {
+                    let live = &mut self.guided_missiles[missile_index];
+                    live.position = missile_center;
+                    live.body = missile_body;
+                }
+                if missile.magnet_hold_ticks >= 0 {
+                    if let Some(entity) = missile.entity {
+                        let row = &mut self.entities[entity];
+                        row.x = missile_center.x.raw();
+                        row.y = missile_center.y.raw();
+                        row.vx = missile_body.velocity.x.raw();
+                        row.vy = missile_body.velocity.y.raw();
+                        row.rotation = missile_body.orientation.raw();
+                        row.angular_velocity = missile_body.angular_velocity.raw();
+                    }
+                    continue;
+                }
+                self.spawn_missile_explosion(missile_center, missile.owner, false, data);
+                self.destroy_guided_missile(missile_index, true);
+                if let Some(entity) = missile.entity {
+                    let row = &mut self.entities[entity];
+                    row.x = missile_center.x.raw();
+                    row.y = missile_center.y.raw();
+                    row.vx = missile_body.velocity.x.raw();
+                    row.vy = missile_body.velocity.y.raw();
+                    row.rotation = missile_body.orientation.raw();
+                    row.angular_velocity = missile_body.angular_velocity.raw();
+                }
+                continue;
+            }
+
             let hit_player = self.players.iter().enumerate().any(|(index, player)| {
                 if !self.playable(index) || missile.magnet_holder == Some(index) {
                     return false;
@@ -19585,6 +19683,58 @@ impl RolloutWorld {
                 if crate::physics::contact::circle_box(circle, water).is_some() {
                     self.detonate_smoke(item_index, true, data);
                     continue;
+                }
+            }
+            if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
+                let hit_igniting_projectile = self.arrows.iter().any(|arrow| {
+                    arrow.active
+                        && arrow.registered
+                        && crate::physics::contact::circle_circle(
+                            circle,
+                            Circle {
+                                center: arrow.position,
+                                radius: data.arrow.radius,
+                            },
+                        )
+                        .is_some()
+                });
+                let hit_grenade_explosion = self.grenade_explosions.iter().any(|explosion| {
+                    explosion.active
+                        && explosion.registered
+                        && explosion.age == 1
+                        && crate::physics::contact::circle_box(
+                            circle,
+                            OrientedBox::from_basis(
+                                explosion.position,
+                                Vec2::RIGHT,
+                                data.grenade.explosion_extents,
+                            ),
+                        )
+                        .is_some()
+                });
+                let hit_missile_explosion = self.missile_explosions.iter().any(|explosion| {
+                    explosion.active
+                        && explosion.registered
+                        && explosion.age == 1
+                        && crate::physics::contact::circle_box(
+                            circle,
+                            OrientedBox::from_basis(
+                                explosion.position,
+                                Vec2::RIGHT,
+                                data.missile.explosion_extents,
+                            ),
+                        )
+                        .is_some()
+                });
+                if hit_igniting_projectile || hit_grenade_explosion || hit_missile_explosion {
+                    if item.ability == ABILITY_GRENADE {
+                        self.detonate_grenade(item_index, true, data);
+                        continue;
+                    }
+                    if item.detonates_on_owner {
+                        self.detonate_smoke(item_index, true, data);
+                        continue;
+                    }
                 }
             }
             if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
