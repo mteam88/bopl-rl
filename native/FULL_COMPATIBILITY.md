@@ -1329,8 +1329,25 @@ one impulse before existing updaters, `Mjolnir.UpdateSim` then accelerates and
 clamps the recall velocity, and the ordinary `Shockwave.UpdateSim` applies the
 second impulse. Rust keeps that regular-pass impulse in the pooled item until
 the Mjolnir updater has run, preserving the source order without allocation.
-Victim-hit and remaining cross-ability interactions still need dedicated goldens
-before the catalog entry is complete.
+
+A whole-source follow-up completes `Mjolnir`, `ThrowItem2`, `Projectile`, and
+the prefab's bounds surface. The lethal overlap uses the live hammer scale and
+`Player.Scale`, then visits ordinary slimes, abilityless clones, and active
+Ability forms in the source's `FindObjectsOfType` order. The retained six-bit
+`alreadyKilled` set consequently lets a clone consume its shared player id
+before the corresponding form. Recall performs the same live-object search:
+the ordinary slime wins when active, a clone wins while the original is
+transformed, and the active form is the final target; absent bodies coast.
+Horizontal blast-zone exits now remove the item, while the prefab's
+`DoNotDestroyUp` continues to permit top exits. Scale, Magnet, Portal, Black
+Hole and Duplicator continue through the common allocation-free item paths.
+
+`mjolnir_broad_ab.sh` runs six optimized-Q32 scenarios spanning aerial
+flight/recall, grounded wall clang and platform push, released Gust, outbound
+and returning Time Stop, Duplicator fan copies and Dash against every shared
+ThrowItem form. All pass, as does the 6,821-step base golden corpus. Live-form
+and clone victim hits plus side-bound removal are source-ported but do not each
+have a standalone public differential; catalog id 37 is marked `ported`.
 
 ### Executable Gust (2026-09-14)
 

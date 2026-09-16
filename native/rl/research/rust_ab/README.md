@@ -302,6 +302,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   spanning ordinary chase/detonation, held and released Gust, held/released/
   anticipation Time Stop, Duplicator fan copies and Dash against all shared
   ThrowItem forms.
+- `mjolnir_broad_ab.sh`: one broad gate over six optimized-Q32 Mjolnir
+  scenarios spanning aerial flight/recall, grounded wall clang and platform
+  push, released Gust, both Time Stop phases, duplication and Dash against all
+  shared ThrowItem forms.
 - `duplicator_missile_ab.c`: a live guided Missile receives three
   velocity-aligned fan copies with fresh engine state, then all four projectiles
   match boundary destruction, deferred explosions and visual expiry over 450 ticks.

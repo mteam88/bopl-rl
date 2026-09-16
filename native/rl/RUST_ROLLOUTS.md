@@ -316,8 +316,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   green.
   Tack is exact through throw, settling, arming, owner-clear re-entry, kill and
   expiry; its shared `Item.Duplicate` path remains absent.
-  Mjolnir is exact through outbound flight, platform clangs, return and catch;
-  its victim-hit and shared `Item.Duplicate` interactions remain open.
+  Mjolnir is exact through outbound flight, platform clangs, return, catch,
+  released Gust, both Time Stop phases and `Item.Duplicate` fan copies. Its
+  source-complete pass adds scale-aware kills over ordinary slimes, abilityless
+  clones and active forms in source search order, live clone/form recall targets,
+  owner/body-swap coasting and horizontal bounds removal. The six-scenario broad
+  gate is green; the added live-form/clone and bounds branches are ported without
+  separate public differentials.
   Poke ball uses the shared throw form and bouncy item body, selects the nearest
   eligible opponent with the source tie-break, pins an invisible invulnerable
   ragdoll for the prefab's 1.92-second override, and ejects it with the exact

@@ -21061,6 +21061,42 @@ impl RolloutWorld {
         self.remove_thrown_item(item_index, true);
     }
 
+    #[inline]
+    fn active_player_position(&self, player_index: usize) -> Option<Vec2> {
+        let player = &self.players[player_index];
+        let entity = Self::blink_player_entity(player);
+        if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+            return None;
+        }
+        let row = self.entities[entity];
+        Some(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)))
+    }
+
+    /// Mjolnir.TryFindOwnerPosition searches live SlimeControllers first,
+    /// then active Ability objects. An abilityless clone therefore becomes
+    /// the recall target while the owner's original slime is transformed.
+    fn mjolnir_owner_position(&self, owner: usize) -> Option<Vec2> {
+        if self.players[owner].active == ActiveAbility::None
+            && !self.players[owner].teleport_effect_active
+            && let Some(position) = self.active_player_position(owner)
+        {
+            return Some(position);
+        }
+        if let Some(clone) = self
+            .abilityless_clones
+            .iter()
+            .find(|clone| clone.active && clone.owner == owner)
+        {
+            return Some(clone.base.position);
+        }
+        if self.players[owner].active != ActiveAbility::None
+            && !self.players[owner].teleport_effect_active
+        {
+            return self.active_player_position(owner);
+        }
+        None
+    }
+
     fn thrown_items_integrate(
         &mut self,
         data: &data::RolloutData,
@@ -21298,20 +21334,72 @@ impl RolloutWorld {
                 continue;
             }
 
-            let item_position = self.thrown_items[item_index].position;
-            let owner = self.thrown_items[item_index].owner;
-            let hit_radius = data.mjolnir.item_radius + Fix::from_f32(0.8);
+            let item = self.thrown_items[item_index];
+            let item_position = item.position;
+            let owner = item.owner;
+            let hammer_radius = data.mjolnir.item_radius * item.scale;
             let mut victims = 0u8;
+            let mut clone_victims = [usize::MAX; MAX_PLAYERS];
+            let mut clone_victim_count = 0;
+
+            // FindObjectsOfType<SlimeController> visits the live ordinary
+            // slime objects before the subsequently spawned empty clones.
             for player_index in 0..self.players.len() {
                 if player_index == owner
                     || !self.playable(player_index)
+                    || self.players[player_index].active != ActiveAbility::None
                     || self.players[player_index].captured_by_ball.is_some()
-                    || self.thrown_items[item_index].killed_players & (1 << player_index) != 0
+                    || item.killed_players & (1 << player_index) != 0
                 {
                     continue;
                 }
-                if (self.players[player_index].base.position - item_position).length_squared()
-                    < hit_radius * hit_radius
+                let hit_radius =
+                    hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+                if self
+                    .active_player_position(player_index)
+                    .is_some_and(|position| {
+                        (position - item_position).length_squared() < hit_radius * hit_radius
+                    })
+                {
+                    victims |= 1 << player_index;
+                }
+            }
+            for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
+                let player_index = clone.owner;
+                if !clone.active
+                    || player_index == owner
+                    || !self.playable(player_index)
+                    || (item.killed_players | victims) & (1 << player_index) != 0
+                {
+                    continue;
+                }
+                let hit_radius =
+                    hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+                if (clone.base.position - item_position).length_squared() < hit_radius * hit_radius
+                {
+                    victims |= 1 << player_index;
+                    clone_victims[clone_victim_count] = clone_index;
+                    clone_victim_count += 1;
+                }
+            }
+            // Ability objects are enumerated after SlimeControllers. A clone
+            // sharing the player's id can consume alreadyKilled first.
+            for player_index in 0..self.players.len() {
+                if player_index == owner
+                    || !self.playable(player_index)
+                    || self.players[player_index].active == ActiveAbility::None
+                    || self.players[player_index].captured_by_ball.is_some()
+                    || (item.killed_players | victims) & (1 << player_index) != 0
+                {
+                    continue;
+                }
+                let hit_radius =
+                    hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+                if self
+                    .active_player_position(player_index)
+                    .is_some_and(|position| {
+                        (position - item_position).length_squared() < hit_radius * hit_radius
+                    })
                 {
                     victims |= 1 << player_index;
                 }
@@ -21321,8 +21409,18 @@ impl RolloutWorld {
                 if victims & (1 << player_index) == 0 {
                     continue;
                 }
+                if clone_victims[..clone_victim_count]
+                    .iter()
+                    .any(|&clone_index| self.abilityless_clones[clone_index].owner == player_index)
+                {
+                    continue;
+                }
                 self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
                 self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false, false);
+            }
+            for &clone_index in &clone_victims[..clone_victim_count] {
+                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+                self.kill_abilityless_clone(clone_index, owner as u32 + 1);
             }
 
             if self.thrown_items[item_index].phase == 0 {
@@ -21339,10 +21437,10 @@ impl RolloutWorld {
                     self.remove_thrown_item(item_index, false);
                     continue;
                 }
-                if !self.playable(owner) || self.players[owner].teleport_effect_active {
+                let Some(owner_position) = self.mjolnir_owner_position(owner) else {
                     continue;
-                }
-                let to_owner = self.players[owner].base.position + Vec2::UP * Fix::from_f32(1.1)
+                };
+                let to_owner = owner_position + Vec2::UP * Fix::from_f32(1.1)
                     - self.thrown_items[item_index].position;
                 {
                     let item = &mut self.thrown_items[item_index];
@@ -21406,6 +21504,12 @@ impl RolloutWorld {
                 if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
                     self.next_spawn_hierarchy += 2;
                 }
+                self.remove_thrown_item(item_index, false);
+                continue;
+            }
+            if ability == ABILITY_MJOLNIR
+                && self.thrown_items[item_index].position.x.abs() > Fix::from_f64(131.25)
+            {
                 self.remove_thrown_item(item_index, false);
                 continue;
             }
