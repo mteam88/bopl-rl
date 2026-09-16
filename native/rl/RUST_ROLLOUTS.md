@@ -471,6 +471,12 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Time Stop also freezes both endpoint clocks for all 690 stopped passes; an
   ordinary player crosses on tick 1811, after the pair would have reached its
   25-second lifetime on an unfrozen clock.
+  A whole-source audit also includes abilityless Duplicator clones, duplicated
+  Rocks, and attached Spike/Engine/Tesla bodies in the source-wide portal queries.
+  Ropes and Black Holes have no portalable positive-mass `BoplBody` in the source.
+  `portal_gun_broad_ab.sh` gates the five public Portal scenarios together; catalog
+  id 38 is therefore `ported`, while the newly audited object classes are not each
+  claimed as standalone exact differentials.
   Smoke is exact through its grounded throw, five-second fuse, four randomized
   cloud spawns, radius animation, and persistent collider export. A broad
   airborne composition also exactly covers charged release, Bow's non-igniting

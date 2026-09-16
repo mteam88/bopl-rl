@@ -3457,8 +3457,14 @@ lands at the same exit. Its mapped velocity differs by less than 0.0024
 units/second because the existing ThrowItem2 port creates that grenade 0.0185
 units away from NativeAOT before portal capture; the portal resets its position
 and preserves the already-different incoming components, so no capture,
-branch, or lifecycle decision differs. Other portalable object categories still need dedicated public compositions, so
-coverage remains partial.
+branch, or lifecycle decision differs. The five scenarios are also gated together by `portal_gun_broad_ab.sh`. A whole-source
+audit additionally ports every represented member of `Portal.UpdateSim`'s two global
+queries: abilityless Duplicator clones share the source's player-id hysteresis, and
+duplicated Rocks plus attached Spike, Engine and Tesla bodies use their positive-mass
+`BoplBody` positions and velocities. Rope objects and Black Holes are not portalable in
+the source because neither runtime object has a positive-mass `BoplBody`. Those audited
+branches retain pooled state and add no tick allocation, so catalog id 38 is marked
+`ported`; only the five broad scenarios are claimed as exact differentials.
 
 `portal_arrow_ab.c` uses a second player to release an upward-right Bow Arrow
 through the free-floating mouth. The layer-9 Arrow registers on tick 361,

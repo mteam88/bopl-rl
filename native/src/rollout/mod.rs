@@ -558,6 +558,7 @@ pub struct SpawnedSpike {
     pub local: Fix,
     pub relative_center: Vec2,
     pub relative_rotation: Fix,
+    pub collider_center: Vec2,
     pub surface_offset: Fix,
     pub scale: Fix,
     pub time: Fix,
@@ -4998,6 +4999,18 @@ impl RolloutWorld {
                 }
             }
         }
+        for clone in &self.abilityless_clones {
+            if clone.active
+                && clone.base.alive
+                && !self.players[clone.owner].out
+                && Self::portal_inside(endpoint, clone.base.position, data)
+            {
+                let player_id = clone.base.id as usize;
+                if player_id < 8 {
+                    self.portals[endpoint_index].player_inside[player_id] = true;
+                }
+            }
+        }
         if self.portal_body_inside.len() < self.entities.len() {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
@@ -5100,6 +5113,93 @@ impl RolloutWorld {
                     &mut self.portal_body_ids,
                     &self.entities,
                     slot.rock_entity,
+                    bit,
+                );
+            }
+        }
+        for rock in &self.duplicated_rocks {
+            if let Some(entity) = rock
+                .entity
+                .filter(|_| rock.active && rock.body.inverse_mass > Fix::ZERO)
+                && self.entities[entity].flags & E_ACTIVE != 0
+                && Self::portal_inside(endpoint, rock.position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for spike in &self.spike_attacks {
+            if !spike.active || spike.platform_index >= self.platform_dynamics.len() {
+                continue;
+            }
+            let right = Vec2::angle(
+                self.platform_dynamics[spike.platform_index]
+                    .body
+                    .orientation
+                    + spike.relative_rotation,
+            );
+            let position = spike.collider_center
+                - (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
+            if let Some(entity) = spike
+                .entity
+                .filter(|_| spike.active && spike.body.inverse_mass > Fix::ZERO)
+                && self.entities[entity].flags & E_ACTIVE != 0
+                && Self::portal_inside(endpoint, position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for engine in &self.engines {
+            if !engine.active || engine.platform_index >= self.platform_dynamics.len() {
+                continue;
+            }
+            let right = Vec2::angle(engine.collider_rotation);
+            let position = engine.collider_center
+                - (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
+            if let Some(entity) = engine
+                .entity
+                .filter(|_| engine.active && engine.body.inverse_mass > Fix::ZERO)
+                && self.entities[entity].flags & E_ACTIVE != 0
+                && Self::portal_inside(endpoint, position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
+                    bit,
+                );
+            }
+        }
+        for node in &self.tesla_nodes {
+            if !node.active || node.platform_index >= self.platform_dynamics.len() {
+                continue;
+            }
+            let right = Vec2::angle(node.collider_rotation);
+            let position = node.collider_center
+                - (data.tesla.node_collider_offset * node.scale).complex_mul(right);
+            if let Some(entity) = node
+                .entity
+                .filter(|_| node.active && node.body.inverse_mass > Fix::ZERO)
+                && self.entities[entity].flags & E_ACTIVE != 0
+                && Self::portal_inside(endpoint, position, data)
+            {
+                Self::mark_portal_body_bit(
+                    &mut self.portal_body_inside,
+                    &mut self.portal_body_ids,
+                    &self.entities,
+                    entity,
                     bit,
                 );
             }
@@ -5291,6 +5391,128 @@ impl RolloutWorld {
                 self.players[index].base.velocity = self.players[index].rock.body.velocity;
             }
         }
+        for index in 0..self.duplicated_rocks.len() {
+            let rock = self.duplicated_rocks[index];
+            let Some(entity) = rock
+                .entity
+                .filter(|_| rock.active && rock.body.inverse_mass > Fix::ZERO)
+            else {
+                continue;
+            };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, rock.position, data)
+            {
+                self.duplicated_rocks[index].position = position;
+                self.duplicated_rocks[index].body.velocity =
+                    Self::portal_velocity(entry, exit, rock.body.velocity);
+                let row = &mut self.entities[entity];
+                row.x = position.x.raw();
+                row.y = position.y.raw();
+                row.vx = self.duplicated_rocks[index].body.velocity.x.raw();
+                row.vy = self.duplicated_rocks[index].body.velocity.y.raw();
+            }
+        }
+        for index in 0..self.spike_attacks.len() {
+            let spike = self.spike_attacks[index];
+            if spike.platform_index >= self.platform_dynamics.len() {
+                continue;
+            }
+            let Some(entity) = spike
+                .entity
+                .filter(|_| spike.active && spike.body.inverse_mass > Fix::ZERO)
+            else {
+                continue;
+            };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            let right = Vec2::angle(
+                self.platform_dynamics[spike.platform_index]
+                    .body
+                    .orientation
+                    + spike.relative_rotation,
+            );
+            let offset = (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
+            let root = spike.collider_center - offset;
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, root, data)
+            {
+                let center = position + offset;
+                self.spike_attacks[index].collider_center = center;
+                self.spike_attacks[index].body.velocity =
+                    Self::portal_velocity(entry, exit, spike.body.velocity);
+                let row = &mut self.entities[entity];
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.vx = self.spike_attacks[index].body.velocity.x.raw();
+                row.vy = self.spike_attacks[index].body.velocity.y.raw();
+            }
+        }
+        for index in 0..self.engines.len() {
+            let engine = self.engines[index];
+            if engine.platform_index >= self.platform_dynamics.len() {
+                continue;
+            }
+            let Some(entity) = engine
+                .entity
+                .filter(|_| engine.active && engine.body.inverse_mass > Fix::ZERO)
+            else {
+                continue;
+            };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            let right = Vec2::angle(engine.collider_rotation);
+            let offset = (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
+            let root = engine.collider_center - offset;
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, root, data)
+            {
+                let center = position + offset;
+                self.engines[index].collider_center = center;
+                self.engines[index].body.velocity =
+                    Self::portal_velocity(entry, exit, engine.body.velocity);
+                let row = &mut self.entities[entity];
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.vx = self.engines[index].body.velocity.x.raw();
+                row.vy = self.engines[index].body.velocity.y.raw();
+            }
+        }
+        for index in 0..self.tesla_nodes.len() {
+            let node = self.tesla_nodes[index];
+            if node.platform_index >= self.platform_dynamics.len() {
+                continue;
+            }
+            let Some(entity) = node
+                .entity
+                .filter(|_| node.active && node.body.inverse_mass > Fix::ZERO)
+            else {
+                continue;
+            };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            let right = Vec2::angle(node.collider_rotation);
+            let offset = (data.tesla.node_collider_offset * node.scale).complex_mul(right);
+            let root = node.collider_center - offset;
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, root, data)
+            {
+                let center = position + offset;
+                self.tesla_nodes[index].collider_center = center;
+                self.tesla_nodes[index].body.velocity =
+                    Self::portal_velocity(entry, exit, node.body.velocity);
+                let row = &mut self.entities[entity];
+                row.x = center.x.raw();
+                row.y = center.y.raw();
+                row.vx = self.tesla_nodes[index].body.velocity.x.raw();
+                row.vy = self.tesla_nodes[index].body.velocity.y.raw();
+            }
+        }
         let mut platforms_changed = false;
         for platform_index in 0..self.platforms.len() {
             let held = self.macho_boulders.iter().any(|boulder| {
@@ -5399,6 +5621,52 @@ impl RolloutWorld {
                 slot.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
                 slot.base.external_velocity = Vec2::ZERO;
                 slot.base.skip_next_gravity = true;
+            }
+            // Ability-less Duplicator clones are ordinary active
+            // SlimeControllers in the source query. They deliberately share
+            // the owner's player-id hysteresis bit, exactly like the source's
+            // fixed `playerWasInside[8]` array.
+            for clone_index in 0..self.abilityless_clones.len() {
+                if !self.abilityless_clones[clone_index].active
+                    || !self.abilityless_clones[clone_index].base.alive
+                    || self.players[self.abilityless_clones[clone_index].owner].out
+                {
+                    continue;
+                }
+                let player_id = self.abilityless_clones[clone_index].base.id as usize;
+                if player_id >= 8 {
+                    continue;
+                }
+                let inside = Self::portal_inside(
+                    endpoint,
+                    self.abilityless_clones[clone_index].base.position,
+                    data,
+                );
+                if !inside {
+                    self.portals[endpoint_index].player_inside[player_id] = false;
+                    continue;
+                }
+                if self.portals[endpoint_index].player_inside[player_id] {
+                    continue;
+                }
+                self.portals[endpoint_index].player_inside[player_id] = true;
+                let Some(linked) = endpoint
+                    .linked
+                    .filter(|&linked| linked < self.portals.len() && self.portals[linked].active)
+                else {
+                    continue;
+                };
+                self.portals[linked].player_inside[player_id] = true;
+                let clone = &mut self.abilityless_clones[clone_index].base;
+                let vin = clone.velocity + clone.external_velocity;
+                let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
+                let sideways = vin.dot(endpoint.tangent);
+                let exit = self.portals[linked];
+                clone.force_unground(&self.platforms);
+                clone.position = exit.position + exit.normal * data.portal_gun.exit_offset;
+                clone.velocity = exit.normal * inward_speed - exit.tangent * sideways;
+                clone.external_velocity = Vec2::ZERO;
+                clone.skip_next_gravity = true;
             }
             self.portal_objects_tick(endpoint_index, data);
         }
@@ -8627,6 +8895,8 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation,
+            collider_center: parent_position
+                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
             surface_offset,
             scale,
             time: Fix::ZERO,
@@ -17638,6 +17908,8 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation: rotation - parent_rotation,
+            collider_center: parent_position
+                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
             surface_offset,
             scale: source.scale,
             time: Fix::ZERO,
@@ -25735,7 +26007,8 @@ impl RolloutWorld {
 
     fn refresh_spike_entities(&mut self) {
         let data = data::get();
-        for spike in &self.spike_attacks {
+        for spike_index in 0..self.spike_attacks.len() {
+            let spike = self.spike_attacks[spike_index];
             if !spike.active || spike.platform_index >= self.platforms.len() {
                 continue;
             }
@@ -25748,6 +26021,7 @@ impl RolloutWorld {
             let basis = Vec2::angle(rotation);
             let center = self.platform_dynamics[spike.platform_index].composite_position
                 + spike.relative_center.complex_mul(platform.surface.right);
+            self.spike_attacks[spike_index].collider_center = center;
             let extents = data::surface_extents(data.spike.attack_extents * spike.scale);
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
