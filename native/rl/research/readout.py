@@ -311,9 +311,94 @@ def pool_scores(runs, pool_name):
             print(f"    sweep observations: " + ", ".join(f"{o['score']:.1f}@{o['steps'] / 1e6:.0f}M" for o in obs) + f"  status {run.results.get('status')}")
 
 
-def elo_curve(runs, steps):
+def anchor_pool(name):
+    """reference_pool's loaded pool for anchors/<name>/pool.json under the sweeps dirs."""
+    sys.path.insert(0, str(ROOT / "native/rl/sweep"))
+    import reference_pool
+    for root in SWEEPS_DIRS:
+        path = root / "anchors" / name / "pool.json"
+        if path.is_file():
+            return reference_pool.load_pool(path)
+    raise SystemExit(f"no pool {name} under {[str(r) for r in SWEEPS_DIRS]}")
+
+
+def refit_curve(runs, steps, pool, bootstrap=200):
+    """{run name: {step: rating record}}: each stored evaluation's games refitted
+    against `pool` (reference_pool.rating_from_evaluation: the same Bradley-Terry
+    MLE the eval hook runs, with this pool's members and ratings as the anchors).
+    Only games against members of the pool count, so the width of the interval
+    is the honest measure of what the pool can say about the evaluation."""
+    import reference_pool
+    out = {}
+    for r in runs:
+        out[r.name] = {}
+        for step in steps:
+            report = r.diagnostics.get(step)
+            if not report:
+                continue
+            rating = reference_pool.rating_from_evaluation(report, pool, report.get("checkpoint", ""), bootstrap=bootstrap)
+            if rating:
+                out[r.name][step] = rating
+    return out
+
+
+def scale_map(src, dst):
+    """(slope, members) of the least-squares line through the origin from the
+    src pool's ratings to the dst pool's over their shared members (random is
+    the 0 anchor of both). Re-expresses a src-scale rating on the dst scale
+    using every game the src fit used, under the assumption that the shared
+    members' relative strengths are consistent between the pools."""
+    a = {m["name"]: m["rating"] for m in src["members"]}
+    b = {m["name"]: m["rating"] for m in dst["members"]}
+    shared = [n for n in a if n in b and a[n] > 0]
+    slope = sum(a[n] * b[n] for n in shared) / sum(a[n] ** 2 for n in shared)
+    return slope, shared
+
+
+def elo_curve(runs, steps, in_run_pool="pool-v7"):
+    ratio = runs[0].learner_ratio()
+    logged = next((e.get("pool_sha8") for r in runs for e in r.elo.values()), "?")
+    pool = anchor_pool(in_run_pool)
+    logged_pool = anchor_pool("pool-v5") if logged == "ec5bd5ae" else None
+    refit = refit_curve(runs, steps, pool)
+    members = sorted({g["opponent"] for r in runs for d in r.diagnostics.values() for g in d.get("games", ())}
+                     & {m["name"] for m in pool["members"]})
+    section(f"2. In-run Elo by evaluation step, refitted on {in_run_pool} from the stored evaluation games"
+            f" (anchors: {', '.join(members)}; the hook logged pool {logged})")
+    mapped = None
+    if logged_pool is not None and logged_pool["pool_sha256"] != pool["pool_sha256"]:
+        slope, shared = scale_map(logged_pool, pool)
+        mapped = slope
+        print(f"  'mapped' = the hook's {len(shared)+1}-anchor rating x {slope:.3f}, the least-squares scale between the two pools'"
+              f" ratings of {len(shared)} shared members (all of the hook's games count; assumes consistent relative strengths)")
+    width = 30 if mapped else 22
+    head = f"  {'learner':>9}  " + "  ".join(f"{r.name:>{width}}" for r in runs) + ("   diff vs " + runs[1].name if len(runs) > 1 else "")
+    print(head)
+    if mapped:
+        print(f"  {'':>9}  " + "  ".join(f"{'refit [95% interval] mapped':>{width}}" for _ in runs))
+    for step in steps:
+        cells, values = [], []
+        for r in runs:
+            e = refit[r.name].get(step)
+            cell = f"{fmt(e['rating'], 6, 0)} [{fmt(e['interval'][0], 6, 0)},{fmt(e['interval'][1], 6, 0)}]" if e else f"{'-':>22}"
+            if mapped:
+                h = r.elo.get(step)
+                cell += f" {fmt(h['elo'] * mapped, 7, 0)}" if h else f" {'-':>7}"
+                values.append(h["elo"] * mapped if h else None)
+            else:
+                values.append(e["rating"] if e else None)
+            cells.append(cell)
+        diff = ""
+        if len(runs) > 1 and values[0] is not None and values[1] is not None:
+            diff = f"   {values[0] - values[1]:+7.0f}"
+        print(f"  {step * ratio / 1e6:8.0f}M  " + "  ".join(cells) + diff)
+    for r in runs:
+        r.refit = refit[r.name]
+
+
+def elo_curve_logged(runs, steps):
     pool = next((e.get("pool_sha8") for r in runs for e in r.elo.values()), "?")
-    section(f"2. In-run Elo from the eval-every hook (rated on pool {pool}), by evaluation step")
+    section(f"2b. In-run Elo as logged by the eval-every hook (pool {pool}), by evaluation step")
     ratio = runs[0].learner_ratio()
     head = f"  {'learner':>9}  " + "  ".join(f"{r.name:>22}" for r in runs) + ("   diff vs " + runs[1].name if len(runs) > 1 else "")
     print(head)
@@ -411,6 +496,8 @@ def main():
     p.add_argument("--baseline", action="append", default=None, metavar="NAME=DIR",
                    help="baseline run(s); default 024=overnight-9/024 plus every seed-024-s*/000")
     p.add_argument("--pool", default="pool-v7", help="band-score pool name under reference/ (default pool-v7)")
+    p.add_argument("--in-run-pool", default="pool-v7", help="pool the in-run curve is refitted on from the stored games (default pool-v7)")
+    p.add_argument("--logged-elo", action="store_true", help="also print the in-run Elo as the eval hook logged it (pool v5 for runs before the flip)")
     p.add_argument("--gamma", type=float, default=GAMMA)
     p.add_argument("--by-opponent", action="store_true", help="also print per-opponent win rates at the last common evaluation")
     p.add_argument("--all-steps", action="store_true", help="print every baseline evaluation step, not only the run's")
@@ -457,7 +544,9 @@ def main():
                   f" restarted cold there, the one discontinuity of the recipe")
     pool_scores(runs, a.pool)
     if steps:
-        elo_curve(runs, steps)
+        elo_curve(runs, steps, a.in_run_pool)
+        if a.logged_elo:
+            elo_curve_logged(runs, steps)
         win_rates(runs, steps, a.by_opponent)
         value_section(runs, steps, a.gamma)
         deaths_section(runs, steps)
@@ -470,6 +559,7 @@ def main():
                 band_scores={pool: {str(s): dict(rating=d["rating"], interval=d.get("interval"), games=d.get("games")) for s, d in scores.items()}
                              for pool, scores in r.reference.items()},
                 elo={str(s): e for s, e in r.elo.items()},
+                elo_refit={str(s): dict(rating=e["rating"], interval=e["interval"], games=e["games"], pool=e["pool"]) for s, e in getattr(r, "refit", {}).items()},
                 win_rates={str(s): r.win_rates(s) for s in r.steps},
                 value={str(s): r.value_ev(s, a.gamma) for s in r.steps},
                 deaths={str(s): dict(zip(("learner", "kills", "games"), (dict(m), dict(f), g))) for s in r.steps for m, f, g in [r.deaths(s)]},
