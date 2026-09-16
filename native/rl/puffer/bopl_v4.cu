@@ -438,8 +438,12 @@ struct EncActs {
     IntTensor dh2[SETS];
     PrecisionTensor wgrad_w1[SETS], wgrad_w2[SETS], wgrad_embedding, wgrad_flat, wgrad_fusion;
 };
-static const float* g_v4_privileged = nullptr;    /* (B, PRIV) of the last encoder forward, for the decoder */
-static int g_v4_privileged_rows = 0;
+/* (B, PRIV) of the last encoder forward on this thread, for the decoder of the
+ * same policy_forward. Thread-local: the buffer threads' rollout chains and the
+ * trainer's forward run concurrently (a shared global handed one thread's
+ * privileged rows to another's decoder). */
+static thread_local const float* g_v4_privileged = nullptr;
+static thread_local int g_v4_privileged_rows = 0;
 static IntTensor* g_v4_overflow = nullptr;        /* (SETS) dropped rows of the last training forward */
 
 static bf16* bfp(IntTensor& t) { return (bf16*)t.data; }

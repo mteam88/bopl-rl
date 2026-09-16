@@ -429,8 +429,10 @@ struct BrActs {
 struct BrWt {  // one group's transposed weights, (K, ld) row-major
     float *flat, *fusion, *gru[BR_MAX_LAYERS], *dec;
 };
+struct Br4Plan;      // policy v4 chain (bopl_rollout_v4.cu); nullptr = layout-v3 set encoder chain
 struct BrPlan {
     int enabled;         // batched chain in use
+    Br4Plan* v4;
     int zero_copy;       // 0 memcpys (obs + packed small inputs), 1 obs memcpy + rest zero-copy, 2 all zero-copy
     int actions_zero_copy;  // sampler writes actions into the mapped host buffer
     int graph_copies;    // H2D / D2H memcpys captured into the forward graph (BOPL_GRAPH_COPIES, default 1)
@@ -480,6 +482,16 @@ static void br_transpose_launch(const BrPlan& p, const BrLinear& src, const BrLi
 }
 
 #ifndef BR_KERNELS_ONLY  // the trainer-side part (needs pufferlib.cu); microbenchmarks include only the kernels above
+// Policy v4 chain hooks (bopl_rollout_v4.cu, included at the end of this file).
+static const char* br4_check(PuffeRL* pufferl);
+static void br4_init(PuffeRL* pufferl, BrPlan* p);
+static void br4_prepare(PuffeRL* pufferl, BrPlan& p, cudaStream_t stream);
+static void br4_free(PuffeRL* pufferl, BrPlan* p);
+static const float* br4_dec_rows(BrPlan& p, int buf);
+static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
+static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
+static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream);
 // ---------------------------------------------------------------------------
 // Sampler: sample_logits_warp with the env's byte mask as input and the
 // actions written to both the env buffer (float) and the rollout.
@@ -634,7 +646,8 @@ static void br_init(PuffeRL* pufferl) {
     const char* why = nullptr;
     DecoderWeights* dw = (DecoderWeights*)pufferl->weights.decoder;
     MinGRUWeights* mw = (MinGRUWeights*)pufferl->weights.network;
-    if (pufferl->policy.encoder.forward != bs_forward) why = "encoder is not the fused set encoder";
+    const bool is_v4 = bopl_is_v4_encoder(pufferl->policy.encoder);
+    if (pufferl->policy.encoder.forward != bs_forward && !is_v4) why = "encoder is not the fused set encoder or policy v4";
     else if (dw->continuous) why = "continuous decoder";
     else if (pufferl->policy.network.forward != mingru_forward) why = "network is not MinGRU";
     else if (mw->num_layers > BR_MAX_LAYERS) why = "too many MinGRU layers";
@@ -643,9 +656,10 @@ static void br_init(PuffeRL* pufferl) {
     for (int b = 0; !why && b < pufferl->num_frozen_banks; b++) {
         WeightBank* fb = &pufferl->frozen_banks[b];
         if (fb->hidden_size != mw->hidden || fb->num_layers != mw->num_layers
-                || fb->policy.encoder.forward != bs_forward || fb->policy.network.forward != mingru_forward)
+                || (!is_v4 && fb->policy.encoder.forward != bs_forward) || fb->policy.network.forward != mingru_forward)
             why = "a frozen bank differs from the learner in shape";
     }
+    if (!why && is_v4) why = br4_check(pufferl);
     if (why) {
         fprintf(stderr, "bopl batched rollout forward disabled: %s\n", why);
         return;
@@ -691,13 +705,14 @@ static void br_init(PuffeRL* pufferl) {
         assert(cudaMalloc((void**)ptr, n * sizeof(float)) == cudaSuccess);
         cudaMemset(*ptr, 0, n * sizeof(float));
     };
-    for (int b = 0; b < hypers.num_buffers; b++) {
+    if (is_v4) br4_init(pufferl, p);
+    for (int b = 0; !is_v4 && b < hypers.num_buffers; b++) {
         BrActs& a = p->acts[b];
         zalloc(&a.flat, (size_t)apb * BS_FLAT); zalloc(&a.joined, (size_t)apb * JW); zalloc(&a.enc, (size_t)apb * H);
         zalloc(&a.comb, (size_t)apb * 3 * H); zalloc(&a.gru[0], (size_t)apb * H); zalloc(&a.gru[1], (size_t)apb * H);
         zalloc(&a.dec, (size_t)apb * p->ld_dec);
     }
-    for (int g = 0; g < p->g.n; g++) {
+    for (int g = 0; !is_v4 && g < p->g.n; g++) {
         BrWt& w = p->wt[g];
         zalloc(&w.flat, (size_t)br_frag_floats(BS_FLAT, H)); zalloc(&w.fusion, (size_t)br_frag_floats(JW, H));
         for (int l = 0; l < p->layers; l++) zalloc(&w.gru[l], (size_t)br_frag_floats(H, 3 * H));
@@ -754,6 +769,7 @@ static void br_group_weights(PuffeRL* pufferl, int g, int buf, PolicyWeights** w
 // per rollout.
 static void br_prepare(PuffeRL* pufferl, cudaStream_t stream) {
     BrPlan& p = *pufferl->br;
+    if (p.v4) { br4_prepare(pufferl, p, stream); return; }
     int H = p.H, JW = H + BS_JOINED_POOLS;
     BrLinear s_flat = {}, s_fus = {}, s_dec = {}, s_gru[BR_MAX_LAYERS] = {};
     BrLinear d_flat = {}, d_fus = {}, d_dec = {}, d_gru[BR_MAX_LAYERS] = {};
@@ -776,11 +792,13 @@ static void br_prepare(PuffeRL* pufferl, cudaStream_t stream) {
 static void br_free(PuffeRL* pufferl) {
     BrPlan* p = pufferl->br;
     if (!p) return;
-    for (int b = 0; b < pufferl->hypers.num_buffers; b++) {
+    const bool is_v4 = p->v4 != nullptr;
+    br4_free(pufferl, p);
+    for (int b = 0; !is_v4 && b < pufferl->hypers.num_buffers; b++) {
         BrActs& a = p->acts[b];
         for (float* ptr : {a.flat, a.joined, a.enc, a.comb, a.gru[0], a.gru[1], a.dec}) cudaFree(ptr);
     }
-    for (int g = 0; g < p->g.n; g++) {
+    for (int g = 0; !is_v4 && g < p->g.n; g++) {
         BrWt& w = p->wt[g];
         cudaFree(w.flat); cudaFree(w.fusion); cudaFree(w.dec);
         for (int l = 0; l < p->layers; l++) cudaFree(w.gru[l]);
@@ -828,6 +846,20 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         if (!vec->pack_in_tail) cudaMemcpyAsync(vec->pack_dev[buf], vec->pack_host[buf], vec->pack_bytes, cudaMemcpyHostToDevice, stream);
     }
 
+    PrecisionTensor obs_dst = puf_slice(rollouts.observations, t, start, rows);
+    PrecisionTensor rew_dst = puf_slice(rollouts.rewards, t, start, rows);
+    PrecisionTensor term_dst = puf_slice(rollouts.terminals, t, start, rows);
+    PrecisionTensor act_dst = puf_slice(rollouts.actions, t, start, rows);
+    PrecisionTensor lp_dst = puf_slice(rollouts.logprobs, t, start, rows);
+    PrecisionTensor val_dst = puf_slice(rollouts.values, t, start, rows);
+    PrecisionTensor mask_dst = {};
+    if (p.mask_stride) mask_dst = puf_slice(rollouts.action_mask, t, start, rows);
+    const float* dec_rows = A.dec;
+    br_check_pre(pufferl, buf, stream);
+    if (p.v4) {
+        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, stream);
+        dec_rows = br4_dec_rows(p, buf);
+    } else {
     // Per-group weights (set-encoder MLPs as stored, GEMM weights transposed by
     // br_prepare) and recurrent state (group 0 = learner snapshot).
     BrLinear w_player = {}, w_slot = {}, w_entity = {}, w_slime = {}, w_embedding = {};
@@ -846,15 +878,6 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         gate.state[g] = s->data;
         gate.state_rows[g] = (int)s->shape[1];
     }
-
-    PrecisionTensor obs_dst = puf_slice(rollouts.observations, t, start, rows);
-    PrecisionTensor rew_dst = puf_slice(rollouts.rewards, t, start, rows);
-    PrecisionTensor term_dst = puf_slice(rollouts.terminals, t, start, rows);
-    PrecisionTensor act_dst = puf_slice(rollouts.actions, t, start, rows);
-    PrecisionTensor lp_dst = puf_slice(rollouts.logprobs, t, start, rows);
-    PrecisionTensor val_dst = puf_slice(rollouts.values, t, start, rows);
-    PrecisionTensor mask_dst = {};
-    if (p.mask_stride) mask_dst = puf_slice(rollouts.action_mask, t, start, rows);
 
     BrEncodeArgs enc = {};
     enc.obs = obs; enc.rewards = rewards; enc.terminals = terminals;
@@ -876,11 +899,13 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         x = A.gru[l & 1];
     }
     br_gemm_launch(p, x, H, A.dec, p.ld_dec, H, p.dec_cols + 1, p.ld_dec, 0, w_dec, stream);
+    }  // v3 chain
+    br_check_post(pufferl, buf, t, terminals, dec_rows, stream);
 
     int hc_stride = 0;
     const signed char* hc_dev = get_head_consume_dev(&hc_stride);
     BrSampleArgs smp = {};
-    smp.dec = A.dec; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
+    smp.dec = dec_rows; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
     smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
     smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
     smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
@@ -893,4 +918,5 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
 }
+#include "bopl_rollout_v4.cu"
 #endif  // BR_KERNELS_ONLY

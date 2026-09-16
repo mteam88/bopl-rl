@@ -56,7 +56,7 @@ if args.device == "cuda":
         # ocean.cu -> bopl_set_encoder.cu, plus the two overlay patches. Refuse to relink a
         # stale one rather than ship a binding whose kernels predate their sources.
         cuda_object = out / "puffer_cuda.o"
-        cuda_sources = [HERE / name for name in ("bopl_rollout.cu", "bopl_set_encoder.cu", "bopl_v4.cu", "bopl_layout_v4.h", "bopl_aim.h",
+        cuda_sources = [HERE / name for name in ("bopl_rollout.cu", "bopl_rollout_v4.cu", "bopl_set_encoder.cu", "bopl_v4.cu", "bopl_layout_v4.h", "bopl_aim.h",
                                                   "bopl_layout.h", "pufferlib-close.patch", "pufferlib-bopl.patch")]
         if not cuda_object.exists():
             raise SystemExit(f"--binding-only: {cuda_object} does not exist; run a full build")
