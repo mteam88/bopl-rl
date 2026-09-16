@@ -292,9 +292,11 @@ def section(title):
 
 
 def pool_scores(runs, pool_name):
-    section(f"1. Band scores on {pool_name} (rating, 95% interval, games); the sweep scores the IQM of the last three")
+    section(f"1. Scores on {pool_name} (rating, 95% interval, games, source); the sweep scores the IQM of the last three 'band' ratings")
+    print("  source: band = the scorer's 480-game adaptive rating (headline); in-run = the eval hook's 160-game point on every"
+          " evaluation checkpoint (10 games per member, same code path); evaluation = bots-only fit of the hook's games (not a pool rating)")
     for run in runs:
-        scores = run.reference.get(pool_name, {})
+        scores = {s: d for s, d in run.reference.get(pool_name, {}).items() if d.get("source") != "evaluation"}
         if not scores:
             print(f"  {run.name}: none yet" + ("" if pool_name in run.reference or not run.reference else f" (has {', '.join(run.reference)})"))
             continue
@@ -303,9 +305,11 @@ def pool_scores(runs, pool_name):
         for step in sorted(scores):
             d = scores[step]
             lo, hi = d.get("interval", (None, None))
-            print(f"    learner {step * ratio / 1e6:7.0f}M  rating {fmt(d['rating'], 7, 1)}  [{fmt(lo, 6, 1)}, {fmt(hi, 6, 1)}]  games {d.get('games', 0)}")
-        last = [scores[s]["rating"] for s in sorted(scores)[-3:]]
-        print(f"    last {len(last)}: mean {fmt(statistics.fmean(last), 6, 1)}  median {fmt(statistics.median(last), 6, 1)}  IQM {fmt(iqm(last), 6, 1)}")
+            print(f"    learner {step * ratio / 1e6:7.0f}M  rating {fmt(d['rating'], 7, 1)}  [{fmt(lo, 6, 1)}, {fmt(hi, 6, 1)}]"
+                  f"  games {d.get('games', 0):4d}  {d.get('source', 'band')}")
+        band = [scores[s]["rating"] for s in sorted(scores) if scores[s].get("source", "band") == "band"][-3:]
+        if band:
+            print(f"    last {len(band)} band: mean {fmt(statistics.fmean(band), 6, 1)}  median {fmt(statistics.median(band), 6, 1)}  IQM {fmt(iqm(band), 6, 1)}")
         if run.results and run.results.get("observations"):
             obs = run.results["observations"]
             print(f"    sweep observations: " + ", ".join(f"{o['score']:.1f}@{o['steps'] / 1e6:.0f}M" for o in obs) + f"  status {run.results.get('status')}")
