@@ -69,6 +69,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `time_stop_missile_ab.c`: a slot-two Missile controller and its guided box
   projectile across all 690 stopped passes, zero-delta stabilization, restored
   steering, release and subsequent flight.
+- `time_stop_mine_form_ab.c`: the held original `ThrowItem` Mine form across
+  all 690 stopped passes, restored release and autonomous item registration.
+- `time_stop_mine_ab.c`: a previously released autonomous Mine held motionless
+  for all 690 stopped passes and resuming its hover clock and motion afterward.
 - `ability_spawner_ab.c`: ability-pickup-layer bodies after the authored 40-second
   pickup boundary. The default RL configuration is 0/0; with the shared
   `BOPL_RL_ABILITY_SPAWNS=1` opt-in it compares the first spawn, seven-pass

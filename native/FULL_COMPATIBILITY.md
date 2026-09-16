@@ -2137,6 +2137,19 @@ angle; Rust preserves that component behavior without advancing either body.
 The controlling form, projectile, cooldowns, all public rows, restored
 steering, release and subsequent flight match for 1,700 ticks.
 
+`time_stop_mine_form_ab.c` holds Mine's original `ThrowItem` form across all
+690 zero-scale passes and then releases it after restoration; the controlling
+body, collider, cooldowns, exit and autonomous Mine registration match for
+1,540 ticks. The form collider retains its established 8,192-raw-Q32
+surface-reprojection bound (less than 0.000002 world units).
+
+`time_stop_mine_ab.c` releases the autonomous Mine before the stop. Both
+backends keep its item collider at the exact frozen position for all 690
+passes, while the unprotected owner's body and cooldowns also remain fixed.
+After restoration its hover clock, force and body motion resume on the same
+pass. This scenario is exact under the same established form bound and does
+not claim the still-unmeasured chasing, anticipation or explosion-entry phases.
+
 ### Executable Spike and platform composites (2026-09-14)
 
 Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback

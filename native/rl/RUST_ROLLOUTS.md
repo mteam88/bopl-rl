@@ -85,6 +85,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   A slot-two Missile holds its controlling form and guided projectile fixed
   across the same window, including zero-delta stabilization, then resumes
   steering, release and flight on the restored clock.
+  Mine's older held form and a separately released autonomous Mine are exact
+  across all 690 passes; the form releases after restoration and the live item
+  resumes its hover clock and motion.
   Other transformed-form callbacks, rope detachment and the public
   horizontal-under-water failure remain open.
   Bow: transform 30 ticks, loadingFrame =
