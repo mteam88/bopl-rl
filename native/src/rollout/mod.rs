@@ -404,6 +404,10 @@ pub struct ThrownItem {
     pub phase: u8,
     /// Mjolnir's allocation-free equivalent of `HashSet<int> alreadyKilled`.
     pub killed_players: u8,
+    /// Shockwave.UpdateSim follows Mjolnir.UpdateSim in runtime hierarchy,
+    /// while Shockwave.Init runs before the updater pass. Retain only the
+    /// regular-pass impulse until Mjolnir has updated its recall velocity.
+    pub pending_gust_impulse: Vec2,
     /// Mine.Init/LateUpdateSim state. Keeping it in the pooled item avoids a
     /// side allocation for every autonomous mine.
     pub random_offset: Fix,
@@ -13084,19 +13088,25 @@ impl RolloutWorld {
                 target.base.external_velocity += force * Fix::from_int(35);
             }
             self.gust_waves[wave_index] = wave;
-            self.gust_wave_apply(wave_index, Fix::ZERO, data);
+            self.gust_wave_apply(wave_index, Fix::ZERO, false, data);
         }
     }
 
     fn gust_waves_update(&mut self, data: &data::RolloutData) {
         for wave_index in 0..self.gust_waves.len() {
             if self.gust_waves[wave_index].active && self.gust_waves[wave_index].registered {
-                self.gust_wave_apply(wave_index, DT, data);
+                self.gust_wave_apply(wave_index, DT, true, data);
             }
         }
     }
 
-    fn gust_wave_apply(&mut self, wave_index: usize, dt: Fix, data: &data::RolloutData) {
+    fn gust_wave_apply(
+        &mut self,
+        wave_index: usize,
+        dt: Fix,
+        defer_mjolnir: bool,
+        data: &data::RolloutData,
+    ) {
         let mut wave = self.gust_waves[wave_index];
         let strength = data.gust.curve.evaluate(wave.time);
         wave.time += dt;
@@ -13144,7 +13154,11 @@ impl RolloutWorld {
                 * (data.gust.default_force / distance)
                 * strength
                 * Fix::from_int(60);
-            item.body.apply_impulse(impulse, Vec2::ZERO);
+            if defer_mjolnir && item.ability == ABILITY_MJOLNIR {
+                item.pending_gust_impulse += impulse;
+            } else {
+                item.body.apply_impulse(impulse, Vec2::ZERO);
+            }
         }
         for target in 0..wave.arrow_count {
             let arrow_index = wave.arrow_indices[target];
@@ -13876,6 +13890,7 @@ impl RolloutWorld {
             settle_position: Vec2::ZERO,
             phase: 0,
             killed_players: 0,
+            pending_gust_impulse: Vec2::ZERO,
             random_offset: Fix::ZERO,
             time_since_anticipation: Fix::ZERO,
             prev_chase_dir: Vec2::RIGHT,
@@ -14120,6 +14135,7 @@ impl RolloutWorld {
             settle_position: Vec2::ZERO,
             phase: 0,
             killed_players: 0,
+            pending_gust_impulse: Vec2::ZERO,
             random_offset: Fix::ZERO,
             time_since_anticipation: Fix::ZERO,
             prev_chase_dir: Vec2::RIGHT,
@@ -18907,6 +18923,21 @@ impl RolloutWorld {
                 if to_owner.length_squared() < Fix::from_int(4) {
                     self.remove_thrown_item(item_index, false);
                 }
+            }
+        }
+
+        // Mjolnir has a lower runtime hierarchy than a subsequently spawned
+        // Gust Shockwave. Its recall update therefore observes the Init
+        // impulse above, while the regular Shockwave impulse lands afterward
+        // and immediately before DetPhysics integration.
+        for item in &mut self.thrown_items {
+            if item.active
+                && item.ability == ABILITY_MJOLNIR
+                && item.pending_gust_impulse != Vec2::ZERO
+            {
+                item.body
+                    .apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+                item.pending_gust_impulse = Vec2::ZERO;
             }
         }
 

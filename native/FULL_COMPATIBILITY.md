@@ -1223,9 +1223,15 @@ allocation while retaining its once-per-player semantics.
 `mjolnir_ability_ab.c` compares 1,450 exact NativeAOT/Q32 ticks through an aerial
 throw, outbound flight, stall-triggered recall and owner catch.
 `mjolnir_wall_ab.c` compares another 1,450 exact ticks through a grounded throw,
-terrain collision, platform motion, clang-triggered recall and catch. Victim-hit
-and shared `Item.Duplicate` interactions still need dedicated goldens before the
-catalog entry is complete.
+terrain collision, platform motion, clang-triggered recall and catch.
+`gust_mjolnir_ab.c` adds 340 exact ticks through released-hammer capture and the
+complete Gust curve. On the first registered-wave pass, `Shockwave.Init` applies
+one impulse before existing updaters, `Mjolnir.UpdateSim` then accelerates and
+clamps the recall velocity, and the ordinary `Shockwave.UpdateSim` applies the
+second impulse. Rust keeps that regular-pass impulse in the pooled item until
+the Mjolnir updater has run, preserving the source order without allocation.
+Victim-hit and remaining cross-ability interactions still need dedicated goldens
+before the catalog entry is complete.
 
 ### Executable Gust (2026-09-14)
 
@@ -1291,6 +1297,12 @@ measured 214/243/243 cast, release and Gust-entry schedule and tick-250 first
 horizontal impulse. Target capture, both initialization-pass forces, the full
 curve, entity ownership and later flight are exact; Tack retains its source
 Projectile owner while the Poke Ball item root remains ownerless.
+
+`gust_mjolnir_ab.c` covers the non-commutative released-Mjolnir variant over 340
+exact ticks. Its longer cooldown yields the 274/303/303 cast, release and Gust
+schedule. On tick 310 the initialization impulse precedes Mjolnir's recall
+update, while the regular wave impulse follows it; the full curve and resumed
+recall flight remain exact.
 
 `gust_grenade_form_ab.c` covers the complementary held state for 294 exact
 ticks. Grenade and Gust enter on ticks 214 and 224; the wave pushes the grounded

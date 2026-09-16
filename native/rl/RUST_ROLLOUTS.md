@@ -126,8 +126,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   held spin/pin countdown and doubled projectile launch force. Gust captures a
   live Arrow in its fixed target set and applies its full Shockwave curve with
   orientation retained from the authored between-impulse Arrow update. Released
-  Grenade, Smoke, Poke Ball and Tack bodies also match the fixed-set item branch
-  through both initialization-pass impulses and the complete force curve. Gust
+  Grenade, Smoke, Poke Ball, Tack and Mjolnir bodies also match the fixed-set item
+  branch through both initialization-pass impulses and the complete force curve.
+  Mjolnir keeps the source's intervening recall update between those two first-pass
+  impulses with a fixed per-item accumulator. Gust
   also queries the live aim-oriented Bow form, the grounded controlling
   Missile form, and the grounded held-Grenade form, applying their one-shot
   PlayerPhysics forces before the later form movement. Missile, Mine and all
