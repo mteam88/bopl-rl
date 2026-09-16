@@ -2752,6 +2752,14 @@ then enables contact kills and drives the ground speed with the exported fixed
 Hermite curve for two seconds. Jumping during the run transfers 75 percent of
 the current surface speed into the ordinary body before the synchronous exit.
 
+`roll_air_release_ab.c` compares 360 NativeAOT/Rust ticks at a 64-raw-Q32
+vector bound. Roll enters while airborne on tick 181 and releases on tick 186;
+`PlayerPhysics.Jump` replaces its inherited velocity with the serialized
+ten-unit world-up velocity and applies the normal jump teleport without an
+attached surface. The short-jump form exits when it begins descending on tick
+191, and the restored ordinary slime lands on tick 215. Its final tick-360 pose
+is exact.
+
 Ground motion preserves `Roll.Move`'s unusual collision discretization. It
 computes `n = floor(abs(speed) * dt * density / hurtboxRadius) + 1`, advances
 exactly `n` times by `speed/(n+1)`, and retains all intermediate circle centres

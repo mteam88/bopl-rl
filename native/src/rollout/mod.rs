@@ -6787,8 +6787,16 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.roll.charging = false;
                 slot.roll.short_jumping = true;
-                slot.base
-                    .jump_with_strength(&self.platforms, data.roll.short_jump_strength);
+                // PlayerPhysics.Jump uses world up when already airborne.
+                // With no attached platform its tangential term is zero,
+                // then UnGround only clears rotation/state.
+                slot.base.velocity = Vec2::UP * data.roll.short_jump_strength;
+                slot.base.position += slot.base.velocity * slot.base.constants.jump_teleport;
+                slot.base.jumped_this_frame = true;
+                slot.base.ground = None;
+                slot.base.grounded_speed = Fix::ZERO;
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
             }
         }
         if self.players[index].roll.time_since_release > data.roll.dash_time {
@@ -17242,10 +17250,7 @@ impl RolloutWorld {
         // landing ray can move the body before that publication.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
-        if slot.base.grounded
-            && slot.frozen_solid_count == 0
-            && !slot.ragdoll.hold_on_ground
-        {
+        if slot.base.grounded && slot.frozen_solid_count == 0 && !slot.ragdoll.hold_on_ground {
             // AttachToGround switches a ragdoll straight into the land state
             // before SlimeController.UpdateSim, which then performs its
             // ordinary grounded Move in this same pass.

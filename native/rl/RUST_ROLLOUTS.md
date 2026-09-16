@@ -347,8 +347,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   composition exactly covers the released Roll's contact-kill callback and
   stock reconstruction, and a Time Stop composition covers frozen charge plus
   restored release and motion. Gust's PlayerPhysics force on an airborne
-  charging Roll, subsequent flight and lower-boundary death are also exact.
-  Platform hopping, early airborne release, moving-platform turns, wall squish
+  charging Roll, subsequent flight and lower-boundary death are also exact. An
+  immediate airborne release is exact through its world-up `ShortJump`,
+  descending form exit and ordinary landing. Platform hopping, moving-platform turns, wall squish
   and other transformed-form contacts still need dedicated differential scenarios.
   Black Hole executes its grounded and airborne form animations, persistent
   layer-23 circle, Hermite growth, all-wall gravity, controlled-platform
