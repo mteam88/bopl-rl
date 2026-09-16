@@ -194,13 +194,16 @@ int main(int argc, char **argv) {
     unsigned item_spawn_tick = 0, stop_tick = 0, restore_tick = 0;
     unsigned opponent_death_tick = 0;
     unsigned frozen_ticks = 0;
+    unsigned item_gone_tick = 0, explosion_start = 0;
+    unsigned explosion_disabled = 0, explosion_end = 0;
+    int previous_item = 0, previous_explosion = 0;
     int64_t frozen_x = 0, frozen_y = 0, frozen_timers[3] = {0};
     int64_t frozen_form_x = 0, frozen_form_y = 0;
     int64_t frozen_item_x = 0, frozen_item_y = 0;
     int64_t frozen_item_vx = 0, frozen_item_vy = 0;
     int64_t frozen_item_angular = 0;
     int64_t caster_other_timer = 0;
-    for (unsigned tick = 1; tick <= 1540; tick++) {
+    for (unsigned tick = 1; tick <= 1550; tick++) {
         const BoplRlState *before = bopl_rl_state(world[0]);
         BoplRlAction action[2] = {{0}};
         action[1].angle = 64;
@@ -240,6 +243,23 @@ int main(int argc, char **argv) {
                 item = &reference->entities[i];
                 break;
             }
+        int live_explosion = 0, disabled_explosion = 0;
+        for (unsigned i = 0; i < reference->header.entity_count; i++) {
+            const BoplRlEntity *entity = &reference->entities[i];
+            if (entity->kind == 1 && entity->layer == 18) {
+                live_explosion |= (entity->flags & 1) != 0;
+                disabled_explosion |= entity->flags == 9;
+            }
+        }
+        if (previous_item && !item && !item_gone_tick) item_gone_tick = tick;
+        if (!previous_explosion && live_explosion && !explosion_start)
+            explosion_start = tick;
+        if (disabled_explosion && !explosion_disabled)
+            explosion_disabled = tick;
+        if (explosion_start && !live_explosion && !explosion_end)
+            explosion_end = tick;
+        previous_item = item != NULL;
+        previous_explosion = live_explosion;
         if (item && !item_spawn_tick) item_spawn_tick = tick;
         if (!saw_stopped && item) saw_item_before_stop = 1;
         if (reference->header.player_time_scale == 0) {
@@ -296,6 +316,8 @@ int main(int argc, char **argv) {
         !saw_item_before_stop || !froze_item || !saw_item_motion_after_stop ||
         (scenario == 3 && !saw_opponent_death_after_stop) ||
         (scenario == 3 && stop_tick - item_spawn_tick >= 48) ||
+        (scenario == 0 && (item_gone_tick != 1455 || explosion_start != 1456 ||
+                           explosion_disabled != 1457 || explosion_end != 1546)) ||
         frozen_ticks < 600 || final->header.player_time_scale != (1LL << 32) ||
         final->players[0].deaths != 0) {
         fprintf(stderr,
@@ -309,8 +331,13 @@ int main(int argc, char **argv) {
                 final->header.player_time_scale, final->players[0].deaths);
         return 1;
     }
-    printf("TIME_STOP_RELEASED_ITEM_OK ability=%u name=%s ticks=1540 frozen=%u\n",
+    printf("TIME_STOP_RELEASED_ITEM_OK ability=%u name=%s ticks=1550 frozen=%u\n",
            abilities[scenario], names[scenario], frozen_ticks);
+    if (scenario == 0)
+        printf("TIME_STOP_GRENADE_FUSE spawn=%u stop=%u restore=%u "
+               "item_gone=%u explosion=%u/%u/%u\n",
+               item_spawn_tick, stop_tick, restore_tick, item_gone_tick,
+               explosion_start, explosion_disabled, explosion_end);
     if (scenario == 3)
         printf("TIME_STOP_TACK_TIMING spawn=%u stop=%u restore=%u death=%u active_before_stop=%u post_restore=%u\n",
                item_spawn_tick, stop_tick, restore_tick, opponent_death_tick,

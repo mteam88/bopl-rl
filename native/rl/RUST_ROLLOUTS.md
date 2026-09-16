@@ -436,8 +436,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   position, velocity and spin for the same interval, and frozen ordinary-slime
   animation state no longer advances until restoration. Released Grenade,
   Smoke, Poke Ball and Tack bodies likewise freeze all motion and resume their
-  updater and physics paths together; Tack pauses 43 ticks into its 48-tick
-  arming delay and later completes its owner re-entry kill. A Mine triggered
+  updater and physics paths together. Grenade's fuse also stays paused for all
+  690 passes, then matches restored detonation, first-frame hitbox disable and
+  complete explosion removal; Tack pauses 43 ticks into its 48-tick arming
+  delay and later completes its owner re-entry kill. A Mine triggered
   into anticipation retains its jitter pose, body state and detonation clock
   across the same 690 passes, then registers `MineExplosion` five active ticks
   after restoration. All four spawned Smoke clouds also hold

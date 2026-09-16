@@ -2319,8 +2319,11 @@ motion resumes on the restored clock. Tack continues far enough to cover its
 owner-clear/re-entry self-kill and stock transition after restoration. Its
 item registers on tick 695 and the stop begins on 738, 43 ticks into the
 authored 48-tick arming delay; the restored self-kill occurs on tick 1459. All
-four 1,540-tick scenarios are exact with the ordinary 2,048-raw-Q32 body bound;
-this does not claim Poke Ball's capture state.
+four 1,550-tick scenarios are exact with the ordinary 2,048-raw-Q32 body bound;
+this does not claim Poke Ball's capture state. The Grenade fixture now continues
+past restoration: its fuse remains paused from stop tick 738 through tick 1428,
+the item detonates on tick 1456, the explosion disables its lethal box on tick
+1457 and the final visual row is removed on tick 1546.
 
 `time_stop_smoke_cloud_ab.c` times Smoke's fuse so all four clouds register
 shortly before the stop while their enter animation is still growing. All four
