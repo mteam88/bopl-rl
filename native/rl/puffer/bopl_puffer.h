@@ -187,6 +187,10 @@ typedef struct {
      * still applies after this one; held: that state; hold_run: consecutive
      * decisions each button has been down (0 when up). Aim is never latched. */
     int hold_left[6]; uint16_t held[6]; int hold_run[6][4];
+    /* The decisions applied before the last one (layout v4's own-action
+     * history, BOPL4_HISTORY): [p][0] the previous decision, [p][1] the one
+     * before. Zero (no aim, no buttons) at the episode start. */
+    BoplRlAction action_history[6][2];
     /* Scripted opponents (bopl_bots.h, SCRIPTED_BOTS.md). Training: banks whose
      * nibble in scripted_kinds is set play a bot instead of frozen weights (the
      * bank's GPU rows still run; their sampled actions are ignored). Evaluation:
@@ -637,6 +641,18 @@ static void bopl_previous_action(float *previous, BoplRlAction action, int hold_
     previous[7]=bopl_clip((double)hold_left/BOPL_HOLD_MAX);
     for (int bit=0; bit<4; bit++) previous[8+bit]=bopl_clip((hold_run?hold_run[bit]:0)/(double)BOPL_HOLD_MAX);
 }
+/* Layout v4: the two decisions before the last one behind the v3 tail (7
+ * floats each: no-aim flag, aim cos/sin, four buttons), then the history
+ * shifts to include `applied`. */
+static void bopl4_previous_history(float *previous, BoplRlAction *history, BoplRlAction applied) {
+    for (int h=0; h<2; h++) {
+        float *out=previous+BOPL_PREVIOUS_FEATURES+7*h;
+        out[0]=history[h].angle==0;
+        out[1]=bopl_aim_table[history[h].angle][0]; out[2]=bopl_aim_table[history[h].angle][1];
+        for (int bit=0; bit<4; bit++) out[3+bit]=(history[h].buttons&(1<<bit))!=0;
+    }
+    history[1]=history[0]; history[0]=applied;
+}
 #include "bopl_obs_v4.h"
 static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_overflow) {
     for (int a=0; a<env->players; a++) {
@@ -800,7 +816,13 @@ static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
     for (int i=0; i<2; i++) bopl_state_copy(&env->delayed[i], state);
     env->delay_cursor=0;
     memset(env->hold_left, 0, sizeof(env->hold_left)); memset(env->held, 0, sizeof(env->held)); memset(env->hold_run, 0, sizeof(env->hold_run));
-    for (int i=0; i<env->players; i++) { bopl_obs_row(env, i)[bopl_previous_offset(env, i)]=1; bopl_write_mask(env, i); }
+    memset(env->action_history, 0, sizeof(env->action_history));
+    for (int i=0; i<env->players; i++) {
+        float *previous=bopl_obs_row(env, i)+bopl_previous_offset(env, i);
+        previous[0]=1;
+        if (bopl_layout_of(env, i)==4) for (int h=0; h<BOPL4_HISTORY; h++) previous[BOPL_PREVIOUS_FEATURES+BOPL4_HISTORY_FEATURES*h]=1;
+        bopl_write_mask(env, i);
+    }
     bopl_encode_privileged(env, state, NULL);
 }
 /* Weighted roster draw from the bot stream. Same LCG as the share coin-flip
@@ -1044,7 +1066,9 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     } else compute_observations_from(env, state);
     if (!terminal) for (int i=0; i<env->players; i++) {
         // Own button history is known immediately; it is not world information.
-        bopl_previous_action(bopl_obs_row(env, i)+bopl_previous_offset(env, i), actions[i], env->hold_left[i], env->hold_run[i]);
+        float *previous=bopl_obs_row(env, i)+bopl_previous_offset(env, i);
+        bopl_previous_action(previous, actions[i], env->hold_left[i], env->hold_run[i]);
+        if (bopl_layout_of(env, i)==4) bopl4_previous_history(previous, env->action_history[i], actions[i]);
         bopl_write_mask(env, i);
     }
     /* The critic's privileged block sees the world as it is now, not as the

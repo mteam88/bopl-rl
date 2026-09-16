@@ -58,16 +58,16 @@ then a pure function of the weights (nothing to export, nothing to drift).
 | global | 66 | v3 prefix with columns 8-9 (absolute self x/64, y/64) zeroed: clocks, time scale, counts, 39 per-ability entity counts, sector counts, time stop. No absolute position anywhere in the row (see "Map invariance" below) |
 | self | 44 | v3 self 20 (id/team/alive/stocks/kills/deaths/pos/scale/flags/timers) + controlling slime: vx, vy, speed, rotation sin/cos, state one-hot 11, in-ability, input-suppressed, spawned, abilityless, scale, grounded (vy==0 and vx==0 is the sim's grounded encoding), pickup slot |
 | opponent | 56 | the primary enemy (nearest visible enemy player's controlling slime): the same 44 as self, plus relative: dx, dy, distance, bearing sin/cos, dvx, dvy, closing speed, tangential speed, time to closest approach, miss distance, position-known flag. Zero with known=0 while invisible. A fixed slot for the one opponent that matters in 1v1, so the policy does not depend on pooling to find it |
-| previous | 12 | v3 own-action tail unchanged |
+| previous | 26 | v3 own-action tail (the decision as applied, latch left, hold runs) + the two decisions applied before it (no-aim flag, aim cos/sin, four buttons each). The observation is 9 ticks old and a decision is 4 ticks, so the last three applied decisions are exactly what the agent knows about its own inputs inside the delay window; the probes measured own velocity R2 0.72 delayed vs 1.00 undelayed (PROBES.md), and own inputs let the network dead-reckon its own state exactly and the foe's approximately |
 | terrain | 12 | egocentric, from the static-collider SDF the scripted bots use (`bot_wall_sdf`): drop to the surface below /32, ceiling above /32, distance to the edge left and right (floor falls away by more than 4 units within one dash, 13 units) /13 with a wall-blocks flag per side, height above the water /32, distance to lethal terrain /16, ground within one dash (some of 16 dash endpoints has a surface within 4 units below), SDF at the body /8 and its gradient |
-| rays | 16 x 6 | the primary geometry channel: 16 rays from the body at 22.5 degree steps, length 32: distance /32 (1 = nothing), hit class one-hot wall / lethal wall / water / dynamic entity, closing speed of an entity hit along the ray. Walls by sphere-marching the SDF, water as the surface plane, entities as circles of their radius |
+| rays | 36 x 8 | the primary geometry channel: 32 rays from the body at 11.25 degree steps plus 4 in a 120 degree fan about straight down (-135, -105, -75, -45 degrees), length 40: distance /40 (1 = nothing), hit class one-hot wall / lethal wall / water or blast plane / hostile projectile or object / opponent body / own object, closing speed of a body or object hit along the ray. Walls by sphere-marching the SDF, water and the blast planes as planes, projectiles and enemy bodies as circles of their radius. The probes' ray study (PROBES.md section 5) fixed the count: 32+4 rays alone beat the whole 1458-float v3 observation on falls and geometry (fall_30 AP 0.72 vs 0.16, drop-to-surface R2 0.94 vs 0.56, lands_dry AUC 0.98 vs 0.93) and 16+4 rays did not (hit_inflight_30 AP 0.18 vs 0.28); 0.1 us per ray. 16 rays is the `v4-rays16` ablation |
 | players | 6 x 32 | v3 20 + the 12 relational columns (below) |
 | slots | 24 x 18 | v3 13 + remaining cooldown /10 s, position-known, owner-is-primary-enemy, owner distance /64, ability id (last column) |
 | entities | 48 x 48 | v3 33 + the 12 relational columns (surface distance; ballistic pair for projectiles: nearest approach of the gravity arc, 40 u/s^2 measured on the sim, and its time), distance and miss distance of the same body seen from the primary enemy (my arrow versus the opponent), ability id (last column). Static colliders keep their rows (exact extents and orientation) but the network is meant to read terrain from the rays and terrain block; the rows are the secondary, exact description |
 | slimes | 32 x 42 | v3 30 (its spare columns now: owner stocks, owner-is-primary-enemy, is-a-controlling-body, abilityless) + the 12 relational columns |
 | privileged | 48 | critic only, never read by the actor: the primary enemy's undelayed true state (relative position, velocity, state, rotation, flags, three slots' remaining cooldown/ready/active/charge, invisibility alpha, latched buttons, hold left, last aim) the staleness of the actor's view (true relative enemy position minus the delayed one) and the observer's own undelayed velocity. Written by the environment from the current state, next to the 9-tick-delayed actor blocks |
 
-Total 4606 floats (v3: 3690, +25%; H2D upload is 6% of the rollout step,
+Total 4812 floats (v3: 3690, +30%; H2D upload is 6% of the rollout step,
 THROUGHPUT.md 1.E). *Measured*: the v4 writer costs 6.3 us per row against
 v3's 3.3 (research_pack_layout on a map-0 state with 17 entities, one core);
 at 24576 rows over 16 environment threads that is about 4.6 ms more per
@@ -82,8 +82,11 @@ training maps an absolute position is a map-and-location lookup key that
 lets the policy skip the geometry rows (Cobbe et al. 2018 / 2020 on level
 memorisation), so v4 has none: the v3 prefix's self x/y are zero, every other
 position is relative to the observer, and the map is seen through the
-egocentric terrain block and the 16 rays (over static colliders, the water
-surface and dynamic entities). The static-collider entity rows remain as the
+egocentric terrain block and the 36 rays (over static colliders, the water
+surface and blast planes, projectiles and enemy bodies). The probes confirmed
+the direction: the v3 GRU state holds absolute position (R2 0.93) and a 0.1
+shift of self x/y moves the policy 0.2 nats, while map identity is barely
+held (0.70 vs 0.35 majority). The static-collider entity rows remain as the
 exact description but are secondary. Whether the relative wall rows still
 leak location is a question for the probes thread; if they do, the lever is
 to cap the number of static-collider rows (they are a truncation-by-distance
@@ -111,7 +114,7 @@ fit in one environment buffer.
 ## 3. Network
 
 ```
-flat  = ReLU(W_f [global, self, opponent, previous, terrain, rays])       286 -> 256
+flat  = ReLU(W_f [global, self, opponent, previous, terrain, rays])       492 -> 256
 row_s = ReLU(W2_s ReLU(W1_s x + E[id]))  per valid row of set s          F_s -> 128 -> 128
 pool_s = [max_rows row_s , mean_rows row_s]                               256 per set
 u     = LN(W_u [flat, pool_player, pool_slot, pool_entity, pool_slime])   1280 -> 256
@@ -147,8 +150,8 @@ value  = W_v LN(z + W_b2 ReLU(W_b1 LN(z))),  z = W_z LN([y, privileged])  304 ->
 - Heads: unchanged Fourier aim head (K=4, `bopl_aim.h`), buttons, hold; the
   entropy head-scale plumbing is untouched because the decoder row format
   (logits then value) is exactly v3's.
-- Parameters: actor path 0.96M (sets 88k, embedding 5k, flat 73k, fusion 328k,
-  MinGRU 197k, FFN 262k, heads 8k); critic 0.68M; total 1.64M. v3 at hidden
+- Parameters: actor path 1.01M (sets 88k, embedding 5k, flat 126k, fusion 328k,
+  MinGRU 197k, FFN 262k, heads 8k); critic 0.68M; total 1.69M. v3 at hidden
   128: 0.15M.
 
 Learning rate. Hilton et al. 2023 keep the Adam learning rate proportional to

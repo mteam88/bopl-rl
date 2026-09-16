@@ -80,10 +80,15 @@ typedef struct {
     BotView view;                 /* only walls[], wall_count and soa are filled */
     double water_top;             /* y of the water surface, -1e9 if no water entity */
     int has_water;
-    /* Dynamic, visible entities as circles for the ray casts. */
-    int circle_count; double cx[BOPL4_ENTITIES], cy[BOPL4_ENTITIES], cr[BOPL4_ENTITIES], cvx[BOPL4_ENTITIES], cvy[BOPL4_ENTITIES];
+    /* Dynamic, visible entities and enemy bodies as circles for the ray casts;
+     * cclass: 0 hostile projectile / object, 1 opponent body, 2 own object. */
+    int circle_count;
+    double cx[BOPL4_ENTITIES+BOPL4_SLIMES], cy[BOPL4_ENTITIES+BOPL4_SLIMES], cr[BOPL4_ENTITIES+BOPL4_SLIMES];
+    double cvx[BOPL4_ENTITIES+BOPL4_SLIMES], cvy[BOPL4_ENTITIES+BOPL4_SLIMES];
+    int cclass[BOPL4_ENTITIES+BOPL4_SLIMES];
 } Bopl4Terrain;
-static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const uint32_t *nearest, int count) {
+static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const uint32_t *nearest, int count,
+                               const uint32_t *nearby_slimes, int slime_count, const BoplRlPlayer *self) {
     BotView *view=&t->view;
     view->wall_count=0; t->has_water=0; t->water_top=-1e9; t->circle_count=0;
     for (uint32_t i=0; i<state->header.entity_count; i++) {
@@ -121,6 +126,19 @@ static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const 
         int k=t->circle_count++;
         t->cx[k]=bopl_fix(e->x); t->cy[k]=bopl_fix(e->y); t->cr[k]=fmax(bopl_fix(e->radius), 0.25);
         t->cvx[k]=bopl_fix(e->vx); t->cvy[k]=bopl_fix(e->vy);
+        t->cclass[k]=e->owner==self->id?2:0;
+    }
+    /* Enemy bodies (the visible slime rows of other teams). */
+    for (int i=0; i<slime_count; i++) {
+        const BoplRlSlime *s=&state->slimes[nearby_slimes[i]];
+        if (!(s->flags&BOPL_SLIME_ACTIVE)) continue;
+        const BoplRlPlayer *owner=bopl_player_by_id(state, s->owner);
+        if (!owner || owner->id==self->id || owner->team==self->team) continue;
+        int k=t->circle_count++;
+        double r=BOT_SLIME_RADIUS*bopl_fix(s->scale);
+        t->cx[k]=bopl_fix(s->x); t->cy[k]=bopl_fix(s->y); t->cr[k]=r>0?r:BOT_SLIME_RADIUS;
+        t->cvx[k]=bopl_fix(s->vx); t->cvy[k]=bopl_fix(s->vy);
+        t->cclass[k]=1;
     }
 }
 /* Nearest wall's index at a point (for the lethal class). */
@@ -132,6 +150,17 @@ static int bopl4_nearest_wall(const BotView *view, double x, double y) {
 /* One ray: distance to the first surface among walls, water and circles
  * (BOPL4_RAY_LENGTH when nothing), the class and, for a circle, its closing
  * speed along the ray (relative to the observer's velocity). */
+/* Ray k's direction: BOPL4_RAYS_AROUND uniform from +x, then the fan about
+ * straight down (cell centres of a 120-degree span: -135, -105, -75, -45). */
+static void bopl4_ray_direction(int k, double *dx, double *dy) {
+    double a;
+    if (k<BOPL4_RAYS_AROUND) a=6.28318530717958647692*k/BOPL4_RAYS_AROUND;
+    else { double span=6.28318530717958647692/3.0; a=-1.57079632679489661923-span/2+span*(k-BOPL4_RAYS_AROUND+0.5)/BOPL4_RAYS_DOWN; }
+    *dx=cos(a); *dy=sin(a);
+}
+/* Classes: 0 wall, 1 lethal wall, 2 water / blast plane, 3 hostile projectile
+ * or object, 4 opponent body, 5 own object; out[7] the hit's closing speed
+ * along the ray for classes 3-5. */
 static void bopl4_ray(const Bopl4Terrain *t, double x, double y, double dx, double dy, double svx, double svy, float *out) {
     double best=BOPL4_RAY_LENGTH; int class=-1; double closing=0;
     if (t->view.wall_count) {
@@ -146,6 +175,10 @@ static void bopl4_ray(const Bopl4Terrain *t, double x, double y, double dx, doub
         double d=(t->water_top-y)/dy;
         if (d>=0 && d<best) { best=d; class=2; }
     }
+    /* The blast planes (bopl_bots.h): implicit kill zones like the water. */
+    if (dy>1e-9) { double d=(BOT_BLAST_Y-y)/dy; if (d>=0 && d<best) { best=d; class=2; } }
+    if (dx>1e-9) { double d=(BOT_BLAST_X-x)/dx; if (d>=0 && d<best) { best=d; class=2; } }
+    if (dx<-1e-9) { double d=(-BOT_BLAST_X-x)/dx; if (d>=0 && d<best) { best=d; class=2; } }
     for (int i=0; i<t->circle_count; i++) {
         double px=t->cx[i]-x, py=t->cy[i]-y, along=px*dx+py*dy;
         if (along<0) continue;
@@ -153,11 +186,11 @@ static void bopl4_ray(const Bopl4Terrain *t, double x, double y, double dx, doub
         if (perp2>r2) continue;
         double d=along-sqrt(r2-perp2);
         if (d<0) d=0;
-        if (d<best) { best=d; class=3; closing=-((t->cvx[i]-svx)*dx+(t->cvy[i]-svy)*dy); }
+        if (d<best) { best=d; class=3+t->cclass[i]; closing=-((t->cvx[i]-svx)*dx+(t->cvy[i]-svy)*dy); }
     }
     out[0]=(float)(best/BOPL4_RAY_LENGTH);
-    out[1]=class==0; out[2]=class==1; out[3]=class==2; out[4]=class==3;
-    out[5]=class==3?bopl_clip(closing/BOPL4_VELOCITY_SCALE):0.0f;
+    for (int c=0; c<6; c++) out[1+c]=class==c;
+    out[7]=class>=3?bopl_clip(closing/BOPL4_VELOCITY_SCALE):0.0f;
 }
 static double bopl4_drop(const Bopl4Terrain *t, double x, double y, double cap) {
     double d=t->view.wall_count?bot_raycast(&t->view, x, y, 0, -1, cap):cap;
@@ -323,12 +356,11 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     /* Terrain and rays: the egocentric view of the map from the body. */
     {
         Bopl4Terrain terrain;
-        bopl4_terrain_fill(&terrain, state, nearest, count);
+        bopl4_terrain_fill(&terrain, state, nearest, count, nearby_slimes, slime_count, self);
         bopl4_terrain(&terrain, self_x, self_y, obs+BOPL4_OBS_TERRAIN_OFFSET);
         for (int k=0; k<BOPL4_RAYS; k++) {
-            double angle=6.28318530717958647692*k/BOPL4_RAYS;
-            bopl4_ray(&terrain, self_x, self_y, cos(angle), sin(angle), self_vx, self_vy,
-                      obs+BOPL4_OBS_RAY_OFFSET+(size_t)k*BOPL4_RAY_FEATURES);
+            double dx, dy; bopl4_ray_direction(k, &dx, &dy);
+            bopl4_ray(&terrain, self_x, self_y, dx, dy, self_vx, self_vy, obs+BOPL4_OBS_RAY_OFFSET+(size_t)k*BOPL4_RAY_FEATURES);
         }
     }
 
