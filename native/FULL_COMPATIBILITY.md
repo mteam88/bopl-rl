@@ -2410,6 +2410,12 @@ owner clearing, same-tick destroyed rows, deferred ownerless explosion, hitbox
 disable and visual expiry all match. The candidate scan uses a fixed 64-entry
 stack buffer and adds no per-tick allocation.
 
+`duplicator_missile_ab.c` adds the Missile-specific `Item` copy path: three
+velocity-aligned fan copies with fresh engine state and pooled duplicate
+lifetimes, followed by exact boundary destruction, four deferred explosions and
+their independent expiry. The 450-tick comparison is bit exact outside the
+standard one-raw-unit box-basis reconstruction allowance.
+
 `missile_grenade_ab.c` adds 500 differential ticks for a released Grenade. The
 circle and guided box resolve dynamically on tick 246; Missile's callback queues
 its explosion while Grenade's item-layer callback intentionally leaves the
@@ -3210,6 +3216,17 @@ items; their positions, velocities, mass and every contact decision match.
 Player-layer form axes and rotation retain the existing dynamic ThrowItem2
 allowance of 30,000,000 raw units (0.00699 radians); player/body state and all
 translational results remain exact.
+
+`duplicator_missile_ab.c` covers Duplicator's Missile-specific item branch for
+450 bit-exact ticks. The source Missile stays live after its controlling form
+exits, then receives three fan copies on tick 251. Each clone registers one pass
+later with a fresh Missile runtime, owner propagation, velocity-derived `up`,
+and an allocation-free 1,800-pass duplicate lifetime stored in the projectile
+pool. The original and copies leave the top/side bounds on ticks 256, 260 and
+261, queue four ownerless explosions, and expire independently on ticks 339,
+343 and 344. Positions, velocities, rotation, identity, hierarchy and public
+player/slime state are bit exact; only the usual one-raw-unit collider-basis
+rounding allowance remains.
 
 `duplicator_smoke_ab.c` adds 450 exact ticks for the same fan path using a live
 Smoke grenade. This exposed three source distinctions now preserved by Rust:

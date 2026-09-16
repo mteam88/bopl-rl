@@ -293,9 +293,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   and visual expiry. The Bow case uses the registered form for Shockwave selection and
   reproduces its callback-time rotation reset and surface-normal death exit. Projectile,
   other active-form contacts, remaining projectile/item types, scale interactions,
-  duplication and Portal traversal remain open. A crossing Arrow additionally matches
-  dynamic Circle/Box resolution, both callback destructions and the complete ownerless
-  explosion lifecycle using a fixed stack contact set. A released Grenade matches the
+  Portal traversal remain open. A crossing Arrow additionally matches dynamic
+  Circle/Box resolution, both callback destructions and the complete ownerless
+  explosion lifecycle using a fixed stack contact set. Duplicator's Missile branch
+  matches three velocity-aligned fan copies with fresh engine state, pooled duplicate
+  lifetimes, boundary destruction and four independent explosions. A released Grenade matches the
   complementary callback split: dynamic correction, Missile-only destruction,
   next-pass blast ignition, chained Grenade explosion and independent visual expiry.
   Mine executes the separate original `ThrowItem` form and exact autonomous
@@ -498,6 +500,9 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Mjolnir copies match the same clone initialization, outbound damping, recall
   and original-hammer removal, then all three owner-return removals on tick 451
   over 500 exact ticks.
+  Guided Missile copies match the item-layer three-copy fan, fresh engine
+  state, owner propagation, velocity-derived orientation, boundary removal and all
+  four deferred explosion lifetimes over 450 exact ticks.
   Poke Ball copies match registration, launch initialization, DetPhysics sweep
   ordering, the first shared dynamic-platform contact, later bounces and all
   four boundary/fizzle removals over 900 ticks. A second exact differential

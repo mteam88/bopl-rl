@@ -450,6 +450,11 @@ pub struct GuidedMissile {
     pub body: Body,
     pub up: Vec2,
     pub instability_ticks: u32,
+    /// `DetPhysics.duplicatedObjects` state for Missile copies. Keeping this
+    /// on the pooled projectile avoids a side allocation in the hot path.
+    pub duplicated: bool,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
     pub magnet_holder: Option<usize>,
     pub magnet_hold_ticks: i8,
 }
@@ -15738,6 +15743,14 @@ impl RolloutWorld {
             .position(|item| item.active && item.entity == Some(hit.entity))
         {
             self.duplicate_thrown_item(item_index, direction, data);
+            return;
+        }
+        if let Some(missile_index) = self
+            .guided_missiles
+            .iter()
+            .position(|missile| missile.active && missile.entity == Some(hit.entity))
+        {
+            self.duplicate_guided_missile(missile_index, direction, data);
         }
     }
 
@@ -15987,6 +16000,56 @@ impl RolloutWorld {
         }
     }
 
+    fn duplicate_guided_missile(
+        &mut self,
+        source_index: usize,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let source = self.guided_missiles[source_index];
+        let speed = source.body.velocity.length() + Fix::from_int(10);
+        for clone_index in 0..data.missile.clone_count {
+            let position = Self::fan_out(
+                data.missile.clone_count,
+                direction,
+                source.position,
+                data.missile.duplicate_spacing,
+                data.missile.duplicate_angle,
+                clone_index,
+            );
+            let up = (position - source.position).normalized_safe();
+            let hierarchy_base = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.missile.spark_updatable_count;
+            let mut body = data.missile.spark_body;
+            body.velocity = up * speed;
+            // duplicateBoplBody first copies the live rotation, then the
+            // Missile-specific branch assigns `up` from the fan velocity.
+            body.orientation = up.perp_cw().normalized_angle();
+            let clone = GuidedMissile {
+                active: true,
+                born_tick: self.tick,
+                hierarchy_base,
+                owner: source.owner,
+                position,
+                body,
+                up,
+                duplicated: true,
+                duplicate_lifespan: 1800,
+                ..GuidedMissile::default()
+            };
+            if let Some(free) = self
+                .guided_missiles
+                .iter()
+                .position(|missile| !missile.active)
+            {
+                let entity = self.guided_missiles[free].entity;
+                self.guided_missiles[free] = GuidedMissile { entity, ..clone };
+            } else {
+                self.guided_missiles.push(clone);
+            }
+        }
+    }
+
     fn duplicated_objects_tick(&mut self) {
         if self.player_time_scale < Fix::from_f32(0.01) {
             return;
@@ -16013,6 +16076,29 @@ impl RolloutWorld {
                     * progress
                     * Fix::from_f32(0.25);
                 item.position += item.duplicate_shake_offset;
+            }
+        }
+        for missile_index in (0..self.guided_missiles.len()).rev() {
+            let missile = &mut self.guided_missiles[missile_index];
+            if !missile.active || !missile.duplicated {
+                continue;
+            }
+            missile.duplicate_lifespan -= 1;
+            if missile.duplicate_lifespan < 0 {
+                missile.active = false;
+                missile.registered = false;
+                if let Some(entity) = missile.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            } else if missile.duplicate_lifespan < 60 {
+                let progress = Fix::ONE
+                    - Fix::from_int(missile.duplicate_lifespan as i64) / Fix::from_int(60);
+                missile.position -= missile.duplicate_shake_offset;
+                missile.duplicate_shake_offset =
+                    Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                        * progress
+                        * Fix::from_f32(0.25);
+                missile.position += missile.duplicate_shake_offset;
             }
         }
     }
