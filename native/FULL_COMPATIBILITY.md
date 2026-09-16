@@ -3109,8 +3109,19 @@ curve radius differs by at most about 100 raw Q32 units. During the active cast
 form, separately synchronized PlayerPhysics and DetPhysics positions differ by
 at most 70,000,000 raw units (0.0163 world units); grounded exit reprojects to
 the exact same platform pose and no collision or lifecycle decision differs.
-Standalone projectile/item force and consumption paths remain to be exercised
-as their catalog abilities are composed with Black Hole, so coverage is marked
+`black_hole_arrow_ab.c` adds 205 differential ticks without widening the
+existing 70,000,000-raw-Q32 active-form bound. The Arrow registers on tick 196;
+the hole spawns on tick 199 and immediately walks the registered circle array,
+adding its exact inverse-square force before DetPhysics integration. The
+Arrow's resulting position and velocity are bit-identical. The same pass's
+trigger callback consumes the Arrow, resets the hole's growth curve and queues
+the nearby shooter's already-covered player death callback. The destroyed
+Arrow disappears on tick 200, when the radius grows from raw Q32 `5425903114`
+to `6444168753`. The implementation reuses the existing Arrow vector and adds
+no contact allocation.
+
+Other projectile/item force and consumption paths remain to be exercised as
+their catalog abilities are composed with Black Hole, so coverage is marked
 partial. `time_stop_black_hole_ab.c` separately covers an already released
 hole through all 690 stopped passes and restored growth. Hole and contact state
 reuse capacity-retained vectors and fixed player arrays; the tick path adds no

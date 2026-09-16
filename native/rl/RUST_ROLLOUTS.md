@@ -366,8 +366,10 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   hierarchy labels differ between the oracle and rollout inventory, but both
   remain before all runtime prefabs and every dynamic identity, trajectory and
   lifecycle boundary matches.
-  Forces and consumption for standalone projectile/item prefabs still need
-  composed differential scenarios as those catalog ports are completed.
+  A live Bow Arrow also receives the hole's circle-array force before physics,
+  integrates to the exact source pose, and is consumed by the trigger callback
+  while the hole grows. Other projectile and item prefabs still need composed
+  differential scenarios.
   Throw executes its separate MachoThrow2 form, animation callbacks, movement,
   eight ground-shrink passes and both release paths. Quick release creates and
   launches its boulder in one pass; a full pickup holds the zero-velocity body

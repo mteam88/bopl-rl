@@ -9245,6 +9245,31 @@ impl RolloutWorld {
                     (-force * data.black_hole.player_force) * Fix::from_int(35);
             }
 
+            // BlackHole.UpdateSim walks the registered circle array before
+            // DetPhysics integrates it. Projectile circles therefore receive
+            // this force in the same pass, including the hole's spawn pass.
+            for arrow in &mut self.arrows {
+                if !arrow.active || !arrow.registered {
+                    continue;
+                }
+                let vector = position - arrow.position;
+                let squared = vector.length_squared();
+                if squared == Fix::ZERO {
+                    continue;
+                }
+                let distance = squared.sqrt().expect("Black Hole Arrow distance");
+                if distance >= radius * data.black_hole.influence_radius_multiplier {
+                    continue;
+                }
+                let cube = distance * distance * distance;
+                if cube == Fix::ZERO {
+                    continue;
+                }
+                let mass_force =
+                    data.black_hole.gravity * (Fix::ONE / data.arrow.body.inverse_mass) * mass;
+                arrow.force += vector * mass_force / cube;
+            }
+
             let controlled_ground = self.players.iter().find_map(|player| {
                 (player.active == ActiveAbility::Push)
                     .then_some(player.base.ground)
@@ -9340,6 +9365,55 @@ impl RolloutWorld {
                     self.entities[platform_entity].flags = E_DESTROYED;
                 }
                 platform_index += 1;
+            }
+        }
+
+        // Circle/Circle trigger pairs do not receive a rigid-body impulse,
+        // but both callbacks still run. A positive-mass BlackHole consumes a
+        // live Arrow, grows from its BoplBody inverse mass, and destroys the
+        // whole projectile object in the callback row.
+        for hole_index in 0..self.black_holes.len() {
+            let hole = self.black_holes[hole_index];
+            if !hole.active || hole.mass < Fix::ZERO {
+                continue;
+            }
+            for arrow_index in 0..self.arrows.len() {
+                let arrow = self.arrows[arrow_index];
+                if !arrow.active || !arrow.registered {
+                    continue;
+                }
+                if crate::physics::contact::circle_circle(
+                    Circle {
+                        center: hole.position,
+                        radius: hole.radius,
+                    },
+                    Circle {
+                        center: arrow.position,
+                        radius: data.arrow.radius,
+                    },
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    data.arrow.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.destroy_arrow(arrow_index);
+                if let Some(entity) = arrow.entity {
+                    let row = &mut self.entities[entity];
+                    row.flags = E_DESTROYED;
+                    row.owner = 0;
+                    row.x = arrow.position.x.raw();
+                    row.y = arrow.position.y.raw();
+                    row.vx = arrow.velocity.x.raw();
+                    row.vy = arrow.velocity.y.raw();
+                    row.rotation = arrow.rotation.raw();
+                    row.angular_velocity = 0;
+                }
             }
         }
 
