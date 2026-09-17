@@ -2139,7 +2139,7 @@ pub struct PlayerSlot {
 
 impl PlayerSlot {
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
-        let scale = scale.clamp(Fix::from_f32(0.3), Fix::from_int(3));
+        let scale = scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
         // SlimeController assigns hurtBox.Scale every pass even when the
         // value is unchanged. Q32 `(One / old) * new` is not necessarily one,
         // so the collider's stored inverse extents keep drifting by raw units.
@@ -3696,7 +3696,7 @@ impl RolloutWorld {
             }
         }
         if height < Fix::from_f32(0.5) {
-            self.ability_pickups[index].body.velocity *= Fix::from_f32(0.95);
+            self.ability_pickups[index].body.velocity *= Fix::from_f64(0.95);
         }
         let divisor = height.max(Fix::ONE);
         let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
@@ -4481,7 +4481,7 @@ impl RolloutWorld {
                 base.external_velocity *= if pushing {
                     // ControlPlatform performs this damping before its
                     // time-stop early return.
-                    Fix::from_f32(0.8)
+                    Fix::from_f64(0.8)
                 } else {
                     Fix::from_f64(0.95)
                 };
@@ -6811,7 +6811,7 @@ impl RolloutWorld {
                         } else {
                             slot.base.velocity = Vec2::ZERO;
                         }
-                        slot.base.external_velocity *= Fix::from_f32(0.2);
+                        slot.base.external_velocity *= Fix::from_f64(0.2);
                         // Ability.UpdateSim publishes the newly positioned
                         // Roll collider later in this same updater pass.
                         slot.reported_position = form_position;
@@ -8163,7 +8163,7 @@ impl RolloutWorld {
                 slot.base.position += offset - slot.meteor.prev_offset;
                 slot.meteor.prev_offset = offset;
                 slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
-                slot.base.external_velocity *= Fix::from_f32(0.8);
+                slot.base.external_velocity *= Fix::from_f64(0.8);
                 slot.base.external_velocity *= Fix::from_f64(0.95);
                 slot.base.sync_collider();
                 slot.meteor.position = slot.base.position;
@@ -8248,7 +8248,7 @@ impl RolloutWorld {
                 slot.base.position += offset - slot.meteor.prev_offset;
                 slot.meteor.prev_offset = offset;
                 slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
-                slot.base.external_velocity *= Fix::from_f32(0.8);
+                slot.base.external_velocity *= Fix::from_f64(0.8);
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
@@ -8534,7 +8534,7 @@ impl RolloutWorld {
             } else if item.ability == ABILITY_MINE && matches!(item.phase, 1 | 2) {
                 let mine = &mut self.thrown_items[item_index];
                 mine.phase = 3;
-                mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f32(0.8);
+                mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
             }
         }
     }
@@ -8700,7 +8700,7 @@ impl RolloutWorld {
     }
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
-        self.players[index].base.external_velocity *= Fix::from_f32(0.8);
+        self.players[index].base.external_velocity *= Fix::from_f64(0.8);
         // ControlPlatform delegates to PlayerPhysics.Move(zero) before its
         // Time Stop and grounded checks. This retains normal friction,
         // surface-local motion (including external force), and drop checks.
@@ -10476,7 +10476,7 @@ impl RolloutWorld {
                     })
                 {
                     mine.time_since_anticipation =
-                        data.mine.anticipation_duration * Fix::from_f32(0.8);
+                        data.mine.anticipation_duration * Fix::from_f64(0.8);
                     mine.phase = 3;
                 }
             }
@@ -16962,7 +16962,7 @@ impl RolloutWorld {
             // the launch vector itself back along +LocalUp.
             state.direction = if released {
                 -local_up
-            } else if aim == Vec2::ZERO || aim.dot(local_up) > Fix::from_f32(-0.3) {
+            } else if aim == Vec2::ZERO || aim.dot(local_up) > Fix::from_f64(-0.3) {
                 local_up
             } else {
                 -local_up
@@ -18246,8 +18246,8 @@ impl RolloutWorld {
         if nearest != Fix::MAX {
             half_length = nearest / Fix::from_int(2);
         }
-        half_length = half_length.max(Fix::from_f32(0.01));
-        let half_width = magnet.pull_width.max(Fix::from_f32(0.01));
+        half_length = half_length.max(Fix::from_f64(0.01));
+        let half_width = magnet.pull_width.max(Fix::from_f64(0.01));
         let query = OrientedBox::from_basis(
             firepoint + direction * half_length,
             direction,
@@ -19468,9 +19468,9 @@ impl RolloutWorld {
                     && let Some(rope) = self.ropes.get_mut(rope_index)
                 {
                     if rope_top {
-                        rope.time_air_start = Fix::from_f32(0.1);
+                        rope.time_air_start = Fix::from_f64(0.1);
                     } else {
-                        rope.time_air_end = Fix::from_f32(0.1);
+                        rope.time_air_end = Fix::from_f64(0.1);
                     }
                 }
             }
@@ -20238,7 +20238,7 @@ impl RolloutWorld {
             position,
             rotation: Fix::ZERO,
             up: Vec2::UP,
-            velocity: launch_direction * Fix::from_f32(1.3) * data.player.constants.jump_strength,
+            velocity: launch_direction * Fix::from_f64(1.3) * data.player.constants.jump_strength,
             external_velocity: Vec2::ZERO,
             radius: data.player.radius,
             scale: Fix::ONE,
@@ -20564,7 +20564,7 @@ impl RolloutWorld {
         let right = up.perp_cw();
         let rotation = right.normalized_angle();
         let relative_right = right.complex_mul(inverse_basis);
-        let surface_offset = Fix::from_f32(2.2) * source.scale;
+        let surface_offset = Fix::from_f64(2.2) * source.scale;
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
@@ -22055,7 +22055,7 @@ impl RolloutWorld {
             left,
             (center.y - Fix::from_int(4)).max(Fix::from_f32(-11.3) + Fix::ONE),
         );
-        let max = Vec2::new(right, Fix::from_int(40) - Fix::from_f32(1.7));
+        let max = Vec2::new(right, Fix::from_int(40) - Fix::from_f64(1.7));
         let min = Vec2::new(min.x.min(max.x), min.y.min(max.y));
         let mut position = old_position;
         for _ in 0..20 {
@@ -22358,7 +22358,7 @@ impl RolloutWorld {
                 let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
                 let slot = &mut self.players[effect.victim];
                 slot.player_scale =
-                    (slot.player_scale + delta).clamp(Fix::from_f32(0.3), Fix::from_int(3));
+                    (slot.player_scale + delta).clamp(Fix::from_f64(0.3), Fix::from_int(3));
                 self.scale_changers[index].time += DT;
                 continue;
             }
@@ -26730,7 +26730,7 @@ impl RolloutWorld {
                 {
                     let mine = &mut self.thrown_items[item_index];
                     mine.time_since_anticipation =
-                        data.mine.anticipation_duration * Fix::from_f32(0.8);
+                        data.mine.anticipation_duration * Fix::from_f64(0.8);
                     mine.phase = 3;
                 }
             }
@@ -31387,6 +31387,23 @@ mod tests {
         let platform = &data::get().platform;
         assert_eq!(platform.spawn_rotation_speed.raw(), 171_798_691_840);
         assert_eq!(platform.spawn_rotation_mu.raw(), 715_828_032);
+    }
+
+    #[test]
+    fn local_double_fix_literals_keep_csharp_q32_precision() {
+        assert_eq!(Fix::from_f64(1.3).raw(), 5_583_457_484);
+        assert_ne!(Fix::from_f64(1.3), Fix::from_f32(1.3));
+        assert_eq!(data::get().blink.player_duration.raw(), 5_153_960_752);
+
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let data = data::get();
+        world.players[1].base.ground = None;
+        world.duplicate_player_target(1, Vec2::ZERO, Vec2::UP, data);
+        assert_eq!(
+            world.abilityless_clones[0].base.velocity,
+            Vec2::UP * Fix::from_f64(1.3) * data.player.constants.jump_strength
+        );
     }
 
     #[test]

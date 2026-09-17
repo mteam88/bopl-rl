@@ -88,6 +88,13 @@ fixed entry is committed separately with its finding id in the subject.
   the forced exit packet now relocates the restored slime to the stealing
   gun's current firepoint before ragdoll/hold state is applied. Ordinary
   slime victims retain their existing position, matching the source branch.
+- **#15 — fixed.** Local C# `(Fix)X` double literals now use
+  `Fix::from_f64`, including the four reported clone-pop, duplicated-Tesla,
+  Blink-duration, and airborne-Blink-bound constants. A whole-port audit also
+  corrected the same error in live Player/ScaleChanger clamps, ability-pickup,
+  Roll, Meteor, Mine, Push, Magnet, and Hookshot arithmetic. Authored Unity
+  `Fix` fields and explicit `(Fix)Xf` literals remain `Fix::from_f32`, because
+  those values originate as single-precision data in the C# oracle.
 - **#8 — fixed.** Duplicated Rocket Engines now advance seven world units
   around the parent platform perimeter before attachment. The prior `0.3`
   argument was the separate surface offset, not Duplicator's placement

@@ -385,7 +385,7 @@ impl RolloutWorld {
                 if !self.players[player].base.grounded {
                     self.players[player].base.position = self.ropes[rope_index].physics.segment
                         [endpoint]
-                        + delta.normalized_safe() * Fix::from_f32(0.1);
+                        + delta.normalized_safe() * Fix::from_f64(0.1);
                 }
                 self.disable_rope(rope_index);
                 self.players[player].grapple[ability_slot].rope = None;

@@ -3127,7 +3127,7 @@ pub fn get() -> &'static RolloutData {
                 fire_ticks: raw.prefabs.blink.fire_ticks,
                 collision_mask: raw.prefabs.blink.collision_mask,
                 player_duration: Fix::from_raw(raw.prefabs.blink.min_player_duration)
-                    .max(Fix::from_f32(0.3) * Fix::from_raw(raw.prefabs.blink.wall_duration)),
+                    .max(Fix::from_f64(0.3) * Fix::from_raw(raw.prefabs.blink.wall_duration)),
                 wall_duration: Fix::from_raw(raw.prefabs.blink.wall_duration),
                 wall_delay: Fix::from_raw(raw.prefabs.blink.wall_delay),
                 wall_shake: Fix::from_raw(raw.prefabs.blink.wall_shake),
