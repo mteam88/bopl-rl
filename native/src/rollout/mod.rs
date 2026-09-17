@@ -22042,7 +22042,7 @@ impl RolloutWorld {
             let player_point =
                 surface_point + self.platforms[selected].surface.normal(surface_point) * radius;
             let blocked = self.platforms.iter().enumerate().any(|(index, platform)| {
-                index != selected && platform.active && platform.collider.overlaps(player_point)
+                index != selected && platform.collider.overlaps(player_point)
             });
             let in_bounds = surface_point.x >= Fix::from_f32(-97.27)
                 && surface_point.x <= Fix::from_f32(97.6)
@@ -32166,6 +32166,34 @@ mod tests {
 
         assert_eq!(world.portal_shots[0].body.velocity, expected);
         assert!(world.portal_shots[0].fire_applied);
+    }
+
+    #[test]
+    fn grounded_blink_release_counts_inactive_blockers() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.platforms.truncate(1);
+        let selected = world.platforms[0].clone();
+        world.players[0].base.position = selected.surface.center;
+        let probe = Vec2::new(Fix::ZERO, Fix::from_int(1000));
+        let fallback = selected.collider.closest_point(probe).unwrap();
+        let mut expected = world.players[0].base.clone();
+        expected.attach(&selected, fallback);
+        let mut blocker = selected.clone();
+        blocker.active = false;
+        blocker.surface.center = Vec2::new(Fix::from_int(1000), Fix::from_int(1000));
+        blocker.collider.inner.right *= Fix::from_int(1000);
+        blocker.collider.inner.up *= Fix::from_int(1000);
+        blocker.collider.inner.inverse_extents = Vec2::new(
+            Fix::ONE / blocker.collider.inner.right.length(),
+            Fix::ONE / blocker.collider.inner.up.length(),
+        );
+        world.platforms.push(blocker);
+
+        world.release_grounded_blink_player(0);
+
+        assert_eq!(world.players[0].base.position, expected.position);
+        assert_eq!(world.players[0].base.local, expected.local);
     }
 
     #[test]

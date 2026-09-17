@@ -155,6 +155,11 @@ fixed entry is committed separately with its finding id in the subject.
   reassert it on their first scheduled `UpdateSim`, before advancing flight
   time. Birth-pass Black Hole, Magnet, Gust, or contact perturbations no
   longer survive the source's one-time `fireApplied` reset.
+- **#44 — fixed.** Grounded Blink release still chooses its destination from
+  active rounded rectangles, but the 20 sampled player positions are now
+  blocked by every registered rounded rectangle, including inactive ones.
+  This mirrors the source's intentionally unfiltered inner overlap loop and
+  preserves both fallback placement and its two RNG draws per attempt.
 - **#47 — fixed.** Pending platform-duplicate effects now use a growable pool,
   and completed-spawn requests use a growable queue. The 33rd concurrent
   effect is instantiated instead of being silently dropped, and more than 32
