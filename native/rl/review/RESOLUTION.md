@@ -240,6 +240,12 @@ fixed entry is committed separately with its finding id in the subject.
 
 ### Suspected projectile findings
 
+- **S1 — not a divergence.** Before Rock's late ability update applies its
+  next curve value, the player update divides `collider_radius` by the prior
+  scale and resets `scale` to one. The late multiplication therefore performs
+  the same old-scale removal as `DPhysicsCircle.Scale`; it does not accumulate
+  across passes. The arrow contact path's authored-radius expression is also
+  equivalent to the live collider radius after that late update.
 - **S2 — fixed.** Grounded Rock entry now stores `prevPlayerVel` from the
   unscaled incoming self-imposed plus external velocity before applying the
   authored `0.6667f` body-velocity factor. A rope's first force sample thus
