@@ -1447,6 +1447,10 @@ pub struct DuplicatePlatformState {
     pub time: Fix,
     pub source: usize,
     pub direction: Vec2,
+    pub original_center: Vec2,
+    pub original_right: Vec2,
+    pub original_up: Vec2,
+    pub effect_scale: Fix,
     pub spawn_position: Vec2,
     pub spawner_hierarchy: u32,
 }
@@ -22648,6 +22652,10 @@ impl RolloutWorld {
             time: Fix::ZERO,
             source,
             direction,
+            original_center: surface.center,
+            original_right: right,
+            original_up: up,
+            effect_scale: scale,
             spawn_position,
             spawner_hierarchy,
         };
@@ -22682,9 +22690,53 @@ impl RolloutWorld {
                 self.duplicate_platform_effects[effect_index].active = false;
                 continue;
             }
+            let loss = Fix::from_f64(0.2);
+            let effect_scale = snapshot
+                .effect_scale
+                .min(snapshot.effect_scale * (Fix::ONE - loss) + loss);
+            let source_scale = self.platform_dynamics[snapshot.source].scale;
+            let effect_ratio = (Fix::ONE / source_scale) * effect_scale;
+            let surface = &self.platforms[snapshot.source].surface;
+            let extents = surface.extents * effect_ratio;
+            let radius = surface.radius * effect_ratio;
+            let vertical = snapshot.original_up.dot(snapshot.direction);
+            let horizontal = snapshot.original_right.dot(snapshot.direction);
+            let spawn_position = if vertical.abs() > horizontal.abs() {
+                snapshot.original_center
+                    + snapshot.original_up
+                        * Fix::from_int(vertical.sign())
+                        * Fix::from_int(2)
+                        * (radius + extents.y + effect_scale)
+            } else {
+                snapshot.original_center
+                    + snapshot.original_right
+                        * Fix::from_int(horizontal.sign())
+                        * Fix::from_int(2)
+                        * (radius + extents.x + effect_scale)
+            };
+            self.duplicate_platform_effects[effect_index].effect_scale = effect_scale;
+            self.duplicate_platform_effects[effect_index].spawn_position = spawn_position;
+
+            let next_scale = source_scale.min(source_scale * (Fix::ONE - loss) + loss);
+            if next_scale != source_scale {
+                let ratio = (Fix::ONE / source_scale) * next_scale;
+                let dynamics = &mut self.platform_dynamics[snapshot.source];
+                dynamics.scale = next_scale;
+                dynamics.surface_shape_dirty = true;
+                dynamics.transform_rotation = Some(dynamics.body.orientation);
+                let platform = &mut self.platforms[snapshot.source];
+                platform.collider.radius *= ratio;
+                platform.collider.inner.right *= ratio;
+                platform.collider.inner.up *= ratio;
+                platform.collider.inner.inverse_extents =
+                    platform.collider.inner.inverse_extents / ratio;
+                platform.surface.radius *= ratio;
+                platform.surface.extents *= ratio;
+                self.platforms_changed();
+            }
             let source_center = self.platforms[snapshot.source].surface.center;
             let mut query = self.platforms[snapshot.source].collider;
-            query.inner.center = snapshot.spawn_position;
+            query.inner.center = spawn_position;
             query.radius += Fix::ONE;
             for platform_index in 0..self.platforms.len() {
                 if crate::physics::contact::rounded_rounded(
@@ -22713,7 +22765,7 @@ impl RolloutWorld {
             {
                 spawn[spawn_count] = Some((
                     snapshot.source,
-                    snapshot.spawn_position,
+                    spawn_position,
                     snapshot.spawner_hierarchy,
                 ));
                 spawn_count += 1;
@@ -31715,6 +31767,43 @@ mod tests {
             .find(|effect| effect.active)
             .unwrap();
         assert_eq!(effect.source, 0);
+    }
+
+    #[test]
+    fn duplicate_effect_decays_source_scale_and_recomputes_spawn() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let source = 0;
+        world.platform_dynamics[source].scale = Fix::from_int(2);
+        world.platform_dynamics[source].body_scale = Fix::from_int(2);
+        world.platforms[source].surface.extents *= Fix::from_int(2);
+        world.platforms[source].surface.radius *= Fix::from_int(2);
+        world.platforms[source].collider.inner.right *= Fix::from_int(2);
+        world.platforms[source].collider.inner.up *= Fix::from_int(2);
+        world.platforms[source].collider.inner.inverse_extents =
+            world.platforms[source].collider.inner.inverse_extents / Fix::from_int(2);
+        world.platforms[source].collider.radius *= Fix::from_int(2);
+        world.begin_duplicate_platform(source, Vec2::ZERO, Vec2::RIGHT, 0, data::get());
+        let initial = world
+            .duplicate_platform_effects
+            .iter()
+            .find(|effect| effect.active)
+            .unwrap()
+            .spawn_position;
+
+        world.tick += 1;
+        world.duplicate_platform_effects_tick(data::get(), DT);
+
+        let expected = Fix::from_int(2) * (Fix::ONE - Fix::from_f64(0.2))
+            + Fix::from_f64(0.2);
+        assert_eq!(world.platform_dynamics[source].scale, expected);
+        let effect = world
+            .duplicate_platform_effects
+            .iter()
+            .find(|effect| effect.active)
+            .unwrap();
+        assert_eq!(effect.effect_scale, expected);
+        assert!(effect.spawn_position.x.abs() < initial.x.abs());
     }
 
     #[test]

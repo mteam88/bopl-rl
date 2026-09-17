@@ -142,6 +142,11 @@ fixed entry is committed separately with its finding id in the subject.
   `DuplicatePlatformEffect` source index above it, and cancels an effect whose
   source itself was destroyed. An in-flight effect therefore cannot silently
   retarget the platform that shifted into the removed vector slot.
+- **#34 — fixed.** Each live `DuplicatePlatformEffect` now applies C#'s
+  per-pass `Fix.Lerp(scale, 1, (Fix)0.2)` downward decay to both its private
+  effect scale and the source wall's DPhysics scale. The destination is
+  recomputed from the captured center/basis and current effect-scaled
+  extents/radius before overlap forces and the eventual clone spawn.
 - **#35 — fixed.** On the pass after a scale ray changes a spawned
   `ResizablePlatform` collider, its updater now recomputes inverse mass and
   moment of inertia from the live extents and bevel radius. This follows
