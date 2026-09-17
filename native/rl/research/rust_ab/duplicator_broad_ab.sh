@@ -20,6 +20,7 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 # ABILITY_PORT_GAPS.md until their broad public capture is added.
 for scenario in \
     duplicator_ability_ab \
+    duplicator_platform_lifetime_ab \
     duplicator_item_ab \
     duplicator_smoke_ab \
     duplicator_tack_ab \
@@ -43,4 +44,4 @@ do
     fi
 done
 
-echo "DUPLICATOR_BROAD_GOLDEN_OK scenarios=13"
+echo "DUPLICATOR_BROAD_GOLDEN_OK scenarios=14"

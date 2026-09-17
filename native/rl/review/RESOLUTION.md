@@ -4,6 +4,15 @@ Each entry records an independent reread of the C# oracle and Rust rollout
 implementation. Commit hashes are intentionally left to Git history; every
 fixed entry is committed separately with its finding id in the subject.
 
+## Guns and spells
+
+- **#1 — fixed.** C# keys permanent duplicated platforms by the casting
+  Duplicator hierarchy. Each new platform from that gun now schedules the
+  previous copy for the same 80-pass delayed removal (`60` shake passes plus
+  the authored `20`-pass grace), while the new copy receives the permanent
+  `i32::MAX` lifetime. The expiry path also mirrors duplicated-object shake
+  displacement and removes the old platform from physics.
+
 ## Cross-cutting
 
 - **C1 — not a divergence.** The `TimeStop` metadata branch in

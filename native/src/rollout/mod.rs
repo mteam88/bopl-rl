@@ -1187,6 +1187,11 @@ pub struct PlatformDynamics {
     pub shake_amount: Fix,
     pub shake_previous: Vec2,
     pub meteor_shake_curve: bool,
+    /// Permanent Duplicator copies are keyed by the casting gun hierarchy.
+    /// A later copy from the same gun schedules the previous one to expire.
+    pub duplicate_spawner_hierarchy: Option<u32>,
+    pub duplicate_lifespan: i32,
+    pub duplicate_shake_offset: Vec2,
     /// StickyRoundedRectangle.DropAllAttachedPlayers. The platform updater
     /// decrements this before player prefabs run; a Meteor landing writes two
     /// after that updater, so later players can be ejected immediately and
@@ -3217,6 +3222,9 @@ impl RolloutWorld {
                 shake_amount: Fix::ZERO,
                 shake_previous: Vec2::ZERO,
                 meteor_shake_curve: false,
+                duplicate_spawner_hierarchy: None,
+                duplicate_lifespan: 0,
+                duplicate_shake_offset: Vec2::ZERO,
                 drop_players_frames: -1,
                 dont_drop_player_id: 0,
                 drop_force: Fix::ZERO,
@@ -13536,6 +13544,9 @@ impl RolloutWorld {
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
             meteor_shake_curve: false,
+            duplicate_spawner_hierarchy: None,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
             drop_players_frames: -1,
             dont_drop_player_id: 0,
             drop_force: Fix::ZERO,
@@ -20485,6 +20496,31 @@ impl RolloutWorld {
         // DetPhysics.UpdateDuplicatedObjects walks its List from Count-1 to
         // zero. The order becomes observable during the last 60 frames because
         // every live duplicate consumes one RandomUnitVector for its shake.
+        for platform_index in (0..self.platforms.len()).rev() {
+            if self.platform_dynamics[platform_index]
+                .duplicate_spawner_hierarchy
+                .is_none()
+            {
+                continue;
+            }
+            self.platform_dynamics[platform_index].duplicate_lifespan -= 1;
+            let lifespan = self.platform_dynamics[platform_index].duplicate_lifespan;
+            if lifespan < 0 {
+                self.remove_platform(platform_index);
+            } else if lifespan < 60 {
+                let progress = Fix::ONE - Fix::from_int(i64::from(lifespan)) / Fix::from_int(60);
+                let old = self.platform_dynamics[platform_index].duplicate_shake_offset;
+                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
+                    * progress
+                    * Fix::from_f32(0.25);
+                let delta = new - old;
+                self.platform_dynamics[platform_index].duplicate_shake_offset = new;
+                self.platforms[platform_index].surface.center += delta;
+                self.platforms[platform_index].collider.inner.center += delta;
+                self.platform_dynamics[platform_index].composite_position += delta;
+                self.platforms_changed();
+            }
+        }
         for arrow_index in (0..self.arrows.len()).rev() {
             if !self.arrows[arrow_index].active || !self.arrows[arrow_index].duplicated {
                 continue;
@@ -22200,13 +22236,17 @@ impl RolloutWorld {
             if self.duplicate_platform_effects[effect_index].time
                 > data.duplicator.platform_shake_duration
             {
-                spawn[spawn_count] = Some((snapshot.source, snapshot.spawn_position));
+                spawn[spawn_count] = Some((
+                    snapshot.source,
+                    snapshot.spawn_position,
+                    snapshot.spawner_hierarchy,
+                ));
                 spawn_count += 1;
                 self.duplicate_platform_effects[effect_index].active = false;
             }
         }
         for request in spawn.into_iter().take(spawn_count).flatten() {
-            self.spawn_duplicate_platform(request.0, request.1, data);
+            self.spawn_duplicate_platform(request.0, request.1, request.2, data);
         }
     }
 
@@ -22214,6 +22254,7 @@ impl RolloutWorld {
         &mut self,
         source: usize,
         position: Vec2,
+        spawner_hierarchy: u32,
         data: &data::RolloutData,
     ) {
         if source >= self.platforms.len() || source >= self.platform_dynamics.len() {
@@ -22238,6 +22279,16 @@ impl RolloutWorld {
         platform.collider.inner.center = position;
         self.next_platform_id += 1;
 
+        for dynamics in &mut self.platform_dynamics {
+            if dynamics.duplicate_spawner_hierarchy == Some(spawner_hierarchy)
+                && dynamics.duplicate_lifespan > 80
+            {
+                // DeleteObjectFromDuplicateListWithId(..., 20): the shared
+                // list starts shaking at 60 frames and expires 20 later.
+                dynamics.duplicate_lifespan = 80;
+            }
+        }
+
         let mut dynamics = self.platform_dynamics[source];
         // InstantiateFixed builds a fresh PhysicsBody from BoplBody's
         // StartVelocity fields; it does not copy the source collider's live
@@ -22256,6 +22307,9 @@ impl RolloutWorld {
         dynamics.shake_amount = Fix::ZERO;
         dynamics.shake_previous = Vec2::ZERO;
         dynamics.init_tick = None;
+        dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
+        dynamics.duplicate_lifespan = i32::MAX;
+        dynamics.duplicate_shake_offset = Vec2::ZERO;
 
         let source_row = self.entities[self.platform_entities[source]];
         let entity = self.entities.len();
@@ -22874,6 +22928,9 @@ impl RolloutWorld {
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
             meteor_shake_curve: false,
+            duplicate_spawner_hierarchy: None,
+            duplicate_lifespan: 0,
+            duplicate_shake_offset: Vec2::ZERO,
             drop_players_frames: -1,
             dont_drop_player_id: 0,
             drop_force: Fix::ZERO,
