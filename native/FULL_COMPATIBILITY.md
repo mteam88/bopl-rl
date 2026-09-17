@@ -1304,18 +1304,33 @@ grace and with non-upward velocity. Each later updater resets the body to the
 captured contact position before physics, matching the source's stable pin.
 
 After the strict 0.8-second arm threshold, the trap scans live vulnerable
-players in source order with its scaled-radius test. The owner remains immune
-until leaving that radius once. A subsequent overlap creates the ordinary death
-effect, kills with the Tack owner as attacker, and removes the trap before that
-pass's DetPhysics contacts. The strict 20-second lifetime uses the player time
-scale clock and removes an unused trap without a pop sound.
+SlimeControllers in source order. Inactive transformed originals are excluded;
+ordinary main bodies precede subsequently spawned abilityless clones. The
+query uses `hitbox.radius * hitbox.Scale` plus the victim's scaled 0.75 radius,
+including DPhysicsCircle's already-scaled retained radius. The owner remains
+immune until any body with that player id leaves the radius once. A subsequent
+overlap creates the ordinary death effect, kills the selected main body or clone
+with the Tack owner as attacker, and removes the trap before that pass's
+DetPhysics contacts. The strict 20-second lifetime uses the player time scale
+clock and removes an unused trap without a pop sound.
 
-`tack_ability_ab.c` compares 1,450 exact NativeAOT/Q32 ticks covering airborne
-entry, charged release, deferred owner binding, ballistic flight, settling,
-stable pinning and lifetime expiry. `tack_kill_ab.c` compares 400 exact ticks and
-drives the thrower away and back across the armed trap, covering owner-clear
-immunity, the one-use kill, updater-phase removal and the stock-choice prefix.
-The shared `Item.Duplicate` behavior remains for the Duplicator integration.
+Tack now runs before later ScaleChanger instances in the source updater phase.
+The shared item body adopts the preceding pass's scale for mass and inertia,
+then BananaPeel evaluates its old-scale armed query, and the ray writes the next
+incremental collider radius. Death during the held form, Time Stop, duplication,
+Portal, Black Hole, Arrow, Gust, Magnet, bounds and pickup replacement reuse the
+source-complete shared item and form paths without per-tick allocation.
+
+`tack_broad_ab.sh` gates eight programs and 5,670 Q32 NativeAOT/Rust ticks.
+It covers 1,450 ticks of airborne throw, settling, stable pin and expiry; the
+owner-clear/re-entry kill; three fresh Duplicator copies through arming and
+consumption; exact Growth and Shrink of the released trap; dynamic Arrow
+contact; the complete Gust curve; Magnet pickup/pin/fire; and a released body
+whose arming clock pauses 43 ticks in before all 690 Time Stop passes and later
+kills its returning owner. The scale scenarios compare collider radius, inverse
+mass, contact and lifecycle exactly with at most the standard 64-raw-Q32 form
+pose bound. Clone victims, simultaneous contacts, Portal/Black Hole and acquired
+pickup use are source-ported but not individually isolated in public captures.
 
 ### Executable Mjolnir flight and recall (2026-09-14)
 

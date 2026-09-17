@@ -324,8 +324,15 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   detonation, projectile/explosion ignition, forced exits, duplication, Time
   Stop, water/bounds cleanup and stock recovery. Its 16-scenario broad gate is
   green.
-  Tack is exact through throw, settling, arming, owner-clear re-entry, kill and
-  expiry; its shared `Item.Duplicate` path remains absent.
+  Tack is source-ported wholesale through throw, top-side settling, stable
+  pinning, arming, owner-clear re-entry, main-player/abilityless-clone selection,
+  kill attribution and strict expiry. Inactive transformed originals are
+  excluded as in `FindObjectsOfType<SlimeController>`, while live item scaling
+  preserves BoplBody/ScaleChanger phase order and the source double-scaled
+  proximity radius. `tack_broad_ab.sh` gates 5,670 Q32 ticks across ordinary
+  and duplicated traps, Growth/Shrink, Arrow, Gust, Magnet and Time Stop.
+  Clone-victim, simultaneous-contact, Portal/Black Hole and acquired-pickup
+  compositions are translated but not individually measured.
   Mjolnir is exact through outbound flight, platform clangs, return, catch,
   released Gust, both Time Stop phases and `Item.Duplicate` fan copies. Its
   source-complete pass adds scale-aware kills over ordinary slimes, abilityless

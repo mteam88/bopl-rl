@@ -4386,6 +4386,7 @@ impl RolloutWorld {
         // collider scale before the later ray effect writes its next value.
         self.thrown_item_scale_mass_tick();
         self.poke_balls_tick(data, updater_dt);
+        self.tacks_tick(data, updater_dt);
         self.scale_changers_tick(data);
         self.duplicate_platform_effects_tick(data, updater_dt);
         self.meteor_smears_tick(data);
@@ -23572,6 +23573,122 @@ impl RolloutWorld {
         }
     }
 
+    fn tacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
+        // updater pass after Fire, pins a settled tack before each integration,
+        // and performs the armed proximity query without allocating.
+        for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].ability != ABILITY_TACK
+                || self.thrown_items[item_index].born_tick >= self.tick
+                || (self.thrown_items[item_index].duplicated
+                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
+            {
+                continue;
+            }
+            {
+                let item = &mut self.thrown_items[item_index];
+                if !item.launched {
+                    item.launched = true;
+                    item.body.angular_velocity = Fix::from_int(4);
+                    if let Some(entity) = item.entity {
+                        self.entities[entity].owner = item.owner as u32 + 1;
+                    }
+                }
+                if item.settled {
+                    item.position = item.settle_position;
+                    item.body.velocity = Vec2::ZERO;
+                    item.body.angular_velocity = Fix::ZERO;
+                }
+                item.age += updater_dt;
+            }
+            if self.thrown_items[item_index].age > data.tack.lifetime_seconds {
+                self.remove_thrown_item(item_index, false);
+                continue;
+            }
+            if self.thrown_items[item_index].age <= data.tack.arm_seconds {
+                continue;
+            }
+            let position = self.thrown_items[item_index].position;
+            let owner = self.thrown_items[item_index].owner;
+            let tack_radius =
+                self.thrown_items[item_index].collider_radius * self.thrown_items[item_index].scale;
+            let mut victim = None;
+            let mut victim_is_clone = false;
+            for player_index in 0..self.players.len() {
+                let player = &self.players[player_index];
+                if !self.playable_slot(player)
+                    || player.active != ActiveAbility::None
+                    || player.base.dash.active
+                    || player.poke_invulnerable
+                {
+                    continue;
+                }
+                let radius = tack_radius + Fix::from_f32(0.75) * player.player_scale;
+                let in_range = (self.players[player_index].base.position - position)
+                    .length_squared()
+                    < radius * radius;
+                if player_index == owner && !self.thrown_items[item_index].owner_clear {
+                    if !in_range {
+                        self.thrown_items[item_index].owner_clear = true;
+                    }
+                    continue;
+                }
+                if in_range {
+                    victim = Some(player_index);
+                    break;
+                }
+            }
+            if victim.is_none() {
+                for clone_index in 0..self.abilityless_clones.len() {
+                    let clone = &self.abilityless_clones[clone_index];
+                    if !clone.active || !clone.base.alive {
+                        continue;
+                    }
+                    let player_index = clone.owner;
+                    let radius =
+                        tack_radius + Fix::from_f32(0.75) * self.players[player_index].player_scale;
+                    let in_range =
+                        (clone.base.position - position).length_squared() < radius * radius;
+                    if player_index == owner && !self.thrown_items[item_index].owner_clear {
+                        if !in_range {
+                            self.thrown_items[item_index].owner_clear = true;
+                        }
+                        continue;
+                    }
+                    if in_range {
+                        victim = Some(clone_index);
+                        victim_is_clone = true;
+                        break;
+                    }
+                }
+            }
+            if let Some(victim) = victim {
+                let killer = owner as u32 + 1;
+                let cause = if victim_is_clone {
+                    CAUSE_OTHER
+                } else if victim == owner {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
+                // BananaPeel invokes PlayerCollision.killPlayer from its
+                // updater: it creates the normal death effect, while
+                // DetPhysics removes all killed colliders before contacts.
+                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+                if victim_is_clone {
+                    self.kill_abilityless_clone(victim, killer);
+                } else {
+                    self.kill(victim, killer, cause, false, false);
+                }
+                self.remove_thrown_item(item_index, false);
+            }
+        }
+    }
+
     fn thrown_item_scale_mass_tick(&mut self) {
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
@@ -23615,82 +23732,6 @@ impl RolloutWorld {
                 }
             }
         }
-        // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
-        // updater pass after Fire, pins a settled tack before each integration,
-        // and performs the armed proximity query without allocating.
-        for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
-            }
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].ability != ABILITY_TACK
-                || self.thrown_items[item_index].born_tick >= self.tick
-                || (self.thrown_items[item_index].duplicated
-                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
-            {
-                continue;
-            }
-            {
-                let item = &mut self.thrown_items[item_index];
-                if !item.launched {
-                    item.launched = true;
-                    item.body.angular_velocity = Fix::from_int(4);
-                    if let Some(entity) = item.entity {
-                        self.entities[entity].owner = item.owner as u32 + 1;
-                    }
-                }
-                if item.settled {
-                    item.position = item.settle_position;
-                    item.body.velocity = Vec2::ZERO;
-                    item.body.angular_velocity = Fix::ZERO;
-                }
-                item.age += updater_dt;
-            }
-            if self.thrown_items[item_index].age > data.tack.lifetime_seconds {
-                self.remove_thrown_item(item_index, false);
-                continue;
-            }
-            if self.thrown_items[item_index].age <= data.tack.arm_seconds {
-                continue;
-            }
-            let position = self.thrown_items[item_index].position;
-            let owner = self.thrown_items[item_index].owner;
-            let radius = data.tack.item_radius + Fix::from_f32(0.75);
-            let mut victim = None;
-            for player_index in 0..self.players.len() {
-                if !self.playable(player_index) || self.players[player_index].poke_invulnerable {
-                    continue;
-                }
-                let in_range = (self.players[player_index].base.position - position)
-                    .length_squared()
-                    < radius * radius;
-                if player_index == owner && !self.thrown_items[item_index].owner_clear {
-                    if !in_range {
-                        self.thrown_items[item_index].owner_clear = true;
-                    }
-                    continue;
-                }
-                if in_range {
-                    victim = Some(player_index);
-                    break;
-                }
-            }
-            if let Some(victim) = victim {
-                let killer = owner as u32 + 1;
-                let cause = if victim == owner {
-                    CAUSE_ACCIDENT
-                } else {
-                    CAUSE_OTHER
-                };
-                // BananaPeel invokes PlayerCollision.killPlayer from its
-                // updater: it creates the normal death effect, while
-                // DetPhysics removes all killed colliders before contacts.
-                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                self.kill(victim, killer, cause, false, false);
-                self.remove_thrown_item(item_index, false);
-            }
-        }
-
         // Mjolnir.UpdateSim also begins one pass after release. The fixed
         // player bitset replaces the source HashSet without allocating.
         for item_index in 0..self.thrown_items.len() {
