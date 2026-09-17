@@ -118,6 +118,11 @@ fixed entry is committed separately with its finding id in the subject.
 - **#29 — fixed.** Freeze animation exits and shared gun landing exits now
   restore the ordinary slime's scaled radius/body geometry, matching the
   already-correct scale-ray animation exit.
+- **#30 — fixed.** Magnet's layer-27 pull and pickup masks now reach both
+  Revival and Teleport marker bodies. Each spell can be pulled, selected by
+  nearest FixTransform position, stolen, held without item wall raycasts,
+  and fired with `FireForce * BoplBody.Scale` (Revival's live scale and
+  Teleport's unchanged transform scale), matching the source spell branch.
 - **#32 — fixed.** Tesla nodes now retain separate raw FixTransform and
   clamped DPhysicsCircle scales. Surface/hitbox offsets use the raw caster
   scale while collider radius honors the authored `0.6..5` clamp.

@@ -1368,6 +1368,8 @@ pub enum MagnetHeld {
     Boulder(usize),
     AbilityPickup(usize),
     PortalShot(usize),
+    RevivalMarker(usize),
+    TeleportMarker(usize),
 }
 
 /// MagnetGun's animation, pull state and allocation-free held-object handle.
@@ -1673,6 +1675,9 @@ pub struct RevivalMarker {
     pub hierarchy_base: u32,
     pub position: Vec2,
     pub body: crate::physics::Body,
+    pub scale: Fix,
+    pub magnet_holder: Option<usize>,
+    pub magnet_hold_ticks: i8,
 }
 
 /// The portal indicator retained by one Teleport ability instance between
@@ -1687,8 +1692,10 @@ pub struct TeleportMarker {
     pub entity: Option<usize>,
     pub hierarchy_base: u32,
     pub position: Vec2,
-    pub velocity: Vec2,
+    pub body: crate::physics::Body,
     pub scale: Fix,
+    pub magnet_holder: Option<usize>,
+    pub magnet_hold_ticks: i8,
 }
 
 /// A PortalShot rigid body. The projectile is registered immediately by
@@ -5093,6 +5100,26 @@ impl RolloutWorld {
             if !marker.active || !marker.registered {
                 continue;
             }
+            if physics_dt > Fix::ZERO && marker.magnet_holder.is_some() {
+                marker.magnet_hold_ticks -= 1;
+                if marker.magnet_hold_ticks == 0 {
+                    marker.magnet_holder = None;
+                    marker.magnet_hold_ticks = -1;
+                }
+            }
+            marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
+        }
+        for marker in &mut self.teleport_marker_pool {
+            if !marker.active || !marker.registered {
+                continue;
+            }
+            if physics_dt > Fix::ZERO && marker.magnet_holder.is_some() {
+                marker.magnet_hold_ticks -= 1;
+                if marker.magnet_hold_ticks == 0 {
+                    marker.magnet_holder = None;
+                    marker.magnet_hold_ticks = -1;
+                }
+            }
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
     }
@@ -5780,8 +5807,8 @@ impl RolloutWorld {
                 self.portal_body_exit(endpoint_index, entity, marker.position, data)
             {
                 self.teleport_marker_pool[index].position = position;
-                self.teleport_marker_pool[index].velocity =
-                    Self::portal_velocity(entry, exit, marker.velocity);
+                self.teleport_marker_pool[index].body.velocity =
+                    Self::portal_velocity(entry, exit, marker.body.velocity);
             }
         }
         for index in 0..self.players.len() {
@@ -6390,8 +6417,10 @@ impl RolloutWorld {
                                 hierarchy_base,
                                 position: self.players[index].base.position
                                     + Vec2::UP * data.teleport.up_cast_offset,
-                                velocity: Vec2::ZERO,
+                                body: data.teleport.marker_body,
                                 scale: self.players[index].player_scale,
+                                magnet_holder: None,
+                                magnet_hold_ticks: -1,
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
@@ -10550,6 +10579,9 @@ impl RolloutWorld {
                 hierarchy_base,
                 position: spawn,
                 body: data.revival.marker_body,
+                scale: Fix::ONE,
+                magnet_holder: None,
+                magnet_hold_ticks: -1,
             });
             self.players[index].revival_markers[ability_slot] = Some(marker_index);
             self.players[index].revival.phase = 1;
@@ -18400,6 +18432,60 @@ impl RolloutWorld {
             }
             self.portal_shots[shot_index].body.force -= direction * magnet.pull_strength * strength;
         }
+        for marker_index in 0..self.revival_marker_pool.len() {
+            let marker = self.revival_marker_pool[marker_index];
+            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
+                continue;
+            }
+            let radius = marker
+                .entity
+                .map(|entity| Fix::from_raw(self.entities[entity].radius))
+                .unwrap_or(data.revival.marker_radius);
+            if crate::physics::contact::circle_box(
+                Circle {
+                    center: marker.position + data.revival.marker_offset,
+                    radius,
+                },
+                query,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let mut strength = multiplier;
+            if (marker.position - magnet.firepoint_offset).length_squared()
+                < magnet.fast_pull_radius_squared
+            {
+                strength *= magnet.close_pull_multiplier;
+            }
+            self.revival_marker_pool[marker_index].body.force -=
+                direction * magnet.pull_strength * strength;
+        }
+        for marker_index in 0..self.teleport_marker_pool.len() {
+            let marker = self.teleport_marker_pool[marker_index];
+            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
+                continue;
+            }
+            if crate::physics::contact::circle_box(
+                Circle {
+                    center: marker.position + data.teleport.marker_offset,
+                    radius: data.teleport.marker_radius,
+                },
+                query,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let mut strength = multiplier;
+            if (marker.position - magnet.firepoint_offset).length_squared()
+                < magnet.fast_pull_radius_squared
+            {
+                strength *= magnet.close_pull_multiplier;
+            }
+            self.teleport_marker_pool[marker_index].body.force -=
+                direction * magnet.pull_strength * strength;
+        }
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
             if !hole.active || self.blink_object_hidden(hole.entity) {
@@ -18671,6 +18757,44 @@ impl RolloutWorld {
                     .is_some(),
             );
         }
+        for (marker_index, marker) in self.revival_marker_pool.iter().enumerate() {
+            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
+                continue;
+            }
+            let radius = marker
+                .entity
+                .map(|entity| Fix::from_raw(self.entities[entity].radius))
+                .unwrap_or(data.revival.marker_radius);
+            consider(
+                MagnetHeld::RevivalMarker(marker_index),
+                marker.position,
+                crate::physics::contact::circle_circle(
+                    pickup_circle,
+                    Circle {
+                        center: marker.position + data.revival.marker_offset,
+                        radius,
+                    },
+                )
+                .is_some(),
+            );
+        }
+        for (marker_index, marker) in self.teleport_marker_pool.iter().enumerate() {
+            if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
+                continue;
+            }
+            consider(
+                MagnetHeld::TeleportMarker(marker_index),
+                marker.position,
+                crate::physics::contact::circle_circle(
+                    pickup_circle,
+                    Circle {
+                        center: marker.position + data.teleport.marker_offset,
+                        radius: data.teleport.marker_radius,
+                    },
+                )
+                .is_some(),
+            );
+        }
 
         if selected != MagnetHeld::Nothing {
             self.magnet_take_target(index, selected, data);
@@ -18748,6 +18872,14 @@ impl RolloutWorld {
             MagnetHeld::PortalShot(i) => {
                 let shot = self.portal_shots[i];
                 (shot.position, shot.body.velocity, Fix::ONE, false)
+            }
+            MagnetHeld::RevivalMarker(i) => {
+                let marker = self.revival_marker_pool[i];
+                (marker.position, marker.body.velocity, marker.scale, false)
+            }
+            MagnetHeld::TeleportMarker(i) => {
+                let marker = self.teleport_marker_pool[i];
+                (marker.position, marker.body.velocity, Fix::ONE, false)
             }
             MagnetHeld::Nothing => return,
         };
@@ -18838,6 +18970,18 @@ impl RolloutWorld {
             }
             MagnetHeld::PortalShot(i) => {
                 self.portal_shots[i].body.angular_velocity = data.magnet.locked_angular_velocity;
+            }
+            MagnetHeld::RevivalMarker(i) => {
+                let marker = &mut self.revival_marker_pool[i];
+                marker.body.angular_velocity = data.magnet.locked_angular_velocity;
+                marker.magnet_holder = Some(index);
+                marker.magnet_hold_ticks = 3;
+            }
+            MagnetHeld::TeleportMarker(i) => {
+                let marker = &mut self.teleport_marker_pool[i];
+                marker.body.angular_velocity = data.magnet.locked_angular_velocity;
+                marker.magnet_holder = Some(index);
+                marker.magnet_hold_ticks = 3;
             }
             MagnetHeld::BlackHole(_) | MagnetHeld::Nothing => {}
         }
@@ -18966,6 +19110,18 @@ impl RolloutWorld {
                 .portal_shots
                 .get(i)
                 .is_some_and(|v| v.active && v.registered && !self.blink_object_hidden(v.entity)),
+            MagnetHeld::RevivalMarker(i) => self.revival_marker_pool.get(i).is_some_and(|v| {
+                v.active
+                    && v.registered
+                    && v.magnet_holder == Some(index)
+                    && !self.blink_object_hidden(v.entity)
+            }),
+            MagnetHeld::TeleportMarker(i) => self.teleport_marker_pool.get(i).is_some_and(|v| {
+                v.active
+                    && v.registered
+                    && v.magnet_holder == Some(index)
+                    && !self.blink_object_hidden(v.entity)
+            }),
         };
         if !valid {
             let state = &mut self.players[index].magnet;
@@ -18988,10 +19144,17 @@ impl RolloutWorld {
             }
             MagnetHeld::AbilityPickup(i) => self.ability_pickups[i].position,
             MagnetHeld::PortalShot(i) => self.portal_shots[i].position,
+            MagnetHeld::RevivalMarker(i) => self.revival_marker_pool[i].position,
+            MagnetHeld::TeleportMarker(i) => self.teleport_marker_pool[i].position,
             MagnetHeld::Nothing => unreachable!(),
         };
         let mut firepoint = self.magnet_firepoint(index, data);
-        if !matches!(held, MagnetHeld::BlackHole(_)) {
+        if !matches!(
+            held,
+            MagnetHeld::BlackHole(_)
+                | MagnetHeld::RevivalMarker(_)
+                | MagnetHeld::TeleportMarker(_)
+        ) {
             firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
         }
         if (firepoint - object_position).length_squared() > data.magnet.max_lock_distance_squared {
@@ -19005,7 +19168,12 @@ impl RolloutWorld {
         let position = self.magnet_interpolate_held_position(
             index,
             firepoint,
-            !matches!(held, MagnetHeld::BlackHole(_)),
+            !matches!(
+                held,
+                MagnetHeld::BlackHole(_)
+                    | MagnetHeld::RevivalMarker(_)
+                    | MagnetHeld::TeleportMarker(_)
+            ),
             data,
         );
         self.players[index].magnet.held_position = position;
@@ -19168,6 +19336,24 @@ impl RolloutWorld {
                 shot.position = position + correction;
                 shot.body.velocity = Vec2::ZERO;
             }
+            MagnetHeld::RevivalMarker(i) => {
+                let velocity = self.revival_marker_pool[i].body.velocity;
+                self.players[index].base.external_velocity += velocity / Fix::from_int(10);
+                let marker = &mut self.revival_marker_pool[i];
+                marker.position = position;
+                marker.body.velocity = Vec2::ZERO;
+                marker.magnet_holder = Some(index);
+                marker.magnet_hold_ticks = 2;
+            }
+            MagnetHeld::TeleportMarker(i) => {
+                let velocity = self.teleport_marker_pool[i].body.velocity;
+                self.players[index].base.external_velocity += velocity / Fix::from_int(10);
+                let marker = &mut self.teleport_marker_pool[i];
+                marker.position = position;
+                marker.body.velocity = Vec2::ZERO;
+                marker.magnet_holder = Some(index);
+                marker.magnet_hold_ticks = 2;
+            }
             MagnetHeld::Nothing => {}
         }
     }
@@ -19201,6 +19387,22 @@ impl RolloutWorld {
             MagnetHeld::Boulder(i) => {
                 if let Some(boulder) = self.macho_boulders.get_mut(i) {
                     boulder.held = false;
+                }
+            }
+            MagnetHeld::RevivalMarker(i) => {
+                if let Some(marker) = self.revival_marker_pool.get_mut(i)
+                    && marker.magnet_holder == Some(index)
+                {
+                    marker.magnet_holder = None;
+                    marker.magnet_hold_ticks = -1;
+                }
+            }
+            MagnetHeld::TeleportMarker(i) => {
+                if let Some(marker) = self.teleport_marker_pool.get_mut(i)
+                    && marker.magnet_holder == Some(index)
+                {
+                    marker.magnet_holder = None;
+                    marker.magnet_hold_ticks = -1;
                 }
             }
             MagnetHeld::Nothing
@@ -19291,6 +19493,16 @@ impl RolloutWorld {
             MagnetHeld::PortalShot(i) => {
                 if let Some(shot) = self.portal_shots.get_mut(i) {
                     shot.body.force += direction * data.magnet.fire_force;
+                }
+            }
+            MagnetHeld::RevivalMarker(i) => {
+                if let Some(marker) = self.revival_marker_pool.get_mut(i) {
+                    marker.body.force += direction * data.magnet.fire_force * marker.scale;
+                }
+            }
+            MagnetHeld::TeleportMarker(i) => {
+                if let Some(marker) = self.teleport_marker_pool.get_mut(i) {
+                    marker.body.force += direction * data.magnet.fire_force;
                 }
             }
             MagnetHeld::Nothing => {}
@@ -22149,6 +22361,7 @@ impl RolloutWorld {
                 for marker in &mut self.revival_marker_pool {
                     if marker.active && marker.entity == Some(effect.victim) {
                         marker.body.inverse_mass = scaled_inverse_mass;
+                        marker.scale = scale;
                     }
                 }
                 for marker in &mut self.teleport_marker_pool {
@@ -30375,8 +30588,9 @@ impl RolloutWorld {
             let position = marker.position + data.teleport.marker_offset;
             e.x = position.x.raw();
             e.y = position.y.raw();
-            e.vx = marker.velocity.x.raw();
-            e.vy = marker.velocity.y.raw();
+            e.vx = marker.body.velocity.x.raw();
+            e.vy = marker.body.velocity.y.raw();
+            e.angular_velocity = marker.body.angular_velocity.raw();
         }
     }
 
@@ -31430,6 +31644,64 @@ mod tests {
 
         assert_eq!(world.players[1].base.position, firepoint);
         assert_eq!(world.players[0].magnet.held_position, firepoint);
+    }
+
+    #[test]
+    fn magnet_pulls_holds_and_fires_spell_markers() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let data = data::get();
+        world.players[0].active = ActiveAbility::Magnet;
+        world.players[0].magnet.phase = 2;
+        world.players[0].magnet.aim = Vec2::RIGHT;
+        world.players[0].magnet.body_right = Vec2::RIGHT;
+        let firepoint = world.magnet_firepoint(0, data);
+        world.revival_marker_pool.push(RevivalMarker {
+            active: true,
+            registered: true,
+            position: firepoint,
+            body: data.revival.marker_body,
+            scale: Fix::from_int(2),
+            magnet_hold_ticks: -1,
+            ..RevivalMarker::default()
+        });
+        world.teleport_marker_pool.push(TeleportMarker {
+            active: true,
+            registered: true,
+            position: firepoint + Vec2::RIGHT,
+            body: data.teleport.marker_body,
+            scale: Fix::from_int(3),
+            magnet_hold_ticks: -1,
+            ..TeleportMarker::default()
+        });
+
+        world.magnet_pull(0, data);
+        assert!(world.revival_marker_pool[0].body.force.x < Fix::ZERO);
+        assert!(world.teleport_marker_pool[0].body.force.x < Fix::ZERO);
+        world.revival_marker_pool[0].body.force = Vec2::ZERO;
+        world.teleport_marker_pool[0].body.force = Vec2::ZERO;
+
+        world.magnet_try_pickup_item(0, data);
+        assert_eq!(
+            world.players[0].magnet.held,
+            MagnetHeld::RevivalMarker(0)
+        );
+        world.magnet_update_held_item(0, data);
+        assert_eq!(world.revival_marker_pool[0].magnet_holder, Some(0));
+        world.magnet_fire_held_item(0, Vec2::RIGHT, data);
+        assert_eq!(
+            world.revival_marker_pool[0].body.force,
+            Vec2::RIGHT * data.magnet.fire_force * Fix::from_int(2)
+        );
+
+        world.players[0].magnet.phase = 2;
+        world.magnet_take_target(0, MagnetHeld::TeleportMarker(0), data);
+        world.magnet_update_held_item(0, data);
+        world.magnet_fire_held_item(0, Vec2::RIGHT, data);
+        assert_eq!(
+            world.teleport_marker_pool[0].body.force,
+            Vec2::RIGHT * data.magnet.fire_force
+        );
     }
 
     #[test]
