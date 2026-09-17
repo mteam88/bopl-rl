@@ -1,7 +1,7 @@
 #!/bin/bash
 # Play against a trained policy or a scripted bot in the native macOS build.
 #
-#   Tools/play-vs-agent-mac.sh <policy-*.bin | mixed-v2-hard | ... | <name>.roster> [--seed N] [--maps 0,1,2,3,4]
+#   Tools/play-vs-agent-mac.sh <policy-*.bin | mixed-v2-hard | ... | <name>.roster> [--seed N] [--maps training|held-out|0,1,2]
 #   Tools/play-vs-agent-mac.sh            # default agent (native/artifacts/rl/human/default-agent, else mixed-v2-hard)
 #
 # A .roster (Tools/rating_roster.py) draws a different member per round; the
@@ -28,7 +28,7 @@ AGENT="" SEED="" MAPS=${BOPL_LEVEL_SET:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --seed) SEED=$2; shift 2 ;;
-    --maps) MAPS=$2; shift 2 ;;   # RL level indices the rotation may draw, e.g. 0,1,2,3,4 (GameSession BOPL_LEVEL_SET)
+    --maps) MAPS=$2; shift 2 ;;   # RL map indices the rotation may draw (0,1,2,3,4), or training | held-out | all (native/data/map-set.json)
     -h|--help) sed -n 2,15p "$0"; exit 0 ;;
     *) AGENT=$1; shift ;;
   esac
@@ -60,8 +60,14 @@ RESULTS=$HUMAN/.session-$SESSION.jsonl
 [ -n "$SEED" ] || SEED=$(( $(date +%s) % 1000000000 ))
 ROSTER_LOG=$HUMAN/.session-$SESSION.roster.jsonl
 export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS BOPL_AGENT_ROSTER_LOG=$ROSTER_LOG
-[ -n "$MAPS" ] && export BOPL_LEVEL_SET=$MAPS
-echo "agent $AGENT  seed $SEED  maps ${MAPS:-all}  results $RESULTS"
+# The game's BOPL_LEVEL_SET takes Unity levels; --maps takes RL map indices or a
+# role of the more-maps split, translated through the catalogue (map_set.py):
+# RL 0-4 are levels 0-4, the appended maps are not.
+if [ -n "$MAPS" ]; then
+  LEVELS=$("$PYTHON" "$ROOT/native/rl/research/map_set.py" levels "$MAPS") || { echo "bad --maps $MAPS" >&2; exit 2; }
+  export BOPL_LEVEL_SET=$LEVELS
+fi
+echo "agent $AGENT  seed $SEED  maps ${MAPS:-all}${LEVELS:+ (levels $LEVELS)}  results $RESULTS"
 echo "$AGENT" > "$HUMAN/last-agent"
 
 "$GAME"

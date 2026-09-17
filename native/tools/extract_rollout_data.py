@@ -143,6 +143,30 @@ def guid_of(ref):
     return m.group(1) if m else None
 
 
+# The game's level catalogue in RL order: RL map index i is Unity level
+# LEVELS[i] (scene 6+LEVELS[i], Assets/Scenes/FFA/Level{LEVELS[i]+1}.unity).
+# 0-4 are the original five; 5-30 are the 26 further grass levels of the
+# more-maps campaign (POLICY_V4_PLAN.md, "More maps"): every grass level
+# (levelType 0) whose components the Rust backend already ports (static
+# StickyRoundedRectangle platforms, animate-in, AntiLockPlatform orbits),
+# stratified by platform count and picked alternately over their width, minus
+# GrowOnStart/VectorFieldPlatform levels and all snow/space levels. Level 80
+# (four orbit platforms already moving, seed-dependently, when the warmup ends)
+# failed the .NET-oracle parity check and gave its slot to level 69. The cap
+# is 31 because the training-map mask and the per-map counters are 31 wide
+# (bopl_puffer.h BOPL_COUNTER_MAPS). Append only: RL indices are stable.
+LEVELS = [0, 1, 2, 3, 4,
+          5, 6, 8, 10, 13, 14, 15, 19, 20, 42, 45, 46, 49,
+          65, 68, 69, 71, 72, 73, 76, 77, 79, 84, 86, 90, 93]
+assert len(LEVELS) == len(set(LEVELS)) <= 31
+# The more-maps campaign's split, by Unity level: 3-4 stay held out (continuity
+# with the five-map runs' trained/held-out gap) plus six new levels, one or two
+# per platform-count stratum at the stratum's median width, so the held-out set
+# is not a distribution shift. Fixed in the config, never in training_map_mask.
+HELD_OUT_LEVELS = [3, 4, 10, 14, 49, 68, 73, 90]
+assert set(HELD_OUT_LEVELS) <= set(LEVELS)
+
+
 def extract_map(index):
     scene = load(f"map-{index}.json")
     platforms = []
@@ -150,6 +174,9 @@ def extract_map(index):
     session = None
     spawner = None
     for node in walk(scene):
+        for unported in ("GrowOnStart", "VectorFieldPlatform"):
+            if node_component(node, unported) is not None:
+                raise ValueError(f"map-{index}: {node.get('name')} carries {unported}, which the backend does not port")
         srr = node_component(node, "StickyRoundedRectangle")
         if srr is not None:
             ft = node_component(node, "FixTransform")
@@ -210,13 +237,18 @@ def extract_map(index):
         if sp is not None:
             ft = node_component(node, "FixTransform")
             spawner = {"position": vec2(ft, "_position")}
-    return {"platforms": platforms, "water": water, "session": session, "ability_spawner": spawner}
+    if water is None or session is None or not platforms:
+        raise ValueError(f"map-{index}: incomplete level (platforms {len(platforms)}, water {water is not None}, session {session is not None})")
+    if session["level_type"] != 0:
+        raise ValueError(f"map-{index}: levelType {session['level_type']} (only grass levels are ported)")
+    return {"level": index, "scene": f"Assets/Scenes/FFA/Level{index + 1}.unity",
+            "platforms": platforms, "water": water, "session": session, "ability_spawner": spawner}
 
 
 def main():
     out = {"reference": load("manifest.json")["reference"], "maps": [], "prefabs": {}}
-    for i in range(5):
-        out["maps"].append(extract_map(i))
+    for level in LEVELS:
+        out["maps"].append(extract_map(level))
 
     # ---- Player (slime) ----
     _, player = find_prefab("Assets/GameObject/Player.prefab")
@@ -396,6 +428,19 @@ def main():
     with open(target, "w") as fh:
         json.dump(out, fh, indent=1)
     print(f"wrote {target}")
+
+    # The RL index -> Unity level table on its own, for the tools that must not
+    # parse rollout.json (the Mac launcher, the human result archive, the ladder).
+    table = ROOT / "data" / "map-set.json"
+    held = [i for i, m in enumerate(out["maps"]) if m["level"] in HELD_OUT_LEVELS]
+    with open(table, "w") as fh:
+        json.dump({"maps": [{"rl": i, "level": m["level"], "scene": m["scene"], "platforms": len(m["platforms"]),
+                             "role": "held-out" if i in held else "training"}
+                            for i, m in enumerate(out["maps"])],
+                   "split": {"training": [i for i in range(len(out["maps"])) if i not in held], "held_out": held}},
+                  fh, indent=0)
+        fh.write("\n")
+    print(f"wrote {table} ({len(out['maps'])} maps)")
 
 
 if __name__ == "__main__":

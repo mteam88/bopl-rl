@@ -10,7 +10,11 @@ tally()/Bradley-Terry can rate them like any other pairing:
 
   a            "human"
   b            "policy:<weights sha256>" or "bot:<kind>-<level>" (the shim's id)
-  map          level index the round was played on
+  map          Unity level index the round was played on (0-123, the game's rotation)
+  rl_map       the level's RL map index in the sim catalogue (native/data/map-set.json),
+               null when the level is not ported; map_role = training | held-out |
+               unported under the more-maps split, so the ladder can separate a fair
+               human test (training maps) from a generalisation test (held-out maps)
   seed         round seed handed to the shim (bopl_agent_reset); replays the agent
   side         index of the human in the roster (0)
   ticks        episode ticks (after the 240-tick warmup)
@@ -30,6 +34,9 @@ import json
 import shutil
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'native/rl/research'))
+import map_set
 
 
 def sha256(path):
@@ -54,6 +61,8 @@ def main():
         print('no rounds were played (no results file)', file=sys.stderr)
         return 0
     rounds = [json.loads(line) for line in args.results.read_text().splitlines() if line.strip()]
+    catalogue = map_set.load()
+    rl_of = map_set.rl_indices(catalogue)
     if not rounds:
         print('no rounds were played', file=sys.stderr)
         args.results.unlink()
@@ -119,8 +128,10 @@ def main():
                 print(f"round {record.get('round')}: seed {record.get('seed')} has no roster draw; skipped", file=sys.stderr)
                 continue
             agent_path, agent_sha = checkpoint(spec)
+            level = record.get('level')
             row = {
-                'a': 'human', 'b': agent_id, 'map': record.get('level'), 'seed': record.get('seed'),
+                'a': 'human', 'b': agent_id, 'map': level, 'seed': record.get('seed'),
+                'rl_map': rl_of.get(level), 'map_role': map_set.role_of_level(level, catalogue) if level is not None else None,
                 'side': human_index, 'ticks': record.get('episode_ticks'), 'outcome': outcome,
                 'agent': spec, 'agent_path': str(agent_path) if agent_path else None, 'agent_sha256': agent_sha,
                 'roster': roster_path,

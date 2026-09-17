@@ -31,7 +31,11 @@ pub mod abi;
 pub mod data;
 
 pub const ABI_VERSION: u32 = 3;
-pub const MAP_COUNT: u32 = 5;
+/// Maps the embedded rollout.json carries (native/tools/extract_rollout_data.py
+/// LEVELS: RL index -> Unity level); the C side reads it through bopl_rl_map_count.
+pub fn map_count() -> u32 {
+    data::get().maps.len() as u32
+}
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
 pub const ABILITY_COUNT: u32 = 39;
 pub const MAX_PLAYERS: usize = 6;
