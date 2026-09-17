@@ -143,7 +143,9 @@ fixed entry is committed separately with its finding id in the subject.
   in collider-registration order. Player, unpushable-form, LethalTerrain, and
   otherwise ignored hits consume slots exactly as they do in
   `DetPhysics.CircleCastAll`; abilityless player clones also receive the
-  ordinary activation push when retained by that shortlist.
+  ordinary activation push when retained by that shortlist. Rounded platforms
+  are tested against their live collider rather than the later observation-row
+  snapshot.
 - **#23 — fixed for the confirmed forms.** Frozen airborne Gust and Time Stop
   forms now return before gravity, aerial steering, and velocity damping, as
   `QuickSpell` and `CastSpell` do. Other active forms retain their authored

@@ -16016,11 +16016,24 @@ impl RolloutWorld {
                 while hit_count < hit_entities.len() {
                     let mut next = None;
                     for (entity, row) in self.entities.iter().enumerate() {
+                        let platform_index = self
+                            .platform_entities
+                            .iter()
+                            .position(|&platform_entity| platform_entity == entity);
+                        let overlaps = if let Some(platform_index) = platform_index {
+                            crate::physics::contact::circle_rounded(
+                                query,
+                                self.platforms[platform_index].collider,
+                            )
+                            .is_some()
+                        } else {
+                            self.circle_overlaps_entity(query, entity)
+                        };
                         if row.kind != kind
                             || row.id <= previous_id
                             || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
                             || GUST_COLLISION_MASK & (1 << row.layer) == 0
-                            || !self.circle_overlaps_entity(query, entity)
+                            || !overlaps
                         {
                             continue;
                         }
@@ -33713,6 +33726,29 @@ mod tests {
         world.gust_waves_init(data::get());
 
         assert_eq!(world.gust_waves[0].target_count, 0);
+    }
+
+    #[test]
+    fn gust_shortlist_reads_live_platform_collider() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        let platform = world.spawn_ability_platform(0, center, Fix::ONE);
+        let entity = world.platform_entities[platform];
+        world.entities[entity].x = (center.x + Fix::from_int(100)).raw();
+        world.gust_waves[0] = GustWave {
+            active: true,
+            born_tick: world.tick.saturating_sub(1),
+            position: center,
+            ..GustWave::default()
+        };
+
+        world.gust_waves_init(data::get());
+
+        assert!(
+            world.gust_waves[0].platform_ids[..world.gust_waves[0].target_count]
+                .contains(&world.platforms[platform].id)
+        );
     }
 
     #[test]
