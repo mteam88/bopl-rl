@@ -1086,6 +1086,13 @@ pub struct PlatformDynamics {
     pub shake_amount: Fix,
     pub shake_previous: Vec2,
     pub meteor_shake_curve: bool,
+    /// StickyRoundedRectangle.DropAllAttachedPlayers. The platform updater
+    /// decrements this before player prefabs run; a Meteor landing writes two
+    /// after that updater, so later players can be ejected immediately and
+    /// earlier players see the remaining frame on the following pass.
+    pub drop_players_frames: i8,
+    pub dont_drop_player_id: u32,
+    pub drop_force: Fix,
     /// A wall QuantumTunnel is registered on the shot pass, waits one strict
     /// second, disables its victim for four seconds, then restores it.
     pub blink_tunnel_active: bool,
@@ -2032,16 +2039,16 @@ struct PlatformScratch {
     /// Arrow Circle/RoundedRectangle manifolds. Retained because arrows can
     /// overlap several composite platforms in one DetPhysics pass.
     arrow_platform_contacts: Vec<(usize, Contact)>,
-    /// Dash.RaycastAll output, retained across casts so the hot rollout never
-    /// allocates for the source's sorted collider list.
-    dash_hits: Vec<DashRayHit>,
+    /// Sorted raycast output shared by Dash and Meteor, retained across casts so
+    /// the hot rollout never allocates for either source collider list.
+    ray_hits: Vec<SortedRayHit>,
 }
 
 #[derive(Clone, Copy, Default)]
-struct DashRayHit {
+struct SortedRayHit {
     distance: Fix,
     hierarchy: u32,
-    /// 0 wall, 1 player slot, 2 non-player entity row.
+    /// 0 wall, 1 player slot, 2 non-player entity row, 3 water.
     kind: u8,
     index: usize,
 }
@@ -2212,7 +2219,7 @@ impl RolloutWorld {
                 missile_contacts: Vec::with_capacity(256),
                 missile_detonations: Vec::with_capacity(128),
                 arrow_platform_contacts: Vec::with_capacity(64),
-                dash_hits: Vec::with_capacity(192),
+                ray_hits: Vec::with_capacity(192),
                 ..PlatformScratch::default()
             },
             platform_dynamics: Vec::with_capacity(64),
@@ -3053,6 +3060,9 @@ impl RolloutWorld {
                 shake_amount: Fix::ZERO,
                 shake_previous: Vec2::ZERO,
                 meteor_shake_curve: false,
+                drop_players_frames: -1,
+                dont_drop_player_id: 0,
+                drop_force: Fix::ZERO,
                 blink_tunnel_active: false,
                 blink_tunnel_born_tick: 0,
                 blink_tunnel_initialized: false,
@@ -4146,6 +4156,9 @@ impl RolloutWorld {
         }
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
+            if self.playable(index) {
+                self.apply_platform_drop(index, data);
+            }
             if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
                 if self.players[index].active == ActiveAbility::Missile {
                     // SparkShot still runs while frozen. Its turn angle uses
@@ -5706,6 +5719,71 @@ impl RolloutWorld {
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
+    fn apply_platform_drop(&mut self, index: usize, data: &data::RolloutData) {
+        let Some(platform_index) = self.players[index].base.ground.and_then(|ground| {
+            self.platforms
+                .iter()
+                .position(|platform| platform.id == ground && platform.active)
+        }) else {
+            return;
+        };
+        let dynamics = self.platform_dynamics[platform_index];
+        if dynamics.drop_players_frames <= 0
+            || dynamics.dont_drop_player_id == self.players[index].base.id
+        {
+            return;
+        }
+        let normal = self.platforms[platform_index]
+            .surface
+            .normal(self.players[index].base.position);
+        let active = self.players[index].active;
+        if matches!(
+            active,
+            ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
+        ) {
+            self.release_held_throw_item_on_exit(index, data);
+        }
+        if active == ActiveAbility::Throw {
+            self.drop_macho_held_boulder(index, data);
+        }
+        if active == ActiveAbility::Magnet {
+            self.drop_magnet_held_item(index);
+        }
+        if active == ActiveAbility::Beam
+            && let Some(orb) = self.players[index].beam.orb
+        {
+            self.beam_orbs[orb].destroy_when_unheld = true;
+        }
+        if active == ActiveAbility::Drill {
+            self.deactivate_drill_hitboxes(index);
+        }
+
+        let slot = &mut self.players[index];
+        slot.base.velocity += normal * dynamics.drop_force;
+        slot.base.position += slot.base.velocity / Fix::from_int(100);
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        if active != ActiveAbility::None {
+            // PlayerPhysics.DropPlatformTest calls the form's IAbilityComponent
+            // with an ungrounded packet containing only self-imposed velocity
+            // and position. Restore the ordinary slime from that packet.
+            slot.active = ActiveAbility::None;
+            slot.base.radius = data.player.radius;
+            slot.base.constants = data.player.constants.clone();
+            slot.base.external_velocity = Vec2::ZERO;
+        }
+        slot.exit_to_fall();
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+    }
+
     fn player_tick(
         &mut self,
         index: usize,
@@ -7669,40 +7747,284 @@ impl RolloutWorld {
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
         let start = self.players[index].base.position;
         let ray_start = start - Vec2::UP * data.meteor.physics_radius;
-        let mut nearest = Fix::MAX;
-        let mut hit = None;
-        for (platform_index, platform) in self.platforms.iter().enumerate() {
-            if data.meteor.raycast_mask & (1 << LAYER_WALL) == 0 {
-                break;
+        let direction = -Vec2::UP;
+        let distance_limit = Fix::from_int(1_000_000);
+        self.scratch.ray_hits.clear();
+
+        // DetPhysics.RaycastAll returns every serialized layer in distance /
+        // hierarchy order. Only the nearest rounded wall can matter because
+        // Meteor exits on the first wall, but player/item callbacks before it
+        // must all run.
+        if data.meteor.raycast_mask & (1 << LAYER_WALL) != 0
+            && let Some((platform_index, distance, _)) =
+                crate::world::closest(terrain!(self), ray_start, direction, distance_limit, None)
+        {
+            self.scratch.ray_hits.push(SortedRayHit {
+                distance,
+                hierarchy: self.entities[self.platform_entities[platform_index]].hierarchy,
+                kind: 0,
+                index: platform_index,
+            });
+        }
+        for (target, player) in self.players.iter().enumerate() {
+            if target == index || !self.playable_slot(player) {
+                continue;
             }
-            if let Some(ray) =
-                platform
-                    .collider
-                    .raycast_within(ray_start, -Vec2::UP, Fix::from_int(1_000_000))
-                && ray.near < nearest
+            let entity = Self::blink_player_entity(player);
+            let Some(row) = self.entities.get(entity).copied() else {
+                continue;
+            };
+            if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                || data.meteor.raycast_mask & (1u32 << row.layer) == 0
             {
-                nearest = ray.near;
-                hit = Some((platform_index, ray_start - Vec2::UP * ray.near));
+                continue;
             }
+            let Some(hit) = Self::raycast_entity_row(row, ray_start, direction)
+                .filter(|hit| hit.near <= distance_limit)
+            else {
+                continue;
+            };
+            self.scratch.ray_hits.push(SortedRayHit {
+                distance: hit.near.max(Fix::ZERO),
+                hierarchy: row.hierarchy,
+                kind: 1,
+                index: target,
+            });
+        }
+        for (entity, row) in self.entities.iter().copied().enumerate() {
+            if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                || matches!(row.layer, LAYER_PLAYER | LAYER_WALL | LAYER_WATER)
+                || data.meteor.raycast_mask & (1u32 << row.layer) == 0
+            {
+                continue;
+            }
+            let Some(hit) = Self::raycast_entity_row(row, ray_start, direction)
+                .filter(|hit| hit.near <= distance_limit)
+            else {
+                continue;
+            };
+            self.scratch.ray_hits.push(SortedRayHit {
+                distance: hit.near.max(Fix::ZERO),
+                hierarchy: row.hierarchy,
+                kind: 2,
+                index: entity,
+            });
         }
         let map = &data.maps[self.map];
         let water = map.water_position.y + map.water_extents.y;
         let water_distance = ray_start.y - water;
         if data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
             && water_distance >= Fix::ZERO
-            && water_distance < nearest
+            && water_distance <= distance_limit
         {
-            self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
-            self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(20));
-            self.exit_meteor_air(index, data);
+            self.scratch.ray_hits.push(SortedRayHit {
+                distance: water_distance,
+                hierarchy: 146,
+                kind: 3,
+                index: 0,
+            });
+        }
+        self.scratch
+            .ray_hits
+            .sort_unstable_by_key(|hit| (hit.distance, hit.hierarchy));
+
+        for hit_index in 0..self.scratch.ray_hits.len() {
+            let hit = self.scratch.ray_hits[hit_index];
+            let near = ray_start + direction * hit.distance;
+            match hit.kind {
+                0 => {
+                    self.meteor_land(index, hit.index, start, near, data);
+                    return;
+                }
+                1 => {
+                    let target = hit.index;
+                    if !self.playable(target) {
+                        continue;
+                    }
+                    self.players[index].base.position = near;
+                    let caster_id = self.players[index].base.id;
+                    self.kill(target, caster_id, CAUSE_OTHER, true, true);
+                    // If invulnerability rejected the target callback, the
+                    // reciprocal PlayerCollision callback can still kill the
+                    // Meteor against a surviving lethal player form.
+                    if self.playable(target)
+                        && (self.players[target].active == ActiveAbility::Rock
+                            || (self.players[target].active == ActiveAbility::Roll
+                                && self.players[target].roll.lethal))
+                    {
+                        let killer = self.players[target].base.id;
+                        self.kill(index, killer, CAUSE_OTHER, true, true);
+                    }
+                    if !self.playable(index) || self.players[index].active != ActiveAbility::Meteor
+                    {
+                        self.spawn_meteor_smear(start, near, index, data);
+                        return;
+                    }
+                }
+                2 => {
+                    let entity = hit.index;
+                    self.players[index].base.position = near;
+                    self.meteor_target_callback(entity, near, index, data);
+                    let row = self.entities[entity];
+                    if row.flags & E_DESTROYED == 0
+                        && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
+                    {
+                        let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
+                        let caster_id = self.players[index].base.id;
+                        if killer != caster_id || can_hurt_owner {
+                            self.kill(
+                                index,
+                                killer,
+                                if killer == caster_id {
+                                    CAUSE_ACCIDENT
+                                } else {
+                                    cause
+                                },
+                                true,
+                                true,
+                            );
+                        }
+                    }
+                    if !self.playable(index) || self.players[index].active != ActiveAbility::Meteor
+                    {
+                        self.spawn_meteor_smear(start, near, index, data);
+                        return;
+                    }
+                }
+                3 => {
+                    self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
+                    self.players[index].base.position =
+                        Vec2::new(start.x, water - Fix::from_int(20));
+                    self.exit_meteor_air(index, data);
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
+        self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(10));
+        self.exit_meteor_air(index, data);
+    }
+
+    fn projectile_credit(&self, entity: usize) -> (u32, bool, u32) {
+        if let Some(arrow) = self
+            .arrows
+            .iter()
+            .find(|arrow| arrow.entity == Some(entity))
+        {
+            return (arrow.owner, arrow.can_hurt_owner, CAUSE_OTHER);
+        }
+        if let Some(explosion) = self
+            .grenade_explosions
+            .iter()
+            .find(|explosion| explosion.active && explosion.entity == Some(entity))
+        {
+            return (explosion.owner as u32 + 1, true, CAUSE_OTHER);
+        }
+        if let Some(explosion) = self
+            .missile_explosions
+            .iter()
+            .find(|explosion| explosion.active && explosion.entity == Some(entity))
+        {
+            return (
+                if explosion.credited_owner {
+                    explosion.owner as u32 + 1
+                } else {
+                    ENVIRONMENT
+                },
+                true,
+                CAUSE_OTHER,
+            );
+        }
+        if let Some(explosion) = self
+            .smoke_explosions
+            .iter()
+            .find(|explosion| explosion.active && explosion.entity == Some(entity))
+        {
+            return (explosion.owner as u32 + 1, true, CAUSE_OTHER);
+        }
+        if let Some(smear) = self
+            .meteor_smears
+            .iter()
+            .find(|smear| smear.active && smear.entity == Some(entity))
+        {
+            return (smear.owner as u32 + 1, true, CAUSE_OTHER);
+        }
+        if let Some(orb) = self
+            .beam_orbs
+            .iter()
+            .find(|orb| orb.active && orb.entity == Some(entity))
+        {
+            return (orb.owner as u32 + 1, false, CAUSE_OTHER);
+        }
+        if let Some(beam) = self
+            .beam_pool
+            .iter()
+            .find(|beam| beam.active && beam.entity == Some(entity))
+        {
+            return (beam.hitbox.owner_id as u32, true, CAUSE_BEAMED);
+        }
+        (ENVIRONMENT, true, CAUSE_OTHER)
+    }
+
+    fn meteor_target_callback(
+        &mut self,
+        entity: usize,
+        near: Vec2,
+        caster: usize,
+        data: &data::RolloutData,
+    ) {
+        if let Some(arrow_index) = self
+            .arrows
+            .iter()
+            .position(|arrow| arrow.active && arrow.entity == Some(entity))
+        {
+            let arrow = self.arrows[arrow_index];
+            let body = Body {
+                velocity: arrow.velocity,
+                orientation: arrow.rotation,
+                angular_velocity: arrow.angular_velocity,
+                ..data.arrow.body
+            };
+            self.destroy_arrow_contact(arrow_index, near, body);
             return;
         }
-        let Some((platform_index, near)) = hit else {
-            self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
-            self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(10));
-            self.exit_meteor_air(index, data);
+        if let Some(missile_index) = self
+            .guided_missiles
+            .iter()
+            .position(|missile| missile.active && missile.entity == Some(entity))
+        {
+            let missile = self.guided_missiles[missile_index];
+            self.spawn_missile_explosion(missile.position, missile.owner, false, Fix::ONE, data);
+            self.destroy_guided_missile(missile_index, true);
             return;
-        };
+        }
+        if let Some(item_index) = self
+            .thrown_items
+            .iter()
+            .position(|item| item.active && item.entity == Some(entity))
+        {
+            let item = self.thrown_items[item_index];
+            if item.ability == ABILITY_GRENADE && (item.owner != caster || item.detonates_on_owner)
+            {
+                self.detonate_grenade(item_index, true, data);
+            } else if item.ability == ABILITY_MINE && matches!(item.phase, 1 | 2) {
+                let mine = &mut self.thrown_items[item_index];
+                mine.phase = 3;
+                mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f32(0.8);
+            }
+        }
+    }
+
+    fn meteor_land(
+        &mut self,
+        index: usize,
+        platform_index: usize,
+        start: Vec2,
+        near: Vec2,
+        data: &data::RolloutData,
+    ) {
         let closest = self.platforms[platform_index]
             .surface
             .closest_point(near)
@@ -7723,6 +8045,9 @@ impl RolloutWorld {
             shake.shake_time = Fix::ZERO;
             shake.shake_duration = data.meteor.shake_duration;
             shake.shake_amount = if self.players[index].meteor.time > data.meteor.time_before_drop {
+                shake.drop_players_frames = 2;
+                shake.dont_drop_player_id = self.players[index].base.id;
+                shake.drop_force = data.meteor.player_push_force * self.players[index].meteor.time;
                 data.meteor.shake_strength
             } else {
                 data.meteor.shake_strength / Fix::from_int(3)
@@ -7753,9 +8078,6 @@ impl RolloutWorld {
         slot.base.grounded_speed = Fix::ZERO;
         slot.base.align(&self.platforms[platform_index]);
         slot.obs_state = STATE_LAND;
-        // ExitAbilityGrounded begins Land after the ordinary slime animator
-        // has already updated on this pass; its first two displayed ticks
-        // therefore precede the normal countdown path.
         slot.state_ticks = LAND_TICKS + 2;
         slot.reported_position = landing;
         slot.reported_tick = self.tick;
@@ -12281,6 +12603,9 @@ impl RolloutWorld {
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
             meteor_shake_curve: false,
+            drop_players_frames: -1,
+            dont_drop_player_id: 0,
+            drop_force: Fix::ZERO,
             blink_tunnel_active: false,
             blink_tunnel_born_tick: 0,
             blink_tunnel_initialized: false,
@@ -15007,7 +15332,7 @@ impl RolloutWorld {
         if let Some((origin, direction, caster_id)) = dash_cast {
             let data = data::get();
             let distance_limit = Fix::from_int(13);
-            self.scratch.dash_hits.clear();
+            self.scratch.ray_hits.clear();
 
             // DetPhysics.RaycastAll sorts every shape by near distance and
             // then PhysicsParent hierarchy. The first wall terminates Dash's
@@ -15018,7 +15343,7 @@ impl RolloutWorld {
                 crate::world::closest(terrain!(self), origin, direction, distance_limit, None)
             {
                 let hierarchy = self.entities[self.platform_entities[platform_index]].hierarchy;
-                self.scratch.dash_hits.push(DashRayHit {
+                self.scratch.ray_hits.push(SortedRayHit {
                     distance,
                     hierarchy,
                     kind: 0,
@@ -15080,7 +15405,7 @@ impl RolloutWorld {
                 else {
                     continue;
                 };
-                self.scratch.dash_hits.push(DashRayHit {
+                self.scratch.ray_hits.push(SortedRayHit {
                     distance: hit.near.max(Fix::ZERO),
                     hierarchy: row.hierarchy,
                     kind: 1,
@@ -15104,7 +15429,7 @@ impl RolloutWorld {
                 let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
                     continue;
                 };
-                self.scratch.dash_hits.push(DashRayHit {
+                self.scratch.ray_hits.push(SortedRayHit {
                     distance: hit.near.max(Fix::ZERO),
                     hierarchy: row.hierarchy,
                     kind: 2,
@@ -15112,11 +15437,11 @@ impl RolloutWorld {
                 });
             }
             self.scratch
-                .dash_hits
+                .ray_hits
                 .sort_unstable_by_key(|hit| (hit.distance, hit.hierarchy));
 
-            for hit_index in 0..self.scratch.dash_hits.len() {
-                let hit = self.scratch.dash_hits[hit_index];
+            for hit_index in 0..self.scratch.ray_hits.len() {
+                let hit = self.scratch.ray_hits[hit_index];
                 match hit.kind {
                     0 => break,
                     1 => {
@@ -21273,6 +21598,9 @@ impl RolloutWorld {
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
             meteor_shake_curve: false,
+            drop_players_frames: -1,
+            dont_drop_player_id: 0,
+            drop_force: Fix::ZERO,
             blink_tunnel_active: false,
             blink_tunnel_born_tick: 0,
             blink_tunnel_initialized: false,
@@ -24959,6 +25287,9 @@ impl RolloutWorld {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
                 continue;
+            }
+            if self.platform_dynamics[i].drop_players_frames >= 0 {
+                self.platform_dynamics[i].drop_players_frames -= 1;
             }
             let previous = self.platform_dynamics[i].body_scale;
             let scale = self.platform_dynamics[i].scale;

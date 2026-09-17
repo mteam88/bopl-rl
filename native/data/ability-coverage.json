@@ -166,8 +166,8 @@
       "name": "Meteor",
       "prefab": "Assets/GameObject/Meteor.prefab",
       "prefab_guid": "cf66511cb6ed3aa41acdad8d6d7915fe",
-      "native_status": "partial",
-      "verification": "meteor_ability_ab matches 1,500 NativeAOT/Rust Q32 ticks across short grounded release, maximum two-second charge, and airborne entry. It covers anticipation/jump/vibration timing, normalized random shake, downward landing, charge-scaled ground impulse, deferred Shockwave forces, one-second platform shake, two-tick smear export/removal, collider handoff, and post-landing movement. Position/axis comparisons allow 50,000 raw Q32 units (<0.000012 world units) for separately rounded FixTransform and normalized-vector fields; platform dynamics match exactly in the measured casts. Ray hits on players/items, DropAllAttachedPlayers, and isolated water/no-hit exits still need dedicated interaction goldens. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
+      "native_status": "ported",
+      "verification": "MeteorSmash and its spawned smear/shockwave path are source-ported wholesale: grounded and airborne entry, animation clocks, normalized vibration RNG, Time Stop, scale no-op, sorted full-mask downward RaycastAll, player and dynamic-item callback dispatch, Water/no-hit exits, moving rounded-platform landing, charge-scaled impulse, exact two-pass DropAllAttachedPlayers state and form/held-payload ejection, platform shake, fixed target shockwave and two-tick lethal smear. meteor_broad_ab.sh runs the 1,500-tick three-cast gate plus the 1,540-tick airborne-Meteor/Time-Stop composition; all 3,040 optimized-Q32 NativeAOT/Rust ticks pass. Position/axis comparisons retain the established 50,000 raw Q32 bound (<0.000012 world units) for separately rounded FixTransform and normalized-vector fields; platform dynamics are exact in measured casts. Newly translated player/item ray callbacks, rider ejection, isolated Water/no-hit exits, moving-platform and post-pickup compositions remain without separate focused public differentials."
     },
     {
       "id": 21,

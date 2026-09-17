@@ -385,12 +385,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   transformed-form and abilityless-clone contacts, Grenade/explosion hits and
   BoplBody Shockwave force. The six-scenario broad gate is green; those added
   rope/mixed-contact branches remain without individual public differentials.
-  Meteor executes its grounded anticipation and jump, direct airborne entry,
-  normalized random vibration, short and maximum-charge downward release,
-  charge-scaled platform impact, deferred Shockwave impulses, one-second
-  ShakablePlatform displacement, and the two-tick lethal smear. Ray hits on
-  players/items, DropAllAttachedPlayers, and isolated water/no-hit exits remain
-  without dedicated differential scenarios.
+  Meteor executes the complete source form and spawned-effect path: grounded
+  and airborne entry, normalized vibration, Time Stop, sorted full-mask
+  downward player/item callbacks, distinct water/no-hit exits, moving-platform
+  landing, charge-scaled impact, two-pass rider/form ejection, deferred
+  Shockwave impulses, one-second ShakablePlatform displacement and the
+  two-tick lethal smear. The 3,040-tick broad gate is exact within the existing
+  sub-0.000012-unit FixTransform/vector bound; newly translated callback and
+  ejection branches remain without separate focused differentials.
   Roll executes its separate PlayerPhysics form, charged ground release,
   serialized Hermite speed curve, source `n/(n+1)` surface substeps, fixed-size
   swept lethal hurtboxes, jump cancel, airborne gravity/control and exit body

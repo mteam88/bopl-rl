@@ -3191,15 +3191,30 @@ each tick without moving its spring home. The lethal MeteorSmear exports its
 rescaled box immediately and removes it after exactly two registered updates.
 All hot-path target storage is fixed-size and cast updates allocate nothing.
 
-`meteor_ability_ab.c` compares 1,500 NativeAOT/Rust Q32 ticks across short
-grounded release, a held maximum-charge cast, and direct airborne entry. It
-checks full public player, slime, entity, telemetry, platform-shake and
-shockwave outcomes. Separately rounded FixTransform positions and normalized
-vectors differ by at most 50,000 raw Q32 units (less than 0.000012 world units);
-platform motion is exact in the measured casts and no state, collision, entity
-lifetime or animation boundary differs. Downward player/item ray callbacks,
-`DropAllAttachedPlayers`, and isolated Water/no-hit exits still need dedicated
-interaction goldens, so coverage remains partial.
+A source-complete pass now retains the full Player, Projectile, item, wall,
+Water, LethalTerrain, Explosion and orb ray result set without allocating,
+sorts it by near distance and collider hierarchy, and dispatches both target
+and Meteor callbacks. Arrow and Missile callbacks destroy their projectile
+before the reciprocal lethal test; Grenade and armed Mine callbacks enter their
+authored detonation phases. Water and empty-ray exits preserve the distinct
+20- and 10-unit submerged endpoints.
+
+Long charges also write `StickyRoundedRectangle.DropAllAttachedPlayers` after
+the platform updater. Later player prefabs are ejected in the landing pass;
+earlier prefabs observe its remaining frame on the next pass. Ordinary riders
+and active forms receive the source normal impulse and 1/100 position nudge;
+held ThrowItem2, Magnet, Macho boulder, Beam and Drill resources follow their
+form exit callbacks. The caster id is exempt.
+
+`meteor_broad_ab.sh` joins `meteor_ability_ab.c`'s 1,500 ticks across short,
+maximum and airborne casts with `time_stop_broad_ab.c`'s 1,540-tick frozen
+Meteor composition. All 3,040 optimized-Q32 NativeAOT/Rust ticks pass.
+Separately rounded FixTransform positions and normalized vectors retain the
+established 50,000 raw Q32 bound (less than 0.000012 world units); platform
+motion is exact in the measured casts and no measured state, collision, entity
+lifetime or animation boundary differs. The newly translated player/item ray,
+rider-ejection, isolated Water/no-hit, moving-platform and post-pickup branches
+remain without separate focused public differentials.
 
 ### Executable Poke Ball capture (2026-09-15)
 
