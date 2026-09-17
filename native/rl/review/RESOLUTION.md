@@ -286,6 +286,11 @@ fixed entry is committed separately with its finding id in the subject.
 
 ### Suspected cross-cutting findings
 
+- **S1 — fixed.** Each player now records the pass in which a collision
+  callback first reached the kill path. Later callbacks for that same body in
+  the same pass return, matching `PlayerCollision.wasKilledThisFrame`; this is
+  observable when the first contact schedules a Revival clone and restores
+  the shared player's alive flag before the queued callback list is exhausted.
 - **S5 — fixed.** PortalShot and Portal clocks now advance by the already
   player-scaled updater delta exactly once. This matches each C# component's
   raw `SimDeltaTime * GameTime.PlayerTimeScale` expression at fractional

@@ -2008,6 +2008,9 @@ pub struct PlayerSlot {
     /// counted: every Poke Ball release clears the shared bit even when a
     /// second ball still retains and pins the same victim.
     pub poke_invulnerable: bool,
+    /// PlayerCollision suppresses every later callback after one callback
+    /// reaches its kill path in the same updater pass.
+    pub callback_killed_tick: Option<u32>,
     /// PokeBall mutates a victim after RlObservation has sampled the slime's
     /// controller fields. Preserve that pre-callback row for the current pass.
     pub late_obs_tick: u32,
@@ -3412,6 +3415,7 @@ impl RolloutWorld {
                 ragdoll_grounded_fall: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
+                callback_killed_tick: None,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
                 late_obs_velocity: Vec2::ZERO,
@@ -29156,6 +29160,12 @@ impl RolloutWorld {
         {
             return;
         }
+        if by_callback {
+            if self.players[index].callback_killed_tick == Some(self.tick) {
+                return;
+            }
+            self.players[index].callback_killed_tick = Some(self.tick);
+        }
         let players = self.players.len();
         if matches!(
             self.players[index].active,
@@ -33121,6 +33131,26 @@ mod tests {
         assert!(world.players[0].revival_clone_pending);
         assert_eq!(world.players[0].revival_target_marker, Some(0));
         assert_eq!(world.revival_marker_pool[0].position, position);
+    }
+
+    #[test]
+    fn collision_kill_latch_suppresses_second_callback_after_revival() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.stocks = 0;
+        world.reset(&config).unwrap();
+        world.revival_marker_pool.push(RevivalMarker {
+            owner: 0,
+            ability_slot: 0,
+            ..RevivalMarker::default()
+        });
+        world.players[0].revival_markers[0] = Some(0);
+
+        world.kill(0, 2, CAUSE_OTHER, true, true);
+        world.kill(0, 2, CAUSE_OTHER, true, true);
+
+        assert_eq!(world.players[0].deaths, 1);
+        assert_eq!(world.players[1].kills, 1);
     }
 
     #[test]
