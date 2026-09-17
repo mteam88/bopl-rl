@@ -5575,7 +5575,10 @@ impl RolloutWorld {
         }
         for marker in &self.revival_marker_pool {
             if let Some(entity) = marker.entity.filter(|_| {
-                marker.active && marker.registered && marker.magnet_holder.is_none()
+                marker.active
+                    && marker.registered
+                    && marker.body.inverse_mass > Fix::ZERO
+                    && marker.magnet_holder.is_none()
             })
                 && Self::portal_inside(endpoint, marker.position, data)
             {
@@ -5590,7 +5593,10 @@ impl RolloutWorld {
         }
         for marker in &self.teleport_marker_pool {
             if let Some(entity) = marker.entity.filter(|_| {
-                marker.active && marker.registered && marker.magnet_holder.is_none()
+                marker.active
+                    && marker.registered
+                    && marker.body.inverse_mass > Fix::ZERO
+                    && marker.magnet_holder.is_none()
             })
                 && Self::portal_inside(endpoint, marker.position, data)
             {
@@ -5867,7 +5873,10 @@ impl RolloutWorld {
         for index in 0..self.revival_marker_pool.len() {
             let marker = self.revival_marker_pool[index];
             let Some(entity) = marker.entity.filter(|_| {
-                marker.active && marker.registered && marker.magnet_holder.is_none()
+                marker.active
+                    && marker.registered
+                    && marker.body.inverse_mass > Fix::ZERO
+                    && marker.magnet_holder.is_none()
             }) else {
                 continue;
             };
@@ -5882,7 +5891,10 @@ impl RolloutWorld {
         for index in 0..self.teleport_marker_pool.len() {
             let marker = self.teleport_marker_pool[index];
             let Some(entity) = marker.entity.filter(|_| {
-                marker.active && marker.registered && marker.magnet_holder.is_none()
+                marker.active
+                    && marker.registered
+                    && marker.body.inverse_mass > Fix::ZERO
+                    && marker.magnet_holder.is_none()
             }) else {
                 continue;
             };

@@ -26,6 +26,9 @@ fixed entry is committed separately with its finding id in the subject.
   Magnet-held BoplBody (arrows, thrown items, missiles, and both spell
   markers). A held object no longer acquires a stale inside bit or teleports,
   matching `Portal.IsPortalable`'s `!body.IsBeingHeld()` predicate.
+- **S5 — fixed.** Revival and Teleport markers now pass the same strictly
+  positive live `BoplBody.InverseMass` gate as every other portalable body,
+  both when recording entry and when performing transit.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
