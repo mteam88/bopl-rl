@@ -9260,6 +9260,9 @@ impl RolloutWorld {
         let relative_rotation = rocket_rotation - parent_rotation;
 
         self.attach_engine_body(platform_index, data.engine.rocket_body);
+        let collider_center = self.platform_dynamics[platform_index].composite_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        let collider_extents = data::surface_extents(data.engine.rocket_extents * scale);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -9268,6 +9271,13 @@ impl RolloutWorld {
             layer: data.engine.rocket_layer,
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.engine.rocket_collider_hierarchy,
+            x: collider_center.x.raw(),
+            y: collider_center.y.raw(),
+            right_x: (rocket_right * collider_extents.x).x.raw(),
+            right_y: (rocket_right * collider_extents.x).y.raw(),
+            up_x: (rocket_right.perp() * collider_extents.y).x.raw(),
+            up_y: (rocket_right.perp() * collider_extents.y).y.raw(),
+            rotation: rocket_rotation.raw(),
             inverse_mass: data.engine.rocket_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -9284,8 +9294,7 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation,
-            collider_center: parent_position
-                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_center,
             collider_rotation: rocket_rotation,
             surface_offset,
             scale,
@@ -19898,6 +19907,9 @@ impl RolloutWorld {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
         self.attach_engine_body(platform_index, data.engine.rocket_body);
+        let collider_center = self.platform_dynamics[platform_index].composite_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        let collider_extents = data::surface_extents(data.engine.rocket_extents * source.scale);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -19906,6 +19918,13 @@ impl RolloutWorld {
             layer: data.engine.rocket_layer,
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.engine.rocket_collider_hierarchy,
+            x: collider_center.x.raw(),
+            y: collider_center.y.raw(),
+            right_x: (right * collider_extents.x).x.raw(),
+            right_y: (right * collider_extents.x).y.raw(),
+            up_x: (right.perp() * collider_extents.y).x.raw(),
+            up_y: (right.perp() * collider_extents.y).y.raw(),
+            rotation: rotation.raw(),
             inverse_mass: data.engine.rocket_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -19922,8 +19941,7 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation: rotation - parent_rotation,
-            collider_center: parent_position
-                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_center,
             collider_rotation: rotation,
             surface_offset,
             scale: source.scale,
