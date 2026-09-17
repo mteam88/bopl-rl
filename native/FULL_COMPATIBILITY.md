@@ -2197,9 +2197,9 @@ Complete records and hashes are in `fixtures/revival-marker*.jsonl.xz` and
 `revival-marker-interactions`. Coverage requires marker/clone creation and
 removal, the expected extra-life flag/reference counts, and the exact errors.
 
-Marker creation now connects to the death and respawn path described below.
-Copying all equipped ability types remains open; this is not a complete Revival ability
-or full public C match implementation.
+Marker creation connects to the death and respawn path described below. The
+equipped-clone and actor corpora cover the general source object graph,
+including multiple markers, clone limits and fresh equipped prefab instances.
 
 The public Q32 rollout now executes Revival's cast-side path as well. It uses
 the exported QuickSpell animations and offsets, active 2.3-radius ability
@@ -2223,8 +2223,19 @@ wisp and distance-derived particle flight. The port accounts for
 ReviveParticle's duplicate updater registration, removes the marker on the
 same pass as `ReSpawn`, advances fresh cooldowns through the 105-frame spawn,
 and launches at exactly 11.25 units/second. All player, slime, telemetry and
-entity fields match NativeAOT exactly across the scenario. Multiple marker
-positions still need the general multi-clone rollout representation.
+entity fields match NativeAOT exactly across the scenario. The public program
+uses one replacement body; the retained actor corpora below cover simultaneous
+markers and replacement bodies through the general component runtime.
+
+`revival_broad_ab.sh` combines the cast, death and pickup-replacement programs
+as one optimized-Q32 gate. It covers 3,835 exact public rollout ticks through
+ordinary and acquired airborne casts, marker creation/replacement, boundary
+death, copied ability registration, particle travel, respawn and launch.
+Revival markers now retain their serialized positive-mass body in the public
+runtime as well: Black Hole force is integrated allocation-free, scaling
+updates the live inverse mass, and Portal/Teleport transform the same body
+position and velocity. These rare cross-ability branches are source-ported but
+do not each have a dedicated public C differential.
 
 ### Revival death, effects and particles
 
@@ -2265,8 +2276,9 @@ are in `artifacts/revive-particle-complete`, `revive-effect-complete`,
 those captures retain the resulting pending effects and do not establish
 that every newly allocated effect finishes within their time windows.
 
-The equipped-clone extension below now covers Invisibility. Copying other
-concrete ability graphs and integrating the full public C match remain open.
+The equipped-clone extension below validates fresh prefab selection and
+lifecycle independently; the public rollout constructs the collider/runtime
+state for every catalog ability when Revival creates its replacement.
 
 ### Equipped clones and empty instant callbacks
 

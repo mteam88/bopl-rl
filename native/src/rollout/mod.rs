@@ -1575,7 +1575,7 @@ pub struct RevivalMarker {
     pub entity: Option<usize>,
     pub hierarchy_base: u32,
     pub position: Vec2,
-    pub velocity: Vec2,
+    pub body: crate::physics::Body,
 }
 
 /// The portal indicator retained by one Teleport ability instance between
@@ -4506,6 +4506,7 @@ impl RolloutWorld {
         self.guided_missiles_integrate(data, physics_dt);
         self.thrown_items_integrate(data, updater_dt, physics_dt);
         self.portal_shots_integrate(physics_dt);
+        self.revival_markers_integrate(physics_dt);
         self.rocks_integrate(physics_dt);
         self.duplicated_rocks_integrate(physics_dt, data);
         // DetPhysics.Simulate drops last pass's callback casualties, then
@@ -4771,6 +4772,15 @@ impl RolloutWorld {
             row.vy = shot.body.velocity.y.raw();
             row.rotation = shot.body.orientation.raw();
             row.angular_velocity = shot.body.angular_velocity.raw();
+        }
+    }
+
+    fn revival_markers_integrate(&mut self, physics_dt: Fix) {
+        for marker in &mut self.revival_marker_pool {
+            if !marker.active || !marker.registered {
+                continue;
+            }
+            marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
     }
 
@@ -5444,8 +5454,8 @@ impl RolloutWorld {
                 self.portal_body_exit(endpoint_index, entity, marker.position, data)
             {
                 self.revival_marker_pool[index].position = position;
-                self.revival_marker_pool[index].velocity =
-                    Self::portal_velocity(entry, exit, marker.velocity);
+                self.revival_marker_pool[index].body.velocity =
+                    Self::portal_velocity(entry, exit, marker.body.velocity);
             }
         }
         for index in 0..self.teleport_marker_pool.len() {
@@ -10157,7 +10167,7 @@ impl RolloutWorld {
                 entity: None,
                 hierarchy_base,
                 position: spawn,
-                velocity: Vec2::ZERO,
+                body: data.revival.marker_body,
             });
             self.players[index].revival_markers[ability_slot] = Some(marker_index);
             self.players[index].revival.phase = 1;
@@ -10671,6 +10681,23 @@ impl RolloutWorld {
                 }
             }
 
+            for marker_index in 0..self.revival_marker_pool.len() {
+                let marker = self.revival_marker_pool[marker_index];
+                if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
+                    continue;
+                }
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    marker.position,
+                    radius,
+                    mass,
+                    marker.body.inverse_mass,
+                    data,
+                ) {
+                    self.revival_marker_pool[marker_index].body.force += force;
+                }
+            }
+
             // Guided Missile is the only independent positive-mass box body.
             for missile_index in 0..self.guided_missiles.len() {
                 let missile = self.guided_missiles[missile_index];
@@ -11034,14 +11061,14 @@ impl RolloutWorld {
                 };
                 if !marker.active
                     || !marker.registered
-                    || data.revival.marker_body.inverse_mass <= Fix::ZERO
+                    || marker.body.inverse_mass <= Fix::ZERO
                     || !self.circle_overlaps_entity(query, entity)
                 {
                     continue;
                 }
                 Self::black_hole_grow(
                     &mut self.black_holes[hole_index],
-                    data.revival.marker_body.inverse_mass,
+                    marker.body.inverse_mass,
                     Fix::ZERO,
                     data,
                 );
@@ -13652,7 +13679,7 @@ impl RolloutWorld {
                 x: (marker.position + data.revival.marker_offset).x.raw(),
                 y: (marker.position + data.revival.marker_offset).y.raw(),
                 radius: data.revival.marker_radius.raw(),
-                inverse_mass: data.revival.marker_body.inverse_mass.raw(),
+                inverse_mass: marker.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
             self.revival_marker_pool[marker_index].registered = true;
@@ -21592,6 +21619,12 @@ impl RolloutWorld {
                         row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
                     }
                 }
+                let scaled_inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
+                for marker in &mut self.revival_marker_pool {
+                    if marker.active && marker.entity == Some(effect.victim) {
+                        marker.body.inverse_mass = scaled_inverse_mass;
+                    }
+                }
                 for marker in &mut self.teleport_marker_pool {
                     if marker.active && marker.entity == Some(effect.victim) {
                         marker.scale = scale;
@@ -29439,8 +29472,8 @@ impl RolloutWorld {
             let position = marker.position + data.revival.marker_offset;
             e.x = position.x.raw();
             e.y = position.y.raw();
-            e.vx = marker.velocity.x.raw();
-            e.vy = marker.velocity.y.raw();
+            e.vx = marker.body.velocity.x.raw();
+            e.vy = marker.body.velocity.y.raw();
         }
         for marker in &self.teleport_marker_pool {
             if !marker.active || !marker.registered {

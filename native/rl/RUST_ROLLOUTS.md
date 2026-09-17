@@ -244,7 +244,11 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   one live marker preserves stocks, replaces the dead slime with a hidden
   clone, waits through the measured wisp and doubly-registered particle
   travel, removes the marker, and plays the ordinary spawn animation before
-  restoring input.
+  restoring input. The general retained actor corpora cover simultaneous
+  markers, clone limits, water and Time Stop. Marker bodies also preserve
+  scale-adjusted mass and allocation-free Black Hole/Portal/Teleport motion.
+  `revival_broad_ab.sh` gates cast, death and acquired-airborne-cast paths
+  together for 3,835 exact optimized-Q32 ticks.
   Teleport is an instant two-stage cast. Its first cast creates the extracted
   portal body on the next updater pass; releasing the button keeps the slot at
   exact cooldown so the next press can cross the strict ready boundary. The
@@ -752,21 +756,20 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   across ordinary and duplicated capture, Growth/Shrink, Arrow, Gust, Magnet
   and Time Stop. Multi-captor expiry, Portal/Black Hole and acquired-pickup
   compositions are translated but not individually measured.
-  Revival's public death
-  path currently supports one live marker; multiple simultaneous markers
-  require the general multi-clone rollout representation. Teleport's player
-  swaps are complete, but its projectile/item/boulder targets await the dynamic
-  entity types supplied by those ability ports. Every slot uses its exact authored
-  cooldown and common ground/castability metadata from the exported prefab.
-  Closing this scope requires the remaining partial interaction branches and
-  their dynamic-body collision pairs.
+  Revival's public broad gate follows one replacement body, while its exact
+  retained actor corpora cover the general simultaneous-marker and clone graph.
+  Every slot uses its authored cooldown and common ground/castability metadata
+  from the exported prefab. All 39 catalog abilities are source-ported; catalog
+  verification text identifies translated composition branches that have not
+  each received an isolated public differential.
 - Landed arrows are freed from the native entity table instead of remaining
   as attached visual children. The gameplay-relevant projectile collider is
   destroyed in both backends and the 20-arrow live-projectile cap is enforced,
   so the remaining difference is primarily observation/entity history.
-- The rollout only contains dynamic bodies needed by ids 2/3/4/7/9/10/11/12/13/14/18/22/24/26/28/29/35/37/38. Forces from
-  unsupported abilities (for example Machoman impulses into a platform) and
-  their circle/box/rope collision pairs remain absent.
+- The rollout contains the spawned bodies, fields, projectiles and form
+  colliders required by all 39 catalog abilities. The catalog records which
+  rare circle/box/rope compositions are source-ported without an isolated
+  public differential.
 - f64 build only (2026-09-12): `Fix::sin` evaluates the quadrant-reduced
   argument with fdlibm's `__kernel_sin`/`__kernel_cos` polynomials instead
   of libm's `sin`. The result is within one ulp (~1e-16) of libm; the

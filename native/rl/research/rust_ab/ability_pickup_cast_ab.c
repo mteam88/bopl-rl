@@ -162,6 +162,7 @@ int main(int argc, char **argv) {
     int jump_cooldown = 0, saw_pickup = 0, collected = 0, registered = 0;
     int cast = 0, saw_active = 0, saw_marker = 0, saw_exit = 0;
     unsigned collect_tick = 0, register_tick = 0, cast_tick = 0;
+    unsigned completed_ticks = 0;
     for (unsigned episode_tick = 0; episode_tick < 2600; episode_tick++) {
         action[0].buttons = 0;
         const BoplRlState *before = bopl_rl_state(world[0]);
@@ -231,6 +232,7 @@ int main(int argc, char **argv) {
         }
         if (saw_active && !(state[0]->slimes[0].ability_flags[2] & 8))
             saw_exit = 1;
+        completed_ticks = episode_tick + 1;
         if (saw_marker && saw_exit) break;
     }
     if (!collected || !registered || !cast || !saw_active || !saw_marker ||
@@ -240,8 +242,8 @@ int main(int argc, char **argv) {
                 cast, saw_active, saw_marker, saw_exit);
         return 1;
     }
-    printf("ABILITY_PICKUP_CAST_GOLDEN_OK collect=%u register=%u cast=%u ability=15\n",
-           collect_tick, register_tick, cast_tick);
+    printf("ABILITY_PICKUP_CAST_GOLDEN_OK ticks=%u collect=%u register=%u cast=%u ability=15\n",
+           completed_ticks, collect_tick, register_tick, cast_tick);
     bopl_rl_close(world[0]); bopl_rl_close(world[1]);
     return 0;
 }

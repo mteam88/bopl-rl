@@ -13,4 +13,6 @@ against an end-to-end NativeAOT/Rust differential through the public rollout
 ABI. Per-branch differential coverage can trail a completed source port; that
 distinction stays explicit in the catalog's verification text.
 
-1. **ID 15 — Revival (`partial`):** An active-form nonlethal Dash no-push callback is exact. Pickup replacement followed by immediate airborne activation of the acquired Revival, marker creation and exit is exact. The public pool still lacks an exact differential for simultaneous markers belonging to multiple live clones, copied equipped-ability state beyond the currently represented clone graph, marker interaction with Portal/Teleport/Black Hole/scale effects, and deaths during Time Stop or another active form.
+No ability-specific source gaps remain. All 39 catalog entries are `ported`.
+Composition branches described as unmeasured in the catalog are translated but
+have not each received a dedicated public NativeAOT/Rust differential.
