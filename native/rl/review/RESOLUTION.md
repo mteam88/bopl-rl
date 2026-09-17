@@ -252,3 +252,7 @@ fixed entry is committed separately with its finding id in the subject.
   matching the prefab's untouched `Explosion.PlayerOwnerId`, at the shared
   Meteor/Roll credit dispatcher too. Its victims classify as `deaths_other`
   instead of environmental deaths at all three collision sites.
+- **G4 — fixed.** Smoke clouds now retain the spawning ability slot and
+  ability-generation identity. Each non-duplicated burst evicts against the
+  one 40-entry FIFO shared by that player's live Smoke ability instance,
+  rather than a private ring keyed to the individual grenade cast.

@@ -484,6 +484,8 @@ pub struct ThrownItem {
     pub id: u32,
     pub owner: usize,
     pub ability: u32,
+    pub ability_slot: usize,
+    pub ability_generation: u32,
     pub born_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
@@ -602,6 +604,7 @@ pub struct SmokeCloud {
     pub scale: Fix,
     pub owner: usize,
     pub ability_slot: usize,
+    pub ability_generation: u32,
     /// The ThrowItem2 instance owns a 40-entry effect ring. A later cast gets
     /// a fresh ring even when it occupies the same ability slot.
     pub source_group: u32,
@@ -17178,6 +17181,8 @@ impl RolloutWorld {
             id: 0,
             owner: index,
             ability: ABILITY_MINE,
+            ability_slot: self.players[index].active_slot,
+            ability_generation: self.players[index].ability_generation,
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
@@ -17424,6 +17429,8 @@ impl RolloutWorld {
             id: 0,
             owner: index,
             ability,
+            ability_slot: self.players[index].active_slot,
+            ability_generation: self.players[index].ability_generation,
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
@@ -25323,7 +25330,8 @@ impl RolloutWorld {
             return;
         }
         let item = self.thrown_items[item_index];
-        let ability_slot = self.players[item.owner].active_slot;
+        let ability_slot = item.ability_slot;
+        let ability_generation = item.ability_generation;
         for &authored_offset in &data.smoke.cloud_offsets {
             let noise_angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
             let noise_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
@@ -25331,15 +25339,19 @@ impl RolloutWorld {
             let rotation = self.rng.fix_range(Fix::ZERO, Fix::TAU);
             let offset = (authored_offset + noise) * data.smoke.spread * item.scale;
 
-            let active_for_cast = self
+            let active_for_ability = self
                 .smoke_clouds
                 .iter()
                 .filter(|cloud| {
-                    cloud.active && !cloud.duplicated && cloud.source_group == item.hierarchy_base
+                    cloud.active
+                        && !cloud.duplicated
+                        && cloud.owner == item.owner
+                        && cloud.ability_slot == ability_slot
+                        && cloud.ability_generation == ability_generation
                 })
                 .count();
             if !item.duplicated
-                && active_for_cast >= 40
+                && active_for_ability >= 40
                 && let Some((oldest, _)) = self
                     .smoke_clouds
                     .iter()
@@ -25347,7 +25359,9 @@ impl RolloutWorld {
                     .filter(|(_, cloud)| {
                         cloud.active
                             && !cloud.duplicated
-                            && cloud.source_group == item.hierarchy_base
+                            && cloud.owner == item.owner
+                            && cloud.ability_slot == ability_slot
+                            && cloud.ability_generation == ability_generation
                     })
                     .min_by_key(|(_, cloud)| cloud.hierarchy_base)
             {
@@ -25365,6 +25379,7 @@ impl RolloutWorld {
                 scale: item.scale,
                 owner: item.owner,
                 ability_slot,
+                ability_generation,
                 source_group: item.hierarchy_base,
                 ignition_time: -Fix::ONE,
                 duplicated: item.duplicated,
@@ -32295,6 +32310,48 @@ mod tests {
         });
 
         assert_eq!(world.projectile_credit(entity), (0, true, CAUSE_OTHER));
+    }
+
+    #[test]
+    fn smoke_cloud_ring_is_shared_by_ability_instance() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        for hierarchy_base in 1..=40 {
+            world.smoke_clouds.push(SmokeCloud {
+                active: true,
+                hierarchy_base,
+                owner: 0,
+                ability_slot: 1,
+                ability_generation: 7,
+                source_group: hierarchy_base,
+                ..SmokeCloud::default()
+            });
+        }
+        world.thrown_items.push(ThrownItem {
+            active: true,
+            owner: 0,
+            ability: ABILITY_SMOKE,
+            ability_slot: 1,
+            ability_generation: 7,
+            hierarchy_base: 999,
+            scale: Fix::ONE,
+            ..ThrownItem::default()
+        });
+
+        world.detonate_smoke(0, false, data::get());
+
+        let matching: Vec<_> = world
+            .smoke_clouds
+            .iter()
+            .filter(|cloud| {
+                cloud.active
+                    && cloud.owner == 0
+                    && cloud.ability_slot == 1
+                    && cloud.ability_generation == 7
+            })
+            .collect();
+        assert_eq!(matching.len(), 40);
+        assert!(matching.iter().all(|cloud| cloud.hierarchy_base != 1));
     }
 
     #[test]
