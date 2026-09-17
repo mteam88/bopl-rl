@@ -601,6 +601,7 @@ pub struct SmokeCloud {
     pub entity: Option<usize>,
     pub position: Vec2,
     pub rotation: Fix,
+    pub body: Body,
     pub scale: Fix,
     pub owner: usize,
     pub ability_slot: usize,
@@ -1801,6 +1802,8 @@ pub struct GustWave {
     pub missile_indices: [usize; 50],
     pub portal_shot_count: usize,
     pub portal_shot_indices: [usize; 50],
+    pub smoke_count: usize,
+    pub smoke_indices: [usize; 50],
     pub black_hole_count: usize,
     pub black_hole_indices: [usize; 50],
 }
@@ -1823,6 +1826,8 @@ impl Default for GustWave {
             missile_indices: [usize::MAX; 50],
             portal_shot_count: 0,
             portal_shot_indices: [usize::MAX; 50],
+            smoke_count: 0,
+            smoke_indices: [usize::MAX; 50],
             black_hole_count: 0,
             black_hole_indices: [usize::MAX; 50],
         }
@@ -1852,6 +1857,7 @@ impl GustWave {
             + self.arrow_count
             + self.missile_count
             + self.portal_shot_count
+            + self.smoke_count
             + self.black_hole_count
     }
 
@@ -4807,6 +4813,9 @@ impl RolloutWorld {
         if has(ABILITY_PORTAL_GUN) {
             self.portal_shots_integrate(physics_dt);
         }
+        if has(ABILITY_SMOKE) {
+            self.smoke_clouds_integrate(physics_dt);
+        }
         if has(ABILITY_REVIVAL) {
             self.revival_markers_integrate(physics_dt);
         }
@@ -5130,6 +5139,22 @@ impl RolloutWorld {
             row.vy = shot.body.velocity.y.raw();
             row.rotation = shot.body.orientation.raw();
             row.angular_velocity = shot.body.angular_velocity.raw();
+        }
+    }
+
+    fn smoke_clouds_integrate(&mut self, physics_dt: Fix) {
+        for cloud in &mut self.smoke_clouds {
+            if !cloud.active || !cloud.registered {
+                continue;
+            }
+            cloud.position += cloud.body.integrate(physics_dt, Fix::ZERO);
+            if let Some(entity) = cloud.entity {
+                let row = &mut self.entities[entity];
+                row.x = cloud.position.x.raw();
+                row.y = cloud.position.y.raw();
+                row.vx = cloud.body.velocity.x.raw();
+                row.vy = cloud.body.velocity.y.raw();
+            }
         }
     }
 
@@ -14286,6 +14311,8 @@ impl RolloutWorld {
                 hierarchy: 100_000_000 + cloud.hierarchy_base + data.smoke.cloud_collider_hierarchy,
                 x: cloud.position.x.raw(),
                 y: cloud.position.y.raw(),
+                vx: cloud.body.velocity.x.raw(),
+                vy: cloud.body.velocity.y.raw(),
                 radius: (data.smoke.cloud_radii[0] * cloud.scale).raw(),
                 rotation: cloud.rotation.raw(),
                 inverse_mass: data.smoke.cloud_body.inverse_mass.raw(),
@@ -16004,6 +16031,23 @@ impl RolloutWorld {
                     wave.portal_shot_count += 1;
                 }
             }
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
+                if wave.retained_full() || !cloud.active || !cloud.registered {
+                    continue;
+                }
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: cloud.position,
+                        radius: data.smoke.cloud_base_radius * cloud.scale,
+                    },
+                )
+                .is_some()
+                {
+                    wave.smoke_indices[wave.smoke_count] = cloud_index;
+                    wave.smoke_count += 1;
+                }
+            }
             // RigidBodyAffector bypasses IPhysicsCollider and calls
             // BlackHole.AddForce during every curve sample.
             for (hole_index, hole) in self.black_holes.iter().enumerate() {
@@ -16277,6 +16321,23 @@ impl RolloutWorld {
                 * strength
                 * Fix::from_int(60);
             shot.body.apply_impulse(impulse, Vec2::ZERO);
+        }
+        for target in 0..wave.smoke_count {
+            let cloud_index = wave.smoke_indices[target];
+            let Some(cloud) = self.smoke_clouds.get_mut(cloud_index) else {
+                continue;
+            };
+            if !cloud.active || !cloud.registered {
+                continue;
+            }
+            let direction = cloud.position - wave.position;
+            let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+            let impulse = direction.normalized_safe()
+                * (data.gust.default_force / distance)
+                * wave.scale
+                * strength
+                * Fix::from_int(60);
+            cloud.body.apply_impulse(impulse, Vec2::ZERO);
         }
         for target in 0..wave.black_hole_count {
             let hole_index = wave.black_hole_indices[target];
@@ -20872,6 +20933,7 @@ impl RolloutWorld {
                 position: source.position
                     + direction * data.smoke.cloud_duplicate_spacing * source.scale,
                 rotation: source.rotation,
+                body: source.body,
                 scale: source.scale,
                 owner: source.owner,
                 ability_slot: source.ability_slot,
@@ -25379,6 +25441,7 @@ impl RolloutWorld {
                 hierarchy_base,
                 position: item.position + offset,
                 rotation,
+                body: data.smoke.cloud_body,
                 scale: item.scale,
                 owner: item.owner,
                 ability_slot,
@@ -32815,6 +32878,32 @@ mod tests {
         assert_eq!(world.time_stop_effects.len(), 3);
         assert!(world.time_stop_effects[1].active);
         assert_eq!(world.time_stop_effects[2].caster, 1);
+    }
+
+    #[test]
+    fn gust_retains_and_pushes_smoke_cloud_bodies() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        world.smoke_clouds.push(SmokeCloud {
+            active: true,
+            registered: true,
+            position: center + Vec2::RIGHT,
+            body: data::get().smoke.cloud_body,
+            scale: Fix::ONE,
+            ..SmokeCloud::default()
+        });
+        world.gust_waves[0] = GustWave {
+            active: true,
+            born_tick: world.tick.saturating_sub(1),
+            position: center,
+            ..GustWave::default()
+        };
+
+        world.gust_waves_init(data::get());
+
+        assert_eq!(world.gust_waves[0].smoke_count, 1);
+        assert!(world.smoke_clouds[0].body.velocity.x > Fix::ZERO);
     }
 
     #[test]

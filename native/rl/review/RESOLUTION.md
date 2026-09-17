@@ -23,6 +23,10 @@ fixed entry is committed separately with its finding id in the subject.
   during Time Stop. `Shockwave.UpdateSim` receives `simDeltaTime` directly and
   never calls `GameTime.FixedDeltaTime`; only the affected physics integration
   is frozen.
+- **#24 — fixed.** Gust now captures layer-22 Smoke circles in its fixed
+  target set and applies every curve impulse to the cloud's `BoplBody`.
+  Smoke clouds now retain and integrate that body state, so the impulse moves
+  the collider on subsequent physics passes exactly like the C# prefab.
 - **#23 — fixed for the confirmed forms.** Frozen airborne Gust and Time Stop
   forms now return before gravity, aerial steering, and velocity damping, as
   `QuickSpell` and `CastSpell` do. Other active forms retain their authored
