@@ -274,3 +274,7 @@ fixed entry is committed separately with its finding id in the subject.
   inactive vector slot. They append in creation order like Unity's newly
   instantiated updatables, so overlapping effects write time protection in
   hierarchy order and the newest surviving stop wins the final write.
+- **G10 — fixed.** A one-player session now terminates on that player's
+  elimination and marks the same player as the round winner. This mirrors the
+  C# debug-session branch, which calls `WinGame` for the sole player's team
+  after its alive count reaches zero.

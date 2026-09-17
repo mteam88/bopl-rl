@@ -29304,7 +29304,10 @@ impl RolloutWorld {
             }
         }
         let alive_teams = &alive_teams[..alive_count];
-        if self.players.len() > 1 && alive_teams.len() <= 1 {
+        if self.players.len() == 1 && self.players[0].out {
+            self.terminal = true;
+            self.players[0].won = true;
+        } else if self.players.len() > 1 && alive_teams.len() <= 1 {
             self.terminal = true;
             if alive_teams.len() == 1 {
                 let winner = alive_teams[0];
@@ -32660,6 +32663,21 @@ mod tests {
         world.session_result_tick();
         assert!(world.terminal);
         assert!(world.players[1].won);
+    }
+
+    #[test]
+    fn solo_session_ends_with_the_dead_player_as_winner() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.players = 1;
+        config.stocks = 0;
+        world.reset(&config).unwrap();
+
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, true, false);
+        world.session_result_tick();
+
+        assert!(world.terminal);
+        assert!(world.players[0].won);
     }
 
     #[test]
