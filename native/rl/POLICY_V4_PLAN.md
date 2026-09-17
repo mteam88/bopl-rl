@@ -436,11 +436,33 @@ games at |vy| > 0, 29% falling fast, 21% within 12 units of the water,
 against 21% / 9% of all decisions), a rescue and mobility use that the fan
 shapes' landing / edge features may make unnecessary.
 
+Second seed (2026-09-17, `v4-aim-s74`: bands 669/650/649, IQM 648, squish
+14.7% of kills on the scorer's checkpoints): the "fan suppresses platform
+play" reading above does not survive it. Platform activations per game over
+the last five evals (1085 games each, 217 per eval), with the squish share
+of kills: `v4-aim` s73 0.06 (0.03-0.10 per eval; 0.27/min), squish 6.6%;
+`v4-aim-s74` 0.19 (0.14-0.24; 0.70/min), squish 10.4% (6.9-16.0%, the
+16.0% is the last eval); `v4-full` 0.20 / 9.3%; `v4-full-s74` 0.14 / 7.3%;
+`v4-lite` 0.13 / 5.1%; `v4-no-rays` 0.29 / 10.9%; `v4-aim-only` 0.23
+(0.18-0.30; 1.17/min) / 14.4%. The same shape spans 0.06-0.19 activations
+and 6.6-10.4% squish across two seeds, which covers every shape's mean but
+`v4-aim-only`'s 14.4%: `v4-aim` s73 was the low draw, not the fan. What
+remains shape-attributable is small: the no-fan shapes (`no-rays`,
+`aim-only`) are at the top of the platform range and `aim-only` alone is
+above the two-seed squish band, one seed each; 19b/19c (`v4-aim-only`
+s74/s75) say whether that holds. Squish share follows platform use across
+runs (rank order the same), so it is one behaviour, not two.
+
 ### 7c. Queue after the aim runs (2026-09-17)
 
 Production shape = `v4-aim` (full + aim/LOS, rays on) unless `v4-aim-only`
 clearly beats it (IQM above `v4-aim`'s 697 + ~30, outside the v4 seed
-spread of ~27 measured by `v4-full` 703 / `v4-full-s74` 676). Rays cost no
+spread of ~27 measured by `v4-full` 703 / `v4-full-s74` 676). Revised
+2026-09-17 with `v4-aim-s74` at 648: the same-shape spread is ~50 (aim
+697/648, full 703/676), so single-seed differences below ~50 are noise, and
+`v4-aim-only`'s 759 is +62..+111 over the two aim seeds, still the only
+shape effect that clears the band; `19b`/`19c` (aim-only s74/s75) decide
+it. Rays cost no
 sps (`v4-no-rays`, bit 2, runs the same 163k), the evidence on them is flat
 not negative, and the more-maps run below is the test where the egocentric
 geometry channel is the point. Queue (gpu-queue/, lexical order): `13zz
@@ -525,7 +547,9 @@ x 2 games (was 2 x 4).
 
 Pre-registered claims (success criteria, written before the run):
 1. `v4-aim-maps` holds pool v7 within seed noise of `v4-aim`'s 697 (IQM3 at
-   or above 697 - 27): training on 23 maps costs nothing on the anchor.
+   or above 697 - 27; with the two-seed band now ~50, `v4-aim-s74`'s 648 is
+   the floor a same-shape seed has reached): training on 23 maps costs
+   nothing on the anchor.
 2. The held-out gap halves against the five-map runs: `v4-aim-maps`'s
    trained-minus-held-out scripted-bot gap on the eight held-out maps is at
    most half of `v4-aim`'s 10.4 points (and of `v4-full`'s 16.1) at 1.73B.
