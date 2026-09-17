@@ -17227,7 +17227,7 @@ impl RolloutWorld {
                 data.mine.air_exit_ticks
             };
             if self.players[index].throw_item.ticks > exit_ticks {
-                let grounded = self.players[index].throw_item.grounded;
+                let grounded = self.players[index].base.grounded;
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
                 if grounded {
@@ -17248,7 +17248,7 @@ impl RolloutWorld {
             }
         }
 
-        if self.players[index].throw_item.grounded {
+        if self.players[index].base.grounded {
             let before_player_physics = self.players[index].base.position;
             self.players[index]
                 .base
@@ -17304,7 +17304,7 @@ impl RolloutWorld {
         if self.players[index].throw_item.has_fired {
             return;
         }
-        let grounded = self.players[index].throw_item.grounded;
+        let grounded = self.players[index].base.grounded;
         let up = if grounded {
             self.players[index]
                 .base
@@ -17416,6 +17416,15 @@ impl RolloutWorld {
         // PlayerBody advance the live ability body later in this pass.
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+        if self.players[index].throw_item.grounded && !self.players[index].base.grounded {
+            let slot = &mut self.players[index];
+            slot.active = ActiveAbility::None;
+            slot.exit_to_fall();
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.collision_rays(terrain!(self));
+            return;
+        }
         if aim != Vec2::ZERO && !self.players[index].throw_item.has_inputted_fire {
             let slot = &mut self.players[index];
             slot.throw_item.direction = aim;
@@ -17518,7 +17527,7 @@ impl RolloutWorld {
                 return;
             }
         }
-        if self.players[index].throw_item.grounded {
+        if self.players[index].base.grounded {
             // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
             // attached to the authored surface. PlayerBody still integrates
             // external velocity afterward, which is observable when a moving
@@ -32930,6 +32939,43 @@ mod tests {
 
         assert!(world.thrown_items[0].active);
         assert!(world.grenade_explosions.is_empty());
+    }
+
+    #[test]
+    fn grounded_throw_exits_after_losing_ground() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active = ActiveAbility::Grenade;
+        world.players[0].throw_item.grounded = true;
+        world.players[0].base.grounded = false;
+        world.players[0].base.ground = None;
+
+        world.throw_item_tick(0, Action::default(), data::get());
+
+        assert!(world.players[0].active == ActiveAbility::None);
+        assert!(world.players[0].throw_item.item.is_none());
+    }
+
+    #[test]
+    fn airborne_mine_entry_uses_live_ground_on_landing_fire() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active = ActiveAbility::Mine;
+        world.players[0].throw_item.grounded = false;
+        world.players[0].throw_item.direction = Vec2::UP;
+
+        world.fire_mine(0, data::get());
+
+        let item = world.thrown_items[world.players[0].throw_item.item.unwrap()];
+        let ground = world.players[0].base.ground.unwrap();
+        let normal = world
+            .platforms
+            .iter()
+            .find(|platform| platform.id == ground)
+            .unwrap()
+            .surface
+            .normal(world.players[0].base.position);
+        assert_eq!(item.body.velocity, normal * data::get().mine.throw_strength);
     }
 
     #[test]

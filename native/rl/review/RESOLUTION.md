@@ -275,6 +275,12 @@ fixed entry is committed separately with its finding id in the subject.
   The Arrow prefab's `Projectile.IgnitesExplosives` is false, so C# never
   detonates Grenade or Smoke from that callback even if an active registered
   arrow survives until the later item-contact pass.
+- **S8 — fixed.** A ThrowItem2 form that entered grounded now exits before
+  processing release/fire when its live PlayerPhysics has lost the platform.
+  Mine's older ThrowItem form instead retains its animation path but now uses
+  live grounded state for movement, exit handoff, and `Fire`; an aerial entry
+  landing during anticipation therefore launches from the surface normal at
+  the grounded strength rather than using the stale aerial packet.
 
 ## Cross-cutting
 
