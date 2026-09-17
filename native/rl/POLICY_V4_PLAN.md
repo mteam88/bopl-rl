@@ -428,8 +428,9 @@ v4-aim-only` -> `19a v4-aim-s74`, `19b v4-aim-s75`, `19c v4-no-rays-s74`
 v4-no-relational`, `27 v4-critic-shared` (renumbered from 15/17 so the seeds
 sort first) -> `28 seeds-rest` (v3, was 20). Parked, not deleted:
 `sym-critic`, `rays16`, `maxpool` (single-seed ablations can only resolve
-effects above ~30 points). The more-maps run (7d) goes behind 19c once its
-gates pass.
+effects above ~30 points). The more-maps runs (7d) went in behind 19c once
+their gates passed: `19d v4-aim-maps`, `19e v4-no-rays-maps` (claim 3 is the
+point of keeping rays, so its control gets the slot).
 
 ### 7d. More maps: the 31-level catalogue (`native/data/map-set.json`)
 
@@ -448,7 +449,16 @@ levels chosen per platform-count stratum (4-6, 7-8, 9-10, 11-15), alternately
 over each stratum's width span so the set covers the spread. The cap is 31
 because `training_map_mask` and the per-map counters are 31 wide
 (`BOPL_COUNTER_MAPS`); widening them touches the trainer the live queue
-loads, so the second half of the 57 waits for a later round. Append only:
+loads, so the second half of the 57 waits for a later round. Round 2, before
+any further level is appended: widen `training_map_mask` (u32 -> u64, the
+`--training-maps` parser and the `bopl_world_ready` / `bopl_draw_config`
+loops), `BOPL_COUNTER_MAPS` / `map_fraction[31]` / `map_keys[31]` in
+binding.c and the counters' Python readers (native_metrics.py,
+metrics_store.py), and `evaluation_protocol.map_ids`'s 0-30 bound; then the
+remaining 26 portable grass levels join the catalogue. That build goes to a
+separately staged library path that new configs point at, not over the live
+queue's `.so` (the 2026-09-17 swap was accepted on identical 0-4 digests,
+not as precedent). Append only:
 RL indices are stable once a run has trained on them. The table with scene
 paths and roles is `native/data/map-set.json` (`map_set.py` for Python and
 shells); `rollout.json` for maps 0-4 is byte-identical to before.
