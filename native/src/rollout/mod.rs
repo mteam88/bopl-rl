@@ -33521,6 +33521,8 @@ mod tests {
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].facing_right = false;
         world.players[0].throw_item.grounded = false;
+        world.players[0].base.grounded = false;
+        world.players[0].base.ground = None;
 
         world.fire_mine(0, data::get());
 
