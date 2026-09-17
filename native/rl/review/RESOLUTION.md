@@ -256,3 +256,8 @@ fixed entry is committed separately with its finding id in the subject.
   ability-generation identity. Each non-duplicated burst evicts against the
   one 40-entry FIFO shared by that player's live Smoke ability instance,
   rather than a private ring keyed to the individual grenade cast.
+- **G6 — fixed.** A last-slot Grappling Hook or Web Swing now suppresses its
+  death pickup while C#'s rope-icon override is active: either the live rope
+  reports zero cooldown, or another player's box overlaps the authored rope
+  proximity circle. The launch-direction RNG sample is still consumed before
+  the failed icon lookup, preserving `DropAbilities` ordering exactly.
