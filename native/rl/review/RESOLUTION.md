@@ -57,6 +57,11 @@ fixed entry is committed separately with its finding id in the subject.
   keep the last overlapping rounded rectangle in DetPhysics registration
   order. Their prior iterator `find` selected the first; Duplicator already
   implemented the source's overwrite-on-each-overlap behavior correctly.
+- **#16 — fixed.** Generic-object ScaleChangers now retain scale by entity
+  identity and synchronize concurrent effects after every write. Sequential
+  hits therefore start from the victim's live `FixTransform.Scale`, while
+  simultaneous Growth/Shrink effects compose additively in updater order as
+  C# does instead of advancing independent accumulators from one.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

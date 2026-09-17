@@ -21101,6 +21101,20 @@ impl RolloutWorld {
                     .find(|node| node.active && !node.macho_carried && node.entity == Some(entity))
                     .map(|node| node.scale)
             })
+            .or_else(|| {
+                self.teleport_marker_pool
+                    .iter()
+                    .find(|marker| marker.active && marker.entity == Some(entity))
+                    .map(|marker| marker.scale)
+            })
+            .or_else(|| {
+                let id = self.entities[entity].id;
+                self.scale_changers
+                    .iter()
+                    .rev()
+                    .find(|state| state.target_kind == 5 && state.entity_id == id)
+                    .map(|state| state.current_scale)
+            })
             .unwrap_or(Fix::ONE);
         self.next_spawn_hierarchy += updatable_count;
         let effect = ScaleChangerState {
@@ -21113,7 +21127,12 @@ impl RolloutWorld {
             time: Fix::ZERO,
             growth,
         };
-        if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
+        // Retain one inactive record per generic entity so a later ray starts
+        // from that object's live FixTransform scale. Active same-entity
+        // effects remain separate and compose against the shared value.
+        if let Some(free) = self.scale_changers.iter().position(|state| {
+            !state.active && state.target_kind == 5 && state.entity_id == effect.entity_id
+        }) {
             self.scale_changers[free] = effect;
         } else {
             self.scale_changers.push(effect);
@@ -22068,7 +22087,14 @@ impl RolloutWorld {
                     }
                 }
                 self.scale_changers[index].time = time;
-                self.scale_changers[index].current_scale = scale;
+                // ScaleChanger writes victim.Scale directly. Every concurrent
+                // changer reads that same live property on its turn rather
+                // than advancing a private accumulator.
+                for changer in &mut self.scale_changers {
+                    if changer.target_kind == 5 && changer.entity_id == effect.entity_id {
+                        changer.current_scale = scale;
+                    }
+                }
                 continue;
             }
             if effect.target_kind == 1
@@ -31186,6 +31212,38 @@ mod tests {
             world.scale_changers.iter().any(|effect| {
                 effect.active && effect.target_kind == 2 && effect.victim == last
             })
+        );
+    }
+
+    #[test]
+    fn generic_scale_changers_share_live_entity_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let entity = world.entities.len();
+        let id = world.next_id();
+        world.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: 10,
+            flags: E_ACTIVE | E_ENABLED,
+            radius: Fix::ONE.raw(),
+            inverse_mass: (-Fix::ONE).raw(),
+            ..CEntity::default()
+        });
+
+        world.begin_scale_change_entity(entity, true, 1);
+        world.scale_changers[0].active = false;
+        world.scale_changers[0].current_scale = Fix::from_int(2);
+        world.begin_scale_change_entity(entity, true, 1);
+        assert_eq!(world.scale_changers[0].current_scale, Fix::from_int(2));
+
+        world.begin_scale_change_entity(entity, false, 1);
+        assert_eq!(world.scale_changers.len(), 2);
+        world.tick += 1;
+        world.scale_changers_tick(data::get());
+        assert_eq!(
+            world.scale_changers[0].current_scale,
+            world.scale_changers[1].current_scale
         );
     }
 
