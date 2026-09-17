@@ -4426,6 +4426,18 @@ impl RolloutWorld {
                     }
                     continue;
                 }
+                if matches!(
+                    self.players[index].active,
+                    ActiveAbility::Gust | ActiveAbility::TimeStop
+                ) && !self.players[index].base.grounded
+                {
+                    // QuickSpell/CastSpell return at their airborne
+                    // time-stop gate before gravity, aerial movement, or
+                    // external-velocity damping.
+                    self.players[index].reported_position = self.players[index].base.position;
+                    self.players[index].reported_tick = self.tick;
+                    continue;
+                }
                 // PlayerPhysics and SlimeController still run. Their motion
                 // helpers apply unscaled gravity and air damping, but every
                 // position/raycast delta receives GameTime.FixedDeltaTime=0.
@@ -30976,6 +30988,23 @@ mod tests {
         world.time_stop_cast_tick(0, Action::default(), data::get());
 
         assert!(world.players[0].active == ActiveAbility::None);
+    }
+
+    #[test]
+    fn frozen_airborne_quick_spell_does_not_gain_gravity() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active = ActiveAbility::Gust;
+        world.players[0].base.grounded = false;
+        world.players[0].base.velocity = Vec2::ZERO;
+        world.players[0].base.external_velocity = Vec2::ZERO;
+        world.player_time_scale = Fix::ZERO;
+        let actions = [CAction::default(); MAX_PLAYERS];
+
+        world.step(&actions[..world.players.len()], 1).unwrap();
+
+        assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
+        assert_eq!(world.players[0].base.external_velocity, Vec2::ZERO);
     }
 
     #[test]

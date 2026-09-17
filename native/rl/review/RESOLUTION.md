@@ -23,6 +23,10 @@ fixed entry is committed separately with its finding id in the subject.
   during Time Stop. `Shockwave.UpdateSim` receives `simDeltaTime` directly and
   never calls `GameTime.FixedDeltaTime`; only the affected physics integration
   is frozen.
+- **#23 — fixed for the confirmed forms.** Frozen airborne Gust and Time Stop
+  forms now return before gravity, aerial steering, and velocity damping, as
+  `QuickSpell` and `CastSpell` do. Other active forms retain their authored
+  per-component frozen behavior rather than applying this exception globally.
 
 ## Cross-cutting
 
