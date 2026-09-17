@@ -24020,19 +24020,19 @@ impl RolloutWorld {
                 engine.platform_index -= 1;
             }
         }
-        for node in &mut self.tesla_nodes {
-            if !node.active || node.macho_carried {
-                continue;
+        for node_index in 0..self.tesla_nodes.len() {
+            if self.tesla_nodes[node_index].active
+                && !self.tesla_nodes[node_index].macho_carried
+                && self.tesla_nodes[node_index].platform_index == index
+            {
+                // Spark nodes are Unity children of their planted platform.
+                // Destroying the parent invokes each node's OnDestroyUpdatable,
+                // including the partner/lightning disconnect cascade.
+                self.remove_tesla_node(node_index);
             }
-            if node.platform_index == index {
-                node.active = false;
-                if let Some(entity) = node.entity {
-                    self.entities[entity].flags = E_REMOVED;
-                }
-                if let Some(entity) = node.line_entity {
-                    self.entities[entity].flags = E_REMOVED;
-                }
-            } else if node.platform_index > index {
+        }
+        for node in &mut self.tesla_nodes {
+            if node.active && !node.macho_carried && node.platform_index > index {
                 node.platform_index -= 1;
             }
         }
@@ -32461,6 +32461,36 @@ mod tests {
             .find(|effect| effect.active)
             .unwrap();
         assert_eq!(effect.source, 0);
+    }
+
+    #[test]
+    fn platform_removal_runs_tesla_partner_disconnect() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.tesla_nodes.push(SpawnedTeslaNode {
+            active: true,
+            connected: true,
+            lethal: true,
+            child: Some(1),
+            platform_index: 0,
+            ..SpawnedTeslaNode::default()
+        });
+        world.tesla_nodes.push(SpawnedTeslaNode {
+            active: true,
+            connected: true,
+            lethal: true,
+            parent: Some(0),
+            platform_index: 1,
+            ..SpawnedTeslaNode::default()
+        });
+
+        world.remove_platform(0);
+
+        assert!(!world.tesla_nodes[0].active);
+        assert!(!world.tesla_nodes[1].connected);
+        assert!(!world.tesla_nodes[1].lethal);
+        assert_eq!(world.tesla_nodes[1].parent, None);
+        assert_eq!(world.tesla_nodes[1].platform_index, 0);
     }
 
     #[test]

@@ -77,6 +77,11 @@ fixed entry is committed separately with its finding id in the subject.
   circle in DetPhysics registration order (the source's `scanForSmokeBuffer[0]`)
   instead of the first active slot in Rust's reusable smoke pool. Reusing an
   earlier pool slot can no longer make a newer cloud win the overlap.
+- **S15 — fixed.** Removing a platform now destroys each attached Tesla node
+  through the same disconnect path as `SimpleSparkNode.OnDestroyUpdatable`.
+  Partner nodes on surviving platforms lose their parent/child link and
+  lethality, and their lightning is retired, instead of retaining a stale
+  live connection to an inactive node slot.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
