@@ -315,6 +315,12 @@ fixed entry is committed separately with its finding id in the subject.
   fix is an actor collection keyed to one player record, with per-actor body,
   form, collider, and revival state; scheduler and collision dispatch must
   then iterate those actors in spawn hierarchy order.
+- **#39 — deferred with #36.** C# enforces `MaxClones + 1` against all live
+  controllers belonging to the Player, including the multiple full actors
+  produced by Revival. Rust's current one main actor plus abilityless-clone
+  pool gives the same cap only while #36 is absent; a faithful count requires
+  the shared player-to-actors collection described there and must gate clone
+  creation before selecting a spawn position.
 
 ## Projectiles
 
