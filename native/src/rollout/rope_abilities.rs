@@ -913,6 +913,7 @@ impl RolloutWorld {
     }
 
     pub(super) fn ropes_physics(&mut self, physics_dt: Fix) {
+        let space = data::get().maps[self.map].is_space();
         self.rope_rectangles.clear();
         self.rope_rectangles
             .extend(self.platforms.iter().map(|platform| platform.collider));
@@ -942,7 +943,7 @@ impl RolloutWorld {
                 RopeConfig {
                     dt: physics_dt,
                     gravity: ROPE_GRAVITY,
-                    space: false,
+                    space,
                     iterations: ROPE_ITERATIONS,
                     stretchiness: PLATFORM_STRETCHINESS,
                 },

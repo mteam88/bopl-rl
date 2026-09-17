@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract the data the Rust rollout backend needs from native/reference-export.
 
-Sources: map-{0..4}.json scene graphs and assets.json prefab/asset entries of the
+Sources: maps.json, all map scene graphs, and assets.json prefab/asset entries of the
 reconstructed game (reference 67484d0). Values are Q32.32 raw integers exactly as
 serialized; nothing here is invented. Output: native/data/rollout.json.
 
@@ -32,6 +32,7 @@ def load(name):
 
 
 ASSETS = load("assets.json")
+MAPS = load("maps.json")
 
 
 def find_prefab(path):
@@ -119,6 +120,8 @@ def physics_body(props):
         "gravity_scale": fix(props, "gravityScale"),
         "air_drag": fix(props, "airFriction01"),
         "rotational_drag": fix(props, "rotationalDrag01"),
+        "start_velocity": vec2(props, "StartVelocity"),
+        "start_angular_velocity": fix(props, "StartAngularVelocity"),
     }
 
 
@@ -150,13 +153,18 @@ def guid_of(ref):
     return m.group(1) if m else None
 
 
-def extract_map(index):
-    scene = load(f"map-{index}.json")
+def extract_map(metadata):
+    index = metadata["level"]
+    if metadata["file"] != f"map-{index}.json":
+        raise ValueError(f"map catalog level/file mismatch: {metadata}")
+    scene = load(metadata["file"])
     platforms = []
     water = None
     session = None
-    spawner = None
+    spawners = []
+    scene_components = set()
     for node in walk(scene):
+        scene_components.update(c["type"] for c in node.get("components", []))
         srr = node_component(node, "StickyRoundedRectangle")
         if srr is not None:
             ft = node_component(node, "FixTransform")
@@ -164,14 +172,19 @@ def extract_map(index):
             av = node_component(node, "AnimateVelocity")
             body = node_component(node, "BoplBody")
             anti = node_component(node, "AntiLockPlatform")
+            grow = node_component(node, "GrowOnStart")
+            vector_field = node_component(node, "VectorFieldPlatform")
             entry = {
                 "name": node.get("name"),
+                "intro_order": len(platforms),
                 "position": vec2(ft, "_position"),
                 "rotation": fix(ft, "_rotation"),
                 "scale": ft.get("_scale.m_rawValue", ONE),
                 "extents": vec2(rr, "startExtents"),
                 "radius": fix(rr, "startRadius") if "startRadius.m_rawValue" in rr else fix(rr, "radius"),
                 "min_scale": fix(rr, "MinScale"),
+                "platform_type": srr["platformType"],
+                "grow_scale": fix(grow, "scaleUp") if grow is not None else ONE,
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
                 "updatable_count": sum(
@@ -192,6 +205,7 @@ def extract_map(index):
                     "mu": fix(av, "mu"),
                     "rotation_speed": fix(av, "rotationSpeed"),
                     "rotation_mu": fix(av, "rotationMu"),
+                    "interpolate_rotation_home": av["interpolateRotationHome"],
                     "sudden_death_speed": fix(av, "suddenDeathSpeed"),
                     "sudden_death_max_delay": fix(av, "MaxRandomSuddenDeathDelay"),
                     "sudden_death_acceleration": fix(av, "SuddenDeathAcceleration"),
@@ -210,6 +224,18 @@ def extract_map(index):
                     "air_drag": fix(body, "airFriction01"),
                     "path": [vec2(anti, f"OrbitPath.Array.data[{i}]") for i in range(n)],
                 }
+            if vector_field is not None:
+                entry["vector_field"] = {
+                    "delay": fix(vector_field, "DelaySeconds"),
+                    "orbit_speed": fix(vector_field, "orbitSpeed"),
+                    "expand_speed": fix(vector_field, "expandSpeed"),
+                    "center": vec2(vector_field, "centerPoint"),
+                    "normal_speed_friction": fix(vector_field, "normalSpeedFriction"),
+                    "dead_zone_dist_squared": fix(vector_field, "DeadZoneDist"),
+                    "orbit_acceleration_multiplier": fix(vector_field, "OrbitAccelerationMulitplier"),
+                    "target_radius": fix(vector_field, "targetRadius"),
+                    "ovalness": fix(vector_field, "ovalness01"),
+                }
             platforms.append(entry)
         if node.get("name") == "WaterHitBox":
             ft = node_component(node, "FixTransform")
@@ -218,6 +244,7 @@ def extract_map(index):
                 "position": vec2(ft, "_position"),
                 "extents": vec2(box, "startExtents"),
                 "layer": node.get("layer"),
+                "hierarchy": box["hierarchyNumber"],
             }
         g = node_component(node, "GameSessionHandler")
         if g is not None:
@@ -227,21 +254,46 @@ def extract_map(index):
                 "teammate_spacing": fix(g, "teammateSpawnSpacing"),
                 "level_type": g.get("levelType"),
                 "time_before_sudden_death": fix(g, "TimeBeforeSuddenDeath"),
+                "level_animation_radius": fix(g, "levelAnimationRadius"),
+                "max_random_delay": fix(g, "MaxRandomDelay"),
+                "level_animation_time": fix(g, "LevelAnimationTime"),
+                "start_animation_progress": fix(g, "startProgressOfAnimateInGrounds"),
+                "animate_in": curve(g, "AnimateInOut"),
             }
         sp = node_component(node, "AbilitySpawner")
         if sp is not None:
             ft = node_component(node, "FixTransform")
-            spawner = {
+            spawners.append({
                 "position": vec2(ft, "_position"),
                 "hierarchy": sp["hierarchyNumber"],
-            }
-    return {"platforms": platforms, "water": water, "session": session, "ability_spawner": spawner}
+            })
+    if session is None or not spawners:
+        raise ValueError(f"map {index} is missing its session or ability spawner")
+    if session["level_type"] != 2 and water is None:
+        raise ValueError(f"non-space map {index} is missing WaterHitBox")
+    # Updater/DetPhysics registration is serialized hierarchy order, not YAML
+    # transform traversal order. Most scenes happen to share both orders, but
+    # nested 2v2 scene roots do not.
+    platforms.sort(key=lambda platform: platform["hierarchy"])
+    spawners.sort(key=lambda spawner: spawner["hierarchy"])
+    return {
+        "level": index,
+        "scene": metadata["scene"],
+        "path": metadata["path"],
+        "platforms": platforms,
+        "water": water,
+        "session": session,
+        "ability_spawners": spawners,
+        "components": sorted(scene_components),
+    }
 
 
 def main():
     out = {"reference": load("manifest.json")["reference"], "maps": [], "prefabs": {}}
-    for i in range(5):
-        out["maps"].append(extract_map(i))
+    for expected, metadata in enumerate(MAPS):
+        if metadata["level"] != expected:
+            raise ValueError(f"map catalog is not dense at {expected}: {metadata}")
+        out["maps"].append(extract_map(metadata))
 
     # ---- Player (slime) ----
     _, player = find_prefab("Assets/GameObject/Player.prefab")
@@ -402,6 +454,7 @@ def main():
             "mu": fix(rp_av, "mu"),
             "rotation_speed": fix(rp_av, "rotationSpeed"),
             "rotation_mu": fix(rp_av, "rotationMu"),
+            "interpolate_rotation_home": rp_av["interpolateRotationHome"],
             "sudden_death_speed": fix(rp_av, "suddenDeathSpeed"),
             "sudden_death_max_delay": fix(rp_av, "MaxRandomSuddenDeathDelay"),
             "sudden_death_acceleration": fix(rp_av, "SuddenDeathAcceleration"),
@@ -1985,6 +2038,44 @@ def main():
     with open(target, "w") as fh:
         json.dump(out, fh, indent=1)
     print(f"wrote {target}")
+
+    def coverage_notes(map_data):
+        notes = ["Authored geometry, intro animation, bodies, spawns, and ability spawners are ported."]
+        components = set(map_data["components"])
+        if "GrowOnStart" in components:
+            notes.append("GrowOnStart scale, collider history, mass, and inertia are ported.")
+        if "VectorFieldPlatform" in components:
+            notes.append("VectorFieldPlatform orbital motion is ported and map-gated.")
+        if "AntiLockPlatform" in components:
+            notes.append("AntiLockPlatform waypoint motion is ported and map-gated.")
+        if map_data["session"]["level_type"] == 2:
+            notes.append("Space gravity, bounds, dash, and rope behavior are ported; this scene has no water collider.")
+        if len(map_data["ability_spawners"]) > 1:
+            notes.append("Both authored ability spawners are preserved in hierarchy order.")
+        if "KeepInCameraCorner" in components:
+            notes.append("KeepInCameraCorner is camera-only.")
+        notes.append("WaterWaves and SceneBoundArrowController are render/HUD-only.")
+        return " ".join(notes)
+
+    coverage = {
+        "reference": out["reference"],
+        "maps": [
+            {
+                "level": m["level"],
+                "scene": m["scene"],
+                "folder": str(Path(m["path"]).parent).removeprefix("Assets/Scenes/"),
+                "components": m["components"],
+                "status": "ported",
+                "notes": coverage_notes(m),
+            }
+            for m in out["maps"]
+        ],
+    }
+    coverage_target = ROOT / "data" / "map-coverage.json"
+    with open(coverage_target, "w") as fh:
+        json.dump(coverage, fh, indent=2)
+        fh.write("\n")
+    print(f"wrote {coverage_target}")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ struct RawAnimateVelocity {
     mu: i64,
     rotation_speed: i64,
     rotation_mu: i64,
+    interpolate_rotation_home: bool,
     sudden_death_speed: i64,
     sudden_death_max_delay: i64,
     sudden_death_acceleration: i64,
@@ -36,6 +37,8 @@ struct RawBody {
     gravity_scale: i64,
     air_drag: i64,
     rotational_drag: i64,
+    start_velocity: RawVec2,
+    start_angular_velocity: i64,
 }
 #[derive(Deserialize)]
 struct RawOrbit {
@@ -47,36 +50,59 @@ struct RawOrbit {
 }
 #[derive(Deserialize)]
 struct RawPlatform {
+    intro_order: usize,
     position: RawVec2,
     rotation: i64,
     scale: i64,
     extents: RawVec2,
     radius: i64,
     min_scale: i64,
+    platform_type: u32,
+    grow_scale: i64,
     hierarchy: u32,
     updatable_count: u32,
     duplicate_collider_hierarchy: u32,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
     orbit: Option<RawOrbit>,
+    vector_field: Option<RawVectorField>,
+}
+#[derive(Deserialize)]
+struct RawVectorField {
+    delay: i64,
+    orbit_speed: i64,
+    expand_speed: i64,
+    center: RawVec2,
+    normal_speed_friction: i64,
+    dead_zone_dist_squared: i64,
+    orbit_acceleration_multiplier: i64,
+    target_radius: i64,
+    ovalness: i64,
 }
 #[derive(Deserialize)]
 struct RawWater {
     position: RawVec2,
     extents: RawVec2,
+    hierarchy: u32,
 }
 #[derive(Deserialize)]
 struct RawSession {
     team_spawns: Vec<RawVec2>,
     teammate_spacing: i64,
     time_before_sudden_death: i64,
+    level_type: u32,
+    level_animation_radius: i64,
+    max_random_delay: i64,
+    level_animation_time: i64,
+    start_animation_progress: i64,
+    animate_in: Curve,
 }
 #[derive(Deserialize)]
 struct RawMap {
     platforms: Vec<RawPlatform>,
-    water: RawWater,
+    water: Option<RawWater>,
     session: RawSession,
-    ability_spawner: RawAbilitySpawner,
+    ability_spawners: Vec<RawAbilitySpawner>,
 }
 #[derive(Deserialize)]
 struct RawAbilitySpawner {
@@ -1227,20 +1253,27 @@ struct RawAbility {
 
 /// A platform's authored geometry plus the behaviours that move it.
 pub struct PlatformDef {
+    pub intro_order: usize,
     pub surface: Surface,
     /// The collider's authored half-extents (`startExtents * scale`); the
     /// surface carries the perimeter's `One / (One / e)` reading instead.
-    pub collider_extents: Vec2,
+    /// DPhysicsRoundedRect's stored inverse extents. GrowOnStart updates this
+    /// incrementally (`inverseExtents /= ratio`), which is observably different
+    /// from recomputing `One / finalExtents` before the first contact.
+    pub collider_inverse_extents: Vec2,
     pub hierarchy: u32,
     pub updatable_count: u32,
     pub duplicate_collider_hierarchy: u32,
     pub min_scale: Fix,
+    pub base_scale: Fix,
+    pub ice: bool,
     /// AnimateVelocity home spring (speed * (home - position)) and damping
     /// (-mu * velocity).
     pub speed: Fix,
     pub mu: Fix,
     pub rotation_speed: Fix,
     pub rotation_mu: Fix,
+    pub interpolate_rotation_home: bool,
     pub body: crate::physics::Body,
     /// Sudden death sinking (AnimateVelocity.ActivateSuddenDeath).
     pub sudden_death_speed: Fix,
@@ -1249,6 +1282,7 @@ pub struct PlatformDef {
     pub sudden_death_y_speed: Curve,
     /// Map 2's AntiLockPlatform orbit (force toward waypoints after a delay).
     pub orbit: Option<OrbitDef>,
+    pub vector_field: Option<VectorFieldDef>,
 }
 pub struct OrbitDef {
     pub force: Fix,
@@ -1258,16 +1292,55 @@ pub struct OrbitDef {
     pub air_drag: Fix,
     pub path: Vec<Vec2>,
 }
+pub struct VectorFieldDef {
+    pub delay: Fix,
+    pub orbit_speed: Fix,
+    pub expand_speed: Fix,
+    pub center: Vec2,
+    pub normal_speed_friction: Fix,
+    pub dead_zone_dist_squared: Fix,
+    pub orbit_acceleration_multiplier: Fix,
+    pub target_radius: Fix,
+    /// Serialized but unused by the shipped VectorFieldPlatform implementation.
+    pub ovalness: Fix,
+}
+pub struct AbilitySpawnerDef {
+    pub position: Vec2,
+    pub hierarchy: u32,
+}
 pub struct MapDef {
     pub platforms: Vec<PlatformDef>,
-    pub water_position: Vec2,
-    pub water_extents: Vec2,
+    pub water: Option<(Vec2, Vec2, u32)>,
+    pub level_type: u32,
     pub team_spawns: Vec<Vec2>,
     pub teammate_spacing: Fix,
     pub respawn_points: [Vec2; 3],
     pub sudden_death_time: Fix,
-    pub ability_spawner_position: Vec2,
-    pub ability_spawner_hierarchy: u32,
+    pub ability_spawners: Vec<AbilitySpawnerDef>,
+    pub level_animation_radius: Fix,
+    pub max_random_delay: Fix,
+    pub level_animation_time: Fix,
+    pub start_animation_progress: Fix,
+    pub animate_in: Curve,
+}
+impl MapDef {
+    pub fn is_space(&self) -> bool {
+        self.level_type == 2
+    }
+
+    pub fn water_height(&self) -> Option<Fix> {
+        self.water
+            .map(|(position, extents, _)| position.y + extents.y)
+    }
+
+    pub fn lower_boundary(&self) -> Fix {
+        if self.is_space() {
+            Fix::from_int(-50)
+        } else {
+            // SceneBounds.WaterHeight, distinct from Constants.WATER_HEIGHT.
+            Fix::from_f32(-11.3)
+        }
+    }
 }
 pub struct MovementData {
     pub constants: crate::world::MovementConstants,
@@ -2299,6 +2372,8 @@ fn body(raw: &RawBody, orientation: Fix) -> crate::physics::Body {
         gravity_scale: Fix::from_raw(raw.gravity_scale),
         air_drag: Fix::from_raw(raw.air_drag),
         rotational_drag: Fix::from_raw(raw.rotational_drag),
+        velocity: raw.start_velocity.get(),
+        angular_velocity: Fix::from_raw(raw.start_angular_velocity),
         ..crate::physics::Body::default()
     }
 }
@@ -2326,32 +2401,59 @@ fn map_def(raw: &RawMap) -> MapDef {
             // rad. The interpolated `Sin`/`Cos` gave the exact angle instead.
             let right = Vec2::angle(rotation);
             let up = right.perp();
-            let scale = Fix::from_raw(p.scale);
+            let authored_scale = Fix::from_raw(p.scale);
+            let grow_scale = Fix::from_raw(p.grow_scale);
+            let base_scale = authored_scale * grow_scale;
             // StickyRoundedRectangle.UpdateBounds (StickyRoundedRectangle.cs:104,
             // rerun after the level animates in, GameSessionHandler.cs:769)
             // reads its perimeter extents back from the collider as
             // `One / inverseExtents` (DPhysicsRoundedRect.CalcExtents:355-358)
             // where the collider stored `One / startExtents`; the round trip
             // moves non-power-of-two extents by a few raw units in Q32.32.
-            let collider_extents = p.extents.get() * scale;
+            let authored_extents = p.extents.get() * authored_scale;
+            let mut collider_inverse_extents =
+                Vec2::new(Fix::ONE / authored_extents.x, Fix::ONE / authored_extents.y);
+            if grow_scale != Fix::ONE && grow_scale != Fix::ZERO {
+                collider_inverse_extents = collider_inverse_extents / grow_scale;
+            }
+            let collider_extents = Vec2::new(
+                Fix::ONE / collider_inverse_extents.x,
+                Fix::ONE / collider_inverse_extents.y,
+            );
+            let mut platform_body = body(&p.body, rotation);
+            // GrowOnStart.Init writes the FixTransform scale before the first
+            // BoplBody updater pass. Non-resizable bodies then multiply both
+            // inverse mass and inverse inertia by prevScale / scaleUp
+            // (BoplBody.cs:332-343). The authored platform scale has already
+            // been consumed by scene construction; only GrowOnStart is a
+            // runtime scale mutation and therefore changes these body terms.
+            if grow_scale != Fix::ONE && grow_scale != Fix::ZERO {
+                let ratio = Fix::ONE / grow_scale;
+                platform_body.inverse_mass *= ratio;
+                platform_body.inverse_inertia *= ratio;
+            }
             PlatformDef {
+                intro_order: p.intro_order,
                 surface: Surface {
                     center: p.position.get(),
                     right,
                     up,
-                    extents: surface_extents(collider_extents),
-                    radius: Fix::from_raw(p.radius) * scale,
+                    extents: collider_extents,
+                    radius: Fix::from_raw(p.radius) * base_scale,
                 },
-                collider_extents,
+                collider_inverse_extents,
                 hierarchy: p.hierarchy,
                 updatable_count: p.updatable_count,
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
                 min_scale: Fix::from_raw(p.min_scale),
+                base_scale,
+                ice: p.platform_type == 2,
                 speed: Fix::from_raw(p.animate_velocity.speed),
                 mu: Fix::from_raw(p.animate_velocity.mu),
                 rotation_speed: Fix::from_raw(p.animate_velocity.rotation_speed),
                 rotation_mu: Fix::from_raw(p.animate_velocity.rotation_mu),
-                body: body(&p.body, rotation),
+                interpolate_rotation_home: p.animate_velocity.interpolate_rotation_home,
+                body: platform_body,
                 sudden_death_speed: Fix::from_raw(p.animate_velocity.sudden_death_speed),
                 sudden_death_max_delay: Fix::from_raw(p.animate_velocity.sudden_death_max_delay),
                 sudden_death_acceleration: Fix::from_raw(
@@ -2364,6 +2466,17 @@ fn map_def(raw: &RawMap) -> MapDef {
                     mass: Fix::from_raw(o.mass),
                     air_drag: Fix::from_raw(o.air_drag),
                     path: o.path.iter().map(RawVec2::get).collect(),
+                }),
+                vector_field: p.vector_field.as_ref().map(|v| VectorFieldDef {
+                    delay: Fix::from_raw(v.delay),
+                    orbit_speed: Fix::from_raw(v.orbit_speed),
+                    expand_speed: Fix::from_raw(v.expand_speed),
+                    center: v.center.get(),
+                    normal_speed_friction: Fix::from_raw(v.normal_speed_friction),
+                    dead_zone_dist_squared: Fix::from_raw(v.dead_zone_dist_squared),
+                    orbit_acceleration_multiplier: Fix::from_raw(v.orbit_acceleration_multiplier),
+                    target_radius: Fix::from_raw(v.target_radius),
+                    ovalness: Fix::from_raw(v.ovalness),
                 }),
             }
         })
@@ -2393,14 +2506,28 @@ fn map_def(raw: &RawMap) -> MapDef {
     ];
     MapDef {
         platforms,
-        water_position: raw.water.position.get(),
-        water_extents: raw.water.extents.get(),
+        water: raw
+            .water
+            .as_ref()
+            .map(|water| (water.position.get(), water.extents.get(), water.hierarchy)),
+        level_type: raw.session.level_type,
         team_spawns,
         teammate_spacing: Fix::from_raw(raw.session.teammate_spacing),
         respawn_points,
         sudden_death_time: Fix::from_raw(raw.session.time_before_sudden_death),
-        ability_spawner_position: raw.ability_spawner.position.get(),
-        ability_spawner_hierarchy: raw.ability_spawner.hierarchy,
+        ability_spawners: raw
+            .ability_spawners
+            .iter()
+            .map(|spawner| AbilitySpawnerDef {
+                position: spawner.position.get(),
+                hierarchy: spawner.hierarchy,
+            })
+            .collect(),
+        level_animation_radius: Fix::from_raw(raw.session.level_animation_radius),
+        max_random_delay: Fix::from_raw(raw.session.max_random_delay),
+        level_animation_time: Fix::from_raw(raw.session.level_animation_time),
+        start_animation_progress: Fix::from_raw(raw.session.start_animation_progress),
+        animate_in: raw.session.animate_in.clone(),
     }
 }
 
@@ -2499,6 +2626,8 @@ pub fn get() -> &'static RolloutData {
                             gravity_scale: b.gravity_scale,
                             air_drag: b.air_drag,
                             rotational_drag: b.rotational_drag,
+                            start_velocity: RawVec2 { x: 0, y: 0 },
+                            start_angular_velocity: 0,
                         },
                         Fix::ZERO,
                     )

@@ -57,6 +57,9 @@ pub struct Player {
     pub velocity: Vec2,
     pub external_velocity: Vec2,
     pub radius: Fix,
+    /// LevelType.space changes gravity and the lower blast boundary.
+    #[serde(default, skip_serializing)]
+    pub space: bool,
     /// FixTransform/DPhysics collider scale. Player.Scale lives above the
     /// body and can lead this value by one updater phase.
     #[serde(skip, default = "default_scale")]
@@ -685,7 +688,7 @@ impl Player {
                 self.constants.gravity_accel,
                 self.constants.gravity_modifier,
                 self.constants.gravity_max_fall_speed,
-                false,
+                self.space,
             )
             .expect("valid movement gravity constants");
             self.collision_rays(terrain);
@@ -770,7 +773,12 @@ impl Player {
         }
     }
     pub(crate) fn outside_bounds(&self) -> bool {
-        self.position.y < Fix::from_f32(-11.3)
+        self.position.y
+            < if self.space {
+                Fix::from_int(-50)
+            } else {
+                Fix::from_f32(-11.3)
+            }
             || self.position.y > Fix::from_f64(72.5)
             || self.position.x < Fix::from_f64(-131.25)
             || self.position.x > Fix::from_f64(131.25)

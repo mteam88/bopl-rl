@@ -112,7 +112,7 @@ impl Player {
                 } else {
                     let mut position = self.position + self.dash.input * Fix::from_int(13);
                     let water = Fix::from_f32(-11.3);
-                    if position.y < water {
+                    if !self.space && position.y < water {
                         let distance = (water - self.position.y) / self.dash.input.y;
                         position.y = water;
                         position.x = self.position.x + self.dash.input.x * distance;
@@ -127,7 +127,12 @@ impl Player {
                 self.rotation = Fix::ZERO;
                 self.up = Vec2::UP;
                 self.local = self.dash.saved_local;
-                self.velocity = self.dash.input * Fix::from_int(60);
+                self.velocity = self.dash.input
+                    * if self.space {
+                        Fix::from_int(30)
+                    } else {
+                        Fix::from_int(60)
+                    };
                 self.external_velocity = Vec2::ZERO;
                 // SlimeController.onExitAbility immediately runs the returned
                 // slime's velocity rays with Dash's leave velocity. Keep this

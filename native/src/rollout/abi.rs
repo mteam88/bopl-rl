@@ -337,7 +337,7 @@ pub extern "C" fn bopl_rl_catalog_hash(_world: *const Handle) -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bopl_rl_map_count(_world: *const Handle) -> u32 {
-    super::MAP_COUNT
+    super::data::get().maps.len() as u32
 }
 
 #[unsafe(no_mangle)]

@@ -32,7 +32,6 @@ pub mod data;
 mod rope_abilities;
 
 pub const ABI_VERSION: u32 = 3;
-pub const MAP_COUNT: u32 = 5;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
 pub const ABILITY_COUNT: u32 = 39;
 pub const MAX_PLAYERS: usize = 6;
@@ -1159,6 +1158,9 @@ pub struct PlatformDynamics {
     /// inertia on the updater pass after DPhysics changes FixTransform scale.
     pub body_scale: Fix,
     pub body_resizable: bool,
+    /// GameSessionHandler keeps authored grounds active but disables their
+    /// colliders/AnimateVelocity until the shared level-intro routine ends.
+    pub intro_disabled: bool,
     pub min_scale: Fix,
     /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
     /// the pass after a later MachoThrow2 scale write.
@@ -1190,6 +1192,7 @@ pub struct PlatformDynamics {
     pub mu: Fix,
     pub rotation_speed: Fix,
     pub rotation_mu: Fix,
+    pub interpolate_rotation_home: bool,
     /// ShakablePlatform's transform-space displacement. Meteor writes the
     /// request after this map updater has run, so the first sample is taken
     /// on the following pass.
@@ -2305,14 +2308,25 @@ pub struct RolloutWorld {
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
     pub ability_spawner_enabled: bool,
-    pub ability_spawner_time: Fix,
-    pub ability_spawner_spawns: u8,
+    /// Per-authored-spawner `(time, spawn_count)` state, in updater order.
+    pub ability_spawner_state: Vec<(Fix, u8)>,
     /// Abilities which can still own an updater in this episode. Bits are
     /// retained after a pickup replaces a loadout slot because already-fired
     /// projectiles and effects remain in Unity's updater list.
     active_subsystems: u64,
-    /// AntiLockPlatform runtime (map 2): platform index and waypoint.
+    /// AntiLockPlatform runtime: platform index and current waypoint.
     pub orbits: Vec<(usize, usize)>,
+    /// Authored VectorFieldPlatform indices. Empty on maps without the component.
+    pub vector_fields: Vec<usize>,
+    /// GameSessionHandler level-intro routine state. Phase 0 is its 0.1 s
+    /// delay, phase 1 animates, phase 2 is the queued enable callback, and 3
+    /// is complete. These vectors are empty-cost after reset and only affect
+    /// the warmup path.
+    pub intro_random_delays: Vec<Fix>,
+    pub intro_phase: u8,
+    pub intro_progress: Fix,
+    pub intro_delay_elapsed: Fix,
+    pub intro_contacts_pending: bool,
     pub next_platform_id: u32,
     pub next_entity_id: u32,
     /// Base hierarchy for the next prefab instantiated after player spawn.
@@ -2442,10 +2456,15 @@ impl RolloutWorld {
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
             ability_spawner_enabled: false,
-            ability_spawner_time: Fix::ZERO,
-            ability_spawner_spawns: 0,
+            ability_spawner_state: Vec::with_capacity(2),
             active_subsystems: 0,
             orbits: Vec::with_capacity(4),
+            vector_fields: Vec::with_capacity(32),
+            intro_random_delays: Vec::with_capacity(50),
+            intro_phase: 0,
+            intro_progress: Fix::ZERO,
+            intro_delay_elapsed: Fix::ZERO,
+            intro_contacts_pending: false,
             next_platform_id: 0,
             next_entity_id: 0,
             next_spawn_hierarchy: 0,
@@ -2547,10 +2566,17 @@ impl RolloutWorld {
         self.sudden_death_delays
             .clone_from(&src.sudden_death_delays);
         self.ability_spawner_enabled = src.ability_spawner_enabled;
-        self.ability_spawner_time = src.ability_spawner_time;
-        self.ability_spawner_spawns = src.ability_spawner_spawns;
+        self.ability_spawner_state
+            .clone_from(&src.ability_spawner_state);
         self.active_subsystems = src.active_subsystems;
         self.orbits.clone_from(&src.orbits);
+        self.vector_fields.clone_from(&src.vector_fields);
+        self.intro_random_delays
+            .clone_from(&src.intro_random_delays);
+        self.intro_phase = src.intro_phase;
+        self.intro_progress = src.intro_progress;
+        self.intro_delay_elapsed = src.intro_delay_elapsed;
+        self.intro_contacts_pending = src.intro_contacts_pending;
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
@@ -2637,10 +2663,15 @@ impl RolloutWorld {
             sudden_death_tick: _,
             sudden_death_delays: _,
             ability_spawner_enabled: _,
-            ability_spawner_time: _,
-            ability_spawner_spawns: _,
+            ability_spawner_state: _,
             active_subsystems: _,
             orbits: _,
+            vector_fields: _,
+            intro_random_delays: _,
+            intro_phase: _,
+            intro_progress: _,
+            intro_delay_elapsed: _,
+            intro_contacts_pending: _,
             next_platform_id: _,
             next_entity_id: _,
             next_spawn_hierarchy: _,
@@ -2734,8 +2765,7 @@ impl RolloutWorld {
         self.scale_changers.clear();
         self.ability_spawner_enabled =
             std::env::var_os("BOPL_RL_ABILITY_SPAWNS").is_some_and(|value| value == "1");
-        self.ability_spawner_time = Fix::from_int(i64::from(self.warmup)) * DT;
-        self.ability_spawner_spawns = 0;
+        self.ability_spawner_state.clear();
         self.active_subsystems = 0;
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
@@ -2773,8 +2803,21 @@ impl RolloutWorld {
         // for the level-intro animation before SpawnPlayers resolves Random
         // abilities. Build the resolved loadouts here so entity registration
         // and hierarchy numbering use the concrete prefabs as well.
-        for _ in &def.platforms {
-            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        self.intro_random_delays.clear();
+        self.intro_random_delays
+            .resize(def.platforms.len(), Fix::ZERO);
+        self.intro_phase = 0;
+        self.intro_progress = def.start_animation_progress;
+        self.intro_delay_elapsed = Fix::ZERO;
+        self.intro_contacts_pending = false;
+        for intro_order in 0..def.platforms.len() {
+            let platform_index = def
+                .platforms
+                .iter()
+                .position(|platform| platform.intro_order == intro_order)
+                .expect("dense authored ground intro order");
+            self.intro_random_delays[platform_index] =
+                self.rng.fix_range(Fix::ZERO, Fix::ONE) * def.max_random_delay;
         }
         let mut resolved_abilities = [[0u32; 3]; MAX_PLAYERS];
         for (i, abilities) in resolved_abilities.iter_mut().enumerate().take(players) {
@@ -2903,25 +2946,27 @@ impl RolloutWorld {
                 });
             }
         }
-        let water_id = self.next_id();
-        // DPhysicsBox's collider axes are `Vec2.right / inverseExtents.x`
-        // (Box.SetRotation, Box.cs:33) with `inverseExtents = One / extents`,
-        // the same round trip as the platform perimeters.
-        let water_extents = data::surface_extents(def.water_extents);
-        self.entities.push(CEntity {
-            id: water_id,
-            kind: 1,
-            layer: LAYER_WATER,
-            owner: 0,
-            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-            hierarchy: 146,
-            x: def.water_position.x.raw(),
-            y: def.water_position.y.raw(),
-            right_x: water_extents.x.raw(),
-            up_y: water_extents.y.raw(),
-            inverse_mass: -(1 << 32),
-            ..CEntity::default()
-        });
+        if let Some((water_position, water_extents, water_hierarchy)) = def.water {
+            let water_id = self.next_id();
+            // DPhysicsBox's collider axes are `Vec2.right / inverseExtents.x`
+            // (Box.SetRotation, Box.cs:33) with `inverseExtents = One / extents`,
+            // the same round trip as the platform perimeters.
+            let water_extents = data::surface_extents(water_extents);
+            self.entities.push(CEntity {
+                id: water_id,
+                kind: 1,
+                layer: LAYER_WATER,
+                owner: 0,
+                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                hierarchy: water_hierarchy,
+                x: water_position.x.raw(),
+                y: water_position.y.raw(),
+                right_x: water_extents.x.raw(),
+                up_y: water_extents.y.raw(),
+                inverse_mass: -(1 << 32),
+                ..CEntity::default()
+            });
+        }
         for i in 0..players {
             for s in 0..=slots {
                 let (extents, hierarchy, target, body) = if s == 0 {
@@ -3220,7 +3265,14 @@ impl RolloutWorld {
         self.next_platform_id = 100;
         self.sudden_death_delays.clear();
         self.orbits.clear();
+        self.vector_fields.clear();
         for (index, p) in def.platforms.iter().enumerate() {
+            let target = p.surface.center;
+            let start = target
+                + (target + Vec2::UP * Fix::from_int(20)).normalized_safe()
+                    * def.level_animation_radius;
+            let mut intro_surface = p.surface.clone();
+            intro_surface.center = start;
             let id = self.next_id();
             let entity = self.entities.len();
             self.entities.push(CEntity {
@@ -3228,27 +3280,29 @@ impl RolloutWorld {
                 kind: 2,
                 layer: LAYER_WALL,
                 owner: 0,
-                flags: E_ACTIVE | E_ENABLED,
+                flags: E_ACTIVE,
                 hierarchy: p.hierarchy,
                 inverse_mass: p.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
-            self.platforms.push(make_platform(
+            self.platforms.push(make_platform_with_inverse(
                 self.next_platform_id,
-                &p.surface,
-                p.collider_extents,
+                &intro_surface,
+                p.collider_inverse_extents,
+                p.ice,
             ));
             self.platform_dynamics.push(PlatformDynamics {
                 body: p.body,
-                scale: Fix::ONE,
-                body_scale: Fix::ONE,
+                scale: p.base_scale,
+                body_scale: p.base_scale,
                 body_resizable: false,
+                intro_disabled: true,
                 min_scale: p.min_scale,
                 surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
-                composite_position: p.surface.center,
-                home_position: p.surface.center,
+                composite_position: intro_surface.center,
+                home_position: intro_surface.center,
                 transform_rotation: None,
                 init_tick: None,
                 float_next_frame: false,
@@ -3257,6 +3311,7 @@ impl RolloutWorld {
                 mu: p.mu,
                 rotation_speed: p.rotation_speed,
                 rotation_mu: p.rotation_mu,
+                interpolate_rotation_home: p.interpolate_rotation_home,
                 shake_time: Fix::ZERO,
                 shake_duration: Fix::ZERO,
                 shake_amount: Fix::ZERO,
@@ -3285,7 +3340,15 @@ impl RolloutWorld {
             if p.orbit.is_some() {
                 self.orbits.push((self.platforms.len() - 1, 0));
             }
+            if p.vector_field.is_some() {
+                self.vector_fields.push(self.platforms.len() - 1);
+            }
         }
+        self.ability_spawner_state.extend(
+            def.ability_spawners
+                .iter()
+                .map(|_| (Fix::from_int(i64::from(self.warmup)) * DT, 0)),
+        );
 
         // GameSessionHandler maps sorted distinct team ids onto authored
         // spawn slots, then fans teammates (and wrapped extra teams) out in
@@ -3341,6 +3404,7 @@ impl RolloutWorld {
                     velocity: Vec2::ZERO,
                     external_velocity: Vec2::ZERO,
                     radius: data.player.radius,
+                    space: def.level_type == 2,
                     scale: Fix::ONE,
                     grounded: false,
                     ground: None,
@@ -3529,11 +3593,28 @@ impl RolloutWorld {
         let no_input = vec![Action::default(); players];
         let mut spawn_anim = 0u32;
         for i in 0..self.warmup {
+            self.tick = i;
+            self.rebuild_bounds();
+            // Authored map components run throughout the level warmup too.
+            // This is observable on VectorFieldPlatform maps whose one- to
+            // three-second delays expire before the standard 240-tick reset.
+            // GameSessionHandler is registered after the authored platform
+            // roots but before their platform components (hierarchy 100 vs
+            // 104+). Its final callback enables all ground colliders before
+            // AnimateVelocity/AntiLockPlatform and DetPhysics run.
+            self.level_intro_tick(data);
+            self.platform_updaters_tick(data, DT);
             if i < SLIME_AWAKE_TICK {
+                if self.intro_phase == 3 {
+                    self.platforms_tick(data, DT, DT);
+                }
                 continue;
             }
             if i == SLIME_AWAKE_TICK {
                 spawn_anim = data.player.spawn_anim_ticks;
+                if self.intro_phase == 3 {
+                    self.platforms_tick(data, DT, DT);
+                }
                 continue;
             }
             if spawn_anim > 0 {
@@ -3545,9 +3626,12 @@ impl RolloutWorld {
                     }
                 }
                 self.record_warmup_rewind(i);
+                if self.intro_phase == 3 {
+                    self.platforms_tick(data, DT, DT);
+                }
                 continue;
             }
-            self.movement_tick(&no_input, i);
+            self.movement_tick(&no_input, i, data);
         }
         // A warmup that ends inside the spawn animation hands the rest of it
         // to the episode (respawn_tick counts it down and launches the same
@@ -3638,15 +3722,24 @@ impl RolloutWorld {
     }
 
     fn ability_spawner_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        if !self.ability_spawner_enabled || self.ability_spawner_spawns >= 3 {
+        if !self.ability_spawner_enabled {
             return;
         }
-        if self.player_time_scale >= Fix::from_f32(0.01) {
-            self.ability_spawner_time += updater_dt;
-        }
-        if self.ability_spawner_time > Fix::from_int(40) {
-            self.ability_spawner_time = Fix::ZERO;
-            self.ability_spawner_spawns += 1;
+        for spawner_index in 0..self.ability_spawner_state.len() {
+            let (mut time, mut spawns) = self.ability_spawner_state[spawner_index];
+            if spawns >= 3 {
+                continue;
+            }
+            if self.player_time_scale >= Fix::from_f32(0.01) {
+                time += updater_dt;
+            }
+            if time <= Fix::from_int(40) {
+                self.ability_spawner_state[spawner_index] = (time, spawns);
+                continue;
+            }
+            time = Fix::ZERO;
+            spawns += 1;
+            self.ability_spawner_state[spawner_index] = (time, spawns);
             // The prefab's initial sprite is Bow. Spawn immediately registers
             // the disabled manual collider, but InitPickup is passed a null
             // icon and clears that sprite before RandomAbility excludes it.
@@ -3655,7 +3748,7 @@ impl RolloutWorld {
             let direction = Vec2::angle(angle);
             let ability = self.random_pickup_ability(ABILITY_NULL);
             self.spawn_ability_pickup(
-                data.maps[self.map].ability_spawner_position,
+                data.maps[self.map].ability_spawners[spawner_index].position,
                 ability,
                 direction,
                 data,
@@ -4107,12 +4200,15 @@ impl RolloutWorld {
     }
 
     /// One movement-only tick (used for warmup settling).
-    fn movement_tick(&mut self, actions: &[Action], warmup_tick: u32) {
-        self.rebuild_bounds();
+    fn movement_tick(&mut self, actions: &[Action], warmup_tick: u32, data: &data::RolloutData) {
         for (index, action) in actions.iter().enumerate() {
             if !self.players[index].base.alive {
                 continue;
             }
+            // Player.UpdatePlayer publishes Player.Position before the
+            // SlimeController/PlayerBody motion later in this updater pass.
+            self.players[index].reported_position = self.players[index].base.position;
+            self.players[index].reported_tick = self.tick;
             self.players[index].base.step(*action, terrain!(self));
         }
         // RewindRecorder.UpdateSim is after PlayerBody.UpdateSim but before
@@ -4121,6 +4217,11 @@ impl RolloutWorld {
         for slot in &mut self.players {
             if slot.base.alive {
                 slot.base.sync_collider();
+            }
+        }
+        self.platforms_tick(data, DT, DT);
+        for slot in &mut self.players {
+            if slot.base.alive {
                 slot.base.late_step(&self.platforms);
             }
         }
@@ -4375,6 +4476,9 @@ impl RolloutWorld {
         // 100,000,000. Compute their home springs before a later ability such
         // as Gust changes a platform body's velocity. DetPhysics integrates
         // both the queued spring force and those later direct impulses below.
+        if self.intro_phase != 3 {
+            self.level_intro_tick(data);
+        }
         self.platform_updaters_tick(data, updater_dt);
         self.ability_spawner_tick(data, updater_dt);
         self.beam_inputs.clear();
@@ -4497,12 +4601,13 @@ impl RolloutWorld {
                 let pushing = self.players[index].active == ActiveAbility::Push;
                 let base = &mut self.players[index].base;
                 if !base.grounded {
+                    let space = base.space;
                     crate::player_physics::apply_gravity(
                         &mut base.velocity,
                         base.constants.gravity_accel,
                         base.constants.gravity_modifier,
                         base.constants.gravity_max_fall_speed,
-                        false,
+                        space,
                     )
                     .expect("valid movement gravity constants");
                     crate::player_physics::air_movement(
@@ -4871,7 +4976,9 @@ impl RolloutWorld {
             }
         }
         self.refresh_actor_entities();
-        self.platforms_tick(data, updater_dt, physics_dt);
+        if self.intro_phase == 3 {
+            self.platforms_tick(data, updater_dt, physics_dt);
+        }
         if has_rope {
             self.ropes_physics(physics_dt);
         }
@@ -6688,12 +6795,13 @@ impl RolloutWorld {
                             // form PlayerBody advances the surviving body.
                             {
                                 let slot = &mut self.players[index];
+                                let space = slot.base.space;
                                 crate::player_physics::apply_gravity(
                                     &mut slot.base.velocity,
                                     data.missile.constants.gravity_accel,
                                     data.missile.constants.gravity_modifier,
                                     data.missile.constants.gravity_max_fall_speed,
-                                    false,
+                                    space,
                                 )
                                 .expect("valid Missile gravity constants");
                                 slot.base.collision_rays(terrain!(self));
@@ -8000,12 +8108,13 @@ impl RolloutWorld {
             )
             .expect("valid Roll aerial constants");
         }
+        let space = self.players[index].base.space;
         crate::player_physics::apply_gravity(
             &mut self.players[index].base.velocity,
             data.roll.constants.gravity_accel,
             data.roll.constants.gravity_modifier,
             data.roll.constants.gravity_max_fall_speed,
-            false,
+            space,
         )
         .expect("valid Roll gravity constants");
         self.players[index].base.collision_rays(terrain!(self));
@@ -8361,6 +8470,11 @@ impl RolloutWorld {
 
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
         let start = self.players[index].base.position;
+        let scene_water = if data.maps[self.map].is_space() {
+            Fix::from_int(-50)
+        } else {
+            Fix::from_f32(-11.3)
+        };
         let ray_start = start - Vec2::UP * data.meteor.physics_radius;
         let direction = -Vec2::UP;
         let distance_limit = Fix::from_int(1_000_000);
@@ -8426,18 +8540,20 @@ impl RolloutWorld {
             });
         }
         let map = &data.maps[self.map];
-        let water = map.water_position.y + map.water_extents.y;
-        let water_distance = ray_start.y - water;
-        if data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
-            && water_distance >= Fix::ZERO
-            && water_distance <= distance_limit
-        {
-            self.scratch.ray_hits.push(SortedRayHit {
-                distance: water_distance,
-                hierarchy: 146,
-                kind: 3,
-                index: 0,
-            });
+        if let Some((water_position, water_extents, water_hierarchy)) = map.water {
+            let water = water_position.y + water_extents.y;
+            let water_distance = ray_start.y - water;
+            if data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
+                && water_distance >= Fix::ZERO
+                && water_distance <= distance_limit
+            {
+                self.scratch.ray_hits.push(SortedRayHit {
+                    distance: water_distance,
+                    hierarchy: water_hierarchy,
+                    kind: 3,
+                    index: 0,
+                });
+            }
         }
         self.scratch
             .ray_hits
@@ -8507,9 +8623,9 @@ impl RolloutWorld {
                     }
                 }
                 3 => {
-                    self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
+                    self.spawn_meteor_smear(start, Vec2::new(start.x, scene_water), index, data);
                     self.players[index].base.position =
-                        Vec2::new(start.x, water - Fix::from_int(20));
+                        Vec2::new(start.x, scene_water - Fix::from_int(20));
                     self.exit_meteor_air(index, data);
                     return;
                 }
@@ -8517,8 +8633,8 @@ impl RolloutWorld {
             }
         }
 
-        self.spawn_meteor_smear(start, Vec2::new(start.x, water), index, data);
-        self.players[index].base.position = Vec2::new(start.x, water - Fix::from_int(10));
+        self.spawn_meteor_smear(start, Vec2::new(start.x, scene_water), index, data);
+        self.players[index].base.position = Vec2::new(start.x, scene_water - Fix::from_int(10));
         self.exit_meteor_air(index, data);
     }
 
@@ -10173,9 +10289,10 @@ impl RolloutWorld {
                         let entity = cloud.entity.expect("registered smoke cloud");
                         self.entities[entity].flags = E_ACTIVE;
                     }
-                    let water_height =
-                        data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y;
-                    if engine.time > end_time || surface_position.y < water_height {
+                    let below_water = data.maps[self.map]
+                        .water_height()
+                        .is_some_and(|height| surface_position.y < height);
+                    if engine.time > end_time || below_water {
                         engine.phase = 2;
                         engine.ticks = 0;
                         continue;
@@ -10758,12 +10875,13 @@ impl RolloutWorld {
             }
         } else {
             let slot = &mut self.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 slot.base.constants.gravity_accel,
                 slot.base.constants.gravity_modifier,
                 slot.base.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Black Hole gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -12594,12 +12712,13 @@ impl RolloutWorld {
             };
             self.players[index].base.move_only(input, terrain!(self));
         } else {
+            let space = self.players[index].base.space;
             crate::player_physics::apply_gravity(
                 &mut self.players[index].base.velocity,
                 data.beam.constants.gravity_accel,
                 data.beam.constants.gravity_modifier,
                 data.beam.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Beam gravity constants");
             self.players[index].base.collision_rays(terrain!(self));
@@ -13701,7 +13820,7 @@ impl RolloutWorld {
         let config = crate::physics::rope::RopeConfig {
             dt: DT,
             gravity: data.ropes.gravity,
-            space: false,
+            space: data.maps[self.map].is_space(),
             iterations: data.ropes.iterations,
             stretchiness: data.ropes.stretchiness,
         };
@@ -13753,8 +13872,12 @@ impl RolloutWorld {
             radius,
         };
         let platform_index = self.platforms.len();
-        self.platforms
-            .push(make_platform(self.next_platform_id, &surface, extents));
+        self.platforms.push(make_platform(
+            self.next_platform_id,
+            &surface,
+            extents,
+            false,
+        ));
         self.next_platform_id += 1;
         self.platform_dynamics.push(PlatformDynamics {
             body: data.macho_throw.boulder_body,
@@ -13763,6 +13886,7 @@ impl RolloutWorld {
             // BoplBody.prevScale retains the prefab default of one.
             body_scale: Fix::ONE,
             body_resizable: false,
+            intro_disabled: false,
             min_scale: data.macho_throw.boulder_min_scale,
             surface_shape_dirty: false,
             root_body: data.macho_throw.boulder_body,
@@ -13777,6 +13901,7 @@ impl RolloutWorld {
             mu: Fix::ZERO,
             rotation_speed: Fix::ZERO,
             rotation_mu: Fix::ZERO,
+            interpolate_rotation_home: false,
             shake_time: Fix::ZERO,
             shake_duration: Fix::ZERO,
             shake_amount: Fix::ZERO,
@@ -14190,15 +14315,14 @@ impl RolloutWorld {
     }
 
     fn macho_boulders_tick(&mut self, data: &data::RolloutData) {
-        let water_height =
-            data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y;
+        let lower_boundary = data.maps[self.map].lower_boundary();
         for boulder in self.macho_boulders.iter().copied() {
             if !boulder.active || boulder.platform_index >= self.platforms.len() {
                 continue;
             }
             // Boulder.prefab only destroys below the water boundary:
             // DestroyIfTooFarX=false and DoNotDestroyUp=true.
-            if self.platforms[boulder.platform_index].surface.center.y < water_height {
+            if self.platforms[boulder.platform_index].surface.center.y < lower_boundary {
                 let entity = self.platform_entities[boulder.platform_index];
                 if self.entities[entity].flags & E_DESTROYED == 0 {
                     self.entities[entity].flags = E_DESTROYED;
@@ -17177,12 +17301,13 @@ impl RolloutWorld {
         } else {
             {
                 let slot = &mut self.players[index];
+                let space = slot.base.space;
                 crate::player_physics::apply_gravity(
                     &mut slot.base.velocity,
                     data.missile.constants.gravity_accel,
                     data.missile.constants.gravity_modifier,
                     data.missile.constants.gravity_max_fall_speed,
-                    false,
+                    space,
                 )
                 .expect("valid Missile gravity constants");
                 slot.base.collision_rays(terrain!(self));
@@ -17334,12 +17459,13 @@ impl RolloutWorld {
         } else {
             let this = &mut *self;
             let slot = &mut this.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 data.mine.constants.gravity_accel,
                 Fix::ONE,
                 data.mine.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Mine gravity constants");
             crate::player_physics::air_movement(
@@ -17628,12 +17754,13 @@ impl RolloutWorld {
             } else {
                 Fix::from_f32(0.03)
             };
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 gd.constants.gravity_accel,
                 modifier,
                 gd.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Grenade gravity constants");
             if slot.throw_item.has_fired {
@@ -17912,12 +18039,13 @@ impl RolloutWorld {
                 Fix::from_f32(0.03)
             };
             let slot = &mut self.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 gun.constants.gravity_accel,
                 gravity_modifier,
                 gun.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid freeze-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -18051,12 +18179,13 @@ impl RolloutWorld {
                 Fix::from_f32(0.03)
             };
             let slot = &mut self.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 gun.constants.gravity_accel,
                 gravity_modifier,
                 gun.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Blink gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -18188,12 +18317,13 @@ impl RolloutWorld {
                 Fix::from_f32(0.03)
             };
             let slot = &mut self.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 ray.constants.gravity_accel,
                 gravity_modifier,
                 ray.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid scale-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -18321,12 +18451,13 @@ impl RolloutWorld {
                 Fix::from_f32(0.03)
             };
             let slot = &mut self.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 gun.constants.gravity_accel,
                 gravity_modifier,
                 gun.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Duplicator gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -18489,12 +18620,13 @@ impl RolloutWorld {
                 Fix::from_f32(0.03)
             };
             let slot = &mut self.players[index];
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 magnet.constants.gravity_accel,
                 gravity_modifier,
                 magnet.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid Magnet gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -20253,12 +20385,14 @@ impl RolloutWorld {
             }
             // The scene water is a DPhysicsBox instantiated before player
             // prefabs, so it precedes the other box rows in this collection.
-            if kind == 0 && mask & (1 << LAYER_WATER) != 0 {
-                let map = &data.maps[self.map];
+            if kind == 0
+                && mask & (1 << LAYER_WATER) != 0
+                && let Some((water_position, water_extents, _)) = data.maps[self.map].water
+            {
                 let water = OrientedBox::from_basis(
-                    map.water_position,
+                    water_position,
                     Vec2::RIGHT,
-                    data::surface_extents(map.water_extents),
+                    data::surface_extents(water_extents),
                 );
                 if let Some(hit) = water.raycast(origin, direction)
                     && hit.near < nearest
@@ -20557,6 +20691,7 @@ impl RolloutWorld {
             velocity: launch_direction * Fix::from_f64(1.3) * data.player.constants.jump_strength,
             external_velocity: Vec2::ZERO,
             radius: data.player.radius,
+            space: data.maps[self.map].level_type == 2,
             scale: Fix::ONE,
             grounded: false,
             ground: None,
@@ -21658,7 +21793,11 @@ impl RolloutWorld {
             self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
         });
 
-        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
+        if !already_hit_water
+            && data.maps[self.map]
+                .water_height()
+                .is_some_and(|height| origin.y <= height)
+        {
             self.begin_scale_change(caster, 0, growth, ray.changer_updatable_count);
             return;
         }
@@ -22028,7 +22167,11 @@ impl RolloutWorld {
 
         // Casting below the water plane deliberately feeds the gun's own
         // Player-layer body to BlinkObject after drawing the reflected ray.
-        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
+        if !already_hit_water
+            && data.maps[self.map]
+                .water_height()
+                .is_some_and(|height| origin.y <= height)
+        {
             self.begin_blink_tunnel(caster, caster, data);
             return;
         }
@@ -22704,12 +22847,13 @@ impl RolloutWorld {
         if slot.ragdoll.skip_physics {
             slot.ragdoll.skip_physics = false;
         } else if !slot.base.grounded {
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 slot.base.constants.gravity_accel,
                 slot.base.constants.gravity_modifier,
                 slot.base.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid ragdoll gravity constants");
             slot.base.collision_rays(terrain!(self));
@@ -23459,12 +23603,13 @@ impl RolloutWorld {
             // Airborne aiming: near-frozen fall (gravity_modifier 0.03), the
             // landing raycast on the unclamped velocity (BowTransform.cs:222),
             // then Vec2.Normalized(v) * maxSlowMoSpeed (BowTransform.cs:249).
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
                 Fix::from_f32(0.03),
                 bow.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid bow gravity constants");
             slot.base.collision_rays(terrain);
@@ -23482,12 +23627,13 @@ impl RolloutWorld {
             // gravity, before its later aerial-control blend. This matters
             // for grounded shots: the downward recoil reattaches and exits
             // before horizontal aim can skew the landing ray.
+            let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
                 Fix::ONE,
                 bow.constants.gravity_max_fall_speed,
-                false,
+                space,
             )
             .expect("valid bow gravity constants");
             slot.base.collision_rays(terrain);
@@ -23909,12 +24055,14 @@ impl RolloutWorld {
             self.next_platform_id,
             &surface,
             pd.spawn_extents * scale,
+            false,
         ));
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
             scale,
             body_scale: scale,
             body_resizable: true,
+            intro_disabled: false,
             min_scale: Fix::from_f32(0.1),
             surface_shape_dirty: false,
             root_body: pd.spawn_body,
@@ -23929,6 +24077,7 @@ impl RolloutWorld {
             mu: pd.spawn_mu,
             rotation_speed: pd.spawn_rotation_speed,
             rotation_mu: pd.spawn_rotation_mu,
+            interpolate_rotation_home: true,
             shake_time: Fix::ZERO,
             shake_duration: Fix::ZERO,
             shake_amount: Fix::ZERO,
@@ -26695,24 +26844,25 @@ impl RolloutWorld {
             // Water is a trigger box. It does not resolve the Missile body,
             // but its collision callback runs after integration and before
             // the next pass's DestroyIfOutsideSceneBounds updater.
-            let map = &data.maps[self.map];
-            let water = OrientedBox::from_basis(
-                map.water_position,
-                Vec2::RIGHT,
-                data::surface_extents(map.water_extents),
-            );
-            if crate::physics::contact::box_box(missile_box, water).is_some()
-                && missile.magnet_hold_ticks < 0
-            {
-                self.spawn_missile_explosion(
-                    missile.position,
-                    missile.owner,
-                    false,
-                    Fix::ONE,
-                    data,
+            if let Some((water_position, water_extents, _)) = data.maps[self.map].water {
+                let water = OrientedBox::from_basis(
+                    water_position,
+                    Vec2::RIGHT,
+                    data::surface_extents(water_extents),
                 );
-                self.destroy_guided_missile(missile_index, true);
-                continue;
+                if crate::physics::contact::box_box(missile_box, water).is_some()
+                    && missile.magnet_hold_ticks < 0
+                {
+                    self.spawn_missile_explosion(
+                        missile.position,
+                        missile.owner,
+                        false,
+                        Fix::ONE,
+                        data,
+                    );
+                    self.destroy_guided_missile(missile_index, true);
+                    continue;
+                }
             }
 
             // Circle/Box item contacts are resolved before Missile.OnCollide
@@ -27283,12 +27433,14 @@ impl RolloutWorld {
                     continue;
                 }
             }
-            if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
-                let map = &data.maps[self.map];
+            if item.ability == ABILITY_SMOKE
+                && item.detonates_on_owner
+                && let Some((water_position, water_extents, _)) = data.maps[self.map].water
+            {
                 let water = OrientedBox::from_basis(
-                    map.water_position,
+                    water_position,
                     Vec2::RIGHT,
-                    data::surface_extents(map.water_extents),
+                    data::surface_extents(water_extents),
                 );
                 if crate::physics::contact::circle_box(circle, water).is_some() {
                     self.detonate_smoke(item_index, true, data);
@@ -27983,7 +28135,7 @@ impl RolloutWorld {
         // rounding is observable over long-running springs (notably map 2's
         // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         for i in 0..self.platforms.len() {
-            if !self.platforms[i].active {
+            if !self.platforms[i].active || self.platform_dynamics[i].intro_disabled {
                 continue;
             }
             let position = self.platforms[i].surface.center;
@@ -28016,13 +28168,16 @@ impl RolloutWorld {
             };
             let impulse = spring * updater_dt / dynamics.body.inverse_mass;
             dynamics.body.force += impulse * Fix::from_int(60);
-            let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
-            if angle_delta.abs() > Fix::PI {
-                angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
+            if dynamics.interpolate_rotation_home {
+                let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
+                if angle_delta.abs() > Fix::PI {
+                    angle_delta =
+                        -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
+                }
+                dynamics.body.angular_velocity = (dynamics.body.angular_velocity
+                    + angle_delta * dynamics.rotation_speed * updater_dt)
+                    * (Fix::ONE - dynamics.rotation_mu);
             }
-            dynamics.body.angular_velocity = (dynamics.body.angular_velocity
-                + angle_delta * dynamics.rotation_speed * updater_dt)
-                * (Fix::ONE - dynamics.rotation_mu);
         }
 
         // ShakablePlatform follows AnimateVelocity in each authored platform
@@ -28031,7 +28186,7 @@ impl RolloutWorld {
         // successive samples replace the previous random offset.
         let mut shook = false;
         for i in 0..self.platforms.len() {
-            if !self.platforms[i].active {
+            if !self.platforms[i].active || self.platform_dynamics[i].intro_disabled {
                 continue;
             }
             let duration = self.platform_dynamics[i].shake_duration;
@@ -28094,10 +28249,152 @@ impl RolloutWorld {
                 // advances the target from the same pre-physics position.
                 let current = o.path[orbit.1];
                 let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
-                if (current - previous).dot(position - current) > Fix::ZERO {
+                let passed = (current - previous).dot(position - current);
+                if passed > Fix::ZERO {
                     orbit.1 = (orbit.1 + 1) % o.path.len();
                 }
             }
+        }
+
+        // VectorFieldPlatform runs after the platform's ordinary spring,
+        // ShakablePlatform and collider updater. Maps without one keep this
+        // list empty, so they pay no per-platform scan.
+        if !self.sudden_death && updater_dt > Fix::ZERO && !self.vector_fields.is_empty() {
+            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+            let fixed_time = DT * self.player_time_scale;
+            let map = &data.maps[self.map];
+            let mut moved = false;
+            for &platform_index in &self.vector_fields {
+                if !self.platforms[platform_index].active {
+                    continue;
+                }
+                let Some(field) = map.platforms[self.platform_defs[platform_index]]
+                    .vector_field
+                    .as_ref()
+                else {
+                    continue;
+                };
+                if sim_time < field.delay {
+                    continue;
+                }
+                let position = self.platforms[platform_index].surface.center;
+                let velocity = self.platform_dynamics[platform_index].body.velocity;
+                let radial = position - field.center;
+                let radial_unit = radial.normalized_safe();
+                let tangent = radial_unit.perp_cw();
+                let mut tangent_speed = tangent.dot(velocity);
+                let mut radial_speed = radial_unit.dot(velocity);
+                let wanted = radial_unit * field.target_radius + field.center - position;
+                radial_speed += radial_unit.dot(wanted) * fixed_time * field.expand_speed;
+
+                let (delta, new_velocity) = if radial.length_squared()
+                    < field.dead_zone_dist_squared
+                {
+                    (
+                        Vec2::ZERO,
+                        radial_unit * radial_speed + tangent * tangent_speed,
+                    )
+                } else {
+                    // Fix.Lerp clamps only the coefficient of `a`; its `b*t`
+                    // term deliberately uses the original, unclamped t.
+                    let t = fixed_time * field.orbit_acceleration_multiplier;
+                    let clamped = t.max(Fix::ZERO).min(Fix::ONE);
+                    tangent_speed = tangent_speed * (Fix::ONE - clamped) + field.orbit_speed * t;
+                    let overflow;
+                    if tangent_speed.sign() == field.orbit_speed.sign() {
+                        if tangent_speed.abs() >= field.orbit_speed.abs() {
+                            overflow = tangent_speed - field.orbit_speed;
+                            tangent_speed -= overflow;
+                        } else {
+                            overflow = Fix::ZERO;
+                        }
+                    } else {
+                        overflow = tangent_speed;
+                        tangent_speed = Fix::ZERO;
+                    }
+                    let tangent_step = tangent * tangent_speed * fixed_time;
+                    let next_radial_unit =
+                        (position + tangent_step - field.center).normalized_safe();
+                    let next_tangent = next_radial_unit.perp_cw();
+                    let radius = radial.length();
+                    let orbital_velocity = next_tangent * tangent_speed;
+                    (
+                        next_radial_unit * radius - orbital_velocity * DT - radial,
+                        orbital_velocity
+                            + next_radial_unit * radial_speed * field.normal_speed_friction
+                            + tangent * overflow,
+                    )
+                };
+
+                let next_position = position + delta;
+                self.platforms[platform_index].surface.center = next_position;
+                self.platforms[platform_index].collider.inner.center = next_position;
+                let dynamics = &mut self.platform_dynamics[platform_index];
+                dynamics.composite_position += delta;
+                dynamics.body.velocity = new_velocity;
+                dynamics.home_position = next_position;
+                moved = true;
+            }
+            if moved {
+                self.platforms_changed();
+            }
+        }
+    }
+
+    /// GameSessionHandler.StartAnimateInLevelRoutine. The level animation is
+    /// gameplay-relevant on maps whose AntiLock/VectorField delays expire
+    /// during the intro: those components still update, but DetPhysics and
+    /// AnimateVelocity stay disabled until the shared completion callback.
+    fn level_intro_tick(&mut self, data: &data::RolloutData) {
+        let map = &data.maps[self.map];
+        match self.intro_phase {
+            0 => {
+                self.intro_delay_elapsed += DT;
+                if self.intro_delay_elapsed > Fix::from_f32(0.1) {
+                    self.intro_delay_elapsed = Fix::ZERO;
+                    self.intro_phase = 1;
+                }
+            }
+            1 => {
+                self.intro_progress += DT / map.level_animation_time;
+                let mut ongoing = false;
+                for i in 0..map.platforms.len() {
+                    let target = map.platforms[i].surface.center;
+                    let start = target
+                        + (target + Vec2::UP * Fix::from_int(20)).normalized_safe()
+                            * map.level_animation_radius;
+                    let delay = self.intro_random_delays[i];
+                    if self.intro_progress < Fix::ONE + delay {
+                        ongoing = true;
+                    }
+                    let amount = map.animate_in.evaluate(self.intro_progress - delay);
+                    let position = target * amount + start * (Fix::ONE - amount);
+                    self.platforms[i].surface.center = position;
+                    self.platforms[i].collider.inner.center = position;
+                    self.platform_dynamics[i].composite_position = position;
+                }
+                self.platforms_changed();
+                if !ongoing {
+                    // RoutineQueue processes the queued Function on the next
+                    // updater pass, not in the loop-completion pass.
+                    self.intro_phase = 2;
+                }
+            }
+            2 => {
+                for i in 0..map.platforms.len() {
+                    let target = map.platforms[i].surface.center;
+                    self.platform_dynamics[i].home_position = target;
+                    self.platform_dynamics[i].intro_disabled = false;
+                }
+                self.intro_phase = 3;
+                // DetPhysics still executes once when newly enabled bodies
+                // are motionless. Some later maps author touching/overlapping
+                // grounds whose first contact impulse starts persistent map
+                // motion, so the steady-state quiet fast path cannot skip it.
+                self.intro_contacts_pending = true;
+                self.platforms_changed();
+            }
+            _ => {}
         }
     }
 
@@ -28835,8 +29132,8 @@ impl RolloutWorld {
             });
         // Bodies and homes only change through paths that bump
         // `platform_epoch`, so a level found quiet stays quiet until then.
-        let disturbed =
-            self.quiet_epoch != self.platform_epoch
+        let disturbed = self.intro_contacts_pending
+            || (self.quiet_epoch != self.platform_epoch
                 && self.platforms.iter().zip(&self.platform_dynamics).any(
                     |(platform, dynamics)| {
                         platform.active
@@ -28847,7 +29144,7 @@ impl RolloutWorld {
                                 || dynamics.body.orientation != dynamics.home_rotation
                                 || dynamics.transform_rotation.is_some())
                     },
-                );
+                ));
         if !disturbed {
             self.quiet_epoch = self.platform_epoch;
         }
@@ -28859,6 +29156,7 @@ impl RolloutWorld {
             return;
         }
         // Everything below may move a body.
+        self.intro_contacts_pending = false;
         self.platforms_changed();
         // ResizablePlatform follows AnimateVelocity in its prefab
         // (ResizablePlatform.prefab component order), so the spring impulse
@@ -31553,8 +31851,11 @@ impl RolloutWorld {
                 &dynamics.root_body
             };
             if e.flags & E_DESTROYED == 0 {
-                e.flags = E_ENABLED
-                    | if platform.active { E_ACTIVE } else { 0 }
+                e.flags = if dynamics.intro_disabled {
+                    0
+                } else {
+                    E_ENABLED
+                } | if platform.active { E_ACTIVE } else { 0 }
                     | if dynamics.attached_children == 0 {
                         0
                     } else {
@@ -31824,7 +32125,7 @@ impl Default for RolloutWorld {
 
 /// `collider_extents` are the authored half-extents DetPhysics holds; the
 /// surface's are the perimeter's `One / (One / e)` reading of them.
-fn make_platform(id: u32, surface: &Surface, collider_extents: Vec2) -> Platform {
+fn make_platform(id: u32, surface: &Surface, collider_extents: Vec2, ice: bool) -> Platform {
     Platform {
         id,
         active: true,
@@ -31833,7 +32134,30 @@ fn make_platform(id: u32, surface: &Surface, collider_extents: Vec2) -> Platform
             inner: OrientedBox::from_basis(surface.center, surface.right, collider_extents),
             radius: surface.radius,
         },
-        ice: false,
+        ice,
+    }
+}
+
+fn make_platform_with_inverse(
+    id: u32,
+    surface: &Surface,
+    inverse_extents: Vec2,
+    ice: bool,
+) -> Platform {
+    Platform {
+        id,
+        active: true,
+        surface: surface.clone(),
+        collider: RoundedRect {
+            inner: OrientedBox {
+                center: surface.center,
+                right: (Vec2::RIGHT / inverse_extents.x).complex_mul(surface.right),
+                up: (Vec2::UP / inverse_extents.y).complex_mul(surface.right),
+                inverse_extents,
+            },
+            radius: surface.radius,
+        },
+        ice,
     }
 }
 
