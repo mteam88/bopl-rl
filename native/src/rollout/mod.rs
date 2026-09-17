@@ -17181,6 +17181,7 @@ impl RolloutWorld {
             };
             // Unlike Fire's authored vector-wide mirror, dummyPos flips only
             // the child's local x coordinate.
+            dummy *= slot.player_scale;
             dummy.x *= local_sign;
             self.thrown_items[item_index].position =
                 slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation));
@@ -17363,14 +17364,15 @@ impl RolloutWorld {
             gd.ground_position
         } else {
             gd.air_position
-        } * local_sign;
+        } * slot.player_scale
+            * local_sign;
         let basis = Vec2::angle(slot.base.rotation);
         let position = slot.base.position + local.complex_mul(basis);
         let charge = (state.fire_input_time * gd.force_gain_speed)
             .max(Fix::ZERO)
             .min(Fix::ONE);
         let force = gd.min_force + (gd.max_force - gd.min_force) * charge;
-        let impulse_force = direction * force * Fix::from_int(60);
+        let impulse_force = direction * slot.player_scale * force * Fix::from_int(60);
         if self.thrown_items[item_index].active {
             let item = &mut self.thrown_items[item_index];
             item.position = position;
@@ -17378,7 +17380,7 @@ impl RolloutWorld {
             // Fire repositions and initializes it without rotating the held
             // FixTransform again.
             item.body.force += impulse_force;
-            item.hurt_owner_delay = gd.hurt_owner_delay;
+            item.hurt_owner_delay = gd.hurt_owner_delay * slot.player_scale.max(Fix::ONE);
             if item.entity.is_none() {
                 item.id = new_collider_id.expect("new grenade collider id");
                 self.entities.push(CEntity::default());
@@ -31047,6 +31049,38 @@ mod tests {
         assert_eq!(
             world.players[0].base.position,
             start + data::get().time_stop.exit_offset * Fix::from_int(2)
+        );
+    }
+
+    #[test]
+    fn thrown_item_fire_uses_caster_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let start = world.players[0].base.position;
+        world.players[0].active = ActiveAbility::Grenade;
+        world.players[0].active_slot = 0;
+        world.players[0].player_scale = Fix::from_int(2);
+        world.players[0].facing_right = false;
+        world.players[0].base.rotation = Fix::ZERO;
+        world.players[0].throw_item.grounded = false;
+        world.players[0].throw_item.direction = Vec2::RIGHT;
+        world.players[0].throw_item.fire_input_time = Fix::ZERO;
+
+        world.fire_thrown_item(0, data::get());
+
+        let item = world.thrown_items[world.players[0].throw_item.item.unwrap()];
+        let grenade = &data::get().grenade;
+        assert_eq!(
+            item.position,
+            start + grenade.air_position * Fix::from_int(2)
+        );
+        assert_eq!(
+            item.body.force,
+            Vec2::RIGHT * Fix::from_int(2) * grenade.min_force * Fix::from_int(60)
+        );
+        assert_eq!(
+            item.hurt_owner_delay,
+            grenade.hurt_owner_delay * Fix::from_int(2)
         );
     }
 

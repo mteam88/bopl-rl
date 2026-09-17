@@ -33,6 +33,12 @@ fixed entry is committed separately with its finding id in the subject.
 - **#38 — fixed.** Time Stop's exit offset now multiplies by the caster's live
   player scale, matching `CastSpell.ExitAbility`.
 
+## Projectiles
+
+- **#1 — fixed.** `ThrowItem2.Fire` now applies caster scale to held-item
+  dummy poses, release offsets, launch impulse, and the owner-immunity delay
+  (with the source's `Max(scale, 1)` rule).
+
 ## Cross-cutting
 
 - **C1 — not a divergence.** The `TimeStop` metadata branch in
