@@ -28321,6 +28321,7 @@ impl RolloutWorld {
                 slot.freeze_entities[2],
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
+                slot.blink_entity,
                 slot.duplicator_entity,
                 slot.magnet_entity,
                 slot.bow_entity,
@@ -28405,6 +28406,7 @@ impl RolloutWorld {
                 slot.freeze_entities[2],
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
+                slot.blink_entity,
                 slot.duplicator_entity,
                 slot.magnet_entity,
                 slot.bow_entity,
@@ -28470,6 +28472,7 @@ impl RolloutWorld {
                 slot.freeze_entities[2],
                 slot.growth_ray_entity,
                 slot.shrink_ray_entity,
+                slot.blink_entity,
                 slot.duplicator_entity,
                 slot.magnet_entity,
                 slot.bow_entity,
@@ -31314,6 +31317,21 @@ mod tests {
             .spawn_position;
         assert!(spawn.x > Fix::ZERO);
         assert_eq!(spawn.y, Fix::ZERO);
+    }
+
+    #[test]
+    fn death_removes_active_blink_hurtbox() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.player[0].abilities[0] = ABILITY_BLINK;
+        world.reset(&config).unwrap();
+        let entity = world.players[0].blink_entity;
+        world.players[0].active = ActiveAbility::Blink;
+        world.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, false, false);
+
+        assert_eq!(world.entities[entity].flags, E_REMOVED);
     }
 
     #[test]

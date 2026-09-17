@@ -75,6 +75,10 @@ fixed entry is committed separately with its finding id in the subject.
   Duplicator's platform spawn-position helper now replaces a degenerate
   rounded rectangle's rotated axes with world right/up when both extents are
   below `1/20`, exactly as `ShootDuplicator.PlatformSpawnPos` does.
+- **#21 — fixed.** Blink's form entity is now included in all three death
+  cleanup paths (Revival replacement, stock replacement, and elimination).
+  It therefore receives the same removed/destroyed transition as every other
+  ability body instead of remaining an active ray-blocking ghost.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
