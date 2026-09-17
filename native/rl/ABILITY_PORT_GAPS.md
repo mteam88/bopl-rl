@@ -13,6 +13,23 @@ against an end-to-end NativeAOT/Rust differential through the public rollout
 ABI. Per-branch differential coverage can trail a completed source port; that
 distinction stays explicit in the catalog's verification text.
 
-No ability-specific source gaps remain. All 39 catalog entries are `ported`.
-Composition branches described as unmeasured in the catalog are translated but
-have not each received a dedicated public NativeAOT/Rust differential.
+The semantic review found three structural source gaps that remain after the
+localized 39-ability corrections:
+
+- **Time Stop / transformed forms:** the scheduler still derives a shared
+  `updater_dt` and has not yet represented each prefab component's independent
+  `GameTime.FixedDeltaTime` opt-in. The confirmed Gust clock, Engine animator,
+  grounded cancel, exit offset/velocity, and Gust/Time Stop no-gravity symptoms
+  are fixed, but the remaining active forms need a per-updatable clock audit.
+- **Revival multi-marker actors:** one player can own several full live
+  `SlimeController` actors in C#. `PlayerSlot` can currently represent only one
+  full actor, so simultaneous retained markers collapse to one revival body.
+- **Clone cap with Revival:** C# counts all full actors plus abilityless clones
+  against `MaxClones + 1`; the native count cannot match until the multi-actor
+  player model exists.
+
+One cross-ability scheduler gap also remains: deferred prefab initialization is
+drained in Rust's type-category order rather than the single global hierarchy
+order used by `Updater`. These items are marked `partial` in the affected
+catalog entries; `native/rl/review/RESOLUTION.md` contains the implementation
+plans and the disposition of every review finding.

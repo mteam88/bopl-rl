@@ -20,6 +20,14 @@ The ability inventory is `data/ability-coverage.json`: 39 catalog entries,
 including NullAbility, Random, and eight custom entries from Rewind through
 Portal gun. No entries are omitted because they are custom or difficult.
 
+The semantic review leaves four known structural gaps despite the broad source
+port: Time Stop still lacks a per-updatable clock model for un-audited
+transformed forms; Revival cannot represent several full live actors owned by
+one player; Duplicator's global clone cap therefore cannot count those missing
+actors; and deferred spawned objects register in Rust's type-category order
+rather than one global Unity hierarchy order. The affected catalog entries are
+`partial`, and `rl/ABILITY_PORT_GAPS.md` records the implementation plans.
+
 ## Required completion gates
 
 - Lossless setup and tick inputs for one through six players, including keyboard
@@ -1424,8 +1432,10 @@ keeps the separate 9,000-fold BoplBody path. Tagged Macho boulders use
 ordinary `ForceMode2D.Impulse`; RigidBodyAffector Black Holes receive the
 source's direct signed-mass `AddForce` without the 60-fold conversion. During
 Time Stop the wave still applies the current curve sample on each updater pass,
-but zero delta freezes its curve clock. All handles and the 50-slot capacity
-remain inline in `GustWave`, so none of these paths allocate per cast or tick.
+and its raw updater delta continues advancing the curve clock. Only the
+affected target's physics integration is frozen. All handles and the 50-slot
+capacity remain inline in `GustWave`, so none of these paths allocate per cast
+or tick.
 
 `gust_ability_ab.c` compares NativeAOT with optimized Q32 Rust for 360 complete
 ticks, including initial loadout rows, cast and public position arbitration, the
@@ -2224,8 +2234,9 @@ ReviveParticle's duplicate updater registration, removes the marker on the
 same pass as `ReSpawn`, advances fresh cooldowns through the 105-frame spawn,
 and launches at exactly 11.25 units/second. All player, slime, telemetry and
 entity fields match NativeAOT exactly across the scenario. The public program
-uses one replacement body; the retained actor corpora below cover simultaneous
-markers and replacement bodies through the general component runtime.
+uses one replacement body. Retained component corpora cover simultaneous
+marker callbacks in isolation, but the public rollout cannot yet represent
+C#'s several independent full `SlimeController` actors owned by one player.
 
 `revival_broad_ab.sh` combines the cast, death and pickup-replacement programs
 as one optimized-Q32 gate. It covers 3,835 exact public rollout ticks through
@@ -2235,7 +2246,8 @@ Revival markers now retain their serialized positive-mass body in the public
 runtime as well: Black Hole force is integrated allocation-free, scaling
 updates the live inverse mass, and Portal/Teleport transform the same body
 position and velocity. These rare cross-ability branches are source-ported but
-do not each have a dedicated public C differential.
+do not each have a dedicated public C differential; multi-marker full actors
+remain the structural gap described above.
 
 ### Revival death, effects and particles
 
@@ -2413,10 +2425,12 @@ clock restoration. Interactions with ability entity types that have not yet
 been ported remain part of those abilities' open scope, so coverage is marked
 partial until the catalog is complete.
 
-A whole-source clock audit (2026-09-16) covers every modeled use of
+A whole-source clock audit (2026-09-16) covers the explicitly modeled uses of
 `GameTime.IsTimeStopped`, `FixedDeltaTime`, `PlayerTimeScale`, and raw updater
 delta across active forms, items, projectiles, attachments, scale effects,
-pickups, duplicate lifetimes and DetPhysics. It exposed one semantic omission:
+pickups, duplicate lifetimes and DetPhysics. It does not yet model independent
+clock selection for every component updater in every transformed form. The
+audited paths exposed one semantic omission:
 `MeteorSmash.UpdateSim` does not return for an unprotected player. Its clock and
 animator freeze, but the vibration state still consumes both
 `RandomInsideUnitCircle` draws, changes the `FixTransform` directly, assigns its
@@ -2429,9 +2443,9 @@ input profile and executes that branch without allocation.
 50,000-raw-Q32 pose bound (0.0000117 world units): 690 stopped passes contain
 observable Meteor vibration with a frozen ability clock and published player
 position, the caster remains protected and advances allowed cooldowns, the
-opponent ignores new input, and restoration resumes release. Remaining entries
-in `ABILITY_PORT_GAPS.md` are translated paths lacking a broad public
-composition rather than known source omissions.
+opponent ignores new input, and restoration resumes release. The remaining
+per-updatable transformed-form clock gap is listed in `ABILITY_PORT_GAPS.md`;
+other listed compositions are translated paths lacking a broad public check.
 
 `time_stop_arrow_ab.c` composes Bow and Time Stop through the public rollout
 ABI. Bow releases an upward arrow on tick 702; the stop begins on tick 738,
@@ -3920,7 +3934,8 @@ player shove, rope, portal and pickup interactions still use the base-player
 paths only where those systems already enumerate the clone pool. The later
 multi-captor Poke Ball expiry/ejection boundary also remains unmeasured. These
 limits affect rare compositions rather than the translated branch selection,
-so catalog id 29 is marked `ported`.
+but the clone cap cannot be exact when Revival would create several full actors
+for one player, so catalog id 29 remains `partial`.
 
 ### Magnet form, pull field and thrown-item handling (2026-09-15)
 
