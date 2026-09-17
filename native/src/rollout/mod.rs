@@ -9130,15 +9130,10 @@ impl RolloutWorld {
                         caster: index,
                         ..TimeStopEffect::default()
                     };
-                    if let Some(free) = self
-                        .time_stop_effects
-                        .iter()
-                        .position(|candidate| !candidate.active)
-                    {
-                        self.time_stop_effects[free] = effect;
-                    } else {
-                        self.time_stop_effects.push(effect);
-                    }
+                    // TimeStop prefabs are instantiated objects, not a pool.
+                    // Appending retains Updater's hierarchy/creation order
+                    // when multiple effects overlap.
+                    self.time_stop_effects.push(effect);
                     self.players[index].cast_spell.phase = 3;
                     self.players[index].cast_spell.ticks = 0;
                 }
@@ -32780,6 +32775,28 @@ mod tests {
         assert!(!world.time_stop_effects[0].active);
         assert_eq!(world.player_time_scale, Fix::ZERO);
         assert!(world.time_stop_protected[0]);
+    }
+
+    #[test]
+    fn time_stop_effects_do_not_reuse_older_vector_slots() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.time_stop_effects.push(TimeStopEffect::default());
+        world.time_stop_effects.push(TimeStopEffect {
+            active: true,
+            registered: true,
+            caster: 0,
+            ..TimeStopEffect::default()
+        });
+        world.players[1].active = ActiveAbility::TimeStop;
+        world.players[1].cast_spell.phase = 2;
+        world.players[1].cast_spell.ticks = data::get().time_stop.cast_spell_ticks;
+
+        world.time_stop_cast_tick(1, Action::default(), data::get());
+
+        assert_eq!(world.time_stop_effects.len(), 3);
+        assert!(world.time_stop_effects[1].active);
+        assert_eq!(world.time_stop_effects[2].caster, 1);
     }
 
     #[test]

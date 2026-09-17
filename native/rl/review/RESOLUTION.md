@@ -270,3 +270,7 @@ fixed entry is committed separately with its finding id in the subject.
   scale and the last protection bits once the session has ended. C# still
   destroys the effect object, but `TimeStop.End` returns before its teardown
   writes when `HasGameEnded()` is true; Rust now makes the same distinction.
+- **G9 — fixed.** Time Stop effects are no longer inserted into the first
+  inactive vector slot. They append in creation order like Unity's newly
+  instantiated updatables, so overlapping effects write time protection in
+  hierarchy order and the newest surviving stop wins the final write.
