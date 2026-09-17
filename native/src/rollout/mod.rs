@@ -8565,7 +8565,10 @@ impl RolloutWorld {
 
     fn spawn_meteor_smear(&mut self, from: Vec2, to: Vec2, owner: usize, data: &data::RolloutData) {
         let distance = (to - from).length();
-        let extents = Vec2::new(data.meteor.smear_extents.x, distance * Fix::from_f32(0.5));
+        let extents = Vec2::new(
+            data.meteor.smear_extents.x * self.players[owner].player_scale,
+            distance * Fix::from_f32(0.5),
+        );
         let offset = Vec2::new(
             data.meteor.smear_offset.x,
             data.meteor.smear_offset.y * extents.y / data.meteor.smear_extents.y,
@@ -31120,6 +31123,21 @@ mod tests {
         assert_eq!(
             world.guided_missiles[missile].position,
             start + data::get().missile.projectile_offset * Fix::from_int(2)
+        );
+    }
+
+    #[test]
+    fn meteor_smear_width_uses_caster_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].player_scale = Fix::from_int(2);
+
+        world.spawn_meteor_smear(Vec2::ZERO, Vec2::UP, 0, data::get());
+
+        let entity = world.meteor_smears[0].entity.unwrap();
+        assert_eq!(
+            world.entities[entity].right_x,
+            (data::get().meteor.smear_extents.x * Fix::from_int(2)).raw()
         );
     }
 

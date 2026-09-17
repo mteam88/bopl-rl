@@ -42,6 +42,8 @@ fixed entry is committed separately with its finding id in the subject.
   local axes by the caster's live scale, matching `ThrowItem.Fire`.
 - **#3 — fixed.** Guided missiles now inherit the caster's scale for both the
   spawn offset and live projectile collider/visual scale.
+- **#4 — fixed.** Meteor's lethal smear half-width now multiplies by the
+  caster's live scale; its travel-derived length remains unchanged.
 
 ## Cross-cutting
 
