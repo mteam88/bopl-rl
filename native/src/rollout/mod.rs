@@ -18683,7 +18683,7 @@ impl RolloutWorld {
             }
         }
 
-        let (position, velocity, scale, boulder_recoil) = match held {
+        let (mut position, velocity, scale, boulder_recoil) = match held {
             MagnetHeld::ThrownItem(i) => {
                 let item = self.thrown_items[i];
                 (item.position, item.body.velocity, item.scale, false)
@@ -18742,6 +18742,13 @@ impl RolloutWorld {
             }
             MagnetHeld::Nothing => return,
         };
+        if let MagnetHeld::Player(victim) = held
+            && self.players[victim].active != ActiveAbility::None
+        {
+            // MagnetGun exits an ability form with an explicit ungrounded
+            // packet whose position is the stealing gun's CurrentFirePoint.
+            position = self.magnet_firepoint(index, data);
+        }
 
         if self.players[index].magnet.phase == 1 {
             self.players[index].magnet.animation = 2;
@@ -18790,6 +18797,8 @@ impl RolloutWorld {
             MagnetHeld::Player(i) => {
                 if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
+                    self.players[i].base.position = position;
+                    self.players[i].reported_position = position;
                 }
                 let slot = &mut self.players[i];
                 slot.base.force_unground(&self.platforms);
@@ -31395,6 +31404,23 @@ mod tests {
             world.entities[entity].inverse_mass,
             data::get().teleport.marker_body.inverse_mass.raw()
         );
+    }
+
+    #[test]
+    fn magnet_steal_exits_form_at_firepoint() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].magnet.aim = Vec2::RIGHT;
+        world.players[0].magnet.body_right = Vec2::RIGHT;
+        world.players[0].base.position = Vec2::new(Fix::from_int(2), Fix::from_int(20));
+        world.players[1].active = ActiveAbility::Blink;
+        world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
+        let firepoint = world.magnet_firepoint(0, data::get());
+
+        world.magnet_take_target(0, MagnetHeld::Player(1), data::get());
+
+        assert_eq!(world.players[1].base.position, firepoint);
+        assert_eq!(world.players[0].magnet.held_position, firepoint);
     }
 
     #[test]

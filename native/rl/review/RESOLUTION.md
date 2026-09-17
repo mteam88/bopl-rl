@@ -84,6 +84,10 @@ fixed entry is committed separately with its finding id in the subject.
   changes, clamped to the authored `0.1..6`; collider radius and inverse mass
   remain untouched. Revival's `AddScale` intentionally delegates to its
   BoplBody scale and retains the ordinary `0.1..5` collider path.
+- **#14 — fixed.** When Magnet steals a player from an active ability form,
+  the forced exit packet now relocates the restored slime to the stealing
+  gun's current firepoint before ragdoll/hold state is applied. Ordinary
+  slime victims retain their existing position, matching the source branch.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
