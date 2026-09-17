@@ -9450,6 +9450,9 @@ impl RolloutWorld {
         let relative_rotation = spike_rotation - parent_rotation;
 
         self.attach_spike_body(platform_index, data.spike.attack_body);
+        let collider_center = self.platform_dynamics[platform_index].composite_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        let collider_extents = data::surface_extents(data.spike.attack_extents * scale);
         let entity_index = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -9459,6 +9462,13 @@ impl RolloutWorld {
             owner: 0,
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.spike.attack_collider_hierarchy,
+            x: collider_center.x.raw(),
+            y: collider_center.y.raw(),
+            right_x: (spike_right * collider_extents.x).x.raw(),
+            right_y: (spike_right * collider_extents.x).y.raw(),
+            up_x: (spike_right.perp() * collider_extents.y).x.raw(),
+            up_y: (spike_right.perp() * collider_extents.y).y.raw(),
+            rotation: spike_rotation.raw(),
             inverse_mass: data.spike.attack_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -9472,8 +9482,7 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation,
-            collider_center: parent_position
-                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_center,
             surface_offset,
             scale,
             time: Fix::ZERO,
@@ -19802,6 +19811,9 @@ impl RolloutWorld {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.spike.attack_updatable_count;
         self.attach_spike_body(platform_index, data.spike.attack_body);
+        let collider_center = self.platform_dynamics[platform_index].composite_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        let collider_extents = data::surface_extents(data.spike.attack_extents * source.scale);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -19810,6 +19822,13 @@ impl RolloutWorld {
             layer: data.spike.attack_layer,
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.spike.attack_collider_hierarchy,
+            x: collider_center.x.raw(),
+            y: collider_center.y.raw(),
+            right_x: (right * collider_extents.x).x.raw(),
+            right_y: (right * collider_extents.x).y.raw(),
+            up_x: (right.perp() * collider_extents.y).x.raw(),
+            up_y: (right.perp() * collider_extents.y).y.raw(),
+            rotation: rotation.raw(),
             inverse_mass: data.spike.attack_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -19823,8 +19842,7 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation: rotation - parent_rotation,
-            collider_center: parent_position
-                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_center,
             surface_offset,
             scale: source.scale,
             time: Fix::ZERO,
