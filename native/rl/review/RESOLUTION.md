@@ -45,6 +45,11 @@ fixed entry is committed separately with its finding id in the subject.
   prior value, then the later `Ability.UpdateSim` multiplies it by
   `player.Scale / prevScale`; this preserves both hierarchy timing and Q32
   telescoping instead of recomputing from the authored offset at fire time.
+- **S9 — fixed.** Non-player ScaleChanger targets now clamp against their
+  authored collider bounds: `0.3..4` for SpikeAttack and duplicated Rock,
+  `0.6..5` for SimpleSparkNode, `0.15..1000000` for BlackHole2, and the
+  default `0.1..5` elsewhere. Spawned ResizablePlatform uses its authored
+  maximum `6` instead of the map-platform default `5`.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the

@@ -21771,6 +21771,12 @@ impl RolloutWorld {
                     .map(|marker| marker.scale)
             })
             .or_else(|| {
+                self.duplicated_rocks
+                    .iter()
+                    .find(|rock| rock.active && rock.entity == Some(entity))
+                    .map(|rock| rock.scale)
+            })
+            .or_else(|| {
                 let id = self.entities[entity].id;
                 self.scale_changers
                     .iter()
@@ -21912,6 +21918,35 @@ impl RolloutWorld {
             return true;
         }
         false
+    }
+
+    fn generic_scale_bounds(&self, entity: usize) -> (Fix, Fix) {
+        if self
+            .spike_attacks
+            .iter()
+            .any(|spike| spike.active && !spike.macho_carried && spike.entity == Some(entity))
+            || self
+                .duplicated_rocks
+                .iter()
+                .any(|rock| rock.active && rock.entity == Some(entity))
+        {
+            return (Fix::from_f32(0.3), Fix::from_int(4));
+        }
+        if self
+            .tesla_nodes
+            .iter()
+            .any(|node| node.active && !node.macho_carried && node.entity == Some(entity))
+        {
+            return (Fix::from_f32(0.6), Fix::from_int(5));
+        }
+        if self
+            .black_holes
+            .iter()
+            .any(|hole| hole.active && hole.entity == Some(entity))
+        {
+            return (Fix::from_f32(0.15), Fix::from_int(1_000_000));
+        }
+        (Fix::from_f32(0.1), Fix::from_int(5))
     }
 
     fn shoot_blink_ray(
@@ -22842,8 +22877,9 @@ impl RolloutWorld {
                 } else {
                     ray.multiplier
                 };
+                let (min_scale, max_scale) = self.generic_scale_bounds(effect.victim);
                 let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                    .clamp(min_scale, max_scale);
                 let ratio = (Fix::ONE / effect.current_scale) * scale;
                 if !self.scale_attached_entity(effect.victim, scale, data) {
                     let row = &mut self.entities[effect.victim];
@@ -22866,6 +22902,11 @@ impl RolloutWorld {
                 for marker in &mut self.teleport_marker_pool {
                     if marker.active && marker.entity == Some(effect.victim) {
                         marker.scale = scale;
+                    }
+                }
+                for rock in &mut self.duplicated_rocks {
+                    if rock.active && rock.entity == Some(effect.victim) {
+                        rock.scale = scale;
                     }
                 }
                 self.scale_changers[index].time = time;
@@ -22961,8 +23002,13 @@ impl RolloutWorld {
                     ray.multiplier
                 };
                 let previous = dynamics.scale;
+                let max_scale = if dynamics.body_resizable {
+                    Fix::from_int(6)
+                } else {
+                    Fix::from_int(5)
+                };
                 let scale = (previous + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(dynamics.min_scale, Fix::from_int(5));
+                    .clamp(dynamics.min_scale, max_scale);
                 let ratio = (Fix::ONE / previous) * scale;
                 dynamics.scale = scale;
                 dynamics.surface_shape_dirty = true;
@@ -32831,6 +32877,46 @@ mod tests {
         assert_eq!(
             world.entities[entity].inverse_mass,
             data::get().teleport.marker_body.inverse_mass.raw()
+        );
+    }
+
+    #[test]
+    fn generic_scale_bounds_follow_target_prefabs() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let spike_entity = world.entities.len();
+        world.entities.push(CEntity::default());
+        world.spike_attacks.push(SpawnedSpike {
+            active: true,
+            entity: Some(spike_entity),
+            ..SpawnedSpike::default()
+        });
+        let node_entity = world.entities.len();
+        world.entities.push(CEntity::default());
+        world.tesla_nodes.push(SpawnedTeslaNode {
+            active: true,
+            entity: Some(node_entity),
+            ..SpawnedTeslaNode::default()
+        });
+        let hole_entity = world.entities.len();
+        world.entities.push(CEntity::default());
+        world.black_holes.push(BlackHoleState {
+            active: true,
+            entity: Some(hole_entity),
+            ..BlackHoleState::default()
+        });
+
+        assert_eq!(
+            world.generic_scale_bounds(spike_entity),
+            (Fix::from_f32(0.3), Fix::from_int(4))
+        );
+        assert_eq!(
+            world.generic_scale_bounds(node_entity),
+            (Fix::from_f32(0.6), Fix::from_int(5))
+        );
+        assert_eq!(
+            world.generic_scale_bounds(hole_entity),
+            (Fix::from_f32(0.15), Fix::from_int(1_000_000))
         );
     }
 
