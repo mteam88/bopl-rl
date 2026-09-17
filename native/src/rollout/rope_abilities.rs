@@ -1153,6 +1153,9 @@ impl RolloutWorld {
             }
         }
         for rope in &mut self.ropes {
+            // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
+            // entries, including bodies disabled during the current pass.
+            rope.disabled_this_frame = false;
             if !rope.physics.enabled {
                 continue;
             }
@@ -1186,7 +1189,6 @@ impl RolloutWorld {
             if rope.hook_active {
                 rope.physics.segment[0] = rope.hook_position;
             }
-            rope.disabled_this_frame = false;
         }
     }
 
