@@ -20169,7 +20169,7 @@ impl RolloutWorld {
         let right = up.perp_cw();
         let rotation = right.normalized_angle();
         let relative_right = right.complex_mul(inverse_basis);
-        let surface_offset = Fix::from_f32(0.3);
+        let surface_offset = Fix::from_f32(0.3) * source.scale;
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
@@ -20263,7 +20263,7 @@ impl RolloutWorld {
         let right = up.perp_cw();
         let rotation = right.normalized_angle();
         let relative_right = right.complex_mul(inverse_basis);
-        let surface_offset = Fix::from_f32(2.2);
+        let surface_offset = Fix::from_f32(2.2) * source.scale;
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);

@@ -35,6 +35,9 @@ fixed entry is committed separately with its finding id in the subject.
 - **#6 — fixed.** Roll now scales its physics radius, lethal hurtbox radius,
   swept-contact radius, platform-hop geometry, and exit radius/offset by the
   player's live scale.
+- **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
+  authored surface offsets by the cloned object's scale before rebuilding
+  composite-relative geometry.
 
 ## Projectiles
 
