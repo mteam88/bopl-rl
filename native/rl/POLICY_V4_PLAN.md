@@ -518,7 +518,7 @@ A result inside the seed spread on (1) with (2) met is the intended outcome;
 (2) missed at equal pool v7 says the gap is about the opponents, not the
 geometry; (3) unresolved keeps rays on by default.
 
-Round 2 (branch `maps-round2`, staged 2026-09-17, not on the rift): the
+Round 2 (branch `maps-round2` in the `policy-v4-work` worktree, 2026-09-17, never landed on the live rift): the
 trainer's map width is 64 (`training_map_mask` u64, fed to the binding as
 two 31-bit halves `training_map_mask` / `training_map_mask_hi` because the
 options travel as doubles; `BOPL_COUNTER_MAPS` = `map_fraction` = 64; map
@@ -539,8 +539,15 @@ platform's `right_y`, counted every tick). Held-out adds 66, 74, 92, 41, 47
 `~/.local/share/bopl-null-hypothesis/lib/maps-r2-54/libbopl_sim.so`
 (sha256 60e8f6b6...), pointed at by `v4-aim-maps-r2.toml`'s `fixed.game`
 (`train.py` now honours `--game` under the Rust backend); the tree's
-library is not touched. Running it needs the widened trainer (`_C`,
-`libbopl_research.so`) on the rift: a land-and-rebuild that waits for a go.
+library is not touched. The widened trainer (`_C`, `libbopl_research.so`,
+`libbopl_policy_eval.so`) is built in the worktree with its own venv
+(`setup.py` + `build.py --device cuda`), so the live rift is never rebuilt
+mid-wave; `19f-v4-aim-maps-r2.job` cds into the worktree and runs the
+driver from there (queued behind 19e). CPU smoke before queueing: a host-path
+vector on the staged sim with a mask spanning both halves drew 13 maps
+uniformly over 51,620 matches (3839-4079 each), `map_matches` partitions
+`matches`, the log's `map_<i>_fraction` keys match the mask; the driver's
+dry run shows the staged `--game`, 41/13 maps and `--v4-ablate 8`.
 
 Human tests on the Mac (`Tools/play-vs-agent-mac.sh --maps training |
 held-out | <rl list>`, translated to the player's `BOPL_LEVEL_SET` levels by
