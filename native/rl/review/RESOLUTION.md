@@ -56,6 +56,12 @@ fixed entry is committed separately with its finding id in the subject.
   the hidden replacement/spawn phase, and Machoman's mask-2 block belongs to
   an unported ability (distinct from the ported Macho Throw), so neither can
   be struck by Freeze through this rollout ABI.
+- **S11 — not a divergence after the confirmed Engine animator fix.** In the
+  firing phase Rust ignites overlapping Smoke, evaluates the end-of-curve and
+  water conditions, and only then applies the zero-clock Time Stop return.
+  Thus an already-ended or submerged Engine enters its stopping animation
+  during Time Stop exactly as `RocketEngine.UpdateSim` does; only animation
+  advancement and force application remain frozen.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the

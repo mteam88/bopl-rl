@@ -33391,6 +33391,31 @@ mod tests {
     }
 
     #[test]
+    fn stopped_engine_checks_curve_end_before_time_gate() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.tick = 1;
+        let end_time = data::get()
+            .engine
+            .force
+            .keys
+            .last()
+            .unwrap()
+            .time;
+        world.engines.push(SpawnedEngine {
+            active: true,
+            phase: 1,
+            time: end_time + Fix::from_raw(1),
+            platform_index: 0,
+            ..SpawnedEngine::default()
+        });
+
+        world.engines_tick(data::get(), Fix::ZERO);
+
+        assert_eq!(world.engines[0].phase, 2);
+    }
+
+    #[test]
     fn time_stop_exit_offset_uses_player_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
