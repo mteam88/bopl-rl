@@ -88,6 +88,10 @@ fixed entry is committed separately with its finding id in the subject.
   the forced exit packet now relocates the restored slime to the stealing
   gun's current firepoint before ragdoll/hold state is applied. Ordinary
   slime victims retain their existing position, matching the source branch.
+- **#8 — fixed.** Duplicated Rocket Engines now advance seven world units
+  around the parent platform perimeter before attachment. The prior `0.3`
+  argument was the separate surface offset, not Duplicator's placement
+  distance.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

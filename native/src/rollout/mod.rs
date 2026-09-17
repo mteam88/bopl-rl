@@ -20221,7 +20221,7 @@ impl RolloutWorld {
             source.local,
             source.relative_rotation,
             Fix::ONE,
-            Fix::from_f32(0.3),
+            Fix::from_int(7),
             direction,
         );
         let parent_position = self.platforms[platform_index].surface.center;
@@ -31421,6 +31421,26 @@ mod tests {
 
         assert_eq!(world.players[1].base.position, firepoint);
         assert_eq!(world.players[0].magnet.held_position, firepoint);
+    }
+
+    #[test]
+    fn duplicated_engine_moves_seven_units_along_platform() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        assert!(world.spawn_engine(0, data::get()));
+        let source = world.engines[0];
+        let expected = world.duplicate_attached_local(
+            source.platform_index,
+            source.local,
+            source.relative_rotation,
+            Fix::ONE,
+            Fix::from_int(7),
+            Vec2::RIGHT,
+        );
+
+        world.duplicate_attached_engine(0, Vec2::RIGHT, 0, data::get());
+
+        assert_eq!(world.engines[1].local, expected);
     }
 
     #[test]
