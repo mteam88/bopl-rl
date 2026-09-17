@@ -86,6 +86,11 @@ fixed entry is committed separately with its finding id in the subject.
   `PlayerBody` fallback because the Drill prefab has no `PlayerPhysics`.
   Rust no longer applies `groundedPlayerForceMultiplier`; it applies the
   ordinary PlayerBody force conversion exactly like an airborne Drill.
+- **S17 — not a divergence.** The suspected target is misclassified:
+  `orbAnim.prefab` is serialized on layer 18, not layer 26. Gust's authored
+  mask contains bit 26 but not 18, and Magnet's pull/pickup masks likewise do
+  not contain bit 18, so neither C# query reaches a live Beam orb. Rust omits
+  the same target from both scans.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
