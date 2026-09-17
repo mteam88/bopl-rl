@@ -23472,14 +23472,18 @@ impl RolloutWorld {
             }
             PLATFORM_ROTATION => {
                 let platform_index = self.players[index].platform.platform_index;
+                let enter_size = self.players[index].platform.ticks
+                    > pd.anticipation_ticks + pd.enter_ticks;
                 if !self.platform_ability_platform_live(index, platform_index) {
+                    if enter_size {
+                        self.players[index].platform.phase = PLATFORM_SIZE;
+                    }
                     return;
                 }
                 let st = &mut self.players[index].platform;
                 st.time_passed += player_dt;
                 let time_passed = st.time_passed;
                 let platform_index = st.platform_index;
-                let ticks = st.ticks;
                 let radius = self.platform_dynamics[platform_index].scale
                     * pd.enter_scale_curve.evaluate(time_passed);
                 let (center, mut up) = {
@@ -23520,7 +23524,7 @@ impl RolloutWorld {
                 // UpdateSim pass. The newly selected Size state therefore
                 // starts on the following tick, one pass after the authored
                 // Enter animation has accumulated all of its frame ticks.
-                if ticks > pd.anticipation_ticks + pd.enter_ticks {
+                if enter_size {
                     slot.platform.phase = PLATFORM_SIZE;
                 }
             }
@@ -32552,6 +32556,23 @@ mod tests {
         });
         world.portals_tick(data::get(), dt);
         assert_eq!(world.portals[0].time_alive, dt);
+    }
+
+    #[test]
+    fn platform_enter_animation_finishes_inside_blink_tunnel() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let platform = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
+        world.platforms[platform].active = false;
+        world.players[0].active = ActiveAbility::Platform;
+        world.players[0].platform.phase = PLATFORM_ROTATION;
+        world.players[0].platform.platform_index = platform;
+        world.players[0].platform.ticks =
+            data::get().platform.anticipation_ticks + data::get().platform.enter_ticks;
+
+        world.platform_ability_tick(0, Action::default(), data::get(), DT);
+
+        assert_eq!(world.players[0].platform.phase, PLATFORM_SIZE);
     }
 
     #[test]

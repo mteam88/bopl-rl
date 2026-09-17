@@ -13,6 +13,10 @@ fixed entry is committed separately with its finding id in the subject.
   prefabs in global hierarchy order. They are no longer deferred until every
   player's updater has run, so an earlier Roll can kill a later-hierarchy
   player before that player's same-pass state transition.
+- **S2 — fixed.** PlatformTransform still returns while its spawned wall is
+  inactive in a Blink tunnel, but the separate SpriteAnimator on the ability
+  form keeps running. Rust now lets that animator's completion callback move
+  Rotation to Size even while the wall is inactive, matching C#.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
