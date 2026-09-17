@@ -20537,10 +20537,18 @@ impl RolloutWorld {
             return;
         }
         let current_scale = self
-            .engines
+            .spike_attacks
             .iter()
-            .find(|engine| engine.active && !engine.macho_carried && engine.entity == Some(entity))
-            .map(|engine| engine.scale)
+            .find(|spike| spike.active && !spike.macho_carried && spike.entity == Some(entity))
+            .map(|spike| spike.scale)
+            .or_else(|| {
+                self.engines
+                    .iter()
+                    .find(|engine| {
+                        engine.active && !engine.macho_carried && engine.entity == Some(entity)
+                    })
+                    .map(|engine| engine.scale)
+            })
             .or_else(|| {
                 self.tesla_nodes
                     .iter()
@@ -20576,6 +20584,40 @@ impl RolloutWorld {
         scale: Fix,
         data: &data::RolloutData,
     ) -> bool {
+        if let Some(index) = self
+            .spike_attacks
+            .iter()
+            .position(|spike| spike.active && !spike.macho_carried && spike.entity == Some(entity))
+        {
+            let spike = self.spike_attacks[index];
+            if spike.platform_index >= self.platforms.len() {
+                return false;
+            }
+            let platform = spike.platform_index;
+            let parent_position = self.platforms[platform].surface.center;
+            let parent_rotation = self.platform_dynamics[platform].body.orientation;
+            let right = Vec2::angle(parent_rotation + spike.relative_rotation);
+            let root = self.platforms[platform]
+                .surface
+                .position(spike.local, Fix::ZERO)
+                + right.perp() * spike.surface_offset;
+            let inverse_basis = Vec2::angle(-parent_rotation);
+            let relative_right = right.complex_mul(inverse_basis);
+            let relative_center = (root - parent_position).complex_mul(inverse_basis)
+                + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
+            self.spike_attacks[index].scale = scale;
+            self.spike_attacks[index].relative_center = relative_center;
+            self.spike_attacks[index].collider_center = parent_position
+                + relative_center.complex_mul(self.platforms[platform].surface.right);
+            let extents = data::surface_extents(data.spike.attack_extents * scale);
+            self.entities[entity].right_x = (right * extents.x).x.raw();
+            self.entities[entity].right_y = (right * extents.x).y.raw();
+            self.entities[entity].up_x = (right.perp() * extents.y).x.raw();
+            self.entities[entity].up_y = (right.perp() * extents.y).y.raw();
+            self.entities[entity].x = self.spike_attacks[index].collider_center.x.raw();
+            self.entities[entity].y = self.spike_attacks[index].collider_center.y.raw();
+            return true;
+        }
         if let Some(index) = self.engines.iter().position(|engine| {
             engine.active && !engine.macho_carried && engine.entity == Some(entity)
         }) {
@@ -21417,14 +21459,22 @@ impl RolloutWorld {
                 }
                 let time = effect.time + DT;
                 let attached_inverse_mass = self
-                    .engines
+                    .spike_attacks
                     .iter()
-                    .find(|engine| {
-                        engine.active
-                            && !engine.macho_carried
-                            && engine.entity == Some(effect.victim)
+                    .find(|spike| {
+                        spike.active && !spike.macho_carried && spike.entity == Some(effect.victim)
                     })
-                    .map(|engine| engine.body.inverse_mass)
+                    .map(|spike| spike.body.inverse_mass)
+                    .or_else(|| {
+                        self.engines
+                            .iter()
+                            .find(|engine| {
+                                engine.active
+                                    && !engine.macho_carried
+                                    && engine.entity == Some(effect.victim)
+                            })
+                            .map(|engine| engine.body.inverse_mass)
+                    })
                     .or_else(|| {
                         self.tesla_nodes
                             .iter()

@@ -94,8 +94,8 @@
       "name": "Spike",
       "prefab": "Assets/GameObject/Spike.prefab",
       "prefab_guid": "b28199828504fa141b09a7fbc4328c9d",
-      "native_status": "partial",
-      "verification": "spike_ability_ab matches 500 exact NativeAOT/Rust ticks through grounded cast/recovery, far-side raycast placement, manual collider registration, down-thrust curve, persistent lethal box export, composite mass/inertia, cast impulse, neighboring-wall collision resolution and bilateral push. Recast replacement and dedicated player-lethality scenarios remain to be goldened. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
+      "native_status": "ported",
+      "verification": "Spike and SpikeAttack are source-ported wholesale: grounded form entry and movement, cast/recovery callbacks, far-side rounded-platform raycast, per-slot recast replacement, manual persistent collider registration, down-thrust animation, composite mass/inertia and correction, cast and contact impulses, one-self-push-per-frame, owner-zero player lethality, platform destruction, duplication, Macho transfer, live Growth/Shrink repositioning, Time Stop, common Shockwave/Portal/Black Hole motion and cleanup. spike_broad_ab.sh gates 4,740 optimized-Q32 NativeAOT/Rust ticks: 500 exact ordinary lifecycle ticks, exact Growth and Shrink of a live attached attack over 1,000 ticks, and the 18-form Dash contact matrix including Spike. Recast, transformed victim, platform-destruction, Macho, Portal/Black Hole and pickup-driven compositions are source-ported but not individually differentially measured."
     },
     {
       "id": 12,

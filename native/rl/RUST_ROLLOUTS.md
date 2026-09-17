@@ -543,11 +543,16 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   1,540 ticks through restored release. The retained input is stored once per
   player and the branch reuses the existing fixed state, so it adds no tick
   allocation.
-  Spike is exact through its grounded cast and recovery, opposite-surface
-  rounded-rectangle raycast, persistent down-thrust attack, platform-composite
-  mass and inertia, cast impulse, and box/wall collision response. Recast
-  replacement and player-lethality paths are implemented but still need
-  dedicated differential scenarios.
+  Spike is source-ported wholesale through its grounded form and animation
+  callbacks, opposite-surface raycast, retained per-slot replacement, persistent
+  down-thrust box, composite mass/inertia and contact response, owner-zero
+  player lethality, duplication, platform removal, Macho transfer, Time Stop
+  and common rigid-affector paths. Growth/Shrink immediately resizes and
+  repositions the attached collider with the source `RepositionOnParent`
+  ordering. `spike_broad_ab.sh` gates 4,740 optimized-Q32 ticks: 500 exact
+  ordinary lifecycle ticks, exact live Growth and Shrink, and the active-form
+  Dash matrix. Recast, transformed-victim, destruction, Macho, Portal/Black
+  Hole and acquired-pickup compositions are not individually measured.
   Engine is exact through grounded placement and recovery, scaled attached-box
   registration, composite mass and inertia, cast impulse, startup delay, fixed
   thrust curve, parent spring re-homing, and the resulting platform collisions.

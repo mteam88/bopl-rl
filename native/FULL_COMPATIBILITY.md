@@ -2590,15 +2590,29 @@ manifold order, effective composite body for impulses, raw child inverse masses
 for correction, and the callback's one-self-push-per-frame rule. Player-layer
 contacts invoke the persistent Explosion's default owner-zero lethal callback.
 
-`spike_ability_ab.c` compares 500 NativeAOT/Q32 ticks exactly through a grounded
-cast, attack registration, all curve frames, recovery exit, persistent collider,
-composite platform flags, cast-force motion, collision with a neighboring
-rounded platform, positional correction, bilateral push, and later repeated
-rigid-body contacts. The attack collider's vertical half-extent uses the same
-`One / (One / extent)` round trip as `DPhysicsBox`; this accounts for the three
-raw Q32 units between the serialized extent and observed axis and is not a
-semantic difference. Dedicated recast-replacement and player-lethality goldens
-remain open, so the catalog entry is marked partial.
+The whole-source pass also covers slot-local recast replacement, owner-zero
+player lethality and team behavior, platform removal, duplicate lifetime,
+MachoThrow's detach/reinitialize transfer, Time Stop and the common Portal,
+Black Hole and Shockwave paths. `DPhysicsBox.Scale` now dispatches the source
+`IPlatformAttachable.RepositionOnParent` callback for a live Spike: it resizes
+the box, preserves the current `SurfaceOffset`, and immediately rebuilds the
+composite child center from the parent frame. Unlike Engine and Tesla, Spike
+has no later scale-offset updater; an active down-thrust curve may replace the
+offset on its next normal update, matching `SpikeAttack.UpdatePosition`.
+
+`spike_broad_ab.sh` compares 4,740 optimized-Q32 NativeAOT/Rust ticks. The
+ordinary 500-tick scenario covers grounded cast, registration, every curve
+frame, recovery, the persistent collider, composite flags and mass, cast-force
+motion, neighboring rounded-platform correction, bilateral push and repeated
+contacts. Two 500-tick compositions hit the retained collider with Growth and
+Shrink and remain exact through immediate repositioning and the complete scale
+curve. The active-form Dash matrix contributes another exact 180-tick Spike
+contact and simultaneously guards all other form callbacks. The attack's
+vertical half-extent retains the source `One / (One / extent)` round trip, which
+explains the three raw Q32 units between serialized extent and observed axis
+without changing overlap semantics. Recast, transformed-victim, platform
+removal, Macho, Portal/Black Hole and acquired-pickup compositions are
+source-ported but have not each been isolated in a public differential.
 
 ### Executable Missile and guided box projectile (2026-09-14)
 
