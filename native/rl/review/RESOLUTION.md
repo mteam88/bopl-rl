@@ -100,6 +100,14 @@ fixed entry is committed separately with its finding id in the subject.
   destroyed Revival component wrapper in `Player.RespawnPositions`, and its
   retained `FixTransform` still supplies `GetPos()`. Rust now retains and
   consumes the same stale marker position instead of eliminating the player.
+- **S20 — deferred: requires the per-updatable Time Stop model.** The remaining
+  transformed forms cannot be corrected safely by another shared branch:
+  their `Ability`, `PlayerPhysics`, `PlayerBody`, component, and animator
+  updaters opt into `GameTime.FixedDeltaTime` independently. The required
+  change is to keep raw `DT` at the scheduler, assign clock ownership to each
+  modeled updater, and gate/integrate each component in hierarchy order from
+  its prefab's behavior. Gust and Time Stop's confirmed no-gravity symptoms
+  are fixed locally; the un-audited forms remain explicitly non-exact.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
