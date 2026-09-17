@@ -22014,6 +22014,10 @@ impl RolloutWorld {
         self.platform_entities.push(entity);
         self.sudden_death_delays.push(Fix::ZERO);
         self.platforms_changed();
+        // The duplicate is instantiated during the updater pass and joins the
+        // same pass's DetPhysics simulation. Later collision rays therefore
+        // need a broad phase containing the newly registered platform.
+        self.rebuild_bounds();
     }
 
     fn exit_freeze_animation(&mut self, index: usize) {
