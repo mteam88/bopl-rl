@@ -79,6 +79,11 @@ fixed entry is committed separately with its finding id in the subject.
   cleanup paths (Revival replacement, stock replacement, and elimination).
   It therefore receives the same removed/destroyed transition as every other
   ability body instead of remaining an active ray-blocking ghost.
+- **#27 — fixed.** Scale rays now dispatch Teleport markers through their
+  `ISpell.AddScale` semantics: only the private teleport-area/particle scale
+  changes, clamped to the authored `0.1..6`; collider radius and inverse mass
+  remain untouched. Revival's `AddScale` intentionally delegates to its
+  BoplBody scale and retains the ordinary `0.1..5` collider path.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

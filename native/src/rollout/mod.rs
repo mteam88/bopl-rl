@@ -22050,6 +22050,33 @@ impl RolloutWorld {
                     continue;
                 }
                 let time = effect.time + DT;
+                if let Some(marker_index) = self
+                    .teleport_marker_pool
+                    .iter()
+                    .position(|marker| marker.active && marker.entity == Some(effect.victim))
+                {
+                    // TeleportIndicator implements ISpell: ScaleChanger calls
+                    // AddScale on its private particle/teleport-area scale and
+                    // never assigns the DPhysicsCircle's Scale property.
+                    let inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
+                    let multiplier =
+                        if inverse_mass > Fix::ZERO && inverse_mass > ray.inverse_mass_before_big {
+                            ray.small_non_players_multiplier
+                        } else {
+                            ray.multiplier
+                        };
+                    let scale = (self.teleport_marker_pool[marker_index].scale
+                        + ray.scale_curve.evaluate(time) * multiplier)
+                        .clamp(Fix::from_f32(0.1), Fix::from_int(6));
+                    self.teleport_marker_pool[marker_index].scale = scale;
+                    self.scale_changers[index].time = time;
+                    for changer in &mut self.scale_changers {
+                        if changer.target_kind == 5 && changer.entity_id == effect.entity_id {
+                            changer.current_scale = scale;
+                        }
+                    }
+                    continue;
+                }
                 let attached_inverse_mass = self
                     .spike_attacks
                     .iter()
@@ -31332,6 +31359,42 @@ mod tests {
         world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, false, false);
 
         assert_eq!(world.entities[entity].flags, E_REMOVED);
+    }
+
+    #[test]
+    fn scale_ray_changes_teleport_area_not_marker_collider() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let entity = world.entities.len();
+        let id = world.next_id();
+        let radius = data::get().teleport.marker_radius;
+        world.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data::get().teleport.marker_layer,
+            flags: E_ACTIVE | E_ENABLED,
+            radius: radius.raw(),
+            inverse_mass: data::get().teleport.marker_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        world.teleport_marker_pool.push(TeleportMarker {
+            active: true,
+            entity: Some(entity),
+            scale: Fix::ONE,
+            ..TeleportMarker::default()
+        });
+        world.begin_scale_change_entity(entity, true, 1);
+        for _ in 0..10 {
+            world.tick += 1;
+            world.scale_changers_tick(data::get());
+        }
+
+        assert!(world.teleport_marker_pool[0].scale > Fix::ONE);
+        assert_eq!(world.entities[entity].radius, radius.raw());
+        assert_eq!(
+            world.entities[entity].inverse_mass,
+            data::get().teleport.marker_body.inverse_mass.raw()
+        );
     }
 
     #[test]
