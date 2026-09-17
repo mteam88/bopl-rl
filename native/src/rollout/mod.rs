@@ -1989,6 +1989,10 @@ pub struct PlayerSlot {
     pub push: PushState,
     pub gun: GunState,
     pub magnet: MagnetState,
+    /// Each equipped MagnetGun prefab mutates its serialized FirepointOffset
+    /// by Ability.OnScaleChanged's incremental scale multiplier.
+    pub magnet_firepoint_offsets: [Vec2; 3],
+    pub magnet_prev_scales: [Fix; 3],
     pub ragdoll: RagdollState,
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
@@ -3409,6 +3413,8 @@ impl RolloutWorld {
                 push: PushState::default(),
                 gun: GunState::default(),
                 magnet: MagnetState::default(),
+                magnet_firepoint_offsets: [data.magnet.firepoint_offset; 3],
+                magnet_prev_scales: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
                 frozen_solid_count: 0,
                 freeze_form_exit_tick: u32::MAX,
@@ -3871,6 +3877,12 @@ impl RolloutWorld {
         debug_assert_ne!(hierarchy_base, u32::MAX);
         self.players[player_index].ability_instantiated[ability_slot] = true;
         self.players[player_index].pending_ability_hierarchy[ability_slot] = u32::MAX;
+
+        if ability == ABILITY_MAGNET {
+            self.players[player_index].magnet_firepoint_offsets[ability_slot] =
+                data.magnet.firepoint_offset;
+            self.players[player_index].magnet_prev_scales[ability_slot] = Fix::ONE;
+        }
 
         if ability == ABILITY_ROCK {
             self.players[player_index].rock_hierarchy =
@@ -15430,6 +15442,8 @@ impl RolloutWorld {
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.magnet = MagnetState::default();
+            slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
+            slot.magnet_prev_scales = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -15877,6 +15891,8 @@ impl RolloutWorld {
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.magnet = MagnetState::default();
+            slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
+            slot.magnet_prev_scales = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -18354,6 +18370,7 @@ impl RolloutWorld {
 
         // Ability.UpdateSim, hierarchy 3. PlayerPhysics at hierarchy 4 only
         // updates scale for this prefab because ApplyGravity is disabled.
+        self.magnet_ability_update_scale(index);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
 
@@ -18361,6 +18378,16 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
         slot.base.external_velocity *= Fix::from_f64(0.95);
+    }
+
+    fn magnet_ability_update_scale(&mut self, index: usize) {
+        let ability_slot = self.players[index].active_slot;
+        let scale = self.players[index].player_scale;
+        let previous = self.players[index].magnet_prev_scales[ability_slot];
+        if scale != previous {
+            self.players[index].magnet_firepoint_offsets[ability_slot] *= scale / previous;
+            self.players[index].magnet_prev_scales[ability_slot] = scale;
+        }
     }
 
     /// MagnetGun.UpdateSim, hierarchy 2. Pull/pickup callbacks are layered
@@ -18532,6 +18559,7 @@ impl RolloutWorld {
         let multiplier = magnet
             .pull_curve
             .evaluate(slot.magnet.time_spent_pulling / magnet.max_pull_duration);
+        let raw_firepoint_offset = slot.magnet_firepoint_offsets[slot.active_slot];
         let ground = slot.base.ground;
         let body_position = slot.base.position;
         let mut changed = false;
@@ -18579,7 +18607,7 @@ impl RolloutWorld {
             // The shipped code accidentally measures closeness from the raw
             // prefab FirepointOffset rather than from the world firepoint.
             let mut strength = multiplier;
-            if (target.base.position - magnet.firepoint_offset).length_squared()
+            if (target.base.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18619,7 +18647,7 @@ impl RolloutWorld {
                 continue;
             }
             let mut strength = multiplier;
-            if (item.position - magnet.firepoint_offset).length_squared()
+            if (item.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18642,7 +18670,7 @@ impl RolloutWorld {
             // 10 (`item`), so MagnetGun routes it through the ordinary item
             // branch. ProjectilePullStr is reserved for layer 9 projectiles.
             let mut strength = multiplier;
-            if (missile.position - magnet.firepoint_offset).length_squared()
+            if (missile.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18664,7 +18692,7 @@ impl RolloutWorld {
                 continue;
             }
             let mut strength = multiplier;
-            if (arrow.position - magnet.firepoint_offset).length_squared()
+            if (arrow.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18684,7 +18712,7 @@ impl RolloutWorld {
                 continue;
             }
             let mut strength = multiplier;
-            if (pickup.position - magnet.firepoint_offset).length_squared()
+            if (pickup.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18709,7 +18737,7 @@ impl RolloutWorld {
                 continue;
             }
             let mut strength = multiplier;
-            if (shot.position - magnet.firepoint_offset).length_squared()
+            if (shot.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18737,7 +18765,7 @@ impl RolloutWorld {
                 continue;
             }
             let mut strength = multiplier;
-            if (marker.position - magnet.firepoint_offset).length_squared()
+            if (marker.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18762,7 +18790,7 @@ impl RolloutWorld {
                 continue;
             }
             let mut strength = multiplier;
-            if (marker.position - magnet.firepoint_offset).length_squared()
+            if (marker.position - raw_firepoint_offset).length_squared()
                 < magnet.fast_pull_radius_squared
             {
                 strength *= magnet.close_pull_multiplier;
@@ -18797,13 +18825,13 @@ impl RolloutWorld {
         }
     }
 
-    fn magnet_firepoint(&self, index: usize, data: &data::RolloutData) -> Vec2 {
+    fn magnet_firepoint(&self, index: usize, _data: &data::RolloutData) -> Vec2 {
         let slot = &self.players[index];
         let right = slot.magnet.body_right;
         let up = right.perp();
         // OnScaleChanged scales the serialized firepoint while extraOffset is
         // assigned in world units from the selected object.
-        let offset = data.magnet.firepoint_offset * slot.base.scale + slot.magnet.extra_offset;
+        let offset = slot.magnet_firepoint_offsets[slot.active_slot] + slot.magnet.extra_offset;
         slot.base.position + up * offset.y + right * offset.x
     }
 
@@ -18839,7 +18867,7 @@ impl RolloutWorld {
         let slot = &self.players[index];
         let direction = slot.magnet.aim.normalized_safe();
         let offset_x =
-            data.magnet.firepoint_offset.x * slot.base.scale + slot.magnet.extra_offset.x;
+            slot.magnet_firepoint_offsets[slot.active_slot].x + slot.magnet.extra_offset.x;
         let root = firepoint - slot.magnet.body_right * offset_x;
         let side = data.magnet.raycast_offset * slot.base.scale;
         let distance = offset_x + Fix::from_int(1000);
@@ -32821,6 +32849,28 @@ mod tests {
 
         assert_eq!(world.players[1].base.position, firepoint);
         assert_eq!(world.players[0].magnet.held_position, firepoint);
+    }
+
+    #[test]
+    fn magnet_firepoint_scale_telescopes_like_ability_component() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active_slot = 0;
+        let authored = data::get().magnet.firepoint_offset;
+        let first = Fix::from_f64(1.3);
+        let second = Fix::from_f64(0.7);
+
+        world.players[0].player_scale = first;
+        world.magnet_ability_update_scale(0);
+        assert_eq!(world.players[0].magnet_firepoint_offsets[0], authored * first);
+
+        world.players[0].player_scale = second;
+        world.magnet_ability_update_scale(0);
+        assert_eq!(
+            world.players[0].magnet_firepoint_offsets[0],
+            authored * first * (second / first)
+        );
+        assert_eq!(world.players[0].magnet_prev_scales[0], second);
     }
 
     #[test]

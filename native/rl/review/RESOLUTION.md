@@ -40,6 +40,11 @@ fixed entry is committed separately with its finding id in the subject.
   `teleportObject`'s early return; trigger-only auxiliary rows have no
   `SpriteRenderer` and return before mutation. Rust's one entity hit therefore
   produces the same single positional shift for every reachable target.
+- **S8 — fixed.** Each equipped Magnet prefab now retains its own mutable
+  `FirepointOffset` and previous Ability scale. `MagnetGun.UpdateSim` uses the
+  prior value, then the later `Ability.UpdateSim` multiplies it by
+  `player.Scale / prevScale`; this preserves both hierarchy timing and Q32
+  telescoping instead of recomputing from the authored offset at fire time.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
