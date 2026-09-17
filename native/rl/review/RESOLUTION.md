@@ -301,6 +301,11 @@ fixed entry is committed separately with its finding id in the subject.
   lightning and BlackHole2 are both instantiated as unparented root prefabs
   and neither prefab contains `Ability`; they likewise do not receive
   `E_CONTACT_DAMAGE_KNOWN` or a source id in C#. Rust's zero metadata matches.
+- **S4 — not a divergence.** The `ResizablePlatform` component GUID appears
+  only on the spawned ability prefab (and is referenced by Platform ability),
+  not on any of the 125 shipped map scenes. Map terrain therefore never enters
+  `PlatformAbility`'s ResizablePlatform fallback, and its zero source id is
+  correct; spawned ResizablePlatforms retain their explicit ability source.
 - **S5 — fixed.** PortalShot and Portal clocks now advance by the already
   player-scaled updater delta exactly once. This matches each C# component's
   raw `SimDeltaTime * GameTime.PlayerTimeScale` expression at fractional
