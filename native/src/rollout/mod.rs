@@ -295,10 +295,14 @@ const E_REMOVED: u32 = 1 << 31;
 #[inline]
 const fn ability_collider_flags(ability: u32) -> u32 {
     E_CONTACT_DAMAGE_KNOWN
-        | if ability == ABILITY_ROCK {
-            E_CONTACT_DAMAGE
-        } else {
-            0
+        | match ability {
+            ABILITY_ROCK => E_CONTACT_DAMAGE,
+            // These components live on the authored ability-form collider,
+            // so RlObservation.GetComponent sees them even while the form is
+            // inactive. Drill's box owns Hitbox; Tesla's owns Explosion.
+            ABILITY_DRILL => E_HITBOX,
+            ABILITY_TESLA => E_EXPLOSIVE,
+            _ => 0,
         }
 }
 
