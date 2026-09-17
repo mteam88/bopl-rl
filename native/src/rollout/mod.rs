@@ -7895,7 +7895,17 @@ impl RolloutWorld {
 
     fn roll_move_grounded(&mut self, index: usize, data: &data::RolloutData) {
         let speed = self.players[index].roll.grounded_speed;
-        if self.players[index].roll.charging || speed == Fix::ZERO {
+        if self.players[index].roll.charging {
+            // Roll.Move still delegates to PlayerPhysics.Move(zero) while
+            // charging. That decays the inherited grounded speed, advances
+            // the retained surface local (including platform force), and
+            // performs the ordinary platform-drop check.
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+            return;
+        }
+        if speed == Fix::ZERO {
             return;
         }
         let hurtbox_radius = data.roll.radius * self.players[index].player_scale;
@@ -31012,6 +31022,21 @@ mod tests {
             world.platform_dynamics[index].root_body.inverse_inertia,
             world.platform_dynamics[index].body.inverse_inertia
         );
+    }
+
+    #[test]
+    fn charging_roll_runs_zero_input_ground_move() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        assert!(world.players[0].base.grounded);
+        world.players[0].roll.charging = true;
+        world.players[0].base.grounded_speed = Fix::from_int(12);
+        let expected =
+            world.players[0].base.grounded_speed * world.players[0].base.constants.friction;
+
+        world.roll_move_grounded(0, data::get());
+
+        assert_eq!(world.players[0].base.grounded_speed, expected);
     }
 
     #[test]

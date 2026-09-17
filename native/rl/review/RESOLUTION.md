@@ -35,6 +35,10 @@ fixed entry is committed separately with its finding id in the subject.
 - **#6 — fixed.** Roll now scales its physics radius, lethal hurtbox radius,
   swept-contact radius, platform-hop geometry, and exit radius/offset by the
   player's live scale.
+- **#4 — fixed.** Grounded Roll now calls the ordinary zero-input
+  `PlayerPhysics.Move` path on every charging pass. This decays the inherited
+  grounded speed, updates its retained surface-local coordinate, and performs
+  the same live-platform/drop checks as C# before release.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
