@@ -9826,7 +9826,7 @@ impl RolloutWorld {
         slot.cast_spell.collider_position = published_position;
         slot.cast_spell.collider_right = Vec2::RIGHT;
         slot.cast_spell.collider_rotation = Fix::ZERO;
-        slot.base.position += data.time_stop.exit_offset;
+        slot.base.position += data.time_stop.exit_offset * slot.player_scale;
         slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = false;
@@ -31030,6 +31030,24 @@ mod tests {
         world.engines[0].phase = 2;
         world.engines_tick(data::get(), Fix::ZERO);
         assert_eq!(world.engines[0].ticks, 3);
+    }
+
+    #[test]
+    fn time_stop_exit_offset_uses_player_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].base.grounded = false;
+        world.players[0].base.ground = None;
+        let start = world.players[0].base.position;
+        world.players[0].active = ActiveAbility::TimeStop;
+        world.players[0].player_scale = Fix::from_int(2);
+
+        world.exit_time_stop_cast(0, data::get());
+
+        assert_eq!(
+            world.players[0].base.position,
+            start + data::get().time_stop.exit_offset * Fix::from_int(2)
+        );
     }
 
     #[test]

@@ -30,6 +30,8 @@ fixed entry is committed separately with its finding id in the subject.
 - **#41 — fixed.** Rocket Engine start and end SpriteAnimator counters now
   stop when global time is stopped. The firing phase was already gated; all
   three phases now match the environment-owned C# components.
+- **#38 — fixed.** Time Stop's exit offset now multiplies by the caster's live
+  player scale, matching `CastSpell.ExitAbility`.
 
 ## Cross-cutting
 
