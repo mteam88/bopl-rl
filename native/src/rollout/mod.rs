@@ -77,6 +77,11 @@ pub const ABILITY_FREEZE: u32 = 36;
 pub const ABILITY_MJOLNIR: u32 = 37;
 pub const ABILITY_PORTAL_GUN: u32 = 38;
 
+#[inline(always)]
+const fn ability_bit(ability: u32) -> u64 {
+    1u64 << ability
+}
+
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
 #[repr(C)]
@@ -101,6 +106,43 @@ impl CAction {
         let x = i64::from(self.buttons & 512 != 0) - i64::from(self.buttons & 128 != 0);
         let y = i64::from(self.buttons & 64 != 0) - i64::from(self.buttons & 256 != 0);
         Vec2::new(Fix::from_int(x), Fix::from_int(y))
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct RecordedActions {
+    first_four: u128,
+    last_two: u64,
+}
+
+impl RecordedActions {
+    #[inline(always)]
+    fn new(actions: &[CAction]) -> Self {
+        let mut frame = Self::default();
+        for (index, action) in actions.iter().enumerate() {
+            let packed = u32::from(action.angle)
+                | (u32::from(action.reserved) << 8)
+                | (u32::from(action.buttons) << 16);
+            if index < 4 {
+                frame.first_four |= u128::from(packed) << (index * 32);
+            } else {
+                frame.last_two |= u64::from(packed) << ((index - 4) * 32);
+            }
+        }
+        frame
+    }
+
+    fn action(self, index: usize) -> CAction {
+        let packed = if index < 4 {
+            (self.first_four >> (index * 32)) as u32
+        } else {
+            (self.last_two >> ((index - 4) * 32)) as u32
+        };
+        CAction {
+            angle: packed as u8,
+            reserved: (packed >> 8) as u8,
+            buttons: (packed >> 16) as u16,
+        }
     }
 }
 #[repr(C)]
@@ -1757,6 +1799,21 @@ impl Default for GustWave {
 }
 
 impl GustWave {
+    fn reset(&mut self) {
+        self.active = false;
+        self.registered = false;
+        self.born_tick = 0;
+        self.position = Vec2::ZERO;
+        self.scale = Fix::ONE;
+        self.time = Fix::ZERO;
+        self.target_count = 0;
+        self.item_count = 0;
+        self.arrow_count = 0;
+        self.missile_count = 0;
+        self.portal_shot_count = 0;
+        self.black_hole_count = 0;
+    }
+
     #[inline]
     fn retained_count(&self) -> usize {
         self.target_count
@@ -2150,6 +2207,8 @@ pub struct RolloutWorld {
     bounds_epoch: u64,
     /// `platform_epoch` the platform entity rows were written for.
     platform_rows_epoch: u64,
+    /// Simulation tick whose DetPhysics actor rows are already synchronized.
+    actor_rows_tick: u32,
     /// `platform_epoch` at which `platforms_tick` last found every body at
     /// rest at its home, so the check need not be repeated until a change.
     quiet_epoch: u64,
@@ -2215,6 +2274,10 @@ pub struct RolloutWorld {
     pub ability_spawner_enabled: bool,
     pub ability_spawner_time: Fix,
     pub ability_spawner_spawns: u8,
+    /// Abilities which can still own an updater in this episode. Bits are
+    /// retained after a pickup replaces a loadout slot because already-fired
+    /// projectiles and effects remain in Unity's updater list.
+    active_subsystems: u64,
     /// AntiLockPlatform runtime (map 2): platform index and waypoint.
     pub orbits: Vec<(usize, usize)>,
     pub next_platform_id: u32,
@@ -2233,7 +2296,7 @@ pub struct RolloutWorld {
     pub sample_valid: bool,
     /// Registered actions per simulated tick (warmup included), for the
     /// BOPLREP2 replay export.
-    pub recording: Vec<[CAction; MAX_PLAYERS]>,
+    recording: Vec<RecordedActions>,
     /// Config captured at reset for the replay header.
     pub replay_config: CConfig,
     /// Encoded replay archive (bopl_rl_replay hands out this buffer).
@@ -2282,6 +2345,7 @@ impl RolloutWorld {
             platform_epoch: 1,
             bounds_epoch: 0,
             platform_rows_epoch: 0,
+            actor_rows_tick: u32::MAX,
             quiet_epoch: 0,
             scratch: PlatformScratch {
                 item_order: Vec::with_capacity(192),
@@ -2345,6 +2409,7 @@ impl RolloutWorld {
             ability_spawner_enabled: false,
             ability_spawner_time: Fix::ZERO,
             ability_spawner_spawns: 0,
+            active_subsystems: 0,
             orbits: Vec::with_capacity(4),
             next_platform_id: 0,
             next_entity_id: 0,
@@ -2388,6 +2453,7 @@ impl RolloutWorld {
         self.platform_epoch = src.platform_epoch;
         self.bounds_epoch = src.bounds_epoch;
         self.platform_rows_epoch = src.platform_rows_epoch;
+        self.actor_rows_tick = src.actor_rows_tick;
         self.quiet_epoch = src.quiet_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
@@ -2446,6 +2512,7 @@ impl RolloutWorld {
         self.ability_spawner_enabled = src.ability_spawner_enabled;
         self.ability_spawner_time = src.ability_spawner_time;
         self.ability_spawner_spawns = src.ability_spawner_spawns;
+        self.active_subsystems = src.active_subsystems;
         self.orbits.clone_from(&src.orbits);
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
@@ -2481,6 +2548,7 @@ impl RolloutWorld {
             platform_epoch: _,
             bounds_epoch: _,
             platform_rows_epoch: _,
+            actor_rows_tick: _,
             quiet_epoch: _,
             scratch: _,
             platform_dynamics: _,
@@ -2534,6 +2602,7 @@ impl RolloutWorld {
             ability_spawner_enabled: _,
             ability_spawner_time: _,
             ability_spawner_spawns: _,
+            active_subsystems: _,
             orbits: _,
             next_platform_id: _,
             next_entity_id: _,
@@ -2595,6 +2664,7 @@ impl RolloutWorld {
         self.warmup = config.warmup_ticks;
         self.limit = config.max_episode_ticks;
         self.tick = 0;
+        self.actor_rows_tick = u32::MAX;
         self.episode_ticks = 0;
         self.started = false;
         self.terminal = false;
@@ -2629,10 +2699,13 @@ impl RolloutWorld {
             std::env::var_os("BOPL_RL_ABILITY_SPAWNS").is_some_and(|value| value == "1");
         self.ability_spawner_time = Fix::from_int(i64::from(self.warmup)) * DT;
         self.ability_spawner_spawns = 0;
+        self.active_subsystems = 0;
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
-        self.gust_waves = [GustWave::default(); MAX_PLAYERS * 3];
+        for wave in &mut self.gust_waves {
+            wave.reset();
+        }
         self.revival_marker_pool.clear();
         self.teleport_marker_pool.clear();
         self.portal_shots.clear();
@@ -2643,7 +2716,6 @@ impl RolloutWorld {
         self.portal_body_ids.clear();
         self.beam_orbs.clear();
         self.beam_pool.clear();
-        rope_abilities::reset_rope_pool(&mut self.ropes);
         self.next_rope_number = 0;
         self.rope_rectangles.clear();
         self.beam_graph = new_beam_graph(data);
@@ -2684,6 +2756,13 @@ impl RolloutWorld {
                 }
                 *ability = resolved;
             }
+            for &ability in abilities.iter().take(slots) {
+                self.active_subsystems |= ability_bit(ability);
+            }
+        }
+        let rope_mask = ability_bit(ABILITY_GRAPPLING_HOOK) | ability_bit(ABILITY_WEB_SWING);
+        if self.ability_spawner_enabled || self.active_subsystems & rope_mask != 0 {
+            rope_abilities::reset_rope_pool(&mut self.ropes);
         }
         // Entity table, in the .NET DetPhysics shape-group order. Within a
         // group registration follows player then equipped-slot order.
@@ -3444,7 +3523,7 @@ impl RolloutWorld {
         }
         // Replays drive every simulated tick from boot, warmup included.
         for _ in 0..self.warmup {
-            self.recording.push([CAction::default(); MAX_PLAYERS]);
+            self.recording.push(RecordedActions::default());
         }
         self.tick = self.warmup;
         self.started = true;
@@ -3704,6 +3783,7 @@ impl RolloutWorld {
             // beyond every authored cooldown. The old inactive ability object
             // is not destroyed and its registered collider row stays behind.
             let ability = pickup.ability;
+            self.active_subsystems |= ability_bit(ability);
             let slot = &mut self.players[player_index];
             slot.abilities[2] = ability;
             slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
@@ -4113,9 +4193,7 @@ impl RolloutWorld {
         }
         self.sample_valid = false;
         for _ in 0..repeat.max(1) {
-            let mut frame = [CAction::default(); MAX_PLAYERS];
-            frame[..actions.len()].copy_from_slice(actions);
-            self.recording.push(frame);
+            self.recording.push(RecordedActions::new(actions));
             // RlBridge registers this frame before Updater.TickSimulation.
             // Live SlimeController/PlayerBody state therefore consumes the
             // current input immediately. Only Player.Position is stale; that
@@ -4143,9 +4221,7 @@ impl RolloutWorld {
         self.sample_valid = true;
         if !self.terminal {
             for _ in 0..second {
-                let mut frame = [CAction::default(); MAX_PLAYERS];
-                frame[..actions.len()].copy_from_slice(actions);
-                self.recording.push(frame);
+                self.recording.push(RecordedActions::new(actions));
                 self.game_tick(actions);
                 if self.terminal {
                     break;
@@ -4162,6 +4238,14 @@ impl RolloutWorld {
     /// session end checks.
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
+        let active_subsystems = self.active_subsystems;
+        let has = |ability| active_subsystems & ability_bit(ability) != 0;
+        let has_rope = has(ABILITY_GRAPPLING_HOOK) || has(ABILITY_WEB_SWING);
+        let has_thrown_item = has(ABILITY_GRENADE)
+            || has(ABILITY_SMOKE)
+            || has(ABILITY_TACK)
+            || has(ABILITY_MJOLNIR)
+            || has(ABILITY_POKE_BALL);
         // DestroyFix from a BlackHole wall callback leaves the rounded body
         // visible as destroyed for that contact pass. DetPhysics removes it
         // at the beginning of the following simulation pass.
@@ -4171,24 +4255,46 @@ impl RolloutWorld {
                 self.remove_platform(platform_index);
             }
         }
-        self.register_pending_arrows();
-        self.register_pending_duplicated_pickups(data);
+        if has(ABILITY_BOW) {
+            self.register_pending_arrows();
+        }
+        if has(ABILITY_DUPLICATOR) {
+            self.register_pending_duplicated_pickups(data);
+        }
         // A projectile fired during the prior updater pass has a lower
         // allocated hierarchy than an ability prefab instantiated by a later
         // pickup collision callback. Updater initializes in that hierarchy
         // order, so expose the Arrow before the replacement ability row.
-        self.register_pending_picked_abilities(data);
-        self.register_pending_mines(data);
-        self.register_pending_guided_missiles(data);
-        self.register_pending_missile_explosions(data);
-        self.register_pending_revival_markers(data);
-        self.register_pending_teleport_markers(data);
-        self.register_pending_revival_clones(data);
+        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+            self.register_pending_picked_abilities(data);
+        }
+        if has(ABILITY_MINE) {
+            self.register_pending_mines(data);
+        }
+        if has(ABILITY_MISSILE) {
+            self.register_pending_guided_missiles(data);
+            self.register_pending_missile_explosions(data);
+        }
+        if has(ABILITY_REVIVAL) {
+            self.register_pending_revival_markers(data);
+            self.register_pending_revival_clones(data);
+        }
+        if has(ABILITY_TELEPORT) {
+            self.register_pending_teleport_markers(data);
+        }
         self.register_pending_stock_clones(data);
-        self.register_pending_grenade_explosions(data);
-        self.register_pending_smoke(data);
-        self.register_pending_time_stops();
-        self.duplicated_objects_tick();
+        if has(ABILITY_GRENADE) {
+            self.register_pending_grenade_explosions(data);
+        }
+        if has(ABILITY_SMOKE) {
+            self.register_pending_smoke(data);
+        }
+        if has(ABILITY_TIME_STOP) {
+            self.register_pending_time_stops();
+        }
+        if has(ABILITY_DUPLICATOR) {
+            self.duplicated_objects_tick();
+        }
         // Updatables earlier than a TimeStop effect observe the scale from
         // the start of the pass. DetPhysics observes any scale written by the
         // effect later in this same pass.
@@ -4198,8 +4304,12 @@ impl RolloutWorld {
         // before it invokes any existing MonoUpdatable. A newly spawned Gust
         // wave therefore applies its first time-zero impulse before map home
         // springs, while its same-tick UpdateSim impulse runs after them.
-        self.gust_waves_init(data);
-        self.meteor_waves_init(data);
+        if has(ABILITY_GUST) {
+            self.gust_waves_init(data);
+        }
+        if has(ABILITY_METEOR) {
+            self.meteor_waves_init(data);
+        }
         // Platforms moved in the previous tick's physics stage.
         self.rebuild_bounds();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
@@ -4408,57 +4518,117 @@ impl RolloutWorld {
                 self.kill(index, ENVIRONMENT, cause, false, false);
             }
         }
-        self.magnet_parries_tick(data);
-        self.grapple_ropes_update();
-        self.ropes_update();
-        self.beam_orbs_tick(data);
+        if has(ABILITY_MAGNET) {
+            self.magnet_parries_tick(data);
+        }
+        if has(ABILITY_GRAPPLING_HOOK) {
+            self.grapple_ropes_update();
+        }
+        if has_rope {
+            self.ropes_update();
+        }
+        if has(ABILITY_BEAM) {
+            self.beam_orbs_tick(data);
+        }
         // Spawned BlackHole prefabs are registered after every authored
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
-        self.black_holes_tick(data, updater_dt);
-        self.portal_shots_tick(data, updater_dt);
-        self.portals_tick(data, updater_dt);
-        self.macho_boulders_tick(data);
-        self.rewind_recorders_tick();
+        if has(ABILITY_BLACK_HOLE) {
+            self.black_holes_tick(data, updater_dt);
+        }
+        if has(ABILITY_PORTAL_GUN) {
+            self.portal_shots_tick(data, updater_dt);
+            self.portals_tick(data, updater_dt);
+        }
+        if has(ABILITY_THROW) {
+            self.macho_boulders_tick(data);
+        }
+        if has(ABILITY_REWIND) {
+            self.rewind_recorders_tick();
+        }
         // SuperStarEffect prefabs spawned during a slime update join the
         // updater list on the following tick. Once live they run after player
         // forms and can overwrite the tick's vertical self-imposed velocity.
-        for (index, &jump_pressed) in jump_pressed_by_player
-            .iter()
-            .enumerate()
-            .take(self.players.len())
-        {
-            self.gold_mushroom_tick(index, jump_pressed, data);
+        if has(ABILITY_GOLD_MUSHROOM) {
+            for (index, &jump_pressed) in jump_pressed_by_player
+                .iter()
+                .enumerate()
+                .take(self.players.len())
+            {
+                self.gold_mushroom_tick(index, jump_pressed, data);
+            }
         }
-        self.gust_waves_update(data, updater_dt);
-        self.meteor_waves_update(data);
-        self.revival_effects_tick(data);
-        self.teleport_effects_tick(data, updater_dt);
-        self.teleport_pending_tick(data);
-        self.blink_tunnels_tick(data, updater_dt);
-        self.blink_platform_tunnels_tick(data, updater_dt);
-        self.blink_object_tunnels_tick(updater_dt);
-        self.grenade_explosions_tick(data, updater_dt);
-        self.missile_explosions_tick(data, updater_dt);
-        self.smoke_tick(data, updater_dt);
-        self.time_stop_effects_tick(data);
-        self.spike_attacks_tick(data, updater_dt);
-        self.engines_tick(data, updater_dt);
-        self.tesla_nodes_tick(data, updater_dt);
-        self.frozen_solids_tick(updater_dt);
-        // Spawned item BoplBody updaters precede ScaleChanger instances in
-        // the global hierarchy. They therefore adopt the preceding pass's
-        // collider scale before the later ray effect writes its next value.
-        self.thrown_item_scale_mass_tick();
-        self.poke_balls_tick(data, updater_dt);
-        self.tacks_tick(data, updater_dt);
-        self.scale_changers_tick(data);
-        self.duplicate_platform_effects_tick(data, updater_dt);
-        self.meteor_smears_tick(data);
-        self.register_pending_duplicated_items(data);
+        if has(ABILITY_GUST) {
+            self.gust_waves_update(data, updater_dt);
+        }
+        if has(ABILITY_METEOR) {
+            self.meteor_waves_update(data);
+        }
+        if has(ABILITY_REVIVAL) {
+            self.revival_effects_tick(data);
+        }
+        if has(ABILITY_TELEPORT) {
+            self.teleport_effects_tick(data, updater_dt);
+            self.teleport_pending_tick(data);
+        }
+        if has(ABILITY_BLINK) {
+            self.blink_tunnels_tick(data, updater_dt);
+            self.blink_platform_tunnels_tick(data, updater_dt);
+            self.blink_object_tunnels_tick(updater_dt);
+        }
+        if has(ABILITY_GRENADE) {
+            self.grenade_explosions_tick(data, updater_dt);
+        }
+        if has(ABILITY_MISSILE) {
+            self.missile_explosions_tick(data, updater_dt);
+        }
+        if has(ABILITY_SMOKE) {
+            self.smoke_tick(data, updater_dt);
+        }
+        if has(ABILITY_TIME_STOP) {
+            self.time_stop_effects_tick(data);
+        }
+        if has(ABILITY_SPIKE) {
+            self.spike_attacks_tick(data, updater_dt);
+        }
+        if has(ABILITY_ENGINE) {
+            self.engines_tick(data, updater_dt);
+        }
+        if has(ABILITY_TESLA) {
+            self.tesla_nodes_tick(data, updater_dt);
+        }
+        if has(ABILITY_FREEZE) {
+            self.frozen_solids_tick(updater_dt);
+        }
+        if has_thrown_item {
+            // Spawned item BoplBody updaters precede ScaleChanger instances in
+            // the global hierarchy. They therefore adopt the preceding pass's
+            // collider scale before the later ray effect writes its next value.
+            self.thrown_item_scale_mass_tick();
+        }
+        if has(ABILITY_POKE_BALL) {
+            self.poke_balls_tick(data, updater_dt);
+        }
+        if has(ABILITY_TACK) {
+            self.tacks_tick(data, updater_dt);
+        }
+        if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
+            self.scale_changers_tick(data);
+        }
+        if has(ABILITY_DUPLICATOR) {
+            self.duplicate_platform_effects_tick(data, updater_dt);
+        }
+        if has(ABILITY_METEOR) {
+            self.meteor_smears_tick(data);
+        }
+        if has(ABILITY_DUPLICATOR) {
+            self.register_pending_duplicated_items(data);
+        }
         // Roll dispatches its extra swept hurtboxes from Roll.UpdateSim,
         // before this pass's DetPhysics collider synchronization.
-        self.roll_contacts(data);
+        if has(ABILITY_ROLL) {
+            self.roll_contacts(data);
+        }
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
@@ -4564,16 +4734,34 @@ impl RolloutWorld {
                 self.update_obs_state(index, input);
             }
         }
-        self.abilityless_clones_tick(actions);
+        if has(ABILITY_GOLD_MUSHROOM) {
+            self.abilityless_clones_tick(actions);
+        }
         let physics_dt = DT * self.player_time_scale;
-        self.arrows_integrate(data, updater_dt, physics_dt);
-        self.ability_pickups_integrate(data, physics_dt);
-        self.guided_missiles_integrate(data, physics_dt);
-        self.thrown_items_integrate(data, updater_dt, physics_dt);
-        self.portal_shots_integrate(physics_dt);
-        self.revival_markers_integrate(physics_dt);
-        self.rocks_integrate(physics_dt);
-        self.duplicated_rocks_integrate(physics_dt, data);
+        if has(ABILITY_BOW) {
+            self.arrows_integrate(data, updater_dt, physics_dt);
+        }
+        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+            self.ability_pickups_integrate(data, physics_dt);
+        }
+        if has(ABILITY_MISSILE) {
+            self.guided_missiles_integrate(data, physics_dt);
+        }
+        if has_thrown_item {
+            self.thrown_items_integrate(data, updater_dt, physics_dt);
+        }
+        if has(ABILITY_PORTAL_GUN) {
+            self.portal_shots_integrate(physics_dt);
+        }
+        if has(ABILITY_REVIVAL) {
+            self.revival_markers_integrate(physics_dt);
+        }
+        if has(ABILITY_ROCK) {
+            self.rocks_integrate(physics_dt);
+        }
+        if has(ABILITY_DUPLICATOR) {
+            self.duplicated_rocks_integrate(physics_dt, data);
+        }
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -4615,37 +4803,73 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         self.platforms_tick(data, updater_dt, physics_dt);
-        self.ropes_physics(physics_dt);
-        self.grapple_hook_contacts();
-        let beam_contact_count = self
-            .beam_pool
-            .iter()
-            .take_while(|slot| {
-                slot.active
-                    && slot
-                        .entity
-                        .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-            })
-            .count();
-        self.beam_physics_tick(data);
-        self.beam_contacts(beam_contact_count);
-        self.portal_shots_contacts(data);
-        self.black_hole_contacts(data);
-        self.drill_contacts();
-        self.ability_pickups_contacts(data);
-        self.rocks_contacts(data);
-        self.portal_shot_rock_contacts(data);
-        self.arrows_contacts(data);
-        self.guided_missile_contacts(data);
-        self.thrown_item_platform_contacts(data);
-        self.thrown_item_pair_contacts(data);
-        self.thrown_items_contacts(data);
-        self.grenade_explosion_contacts(data);
-        self.missile_explosion_contacts(data);
-        self.smoke_contacts(data);
-        self.spike_contacts(data);
-        self.tesla_contacts(data);
-        self.abilityless_clone_contacts();
+        if has_rope {
+            self.ropes_physics(physics_dt);
+        }
+        if has(ABILITY_GRAPPLING_HOOK) {
+            self.grapple_hook_contacts();
+        }
+        if has(ABILITY_BEAM) {
+            let beam_contact_count = self
+                .beam_pool
+                .iter()
+                .take_while(|slot| {
+                    slot.active
+                        && slot
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                })
+                .count();
+            self.beam_physics_tick(data);
+            self.beam_contacts(beam_contact_count);
+        }
+        if has(ABILITY_PORTAL_GUN) {
+            self.portal_shots_contacts(data);
+        }
+        if has(ABILITY_BLACK_HOLE) {
+            self.black_hole_contacts(data);
+        }
+        if has(ABILITY_DRILL) {
+            self.drill_contacts();
+        }
+        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+            self.ability_pickups_contacts(data);
+        }
+        if has(ABILITY_ROCK) {
+            self.rocks_contacts(data);
+        }
+        if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
+            self.portal_shot_rock_contacts(data);
+        }
+        if has(ABILITY_BOW) {
+            self.arrows_contacts(data);
+        }
+        if has(ABILITY_MISSILE) {
+            self.guided_missile_contacts(data);
+        }
+        if has_thrown_item {
+            self.thrown_item_platform_contacts(data);
+            self.thrown_item_pair_contacts(data);
+            self.thrown_items_contacts(data);
+        }
+        if has(ABILITY_GRENADE) {
+            self.grenade_explosion_contacts(data);
+        }
+        if has(ABILITY_MISSILE) {
+            self.missile_explosion_contacts(data);
+        }
+        if has(ABILITY_SMOKE) {
+            self.smoke_contacts(data);
+        }
+        if has(ABILITY_SPIKE) {
+            self.spike_contacts(data);
+        }
+        if has(ABILITY_TESLA) {
+            self.tesla_contacts(data);
+        }
+        if has(ABILITY_GOLD_MUSHROOM) {
+            self.abilityless_clone_contacts();
+        }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -4694,10 +4918,18 @@ impl RolloutWorld {
                 self.players[index].base.late_step(&self.platforms);
             }
         }
-        self.ropes_late();
-        self.macho_late_tick(data);
-        self.mines_late_tick(data);
-        self.rocks_late_tick(data);
+        if has_rope {
+            self.ropes_late();
+        }
+        if has(ABILITY_THROW) {
+            self.macho_late_tick(data);
+        }
+        if has(ABILITY_MINE) {
+            self.mines_late_tick(data);
+        }
+        if has(ABILITY_ROCK) {
+            self.rocks_late_tick(data);
+        }
         // On the following player-updater pass, an attached rider observes
         // that its StickyRoundedRectangle GameObject is inactive and exits
         // the ground with the wall's last surface normal.
@@ -4714,6 +4946,7 @@ impl RolloutWorld {
             }
         }
         self.tick += 1;
+        self.actor_rows_tick = self.tick;
         self.episode_ticks += 1;
         self.session_tick();
     }
@@ -15514,10 +15747,11 @@ impl RolloutWorld {
     /// performs the curve's first time-zero impulse immediately.
     fn gust_waves_init(&mut self, data: &data::RolloutData) {
         for wave_index in 0..self.gust_waves.len() {
-            let mut wave = self.gust_waves[wave_index];
-            if !wave.active || wave.registered || wave.born_tick >= self.tick {
+            let current = &self.gust_waves[wave_index];
+            if !current.active || current.registered || current.born_tick >= self.tick {
                 continue;
             }
+            let mut wave = self.gust_waves[wave_index];
             wave.registered = true;
             let query = Circle {
                 center: wave.position,
@@ -26335,9 +26569,9 @@ impl RolloutWorld {
 
     /// Stable rounded-rectangle broad phase, matching the RR subset of the
     /// generic DetPhysics sweep (strict touching-edge rejection included).
-    fn platform_pairs(&self, scratch: &mut PlatformScratch) {
+    fn platform_pairs(platforms: &[Platform], entities: &[CEntity], scratch: &mut PlatformScratch) {
         scratch.pairs.clear();
-        if self.platforms.len() < 2 {
+        if platforms.len() < 2 {
             return;
         }
         // DetPhysics picks the sweep axis from every registered collider:
@@ -26348,7 +26582,7 @@ impl RolloutWorld {
         let others = &mut scratch.others;
         others.clear();
         others.extend(
-            self.entities
+            entities
                 .iter()
                 .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
                 .map(|e| {
@@ -26361,7 +26595,7 @@ impl RolloutWorld {
         );
         let mut mean = Vec2::ZERO;
         let mut active_platforms = 0usize;
-        for platform in &self.platforms {
+        for platform in platforms {
             if platform.active {
                 mean += platform.surface.center;
                 active_platforms += 1;
@@ -26372,12 +26606,11 @@ impl RolloutWorld {
         }
         mean = mean / Fix::from_int((active_platforms + others.len()) as i64);
         let mut variance = Vec2::ZERO;
-        for platform in &self.platforms {
+        for platform in platforms {
             let delta = mean - platform.surface.center;
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
-        for e in self
-            .entities
+        for e in entities
             .iter()
             .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
         {
@@ -26389,7 +26622,7 @@ impl RolloutWorld {
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let bounds = &mut scratch.bounds;
         bounds.clear();
-        bounds.extend(self.platforms.iter().map(|platform| {
+        bounds.extend(platforms.iter().map(|platform| {
             let r = platform.collider;
             let extent = Vec2::new(
                 r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
@@ -26401,7 +26634,7 @@ impl RolloutWorld {
         let active = &mut scratch.active;
         active.clear();
         active.extend(
-            self.platforms
+            platforms
                 .iter()
                 .enumerate()
                 .filter_map(|(index, platform)| platform.active.then_some(index)),
@@ -27471,7 +27704,7 @@ impl RolloutWorld {
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
-        let mut scratch = std::mem::take(&mut self.scratch);
+        let scratch = &mut self.scratch;
         scratch.callback_colliders.clear();
         scratch
             .callback_colliders
@@ -27479,7 +27712,7 @@ impl RolloutWorld {
 
         // RR-only sweep/narrow-phase. Contacts are all captured before any
         // impulse or correction, just like DetPhysics' collision buffer.
-        self.platform_pairs(&mut scratch);
+        Self::platform_pairs(&self.platforms, &self.entities, scratch);
         scratch.contacts.clear();
         for &[a, b] in &scratch.pairs {
             if let Some(contact) = crate::physics::contact::rounded_rounded(
@@ -27728,7 +27961,9 @@ impl RolloutWorld {
             self.players
                 .iter()
                 .enumerate()
-                .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
+                .filter(|(_, slot)| {
+                    slot.base.alive && slot.respawn_ticks == 0 && slot.base.grounded
+                })
                 // Roll enables PlayerCollision.isSquishable on entry, then
                 // ReleaseDash disables it for the lethal rolling form.
                 .filter(|(_, slot)| slot.active != ActiveAbility::Roll || !slot.roll.lethal)
@@ -27740,10 +27975,14 @@ impl RolloutWorld {
                 })
                 .map(|(index, _)| index),
         );
-        for &index in &scratch.squished {
+        let mut squished = [usize::MAX; MAX_PLAYERS];
+        let squished_count = scratch.squished.len();
+        for (target, &index) in squished.iter_mut().zip(&scratch.squished) {
+            *target = index;
+        }
+        for &index in &squished[..squished_count] {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
         }
-        self.scratch = scratch;
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is
         // intentionally not synchronized: its UpdateSim copied the platform's
@@ -28273,6 +28512,32 @@ impl RolloutWorld {
     /// while preserving registration order inside each shape group.
     fn publish_entities(&self, out: &mut Vec<CEntity>) {
         out.clear();
+        // Reset builds the fixed collider table in DetPhysics shape order.
+        // Most rollouts never append a lower-kind dynamic collider, so copy
+        // that table once rather than filtering and memmoving it four times.
+        // Detect the uncommon out-of-order append while copying and restart
+        // through the stable shape partitions in that case. Rope rows are an
+        // independent pool inserted between rounded rectangles and metadata.
+        let rope_mask = ability_bit(ABILITY_GRAPPLING_HOOK) | ability_bit(ABILITY_WEB_SWING);
+        if self.active_subsystems & rope_mask == 0 {
+            let mut last_kind = 0;
+            let mut ordered = true;
+            for &entity in &self.entities {
+                if entity.flags & E_REMOVED != 0 {
+                    continue;
+                }
+                if entity.kind < last_kind {
+                    ordered = false;
+                    break;
+                }
+                last_kind = entity.kind;
+                out.push(entity);
+            }
+            if ordered {
+                return;
+            }
+            out.clear();
+        }
         for kind in [0, 1, 2] {
             out.extend(
                 self.entities
@@ -28304,10 +28569,19 @@ impl RolloutWorld {
 
     /// Update the entity table from live state (positions, flags).
     fn refresh_entities(&mut self) {
-        self.refresh_actor_entities();
-        self.refresh_spike_entities();
-        self.refresh_engine_entities();
-        self.refresh_tesla_entities();
+        if self.actor_rows_tick != self.tick {
+            self.refresh_actor_entities();
+            self.actor_rows_tick = self.tick;
+        }
+        if self.active_subsystems & ability_bit(ABILITY_SPIKE) != 0 {
+            self.refresh_spike_entities();
+        }
+        if self.active_subsystems & ability_bit(ABILITY_ENGINE) != 0 {
+            self.refresh_engine_entities();
+        }
+        if self.active_subsystems & ability_bit(ABILITY_TESLA) != 0 {
+            self.refresh_tesla_entities();
+        }
         self.refresh_platform_entities();
         self.refresh_entity_metadata();
     }
@@ -28317,6 +28591,26 @@ impl RolloutWorld {
     /// component flags and timer fields are applied in one final allocation-
     /// free pass immediately before publishing the observation.
     fn refresh_entity_metadata(&mut self) {
+        let simple_mask = ability_bit(ABILITY_DASH)
+            | ability_bit(ABILITY_GUST)
+            | ability_bit(ABILITY_INVISIBILITY);
+        if self.active_subsystems & !simple_mask == 0 && self.ability_pickups.is_empty() {
+            for slot in &self.players {
+                for (entity, ability) in [
+                    (slot.dash_entity, ABILITY_DASH),
+                    (slot.gust_entity, ABILITY_GUST),
+                ] {
+                    if entity != usize::MAX {
+                        let row = &mut self.entities[entity];
+                        row.flags =
+                            (row.flags & !E_COMPONENT_METADATA) | ability_collider_flags(ability);
+                        row.reserved[1] = 0;
+                        row.clock_rate = 0;
+                    }
+                }
+            }
+            return;
+        }
         for row in &mut self.entities {
             row.flags &= !E_COMPONENT_METADATA;
             row.reserved[1] = 0;
@@ -28774,14 +29068,21 @@ impl RolloutWorld {
                 // separate slime record.
                 body.vx = 0;
                 body.vy = 0;
-                // Box.SetRotation: axis length `One / inverseExtents`, not
-                // `extents`. An active row is the synced Player-layer box
-                // itself (the slime is never dashing while its row is active).
-                // By reference: a by-value copy of the 64-byte box followed
-                // by a vector reload of its axes stalls on store forwarding.
-                let basis = Vec2::angle(angle);
-                let right = (Vec2::RIGHT / slot.body_inverse_extents.x).complex_mul(basis);
-                let up = (Vec2::UP / slot.body_inverse_extents.y).complex_mul(basis);
+                // The active row is the Player-layer box which DetPhysics
+                // already synchronized. Reusing those axes is both more
+                // faithful than rebuilding them from the scalar angle and
+                // avoids two divisions plus a sine-table lookup per row.
+                // Inactive ability-origin rows have no synchronized box and
+                // still need the authored extents reconstructed here.
+                let (right, up) = if body_active || teleporting {
+                    (slot.base.collider.right, slot.base.collider.up)
+                } else {
+                    let basis = Vec2::angle(angle);
+                    (
+                        (Vec2::RIGHT / slot.body_inverse_extents.x).complex_mul(basis),
+                        (Vec2::UP / slot.body_inverse_extents.y).complex_mul(basis),
+                    )
+                };
                 body.right_x = right.x.raw();
                 body.right_y = right.y.raw();
                 body.up_x = up.x.raw();
@@ -30265,7 +30566,8 @@ impl RolloutWorld {
         }
         out.extend_from_slice(&(self.recording.len() as i32).to_le_bytes());
         for (tick, frame) in self.recording.iter().enumerate() {
-            for action in &frame[..players] {
+            for player in 0..players {
+                let action = frame.action(player);
                 out.extend_from_slice(&(tick as u32 + 1).to_le_bytes());
                 out.push(action.angle);
                 out.extend_from_slice(&action.buttons.to_le_bytes());
