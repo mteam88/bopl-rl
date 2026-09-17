@@ -525,6 +525,7 @@ pub struct ThrownItem {
     pub prev_velocity_change: Vec2,
     /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
     pub capture_victim: Option<usize>,
+    pub capture_victim_is_clone: bool,
     pub capture_left: Fix,
     /// `DetPhysics.duplicatedObjects`: Duplicator copies count down from 1800
     /// before ordinary updaters run.
@@ -1560,6 +1561,8 @@ pub struct AbilitylessClone {
     pub owner: usize,
     pub base: Player,
     pub obs_state: u32,
+    pub captured_by_ball: Option<usize>,
+    pub poke_invulnerable: bool,
     pub blink_tunnel_active: bool,
     pub blink_tunnel_born_tick: u32,
     pub blink_tunnel_age: Fix,
@@ -17176,6 +17179,7 @@ impl RolloutWorld {
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
             capture_victim: None,
+            capture_victim_is_clone: false,
             capture_left: Fix::ZERO,
             duplicated: false,
             duplicate_lifespan: 0,
@@ -17425,6 +17429,7 @@ impl RolloutWorld {
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
             capture_victim: None,
+            capture_victim_is_clone: false,
             capture_left: Fix::ZERO,
             duplicated: false,
             duplicate_lifespan: 0,
@@ -20285,6 +20290,8 @@ impl RolloutWorld {
             owner: victim,
             base,
             obs_state: STATE_FALL,
+            captured_by_ball: None,
+            poke_invulnerable: false,
             blink_tunnel_active: false,
             blink_tunnel_born_tick: 0,
             blink_tunnel_age: Fix::ZERO,
@@ -20734,6 +20741,7 @@ impl RolloutWorld {
             clone.prev_rand_vector = Vec2::ZERO;
             clone.prev_velocity_change = Vec2::ZERO;
             clone.capture_victim = None;
+            clone.capture_victim_is_clone = false;
             clone.capture_left = Fix::ZERO;
             // Mine.Init is deferred with the cloned MonoUpdatables. Its hover
             // RNG sample is taken by register_pending_mines next pass, once,
@@ -24473,6 +24481,35 @@ impl RolloutWorld {
         }
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(victim);
+        item.capture_victim_is_clone = false;
+        item.capture_left = data.poke_ball.capture_seconds;
+        item.body.velocity = Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
+        if let Some(entity) = item.entity {
+            self.entities[entity].vx = item.body.velocity.x.raw();
+            self.entities[entity].vy = item.body.velocity.y.raw();
+        }
+    }
+
+    fn capture_poke_clone(
+        &mut self,
+        item_index: usize,
+        clone_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let capture_position = self.thrown_items[item_index].position;
+        let owner = self.abilityless_clones[clone_index].owner;
+        let clone = &mut self.abilityless_clones[clone_index];
+        clone.captured_by_ball = Some(item_index);
+        clone.poke_invulnerable = true;
+        clone.base.force_unground(&self.platforms);
+        clone.base.position = capture_position;
+        clone.base.velocity = Vec2::ZERO;
+        clone.base.sync_collider();
+        clone.obs_state = STATE_RAGDOLL;
+        self.players[owner].invisible = true;
+        let item = &mut self.thrown_items[item_index];
+        item.capture_victim = Some(clone_index);
+        item.capture_victim_is_clone = true;
         item.capture_left = data.poke_ball.capture_seconds;
         item.body.velocity = Vec2::new(item.body.velocity.x / Fix::from_int(4), Fix::from_int(5));
         if let Some(entity) = item.entity {
@@ -24565,14 +24602,31 @@ impl RolloutWorld {
                 // balls may capture the same slime from manifolds queued in
                 // one DetPhysics pass, even after the first callback sets the
                 // shared invulnerability mask.
-                let valid = victim < self.players.len() && self.playable(victim);
+                let victim_is_clone = self.thrown_items[item_index].capture_victim_is_clone;
+                let valid = if victim_is_clone {
+                    victim < self.abilityless_clones.len()
+                        && self.abilityless_clones[victim].active
+                        && self.abilityless_clones[victim].base.alive
+                } else {
+                    victim < self.players.len() && self.playable(victim)
+                };
                 if !valid {
-                    self.release_poke_victim(item_index, victim, data);
+                    if victim_is_clone {
+                        self.release_poke_clone(item_index, victim, data);
+                    } else {
+                        self.release_poke_victim(item_index, victim, data);
+                    }
                     self.remove_thrown_item(item_index, false);
                     continue;
                 }
                 let position = self.thrown_items[item_index].position;
-                {
+                if victim_is_clone {
+                    let clone = &mut self.abilityless_clones[victim];
+                    clone.base.position = position;
+                    clone.base.velocity = Vec2::ZERO;
+                    clone.base.sync_collider();
+                    clone.obs_state = STATE_RAGDOLL;
+                } else {
                     let slot = &mut self.players[victim];
                     slot.base.position = position;
                     slot.base.velocity = Vec2::ZERO;
@@ -24588,7 +24642,11 @@ impl RolloutWorld {
                 }
                 self.thrown_items[item_index].capture_left -= updater_dt;
                 if self.thrown_items[item_index].capture_left <= Fix::ZERO {
-                    self.release_poke_victim(item_index, victim, data);
+                    if victim_is_clone {
+                        self.release_poke_clone(item_index, victim, data);
+                    } else {
+                        self.release_poke_victim(item_index, victim, data);
+                    }
                     self.remove_thrown_item(item_index, false);
                 }
                 continue;
@@ -24608,6 +24666,8 @@ impl RolloutWorld {
             let owner = self.thrown_items[item_index].owner;
             let mut nearest = Fix::MAX;
             let mut victim = None;
+            let mut victim_is_clone = false;
+            let mut victim_owner = usize::MAX;
             for player_index in 0..self.players.len() {
                 let player = &self.players[player_index];
                 if player_index == owner
@@ -24620,15 +24680,39 @@ impl RolloutWorld {
                 }
                 let distance = (player.base.position - position).length_squared();
                 if distance < nearest
-                    || (distance == nearest && victim.is_some_and(|old| player_index < old))
+                    || (distance == nearest && player_index < victim_owner)
                 {
                     nearest = distance;
                     let capture_radius = radius + Fix::from_f32(0.8) * player.player_scale;
                     victim = (distance < capture_radius * capture_radius).then_some(player_index);
+                    victim_is_clone = false;
+                    victim_owner = player_index;
+                }
+            }
+            for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
+                if !clone.active
+                    || !clone.base.alive
+                    || clone.owner == owner
+                    || clone.poke_invulnerable
+                {
+                    continue;
+                }
+                let distance = (clone.base.position - position).length_squared();
+                if distance < nearest || (distance == nearest && clone.owner < victim_owner) {
+                    nearest = distance;
+                    let capture_radius =
+                        radius + Fix::from_f32(0.8) * self.players[clone.owner].player_scale;
+                    victim = (distance < capture_radius * capture_radius).then_some(clone_index);
+                    victim_is_clone = true;
+                    victim_owner = clone.owner;
                 }
             }
             if let Some(victim) = victim {
-                self.capture_poke_victim(item_index, victim, data, true);
+                if victim_is_clone {
+                    self.capture_poke_clone(item_index, victim, data);
+                } else {
+                    self.capture_poke_victim(item_index, victim, data, true);
+                }
             }
         }
     }
@@ -25084,7 +25168,10 @@ impl RolloutWorld {
             .iter()
             .enumerate()
             .find(|(index, other)| {
-                *index != item_index && other.active && other.capture_victim == Some(victim)
+                *index != item_index
+                    && other.active
+                    && !other.capture_victim_is_clone
+                    && other.capture_victim == Some(victim)
             })
             .map(|(index, _)| index);
         let slot = &mut self.players[victim];
@@ -25118,6 +25205,49 @@ impl RolloutWorld {
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
         };
+    }
+
+    fn release_poke_clone(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
+        if victim >= self.abilityless_clones.len()
+            || !self.abilityless_clones[victim].base.alive
+        {
+            return;
+        }
+        let item = self.thrown_items[item_index];
+        let remaining_captor = self
+            .thrown_items
+            .iter()
+            .enumerate()
+            .find(|(index, other)| {
+                *index != item_index
+                    && other.active
+                    && other.capture_victim_is_clone
+                    && other.capture_victim == Some(victim)
+            })
+            .map(|(index, _)| index);
+        let owner = self.abilityless_clones[victim].owner;
+        let clone = &mut self.abilityless_clones[victim];
+        clone.captured_by_ball = remaining_captor;
+        clone.poke_invulnerable = false;
+        clone.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
+        clone.base.velocity = Vec2::new(
+            item.body.velocity.x / Fix::from_f32(4.5),
+            data.poke_ball.pop_up_speed,
+        );
+        let eject_direction = Vec2::new(
+            item.body.velocity.x / Fix::from_int(3),
+            data.poke_ball.pop_up_speed,
+        )
+        .normalized_safe();
+        if eject_direction != Vec2::ZERO {
+            clone.base.rotation = eject_direction.normalized_angle();
+            clone.base.up = eject_direction.perp();
+        }
+        clone.base.grounded = false;
+        clone.base.ground = None;
+        clone.base.sync_collider();
+        clone.obs_state = STATE_RAGDOLL;
+        self.players[owner].invisible = false;
     }
 
     fn detonate_grenade(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
@@ -26653,6 +26783,7 @@ impl RolloutWorld {
                 // live PlayerBody; the box is synchronized next pass.
                 let owner = item.owner;
                 let mut victim = None;
+                let mut victim_is_clone = false;
                 for player_index in 0..self.players.len() {
                     if player_index == owner
                         || !self.playable(player_index)
@@ -26671,8 +26802,25 @@ impl RolloutWorld {
                         break;
                     }
                 }
+                if victim.is_none() {
+                    for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
+                        if !clone.active || !clone.base.alive || clone.owner == owner {
+                            continue;
+                        }
+                        if crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
+                        {
+                            victim = Some(clone_index);
+                            victim_is_clone = true;
+                            break;
+                        }
+                    }
+                }
                 if let Some(victim) = victim {
-                    self.capture_poke_victim(item_index, victim, data, false);
+                    if victim_is_clone {
+                        self.capture_poke_clone(item_index, victim, data);
+                    } else {
+                        self.capture_poke_victim(item_index, victim, data, false);
+                    }
                     continue;
                 }
             }
@@ -27516,6 +27664,14 @@ impl RolloutWorld {
             {
                 continue;
             }
+            if self.abilityless_clones[clone_index]
+                .captured_by_ball
+                .is_some()
+            {
+                self.abilityless_clones[clone_index].base.sync_collider();
+                self.sync_abilityless_clone_entity(clone_index);
+                continue;
+            }
             let owner = self.abilityless_clones[clone_index].owner;
             if owner >= actions.len() {
                 continue;
@@ -27538,6 +27694,11 @@ impl RolloutWorld {
                 continue;
             }
             self.abilityless_clones[clone_index].base.sync_collider();
+            self.sync_abilityless_clone_entity(clone_index);
+        }
+    }
+
+    fn sync_abilityless_clone_entity(&mut self, clone_index: usize) {
             let clone = &self.abilityless_clones[clone_index];
             if let Some(entity) = clone.entity {
                 let collider = clone.base.collider;
@@ -27559,7 +27720,6 @@ impl RolloutWorld {
                     ..CEntity::default()
                 };
             }
-        }
     }
 
     fn kill_abilityless_clone(&mut self, clone_index: usize, killer: u32) {
@@ -31948,6 +32108,40 @@ mod tests {
         world.rocks_contacts(data::get());
 
         assert_eq!(world.players[0].rock.body.force, Vec2::ZERO);
+    }
+
+    #[test]
+    fn poke_ball_captures_abilityless_clone() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[1].base.ground = None;
+        world.duplicate_player_target(1, Vec2::ZERO, Vec2::UP, data::get());
+        let clone_position = world.abilityless_clones[0].base.position;
+        world.players[1].base.position = clone_position + Vec2::RIGHT * Fix::from_int(20);
+        let ball_entity = world.entities.len();
+        world.entities.push(CEntity {
+            flags: E_ACTIVE | E_ENABLED,
+            ..CEntity::default()
+        });
+        world.thrown_items.push(ThrownItem {
+            active: true,
+            owner: 0,
+            ability: ABILITY_POKE_BALL,
+            entity: Some(ball_entity),
+            position: clone_position,
+            scale: Fix::ONE,
+            collider_radius: data::get().poke_ball.item_radius,
+            launched: true,
+            ..ThrownItem::default()
+        });
+        world.tick = 2;
+
+        world.poke_balls_tick(data::get(), DT);
+
+        assert!(world.thrown_items[0].capture_victim_is_clone);
+        assert_eq!(world.thrown_items[0].capture_victim, Some(0));
+        assert_eq!(world.abilityless_clones[0].captured_by_ball, Some(0));
+        assert!(world.abilityless_clones[0].poke_invulnerable);
     }
 
     #[test]

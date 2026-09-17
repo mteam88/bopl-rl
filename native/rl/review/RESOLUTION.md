@@ -194,6 +194,11 @@ fixed entry is committed separately with its finding id in the subject.
   abilityless-clone, Rock/Rock, Arrow, and Dash contacts still resolve and
   apply their gameplay callbacks while Web Swing/Grapple owns the body, but
   no longer add the source-suppressed bounce force.
+- **#10 — fixed.** Poke Ball's proximity scan and Player-layer collision
+  callback now include live Duplicator abilityless clones. Clone captures
+  carry their own invulnerability/captor state, follow the ball without
+  receiving shared input, hide the owning player as C# does, and use the same
+  timed ejection packet as an ordinary slime victim.
 
 ## Cross-cutting
 
