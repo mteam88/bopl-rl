@@ -30,6 +30,15 @@ class State(C.Structure):
 
 LIB = C.CDLL(os.environ.get('BOPL_RESEARCH_LIBRARY') or str(ROOT/'native/artifacts/rl/libbopl_research.so'))
 LIB.research_obs_size.restype = C.c_int
+HAS_LAYOUT_V4 = all(hasattr(LIB, name) for name in
+                    ('research_obs_stride', 'research_obs_size_of', 'research_layout_v4',
+                     'research_set_layout', 'research_get_layout'))
+if HAS_LAYOUT_V4:
+    LIB.research_obs_stride.restype = C.c_int
+    LIB.research_obs_size_of.argtypes = [C.c_int]; LIB.research_obs_size_of.restype = C.c_int
+    LIB.research_layout_v4.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout_v4.restype = C.c_int
+    LIB.research_set_layout.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_layout.restype = C.c_int
+    LIB.research_get_layout.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_layout.restype = C.c_int
 LIB.research_telemetry_size.restype = C.c_int
 LIB.research_num_atns.restype = C.c_int
 LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
@@ -41,6 +50,11 @@ _fields = (C.c_int*len(layout.LAYOUT_FIELDS))()
 if (LIB.research_layout(_fields,len(_fields))!=len(layout.LAYOUT_FIELDS) or tuple(_fields)!=layout.LAYOUT_FIELDS
         or LIB.research_num_atns()!=NUM_ATNS or LIB.research_obs_size()!=layout.OBS_SIZE):
     raise RuntimeError(f'Research library layout {tuple(_fields)} differs from research/layout.py {layout.LAYOUT_FIELDS}; rebuild it')
+if HAS_LAYOUT_V4:
+    _fields4 = (C.c_int*len(layout.V4_LAYOUT_FIELDS))()
+    if (LIB.research_layout_v4(_fields4,len(_fields4))!=len(layout.V4_LAYOUT_FIELDS) or tuple(_fields4)!=layout.V4_LAYOUT_FIELDS
+            or LIB.research_obs_stride()!=layout.OBS_STRIDE):
+        raise RuntimeError(f'Research library layout v4 {tuple(_fields4)} differs from research/layout.py {layout.V4_LAYOUT_FIELDS}; rebuild it')
 LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
 LIB.research_reset.argtypes = [C.c_void_p,C.c_uint32,C.c_uint32]
@@ -60,6 +74,7 @@ LIB.research_mask.argtypes = [C.c_void_p]; LIB.research_mask.restype = C.POINTER
 LIB.research_mask_size.restype = C.c_int
 if LIB.research_mask_size()!=layout.LOGITS: raise RuntimeError('Research library action mask width differs from layout.LOGITS')
 OBS_SIZE = LIB.research_obs_size()
+OBS_STRIDE = LIB.research_obs_stride() if HAS_LAYOUT_V4 else OBS_SIZE
 
 def selected_game():
     """The player the C environment will actually launch (explicit > BOPL_RL_GAME > IL2CPP default)."""
@@ -115,7 +130,9 @@ class Environment:
         if setter is not None and setter(self.handle, kill, timeout):
             self.close()
             raise ValueError('Evaluation reward values are outside native float range')
-        self.obs=np.ctypeslib.as_array(LIB.research_obs(self.handle),shape=(2*OBS_SIZE,)).reshape(2,OBS_SIZE)
+        self._rows=np.ctypeslib.as_array(LIB.research_obs(self.handle),shape=(2*OBS_STRIDE,)).reshape(2,OBS_STRIDE)
+        self._layouts=[3,3]
+        self._view()
         self.telemetry=np.ctypeslib.as_array(LIB.research_telemetry(self.handle),shape=(2*len(FIELDS),)).reshape(2,len(FIELDS))
         # Action mask of the next decision (1 = allowed), the one the trainer samples with:
         # while a player's buttons are latched only the held button state and hold length 1 remain.
@@ -123,6 +140,19 @@ class Environment:
         try: self.check()
         except BaseException:
             self.close();raise
+    def _view(self):
+        width=max(layout.obs_size_of(v) for v in self._layouts)
+        self.obs=self._rows[:,:width]
+    def set_layout(self,player,version):
+        if not HAS_LAYOUT_V4:
+            if int(version) != 3: raise RuntimeError('Research library does not support observation layout v4')
+            return
+        if LIB.research_set_layout(self.handle,player,int(version)): raise ValueError('Bad observation layout selection')
+        self._layouts[player]=int(version); self._view()
+    def layout_of(self,player): return LIB.research_get_layout(self.handle,player) if HAS_LAYOUT_V4 else 3
+    @property
+    def rows(self): return self._rows
+    def obs_row(self,player): return self._rows[player,:layout.obs_size_of(self._layouts[player])]
     def check(self):
         if LIB.research_check(self.handle): raise RuntimeError('Game error during evaluation')
     @property

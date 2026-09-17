@@ -31,6 +31,10 @@ class Model:
         self.name=name; self.kind=kind; self.step=step; self.path=Path(path)
         self.policy,self.meta=load(self.path,**(dict(library=library) if library else {}))
         self.sha256=hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.layout=layout.layout_of(self.meta.get('architecture'))
+
+    def attach(self,env,side):
+        env.set_layout(side,self.layout)
 
     def start(self,task,side,rng):
         import torch
@@ -42,8 +46,10 @@ class Model:
             return rng.choice(len(part),p=weights)
         def act(observation,mask):
             nonlocal state
+            batch=np.zeros((2,policy.obs_size),dtype=np.float32)
+            batch[side]=observation[side,:policy.obs_size]
             with torch.no_grad():
-                batch=torch.from_numpy(np.ascontiguousarray(observation,dtype=np.float32))
+                batch=torch.from_numpy(batch)
                 rows,state=policy.step_raw(batch,state)
                 logits,_=policy.game_logits(rows)
             # Sample as the trainer does: the environment's action mask (1 = allowed) zeroes latched choices;
@@ -258,7 +264,7 @@ def pair_tasks(a,b,maps,games_per_map,seed_base):
     return tasks
 
 
-def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
@@ -281,14 +287,17 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
                 actors={task['side']:by_name[task['a']].start(task,task['side'],rng),
                         1-task['side']:by_name[task['b']].start(task,1-task['side'],rng)}
                 while not env.ended:
-                    observation=env.obs.copy(); mask=env.mask.copy()
+                    observation=env.rows.copy(); mask=env.mask.copy()
                     env.step(np.stack([actors[0](observation,mask),actors[1](observation,mask)]))
                 final=env.frame()
                 timeout=bool(final['flags']&2)
                 a_won=bool(final['players'][task['side']]['flags']&2) and not timeout
                 b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
-                results.append(dict(task,ticks=final['t'],
-                                    outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b')))
+                result=dict(task,ticks=final['t'],
+                            outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b'))
+                if on_result:
+                    on_result(result)
+                results.append(result)
         return results
     if not tasks: return []
     buckets=[tasks[i::workers] for i in range(min(workers,len(tasks)))]
