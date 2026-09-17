@@ -28002,6 +28002,11 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
     ) {
+        // Player.Kill returns before every side effect once this player has
+        // won the round, including telemetry and killer credit.
+        if self.players[index].won {
+            return;
+        }
         // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
         // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
         // ordinary collision callbacks do not.
