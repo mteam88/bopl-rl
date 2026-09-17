@@ -16580,8 +16580,11 @@ impl RolloutWorld {
                         if self.players[target].active == ActiveAbility::Rock {
                             // PhysicsParent callback precedes the caster's
                             // PlayerCollision callback.
-                            self.players[target].rock.body.force +=
-                                direction * data.rock.player_collision_bounce * Fix::from_int(60);
+                            if self.players[target].rope.is_none() {
+                                self.players[target].rock.body.force += direction
+                                    * data.rock.player_collision_bounce
+                                    * Fix::from_int(60);
+                            }
                             let slot = &mut self.players[index];
                             slot.base.position = origin + direction * hit.distance;
                             slot.reported_position = slot.base.position;
@@ -25485,10 +25488,12 @@ impl RolloutWorld {
                     // both callbacks without flipping it. Rock is circle A
                     // (preallocated before the spawned Arrow), so it receives
                     // the Rock-to-Arrow normal here.
-                    rock_body.force += contact.normal
-                        * data.rock.player_collision_bounce
-                        * Fix::from_f32(0.1)
-                        * Fix::from_int(60);
+                    if self.players[player_index].rope.is_none() {
+                        rock_body.force += contact.normal
+                            * data.rock.player_collision_bounce
+                            * Fix::from_f32(0.1)
+                            * Fix::from_int(60);
+                    }
                     self.players[player_index].rock.body = rock_body;
                 }
                 self.destroy_arrow_contact(i, arrow_center, arrow_body);
@@ -27880,8 +27885,12 @@ impl RolloutWorld {
                     right[0].base.position += correction[1];
                     let impulse =
                         contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                    left[a].rock.body.force += impulse;
-                    right[0].rock.body.force += impulse;
+                    if left[a].rope.is_none() {
+                        left[a].rock.body.force += impulse;
+                    }
+                    if right[0].rope.is_none() {
+                        right[0].rock.body.force += impulse;
+                    }
                     left[a].base.velocity = left[a].rock.body.velocity;
                     right[0].base.velocity = right[0].rock.body.velocity;
                 }
@@ -27917,8 +27926,10 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    self.players[rock_index].rock.body.force +=
-                        contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    if self.players[rock_index].rope.is_none() {
+                        self.players[rock_index].rock.body.force +=
+                            contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    }
                     if !victims[..victim_count].contains(&victim) {
                         victims[victim_count] = victim;
                         killers[victim_count] = self.players[rock_index].base.id;
@@ -27936,8 +27947,10 @@ impl RolloutWorld {
                     continue;
                 };
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    self.players[rock_index].rock.body.force +=
-                        contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    if self.players[rock_index].rope.is_none() {
+                        self.players[rock_index].rock.body.force +=
+                            contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                    }
                     if !clone_victims[..clone_victim_count].contains(&clone_index) {
                         clone_victims[clone_victim_count] = clone_index;
                         clone_killers[clone_victim_count] = self.players[rock_index].base.id;
@@ -31916,6 +31929,25 @@ mod tests {
 
         assert!(world.players[0].active == ActiveAbility::None);
         assert_eq!(world.guided_missiles[0].instability_ticks, 7);
+    }
+
+    #[test]
+    fn rope_attached_rock_skips_player_bounce_impulse() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let target_entity = world.players[1].body_entity;
+        world.players[0].active = ActiveAbility::Rock;
+        world.players[0].rope = Some(0);
+        world.players[0].rock.collider_radius = data::get().rock.radius;
+        world.players[0].rock.body.force = Vec2::ZERO;
+        world.players[0].base.position = Vec2::new(
+            Fix::from_raw(world.entities[target_entity].x),
+            Fix::from_raw(world.entities[target_entity].y),
+        );
+
+        world.rocks_contacts(data::get());
+
+        assert_eq!(world.players[0].rock.body.force, Vec2::ZERO);
     }
 
     #[test]

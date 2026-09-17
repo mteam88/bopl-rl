@@ -189,6 +189,11 @@ fixed entry is committed separately with its finding id in the subject.
   exits immediately before touching the live spark. Stabilization/steering is
   dispatched only after the form survives `PlayerPhysics.Move`, so a landing
   pass no longer rotates the projectile or clears its instability counter.
+- **#9 — fixed.** All five Rock callback paths now gate BounceBall's extra
+  Player/Projectile impulse on the Rock having no attached rope. Player,
+  abilityless-clone, Rock/Rock, Arrow, and Dash contacts still resolve and
+  apply their gameplay callbacks while Web Swing/Grapple owns the body, but
+  no longer add the source-suppressed bounce force.
 
 ## Cross-cutting
 
