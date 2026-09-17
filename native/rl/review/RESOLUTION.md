@@ -291,6 +291,11 @@ fixed entry is committed separately with its finding id in the subject.
   the same pass return, matching `PlayerCollision.wasKilledThisFrame`; this is
   observable when the first contact schedules a Revival clone and restores
   the shared player's alive flag before the queued callback list is exhausted.
+- **S2 — fixed after correcting the premise.** `SmearFramePrefab` is
+  `MeteorSmear_explo`, instantiated as an unparented root with `Explosion` and
+  no `Projectile` or ancestor `Ability`. Its source id therefore remains zero,
+  but the row now carries `E_EXPLOSIVE` rather than the incorrect
+  `E_PROJECTILE` component flag.
 - **S5 — fixed.** PortalShot and Portal clocks now advance by the already
   player-scaled updater delta exactly once. This matches each C# component's
   raw `SimDeltaTime * GameTime.PlayerTimeScale` expression at fractional

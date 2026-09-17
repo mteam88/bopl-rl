@@ -33552,6 +33552,20 @@ mod tests {
     }
 
     #[test]
+    fn meteor_smear_observes_explosion_not_projectile_component() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.spawn_meteor_smear(Vec2::ZERO, Vec2::UP, 0, data::get());
+
+        world.refresh_entity_metadata();
+
+        let row = world.entities[world.meteor_smears[0].entity.unwrap()];
+        assert_ne!(row.flags & E_EXPLOSIVE, 0);
+        assert_eq!(row.flags & E_PROJECTILE, 0);
+        assert_eq!(row.reserved[0], ABILITY_NULL);
+    }
+
+    #[test]
     fn teleport_marker_hurtbox_does_not_scale() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
