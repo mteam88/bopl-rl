@@ -8477,7 +8477,7 @@ impl RolloutWorld {
                 if explosion.credited_owner {
                     explosion.owner as u32 + 1
                 } else {
-                    ENVIRONMENT
+                    0
                 },
                 true,
                 CAUSE_OTHER,
@@ -32279,6 +32279,22 @@ mod tests {
         });
 
         assert_eq!(world.projectile_credit(entity), (2, true, CAUSE_OTHER));
+    }
+
+    #[test]
+    fn uncredited_missile_explosion_uses_other_credit() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let entity = world.entities.len();
+        world.entities.push(CEntity::default());
+        world.missile_explosions.push(MissileExplosion {
+            active: true,
+            entity: Some(entity),
+            credited_owner: false,
+            ..MissileExplosion::default()
+        });
+
+        assert_eq!(world.projectile_credit(entity), (0, true, CAUSE_OTHER));
     }
 
     #[test]

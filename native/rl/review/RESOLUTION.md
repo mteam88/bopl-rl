@@ -248,3 +248,7 @@ fixed entry is committed separately with its finding id in the subject.
   entity's published owner id with owner damage enabled. Dropped lethal Rock
   bodies hit by Meteor/Roll therefore credit their player instead of the
   environment.
+- **G2 — fixed.** An uncredited Missile explosion now returns owner id zero,
+  matching the prefab's untouched `Explosion.PlayerOwnerId`, at the shared
+  Meteor/Roll credit dispatcher too. Its victims classify as `deaths_other`
+  instead of environmental deaths at all three collision sites.
