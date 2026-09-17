@@ -432,14 +432,20 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   three existing scenarios run together in `black_hole_broad_ab.sh`; generic
   bodies and rope/merge branches are source-ported but not individually
   differentially isolated.
-  Throw executes its separate MachoThrow2 form, animation callbacks, movement,
-  eight ground-shrink passes and both release paths. Quick release creates and
-  launches its boulder in one pass; a full pickup holds the zero-velocity body
-  at the animated hand position before applying the authored scale-adjusted
-  launch. Boulders use the common rounded-platform pool, including gravity,
-  torque, collision response, player riding, bounds removal and death/stock
-  reconstruction. Transferring Spike, Engine, Tesla and rope attachments from
-  the consumed platform to the boulder remains open.
+  Throw is source-ported wholesale through its separate MachoThrow2 form,
+  animation and movement callbacks, eight ground-shrink passes, quick and held
+  release, scaled boulder launch, forced exits and Magnet stealing. Boulders use
+  the common rounded-platform pool for gravity, torque, contacts, riders,
+  Portal/Black Hole/Shockwave/scale interactions, water removal and stock
+  reconstruction. The nearest wrapped-perimeter scan transfers the same Spike,
+  Engine or Tesla object, or either rope endpoint, onto the boulder with each
+  component's source-specific initialization. Rope handoff switches to the
+  boulder pull coefficient, translates half the chain, resets Verlet history
+  and immediately relaxes once. `throw_broad_ab.sh` gates 1,430 optimized-Q32
+  ticks across both release paths, collision/death/clone recovery and a live
+  boulder under Gust with Portal Shot and Black Hole. Attachment transfer,
+  Time Stop, Portal, Magnet and scale compositions are translated but not each
+  individually measured.
   Drill executes its separate static-box PlayerBody form, 19-update entry and
   13-update exit callbacks, air steering/gravity, first-cast HitboxCombo
   registration, underground wall traversal and owner-credited Explosion-layer

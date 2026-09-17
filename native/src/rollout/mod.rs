@@ -551,6 +551,9 @@ pub struct TimeStopEffect {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedSpike {
     pub active: bool,
+    /// MachoThrow2 detached this box from its composite while the boulder is
+    /// still represented only by the player's dummy sprite.
+    pub macho_carried: bool,
     pub born_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
@@ -1473,6 +1476,8 @@ pub struct MachoThrowState {
     /// same inactive object until SpawnBoulder reparents and reinitializes it.
     pub picked_engine: Option<usize>,
     pub picked_tesla: Option<usize>,
+    pub picked_spike: Option<usize>,
+    pub picked_rope: Option<usize>,
     pub collider_position: Vec2,
     pub collider_right: Vec2,
     pub collider_rotation: Fix,
@@ -5198,7 +5203,10 @@ impl RolloutWorld {
             }
         }
         for spike in &self.spike_attacks {
-            if !spike.active || spike.platform_index >= self.platform_dynamics.len() {
+            if !spike.active
+                || spike.macho_carried
+                || spike.platform_index >= self.platform_dynamics.len()
+            {
                 continue;
             }
             let right = Vec2::angle(
@@ -5486,7 +5494,7 @@ impl RolloutWorld {
         }
         for index in 0..self.spike_attacks.len() {
             let spike = self.spike_attacks[index];
-            if spike.platform_index >= self.platform_dynamics.len() {
+            if spike.macho_carried || spike.platform_index >= self.platform_dynamics.len() {
                 continue;
             }
             let Some(entity) = spike
@@ -9259,7 +9267,7 @@ impl RolloutWorld {
                 .inverse_inertia;
         let mut count = 0u32;
         for spike in &self.spike_attacks {
-            if spike.active && spike.platform_index == platform_index {
+            if spike.active && !spike.macho_carried && spike.platform_index == platform_index {
                 mass += Fix::ONE / spike.body.inverse_mass;
                 moment += Fix::ONE / spike.body.inverse_inertia;
                 count += 1;
@@ -9362,6 +9370,7 @@ impl RolloutWorld {
         });
         let attack = SpawnedSpike {
             active: true,
+            macho_carried: false,
             born_tick: self.tick,
             hierarchy_base,
             entity: Some(entity_index),
@@ -9424,13 +9433,16 @@ impl RolloutWorld {
         }
         let platform_index = self.spike_attacks[spike_index].platform_index;
         self.spike_attacks[spike_index].active = false;
+        self.spike_attacks[spike_index].macho_carried = false;
         if let Some(entity) = self.spike_attacks[spike_index].entity {
             self.entities[entity].flags = E_REMOVED;
         }
         // DestroyFix reconstructs the composite from every child still
         // attached to the platform. This matters when Spike and Engine are
         // mixed on one parent rather than when only identical spikes remain.
-        self.rebuild_platform_attachment_body(platform_index);
+        if platform_index < self.platforms.len() {
+            self.rebuild_platform_attachment_body(platform_index);
+        }
         self.platforms_changed();
     }
 
@@ -9511,7 +9523,7 @@ impl RolloutWorld {
             .expect("authored SpikeAttack curve")
             .time;
         for attack in &mut self.spike_attacks {
-            if !attack.active || attack.born_tick >= self.tick {
+            if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
                 continue;
             }
             attack.time += updater_dt;
@@ -9843,7 +9855,8 @@ impl RolloutWorld {
         // PlayerCollision sees the persistent LethalTerrain Explosion first.
         let mut victims = [false; MAX_PLAYERS];
         for spike in self.spike_attacks.iter().copied() {
-            if !spike.active || spike.platform_index >= self.platforms.len() {
+            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             let parent = &self.platform_dynamics[spike.platform_index];
@@ -10667,7 +10680,10 @@ impl RolloutWorld {
             // Composite children retain their own collider centres, but the
             // DetPhysics entry points at the parent's combined PhysicsBody.
             for spike in &self.spike_attacks {
-                if !spike.active || spike.platform_index >= self.platform_dynamics.len() {
+                if !spike.active
+                    || spike.macho_carried
+                    || spike.platform_index >= self.platform_dynamics.len()
+                {
                     continue;
                 }
                 let parent = &mut self.platform_dynamics[spike.platform_index].body;
@@ -11047,6 +11063,7 @@ impl RolloutWorld {
                     continue;
                 };
                 if !spike.active
+                    || spike.macho_carried
                     || spike.platform_index >= self.platform_dynamics.len()
                     || !self.circle_overlaps_entity(query, entity)
                 {
@@ -12636,6 +12653,15 @@ impl RolloutWorld {
         let Some(boulder_index) = self.players[index].macho_throw.held_boulder else {
             return;
         };
+        if self.players.iter().any(|player| {
+            player.active == ActiveAbility::Magnet
+                && player.magnet.held == MagnetHeld::Boulder(boulder_index)
+        }) {
+            // Boulder.body.magnetGunHolder makes MachoThrow2 release its
+            // private reference. Magnet's Hold call still owns the boulder.
+            self.players[index].macho_throw.held_boulder = None;
+            return;
+        }
         if boulder_index >= self.macho_boulders.len()
             || !self.macho_boulders[boulder_index].active
             || self.macho_boulders[boulder_index].dropped
@@ -12721,7 +12747,8 @@ impl RolloutWorld {
         let circumference = self.platforms[platform_index].surface.circumference();
         let mut best_fraction = Fix::MAX;
         let mut best_hierarchy = u32::MAX;
-        // 0 is an unported blocker, 1 an Engine, and 2 a Tesla node.
+        // Candidate kinds follow the source component dispatch: Engine,
+        // Tesla, Spike, then the separately scanned RopeAttachment.
         let mut best = None;
         let mut consider = |local: Fix, hierarchy: u32, candidate: Option<(u8, usize)>| {
             let direct = (local - player_local).abs();
@@ -12736,9 +12763,9 @@ impl RolloutWorld {
                 best = candidate;
             }
         };
-        for spike in &self.spike_attacks {
-            if spike.active && spike.platform_index == platform_index {
-                consider(spike.local, spike.hierarchy_base, None);
+        for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
+            if spike.active && !spike.macho_carried && spike.platform_index == platform_index {
+                consider(spike.local, spike.hierarchy_base, Some((3, spike_index)));
             }
         }
         for (engine_index, engine) in self.engines.iter().enumerate() {
@@ -12753,7 +12780,7 @@ impl RolloutWorld {
         }
         // Ropes are scanned after Transform children and only replace a
         // candidate at a strictly smaller distance.
-        for rope in &self.ropes {
+        for (rope_index, rope) in self.ropes.iter().enumerate() {
             if rope.physics.enabled && rope.platform == Some(platform_index) {
                 let direct = (rope.platform_local - player_local).abs();
                 let fraction = direct.min(Fix::ONE - direct);
@@ -12761,7 +12788,7 @@ impl RolloutWorld {
                     && fraction < best_fraction
                 {
                     best_fraction = fraction;
-                    best = None;
+                    best = Some((4, rope_index));
                 }
             }
         }
@@ -12777,7 +12804,7 @@ impl RolloutWorld {
             }
             self.players[owner].macho_throw.picked_engine = Some(attachable_index);
             self.rebuild_platform_attachment_body(old_platform);
-        } else {
+        } else if kind == 2 {
             let old_platform = self.tesla_nodes[attachable_index].platform_index;
             let line_owner = if self.tesla_nodes[attachable_index].child.is_some() {
                 Some(attachable_index)
@@ -12797,6 +12824,17 @@ impl RolloutWorld {
             }
             self.players[owner].macho_throw.picked_tesla = Some(attachable_index);
             self.rebuild_platform_attachment_body(old_platform);
+        } else if kind == 3 {
+            let old_platform = self.spike_attacks[attachable_index].platform_index;
+            self.spike_attacks[attachable_index].macho_carried = true;
+            self.spike_attacks[attachable_index].platform_index = usize::MAX;
+            if let Some(entity) = self.spike_attacks[attachable_index].entity {
+                self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+            }
+            self.players[owner].macho_throw.picked_spike = Some(attachable_index);
+            self.rebuild_platform_attachment_body(old_platform);
+        } else {
+            self.players[owner].macho_throw.picked_rope = Some(attachable_index);
         }
         self.platforms_changed();
     }
@@ -12939,6 +12977,132 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
+    /// Reactivate and initialize the exact SpikeAttack selected from the old
+    /// platform. Spike preserves its down-thrust clock; Initialize derives a
+    /// fresh local from the far probe and reuses the current SurfaceOffset as
+    /// an unscaled fixed offset, exactly as the shipped transfer does.
+    fn macho_attach_spike_to_boulder(
+        &mut self,
+        owner: usize,
+        platform_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let Some(spike_index) = self.players[owner].macho_throw.picked_spike.take() else {
+            return;
+        };
+        if spike_index >= self.spike_attacks.len()
+            || !self.spike_attacks[spike_index].active
+            || !self.spike_attacks[spike_index].macho_carried
+        {
+            return;
+        }
+        let source = self.spike_attacks[spike_index];
+        let entity = source.entity.expect("active Spike has a collider row");
+        let old_rotation = Fix::from_raw(self.entities[entity].rotation);
+        let old_right = Vec2::angle(old_rotation);
+        let old_root = source.collider_center
+            - (data.spike.attack_collider_offset * source.scale).complex_mul(old_right);
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let desired_rotation = parent_rotation + Fix::PI;
+        let desired_right = Vec2::angle(desired_rotation);
+        let desired_up = desired_right.perp();
+        let probe = old_root - desired_up * Fix::from_int(1000);
+        let closest = self.platforms[platform_index]
+            .surface
+            .closest_point(probe)
+            .expect("Macho boulder has a valid perimeter");
+        let local = self.platforms[platform_index]
+            .surface
+            .local_position(closest, Fix::ZERO)
+            .expect("Macho Spike probe maps to the boulder perimeter");
+        let fixed_offset = source.surface_offset / source.scale;
+        let surface_offset = data.spike.down_thrust.evaluate(source.time) + fixed_offset;
+        let root = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO)
+            + desired_up * surface_offset;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let relative_right = desired_right.complex_mul(inverse_basis);
+        let relative_center = (root - parent_position).complex_mul(inverse_basis)
+            + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
+        let mut child_body = source.body;
+        child_body.orientation = desired_rotation;
+        self.attach_spike_body(platform_index, child_body);
+        let spike = &mut self.spike_attacks[spike_index];
+        spike.macho_carried = false;
+        spike.born_tick = self.tick;
+        spike.platform_index = platform_index;
+        spike.local = local;
+        spike.relative_center = relative_center;
+        spike.relative_rotation = desired_rotation - parent_rotation;
+        spike.collider_center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        spike.surface_offset = surface_offset;
+        spike.body = child_body;
+        self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
+        self.entities[entity].inverse_mass = child_body.inverse_mass.raw();
+        self.platforms_changed();
+    }
+
+    /// RopeAttachment remains live during pickup. Once the boulder exists it
+    /// is retargeted to local 1/2, the first half of the rope is translated by
+    /// the anchor delta, every previous sample is reset, and DetPhysics runs
+    /// the source's immediate extra relaxation pass.
+    fn macho_attach_rope_to_boulder(
+        &mut self,
+        owner: usize,
+        platform_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let Some(rope_index) = self.players[owner].macho_throw.picked_rope.take() else {
+            return;
+        };
+        if rope_index >= self.ropes.len() || !self.ropes[rope_index].physics.enabled {
+            return;
+        }
+        let old_position = self.ropes[rope_index]
+            .platform
+            .filter(|&platform| platform < self.platforms.len())
+            .map(|platform| {
+                self.platforms[platform]
+                    .surface
+                    .position(self.ropes[rope_index].platform_local, Fix::ZERO)
+            })
+            .unwrap_or_else(|| {
+                let endpoint = if self.ropes[rope_index].platform_top {
+                    0
+                } else {
+                    self.ropes[rope_index].physics.count - 1
+                };
+                self.ropes[rope_index].physics.segment[endpoint]
+            });
+        let local = Fix::from_f32(0.5);
+        let new_position = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO);
+        let delta = new_position - old_position;
+        let config = crate::physics::rope::RopeConfig {
+            dt: DT,
+            gravity: data.ropes.gravity,
+            space: false,
+            iterations: data.ropes.iterations,
+            stretchiness: data.ropes.stretchiness,
+        };
+        let rope = &mut self.ropes[rope_index];
+        rope.platform = Some(platform_index);
+        rope.platform_local = local;
+        rope.platform_pull = data.ropes.boulder_pull;
+        rope.platform_attach_tick = 0;
+        for segment in 0..rope.physics.count / 2 {
+            rope.physics.segment[segment] += delta;
+        }
+        for segment in 0..rope.physics.count {
+            rope.physics.previous[segment] = rope.physics.segment[segment];
+        }
+        rope.physics.step(config, &self.rope_rectangles);
+    }
+
     fn spawn_macho_boulder(
         &mut self,
         owner: usize,
@@ -13039,6 +13203,8 @@ impl RolloutWorld {
         }
         self.macho_attach_engine_to_boulder(owner, platform_index, data);
         self.macho_attach_tesla_to_boulder(owner, platform_index, data);
+        self.macho_attach_spike_to_boulder(owner, platform_index, data);
+        self.macho_attach_rope_to_boulder(owner, platform_index, data);
         boulder_index
     }
 
@@ -14096,7 +14262,7 @@ impl RolloutWorld {
             return self
                 .spike_attacks
                 .iter()
-                .any(|spike| spike.active && spike.entity == Some(entity))
+                .any(|spike| spike.active && !spike.macho_carried && spike.entity == Some(entity))
                 || self
                     .tesla_nodes
                     .iter()
@@ -18886,11 +19052,9 @@ impl RolloutWorld {
             self.duplicate_lethal_rock(rock_index, direction, data);
             return;
         }
-        if let Some(spike_index) = self
-            .spike_attacks
-            .iter()
-            .position(|spike| spike.active && spike.entity == Some(hit.entity))
-        {
+        if let Some(spike_index) = self.spike_attacks.iter().position(|spike| {
+            spike.active && !spike.macho_carried && spike.entity == Some(hit.entity)
+        }) {
             self.duplicate_attached_spike(spike_index, direction, data);
             return;
         }
@@ -19463,6 +19627,7 @@ impl RolloutWorld {
         });
         let clone = SpawnedSpike {
             active: true,
+            macho_carried: false,
             born_tick: self.tick,
             hierarchy_base,
             entity: Some(entity),
@@ -20023,6 +20188,7 @@ impl RolloutWorld {
         }
         for spike_index in (0..self.spike_attacks.len()).rev() {
             if !self.spike_attacks[spike_index].active
+                || self.spike_attacks[spike_index].macho_carried
                 || !self.spike_attacks[spike_index].duplicated
             {
                 continue;
@@ -22022,6 +22188,7 @@ impl RolloutWorld {
         let rope = &mut self.ropes[rope_index];
         rope.platform = Some(platform_index);
         rope.platform_local = local;
+        rope.platform_pull = data::get().ropes.platform_pull;
         rope.platform_top = top;
         rope.platform_attach_tick = self.tick;
         // RopeAttachment is the prefab's only MonoUpdatable.
@@ -22267,7 +22434,7 @@ impl RolloutWorld {
         let entity = self.platform_entities[index];
         self.entities[entity].flags = E_REMOVED;
         for spike in &mut self.spike_attacks {
-            if !spike.active {
+            if !spike.active || spike.macho_carried {
                 continue;
             }
             if spike.platform_index == index {
@@ -24358,7 +24525,9 @@ impl RolloutWorld {
                     let platform_index = self
                         .spike_attacks
                         .iter()
-                        .find(|spike| spike.active && spike.entity == Some(entity))
+                        .find(|spike| {
+                            spike.active && !spike.macho_carried && spike.entity == Some(entity)
+                        })
                         .map(|spike| spike.platform_index)
                         .or_else(|| {
                             self.tesla_nodes
@@ -27013,7 +27182,8 @@ impl RolloutWorld {
         // positional correction move their attached platform body.
         scratch.spike_wall_contacts.clear();
         for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
-            if !spike.active || spike.platform_index >= self.platforms.len() {
+            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             let parent_index = spike.platform_index;
@@ -27899,7 +28069,8 @@ impl RolloutWorld {
         let data = data::get();
         for spike_index in 0..self.spike_attacks.len() {
             let spike = self.spike_attacks[spike_index];
-            if !spike.active || spike.platform_index >= self.platforms.len() {
+            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             let Some(entity) = spike.entity else {

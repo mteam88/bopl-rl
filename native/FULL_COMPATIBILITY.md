@@ -3463,10 +3463,34 @@ and does not change a contact or branch. The form collider preserves the source
 split where its centre uses the stored FixTransform right vector while its axes
 are rebuilt from scalar rotation.
 
-The source can detach an existing Spike, Engine, Tesla node or rope anchor from
-the consumed platform and reattach it to the held boulder. Those composed
-attachment transfers still require implementation and differential scenarios,
-so coverage remains partial.
+The whole-source completion implements `pickUpNearbyAttachables` as one wrapped
+perimeter arbitration across platform children followed by rope updaters. The
+same selected Spike, Engine or Tesla record is removed from the old composite,
+hidden during the dummy animation, and reactivated on the boulder. Spike keeps
+its down-thrust clock and repeats the source's far-probe/local derivation;
+Engine restarts its ignition clock; Tesla resets and reconnects through its
+preserved child relationship. Rope anchors stay live until boulder creation,
+then move to local one-half, switch from `platformPullStr` to `boulderPullStr`,
+translate the source-selected first half of the chain, reset every previous
+sample and run the immediate extra DetPhysics relaxation pass. No transfer
+allocates in the tick path.
+
+The active form also now observes Magnet ownership of its held boulder and
+clears its private handle while Magnet retains the body, matching
+`Boulder.body.magnetGunHolder`. Common platform machinery already supplies
+Portal relocation, Black Hole consumption/force, Gust and Meteor shockwaves,
+Growth/Shrink, Time Stop, rider contacts and water destruction. Forced
+pickup/death/form exits drop an existing held boulder through the shared exit
+path.
+
+`throw_broad_ab.sh` runs the two ordinary 500-tick scenarios plus the 430-tick
+Gust composition as one optimized-Q32 gate. Both release paths, ground
+consumption, launch, collision, death and clone recovery retain their exact
+lifecycle, with only the existing four-raw-unit shrinking-axis reciprocal
+bound. The composition also matches a live boulder under Gust alongside a
+Portal Shot and Black Hole. Attachment transfers, Time Stop, Portal, Magnet
+stealing, scale rays and forced exits are source-ported but are not each
+isolated in a public differential.
 
 ### Executable Drill form and combo hitboxes (2026-09-15)
 

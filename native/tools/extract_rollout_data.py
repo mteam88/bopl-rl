@@ -1854,6 +1854,7 @@ def main():
         "platform_mass": fix(attachment, "platformMass01"),
         "platform_heaviness": fix(attachment, "platformHeavinessScaling"),
         "platform_pull": fix(attachment, "platformPullStr"),
+        "boulder_pull": fix(attachment, "boulderPullStr"),
         "platform_break_stretch": fix(attachment, "stretchBeforeBreak_platform"),
         "non_platform_mass": fix(attachment, "nonPlatformMass"),
         "web_max_length": fix(web, "maxWebLength"),

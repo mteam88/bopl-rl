@@ -18,6 +18,7 @@ const ROPE_SEGMENT_RADIUS: Fix = Fix::from_raw(429_496_736);
 const PLATFORM_MASS: Fix = Fix::from_raw(3_865_470_464);
 const PLATFORM_HEAVINESS: Fix = Fix::from_raw(42_949_672);
 const PLATFORM_PULL: Fix = Fix::from_raw(-42_949_672_960);
+const BOULDER_PULL: Fix = Fix::from_raw(-21_474_836_480);
 const PLATFORM_BREAK_STRETCH: Fix = Fix::from_raw(429_496_729_600);
 
 const WEB_MAX_LENGTH: Fix = Fix::from_raw(85_899_345_920);
@@ -56,6 +57,8 @@ pub(crate) struct RolloutRope {
     pub time_air_end: Fix,
     pub platform: Option<usize>,
     pub platform_local: Fix,
+    /// RopeAttachment.effectivePlatformPullStr switches on Boulder parents.
+    pub platform_pull: Fix,
     /// RopeAttachment.topAttachment. Web/Grapple platform anchors use the
     /// top endpoint; PlatformTransform can transfer either player endpoint.
     pub platform_top: bool,
@@ -102,6 +105,7 @@ fn empty_rope() -> RolloutRope {
         time_air_end: Fix::ZERO,
         platform: None,
         platform_local: Fix::ZERO,
+        platform_pull: PLATFORM_PULL,
         platform_top: true,
         platform_attach_tick: 0,
         black_hole: None,
@@ -137,6 +141,7 @@ pub(super) fn rope_pool() -> Vec<RolloutRope> {
     assert_eq!(source.platform_mass, PLATFORM_MASS);
     assert_eq!(source.platform_heaviness, PLATFORM_HEAVINESS);
     assert_eq!(source.platform_pull, PLATFORM_PULL);
+    assert_eq!(source.boulder_pull, BOULDER_PULL);
     assert_eq!(source.platform_break_stretch, PLATFORM_BREAK_STRETCH);
     assert_eq!(source.non_platform_mass, Fix::from_f64(0.5));
     assert_eq!(source.web_max_length, WEB_MAX_LENGTH);
@@ -156,6 +161,7 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.number = 0;
         rope.segment_ids = [0; MAX_SEGMENTS - 1];
         rope.platform = None;
+        rope.platform_pull = PLATFORM_PULL;
         rope.platform_top = true;
         rope.platform_attach_tick = 0;
         rope.black_hole = None;
@@ -201,6 +207,7 @@ impl RolloutWorld {
         };
         rope.platform = platform;
         rope.platform_local = platform_local;
+        rope.platform_pull = PLATFORM_PULL;
         rope.platform_top = true;
         rope.platform_attach_tick = self.tick;
         rope.black_hole = None;
@@ -868,7 +875,7 @@ impl RolloutWorld {
             {
                 let force = (self.ropes[index].physics.segment[endpoint]
                     - self.ropes[index].physics.segment[neighbor])
-                    * PLATFORM_PULL;
+                    * self.ropes[index].platform_pull;
                 let arm = (anchor - self.platforms[platform].surface.center).normalized_safe();
                 self.platform_dynamics[platform]
                     .body
@@ -983,6 +990,7 @@ impl RolloutWorld {
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
                 rope.platform = Some(platform);
                 rope.platform_local = local;
+                rope.platform_pull = source.platform_pull;
                 rope.reel_in = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
