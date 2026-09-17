@@ -2193,6 +2193,8 @@ struct PlatformScratch {
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
+    duplicate_shake_order: Vec<(u32, u8, usize)>,
+    duplicate_shake_offsets: Vec<(u8, usize, Vec2)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2376,6 +2378,8 @@ impl RolloutWorld {
                 missile_detonations: Vec::with_capacity(128),
                 arrow_platform_contacts: Vec::with_capacity(64),
                 ray_hits: Vec::with_capacity(192),
+                duplicate_shake_order: Vec::with_capacity(64),
+                duplicate_shake_offsets: Vec::with_capacity(64),
                 ..PlatformScratch::default()
             },
             platform_dynamics: Vec::with_capacity(64),
@@ -21038,6 +21042,107 @@ impl RolloutWorld {
         if self.player_time_scale < Fix::from_f32(0.01) {
             return;
         }
+        const PLATFORM: u8 = 0;
+        const ARROW: u8 = 1;
+        const PICKUP: u8 = 2;
+        const BLACK_HOLE: u8 = 3;
+        const ROCK: u8 = 4;
+        const SMOKE: u8 = 5;
+        const ITEM: u8 = 6;
+        const MISSILE: u8 = 7;
+        const SPIKE: u8 = 8;
+        const ENGINE: u8 = 9;
+        const TESLA: u8 = 10;
+        let mut shake_order = std::mem::take(&mut self.scratch.duplicate_shake_order);
+        shake_order.clear();
+        let mut add = |order: u32, kind: u8, index: usize, lifespan: i32| {
+            if (1..=60).contains(&lifespan) {
+                shake_order.push((order, kind, index));
+            }
+        };
+        for (index, dynamics) in self.platform_dynamics.iter().enumerate() {
+            if dynamics.duplicate_spawner_hierarchy.is_some() {
+                add(
+                    self.entities[self.platform_entities[index]]
+                        .hierarchy
+                        .saturating_sub(100_000_000),
+                    PLATFORM,
+                    index,
+                    dynamics.duplicate_lifespan,
+                );
+            }
+        }
+        for (index, arrow) in self.arrows.iter().enumerate() {
+            if arrow.active && arrow.duplicated {
+                add(arrow.hierarchy_base, ARROW, index, arrow.duplicate_lifespan);
+            }
+        }
+        for (index, pickup) in self.ability_pickups.iter().enumerate() {
+            if pickup.active && pickup.duplicated {
+                add(pickup.hierarchy_base, PICKUP, index, pickup.duplicate_lifespan);
+            }
+        }
+        for (index, hole) in self.black_holes.iter().enumerate() {
+            if hole.active && hole.duplicated {
+                add(hole.hierarchy_base, BLACK_HOLE, index, hole.duplicate_lifespan);
+            }
+        }
+        for (index, rock) in self.duplicated_rocks.iter().enumerate() {
+            if rock.active {
+                let order = rock.entity.map_or(0, |entity| {
+                    self.entities[entity].hierarchy.saturating_sub(100_000_000)
+                });
+                add(order, ROCK, index, rock.duplicate_lifespan);
+            }
+        }
+        for (index, cloud) in self.smoke_clouds.iter().enumerate() {
+            if cloud.active && cloud.duplicated {
+                add(cloud.hierarchy_base, SMOKE, index, cloud.duplicate_lifespan);
+            }
+        }
+        for (index, item) in self.thrown_items.iter().enumerate() {
+            if item.active && item.duplicated {
+                add(item.hierarchy_base, ITEM, index, item.duplicate_lifespan);
+            }
+        }
+        for (index, missile) in self.guided_missiles.iter().enumerate() {
+            if missile.active && missile.duplicated {
+                add(missile.hierarchy_base, MISSILE, index, missile.duplicate_lifespan);
+            }
+        }
+        for (index, spike) in self.spike_attacks.iter().enumerate() {
+            if spike.active && !spike.macho_carried && spike.duplicated {
+                add(spike.hierarchy_base, SPIKE, index, spike.duplicate_lifespan);
+            }
+        }
+        for (index, engine) in self.engines.iter().enumerate() {
+            if engine.active && engine.duplicated {
+                add(engine.hierarchy_base, ENGINE, index, engine.duplicate_lifespan);
+            }
+        }
+        for (index, node) in self.tesla_nodes.iter().enumerate() {
+            if node.active && !node.macho_carried && node.duplicated {
+                add(node.hierarchy_base, TESLA, index, node.duplicate_lifespan);
+            }
+        }
+        shake_order.sort_unstable_by_key(|&(order, _, _)| std::cmp::Reverse(order));
+        let mut shake_offsets = std::mem::take(&mut self.scratch.duplicate_shake_offsets);
+        shake_offsets.clear();
+        shake_offsets.reserve(shake_order.len().saturating_sub(shake_offsets.capacity()));
+        for &(_, kind, index) in &shake_order {
+            shake_offsets.push((
+                kind,
+                index,
+                Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU)),
+            ));
+        }
+        let shake = |kind: u8, index: usize| {
+            shake_offsets
+                .iter()
+                .find(|&&(candidate, slot, _)| candidate == kind && slot == index)
+                .expect("duplicate in shake window")
+                .2
+        };
         // DetPhysics.UpdateDuplicatedObjects walks its List from Count-1 to
         // zero. The order becomes observable during the last 60 frames because
         // every live duplicate consumes one RandomUnitVector for its shake.
@@ -21055,9 +21160,7 @@ impl RolloutWorld {
             } else if lifespan < 60 {
                 let progress = Fix::ONE - Fix::from_int(i64::from(lifespan)) / Fix::from_int(60);
                 let old = self.platform_dynamics[platform_index].duplicate_shake_offset;
-                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                let new = shake(PLATFORM, platform_index) * progress * Fix::from_f32(0.25);
                 let delta = new - old;
                 self.platform_dynamics[platform_index].duplicate_shake_offset = new;
                 self.platforms[platform_index].surface.center += delta;
@@ -21078,9 +21181,8 @@ impl RolloutWorld {
                 let progress =
                     Fix::ONE - Fix::from_int(arrow.duplicate_lifespan as i64) / Fix::from_int(60);
                 arrow.position -= arrow.duplicate_shake_offset;
-                arrow.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                arrow.duplicate_shake_offset =
+                    shake(ARROW, arrow_index) * progress * Fix::from_f32(0.25);
                 arrow.position += arrow.duplicate_shake_offset;
             }
         }
@@ -21100,9 +21202,7 @@ impl RolloutWorld {
                     Fix::ONE - Fix::from_int(pickup.duplicate_lifespan as i64) / Fix::from_int(60);
                 pickup.position -= pickup.duplicate_shake_offset;
                 pickup.duplicate_shake_offset =
-                    Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                        * progress
-                        * Fix::from_f32(0.25);
+                    shake(PICKUP, pickup_index) * progress * Fix::from_f32(0.25);
                 pickup.position += pickup.duplicate_shake_offset;
             }
         }
@@ -21121,9 +21221,8 @@ impl RolloutWorld {
                 let progress =
                     Fix::ONE - Fix::from_int(hole.duplicate_lifespan as i64) / Fix::from_int(60);
                 hole.position -= hole.duplicate_shake_offset;
-                hole.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                hole.duplicate_shake_offset =
+                    shake(BLACK_HOLE, hole_index) * progress * Fix::from_f32(0.25);
                 hole.position += hole.duplicate_shake_offset;
             }
         }
@@ -21142,9 +21241,8 @@ impl RolloutWorld {
                 let progress =
                     Fix::ONE - Fix::from_int(rock.duplicate_lifespan as i64) / Fix::from_int(60);
                 rock.position -= rock.duplicate_shake_offset;
-                rock.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                rock.duplicate_shake_offset =
+                    shake(ROCK, rock_index) * progress * Fix::from_f32(0.25);
                 rock.position += rock.duplicate_shake_offset;
             }
         }
@@ -21161,9 +21259,8 @@ impl RolloutWorld {
                 let progress =
                     Fix::ONE - Fix::from_int(cloud.duplicate_lifespan as i64) / Fix::from_int(60);
                 cloud.position -= cloud.duplicate_shake_offset;
-                cloud.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                cloud.duplicate_shake_offset =
+                    shake(SMOKE, cloud_index) * progress * Fix::from_f32(0.25);
                 cloud.position += cloud.duplicate_shake_offset;
                 if let Some(entity) = cloud.entity {
                     self.entities[entity].x = cloud.position.x.raw();
@@ -21186,9 +21283,8 @@ impl RolloutWorld {
                 let progress =
                     Fix::ONE - Fix::from_int(item.duplicate_lifespan as i64) / Fix::from_int(60);
                 item.position -= item.duplicate_shake_offset;
-                item.duplicate_shake_offset = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                item.duplicate_shake_offset =
+                    shake(ITEM, item_index) * progress * Fix::from_f32(0.25);
                 item.position += item.duplicate_shake_offset;
             }
         }
@@ -21209,9 +21305,7 @@ impl RolloutWorld {
                     Fix::ONE - Fix::from_int(missile.duplicate_lifespan as i64) / Fix::from_int(60);
                 missile.position -= missile.duplicate_shake_offset;
                 missile.duplicate_shake_offset =
-                    Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                        * progress
-                        * Fix::from_f32(0.25);
+                    shake(MISSILE, missile_index) * progress * Fix::from_f32(0.25);
                 missile.position += missile.duplicate_shake_offset;
             }
         }
@@ -21230,9 +21324,7 @@ impl RolloutWorld {
                     - Fix::from_int(self.spike_attacks[spike_index].duplicate_lifespan as i64)
                         / Fix::from_int(60);
                 let old = self.spike_attacks[spike_index].duplicate_shake_offset;
-                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                let new = shake(SPIKE, spike_index) * progress * Fix::from_f32(0.25);
                 let platform = self.spike_attacks[spike_index].platform_index;
                 let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
                 self.spike_attacks[spike_index].relative_center += (new - old).complex_mul(inverse);
@@ -21251,9 +21343,7 @@ impl RolloutWorld {
                     - Fix::from_int(self.engines[engine_index].duplicate_lifespan as i64)
                         / Fix::from_int(60);
                 let old = self.engines[engine_index].duplicate_shake_offset;
-                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                let new = shake(ENGINE, engine_index) * progress * Fix::from_f32(0.25);
                 let platform = self.engines[engine_index].platform_index;
                 let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
                 self.engines[engine_index].relative_center += (new - old).complex_mul(inverse);
@@ -21275,15 +21365,15 @@ impl RolloutWorld {
                     - Fix::from_int(self.tesla_nodes[node_index].duplicate_lifespan as i64)
                         / Fix::from_int(60);
                 let old = self.tesla_nodes[node_index].duplicate_shake_offset;
-                let new = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU))
-                    * progress
-                    * Fix::from_f32(0.25);
+                let new = shake(TESLA, node_index) * progress * Fix::from_f32(0.25);
                 let platform = self.tesla_nodes[node_index].platform_index;
                 let inverse = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
                 self.tesla_nodes[node_index].relative_center += (new - old).complex_mul(inverse);
                 self.tesla_nodes[node_index].duplicate_shake_offset = new;
             }
         }
+        self.scratch.duplicate_shake_order = shake_order;
+        self.scratch.duplicate_shake_offsets = shake_offsets;
     }
 
     fn register_pending_duplicated_pickups(&mut self, data: &data::RolloutData) {
@@ -32723,6 +32813,42 @@ mod tests {
         world.duplicate_black_hole(0, Vec2::RIGHT, data::get());
 
         assert_eq!(world.black_holes[1].duplicate_lifespan, 480);
+    }
+
+    #[test]
+    fn duplicate_shake_rng_follows_global_newest_first_order() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.arrows.push(Arrow {
+            active: true,
+            duplicated: true,
+            hierarchy_base: 10,
+            duplicate_lifespan: 60,
+            ..Arrow::default()
+        });
+        world.thrown_items.push(ThrownItem {
+            active: true,
+            duplicated: true,
+            hierarchy_base: 20,
+            duplicate_lifespan: 60,
+            ..ThrownItem::default()
+        });
+        let (newer, older) = {
+            let mut rng = world.rng;
+            let newer = Vec2::angle(rng.fix_range(Fix::ZERO, Fix::TAU));
+            let older = Vec2::angle(rng.fix_range(Fix::ZERO, Fix::TAU));
+            (newer, older)
+        };
+        let amplitude = (Fix::ONE - Fix::from_int(59) / Fix::from_int(60))
+            * Fix::from_f32(0.25);
+
+        world.duplicated_objects_tick();
+
+        assert_eq!(
+            world.thrown_items[0].duplicate_shake_offset,
+            newer * amplitude
+        );
+        assert_eq!(world.arrows[0].duplicate_shake_offset, older * amplitude);
     }
 
     #[test]

@@ -189,6 +189,11 @@ fixed entry is committed separately with its finding id in the subject.
   effect is instantiated instead of being silently dropped, and more than 32
   effects can complete on one pass without indexing a fixed array out of
   bounds.
+- **#45 — fixed.** Duplicate shake vectors are now sampled from the one
+  cross-type creation sequence, newest first, before per-type state updates.
+  Each live duplicate therefore receives the same RNG draw as its entry in
+  `DetPhysics.duplicatedObjects`, while retaining the existing allocation-free
+  object pools and type-specific expiry behavior.
 - **#35 — fixed.** On the pass after a scale ray changes a spawned
   `ResizablePlatform` collider, its updater now recomputes inverse mass and
   moment of inertia from the live extents and bevel radius. This follows
