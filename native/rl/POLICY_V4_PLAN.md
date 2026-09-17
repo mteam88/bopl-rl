@@ -415,6 +415,27 @@ Attention: if `v4-full` beats v3 by a margin the probes attribute to
 relations the fixed features do not cover, a one-layer attention stage over
 the entity set is the next experiment, costed first.
 
+Own-platform probe (2026-09-17, after `v4-aim-only` scored 759 with 4x the
+platform use of the fan shapes: 0.23-0.29 activations per game against
+0.06): does the fan / terrain block flip when the caster's own platform
+appears, so that casting reads as a state discontinuity? No. On the CPU
+evaluator with the full geometry channel (`BOPL4_ABLATE=8`), the platform
+entity appears 6 decisions (24 ticks) after the activation and the caster
+stands still for the cast, so at the appearance decision the terrain block
+does not move at all (0 of 103 own spawns, random self and the `v4-aim`
+policy, changed any of the 12 features by more than 0.25; mean |delta| at or
+below 0.004 against a 0.02-0.16 baseline) and 0.7-0.9 rays move against
+2.4-3.3 at a baseline decision: the new wall enters one or two rays, which is
+the geometry. The spawned platform is a wall (kind 2, layer 11) like the
+level's, not an own-object circle (its entity owner is 0), so the hit class
+is consistent. The opponent's spawns do move the learner's block (sdf flip
+24% vs 3%, edge 15% vs 7%) because the bots drop platforms at the learner:
+real events. So there is no writer bug to fix for a v4.2; the platform gap
+is behavioural. `v4-aim-only` casts while airborne (all 14 casts in 60
+games at |vy| > 0, 29% falling fast, 21% within 12 units of the water,
+against 21% / 9% of all decisions), a rescue and mobility use that the fan
+shapes' landing / edge features may make unnecessary.
+
 ### 7c. Queue after the aim runs (2026-09-17)
 
 Production shape = `v4-aim` (full + aim/LOS, rays on) unless `v4-aim-only`
