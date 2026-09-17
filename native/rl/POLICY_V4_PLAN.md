@@ -384,6 +384,12 @@ hit class one-hot, closing speed):
   the blocker at its distance; all zero when the opponent is unseen.
 - (c) is not buildable: the wire state carries no opponent aim (only arrows
   in flight, which the rays and entity rows already show).
+With bit 2 as well (`v4_ablate = 10`, config `v4-aim-only.toml`) the two
+casts are the only thing on the channel: `v4-no-rays` plus the aim ray and
+line of sight, no fan and no terrain block, the pair that attributes a lift
+to the casts alone (`v4-no-rays` scored IQM 693 against `v4-full`'s 703 on
+2026-09-17: the fan and terrain block are worth at most a few points at
+1.73B, inside the seed band, while costing ~20% of learner sps).
 Over 10k bot-game rows: the aim ray is present in 98% (56% meets nothing
 within 40, 36% a wall, 4% the opponent); the line of sight is clear in 40%,
 wall-blocked in 46%, beyond 40 units in 11%. The in-game shim applies the

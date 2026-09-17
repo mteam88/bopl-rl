@@ -612,6 +612,13 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     /* Terrain and rays: the egocentric view of the map from the body. */
     if (bopl4_ablation()&BOPL4_ABLATE_RAYS) {
         memset(obs+BOPL4_OBS_TERRAIN_OFFSET, 0, (BOPL4_TERRAIN+BOPL4_RAYS*BOPL4_RAY_FEATURES)*sizeof(float));
+        /* Bits 2|8 (v4_ablate 10): the aim ray and line of sight alone, no fan
+         * and no terrain block (the two casts on an otherwise empty channel). */
+        if (bopl4_ablation()&BOPL4_ABLATE_AIM) {
+            Bopl4Terrain terrain;
+            bopl4_terrain_fill(&terrain, state, nearest, count, nearby_slimes, slime_count, self);
+            bopl4_aim_rays(&terrain, self_x, self_y, self_vx, self_vy, env->applied[a], &enemy, obs);
+        }
     } else {
         Bopl4Terrain terrain;
         int rays16=bopl4_ablation()&BOPL4_ABLATE_RAYS16;   /* every other of the 32, none of the down fan */
