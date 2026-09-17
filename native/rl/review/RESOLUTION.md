@@ -104,6 +104,11 @@ fixed entry is committed separately with its finding id in the subject.
   or beyond the ground-alignment deadzone enters the slime's stop animation,
   while reverse or neutral input enters idle. This preserves the source state
   transition before the next directional cast.
+- **#12 — fixed.** Engine ring eviction now happens after the replacement
+  engine is attached and the cast impulse is applied. Every fifth cast thus
+  computes that impulse against the temporary root-plus-five-child composite,
+  then rebuilds the platform without the destroyed oldest child before the
+  physics pass, matching `PlaceRocketEngine.Place` and DetPhysics cleanup.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

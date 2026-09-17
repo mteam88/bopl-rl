@@ -9522,12 +9522,6 @@ impl RolloutWorld {
                 }
             }
         }
-        if count >= data.engine.buffer_size
-            && let Some(oldest) = oldest
-        {
-            self.remove_engine(oldest);
-        }
-
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
         let parent_position = self.platforms[platform_index].surface.center;
@@ -9603,6 +9597,15 @@ impl RolloutWorld {
         self.platform_dynamics[platform_index]
             .body
             .apply_impulse(-normal * data.engine.cast_force, arm);
+        // RingBuffer.Add marks the evicted engine only after Place has
+        // attached the replacement and applied the cast force. DetPhysics
+        // then removes the destroyed child before simulation, preserving the
+        // impulse calculated with the temporary five-child composite mass.
+        if count >= data.engine.buffer_size
+            && let Some(oldest) = oldest
+        {
+            self.remove_engine(oldest);
+        }
         self.platforms_changed();
         true
     }
@@ -31632,6 +31635,45 @@ mod tests {
         world.players[0].last_movement_input = -Vec2::RIGHT;
         world.exit_engine_cast(0);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
+    }
+
+    #[test]
+    fn fifth_engine_cast_uses_temporary_five_child_mass() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let data = data::get();
+        world.players[0].active = ActiveAbility::Engine;
+        world.players[0].active_slot = 0;
+
+        for tick in 1..=data.engine.buffer_size {
+            world.tick = tick as u32;
+            assert!(world.spawn_engine(0, data));
+        }
+        let platform_index = world
+            .platforms
+            .iter()
+            .position(|p| Some(p.id) == world.players[0].base.ground)
+            .unwrap();
+        let before = world.platform_dynamics[platform_index].body;
+        let five_child_inverse_mass = Fix::ONE
+            / (Fix::ONE / before.inverse_mass + Fix::ONE / data.engine.rocket_body.inverse_mass);
+        let body_position = world.players[0].base.position;
+        let normal = world.platforms[platform_index].surface.normal(body_position);
+
+        world.tick += 1;
+        assert!(world.spawn_engine(0, data));
+
+        assert_eq!(
+            world.platform_dynamics[platform_index].body.velocity,
+            before.velocity + five_child_inverse_mass * (-normal * data.engine.cast_force)
+        );
+        assert_eq!(
+            world.engines
+                .iter()
+                .filter(|engine| engine.active && engine.owner == 0)
+                .count(),
+            data.engine.buffer_size
+        );
     }
 
     #[test]
