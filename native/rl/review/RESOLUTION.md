@@ -16,6 +16,9 @@ fixed entry is committed separately with its finding id in the subject.
   when the marker object was already destroyed by a Black Hole. C# leaves the
   destroyed component in `Player.RespawnPositions`, and `killPlayer` tests the
   list count before calling the stale indicator's retained `GetPos()`.
+- **#7 — fixed.** Grounded Time Stop now checks button release during the
+  initial `idleToFall` animation, matching `CastSpell.UpdateSim`'s release
+  check on every pass rather than forcing the first twenty animation ticks.
 
 ## Cross-cutting
 

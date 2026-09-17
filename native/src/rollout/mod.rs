@@ -8963,6 +8963,12 @@ impl RolloutWorld {
 
         match phase {
             0 => {
+                if action.buttons & button == 0
+                    && self.players[index].cast_spell.time <= data.time_stop.cast_time
+                {
+                    self.exit_time_stop_cast(index, data);
+                    return;
+                }
                 self.players[index].cast_spell.ticks += 1;
                 if self.players[index].cast_spell.ticks > data.time_stop.idle_to_fall_ticks {
                     let normal = self.players[index].base.ground.and_then(|ground| {
@@ -30956,6 +30962,20 @@ mod tests {
         assert!(world.players[0].revival_clone_pending);
         assert_eq!(world.players[0].revival_target_marker, Some(0));
         assert_eq!(world.revival_marker_pool[0].position, position);
+    }
+
+    #[test]
+    fn grounded_time_stop_can_cancel_during_entry_animation() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active = ActiveAbility::TimeStop;
+        world.players[0].active_slot = 0;
+        world.players[0].cast_spell.phase = 0;
+        world.players[0].cast_spell.time = DT;
+
+        world.time_stop_cast_tick(0, Action::default(), data::get());
+
+        assert!(world.players[0].active == ActiveAbility::None);
     }
 
     #[test]
