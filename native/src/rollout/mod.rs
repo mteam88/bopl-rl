@@ -6653,7 +6653,6 @@ impl RolloutWorld {
                         slot.base.up = normal;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
-                        slot.base.grounded_speed = Fix::ZERO;
                         self.push_tick(index, action, data);
                         return;
                     }
@@ -31058,6 +31057,31 @@ mod tests {
         world.exit_roll(0, false, data::get());
 
         assert_eq!(world.players[0].base.grounded_speed, Fix::from_int(5));
+    }
+
+    #[test]
+    fn push_entry_preserves_grounded_speed() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.player[0].abilities[0] = ABILITY_PUSH;
+        world.reset(&config).unwrap();
+        assert!(world.players[0].base.grounded);
+        world.players[0].base.grounded_speed = Fix::from_int(12);
+        world.players[0].timers[0] = world.players[0].cooldowns[0] + Fix::ONE;
+
+        world.player_tick(
+            0,
+            Action {
+                angle: 0,
+                buttons: 2,
+            },
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+
+        assert!(world.players[0].active == ActiveAbility::Push);
+        assert_eq!(world.players[0].base.grounded_speed, Fix::from_int(12));
     }
 
     #[test]

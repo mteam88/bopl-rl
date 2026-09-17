@@ -72,6 +72,9 @@ fixed entry is committed separately with its finding id in the subject.
   spawn offset and live projectile collider/visual scale.
 - **#4 — fixed.** Meteor's lethal smear half-width now multiplies by the
   caster's live scale; its travel-derived length remains unchanged.
+- **#6 — fixed.** Push entry now preserves the captured ordinary slime
+  `groundedSpeed` through `PlayerPhysics.SyncPhysicsTo`; only its self-imposed
+  and external velocity channels are cleared by `ControlPlatform.OnEnterAbility`.
 
 ## Cross-cutting
 
