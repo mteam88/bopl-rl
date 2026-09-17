@@ -26,13 +26,16 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   opponents), `reset_begin`/`reset_finish`, telemetry, and BOPLREP2 replay
   export (`bopl_rl_replay`, byte-compatible with `ReplayArchive`, SHA-256
   trailer), so `evaluate.py`'s per-group replay saves work unchanged.
-- **Maps 0-4**: geometry, spawn points, prefab constants and animation
+- **Maps 0-123**: geometry, spawn points, prefab constants and animation
   timings are extracted from the reference export by
   `native/tools/extract_rollout_data.py` into `native/data/rollout.json`
   (embedded via `include_str!`). Every authored and spawned platform has its
   extracted `BoplBody`, an `AnimateVelocity` home spring, and dynamic RR-RR
-  collision impulse/positional correction. Map 2's AntiLockPlatform uses the
-  same body path and matches the reference waypoint trajectory exactly.
+  collision impulse/positional correction. The same path covers FFA, 2v2,
+  snow and space scenes, including multiple ability spawners, ice surfaces,
+  GrowOnStart, AntiLockPlatform and VectorFieldPlatform. Space maps use their
+  source gravity, lower scene boundary and no-water behavior. The per-scene
+  inventory and status are generated as `native/data/map-coverage.json`.
 - **Episode lifecycle**: 240-tick warmup simulated for real on Unity's
   spawn timeline (`GameSessionHandler.SpawnPlayers` after `timeBeforeTwo`:
   slimes exist from tick 63, play the 105-tick spawn animation with physics
@@ -289,6 +292,46 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   SlimeController state machine (fall/land 36t/idle/run/stop 6t/turn 12t,
   tangential ground-alignment deadzones). Rewards and telemetry hook up
   through the same header/flag bits the puffer env reads.
+
+## Map coverage and differential
+
+`extract_rollout_data.py` reads `maps.json` in level order and rejects a
+non-dense catalog, so `BoplRlConfig.map` has the same 0..123 meaning in both
+backends. It also regenerates `native/data/map-coverage.json`; run the
+extractor twice and compare hashes when changing map extraction to check that
+ordering remains deterministic.
+
+Build and run the authored-map-state differential with absolute library paths:
+
+```sh
+just build-q32
+make -C native/rl map-ab OUT=../target
+native/target/map_ab \
+  "$(realpath sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so)" \
+  "$(realpath native/target/release/libbopl_sim.so)" 360
+```
+
+The default run checks all 124 maps with 2 and 6 players. It compares every
+authored platform and water row byte-for-byte on reset and after every step,
+along with the clocks that drive map behavior. `MAP_AB_STRICT_ACTORS=1` adds
+discrete actor-state diagnostics; `MAP_AB_STRICT_VECTORS=1` also requires
+actor vectors to be byte-identical. Actor/entity-table representation is
+otherwise covered by the focused ability and rollout gates.
+
+For isolated geometry interactions, set `MAP_AB_ABILITY` to `14` (Platform),
+`9` (Rock), or `27` (Grappling Hook), and optionally pass one map after the
+tick count:
+
+```sh
+MAP_AB_ABILITY=27 native/target/map_ab "$REFERENCE" "$RUST" 240 119
+```
+
+The port treats `GrowOnStart`, `VectorFieldPlatform`, `AntiLockPlatform`,
+`GameSessionHandler`, `AnimateVelocity`, `BoplBody`, platform type, level type,
+and ability-spawner multiplicity as simulation state. `KeepInCameraCorner`
+only follows the render camera, `WaterWaves` only drives particles, and
+`SceneBoundArrowController` only drives HUD arrows, so those three remain
+outside the rollout state.
 
 ## Deliberate .NET quirks mirrored
 
