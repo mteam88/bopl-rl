@@ -553,16 +553,21 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   lifecycle and all 690 stopped passes exactly. Smoke chaining, ring eviction,
   scale changes, destruction, multiple simultaneous engines and Macho transfer
   are translated but do not each have a dedicated differential scenario.
-  Tesla coil is exact within 16 raw Q32 position units through grounded
-  placement, two-node connection, staggered orb activation, lightning flicker,
-  and third-cast ring eviction. It preserves DetPhysics' temporary four-body
-  cast impulse before rebuilding the surviving three-body composite, and the
-  evicted lightning remains visible for one pass as a destroyed trigger.
-  Noncoincident moving-platform placement currently has bounded root/collider
-  reconstruction differences below 0.0001 world units. Its owner-contact kill
-  and uncredited `Explosion.PlayerOwnerId` telemetry match on the same tick;
-  scale changes, platform destruction, time stop, smoke/mine ignition, and
-  mixed attachments still need dedicated differential scenarios.
+  Tesla coil is source-ported wholesale through grounded placement, composite
+  attachment and temporary cast-impulse ordering, connection, staggered
+  lethality, flicker, player/Smoke/Mine contacts, two-slot eviction, destroyed
+  line lifetime, duplication, platform removal and Time Stop. Growth/Shrink now
+  writes the live attached collider and reproduces the source updater split:
+  immediate repositioning uses the old attachment offset, then the next
+  SimpleSparkNode pass scales that offset. Macho Throw detaches and hides the
+  selected exact node, rebuilds the old composite, and reparents the same
+  identity to local zero on the boulder while preserving scale, owner, child
+  link and duplicate metadata. `tesla_broad_ab.sh` gates 3,500 optimized-Q32
+  ticks across three casts, eviction/reconnection, a lethal contact, full
+  flicker, and all 690 stopped passes. Lifecycle and gameplay state are exact;
+  the placement scenario retains the documented <=16-raw-unit fixed-point
+  root/collider reconstruction bound. The newly translated scale, destruction,
+  Macho and mixed-attachment compositions are not individually measured.
   Push is exact through grounded entry, animation/channel timing, direct
   control of an `AnimateVelocity` platform, home-spring retargeting, rigid-body
   force and torque, collider publication, and button-release restoration.

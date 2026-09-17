@@ -621,6 +621,9 @@ pub struct SpawnedEngine {
     pub collider_rotation: Fix,
     pub surface_offset: Fix,
     pub scale: Fix,
+    /// RocketEngine.prevScale: component offsets adopt a DPhysics scale write
+    /// on the following RocketEngine updater pass.
+    pub offset_scale: Fix,
     pub time: Fix,
     /// 0=start animation, 1=firing, 2=end animation, 3=off.
     pub phase: u32,
@@ -636,6 +639,8 @@ pub struct SpawnedEngine {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedTeslaNode {
     pub active: bool,
+    /// MachoThrow2 temporarily deparents and hides the selected node.
+    pub macho_carried: bool,
     pub born_tick: u32,
     pub owner: usize,
     pub ability_slot: usize,
@@ -650,6 +655,9 @@ pub struct SpawnedTeslaNode {
     pub collider_rotation: Fix,
     pub surface_offset: Fix,
     pub scale: Fix,
+    /// SimpleSparkNode.prevScale, separate from the live circle scale for the
+    /// source's one-updater-late SurfaceOffset/_hitBoxOffsetY update.
+    pub offset_scale: Fix,
     pub body: Body,
     pub child: Option<usize>,
     pub parent: Option<usize>,
@@ -1464,6 +1472,7 @@ pub struct MachoThrowState {
     /// RocketEngine selected by pickUpNearbyAttachables. The source keeps the
     /// same inactive object until SpawnBoulder reparents and reinitializes it.
     pub picked_engine: Option<usize>,
+    pub picked_tesla: Option<usize>,
     pub collider_position: Vec2,
     pub collider_right: Vec2,
     pub collider_rotation: Fix,
@@ -5240,7 +5249,10 @@ impl RolloutWorld {
             }
         }
         for node in &self.tesla_nodes {
-            if !node.active || node.platform_index >= self.platform_dynamics.len() {
+            if !node.active
+                || node.macho_carried
+                || node.platform_index >= self.platform_dynamics.len()
+            {
                 continue;
             }
             let right = Vec2::angle(node.collider_rotation);
@@ -5541,7 +5553,7 @@ impl RolloutWorld {
         }
         for index in 0..self.tesla_nodes.len() {
             let node = self.tesla_nodes[index];
-            if node.platform_index >= self.platform_dynamics.len() {
+            if node.macho_carried || node.platform_index >= self.platform_dynamics.len() {
                 continue;
             }
             let Some(entity) = node
@@ -8954,6 +8966,7 @@ impl RolloutWorld {
         });
         let node = SpawnedTeslaNode {
             active: true,
+            macho_carried: false,
             born_tick: self.tick,
             owner: index,
             ability_slot,
@@ -8969,6 +8982,7 @@ impl RolloutWorld {
             collider_rotation: node_rotation,
             surface_offset,
             scale,
+            offset_scale: scale,
             body: data.tesla.node_body,
             child,
             ..SpawnedTeslaNode::default()
@@ -9065,10 +9079,13 @@ impl RolloutWorld {
         }
         let platform_index = self.tesla_nodes[node_index].platform_index;
         self.tesla_nodes[node_index].active = false;
+        self.tesla_nodes[node_index].macho_carried = false;
         if let Some(entity) = self.tesla_nodes[node_index].entity {
             self.entities[entity].flags = E_REMOVED;
         }
-        self.rebuild_platform_attachment_body(platform_index);
+        if platform_index < self.platforms.len() {
+            self.rebuild_platform_attachment_body(platform_index);
+        }
         self.platforms_changed();
     }
 
@@ -9170,6 +9187,7 @@ impl RolloutWorld {
             collider_rotation: rocket_rotation,
             surface_offset,
             scale,
+            offset_scale: scale,
             time: Fix::ZERO,
             phase: 0,
             ticks: 0,
@@ -9255,7 +9273,7 @@ impl RolloutWorld {
             }
         }
         for node in &self.tesla_nodes {
-            if node.active && node.platform_index == platform_index {
+            if node.active && !node.macho_carried && node.platform_index == platform_index {
                 mass += Fix::ONE / node.body.inverse_mass;
                 moment += Fix::ONE / node.body.inverse_inertia;
                 count += 1;
@@ -9533,6 +9551,14 @@ impl RolloutWorld {
             if !engine.active || engine.macho_carried || engine.born_tick == self.tick {
                 continue;
             }
+            // RocketEngine.UpdateSim observes DPhysicsBox.Scale after the
+            // ScaleChanger updater which wrote it. The collider was already
+            // repositioned with the old SurfaceOffset on that write; this
+            // pass only adopts the offset scale for future parent movement.
+            if engine.scale != engine.offset_scale {
+                engine.surface_offset *= engine.scale / engine.offset_scale;
+                engine.offset_scale = engine.scale;
+            }
             match engine.phase {
                 0 => {
                     engine.ticks += 1;
@@ -9652,16 +9678,27 @@ impl RolloutWorld {
 
         for node_index in 0..self.tesla_nodes.len() {
             if !self.tesla_nodes[node_index].active
+                || self.tesla_nodes[node_index].macho_carried
                 || self.tesla_nodes[node_index].born_tick >= self.tick
             {
                 continue;
             }
+            if self.tesla_nodes[node_index].scale != self.tesla_nodes[node_index].offset_scale {
+                let ratio =
+                    self.tesla_nodes[node_index].scale / self.tesla_nodes[node_index].offset_scale;
+                self.tesla_nodes[node_index].surface_offset *= ratio;
+                self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
+            }
             if self.tesla_nodes[node_index].connected {
                 let child_live = self.tesla_nodes[node_index].child.is_some_and(|child| {
-                    child < self.tesla_nodes.len() && self.tesla_nodes[child].active
+                    child < self.tesla_nodes.len()
+                        && self.tesla_nodes[child].active
+                        && !self.tesla_nodes[child].macho_carried
                 });
                 let parent_live = self.tesla_nodes[node_index].parent.is_some_and(|parent| {
-                    parent < self.tesla_nodes.len() && self.tesla_nodes[parent].active
+                    parent < self.tesla_nodes.len()
+                        && self.tesla_nodes[parent].active
+                        && !self.tesla_nodes[parent].macho_carried
                 });
                 if !child_live && !parent_live {
                     self.disconnect_tesla_node(node_index);
@@ -9671,13 +9708,18 @@ impl RolloutWorld {
                 && let Some(child) = self.tesla_nodes[node_index].child
                 && child < self.tesla_nodes.len()
                 && self.tesla_nodes[child].active
+                && !self.tesla_nodes[child].macho_carried
             {
                 self.connect_tesla_node(node_index, child, data);
+            }
+            if !self.tesla_nodes[node_index].connected {
+                self.tesla_nodes[node_index].lethal = false;
             }
         }
 
         for node_index in 0..self.tesla_nodes.len() {
             if !self.tesla_nodes[node_index].active
+                || self.tesla_nodes[node_index].macho_carried
                 || !self.tesla_nodes[node_index].connected
                 || self.tesla_nodes[node_index].child.is_none()
             {
@@ -9922,7 +9964,7 @@ impl RolloutWorld {
     fn tesla_contacts(&mut self, data: &data::RolloutData) {
         let mut victims = [false; MAX_PLAYERS];
         for node in self.tesla_nodes.iter().copied() {
-            if !node.active || !node.lethal {
+            if !node.active || node.macho_carried || !node.lethal {
                 continue;
             }
             let node_circle = Circle {
@@ -10660,7 +10702,10 @@ impl RolloutWorld {
                 }
             }
             for node in &self.tesla_nodes {
-                if !node.active || node.platform_index >= self.platform_dynamics.len() {
+                if !node.active
+                    || node.macho_carried
+                    || node.platform_index >= self.platform_dynamics.len()
+                {
                     continue;
                 }
                 let parent = &mut self.platform_dynamics[node.platform_index].body;
@@ -11055,6 +11100,7 @@ impl RolloutWorld {
                     continue;
                 };
                 if !node.active
+                    || node.macho_carried
                     || node.platform_index >= self.platform_dynamics.len()
                     || !self.circle_overlaps_entity(query, entity)
                 {
@@ -12660,10 +12706,10 @@ impl RolloutWorld {
 
     /// MachoThrow2.pickUpNearbyAttachables scans platform children first and
     /// rope updaters second, retaining the nearest perimeter coordinate. This
-    /// Engine pass also considers the other attachable kinds so a farther
-    /// RocketEngine cannot win merely because their transfer ports are owned
-    /// by the corresponding ability passes.
-    fn macho_pick_up_engine(&mut self, owner: usize, data: &data::RolloutData) {
+    /// The implemented Engine and Tesla branches retain the exact selected
+    /// object while Spike and rope candidates still participate in nearest
+    /// arbitration for their owning ability passes.
+    fn macho_pick_up_attachable(&mut self, owner: usize, data: &data::RolloutData) {
         let Some(platform_index) = self.players[owner]
             .base
             .ground
@@ -12675,8 +12721,9 @@ impl RolloutWorld {
         let circumference = self.platforms[platform_index].surface.circumference();
         let mut best_fraction = Fix::MAX;
         let mut best_hierarchy = u32::MAX;
-        let mut best_engine = None;
-        let mut consider = |local: Fix, hierarchy: u32, engine: Option<usize>| {
+        // 0 is an unported blocker, 1 an Engine, and 2 a Tesla node.
+        let mut best = None;
+        let mut consider = |local: Fix, hierarchy: u32, candidate: Option<(u8, usize)>| {
             let direct = (local - player_local).abs();
             let fraction = direct.min(Fix::ONE - direct);
             if fraction * circumference >= data.macho_throw.max_attachable_distance {
@@ -12686,7 +12733,7 @@ impl RolloutWorld {
             {
                 best_fraction = fraction;
                 best_hierarchy = hierarchy;
-                best_engine = engine;
+                best = candidate;
             }
         };
         for spike in &self.spike_attacks {
@@ -12696,12 +12743,12 @@ impl RolloutWorld {
         }
         for (engine_index, engine) in self.engines.iter().enumerate() {
             if engine.active && !engine.macho_carried && engine.platform_index == platform_index {
-                consider(engine.local, engine.hierarchy_base, Some(engine_index));
+                consider(engine.local, engine.hierarchy_base, Some((1, engine_index)));
             }
         }
-        for node in &self.tesla_nodes {
-            if node.active && node.platform_index == platform_index {
-                consider(node.local, node.hierarchy_base, None);
+        for (node_index, node) in self.tesla_nodes.iter().enumerate() {
+            if node.active && !node.macho_carried && node.platform_index == platform_index {
+                consider(node.local, node.hierarchy_base, Some((2, node_index)));
             }
         }
         // Ropes are scanned after Transform children and only replace a
@@ -12714,21 +12761,43 @@ impl RolloutWorld {
                     && fraction < best_fraction
                 {
                     best_fraction = fraction;
-                    best_engine = None;
+                    best = None;
                 }
             }
         }
-        let Some(engine_index) = best_engine else {
+        let Some((kind, attachable_index)) = best else {
             return;
         };
-        let old_platform = self.engines[engine_index].platform_index;
-        self.engines[engine_index].macho_carried = true;
-        self.engines[engine_index].platform_index = usize::MAX;
-        if let Some(entity) = self.engines[engine_index].entity {
-            self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+        if kind == 1 {
+            let old_platform = self.engines[attachable_index].platform_index;
+            self.engines[attachable_index].macho_carried = true;
+            self.engines[attachable_index].platform_index = usize::MAX;
+            if let Some(entity) = self.engines[attachable_index].entity {
+                self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+            }
+            self.players[owner].macho_throw.picked_engine = Some(attachable_index);
+            self.rebuild_platform_attachment_body(old_platform);
+        } else {
+            let old_platform = self.tesla_nodes[attachable_index].platform_index;
+            let line_owner = if self.tesla_nodes[attachable_index].child.is_some() {
+                Some(attachable_index)
+            } else {
+                self.tesla_nodes[attachable_index].parent
+            };
+            if let Some(line_owner) = line_owner
+                && line_owner < self.tesla_nodes.len()
+                && self.tesla_nodes[line_owner].connected
+            {
+                self.disconnect_tesla_node(line_owner);
+            }
+            self.tesla_nodes[attachable_index].macho_carried = true;
+            self.tesla_nodes[attachable_index].platform_index = usize::MAX;
+            if let Some(entity) = self.tesla_nodes[attachable_index].entity {
+                self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+            }
+            self.players[owner].macho_throw.picked_tesla = Some(attachable_index);
+            self.rebuild_platform_attachment_body(old_platform);
         }
-        self.players[owner].macho_throw.picked_engine = Some(engine_index);
-        self.rebuild_platform_attachment_body(old_platform);
         self.platforms_changed();
     }
 
@@ -12797,6 +12866,7 @@ impl RolloutWorld {
         engine.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         engine.collider_rotation = desired_rotation;
+        engine.offset_scale = engine.scale;
         engine.time = Fix::ZERO;
         engine.phase = 0;
         engine.ticks = 0;
@@ -12804,6 +12874,67 @@ impl RolloutWorld {
         if let Some(entity) = engine.entity {
             self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
             self.entities[entity].inverse_mass = child.inverse_mass.raw();
+        }
+        self.platforms_changed();
+    }
+
+    /// SimpleSparkNode.Initialize(skipInit:true) keeps the selected node's
+    /// identity, scale, owner and child link, while resetting the connection
+    /// and placing it at local zero with world rotation zero.
+    fn macho_attach_tesla_to_boulder(
+        &mut self,
+        owner: usize,
+        platform_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let Some(node_index) = self.players[owner].macho_throw.picked_tesla.take() else {
+            return;
+        };
+        if node_index >= self.tesla_nodes.len()
+            || !self.tesla_nodes[node_index].active
+            || !self.tesla_nodes[node_index].macho_carried
+        {
+            return;
+        }
+        let source = self.tesla_nodes[node_index];
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let desired_rotation = Fix::ZERO;
+        let desired_right = Vec2::RIGHT;
+        let desired_up = Vec2::UP;
+        let local = Fix::ZERO;
+        let root = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO)
+            + desired_up * source.surface_offset;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let relative_right = desired_right.complex_mul(inverse_basis);
+        let relative_center = (root - parent_position).complex_mul(inverse_basis)
+            + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
+        let mut child_body = source.body;
+        child_body.orientation = desired_rotation;
+        self.attach_engine_body(platform_index, child_body);
+        let node = &mut self.tesla_nodes[node_index];
+        node.macho_carried = false;
+        node.born_tick = self.tick;
+        node.platform_index = platform_index;
+        node.local = local;
+        node.relative_center = relative_center;
+        node.relative_rotation = desired_rotation - parent_rotation;
+        node.collider_center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        node.collider_rotation = desired_rotation;
+        node.offset_scale = node.scale;
+        node.body = child_body;
+        node.connected = false;
+        node.lethal = false;
+        node.enter_ticks = 0;
+        node.line_active = false;
+        node.line_collider_enabled = false;
+        if let Some(entity) = node.entity {
+            self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
+            self.entities[entity].layer = data.tesla.node_layer;
+            self.entities[entity].inverse_mass = child_body.inverse_mass.raw();
         }
         self.platforms_changed();
     }
@@ -12907,6 +13038,7 @@ impl RolloutWorld {
             self.players[owner].macho_throw.held_boulder = Some(boulder_index);
         }
         self.macho_attach_engine_to_boulder(owner, platform_index, data);
+        self.macho_attach_tesla_to_boulder(owner, platform_index, data);
         boulder_index
     }
 
@@ -13092,7 +13224,7 @@ impl RolloutWorld {
                 match phase {
                     0 => {
                         self.next_spawn_hierarchy += data.macho_throw.smoke_updatable_count;
-                        self.macho_pick_up_engine(index, data);
+                        self.macho_pick_up_attachable(index, data);
                         let state = &mut self.players[index].macho_throw;
                         state.phase = 1;
                         state.ticks = 0;
@@ -18771,7 +18903,7 @@ impl RolloutWorld {
         if let Some(node_index) = self
             .tesla_nodes
             .iter()
-            .position(|node| node.active && node.entity == Some(hit.entity))
+            .position(|node| node.active && !node.macho_carried && node.entity == Some(hit.entity))
         {
             self.duplicate_attached_tesla(node_index, direction, caster, data);
             return;
@@ -19424,6 +19556,7 @@ impl RolloutWorld {
             collider_rotation: rotation,
             surface_offset,
             scale: source.scale,
+            offset_scale: source.scale,
             time: Fix::ZERO,
             phase: 0,
             ticks: 0,
@@ -19494,6 +19627,7 @@ impl RolloutWorld {
         });
         let clone = SpawnedTeslaNode {
             active: true,
+            macho_carried: false,
             born_tick: self.tick,
             owner: caster,
             ability_slot: self.players[caster].active_slot,
@@ -19509,6 +19643,7 @@ impl RolloutWorld {
             collider_rotation: rotation,
             surface_offset,
             scale: source.scale,
+            offset_scale: source.scale,
             body: data.tesla.node_body,
             duplicated: true,
             duplicate_lifespan: 1800,
@@ -19931,7 +20066,10 @@ impl RolloutWorld {
             }
         }
         for node_index in (0..self.tesla_nodes.len()).rev() {
-            if !self.tesla_nodes[node_index].active || !self.tesla_nodes[node_index].duplicated {
+            if !self.tesla_nodes[node_index].active
+                || self.tesla_nodes[node_index].macho_carried
+                || !self.tesla_nodes[node_index].duplicated
+            {
                 continue;
             }
             self.tesla_nodes[node_index].duplicate_lifespan -= 1;
@@ -20228,6 +20366,18 @@ impl RolloutWorld {
         if entity >= self.entities.len() || self.entities[entity].flags & E_ACTIVE == 0 {
             return;
         }
+        let current_scale = self
+            .engines
+            .iter()
+            .find(|engine| engine.active && !engine.macho_carried && engine.entity == Some(entity))
+            .map(|engine| engine.scale)
+            .or_else(|| {
+                self.tesla_nodes
+                    .iter()
+                    .find(|node| node.active && !node.macho_carried && node.entity == Some(entity))
+                    .map(|node| node.scale)
+            })
+            .unwrap_or(Fix::ONE);
         self.next_spawn_hierarchy += updatable_count;
         let effect = ScaleChangerState {
             active: true,
@@ -20235,7 +20385,7 @@ impl RolloutWorld {
             victim: entity,
             target_kind: 5,
             entity_id: self.entities[entity].id,
-            current_scale: Fix::ONE,
+            current_scale,
             time: Fix::ZERO,
             growth,
         };
@@ -20244,6 +20394,81 @@ impl RolloutWorld {
         } else {
             self.scale_changers.push(effect);
         }
+    }
+
+    /// Apply DPhysics.Scale to an attached collider. The component's
+    /// SurfaceOffset still has its previous scale until its own updater runs,
+    /// while RepositionOnParent immediately uses the newly scaled collider
+    /// offset. Composite mass is deliberately unchanged by BoplBody.
+    fn scale_attached_entity(
+        &mut self,
+        entity: usize,
+        scale: Fix,
+        data: &data::RolloutData,
+    ) -> bool {
+        if let Some(index) = self.engines.iter().position(|engine| {
+            engine.active && !engine.macho_carried && engine.entity == Some(entity)
+        }) {
+            let engine = self.engines[index];
+            if engine.platform_index >= self.platforms.len() {
+                return false;
+            }
+            let platform = engine.platform_index;
+            let parent_position = self.platforms[platform].surface.center;
+            let parent_rotation = self.platform_dynamics[platform].body.orientation;
+            let right = Vec2::angle(engine.collider_rotation);
+            let root = self.platforms[platform]
+                .surface
+                .position(engine.local, Fix::ZERO)
+                + right.perp() * engine.surface_offset;
+            let inverse_basis = Vec2::angle(-parent_rotation);
+            let relative_right = right.complex_mul(inverse_basis);
+            let relative_center = (root - parent_position).complex_mul(inverse_basis)
+                + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
+            self.engines[index].scale = scale;
+            self.engines[index].relative_center = relative_center;
+            self.engines[index].collider_center = parent_position
+                + relative_center.complex_mul(self.platforms[platform].surface.right);
+            let extents = data::surface_extents(data.engine.rocket_extents * scale);
+            self.entities[entity].right_x = (right * extents.x).x.raw();
+            self.entities[entity].right_y = (right * extents.x).y.raw();
+            self.entities[entity].up_x = (right.perp() * extents.y).x.raw();
+            self.entities[entity].up_y = (right.perp() * extents.y).y.raw();
+            self.entities[entity].x = self.engines[index].collider_center.x.raw();
+            self.entities[entity].y = self.engines[index].collider_center.y.raw();
+            return true;
+        }
+        if let Some(index) = self
+            .tesla_nodes
+            .iter()
+            .position(|node| node.active && !node.macho_carried && node.entity == Some(entity))
+        {
+            let node = self.tesla_nodes[index];
+            if node.platform_index >= self.platforms.len() {
+                return false;
+            }
+            let platform = node.platform_index;
+            let parent_position = self.platforms[platform].surface.center;
+            let parent_rotation = self.platform_dynamics[platform].body.orientation;
+            let right = Vec2::angle(node.collider_rotation);
+            let root = self.platforms[platform]
+                .surface
+                .position(node.local, Fix::ZERO)
+                + right.perp() * node.surface_offset;
+            let inverse_basis = Vec2::angle(-parent_rotation);
+            let relative_right = right.complex_mul(inverse_basis);
+            let relative_center = (root - parent_position).complex_mul(inverse_basis)
+                + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
+            self.tesla_nodes[index].scale = scale;
+            self.tesla_nodes[index].relative_center = relative_center;
+            self.tesla_nodes[index].collider_center = parent_position
+                + relative_center.complex_mul(self.platforms[platform].surface.right);
+            self.entities[entity].radius = (data.tesla.node_radius * scale).raw();
+            self.entities[entity].x = self.tesla_nodes[index].collider_center.x.raw();
+            self.entities[entity].y = self.tesla_nodes[index].collider_center.y.raw();
+            return true;
+        }
+        false
     }
 
     fn shoot_blink_ray(
@@ -21021,10 +21246,29 @@ impl RolloutWorld {
                     continue;
                 }
                 let time = effect.time + DT;
-                let row = &mut self.entities[effect.victim];
-                let multiplier = if row.inverse_mass > 0
-                    && Fix::from_raw(row.inverse_mass) * effect.current_scale
-                        > ray.inverse_mass_before_big
+                let attached_inverse_mass = self
+                    .engines
+                    .iter()
+                    .find(|engine| {
+                        engine.active
+                            && !engine.macho_carried
+                            && engine.entity == Some(effect.victim)
+                    })
+                    .map(|engine| engine.body.inverse_mass)
+                    .or_else(|| {
+                        self.tesla_nodes
+                            .iter()
+                            .find(|node| {
+                                node.active
+                                    && !node.macho_carried
+                                    && node.entity == Some(effect.victim)
+                            })
+                            .map(|node| node.body.inverse_mass)
+                    });
+                let row_inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
+                let inverse_mass = attached_inverse_mass.unwrap_or(row_inverse_mass);
+                let multiplier = if inverse_mass > Fix::ZERO
+                    && inverse_mass * effect.current_scale > ray.inverse_mass_before_big
                 {
                     ray.small_non_players_multiplier
                 } else {
@@ -21033,13 +21277,16 @@ impl RolloutWorld {
                 let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
                     .clamp(Fix::from_f32(0.1), Fix::from_int(5));
                 let ratio = scale / effect.current_scale;
-                row.radius = (Fix::from_raw(row.radius) * ratio).raw();
-                row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
-                row.right_y = (Fix::from_raw(row.right_y) * ratio).raw();
-                row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
-                row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
-                if row.inverse_mass > 0 {
-                    row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
+                if !self.scale_attached_entity(effect.victim, scale, data) {
+                    let row = &mut self.entities[effect.victim];
+                    row.radius = (Fix::from_raw(row.radius) * ratio).raw();
+                    row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
+                    row.right_y = (Fix::from_raw(row.right_y) * ratio).raw();
+                    row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
+                    row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
+                    if row.inverse_mass > 0 {
+                        row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
+                    }
                 }
                 for marker in &mut self.teleport_marker_pool {
                     if marker.active && marker.entity == Some(effect.victim) {
@@ -22046,7 +22293,7 @@ impl RolloutWorld {
             }
         }
         for node in &mut self.tesla_nodes {
-            if !node.active {
+            if !node.active || node.macho_carried {
                 continue;
             }
             if node.platform_index == index {
@@ -26691,7 +26938,7 @@ impl RolloutWorld {
                     .complex_mul(self.platforms[platform].surface.right);
         }
         for node in &mut self.tesla_nodes {
-            if !node.active || node.platform_index >= self.platforms.len() {
+            if !node.active || node.macho_carried || node.platform_index >= self.platforms.len() {
                 continue;
             }
             let platform = node.platform_index;
@@ -27546,7 +27793,7 @@ impl RolloutWorld {
         let data = data::get();
         for node_index in 0..self.tesla_nodes.len() {
             let node = self.tesla_nodes[node_index];
-            if !node.active || node.platform_index >= self.platforms.len() {
+            if !node.active || node.macho_carried || node.platform_index >= self.platforms.len() {
                 continue;
             }
             if let Some(entity) = node.entity {
@@ -27575,7 +27822,10 @@ impl RolloutWorld {
             let Some(child_index) = node.child else {
                 continue;
             };
-            if child_index >= self.tesla_nodes.len() || !self.tesla_nodes[child_index].active {
+            if child_index >= self.tesla_nodes.len()
+                || !self.tesla_nodes[child_index].active
+                || self.tesla_nodes[child_index].macho_carried
+            {
                 continue;
             }
             let line_hidden = self.blink_object_hidden(Some(line_entity));

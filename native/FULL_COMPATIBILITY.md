@@ -3188,9 +3188,30 @@ death and telemetry state for 700 ticks, and observes the same owner collision
 on tick 381. The kill is classified as `Other` with owner zero: both Tesla
 prefabs publish their `IPlayerIdHolder`, but neither assigns the adjacent
 `Explosion.PlayerOwnerId`, so its default is the value PlayerCollision uses for
-attribution. Scaling, platform destruction, time stop, smoke/mine ignition and
-mixed attachment types still need complete differential scenarios. Coverage
-therefore remains partial.
+attribution. A whole-source completion now also keeps attached scaling in the live node
+record rather than transiently changing only its exported entity. It reproduces
+the source updater split: `DPhysicsCircle.Scale` immediately repositions with
+the old `SurfaceOffset`, then the following `SimpleSparkNode.UpdateSim` scales
+`SurfaceOffset` and `_hitBoxOffsetY` without a second reposition. Composite mass
+stays unchanged, as the attached child's `BoplBody` does in the source.
+
+`MachoThrow2.pickUpNearbyAttachables` now transfers Tesla nodes as well as
+Engines. The perimeter scan includes Spike and rope blockers, the selected node
+is hidden and removed from the old composite, and its connection is deactivated.
+`SpawnBoulder` then reparents that same node at local zero and world rotation
+zero. Owner, scale, entity identity, child relationship and duplication metadata
+survive; connection and lethal startup state reset as
+`SimpleSparkNode.Initialize(skipInit:true)` requires. Fixed records and scans add
+no allocation to the tick path.
+
+`tesla_broad_ab.sh` runs the retained placement, contact and Time Stop programs
+as one 3,500-tick optimized-Q32 gate. It is exact through three casts,
+eviction/reconnection, a full flicker, the tick-381 lethal contact and all 690
+stopped passes. The existing placement-only position bound remains at 16 raw
+Q32 units from Unity's separately rounded FixTransform/circle values. Live
+Growth/Shrink, platform destruction, Macho transfer, startup Time Stop, mixed
+attachments and simultaneous contacts are source-ported but have not each been
+isolated in a public differential.
 
 ### Executable Meteor Smash form (2026-09-15)
 
