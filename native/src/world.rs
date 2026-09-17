@@ -569,8 +569,11 @@ impl Player {
         self.jump_with_strength(platforms, self.constants.jump_strength);
     }
     pub(crate) fn jump_with_strength(&mut self, platforms: &[Platform], strength: Fix) {
-        let platform = self.platform(platforms).unwrap();
-        let normal = platform.surface.normal(self.position);
+        // PlayerPhysics.Jump uses world up while airborne and only reads the
+        // attached platform when grounded (PlayerPhysics.cs:333). Roll can
+        // charge in the air, so an attached platform is not required here.
+        let platform = self.grounded.then(|| self.platform(platforms).unwrap());
+        let normal = platform.map_or(Vec2::UP, |p| p.surface.normal(self.position));
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
             .max(Fix::ZERO);
@@ -580,7 +583,7 @@ impl Player {
         self.position += self.velocity * self.constants.jump_teleport;
         self.jumped_this_frame = true;
         let mut motion = self.ground_state();
-        motion.unground(Some(&platform.surface), true);
+        motion.unground(platform.map(|p| &p.surface), true);
         self.apply_ground_state(motion);
     }
     fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {

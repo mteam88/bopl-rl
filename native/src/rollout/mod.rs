@@ -7506,7 +7506,11 @@ impl RolloutWorld {
         let ground_live = self.players[index]
             .base
             .ground
-            .is_some_and(|id| self.platforms.iter().any(|platform| platform.id == id));
+            .is_some_and(|id| {
+                self.platforms
+                    .iter()
+                    .any(|platform| platform.active && platform.id == id)
+            });
         if self.players[index].base.grounded && !ground_live {
             self.exit_roll(index, false, data);
             return;
