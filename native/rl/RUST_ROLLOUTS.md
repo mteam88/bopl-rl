@@ -200,12 +200,19 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   registration of the still-held payload, its deferred upward impulse, stock
   clone and later fuse explosion; only NativeAOT's inert destroyed-Arrow spin
   row is excluded. Lost-support/other-form exits and duplication remain open.
-  Platform: anticipation, aim rotation,
-  cursor sizing under the area cap, geometry-dependent mass/inertia,
-  the authored translational and rotational home springs, ejection and
-  same-pass exit reattachment, one-platform-per-player, curve-driven old-body
-  removal, transform following, and squish deaths. Resizing preserves the
-  scalar body orientation exactly, as `ResizablePlatform.ResizePlatform` does.
+  Platform executes the complete `PlatformTransform` and
+  `ResizablePlatform` source path: anticipation/release latching, player-scale
+  creation, aim rotation, cursor sizing under the scale-aware area cap,
+  geometry-dependent mass/inertia, split raw/player Time Stop deltas, the
+  authored translational and rotational home springs, ejection and same-pass
+  exit reattachment, one-platform-per-player removal, temporary tunnel pause,
+  destroyed-wall owner death, either-endpoint rope transfer, child-attachment
+  mass handoff, portals, scale rays, external forces, rider drops and squish
+  callbacks. Resizing preserves scalar body orientation exactly. The combined
+  six-scenario gate covers 4,140 optimized-Q32 ticks within the established
+  contact-loaded platform bounds; discrete phases, deaths and lifecycles match.
+  Newly translated rope, scale, tunnel/destruction, Time Stop and mixed
+  attachment branches remain without separate focused public differentials.
   Gust uses QuickSpell's measured cast/exit callbacks, its active circle
   hurtbox, deferred Shockwave registration, exact circle/shape target capture,
   one-time grounded-player push, and the shipped 0.25-second force curve. Its

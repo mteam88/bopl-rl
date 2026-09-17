@@ -4208,6 +4208,23 @@ impl RolloutWorld {
                     self.meteor_time_stop_tick(index, data);
                     continue;
                 }
+                if self.players[index].active == ActiveAbility::Platform {
+                    // PlatformTransform keeps receiving Updater's raw 60 Hz
+                    // simDeltaTime while the owner's FixedDeltaTime is zero.
+                    // Rotation and cursor motion therefore still use the
+                    // retained input, while animations, sizing, ejection and
+                    // the ability clock remain frozen.
+                    let retained = self.players[index].last_action;
+                    self.platform_ability_tick(index, retained, data, Fix::ZERO);
+                    self.players[index].base.external_velocity *= Fix::from_f64(0.95);
+                    if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                        self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                        self.players[index].reported_position = self.players[index].base.position;
+                        self.players[index].reported_tick = self.tick;
+                        self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                    }
+                    continue;
+                }
                 // PlayerPhysics and SlimeController still run. Their motion
                 // helpers apply unscaled gravity and air damping, but every
                 // position/raycast delta receives GameTime.FixedDeltaTime=0.
@@ -7106,6 +7123,7 @@ impl RolloutWorld {
                         // its position; the ability object carries no velocity.
                         slot.platform = PlatformState {
                             active_corner: Vec2::new(Fix::ONE, Fix::ONE),
+                            platform_index: usize::MAX,
                             ..PlatformState::default()
                         };
                         slot.base.velocity = Vec2::ZERO;
@@ -7298,7 +7316,7 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
-            self.platform_ability_tick(index, action, data);
+            self.platform_ability_tick(index, action, data, DT);
             // PlatformTransform updates before its own
             // DestroyIfOutsideSceneBounds component. Unlike the ordinary
             // slime, this ability body's position is final for this updater
@@ -21406,12 +21424,20 @@ impl RolloutWorld {
     /// PlatformTransform.UpdateSim: anticipation, rotation while the enter
     /// animation scales the radius in, cursor-driven sizing under the area
     /// cap, and the ejection along the platform's up vector.
-    fn platform_ability_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+    fn platform_ability_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        data: &data::RolloutData,
+        player_dt: Fix,
+    ) {
         let pd = &data.platform;
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let aim = action.direction();
-        self.players[index].platform.ticks += 1;
+        if player_dt > Fix::ZERO {
+            self.players[index].platform.ticks += 1;
+        }
         if !button_down && !self.players[index].platform.released {
             self.players[index].platform.released = true;
         }
@@ -21421,24 +21447,31 @@ impl RolloutWorld {
                 if self.players[index].platform.ticks >= pd.anticipation_ticks {
                     // CreatePlatform: spawn at the frozen player position.
                     let position = self.players[index].base.position;
-                    let platform_index = self.spawn_ability_platform(index, position);
+                    let scale = self.players[index].base.scale;
+                    let platform_index = self.spawn_ability_platform(index, position, scale);
+                    self.transfer_player_rope_to_platform(index, platform_index);
                     let st = &mut self.players[index].platform;
                     st.platform_index = platform_index;
                     st.phase = PLATFORM_ROTATION;
                     st.time_passed = Fix::ZERO;
-                    st.cursor = position + Vec2::UP * pd.spawn_radius;
+                    st.cursor = position + Vec2::UP * (pd.spawn_radius * scale);
                     st.hurtbox_disabled = true;
                     // body.rotation = 0 on entry (PlatformTransform.cs:122).
                     st.sizing_right = Vec2::RIGHT;
                 }
             }
             PLATFORM_ROTATION => {
+                let platform_index = self.players[index].platform.platform_index;
+                if !self.platform_ability_platform_live(index, platform_index) {
+                    return;
+                }
                 let st = &mut self.players[index].platform;
-                st.time_passed += DT;
+                st.time_passed += player_dt;
                 let time_passed = st.time_passed;
                 let platform_index = st.platform_index;
                 let ticks = st.ticks;
-                let radius = pd.enter_scale_curve.evaluate(time_passed);
+                let radius = self.platform_dynamics[platform_index].scale
+                    * pd.enter_scale_curve.evaluate(time_passed);
                 let (center, mut up) = {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up)
@@ -21467,7 +21500,10 @@ impl RolloutWorld {
                     // (FixTransform.cs:49-59); State.Size sizes along them.
                     self.players[index].platform.sizing_right = up.perp_cw();
                 }
-                self.reshape_platform(platform_index, center, pd.spawn_extents, radius);
+                // CalcExtents already includes the current DPhysics scale.
+                // During the enter animation only the bevel radius changes.
+                let extents = pd.spawn_extents * self.platform_dynamics[platform_index].scale;
+                self.reshape_platform(platform_index, center, extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
                 // SpriteAnimator invokes EnterSize after PlatformTransform's
@@ -21479,8 +21515,12 @@ impl RolloutWorld {
                 }
             }
             PLATFORM_SIZE => {
-                self.players[index].platform.time_passed += DT;
-                self.platform_size_tick(index, aim, pd);
+                let platform_index = self.players[index].platform.platform_index;
+                if !self.platform_ability_platform_live(index, platform_index) {
+                    return;
+                }
+                self.players[index].platform.time_passed += player_dt;
+                self.platform_size_tick(index, aim, player_dt, pd);
                 let st = &mut self.players[index].platform;
                 if st.released || st.time_passed > pd.max_size_time {
                     st.phase = PLATFORM_EXIT;
@@ -21488,8 +21528,12 @@ impl RolloutWorld {
                 }
             }
             _ => {
+                let platform_index = self.players[index].platform.platform_index;
+                if !self.platform_ability_platform_live(index, platform_index) {
+                    return;
+                }
                 let st = &mut self.players[index].platform;
-                st.time_passed += DT;
+                st.time_passed += player_dt;
                 let (time_passed, exit_time, platform_index) =
                     (st.time_passed, st.exit_time, st.platform_index);
                 let (center, up, span) = {
@@ -21525,10 +21569,65 @@ impl RolloutWorld {
         }
     }
 
+    /// PlatformTransform's destroyed/inactive branches before its state
+    /// switch. A destroyed platform kills the form with an environmental
+    /// accident; a temporarily inactive Blink-tunneled platform only hides
+    /// and pauses the form until the same object is restored.
+    fn platform_ability_platform_live(&mut self, owner: usize, platform_index: usize) -> bool {
+        if platform_index == usize::MAX || platform_index >= self.platforms.len() {
+            self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT, false, true);
+            return false;
+        }
+        let entity = self.platform_entities[platform_index];
+        if self.entities[entity].flags & (E_REMOVED | E_DESTROYED) != 0 {
+            self.kill(owner, ENVIRONMENT, CAUSE_ACCIDENT, false, true);
+            return false;
+        }
+        self.platforms[platform_index].active && self.entities[entity].flags & E_ACTIVE != 0
+    }
+
+    /// CreatePlatform replaces a live player rope endpoint with a newly
+    /// instantiated RopeAttachment on the bottom face of the spawned wall.
+    /// EnterAbilityClearRope deliberately clears the form binding without
+    /// detaching that endpoint from the RopeBody.
+    fn transfer_player_rope_to_platform(&mut self, owner: usize, platform_index: usize) {
+        let Some(rope_index) = self.players[owner].rope else {
+            return;
+        };
+        if rope_index >= self.ropes.len() || !self.ropes[rope_index].physics.enabled {
+            self.players[owner].rope = None;
+            return;
+        }
+        let surface = &self.platforms[platform_index].surface;
+        let probe = surface.center - surface.up * Fix::from_int(10);
+        let closest = surface.closest_point(probe).unwrap_or(probe);
+        let Ok(local) = surface.local_position(closest, Fix::ZERO) else {
+            return;
+        };
+        let top = self.players[owner].rope_top;
+        let rope = &mut self.ropes[rope_index];
+        rope.platform = Some(platform_index);
+        rope.platform_local = local;
+        rope.platform_top = top;
+        rope.platform_attach_tick = self.tick;
+        // RopeAttachment is the prefab's only MonoUpdatable.
+        self.next_spawn_hierarchy += 1;
+        let slot = &mut self.players[owner];
+        slot.rope_prev_imposed = slot.base.velocity;
+        slot.rope_prev_external = slot.base.external_velocity;
+        slot.rope = None;
+    }
+
     /// The State.Size cursor sizing, ported from PlatformTransform (active
     /// corner selection, per-axis growth, and the maxArea cap with its
     /// quadratic clamp when both axes grow).
-    fn platform_size_tick(&mut self, index: usize, aim: Vec2, pd: &data::PlatformAbilityData) {
+    fn platform_size_tick(
+        &mut self,
+        index: usize,
+        aim: Vec2,
+        player_dt: Fix,
+        pd: &data::PlatformAbilityData,
+    ) {
         let platform_index = self.players[index].platform.platform_index;
         let (center, extents, radius) = {
             let s = &self.platforms[platform_index].surface;
@@ -21570,14 +21669,14 @@ impl RolloutWorld {
             capped.x * Fix::from_int(corner.x.sign()),
             capped.y * Fix::from_int(corner.y.sign()),
         );
-        let mut a = (x + dir.x * DT * pd.size_change_speed).max(pd.min_size);
-        let mut a2 = (y + dir.y * DT * pd.size_change_speed).max(pd.min_size);
-        let cap = pd.max_area;
+        let mut a = (x + dir.x * player_dt * pd.size_change_speed).max(pd.min_size);
+        let mut a2 = (y + dir.y * player_dt * pd.size_change_speed).max(pd.min_size);
+        let cap = pd.max_area * self.platform_dynamics[platform_index].scale;
         if dir.x >= Fix::ZERO && dir.y >= Fix::ZERO {
             // `vec8.x *= fix * SizeChangeSpeed`: the scalar product first
             // (PlatformTransform.cs:335-336), unlike `a` above.
-            let gx = dir.x * (DT * pd.size_change_speed);
-            let gy = dir.y * (DT * pd.size_change_speed);
+            let gx = dir.x * (player_dt * pd.size_change_speed);
+            let gy = dir.y * (player_dt * pd.size_change_speed);
             let grow = gx.min(gy);
             let skew = gx - gy;
             if skew > Fix::ZERO {
@@ -21630,7 +21729,7 @@ impl RolloutWorld {
 
     /// Spawn a ResizablePlatform for `owner` (starting removal of the previous one)
     /// and return its index in `platforms`.
-    fn spawn_ability_platform(&mut self, owner: usize, position: Vec2) -> usize {
+    fn spawn_ability_platform(&mut self, owner: usize, position: Vec2, scale: Fix) -> usize {
         self.begin_removing_spawned_platform_of(owner);
         let pd = &data::get().platform;
         let entity = self.entities.len();
@@ -21649,19 +21748,19 @@ impl RolloutWorld {
             center: position,
             right: Vec2::RIGHT,
             up: Vec2::UP,
-            extents: data::surface_extents(pd.spawn_extents),
-            radius: pd.spawn_radius,
+            extents: data::surface_extents(pd.spawn_extents * scale),
+            radius: pd.spawn_radius * scale,
         };
         let platform_index = self.platforms.len();
         self.platforms.push(make_platform(
             self.next_platform_id,
             &surface,
-            pd.spawn_extents,
+            pd.spawn_extents * scale,
         ));
         self.platform_dynamics.push(PlatformDynamics {
             body: pd.spawn_body,
-            scale: Fix::ONE,
-            body_scale: Fix::ONE,
+            scale,
+            body_scale: scale,
             body_resizable: true,
             min_scale: Fix::from_f32(0.1),
             surface_shape_dirty: false,
@@ -21699,7 +21798,12 @@ impl RolloutWorld {
         // CreatePlatform immediately calls ResizePlatform with the prefab
         // dimensions after ManualInit. That recomputes mass and inertia even
         // though the geometry itself did not change.
-        self.reshape_platform(platform_index, position, pd.spawn_extents, pd.spawn_radius);
+        self.reshape_platform(
+            platform_index,
+            position,
+            pd.spawn_extents * scale,
+            pd.spawn_radius * scale,
+        );
         // CreatePlatform explicitly activates a new body's sudden-death mode
         // only when the global transition is already in progress.
         let delay = if self.sudden_death {
@@ -21817,6 +21921,27 @@ impl RolloutWorld {
                 effect.victim -= 1;
             }
         }
+        for rope in &mut self.ropes {
+            let Some(platform_index) = rope.platform else {
+                continue;
+            };
+            if platform_index == index {
+                let top = rope.platform_top;
+                rope.physics
+                    .set_mass(data::get().ropes.non_platform_mass, top, Fix::ONE);
+                if top {
+                    rope.time_air_start = Fix::from_int(100);
+                    rope.physics.force_start = Vec2::ZERO;
+                } else {
+                    rope.time_air_end = Fix::from_int(100);
+                    rope.physics.force_end = Vec2::ZERO;
+                }
+                rope.physics.detach(top);
+                rope.platform = None;
+            } else if platform_index > index {
+                rope.platform = Some(platform_index - 1);
+            }
+        }
         self.platforms.remove(index);
         self.platform_dynamics.remove(index);
         self.platform_defs.remove(index);
@@ -21829,12 +21954,19 @@ impl RolloutWorld {
             }
         }
         for s in &mut self.spawned {
-            if s.active && s.platform_index > index {
+            if s.active && s.platform_index == index {
+                s.active = false;
+            } else if s.active && s.platform_index > index {
                 s.platform_index -= 1;
             }
         }
         for p in &mut self.players {
-            if p.active == ActiveAbility::Platform && p.platform.platform_index > index {
+            if p.active != ActiveAbility::Platform {
+                continue;
+            }
+            if p.platform.platform_index == index {
+                p.platform.platform_index = usize::MAX;
+            } else if p.platform.platform_index > index && p.platform.platform_index != usize::MAX {
                 p.platform.platform_index -= 1;
             }
         }
@@ -21891,6 +22023,10 @@ impl RolloutWorld {
         let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
         dynamics.body.inverse_mass = Fix::ONE / mass;
         dynamics.body.inverse_inertia = Fix::ONE / inertia;
+        if dynamics.attached_children == 0 {
+            dynamics.root_body.inverse_mass = dynamics.body.inverse_mass;
+            dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
+        }
         dynamics.home_position += center - old_center;
         self.platforms_changed();
         self.rebuild_bounds();
@@ -29094,7 +29230,11 @@ mod tests {
     fn resizing_platform_does_not_rederive_body_rotation() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        let index = world.spawn_ability_platform(0, Vec2::new(Fix::from_int(3), Fix::from_int(4)));
+        let index = world.spawn_ability_platform(
+            0,
+            Vec2::new(Fix::from_int(3), Fix::from_int(4)),
+            Fix::ONE,
+        );
         let orientation = Fix::from_f64(3.135_432_668_56);
         let right = Vec2::angle(orientation);
         let up = right.perp();
@@ -29160,7 +29300,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let platform_index =
-            world.spawn_ability_platform(0, Vec2::new(Fix::ZERO, Fix::from_int(30)));
+            world.spawn_ability_platform(0, Vec2::new(Fix::ZERO, Fix::from_int(30)), Fix::ONE);
         let platform_id = world.platforms[platform_index].id;
         let position = world.platforms[platform_index]
             .surface

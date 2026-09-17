@@ -56,6 +56,11 @@ pub(crate) struct RolloutRope {
     pub time_air_end: Fix,
     pub platform: Option<usize>,
     pub platform_local: Fix,
+    /// RopeAttachment.topAttachment. Web/Grapple platform anchors use the
+    /// top endpoint; PlatformTransform can transfer either player endpoint.
+    pub platform_top: bool,
+    /// A dynamically instantiated RopeAttachment joins Updater next pass.
+    pub platform_attach_tick: u32,
     pub black_hole: Option<usize>,
     pub black_hole_local: Vec2,
     pub black_hole_reel_frames: usize,
@@ -97,6 +102,8 @@ fn empty_rope() -> RolloutRope {
         time_air_end: Fix::ZERO,
         platform: None,
         platform_local: Fix::ZERO,
+        platform_top: true,
+        platform_attach_tick: 0,
         black_hole: None,
         black_hole_local: Vec2::ZERO,
         black_hole_reel_frames: 0,
@@ -149,6 +156,8 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.number = 0;
         rope.segment_ids = [0; MAX_SEGMENTS - 1];
         rope.platform = None;
+        rope.platform_top = true;
+        rope.platform_attach_tick = 0;
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
@@ -192,6 +201,8 @@ impl RolloutWorld {
         };
         rope.platform = platform;
         rope.platform_local = platform_local;
+        rope.platform_top = true;
+        rope.platform_attach_tick = self.tick;
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
@@ -826,13 +837,28 @@ impl RolloutWorld {
             let Some(platform) = self.ropes[index].platform else {
                 continue;
             };
+            if self.ropes[index].platform_attach_tick == self.tick {
+                continue;
+            }
             if platform >= self.platforms.len()
                 || self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
             {
-                self.ropes[index].physics.detach(true);
+                let top = self.ropes[index].platform_top;
+                self.ropes[index].physics.detach(top);
                 self.ropes[index].platform = None;
                 continue;
             }
+            let top = self.ropes[index].platform_top;
+            let endpoint = if top {
+                0
+            } else {
+                self.ropes[index].physics.count - 1
+            };
+            let neighbor = if top {
+                1
+            } else {
+                self.ropes[index].physics.count - 2
+            };
             let anchor = self.platforms[platform]
                 .surface
                 .position(self.ropes[index].platform_local, Fix::ZERO);
@@ -840,8 +866,8 @@ impl RolloutWorld {
                 && !self.ropes[index].physics.detached
                 && !stopped
             {
-                let force = (self.ropes[index].physics.segment[0]
-                    - self.ropes[index].physics.segment[1])
+                let force = (self.ropes[index].physics.segment[endpoint]
+                    - self.ropes[index].physics.segment[neighbor])
                     * PLATFORM_PULL;
                 let arm = (anchor - self.platforms[platform].surface.center).normalized_safe();
                 self.platform_dynamics[platform]
@@ -849,20 +875,28 @@ impl RolloutWorld {
                     .apply_impulse(force, arm);
                 moved_platform = true;
             }
-            self.ropes[index].time_air_start = Fix::ZERO;
+            if top {
+                self.ropes[index].time_air_start = Fix::ZERO;
+            } else {
+                self.ropes[index].time_air_end = Fix::ZERO;
+            }
             let scale = PLATFORM_HEAVINESS / self.platform_dynamics[platform].body.inverse_mass;
             self.ropes[index]
                 .physics
-                .set_mass(PLATFORM_MASS, true, scale);
-            self.ropes[index].physics.force_start = Vec2::ZERO;
-            self.ropes[index].physics.segment[0] = anchor;
+                .set_mass(PLATFORM_MASS, top, scale);
+            if top {
+                self.ropes[index].physics.force_start = Vec2::ZERO;
+            } else {
+                self.ropes[index].physics.force_end = Vec2::ZERO;
+            }
+            self.ropes[index].physics.segment[endpoint] = anchor;
             for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
                 if (self.ropes[index].physics.segment[segment]
                     - self.ropes[index].physics.segment[segment + 1])
                     .length_squared()
                     > PLATFORM_BREAK_STRETCH
                 {
-                    self.ropes[index].physics.detach(true);
+                    self.ropes[index].physics.detach(top);
                     self.ropes[index].platform = None;
                     break;
                 }
@@ -1120,8 +1154,14 @@ impl RolloutWorld {
             // pin the player endpoint immediately.
             if rope.born_tick != self.tick
                 && let Some(platform) = rope.platform
+                && rope.platform_attach_tick != self.tick
             {
-                rope.physics.segment[0] = self.platforms[platform]
+                let endpoint = if rope.platform_top {
+                    0
+                } else {
+                    rope.physics.count - 1
+                };
+                rope.physics.segment[endpoint] = self.platforms[platform]
                     .surface
                     .position(rope.platform_local, Fix::ZERO);
             }

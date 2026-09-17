@@ -4074,6 +4074,44 @@ exact; unmeasured generic target classes and target-specific spell internals sta
 listed in `rl/ABILITY_PORT_GAPS.md`.
 
 
+### Complete Platform transform and spawned-wall lifecycle (2026-09-17)
+
+Catalog id 14 now translates the remaining `PlatformTransform` and
+`ResizablePlatform` source branches. A platform created by a scaled player
+starts with scaled rounded geometry and uses `maxArea * rr.Scale` while sizing.
+Every resize recomputes mass and inertia; before Spike, Engine or Tesla makes
+the wall composite, the recalculated root body is retained for later child
+removal. An existing Web Swing or Grappling Hook endpoint transfers to a new
+`RopeAttachment` on the platform's bottom face without detaching the rope.
+The fixed rope state records which endpoint moved, pins it from the
+attachment's next updater pass, applies the source platform mass/pull, and
+keeps platform indices valid through removal.
+
+The ability distinguishes a temporarily inactive wall from a destroyed one.
+A Blink-tunneled wall hides and pauses the transform until the same body is
+restored; a consumed or removed wall kills the transformed owner as an
+environmental accident on its following update. During Time Stop,
+`PlatformTransform` still receives the raw 60 Hz `simDeltaTime`, so retained
+aim can rotate the wall and move the cursor, while the owner's
+`GameTime.FixedDeltaTime` freezes animation callbacks, sizing, ejection and the
+ability clock. Portal motion, Growth/Shrink collider scaling, Gust/Meteor/Black
+Hole forces, attached child bodies, rider drops and wall squish callbacks all
+operate on the same live spawned body without per-tick allocation.
+
+`platform_broad_ab.sh` runs the existing entry/phase, overlap, landing,
+boundary, rotation and map-2 AntiLockPlatform scenarios as one optimized-Q32
+gate: six scenarios and 4,140 ticks pass. Unloaded orbiter fields, discrete
+flags, phase boundaries, deaths and spawned-wall retention are exact. The
+contact-loaded cases retain their established semantic bounds: at most 0.05
+world units in platform/player pose, 0.01 units per second in platform
+velocity, 0.012 radians in orientation and 0.005 radians per second in angular
+velocity. These differences arise after rigid contacts from separately
+rounded collider axes and correction order; no measured contact, state,
+death, ownership or lifetime boundary differs. Scaled entry, rope transfer,
+tunnel/destruction, Time Stop and mixed attached-child branches are translated
+but do not yet have separate focused public differentials.
+
+
 ### Complete Freeze query and duplicate-slot lifecycle (2026-09-16)
 
 Catalog id 36 now translates the rest of `FreezeRayGun.Shoot` as one query.

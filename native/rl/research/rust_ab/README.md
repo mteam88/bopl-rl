@@ -245,6 +245,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `bow_test.c`: Rust-only bow scenario used while porting.
 - `platform_ab.c`: grounded platform transform overlap, jump-and-land player
   carry, and the map-2 AntiLockPlatform trajectory.
+- `platform_broad_ab.sh`: one optimized-Q32 gate over Platform entry,
+  anticipation, rotation, sizing, ejection, overlap-loaded motion, landing,
+  boundary death, retained spawned-wall collision and map-2 AntiLockPlatform
+  motion; six scenarios and 4,140 differential ticks pass together.
 - `gust_ability_ab.c`: complete QuickSpell cast and exit, active Gust hurtbox,
   deferred Shockwave registration, exact captured targets, both time-zero
   impulses around the map spring updater, force-curve platform trajectories,
