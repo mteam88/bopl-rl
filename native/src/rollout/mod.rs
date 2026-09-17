@@ -23549,6 +23549,16 @@ impl RolloutWorld {
                 effect.victim -= 1;
             }
         }
+        for effect in &mut self.duplicate_platform_effects {
+            if !effect.active {
+                continue;
+            }
+            if effect.source == index {
+                effect.active = false;
+            } else if effect.source > index {
+                effect.source -= 1;
+            }
+        }
         for rope in &mut self.ropes {
             let Some(platform_index) = rope.platform else {
                 continue;
@@ -31689,6 +31699,22 @@ mod tests {
             .spawn_position;
         assert!(spawn.x > Fix::ZERO);
         assert_eq!(spawn.y, Fix::ZERO);
+    }
+
+    #[test]
+    fn platform_removal_reindexes_pending_duplicate_source() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.begin_duplicate_platform(1, Vec2::ZERO, Vec2::RIGHT, 0, data::get());
+
+        world.remove_platform(0);
+
+        let effect = world
+            .duplicate_platform_effects
+            .iter()
+            .find(|effect| effect.active)
+            .unwrap();
+        assert_eq!(effect.source, 0);
     }
 
     #[test]
