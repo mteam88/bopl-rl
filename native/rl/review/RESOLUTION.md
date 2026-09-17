@@ -180,6 +180,11 @@ fixed entry is committed separately with its finding id in the subject.
   `PlayerPhysics.Move` immediately after the authored `0.8` external-velocity
   damping. This restores grounded friction, surface-local movement from
   inherited force, destroyed-ground detachment, and platform drop checks.
+- **#7 — fixed.** During Time Stop, a protected owner's Mine still advances
+  its raw-delta hover clock and can transition from off to armed, but the
+  armed, chasing, and anticipation states now honor their separate global
+  stop checks. They no longer scan, steer, or count down merely because their
+  owner is protected.
 
 ## Cross-cutting
 

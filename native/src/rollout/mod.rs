@@ -24331,7 +24331,8 @@ impl RolloutWorld {
                 continue;
             }
             let owner = self.thrown_items[item_index].owner;
-            if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner] {
+            let time_stopped = self.player_time_scale < Fix::from_f32(0.01);
+            if time_stopped && !self.time_stop_protected[owner] {
                 continue;
             }
 
@@ -24349,6 +24350,12 @@ impl RolloutWorld {
             }
 
             if phase == 0 {
+                continue;
+            }
+            // Mine.LateUpdateSim lets the protected owner's hover/arming
+            // prelude run, but every active state separately checks the
+            // global Time Stop and freezes scanning, chase, and anticipation.
+            if time_stopped {
                 continue;
             }
             let scan_target = if matches!(phase, 1 | 2) && !being_held {
@@ -31843,6 +31850,39 @@ mod tests {
                 .count(),
             33
         );
+    }
+
+    #[test]
+    fn protected_mine_only_hovers_during_time_stop() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let entity = world.entities.len();
+        world.entities.push(CEntity {
+            flags: E_ACTIVE | E_ENABLED,
+            ..CEntity::default()
+        });
+        world.thrown_items.push(ThrownItem {
+            active: true,
+            owner: 0,
+            ability: ABILITY_MINE,
+            entity: Some(entity),
+            phase: 2,
+            age: Fix::ONE,
+            time_since_anticipation: Fix::from_f64(0.5),
+            prev_chase_dir: Vec2::RIGHT,
+            ..ThrownItem::default()
+        });
+        world.player_time_scale = Fix::ZERO;
+        world.time_stop_protected[0] = true;
+
+        world.mines_late_tick(data::get());
+
+        assert_eq!(world.thrown_items[0].age, Fix::ONE + DT);
+        assert_eq!(
+            world.thrown_items[0].time_since_anticipation,
+            Fix::from_f64(0.5)
+        );
+        assert_eq!(world.thrown_items[0].body.force.x, Fix::ZERO);
     }
 
     #[test]
