@@ -2288,7 +2288,7 @@ pub struct RolloutWorld {
     /// reused and fit in one word (six players * three slots * two mouths).
     pub portal_body_inside: Vec<u64>,
     pub portal_body_ids: Vec<u32>,
-    duplicate_platform_effects: [DuplicatePlatformState; 32],
+    duplicate_platform_effects: Vec<DuplicatePlatformState>,
     pub sudden_death: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
@@ -2414,7 +2414,7 @@ impl RolloutWorld {
             portals: Vec::with_capacity(32),
             portal_body_inside: Vec::with_capacity(192),
             portal_body_ids: Vec::with_capacity(192),
-            duplicate_platform_effects: [DuplicatePlatformState::default(); 32],
+            duplicate_platform_effects: Vec::with_capacity(32),
             beam_orbs: Vec::with_capacity(32),
             beam_pool: Vec::with_capacity(16),
             ropes: rope_abilities::rope_pool(),
@@ -2515,7 +2515,8 @@ impl RolloutWorld {
         self.portals.clone_from(&src.portals);
         self.portal_body_inside.clone_from(&src.portal_body_inside);
         self.portal_body_ids.clone_from(&src.portal_body_ids);
-        self.duplicate_platform_effects = src.duplicate_platform_effects;
+        self.duplicate_platform_effects
+            .clone_from(&src.duplicate_platform_effects);
         self.beam_orbs.clone_from(&src.beam_orbs);
         self.beam_pool.clone_from(&src.beam_pool);
         self.ropes.clone_from(&src.ropes);
@@ -2731,6 +2732,7 @@ impl RolloutWorld {
         self.portals.clear();
         self.portal_body_inside.clear();
         self.portal_body_ids.clear();
+        self.duplicate_platform_effects.clear();
         self.beam_orbs.clear();
         self.beam_pool.clear();
         self.next_rope_number = 0;
@@ -22676,6 +22678,8 @@ impl RolloutWorld {
             .find(|state| !state.active)
         {
             *slot = effect;
+        } else {
+            self.duplicate_platform_effects.push(effect);
         }
         self.next_spawn_hierarchy += data.duplicator.platform_effect_updatable_count;
         let dynamics = &mut self.platform_dynamics[source];
@@ -22690,8 +22694,7 @@ impl RolloutWorld {
         if updater_dt == Fix::ZERO {
             return;
         }
-        let mut spawn = [None; 32];
-        let mut spawn_count = 0;
+        let mut spawn = Vec::new();
         for effect_index in 0..self.duplicate_platform_effects.len() {
             let snapshot = self.duplicate_platform_effects[effect_index];
             if !snapshot.active || snapshot.born_tick == self.tick {
@@ -22774,16 +22777,15 @@ impl RolloutWorld {
             if self.duplicate_platform_effects[effect_index].time
                 > data.duplicator.platform_shake_duration
             {
-                spawn[spawn_count] = Some((
+                spawn.push((
                     snapshot.source,
                     spawn_position,
                     snapshot.spawner_hierarchy,
                 ));
-                spawn_count += 1;
                 self.duplicate_platform_effects[effect_index].active = false;
             }
         }
-        for request in spawn.into_iter().take(spawn_count).flatten() {
+        for request in spawn {
             self.spawn_duplicate_platform(request.0, request.1, request.2, data);
         }
     }
@@ -31815,6 +31817,32 @@ mod tests {
             .unwrap();
         assert_eq!(effect.effect_scale, expected);
         assert!(effect.spawn_position.x.abs() < initial.x.abs());
+    }
+
+    #[test]
+    fn duplicate_effect_pool_grows_past_thirty_two() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.duplicate_platform_effects = vec![
+            DuplicatePlatformState {
+                active: true,
+                source: usize::MAX,
+                ..DuplicatePlatformState::default()
+            };
+            32
+        ];
+
+        world.begin_duplicate_platform(0, Vec2::ZERO, Vec2::RIGHT, 0, data::get());
+
+        assert_eq!(world.duplicate_platform_effects.len(), 33);
+        assert_eq!(
+            world
+                .duplicate_platform_effects
+                .iter()
+                .filter(|effect| effect.active)
+                .count(),
+            33
+        );
     }
 
     #[test]

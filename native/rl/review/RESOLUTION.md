@@ -151,6 +151,11 @@ fixed entry is committed separately with its finding id in the subject.
   hierarchy allocation order, the rollout equivalent of C#'s incrementing
   `BlackHoleIndex`/sorting order. Reusing an earlier vector slot can no longer
   make an older hole consume the later-created one.
+- **#47 — fixed.** Pending platform-duplicate effects now use a growable pool,
+  and completed-spawn requests use a growable queue. The 33rd concurrent
+  effect is instantiated instead of being silently dropped, and more than 32
+  effects can complete on one pass without indexing a fixed array out of
+  bounds.
 - **#35 — fixed.** On the pass after a scale ray changes a spawned
   `ResizablePlatform` collider, its updater now recomputes inverse mass and
   moment of inertia from the live extents and bevel radius. This follows
