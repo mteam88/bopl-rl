@@ -21,31 +21,32 @@ The quiet-host measurements captured before this pass showed the regression:
 | 2 | 1,621,291 | 308,710 | 5.25x |
 | 6 | 816,807 | 184,165 | 4.44x |
 
-The final five-repetition run was taken while a separate RL training job used
-about five cores, so absolute rates are lower. Interleaving makes the ratio the
+The accepted five-repetition run was taken while other Rift builds and jobs
+shared the host, so absolute rates are lower. Interleaving makes the ratio the
 useful result:
 
 | players | old median ticks/s | optimized median ticks/s | remaining gap |
 |---:|---:|---:|---:|
-| 2 | 784,005 | 551,207 | 1.42x |
-| 6 | 305,913 | 254,130 | 1.20x |
+| 2 | 608,345 | 498,186 | 1.22x |
+| 6 | 287,821 | 224,591 | 1.28x |
 
-An immediately preceding five-repetition run of the same binaries measured
-917,447 vs 730,318 ticks/s at 2 players (1.26x) and 341,163 vs 322,427 at 6
-players (1.06x), showing the amount of shared-host variance. The 6-player
-target is robustly met; the 2-player target is met in one run but not robustly
-under the final load.
+The final balanced ten-repetition run alternated which library ran first. It
+measured 689,746 vs 525,116 ticks/s at 2 players (1.31x) and 296,637 vs
+239,163 at 6 players (1.24x). The 6-player target is robustly met; the
+2-player result sits on the 1.3x boundary under shared-host variance (the same
+binaries ranged from 1.22x to 1.36x in five-repetition runs).
 
-The 130,000-tick, 6-player all-ability sweep has a median of 206,877 ticks/s.
-The minimum is Grappling Hook (ability 27) at 10,537 ticks/s; Web Swing
-(ability 32) is 55,217 ticks/s. These are dominated by exact rope constraint
+The final 130,000-tick all-ability sweep has a 2-player median/minimum of
+335,147/32,024 ticks/s and a 6-player median/minimum of 156,913/9,415 ticks/s.
+The 6-player minimum is Grappling Hook (ability 27); Web Swing (ability 32)
+is 52,980 ticks/s. These are dominated by exact rope constraint
 physics. Grappling Hook reached 1,137 published entities. That is not accidental
 over-publication: `RlObservation.cs` emits one row for every enabled rope
 segment pair (`segmentCount - 1`), and the authored pool permits 16 ropes per
 player. Reducing those rows or skipping rope iterations would diverge from the
 C# oracle, so the 100k per-ability target remains unmet for rope-heavy matches.
-Abilities 11, 35, and 38 measured 93,535, 98,090, and 94,952 ticks/s under the
-same shared load; all other abilities exceeded 100k.
+Spike (11), Smoke (13), and Portal Gun (38) measured 70,492, 91,225, and
+78,868 ticks/s under the same shared load; all other abilities exceeded 100k.
 
 The optimization keeps C# updater ordering while gating inactive subsystems,
 uses a single-pass common entity publication path, avoids duplicate entity
