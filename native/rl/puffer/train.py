@@ -13,6 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools'), str(ROOT / 'native/rl/sweep')]
 from common import atomic_json
+import counters
 from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED
 from native_checkpoint import write_checkpoint
 import layout
@@ -29,8 +30,8 @@ def maps(value):
         result = [int(x) for x in value.split(',')]
     except ValueError as error:
         raise argparse.ArgumentTypeError('Expected comma-separated map IDs') from error
-    if not result or len(set(result)) != len(result) or any(x < 0 or x > 30 for x in result):
-        raise argparse.ArgumentTypeError('Expected distinct map IDs in 0..30')
+    if not result or len(set(result)) != len(result) or any(x < 0 or x >= 62 for x in result):
+        raise argparse.ArgumentTypeError('Expected distinct map IDs in 0..61')
     return result
 
 
@@ -343,7 +344,7 @@ def arguments():
         p.error(f'entropy-head-scale must be {layout.NUM_ATNS} finite values in 0..100')
     a.head_scale = head_scale
     a.evaluation_maps = a.evaluation_maps or a.training_maps
-    a.heldout_maps = a.heldout_maps or [m for m in range(31) if m not in a.training_maps][:2]
+    a.heldout_maps = a.heldout_maps or [m for m in range(counters.MAPS) if m not in a.training_maps][:2]
     if not a.no_eval:
         if not a.heldout_maps or set(a.heldout_maps) & set(a.training_maps + a.evaluation_maps):
             p.error('heldout maps must be disjoint from training and evaluation maps')
@@ -513,7 +514,9 @@ def main():
         scripted_kinds |= SCRIPTED_KINDS[kind_name] << 4 * (scripted_first_bank + i)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
-                       training_map_mask=sum(1 << m for m in a.training_maps),
+                       # two 31-bit halves: the binding's options travel as doubles
+                       training_map_mask=sum(1 << m for m in a.training_maps if m < 31),
+                       training_map_mask_hi=sum(1 << (m - 31) for m in a.training_maps if m >= 31),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
                        scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],
                        obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)

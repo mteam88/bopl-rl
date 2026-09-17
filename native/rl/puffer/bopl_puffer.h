@@ -35,10 +35,11 @@ typedef struct {
      * was chosen when the button state was free, and how many decisions the
      * button head was ignored because a latch was in force. */
     float hold_choice[BOPL_ACT_HOLD], latched_decisions;
-    float map_fraction[31];
+    float map_fraction[64];   /* BOPL_COUNTER_MAPS */
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
-enum { BOPL_COUNTER_MAPS=31, BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+BOPL_COUNTER_MAPS };
+/* 64 maps: training_map_mask is 64 bits wide (bits 0-61 reach the binding as two 31-bit halves). */
+enum { BOPL_COUNTER_MAPS=64, BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+BOPL_COUNTER_MAPS };
 typedef struct {
     double learner_steps;            /* learner decisions (self-play: every player; historical: the learner side) */
     double game_steps;               /* physical decisions of every player, learner or frozen */
@@ -158,7 +159,7 @@ typedef struct {
     int world_opening, world_checked;
     char world_log[4096], world_error[512];
     int repeat, random_maps, random_loadouts, failed;
-    uint32_t training_map_mask;
+    uint64_t training_map_mask;
     int observation_delay, delay_cursor, no_autoreset;
     /* Observation delay (nine ticks = two decisions at repeat 4): the world
      * states sampled at phase 3 of the last two decisions, encoded into the
@@ -745,8 +746,8 @@ static void bopl_world_ready(BoplPuffer *env) {
     if (!env->world) { fprintf(stderr, "Bopl RL startup: %s\n", env->world_error); abort(); }
     if (env->world_checked) return;
     env->world_checked=1;
-    for (uint32_t map=0; map<31; map++)
-        if ((env->training_map_mask&(1u<<map)) && map>=bopl_rl_map_count(env->world)) {
+    for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++)
+        if ((env->training_map_mask&(1ull<<map)) && map>=bopl_rl_map_count(env->world)) {
             fprintf(stderr, "Training map outside game catalog\n"); abort();
         }
     if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
@@ -799,9 +800,9 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
     config->seed=bopl_random(env);
     if (env->training_map_mask) {
         uint32_t count=0;
-        for (uint32_t map=0; map<31; map++) count+=(env->training_map_mask>>map)&1u;
+        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) count+=(uint32_t)((env->training_map_mask>>map)&1u);
         uint32_t selected=bopl_random(env)%count;
-        for (uint32_t map=0; map<31; map++) if (env->training_map_mask&(1u<<map)) {
+        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) if (env->training_map_mask&(1ull<<map)) {
             if (selected==0) { config->map=map; break; }
             selected--;
         }
@@ -1031,7 +1032,7 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
         } else c->opponent_game_decisions++;
         env->deaths[i]=player->deaths; env->kills[i]=player->kills;
         if (terminal) {
-            if (env->config.map<31) env->log.map_fraction[env->config.map]++;
+            if (env->config.map<BOPL_COUNTER_MAPS) env->log.map_fraction[env->config.map]++;
             *env->terminal_ptr[slot]=1;
             int won=!truncated && (player->flags&2)!=0;
             env->log.perf+=won; env->log.score+=player->kills;

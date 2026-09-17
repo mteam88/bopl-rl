@@ -153,12 +153,13 @@ def guid_of(ref):
 # GrowOnStart/VectorFieldPlatform levels and all snow/space levels. Level 80
 # (four orbit platforms already moving, seed-dependently, when the warmup ends)
 # failed the .NET-oracle parity check and gave its slot to level 69. The cap
-# is 31 because the training-map mask and the per-map counters are 31 wide
-# (bopl_puffer.h BOPL_COUNTER_MAPS). Append only: RL indices are stable.
+# is 62 (round 2 widened the training-map mask to two 31-bit halves and the
+# per-map counters to BOPL_COUNTER_MAPS=64 in bopl_puffer.h). Append only: RL
+# indices are stable.
 LEVELS = [0, 1, 2, 3, 4,
           5, 6, 8, 10, 13, 14, 15, 19, 20, 42, 45, 46, 49,
           65, 68, 69, 71, 72, 73, 76, 77, 79, 84, 86, 90, 93]
-assert len(LEVELS) == len(set(LEVELS)) <= 31
+assert len(LEVELS) == len(set(LEVELS)) <= 62
 # The more-maps campaign's split, by Unity level: 3-4 stay held out (continuity
 # with the five-map runs' trained/held-out gap) plus six new levels, one or two
 # per platform-count stratum at the stratum's median width, so the held-out set

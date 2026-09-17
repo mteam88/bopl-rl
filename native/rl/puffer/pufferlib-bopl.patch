@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-16 18:31:54.835509749 -0400
-+++ puffer-overlay/bindings.cu	2026-09-16 18:33:34.606700625 -0400
++++ puffer-overlay/bindings.cu	2026-09-17 12:10:27.932210708 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -40,6 +40,15 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      result["loss"] = losses_dict;
  
      // Profile
+@@ -109,7 +131,7 @@
+     pybind11::dict env_dict;
+     // Capacity 64 to fit chess's per-bank hist_score_bank/hist_n_bank entries
+     // (16 keys across 8 banks) on top of base env-log fields.
+-    Dict* env_out = create_dict(64);
++    Dict* env_out = create_dict(128);   // bopl: up to 64 map_<i>_fraction keys (BOPL_COUNTER_MAPS)
+     static_vec_eval_log(pufferl.vec, env_out);
+     for (int i = 0; i < env_out->size; i++) {
+         env_dict[env_out->items[i].key] = env_out->items[i].value;
 @@ -132,34 +154,29 @@
      static_vec_render(pufferl.vec, env_id);
  }
@@ -247,7 +256,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-16 18:31:54.835509749 -0400
-+++ puffer-overlay/kernels.cu	2026-09-16 18:33:34.610061096 -0400
++++ puffer-overlay/kernels.cu	2026-09-16 23:40:30.197645103 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -506,7 +515,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-16 18:31:54.835509749 -0400
-+++ puffer-overlay/models.cu	2026-09-16 18:33:34.612337492 -0400
++++ puffer-overlay/models.cu	2026-09-16 23:40:30.198171065 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -839,7 +848,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/muon.cu	2026-09-16 18:33:34.614868327 -0400
++++ puffer-overlay/muon.cu	2026-09-16 23:40:30.198764624 -0400
 @@ -83,6 +83,68 @@
      {2.8366, -3.0525, 1.2012},
  };
@@ -1181,7 +1190,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/ocean.cu	2026-09-16 18:33:34.617128512 -0400
++++ puffer-overlay/ocean.cu	2026-09-16 23:40:30.199264347 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1219,7 +1228,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-16 18:33:34.617697398 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-17 12:10:27.932851398 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -1463,7 +1472,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      cudaGraphExec_t* fused_rollout_cudagraphs;  // [horizon][num_buffers]
      cudaGraphExec_t train_cudagraph;
      cudaStream_t* streams;  // per-buffer raw CUDA streams
-@@ -388,7 +556,156 @@
+@@ -388,12 +556,161 @@
      // worker thread only writes inside its own physical chunk.
      // Bank 0 = primary (learner). NULL = no layout set (primary owns full chunk).
      int* bank_layout;
@@ -1620,6 +1629,12 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
  Dict* log_environments_impl(PuffeRL& pufferl) {
      // Capacity raised from 32 to 64 to accommodate chess's per-bank
+     // hist_score_bank_<b> / hist_n_bank_<b> entries (16 keys for 8 banks).
+-    Dict* out = create_dict(64);
++    Dict* out = create_dict(128);   // bopl: up to 64 map_<i>_fraction keys (BOPL_COUNTER_MAPS)
+     static_vec_log(pufferl.vec, out);
+     return out;
+ }
 @@ -415,6 +732,44 @@
      tl_stream = pufferl->streams[buf];
  }
@@ -3251,7 +3266,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/vecenv.h	2026-09-16 18:40:44.776542737 -0400
++++ puffer-overlay/vecenv.h	2026-09-16 23:40:30.201806322 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.

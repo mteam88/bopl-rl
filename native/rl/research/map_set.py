@@ -1,6 +1,6 @@
 """The RL map catalogue: RL map index <-> Unity level (native/data/map-set.json).
 
-The Rust sim addresses maps by RL index (0-30, dense, stable); the game, the
+The Rust sim addresses maps by RL index (dense, stable; 0-30 in round 1); the game, the
 Unity player's BOPL_LEVEL_SET hook and the human result rows address Unity
 levels (0-123, scene 6+level, Assets/Scenes/FFA/Level{level+1}.unity). RL
 indices 0-4 are levels 0-4; the more-maps catalogue appends 26 grass levels.

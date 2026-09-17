@@ -60,8 +60,12 @@ void my_init(Env *env, Dict *kwargs) {
     env->observation_delay=option(kwargs, "observation_delay", 9);
     env->repeat=option(kwargs, "action_repeat", 4);
     env->random_maps=option(kwargs, "random_maps", 0);
-    env->training_map_mask=(uint32_t)option(kwargs, "training_map_mask", 0);
-    if (env->training_map_mask&0x80000000u) abort();
+    /* The mask arrives as two 31-bit halves (option() goes through a double, and a
+     * 64-bit mask would not survive it): bits 0-30 and 31-61. */
+    unsigned long long mask_lo=(unsigned long long)option(kwargs, "training_map_mask", 0);
+    unsigned long long mask_hi=(unsigned long long)option(kwargs, "training_map_mask_hi", 0);
+    if ((mask_lo|mask_hi)&0x80000000ull) abort();
+    env->training_map_mask=mask_lo|(mask_hi<<31);
     env->random_loadouts=option(kwargs, "random_loadouts", 0);
     bopl_rl_default_config(&env->config, (uint32_t)env->players);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
@@ -107,7 +111,7 @@ void my_setup_perm(StaticVec *vec, Env *env, int slot_base) {
 }
 void my_log(Log *log, Dict *out) {
     /* PufferLib retains key pointers and starts with room for only 32 fields. */
-    static const char *map_keys[31]={
+    static const char *map_keys[BOPL_COUNTER_MAPS]={
         "map_0_fraction", "map_1_fraction", "map_2_fraction", "map_3_fraction",
         "map_4_fraction", "map_5_fraction", "map_6_fraction", "map_7_fraction",
         "map_8_fraction", "map_9_fraction", "map_10_fraction", "map_11_fraction",
@@ -115,7 +119,15 @@ void my_log(Log *log, Dict *out) {
         "map_16_fraction", "map_17_fraction", "map_18_fraction", "map_19_fraction",
         "map_20_fraction", "map_21_fraction", "map_22_fraction", "map_23_fraction",
         "map_24_fraction", "map_25_fraction", "map_26_fraction", "map_27_fraction",
-        "map_28_fraction", "map_29_fraction", "map_30_fraction"
+        "map_28_fraction", "map_29_fraction", "map_30_fraction", "map_31_fraction",
+        "map_32_fraction", "map_33_fraction", "map_34_fraction", "map_35_fraction",
+        "map_36_fraction", "map_37_fraction", "map_38_fraction", "map_39_fraction",
+        "map_40_fraction", "map_41_fraction", "map_42_fraction", "map_43_fraction",
+        "map_44_fraction", "map_45_fraction", "map_46_fraction", "map_47_fraction",
+        "map_48_fraction", "map_49_fraction", "map_50_fraction", "map_51_fraction",
+        "map_52_fraction", "map_53_fraction", "map_54_fraction", "map_55_fraction",
+        "map_56_fraction", "map_57_fraction", "map_58_fraction", "map_59_fraction",
+        "map_60_fraction", "map_61_fraction", "map_62_fraction", "map_63_fraction",
     };
     if (out->capacity<192) {
         DictItem *items=realloc(out->items,192*sizeof(DictItem));
@@ -153,7 +165,7 @@ void my_log(Log *log, Dict *out) {
     for (int i=0; i<32; i++) if (log->bot_n_entry[i]) {
         dict_set(out, entry_n[i], log->bot_n_entry[i]); dict_set(out, entry_score[i], log->bot_score_entry[i]);
     }
-    for (int map=0; map<31; map++) if (log->map_fraction[map]) {
+    for (int map=0; map<BOPL_COUNTER_MAPS; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);
     }
 }
@@ -262,7 +274,7 @@ int bopl_vec_set_tags(const void *gpu_observations, const int *tags) {
 }
 /* Cumulative counters summed over the vector's environments (BOPL_COUNTER_SIZE
  * doubles in BoplCounters order: learner_steps, game_steps, matches,
- * opponent_game_decisions, kills, buttons[4], telemetry[16], map_matches[31]).
+ * opponent_game_decisions, kills, buttons[4], telemetry[16], map_matches[64]).
  * Read between rollouts, when no environment thread is stepping. */
 int bopl_vec_counters(const void *gpu_observations, double *out, int capacity) {
     StaticVec *vec=bopl_find_vec(gpu_observations);
