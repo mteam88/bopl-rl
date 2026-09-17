@@ -5011,6 +5011,11 @@ impl RolloutWorld {
         // than ability-gated so the pickup enables, rerolls, and moves.
         if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
             self.portals_tick(data, updater_dt);
+        } else if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+            // Portal endpoints interleave pickup updaters by hierarchy when
+            // present. Without Portal Gun, the same global updater tail must
+            // still advance DynamicAbilityPickup.
+            self.ability_pickups_tick_remaining(data, updater_dt);
         }
         if has(ABILITY_THROW) {
             self.macho_boulders_tick(data);
