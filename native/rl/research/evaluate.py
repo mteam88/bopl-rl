@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 from environment import Environment,configure
-from native_policy import load,masked,sample,decide
+from native_policy import load,masked,sample,decide,writer_ablation
 from common import atomic_json
 import decision_dump
 import layout
@@ -119,8 +119,9 @@ def main():
                 if scripted is not None: env.bot(1-task['side'],*scripted)
                 # Each side's row in its checkpoint's observation layout (a scripted or random
                 # opponent's row stays v3).
-                env.set_layout(task['side'],layout.layout_of(policy.architecture))
-                env.set_layout(1-task['side'],layout.layout_of(opponent.architecture) if opponent is not None else 3)
+                env.set_layout(task['side'],layout.layout_of(policy.architecture),ablate=writer_ablation(policy))
+                env.set_layout(1-task['side'],layout.layout_of(opponent.architecture) if opponent is not None else 3,
+                               ablate=writer_ablation(opponent) if opponent is not None else -1)
                 layouts=[env.layout_of(0),env.layout_of(1)]
                 generator=torch.Generator().manual_seed(task['seed']*7+task['side'])
                 rng=np.random.default_rng(task['seed']*11+task['side'])

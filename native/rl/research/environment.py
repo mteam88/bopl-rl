@@ -35,6 +35,8 @@ LIB.research_obs_size_of.argtypes = [C.c_int]; LIB.research_obs_size_of.restype 
 LIB.research_layout_v4.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout_v4.restype = C.c_int
 LIB.research_set_layout.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_layout.restype = C.c_int
 LIB.research_get_layout.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_layout.restype = C.c_int
+LIB.research_set_ablation.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_ablation.restype = C.c_int
+LIB.research_get_ablation.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_ablation.restype = C.c_int
 LIB.research_telemetry_size.restype = C.c_int
 LIB.research_num_atns.restype = C.c_int
 LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
@@ -143,12 +145,19 @@ class Environment:
     def _view(self):
         width=max(layout.obs_size_of(v) for v in self._layouts)
         self.obs=self._rows[:,:width]
-    def set_layout(self,player,version):
-        """Encode player's row in observation layout `version` (3 or 4, layout.py). Call
+    def set_layout(self,player,version,ablate=None):
+        """Encode player's row in observation layout `version` (3 or 4, layout.py) and, for
+        v4, with writer ablation bits `ablate` (the checkpoint's v4_shape.ablate,
+        native_policy.writer_ablation; None keeps the player's current bits, which start
+        at the process default BOPL4_ABLATE). Call
         after reset, like bot(); persists across resets. Selected per checkpoint via
         layout.layout_of(architecture) so v3 and v4 policies can share a game."""
+        if ablate is not None and LIB.research_set_ablation(self.handle,player,int(ablate)): raise ValueError('Bad writer ablation selection')
         if LIB.research_set_layout(self.handle,player,int(version)): raise ValueError('Bad observation layout selection')
         self._layouts[player]=int(version); self._view()
+    def ablation_of(self,player):
+        """Player's v4 writer bits; -1 = the process default (BOPL4_ABLATE)."""
+        return LIB.research_get_ablation(self.handle,player)
     def layout_of(self,player): return LIB.research_get_layout(self.handle,player)
     @property
     def rows(self):

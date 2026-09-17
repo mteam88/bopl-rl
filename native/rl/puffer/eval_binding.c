@@ -25,10 +25,8 @@ void research_pack(const BoplRlState *state, const BoplRlConfig *config, float *
  * like research_bot: the row is re-encoded from the current world state (the
  * episode's first state, which is what the reset row shows) with the neutral
  * own-action tail. Persists across resets. Returns -1 for a bad player or layout. */
-int research_set_layout(BoplPuffer *env, int player, int layout) {
-    if (player<0 || player>=env->players || (layout!=3 && layout!=BOPL4_LAYOUT_VERSION)) return -1;
-    if (bopl_layout_of(env, player)==layout) return 0;
-    env->layout[player]=layout;
+static void research_reencode(BoplPuffer *env, int player) {
+    int layout=bopl_layout_of(env, player)==4?BOPL4_LAYOUT_VERSION:3;
     float *row=bopl_obs_row(env, player);
     memset(row, 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_forget_row(env, row);
     const BoplRlState *now=bopl_rl_state(env->world);
@@ -40,9 +38,27 @@ int research_set_layout(BoplPuffer *env, int player, int layout) {
     previous[0]=1;
     if (layout==BOPL4_LAYOUT_VERSION) for (int h=0; h<BOPL4_HISTORY; h++) previous[BOPL_PREVIOUS_FEATURES+BOPL4_HISTORY_FEATURES*h]=1;
     bopl_encode_privileged(env, now, NULL);
+}
+int research_set_layout(BoplPuffer *env, int player, int layout) {
+    if (player<0 || player>=env->players || (layout!=3 && layout!=BOPL4_LAYOUT_VERSION)) return -1;
+    if (bopl_layout_of(env, player)==layout) return 0;
+    env->layout[player]=layout;
+    research_reencode(env, player);
     return 0;
 }
 int research_get_layout(BoplPuffer *env, int player) { return player<0 || player>=env->players?-1:bopl_layout_of(env, player); }
+/* Select player p's v4 writer ablation bits (bopl_obs_v4.h BOPL4_ABLATE_*: the
+ * checkpoint's v4_shape.ablate); mask < 0 restores the process default
+ * (BOPL4_ABLATE). Re-encodes the row like research_set_layout when the player
+ * is on layout v4. Persists across resets. Returns -1 for a bad player. */
+int research_set_ablation(BoplPuffer *env, int player, int mask) {
+    if (player<0 || player>=env->players || mask>15) return -1;
+    if (bopl_ablate_of(env, player)==(mask<0?-1:mask)) return 0;
+    bopl_set_ablate_of(env, player, mask);
+    if (bopl_layout_of(env, player)==4) research_reencode(env, player);
+    return 0;
+}
+int research_get_ablation(BoplPuffer *env, int player) { return player<0 || player>=env->players?-2:bopl_ablate_of(env, player); }
 /* Standalone environments route every player straight to its own row. */
 static void research_route(BoplPuffer *env) {
     for (int s=0; s<env->num_agents; s++) {

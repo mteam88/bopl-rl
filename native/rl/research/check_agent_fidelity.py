@@ -78,7 +78,7 @@ def check_sim(args):
                 if agent.is_policy:
                     import native_policy
                     policy, _ = native_policy.load(spec)
-                    env.set_layout(1, layout.layout_of(policy.architecture))
+                    env.set_layout(1, layout.layout_of(policy.architecture), ablate=native_policy.writer_ablation(policy))
                 # Layout v4's tail (V4_PRIVILEGED floats from V4_PRIVILEGED_OFFSET) is the
                 # critic's privileged block, which encodes the opponent's applied action:
                 # the shim never sees the human's inputs and the actor never reads it
