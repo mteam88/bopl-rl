@@ -6,6 +6,14 @@ fixed entry is committed separately with its finding id in the subject.
 
 ## Guns and spells
 
+### Suspected guns/spells findings
+
+- **S1 — fixed.** Roll's synchronous swept-circle callbacks now run
+  immediately after that roller's own updater slice, before later player
+  prefabs in global hierarchy order. They are no longer deferred until every
+  player's updater has run, so an earlier Roll can kill a later-hierarchy
+  player before that player's same-pass state transition.
+
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
   previous copy for the same 80-pass delayed removal (`60` shake passes plus

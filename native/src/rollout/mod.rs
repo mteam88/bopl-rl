@@ -4542,6 +4542,9 @@ impl RolloutWorld {
             self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
             self.player_tick(index, action, movement_input, jump_pressed, data);
+            if self.players[index].active == ActiveAbility::Roll {
+                self.roll_contacts_for(index, data);
+            }
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
             // the match-level death exactly once; otherwise the later
@@ -4676,11 +4679,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_items(data);
-        }
-        // Roll dispatches its extra swept hurtboxes from Roll.UpdateSim,
-        // before this pass's DetPhysics collider synchronization.
-        if has(ABILITY_ROLL) {
-            self.roll_contacts(data);
         }
         // Slime-vs-slime shove (World::step parity).
         for a in 0..self.players.len() {
@@ -28537,18 +28535,13 @@ impl RolloutWorld {
     /// Roll.CollideExtraHurtBoxes plus the live circle/circle-or-box contact.
     /// The source dispatches every swept centre, but PlayerCollision accepts
     /// only the first kill in a frame; a fixed victim bitset has that result.
-    fn roll_contacts(&mut self, data: &data::RolloutData) {
-        // Roll.UpdateSim dispatches each active player's swept callbacks in
-        // prefab hierarchy order. Apply deaths immediately so two lethal Rolls
-        // do not both survive long enough to kill each other in a deferred
-        // batch.
-        for roller in 0..self.players.len() {
-            if self.players[roller].active != ActiveAbility::Roll
-                || !self.players[roller].roll.lethal
-                || !self.playable(roller)
-            {
-                continue;
-            }
+    fn roll_contacts_for(&mut self, roller: usize, data: &data::RolloutData) {
+        if self.players[roller].active != ActiveAbility::Roll
+            || !self.players[roller].roll.lethal
+            || !self.playable(roller)
+        {
+            return;
+        }
             let mut centers = [Vec2::ZERO; 31];
             let swept_len = usize::from(self.players[roller].roll.swept_len);
             centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
@@ -28651,7 +28644,6 @@ impl RolloutWorld {
                 if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
                     break;
                 }
-            }
         }
     }
 
