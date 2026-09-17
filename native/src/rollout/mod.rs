@@ -8511,7 +8511,12 @@ impl RolloutWorld {
         {
             return (beam.hitbox.owner_id as u32, true, CAUSE_BEAMED);
         }
-        (ENVIRONMENT, true, CAUSE_OTHER)
+        let row = self.entities[entity];
+        if matches!(row.layer, 16 | 18) {
+            (row.owner, true, CAUSE_OTHER)
+        } else {
+            (ENVIRONMENT, true, CAUSE_OTHER)
+        }
     }
 
     fn player_form_target_callback(
@@ -32260,6 +32265,20 @@ mod tests {
 
         assert_eq!(world.players[1].deaths, 1);
         assert!(world.retired_tesla_contacts.is_empty());
+    }
+
+    #[test]
+    fn lethal_hitbox_fallback_keeps_entity_owner_credit() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let entity = world.entities.len();
+        world.entities.push(CEntity {
+            layer: 16,
+            owner: 2,
+            ..CEntity::default()
+        });
+
+        assert_eq!(world.projectile_credit(entity), (2, true, CAUSE_OTHER));
     }
 
     #[test]

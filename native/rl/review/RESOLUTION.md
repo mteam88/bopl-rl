@@ -243,3 +243,8 @@ fixed entry is committed separately with its finding id in the subject.
   exit/drop behavior. `native/src/player_life.rs` remains the independently
   verified accounting oracle; merging the two implementations would be a
   larger refactor and is not needed for this localized correction.
+- **G1 — fixed.** `projectile_credit` now mirrors the C# Hitbox fallback for
+  otherwise-unclassified Explosion/LethalTerrain rows by returning the
+  entity's published owner id with owner damage enabled. Dropped lethal Rock
+  bodies hit by Meteor/Roll therefore credit their player instead of the
+  environment.
