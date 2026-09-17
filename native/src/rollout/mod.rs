@@ -310,7 +310,6 @@ const S_IN_ABILITY: u32 = 4;
 const S_SUPPRESS_INPUT: u32 = 8;
 const S_SIMULATED: u32 = 16;
 const S_ABILITYLESS: u32 = 32;
-const S_PICKUP_SLOT_SHIFT: u32 = 6;
 
 const E_COMPONENT_METADATA: u32 = E_TIMER_KNOWN
     | E_PICKUP
@@ -2207,8 +2206,6 @@ pub struct RolloutWorld {
     bounds_epoch: u64,
     /// `platform_epoch` the platform entity rows were written for.
     platform_rows_epoch: u64,
-    /// Simulation tick whose DetPhysics actor rows are already synchronized.
-    actor_rows_tick: u32,
     /// `platform_epoch` at which `platforms_tick` last found every body at
     /// rest at its home, so the check need not be repeated until a change.
     quiet_epoch: u64,
@@ -2345,7 +2342,6 @@ impl RolloutWorld {
             platform_epoch: 1,
             bounds_epoch: 0,
             platform_rows_epoch: 0,
-            actor_rows_tick: u32::MAX,
             quiet_epoch: 0,
             scratch: PlatformScratch {
                 item_order: Vec::with_capacity(192),
@@ -2453,7 +2449,6 @@ impl RolloutWorld {
         self.platform_epoch = src.platform_epoch;
         self.bounds_epoch = src.bounds_epoch;
         self.platform_rows_epoch = src.platform_rows_epoch;
-        self.actor_rows_tick = src.actor_rows_tick;
         self.quiet_epoch = src.quiet_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
@@ -2548,7 +2543,6 @@ impl RolloutWorld {
             platform_epoch: _,
             bounds_epoch: _,
             platform_rows_epoch: _,
-            actor_rows_tick: _,
             quiet_epoch: _,
             scratch: _,
             platform_dynamics: _,
@@ -2664,7 +2658,6 @@ impl RolloutWorld {
         self.warmup = config.warmup_ticks;
         self.limit = config.max_episode_ticks;
         self.tick = 0;
-        self.actor_rows_tick = u32::MAX;
         self.episode_ticks = 0;
         self.started = false;
         self.terminal = false;
@@ -4946,7 +4939,6 @@ impl RolloutWorld {
             }
         }
         self.tick += 1;
-        self.actor_rows_tick = self.tick;
         self.episode_ticks += 1;
         self.session_tick();
     }
@@ -8006,7 +7998,8 @@ impl RolloutWorld {
         }
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
-        slot.roll.lethal = false;
+        // Roll.ExitAbility leaves Ability.KillPlayersOnContact unchanged on
+        // the now-inactive prefab; the next OnEnterAbility clears it.
         slot.base.constants = data.player.constants.clone();
         slot.base.radius = data.player.radius;
         slot.base.rotation = Fix::ZERO;
@@ -28569,10 +28562,7 @@ impl RolloutWorld {
 
     /// Update the entity table from live state (positions, flags).
     fn refresh_entities(&mut self) {
-        if self.actor_rows_tick != self.tick {
-            self.refresh_actor_entities();
-            self.actor_rows_tick = self.tick;
-        }
+        self.refresh_actor_entities();
         if self.active_subsystems & ability_bit(ABILITY_SPIKE) != 0 {
             self.refresh_spike_entities();
         }
@@ -28602,6 +28592,9 @@ impl RolloutWorld {
                 ] {
                     if entity != usize::MAX {
                         let row = &mut self.entities[entity];
+                        if row.flags & E_DESTROYED != 0 {
+                            continue;
+                        }
                         row.flags =
                             (row.flags & !E_COMPONENT_METADATA) | ability_collider_flags(ability);
                         row.reserved[1] = 0;
@@ -28617,7 +28610,10 @@ impl RolloutWorld {
             row.clock_rate = 0;
             // Ability prefab colliders keep their source id even after a
             // pickup replaces the slot and the inactive collider is orphaned.
-            if row.layer == LAYER_PLAYER && row.reserved[0] != ABILITY_NULL {
+            if row.layer == LAYER_PLAYER
+                && row.flags & E_DESTROYED == 0
+                && row.reserved[0] != ABILITY_NULL
+            {
                 row.flags |= ability_collider_flags(row.reserved[0]);
             }
         }
@@ -28625,15 +28621,21 @@ impl RolloutWorld {
         for slot in &self.players {
             if slot.rock_entity != usize::MAX {
                 let row = &mut self.entities[slot.rock_entity];
-                row.reserved[0] = ABILITY_ROCK;
-                row.flags |= ability_collider_flags(ABILITY_ROCK);
+                if row.flags & E_DESTROYED == 0 {
+                    row.reserved[0] = ABILITY_ROCK;
+                    row.flags |= ability_collider_flags(ABILITY_ROCK);
+                }
             }
-            if slot.roll_entity != usize::MAX && slot.roll.lethal {
+            if slot.roll_entity != usize::MAX
+                && slot.roll.lethal
+                && self.entities[slot.roll_entity].flags & E_DESTROYED == 0
+            {
                 self.entities[slot.roll_entity].flags |= E_CONTACT_DAMAGE;
             }
             if slot.meteor_entity != usize::MAX
                 && slot.active == ActiveAbility::Meteor
                 && slot.meteor.phase == 3
+                && self.entities[slot.meteor_entity].flags & E_DESTROYED == 0
             {
                 self.entities[slot.meteor_entity].flags |= E_CONTACT_DAMAGE;
             }
@@ -28641,8 +28643,10 @@ impl RolloutWorld {
                 for &entity in entities {
                     if entity != usize::MAX {
                         let row = &mut self.entities[entity];
-                        row.flags |= E_HITBOX | E_CONTACT_DAMAGE_KNOWN;
-                        row.reserved[0] = ABILITY_DRILL;
+                        if row.flags & E_DESTROYED == 0 {
+                            row.flags |= E_HITBOX;
+                            row.reserved[0] = ABILITY_DRILL;
+                        }
                     }
                 }
             }
@@ -28659,6 +28663,9 @@ impl RolloutWorld {
                 continue;
             };
             let row = &mut self.entities[entity];
+            if row.flags & E_DESTROYED != 0 {
+                continue;
+            }
             row.flags |= E_PICKUP | E_TIMER_KNOWN;
             row.reserved = [
                 pickup.ability,
@@ -28669,12 +28676,18 @@ impl RolloutWorld {
         for arrow in &self.arrows {
             let Some(entity) = arrow.entity else { continue };
             let row = &mut self.entities[entity];
+            if row.flags & E_DESTROYED != 0 {
+                continue;
+            }
             row.flags |= E_PROJECTILE;
             row.reserved[0] = ABILITY_BOW;
         }
         for shot in &self.portal_shots {
             if let Some(entity) = shot.entity {
                 let row = &mut self.entities[entity];
+                if row.flags & E_DESTROYED != 0 {
+                    continue;
+                }
                 row.flags |= E_PROJECTILE;
                 // The NativeAOT observer's generic Projectile fallback
                 // credits the owner's Bow slot when one exists.
@@ -28688,12 +28701,18 @@ impl RolloutWorld {
         }
         for smear in &self.meteor_smears {
             if let Some(entity) = smear.entity {
-                self.entities[entity].flags |= E_PROJECTILE;
+                // Meteor's ground smear carries Explosion, not Projectile.
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for item in &self.thrown_items {
             let Some(entity) = item.entity else { continue };
             let row = &mut self.entities[entity];
+            if row.flags & E_DESTROYED != 0 {
+                continue;
+            }
             if item.ability != ABILITY_MINE {
                 row.flags |= E_EXPLOSIVE;
             }
@@ -28706,7 +28725,13 @@ impl RolloutWorld {
             if item.ability != ABILITY_MINE {
                 row.reserved[0] = item.ability;
             }
-            if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse != Fix::MAX {
+            // Grenade.Init runs on the updater pass after instantiation. Both
+            // ordinary and smoke payloads carry Grenade, but its timer remains
+            // at the authored negative sentinel on the first observed pass.
+            if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE)
+                && item.fuse != Fix::MAX
+                && item.born_tick.saturating_add(1) < self.tick
+            {
                 row.flags |= E_TIMER_KNOWN;
                 row.reserved[1] = remaining_ticks(item.fuse);
                 row.clock_rate = self.player_time_scale.raw();
@@ -28715,6 +28740,9 @@ impl RolloutWorld {
         for cloud in &self.smoke_clouds {
             let Some(entity) = cloud.entity else { continue };
             let row = &mut self.entities[entity];
+            if row.flags & E_DESTROYED != 0 {
+                continue;
+            }
             row.flags |= E_FLAMMABLE_SMOKE;
             if cloud.ignition_time >= Fix::ZERO {
                 row.flags |= E_TIMER_KNOWN;
@@ -28725,6 +28753,9 @@ impl RolloutWorld {
         for node in &self.tesla_nodes {
             if let Some(entity) = node.entity {
                 let row = &mut self.entities[entity];
+                if row.flags & E_DESTROYED != 0 {
+                    continue;
+                }
                 row.flags |= E_SPARK_NODE | E_EXPLOSIVE;
                 row.reserved[0] = self.players[node.owner]
                     .abilities
@@ -28736,37 +28767,51 @@ impl RolloutWorld {
         }
         for spike in &self.spike_attacks {
             if let Some(entity) = spike.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for orb in &self.beam_orbs {
             if let Some(entity) = orb.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for beam in &self.beam_pool {
             if let Some(entity) = beam.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for rock in &self.duplicated_rocks {
             if let Some(entity) = rock.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for explosion in &self.grenade_explosions {
             if let Some(entity) = explosion.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for explosion in &self.missile_explosions {
             if let Some(entity) = explosion.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
         for explosion in &self.smoke_explosions {
             if let Some(entity) = explosion.entity {
-                self.entities[entity].flags |= E_EXPLOSIVE;
+                if self.entities[entity].flags & E_DESTROYED == 0 {
+                    self.entities[entity].flags |= E_EXPLOSIVE;
+                }
             }
         }
     }
@@ -30159,9 +30204,6 @@ impl RolloutWorld {
             if !in_ability && !respawning {
                 flags |= S_SIMULATED;
             }
-            // This backend's pickup path replaces slot two; expose that
-            // target through the same two ABI-v3 bits as SlimeController.
-            flags |= 2 << S_PICKUP_SLOT_SHIFT;
             let mut ability_flags = [0u32; 3];
             for (s, flags) in ability_flags.iter_mut().enumerate() {
                 if slot.abilities[s] == 0 {
