@@ -156,15 +156,26 @@ def guid_of(ref):
 # is 62 (round 2 widened the training-map mask to two 31-bit halves and the
 # per-map counters to BOPL_COUNTER_MAPS=64 in bopl_puffer.h). Append only: RL
 # indices are stable.
+# Round 2 (RL 31-53): the remaining portable grass levels in level order, minus
+# 17 and 75, which fail the oracle the way 80 does (an AntiLockPlatform orbit
+# already in motion when the warmup ends: Unity has the platform 13 units from
+# where the Rust sim holds it, seed-dependently; level 75 then disagrees on
+# 10/12 episode lengths). Porting the orbit's warmup phase is sim work; until
+# then the catalogue is 54 of the 57 portable grass levels.
 LEVELS = [0, 1, 2, 3, 4,
           5, 6, 8, 10, 13, 14, 15, 19, 20, 42, 45, 46, 49,
-          65, 68, 69, 71, 72, 73, 76, 77, 79, 84, 86, 90, 93]
+          65, 68, 69, 71, 72, 73, 76, 77, 79, 84, 86, 90, 93,
+          7, 9, 18, 39, 40, 41, 43, 44, 47, 48, 64, 66,
+          70, 74, 78, 81, 83, 85, 87, 88, 89, 91, 92]
 assert len(LEVELS) == len(set(LEVELS)) <= 62
 # The more-maps campaign's split, by Unity level: 3-4 stay held out (continuity
 # with the five-map runs' trained/held-out gap) plus six new levels, one or two
 # per platform-count stratum at the stratum's median width, so the held-out set
 # is not a distribution shift. Fixed in the config, never in training_map_mask.
-HELD_OUT_LEVELS = [3, 4, 10, 14, 49, 68, 73, 90]
+# Round 2 adds five of its 23 by the same rule (one or two per stratum at the
+# stratum's median width): 66 (4-6 platforms), 74 and 92 (7-8), 41 (9-10), 47
+# (11-15). Held out: 13 of 54.
+HELD_OUT_LEVELS = [3, 4, 10, 14, 49, 68, 73, 90, 41, 47, 66, 74, 92]
 assert set(HELD_OUT_LEVELS) <= set(LEVELS)
 
 
