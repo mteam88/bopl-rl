@@ -415,6 +415,105 @@ Attention: if `v4-full` beats v3 by a margin the probes attribute to
 relations the fixed features do not cover, a one-layer attention stage over
 the entity set is the next experiment, costed first.
 
+### 7c. Queue after the aim runs (2026-09-17)
+
+Production shape = `v4-aim` (full + aim/LOS, rays on) unless `v4-aim-only`
+clearly beats it (IQM above `v4-aim`'s 697 + ~30, outside the v4 seed
+spread of ~27 measured by `v4-full` 703 / `v4-full-s74` 676). Rays cost no
+sps (`v4-no-rays`, bit 2, runs the same 163k), the evidence on them is flat
+not negative, and the more-maps run below is the test where the egocentric
+geometry channel is the point. Queue (gpu-queue/, lexical order): `13zz
+v4-aim-only` -> `19a v4-aim-s74`, `19b v4-aim-s75`, `19c v4-no-rays-s74`
+(seed replicates of the production shape and its no-rays control) -> `25
+v4-no-relational`, `27 v4-critic-shared` (renumbered from 15/17 so the seeds
+sort first) -> `28 seeds-rest` (v3, was 20). Parked, not deleted:
+`sym-critic`, `rays16`, `maxpool` (single-seed ablations can only resolve
+effects above ~30 points). The more-maps run (7d) goes behind 19c once its
+gates pass.
+
+### 7d. More maps: the 31-level catalogue (`native/data/map-set.json`)
+
+The five-map runs test map invariance on two held-out levels that share the
+training levels' scale. The game has 124 level scenes and full dumps of all
+of them (`native/reference-export/map-{0..123}.json`): 64 grass (levelType
+0, the constants the sim was validated on), 38 snow, 22 space. Of the grass
+levels, 57 use only components the Rust backend already ports (static
+`StickyRoundedRectangle` platforms, animate-in, `AntiLockPlatform` orbits);
+the other 7 carry `GrowOnStart` / `VectorFieldPlatform` and are skipped,
+as are snow and space (they switch gameplay constants: sim work, not data).
+
+Catalogue (2026-09-17, `extract_rollout_data.py LEVELS`): RL map index i is
+Unity level `LEVELS[i]`; 0-4 are the original five, 5-30 are 26 new grass
+levels chosen per platform-count stratum (4-6, 7-8, 9-10, 11-15), alternately
+over each stratum's width span so the set covers the spread. The cap is 31
+because `training_map_mask` and the per-map counters are 31 wide
+(`BOPL_COUNTER_MAPS`); widening them touches the trainer the live queue
+loads, so the second half of the 57 waits for a later round. Append only:
+RL indices are stable once a run has trained on them. The table with scene
+paths and roles is `native/data/map-set.json` (`map_set.py` for Python and
+shells); `rollout.json` for maps 0-4 is byte-identical to before.
+
+Split (fixed in the config, never in `training_map_mask`): training = 0-2
+plus 20 new (RL 5, 6, 7, 9, 11-16, 18, 20-22, 24-28, 30); held out = 3-4
+(continuity with the 12/10-point gaps of the five-map runs) plus six new,
+one or two per stratum at the stratum's median width so held-out is not a
+distribution shift: RL 8, 10, 17, 19, 23, 29 = levels 10, 14, 49, 68, 73, 90.
+
+Gates, all passed before the job file exists (`v4-aim-maps.toml`):
+- per-map smoke (`check_map_catalogue.py`, 8 seeds per map): spawns dry, no
+  platform moving in the first two idle seconds beyond the authored orbits,
+  random-input and bot-vs-bot episodes to the terminal with finite v3/v4 rows
+  and ray distances in [0, 1]: 31/31 ok; the 0-4 row digests equal the
+  previous build's, and `repr_ab` old vs new .so on 0-4 is identical at
+  tolerance 0 (2597/2597 ticks). The pre-existing `check_maps.py` (reset
+  idempotence, capacity flags, tick accounting) passes on 5-30 too.
+- Unity parity (`repr_ab` against the .NET oracle `BoplSimNative.so`, the
+  game code compiled headless, per-backend map pins: the oracle takes the
+  level, Rust the RL index; 12 episodes per level, tolerance 2^-19): every one
+  of the 26 new levels agrees on the winner 12/12 and on the episode length
+  311/312 (one 709/710 case from a 2.4e-6 velocity rounding). Ticks within
+  tolerance 75-100% per level against 93.6-99.4% on maps 0-4; the excess on
+  levels 6, 13, 19, 90, 93 is the known classes (the constant basis rounding
+  of the water box's `right_x`, the arrow's spawn-row rotation 3pi/2 vs 0 one
+  tick before flight, terminal-tick death positions), no new class. Level 80
+  (four orbit platforms already moving, seed-dependently, when the warmup
+  ends: 16 fields differ after reset, 13/20 lengths) failed and was replaced
+  by level 69.
+- zero-shot baseline: `v4-aim` policy-986677248 (trained on 0-2) evaluated on
+  the new split by `evaluate.py`: 81.0% on 0-2 vs 74.0% on the eight held-out
+  maps (71/96) and 75.7% over all 17 unseen maps (222 games).
+
+Metric: pool v7 stays primary, scored exactly as every other v4 run (its
+members trained on 0-2; scoring on new maps would re-scale the anchor and
+penalise v3 for our distribution, not theirs). Second band: scripted-bot win
+rate on the held-out maps, reported as the trained/held-out gap with CI
+(readout.py section 3) and as `flags.py heldout_win_rate` / `heldout_gap`
+with the config flag `heldout-gap = "heldout_gap > 8"`. In-run evaluation
+keeps its budget: 12 training maps x 2 games (was 3 x 8) and 8 held-out maps
+x 2 games (was 2 x 4).
+
+Pre-registered claims (success criteria, written before the run):
+1. `v4-aim-maps` holds pool v7 within seed noise of `v4-aim`'s 697 (IQM3 at
+   or above 697 - 27): training on 23 maps costs nothing on the anchor.
+2. The held-out gap halves against the five-map runs: `v4-aim-maps`'s
+   trained-minus-held-out scripted-bot gap on the eight held-out maps is at
+   most half of `v4-aim`'s 10.4 points (and of `v4-full`'s 16.1) at 1.73B.
+3. `v4-no-rays-maps` (bits 2|8: fan and terrain block off, aim ray and line
+   of sight kept, so only the geometry channel differs; same split, the
+   follow-up job) loses more than `v4-aim-maps` on more maps: its pool v7 IQM
+   and its held-out win rate are both below `v4-aim-maps`'s by more than the
+   v4 seed spread, the test of the geometry channel that five maps could not
+   give.
+A result inside the seed spread on (1) with (2) met is the intended outcome;
+(2) missed at equal pool v7 says the gap is about the opponents, not the
+geometry; (3) unresolved keeps rays on by default.
+
+Human tests on the Mac (`Tools/play-vs-agent-mac.sh --maps training |
+held-out | <rl list>`, translated to the player's `BOPL_LEVEL_SET` levels by
+`map_set.py`): training maps for a fair test, held-out for generalisation.
+`games.jsonl` rows carry `rl_map` and `map_role`, and `reference_pool.py
+human --map-role training|held-out|unported` rates them apart.
+
 ## 8. Config and flags
 
 `train.py --policy v4` (default `v3` so existing configs are unchanged) with
