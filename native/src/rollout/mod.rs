@@ -10161,21 +10161,29 @@ impl RolloutWorld {
                         center: fire,
                         radius: data.engine.fire_radius * engine.scale,
                     };
-                    if let Some(cloud) = self.smoke_clouds.iter_mut().find(|cloud| {
-                        if !cloud.active || !cloud.registered {
-                            return false;
-                        }
-                        let entity = cloud.entity.expect("registered smoke cloud");
-                        self.entities[entity].flags & E_ENABLED != 0
-                            && crate::physics::contact::circle_circle(
-                                flame,
-                                Circle {
-                                    center: cloud.position,
-                                    radius: Fix::from_raw(self.entities[entity].radius),
-                                },
-                            )
-                            .is_some()
-                    }) {
+                    let smoke_hit = self
+                        .smoke_clouds
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, cloud)| {
+                            if !cloud.active || !cloud.registered {
+                                return false;
+                            }
+                            let entity = cloud.entity.expect("registered smoke cloud");
+                            self.entities[entity].flags & E_ENABLED != 0
+                                && crate::physics::contact::circle_circle(
+                                    flame,
+                                    Circle {
+                                        center: cloud.position,
+                                        radius: Fix::from_raw(self.entities[entity].radius),
+                                    },
+                                )
+                                .is_some()
+                        })
+                        .min_by_key(|(_, cloud)| cloud.entity.expect("registered smoke cloud"))
+                        .map(|(index, _)| index);
+                    if let Some(cloud_index) = smoke_hit {
+                        let cloud = &mut self.smoke_clouds[cloud_index];
                         cloud.ignition_time = Fix::ZERO;
                         let entity = cloud.entity.expect("registered smoke cloud");
                         self.entities[entity].flags = E_ACTIVE;
@@ -33428,6 +33436,56 @@ mod tests {
         world.rebuild_platform_attachment_body(0);
 
         assert_eq!(world.platform_dynamics[0].body.force, Vec2::ZERO);
+    }
+
+    #[test]
+    fn engine_ignites_first_registered_overlapping_smoke() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.tick = 1;
+        let data = data::get();
+        let fire = data.engine.fire_offset - data.engine.rocket_collider_offset;
+        let older = world.entities.len();
+        world.entities.push(CEntity {
+            flags: E_ACTIVE | E_ENABLED,
+            radius: data.smoke.cloud_base_radius.raw(),
+            ..CEntity::default()
+        });
+        let newer = world.entities.len();
+        world.entities.push(CEntity {
+            flags: E_ACTIVE | E_ENABLED,
+            radius: data.smoke.cloud_base_radius.raw(),
+            ..CEntity::default()
+        });
+        world.smoke_clouds.push(SmokeCloud {
+            active: true,
+            registered: true,
+            entity: Some(newer),
+            position: fire,
+            ignition_time: Fix::ONE,
+            ..SmokeCloud::default()
+        });
+        world.smoke_clouds.push(SmokeCloud {
+            active: true,
+            registered: true,
+            entity: Some(older),
+            position: fire,
+            ignition_time: Fix::ONE,
+            ..SmokeCloud::default()
+        });
+        world.engines.push(SpawnedEngine {
+            active: true,
+            phase: 1,
+            scale: Fix::ONE,
+            offset_scale: Fix::ONE,
+            platform_index: 0,
+            ..SpawnedEngine::default()
+        });
+
+        world.engines_tick(data, DT);
+
+        assert_eq!(world.smoke_clouds[0].ignition_time, Fix::ONE);
+        assert_eq!(world.smoke_clouds[1].ignition_time, Fix::ZERO);
     }
 
     #[test]

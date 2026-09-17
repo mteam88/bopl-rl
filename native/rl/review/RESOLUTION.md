@@ -73,6 +73,10 @@ fixed entry is committed separately with its finding id in the subject.
   force was cleared on attachment, then explicitly copies only velocity and
   angular velocity from the old composite; carrying Rust's old force applied
   an extra impulse after any child removal.
+- **S14 — fixed.** Rocket Engine now ignites the first overlapping Smoke
+  circle in DetPhysics registration order (the source's `scanForSmokeBuffer[0]`)
+  instead of the first active slot in Rust's reusable smoke pool. Reusing an
+  earlier pool slot can no longer make a newer cloud win the overlap.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
