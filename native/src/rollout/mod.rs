@@ -4336,7 +4336,7 @@ impl RolloutWorld {
             self.register_pending_teleport_markers(data);
         }
         self.register_pending_stock_clones(data);
-        if has(ABILITY_GRENADE) {
+        if has(ABILITY_GRENADE) || has(ABILITY_SMOKE) {
             self.register_pending_grenade_explosions(data);
         }
         if has(ABILITY_SMOKE) {
