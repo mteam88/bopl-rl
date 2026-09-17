@@ -320,6 +320,18 @@ discrete actor-state diagnostics; `MAP_AB_STRICT_VECTORS=1` also requires
 actor vectors to be byte-identical. Actor/entity-table representation is
 otherwise covered by the focused ability and rollout gates.
 
+The complete Q32 map port has also been validated with strict actor vectors
+for 6000 ticks across both player counts:
+
+```sh
+MAP_AB_STRICT_ACTORS=1 MAP_AB_STRICT_VECTORS=1 native/target/map_ab \
+  "$(realpath sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so)" \
+  "$(realpath native/target/release/libbopl_sim.so)" 6000
+```
+
+This sweep passes all 124 maps byte-for-byte, including actor positions and
+velocities.
+
 For isolated geometry interactions, set `MAP_AB_ABILITY` to `14` (Platform),
 `9` (Rock), or `27` (Grappling Hook), and optionally pass one map after the
 tick count:
@@ -340,6 +352,8 @@ outside the rollout state.
 
 - `Player.Position` normally reports the body position from before movement
   in the same updater pass, while the slime/entity rows contain the live body.
+  When a SlimeController is destroyed, `Player.Position` retains that
+  controller's last publication indefinitely.
   Ability callbacks have specific exceptions: Dash publishes after its
   transform, Platform exit publishes the final ejection, and stock selection
   publishes the selected respawn point in that same pass.
