@@ -92,6 +92,9 @@ fixed entry is committed separately with its finding id in the subject.
   around the parent platform perimeter before attachment. The prior `0.3`
   argument was the separate surface offset, not Duplicator's placement
   distance.
+- **#9 — fixed.** Duplicated Black Holes now enter DetPhysics' duplicate
+  expiry list with the explicit source lifespan of 480 passes (eight seconds),
+  rather than inheriting the generic 1800-pass object lifetime.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

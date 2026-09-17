@@ -19892,7 +19892,7 @@ impl RolloutWorld {
             target_size: Fix::from_int(100) + source.mass.abs() * data.black_hole.growth,
             radius: source.radius,
             duplicated: true,
-            duplicate_lifespan: 1800,
+            duplicate_lifespan: 480,
             duplicate_shake_offset: Vec2::ZERO,
         };
         if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
@@ -31441,6 +31441,22 @@ mod tests {
         world.duplicate_attached_engine(0, Vec2::RIGHT, 0, data::get());
 
         assert_eq!(world.engines[1].local, expected);
+    }
+
+    #[test]
+    fn duplicated_black_hole_uses_explicit_lifespan() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.black_holes.push(BlackHoleState {
+            active: true,
+            radius: Fix::ONE,
+            mass: Fix::ONE,
+            ..BlackHoleState::default()
+        });
+
+        world.duplicate_black_hole(0, Vec2::RIGHT, data::get());
+
+        assert_eq!(world.black_holes[1].duplicate_lifespan, 480);
     }
 
     #[test]
