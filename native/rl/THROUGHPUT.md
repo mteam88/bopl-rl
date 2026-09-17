@@ -7,6 +7,52 @@ this is the measured bottleneck model and the ranked options. Fidelity
 constraint per Matthew: a close approximation is fine (bit-exactness with the
 .NET oracle is not required for training speed work).
 
+## 2026-09-17: 39-ability Rust port recovery
+
+All numbers below use the trainer's Q32 release build. The old library is
+commit `a807fce`, built from an archive under `native/target/oldsrc`; the new
+library is branch `ability-port`. The benchmark is pinned to CPU 11 and runs
+old/new in alternating order for 130,000 ticks per repetition.
+
+The quiet-host measurements captured before this pass showed the regression:
+
+| players | old median ticks/s | port median ticks/s | slowdown |
+|---:|---:|---:|---:|
+| 2 | 1,621,291 | 308,710 | 5.25x |
+| 6 | 816,807 | 184,165 | 4.44x |
+
+The final five-repetition run was taken while a separate RL training job used
+about five cores, so absolute rates are lower. Interleaving makes the ratio the
+useful result:
+
+| players | old median ticks/s | optimized median ticks/s | remaining gap |
+|---:|---:|---:|---:|
+| 2 | 784,005 | 551,207 | 1.42x |
+| 6 | 305,913 | 254,130 | 1.20x |
+
+An immediately preceding five-repetition run of the same binaries measured
+917,447 vs 730,318 ticks/s at 2 players (1.26x) and 341,163 vs 322,427 at 6
+players (1.06x), showing the amount of shared-host variance. The 6-player
+target is robustly met; the 2-player target is met in one run but not robustly
+under the final load.
+
+The 130,000-tick, 6-player all-ability sweep has a median of 206,877 ticks/s.
+The minimum is Grappling Hook (ability 27) at 10,537 ticks/s; Web Swing
+(ability 32) is 55,217 ticks/s. These are dominated by exact rope constraint
+physics. Grappling Hook reached 1,137 published entities. That is not accidental
+over-publication: `RlObservation.cs` emits one row for every enabled rope
+segment pair (`segmentCount - 1`), and the authored pool permits 16 ropes per
+player. Reducing those rows or skipping rope iterations would diverge from the
+C# oracle, so the 100k per-ability target remains unmet for rope-heavy matches.
+Abilities 11, 35, and 38 measured 93,535, 98,090, and 94,952 ticks/s under the
+same shared load; all other abilities exceeded 100k.
+
+The optimization keeps C# updater ordering while gating inactive subsystems,
+uses a single-pass common entity publication path, avoids duplicate entity
+refreshes, retains scratch allocations, compacts replay actions, and replaces
+restoring Q32 division/square-root work with result-identical integer paths.
+`just verify` passes the complete golden differential suite after these changes.
+
 ## 1. Measured state
 
 Per update (448 agent rows x 128 steps = 57,344 rows; 256 physical players
