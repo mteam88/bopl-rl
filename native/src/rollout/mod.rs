@@ -5099,7 +5099,7 @@ impl RolloutWorld {
                 self.portal_shots[shot_index].body.velocity =
                     self.portal_shots[shot_index].fire_velocity;
             }
-            self.portal_shots[shot_index].time_alive += updater_dt * self.player_time_scale;
+            self.portal_shots[shot_index].time_alive += updater_dt;
             if self.portal_shots[shot_index].time_alive > data.portal_gun.max_flight_seconds {
                 let mut outward = -self.portal_shots[shot_index]
                     .body
@@ -6056,7 +6056,7 @@ impl RolloutWorld {
                 data,
                 updater_dt,
             );
-            self.portals[endpoint_index].time_alive += updater_dt * self.player_time_scale;
+            self.portals[endpoint_index].time_alive += updater_dt;
             if self.portals[endpoint_index].time_alive > data.portal_gun.lifetime_seconds {
                 if let Some(linked) = self.portals[endpoint_index].linked
                     && linked < self.portals.len()
@@ -32530,6 +32530,26 @@ mod tests {
 
         assert_eq!(world.portal_shots[0].body.velocity, expected);
         assert!(world.portal_shots[0].fire_applied);
+    }
+
+    #[test]
+    fn portal_clocks_apply_fractional_time_scale_once() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.spawn_portal_shot(0, 0, Vec2::RIGHT, data::get());
+        world.tick += 1;
+        let dt = DT * Fix::from_f32(0.5);
+
+        world.portal_shots_tick(data::get(), dt);
+
+        assert_eq!(world.portal_shots[0].time_alive, dt);
+        world.portals.push(PortalEndpoint {
+            active: true,
+            hierarchy_base: 1,
+            ..PortalEndpoint::default()
+        });
+        world.portals_tick(data::get(), dt);
+        assert_eq!(world.portals[0].time_alive, dt);
     }
 
     #[test]

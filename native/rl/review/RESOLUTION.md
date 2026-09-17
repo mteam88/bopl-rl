@@ -284,6 +284,13 @@ fixed entry is committed separately with its finding id in the subject.
 
 ## Cross-cutting
 
+### Suspected cross-cutting findings
+
+- **S5 — fixed.** PortalShot and Portal clocks now advance by the already
+  player-scaled updater delta exactly once. This matches each C# component's
+  raw `SimDeltaTime * GameTime.PlayerTimeScale` expression at fractional
+  reference-harness scales instead of squaring the scale.
+
 - **C1 — not a divergence.** The `TimeStop` metadata branch in
   `RlObservation.Entity` is unreachable in the C# oracle. `Write` emits only
   DetPhysics circles, boxes, rounded rectangles, rope segments, and beams;
