@@ -458,10 +458,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   registration, underground wall traversal and owner-credited Explosion-layer
   kills. It preserves Ability/PlayerBody/Drill publication order, the first
   registered overlapping platform, minimum and entry/leave speed multipliers,
-  underside forced exit, and the source's PlayerBody-only behavior during Time
-  Stop. Four differential scenarios cover ordinary/forced exits, a same-team
-  contact kill, bounds death, stock reconstruction, and 690 frozen ticks. Rope
-  detachment and direct Shockwave pushing remain to be composed and goldened.
+  underside forced exit, live-rope `PlayerBody` integration/detachment, and the
+  source's PlayerBody-only behavior during Time Stop. `drill_broad_ab.sh`
+  covers ordinary/forced exits, a same-team contact kill, bounds death, stock
+  reconstruction, 690 frozen ticks, a live Web Swing endpoint and Gust's
+  pushable-form callback across 3,229 optimized-Q32 ticks. Meteor's matching
+  one-shot callback is translated but not separately isolated because its
+  composition first reaches the known Meteor caster-pose approximation.
   Beam executes its grounded and airborne PlayerBody forms, charge/aim clips,
   frame-driven retained orb, maximum-time shrink and all three exit routes. Its
   allocation-free live graph preserves crossings and water reflections, pools

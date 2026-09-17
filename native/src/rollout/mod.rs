@@ -11380,8 +11380,15 @@ impl RolloutWorld {
             }
         }
 
-        // PlayerBody (hierarchy 6) advances before Drill (hierarchy 7).
-        {
+        // PlayerBody (hierarchy 6) advances before Drill (hierarchy 7). Its
+        // rope branch constrains the live endpoint as well as integrating the
+        // body; an unroped form takes the direct path below.
+        let rope_enabled = self.players[index]
+            .rope
+            .is_some_and(|rope| rope < self.ropes.len() && self.ropes[rope].physics.enabled);
+        if rope_enabled {
+            self.rope_body_move(index, action.buttons & 1 != 0);
+        } else {
             let body = &mut self.players[index].base;
             body.position += (body.velocity + body.external_velocity) * DT;
             body.external_velocity *= Fix::from_f64(0.95);
@@ -11477,12 +11484,15 @@ impl RolloutWorld {
             self.players[index].drill.underground = false;
         }
 
+        let rope_enabled = self.players[index]
+            .rope
+            .is_some_and(|rope| rope < self.ropes.len() && self.ropes[rope].physics.enabled);
         if self.players[index].drill.underground {
             let speed = self.players[index].base.velocity.length();
             let direction = -self.players[index].base.up;
             self.players[index].base.velocity =
                 direction * speed + direction * data.drill.drill_strength * DT;
-        } else {
+        } else if !rope_enabled {
             let drill = self.players[index].drill;
             let body = &mut self.players[index].base;
             let gravity = if drill.time < data.drill.keep_strong_gravity_seconds
@@ -11502,6 +11512,14 @@ impl RolloutWorld {
             let point_velocity = offset.length() * angular * offset.normalized_safe().perp()
                 + self.platform_dynamics[platform_index].body.velocity;
             self.players[index].base.position += point_velocity * DT;
+        }
+
+        // Drill.UpdateSim leaves a live rope attached while airborne, but
+        // entering terrain calls PlayerBody.AttachRope(null, topAttachment)
+        // after the moving-platform contribution for this pass.
+        if self.players[index].drill.underground && rope_enabled {
+            let top = self.players[index].rope_top;
+            self.attach_player_rope(index, None, top);
         }
 
         if action.buttons & (2 << self.players[index].active_slot) as u8 == 0
@@ -15804,16 +15822,67 @@ impl RolloutWorld {
                 if !self.playable(player_index) || player_index == wave.owner {
                     continue;
                 }
-                let player = &mut self.players[player_index];
-                if player.active != ActiveAbility::None
-                    || crate::physics::contact::circle_box(query, player.base.collider).is_none()
-                {
+                if matches!(
+                    self.players[player_index].active,
+                    ActiveAbility::Dash
+                        | ActiveAbility::Gust
+                        | ActiveAbility::Meteor
+                        | ActiveAbility::Platform
+                        | ActiveAbility::Push
+                        | ActiveAbility::Revival
+                ) {
+                    // These prefabs serialize Ability.isPushable=false.
                     continue;
                 }
+
+                let player = &self.players[player_index];
+                let entity = Self::blink_player_entity(player);
+                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let overlaps = if row.kind == 0 {
+                    crate::physics::contact::circle_circle(
+                        query,
+                        Circle {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            radius: Fix::from_raw(row.radius),
+                        },
+                    )
+                    .is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    crate::physics::contact::circle_box(
+                        query,
+                        OrientedBox {
+                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                            right,
+                            up,
+                            inverse_extents: Vec2::new(
+                                Fix::ONE / right.length(),
+                                Fix::ONE / up.length(),
+                            ),
+                        },
+                    )
+                    .is_some()
+                };
+                if !overlaps {
+                    continue;
+                }
+
+                let player = &mut self.players[player_index];
                 let delta = player.base.position - wave.position;
                 let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
                 let magnitude = wave.force_scale * data.meteor.shockwave.default_force / distance;
-                if !player.base.grounded {
+                if player.active == ActiveAbility::Rock {
+                    // Rock has BoplBody but no PlayerPhysics or PlayerBody.
+                    player.rock.body.force += delta * magnitude * Fix::from_int(9000);
+                } else if player.active == ActiveAbility::Drill {
+                    // Drill exposes PlayerBody.AddForce, whose authored force
+                    // conversion multiplies the external velocity by 35.
+                    player.base.external_velocity += delta * magnitude * Fix::from_int(35);
+                } else if !player.base.grounded {
                     // PlayerPhysics.AddForce uses its serialized inverseMass01;
                     // the stock player value is one in the shipped prefab.
                     player.base.external_velocity += delta * magnitude;

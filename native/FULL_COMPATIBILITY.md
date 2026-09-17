@@ -3562,7 +3562,10 @@ colliders.
 
 The oriented drill query scans wall platforms in registered order. Air motion
 uses the strong 102-unit gravity for the strict initial 0.4-second interval and
-45 thereafter, with the source's normalized-vector steering. Entering a valid
+45 thereafter, with the source's normalized-vector steering. A live rope uses
+the full `PlayerBody` endpoint integration and suppresses Drill gravity; entry
+into terrain detaches it after the moving-platform contribution, matching the
+source component order. Entering a valid
 surface clamps nonzero speed to 10, applies the 0.66 multiplier, clears external
 velocity, then constrains and accelerates motion along the drill axis. Leaving
 applies the 1.5 multiplier; a held release is suppressed underground and exits
@@ -3584,9 +3587,19 @@ counts, contacts, deaths and callback ticks match. Entry, exit and collider
 positions differ by at most two raw Q32 units (4.7e-10 world units) because the
 Rust path groups the scaled local-vector multiplication differently; no query,
 contact or branch changes. State and hitbox storage are inline or retained and
-the tick path allocates nothing. Rope detachment and direct Shockwave pushing
-remain to be exercised as composed interactions, so catalog coverage remains
-partial.
+the tick path allocates nothing. `drill_rope_ab.c` adds 279 exact public-state
+ticks from a live Web Swing endpoint through Drill entry, rope-constrained
+flight, release and exit; the documented rope-segment relaxation is excluded
+while the complete player/slime contract remains exact. `gust_drill_ab.c` adds
+250 ticks through the pushable Drill `PlayerBody` callback and observes the
+impulse on tick 231. `drill_broad_ab.sh` runs these with the four original
+scenarios as one 3,229-tick optimized-Q32 gate. Meteor's equivalent one-shot
+`PlayerBody` branch is source-ported with its one-seventh force divisor and 35x
+conversion; it is not isolated because the broad composition first encounters
+the existing Meteor caster-pose approximation. Scale only changes Drill's
+particles in its callback; gameplay hurtboxes and queries already read the
+live player scale. Moving platforms, transformed hitbox victims, Portal/Black
+Hole routing, burrow death and post-exit pickups use the audited common paths.
 
 ### Executable Portal Gun, linked planes and rigid-body transit (2026-09-15)
 
