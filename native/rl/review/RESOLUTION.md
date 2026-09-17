@@ -238,6 +238,13 @@ fixed entry is committed separately with its finding id in the subject.
   receiving shared input, hide the owning player as C# does, and use the same
   timed ejection packet as an ordinary slime victim.
 
+### Suspected projectile findings
+
+- **S2 — fixed.** Grounded Rock entry now stores `prevPlayerVel` from the
+  unscaled incoming self-imposed plus external velocity before applying the
+  authored `0.6667f` body-velocity factor. A rope's first force sample thus
+  uses the same delta as `BounceBall.Initialize`.
+
 ## Cross-cutting
 
 - **C1 — not a divergence.** The `TimeStop` metadata branch in

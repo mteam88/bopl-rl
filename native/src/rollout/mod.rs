@@ -6807,7 +6807,7 @@ impl RolloutWorld {
                             exit_scale: Fix::ONE,
                             scale_last_frame: Fix::ONE,
                             scale: Fix::ONE,
-                            previous_player_velocity: body.velocity,
+                            previous_player_velocity: velocity,
                             ..RockState::default()
                         };
                         return;
@@ -33192,6 +33192,43 @@ mod tests {
         world.gust_waves_init(data::get());
 
         assert_eq!(world.gust_waves[0].target_count, 0);
+    }
+
+    #[test]
+    fn grounded_rock_retains_pre_entry_velocity_for_first_rope_force() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.player[0].abilities[0] = ABILITY_ROCK;
+        world.reset(&config).unwrap();
+        let platform = &world.platforms[0];
+        let position = platform.surface.position(Fix::ZERO, world.players[0].base.radius);
+        world.players[0].base.position = position;
+        world.players[0].base.grounded = true;
+        world.players[0].base.ground = Some(platform.id);
+        world.players[0].base.local = Fix::ZERO;
+        world.players[0].base.velocity = Vec2::RIGHT * Fix::from_int(3);
+        world.players[0].base.external_velocity = Vec2::RIGHT;
+        world.players[0].timers[0] = Fix::from_int(100);
+
+        world.player_tick(
+            0,
+            Action {
+                buttons: 2,
+                ..Action::default()
+            },
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+
+        assert_eq!(
+            world.players[0].rock.previous_player_velocity,
+            Vec2::RIGHT * Fix::from_int(4)
+        );
+        assert_eq!(
+            world.players[0].rock.body.velocity,
+            Vec2::RIGHT * Fix::from_int(4) * Fix::from_f32(0.6667)
+        );
     }
 
     #[test]
