@@ -8664,6 +8664,12 @@ impl RolloutWorld {
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         self.players[index].base.external_velocity *= Fix::from_f32(0.8);
+        // ControlPlatform delegates to PlayerPhysics.Move(zero) before its
+        // Time Stop and grounded checks. This retains normal friction,
+        // surface-local motion (including external force), and drop checks.
+        self.players[index]
+            .base
+            .move_only(Vec2::ZERO, terrain!(self));
         let Some(ground_id) = self.players[index].base.ground else {
             self.exit_push(index, data);
             return;
@@ -31081,7 +31087,32 @@ mod tests {
         );
 
         assert!(world.players[0].active == ActiveAbility::Push);
-        assert_eq!(world.players[0].base.grounded_speed, Fix::from_int(12));
+        assert_eq!(
+            world.players[0].base.grounded_speed,
+            Fix::from_int(12) * world.players[0].base.constants.friction
+        );
+    }
+
+    #[test]
+    fn push_runs_zero_input_ground_move() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        assert!(world.players[0].base.grounded);
+        world.players[0].active = ActiveAbility::Push;
+        world.players[0].base.grounded_speed = Fix::from_int(12);
+        let expected =
+            world.players[0].base.grounded_speed * world.players[0].base.constants.friction;
+
+        world.push_tick(
+            0,
+            Action {
+                angle: 0,
+                buttons: 2,
+            },
+            data::get(),
+        );
+
+        assert_eq!(world.players[0].base.grounded_speed, expected);
     }
 
     #[test]

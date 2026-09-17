@@ -75,6 +75,10 @@ fixed entry is committed separately with its finding id in the subject.
 - **#6 — fixed.** Push entry now preserves the captured ordinary slime
   `groundedSpeed` through `PlayerPhysics.SyncPhysicsTo`; only its self-imposed
   and external velocity channels are cleared by `ControlPlatform.OnEnterAbility`.
+- **#5 — fixed.** Every active Push pass now calls zero-input
+  `PlayerPhysics.Move` immediately after the authored `0.8` external-velocity
+  damping. This restores grounded friction, surface-local movement from
+  inherited force, destroyed-ground detachment, and platform drop checks.
 
 ## Cross-cutting
 
