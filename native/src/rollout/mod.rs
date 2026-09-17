@@ -16320,7 +16320,7 @@ impl RolloutWorld {
                     target.rock.body.force += delta * force * Fix::from_int(9000);
                     continue;
                 }
-                let force = if target.base.grounded {
+                let force = if target.base.grounded && target.active != ActiveAbility::Drill {
                     data.gust.grounded_multiplier * delta * force
                 } else {
                     delta * force
@@ -33516,6 +33516,35 @@ mod tests {
 
         assert_eq!(world.smoke_clouds[0].ignition_time, Fix::ONE);
         assert_eq!(world.smoke_clouds[1].ignition_time, Fix::ZERO);
+    }
+
+    #[test]
+    fn gust_grounded_drill_uses_player_body_force_branch() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.player[1].abilities[0] = ABILITY_DRILL;
+        world.reset(&config).unwrap();
+        world.tick = 1;
+        let origin = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        world.gust_waves[0] = GustWave {
+            active: true,
+            born_tick: 0,
+            position: origin,
+            scale: Fix::ONE,
+            ..GustWave::default()
+        };
+        world.players[1].active = ActiveAbility::Drill;
+        world.players[1].base.grounded = true;
+        world.players[1].base.position = origin + Vec2::RIGHT;
+        world.players[1].base.external_velocity = Vec2::ZERO;
+        let entity = world.players[1].drill_entity;
+        world.entities[entity].flags = E_ACTIVE | E_ENABLED;
+        world.entities[entity].x = world.players[1].base.position.x.raw();
+        world.entities[entity].y = world.players[1].base.position.y.raw();
+
+        world.gust_waves_init(data::get());
+
+        assert_ne!(world.players[1].base.external_velocity, Vec2::ZERO);
     }
 
     #[test]

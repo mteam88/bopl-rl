@@ -82,6 +82,10 @@ fixed entry is committed separately with its finding id in the subject.
   Partner nodes on surviving platforms lose their parent/child link and
   lethality, and their lightning is retired, instead of retaining a stale
   live connection to an inactive node slot.
+- **S16 — fixed.** A grounded Drill hit by Gust now follows Shockwave's
+  `PlayerBody` fallback because the Drill prefab has no `PlayerPhysics`.
+  Rust no longer applies `groundedPlayerForceMultiplier`; it applies the
+  ordinary PlayerBody force conversion exactly like an airborne Drill.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
