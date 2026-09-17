@@ -315,7 +315,14 @@ not listed are `layout.V4_DEFAULTS`):
 3. `v4-no-relational`: relational columns zeroed in the writer (same shapes;
    isolates the feature work from the encoder work). `v4_ablate = 1`
    (`BOPL4_ABLATE` bit 1, bopl_obs_v4.h `bopl4_ablation`; recorded in the
-   checkpoint's `v4_shape` so the evaluator writes the same rows).
+   checkpoint's `v4_shape` so the evaluator writes the same rows). The bits
+   are per player, like the layout: `env->ablate[player]` (bopl_puffer.h,
+   0 = the process default `BOPL4_ABLATE`, which is all training does),
+   `research_set_ablation` / `Environment.set_layout(side, 4, ablate=...)`
+   from the sidecar's `v4_shape.ablate` (`native_policy.writer_ablation`,
+   `elo_ladder.Model.attach`, evaluate.py), and the in-game shim's
+   `BoplAgent.ablate`; so checkpoints of the four families 0 / 2 / 8 / 10
+   share a game and a process (tournaments, two agents on the Mac).
 4. `v4-maxpool`: mean pool off (max only, v3 style). `v4_mean_pool = 0`.
 5. `v4-lite`: critic 384, set inner 64, FFN off: the within-2x shape.
    `v4_set_inner = 64`, `v4_ffn_dim = 0`, `v4_critic_dim = 384`.

@@ -35,6 +35,7 @@ struct BoplAgent {
     /* policy */
     void *policy; int hidden, layers, is_policy, aim_fourier, aim_ar;
     int layout;              /* the policy's observation layout, 3 or BOPL4_LAYOUT_VERSION (bopl_layout_v4.h) */
+    int ablate;              /* the checkpoint's v4 writer bits, -1 = process default (v3, scripted) */
     float *rstate, *rnext, *decoder, *row;  /* decoder: BOPL_LOGITS game logits + value; row: the raw decoder row */
     uint64_t rng;
     int decision[3], decisions;
@@ -163,6 +164,7 @@ static int bopl_agent_env_alloc(BoplAgent *a) {
     /* Row memory is BOPL_OBS_STRIDE (the larger layout); the policy's player is
      * encoded in its checkpoint's layout, every other row stays v3 (unread). */
     env->layout[a->player]=a->layout;
+    bopl_set_ablate_of(env, a->player, a->ablate);
     env->observations=calloc((size_t)n*BOPL_OBS_STRIDE, sizeof(float));
     env->actions=calloc((size_t)n*BOPL_NUM_ATNS, sizeof(float));
     env->rewards=calloc((size_t)n, sizeof(float)); env->terminals=calloc((size_t)n, sizeof(float));
@@ -214,8 +216,9 @@ static int bopl_agent_open_policy(BoplAgent *a, const char *path, char *error, s
         shape[k]=(int)value;
     }
     /* The writer bits the checkpoint trained under (v4_shape.ablate: the
-     * ablations and layout v4.1's aim rays), applied before the first row. */
-    if (v4) bopl4_set_ablation(bopl_json_int(j, "ablate", &value)?(int)value:0);
+     * ablations and layout v4.1's aim rays), applied to this agent's row only
+     * (bopl_agent_env_alloc), so agents of different families share a process. */
+    a->ablate=v4?(bopl_json_int(j, "ablate", &value)?(int)value:0):-1;
     char actual[65]; bopl_sha256_hex(data, length, actual);
     if (strcmp(actual, sha)) { free(data); free(json); bopl_agent_error(error, capacity, "weights sha256 %s does not match sidecar %s", actual, sha); return -1; }
     if (length%sizeof(float)) { free(data); free(json); bopl_agent_error(error, capacity, "checkpoint size %zu is not float32", length); return -1; }
@@ -257,7 +260,7 @@ static int bopl_agent_open_bot(BoplAgent *a, const char *spec, char *error, size
             bopl_agent_error(error, capacity, "the search bot plans by forking the in-process simulator every decision; it cannot follow a game it does not step. Pick a checkpoint or one of the scripted kinds (archer|pursuer|evasive|mixed[-v2]-easy|medium|hard).");
             return -1;
         }
-        a->kind=kind; a->level=level; a->layout=3;
+        a->kind=kind; a->level=level; a->layout=3; a->ablate=-1;
         snprintf(a->id, sizeof(a->id), "bot:%s", name);
         return 0;
     }

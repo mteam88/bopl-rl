@@ -178,6 +178,12 @@ typedef struct {
      * Training sets one for every player (obs_layout kwarg); evaluation selects
      * per player from the checkpoint's architecture (research_set_layout). */
     int layout[BOPL_MAX_PLAYERS];
+    /* Writer ablation bits (bopl_obs_v4.h BOPL4_ABLATE_*) of each player's v4
+     * row, stored as mask+1: 0 (every zeroed environment, training) = the
+     * process default BOPL4_ABLATE, else the mask of that player's checkpoint
+     * (research_set_ablation, the in-game shim), so checkpoints of different
+     * writer families share a game. bopl_ablate_of / bopl_set_ablate_of. */
+    int ablate[BOPL_MAX_PLAYERS];
     float returns[6];
     /* Optional host buffer, separate from every tensor visible to the policy. */
     float *telemetry;
@@ -347,6 +353,8 @@ static float *bopl_obs_row(BoplPuffer *env, int player) {
 }
 /* Layout version of player p's row: 4 (bopl_layout_v4.h) or 3 (the default). */
 static int bopl_layout_of(const BoplPuffer *env, int player) { return env->layout[player]==BOPL4_LAYOUT_VERSION?4:3; }
+static int bopl_ablate_of(const BoplPuffer *env, int player) { return env->ablate[player]-1; }   /* -1: the process default */
+static void bopl_set_ablate_of(BoplPuffer *env, int player, int mask) { env->ablate[player]=mask<0?0:mask+1; }
 static int bopl_obs_size_of(const BoplPuffer *env, int player) { return bopl_layout_of(env, player)==4?BOPL4_OBS_SIZE:BOPL_OBS_SIZE; }
 static int bopl_previous_offset(const BoplPuffer *env, int player) {
     return bopl_layout_of(env, player)==4?BOPL4_OBS_PREVIOUS_OFFSET:BOPL_OBS_PREVIOUS_OFFSET;

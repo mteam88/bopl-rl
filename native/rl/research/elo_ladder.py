@@ -32,11 +32,14 @@ class Model:
         self.policy,self.meta=load(self.path,**(dict(library=library) if library else {}))
         self.sha256=hashlib.sha256(self.path.read_bytes()).hexdigest()
         self.layout=layout.layout_of(self.meta.get('architecture'))
+        from native_policy import writer_ablation
+        self.ablate=writer_ablation(self.policy)
 
     def attach(self,env,side):
         # The environment writes this player's row in the checkpoint's observation layout
-        # (v3 or v4, layout.py), so v3 pool members and v4 candidates share a game.
-        env.set_layout(side,self.layout)
+        # (v3 or v4, layout.py) and v4 writer family (v4_shape.ablate), so v3 pool members
+        # and v4 candidates of different families share a game.
+        env.set_layout(side,self.layout,ablate=self.ablate)
 
     def start(self,task,side,rng):
         import torch

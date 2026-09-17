@@ -44,6 +44,12 @@ V4_SHAPE_KEYS = ("set_dim", "set_inner", "flat_dim", "ffn_dim", "critic_dim", "c
 HEAD_BOUNDS = [sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS + 1)]  # logits row offsets per head
 
 
+def writer_ablation(policy):
+    """The v4 writer bits (v4_shape.ablate) a policy's row must be written with; -1 for
+    v3 policies and scripted players (the process default, which they never read)."""
+    return int(policy.v4_shape["ablate"]) if getattr(policy, "architecture", None) == layout.V4_ARCHITECTURE else -1
+
+
 def build(output=LIBRARY):
     """Explicit build: loading a checkpoint never runs a compiler."""
     output = Path(output)
@@ -124,16 +130,16 @@ class NativePolicy:
             self.v4_shape = {**layout.V4_DEFAULTS, **{k: int(v) for k, v in (v4_shape or {}).items() if k in layout.V4_DEFAULTS}}
             expected = layout.policy_v4_weights(self.hidden, self.num_layers, aim_fourier=self.aim_fourier, aim_ar=self.aim_ar,
                                                 **self.v4_shape)
-            # The writer ablation is a process-wide switch of the observation writer
-            # (bopl_obs_v4.h bopl4_ablation, read once): apply this checkpoint's, refuse
-            # to share a process with a v4 checkpoint that was trained under another.
+            # The writer ablation (bopl_obs_v4.h) is per player: Environment.set_layout(side,
+            # layout, ablate=writer_ablation(policy)) writes this checkpoint's family for
+            # its row, so checkpoints of different families share a game. The process
+            # default (BOPL4_ABLATE, rows without an explicit family) follows the first v4
+            # checkpoint loaded, for callers that select the layout alone.
             ablate = str(self.v4_shape["ablate"])
-            current = os.environ.get("BOPL4_ABLATE", "0") or "0"
-            if current != ablate:
-                if _V4_ABLATE_APPLIED[0] is not None:
-                    raise ValueError(f"v4 checkpoints with writer ablations {_V4_ABLATE_APPLIED[0]} and {ablate} cannot share a process")
+            if _V4_ABLATE_APPLIED[0] is None and not os.environ.get("BOPL4_ABLATE"):
                 os.environ["BOPL4_ABLATE"] = ablate
-            _V4_ABLATE_APPLIED[0] = ablate
+            if _V4_ABLATE_APPLIED[0] is None:
+                _V4_ABLATE_APPLIED[0] = ablate
         else:
             # layout.policy_weights for the set encoder; the linear encoder accepts any obs width.
             encoder_weights = (layout.set_encoder_weights(self.hidden) if self.architecture == layout.ARCHITECTURE

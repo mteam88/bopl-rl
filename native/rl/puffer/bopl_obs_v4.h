@@ -16,11 +16,20 @@
 enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8 };
 enum { BOPL4_AIM_RAY=BOPL4_RAYS_AROUND+0, BOPL4_LOS_RAY=BOPL4_RAYS_AROUND+3 };
 static int bopl4_ablation_value=-1;
-/* The in-game shim sets the checkpoint's bits before its first row (no environment there). */
+/* The process default (BOPL4_ABLATE, read once): every row of a training run. */
 static void bopl4_set_ablation(int bits) { bopl4_ablation_value=bits; }
-static int bopl4_ablation(void) {
+static int bopl4_ablation_default(void) {
     if (bopl4_ablation_value<0) { const char *v=getenv("BOPL4_ABLATE"); bopl4_ablation_value=v&&v[0]?atoi(v):0; }
     return bopl4_ablation_value;
+}
+/* The bits of the row being written on this thread (bopl_encode_v4_row sets
+ * them from env->ablate[player]; -1 = the default), so players whose
+ * checkpoints trained under different writer families share one game. Rows
+ * are written one at a time per thread (the env pool's workers, the research
+ * environment, the shim). */
+static __thread int bopl4_row_ablation=-1;
+static int bopl4_ablation(void) {
+    return bopl4_row_ablation>=0?bopl4_row_ablation:bopl4_ablation_default();
 }
 
 /* Relational block (BOPL4_RELATION) of a body at relative position r moving
@@ -500,6 +509,7 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
  * of the previous encode), the own-action tail zeroed and the privileged block
  * left for bopl4_privileged. */
 static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a, int count_overflow) {
+    bopl4_row_ablation=bopl_ablate_of(env, a);   /* this player's writer family for the whole row */
     float *obs=bopl_obs_row(env, a);
     int w=-1;
     for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) { w=i; break; }
