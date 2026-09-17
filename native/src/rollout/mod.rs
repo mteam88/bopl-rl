@@ -4917,17 +4917,19 @@ impl RolloutWorld {
                 self.players[index].reported_tick = self.tick;
                 continue;
             }
-            // Player.UpdatePlayer is on the disabled slime GameObject during
-            // TeleportedObjectEffect, so Player.Position remains at its
-            // pre-teleport publication until reactivation.
-            if !self.players[index].teleport_effect_active
-                && !self.players[index].blink_tunnel_active
-                && self.players[index].freeze_form_exit_tick != self.tick
-            {
-                self.players[index].reported_position = self.players[index].base.position;
-                self.players[index].reported_tick = self.tick;
-            } else {
-                self.players[index].reported_tick = self.tick;
+            // SlimeController is absent after destruction and disabled during
+            // TeleportedObjectEffect, so neither state may publish a new
+            // Player.Position through Player.SetPosition.
+            if self.players[index].base.alive {
+                if !self.players[index].teleport_effect_active
+                    && !self.players[index].blink_tunnel_active
+                    && self.players[index].freeze_form_exit_tick != self.tick
+                {
+                    self.players[index].reported_position = self.players[index].base.position;
+                    self.players[index].reported_tick = self.tick;
+                } else {
+                    self.players[index].reported_tick = self.tick;
+                }
             }
             let action = packet.aim_action();
             self.players[index].last_action = action;
@@ -32410,7 +32412,11 @@ impl RolloutWorld {
             if slot.active == ActiveAbility::Throw {
                 player_flags |= 64;
             }
-            let position = if slot.reported_tick.checked_add(1) == Some(tick) {
+            // Player.Position is only changed by a live SlimeController's
+            // SetPosition call. Once the controller is destroyed, the Player
+            // retains its last published position indefinitely; later body
+            // corrections in the callback pass are not observable there.
+            let position = if !slot.base.alive || slot.reported_tick.checked_add(1) == Some(tick) {
                 slot.reported_position
             } else {
                 slot.base.position

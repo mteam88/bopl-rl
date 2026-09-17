@@ -102,6 +102,17 @@ static const BoplRlEntity *find_map_entity(const BoplRlState *state,
 
 static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
                    unsigned players, unsigned tick) {
+    if (getenv("MAP_AB_TRACE_PLAYER")) {
+        unsigned player =
+            (unsigned)strtoul(getenv("MAP_AB_TRACE_PLAYER"), NULL, 10);
+        if (player < 6)
+            fprintf(stderr,
+                    "PLAYER_TRACE tick=%u flags=%u/%u pos=(%" PRId64 ",%" PRId64
+                    ")/(%" PRId64 ",%" PRId64 ")\n",
+                    tick, a->players[player].flags, b->players[player].flags,
+                    a->players[player].x, a->players[player].y,
+                    b->players[player].x, b->players[player].y);
+    }
     if (getenv("MAP_AB_TRACE_PICKUP")) {
         unsigned trace_id = (unsigned)strtoul(getenv("MAP_AB_TRACE_PICKUP"), NULL, 10);
         const BoplRlEntity *ap = NULL, *bp = NULL;
@@ -200,6 +211,17 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
                         p, a->players[p].x, a->players[p].y,
                         b->players[p].x, b->players[p].y,
                         a->players[p].flags, b->players[p].flags);
+            for (unsigned s = 0; s < a->header.slime_count; s++)
+                fprintf(stderr,
+                        "  slime[%u] owner=%u/%u state=%u/%u pos=(%" PRId64
+                        ",%" PRId64 ")/(%" PRId64 ",%" PRId64 ") vel=(%" PRId64
+                        ",%" PRId64 ")/(%" PRId64 ",%" PRId64 ")\n",
+                        s, a->slimes[s].owner, b->slimes[s].owner,
+                        a->slimes[s].state, b->slimes[s].state,
+                        a->slimes[s].x, a->slimes[s].y,
+                        b->slimes[s].x, b->slimes[s].y,
+                        a->slimes[s].vx, a->slimes[s].vy,
+                        b->slimes[s].vx, b->slimes[s].vy);
             for (unsigned e = 0; e < a->header.entity_count; e++) {
                 if (a->entities[e].kind == 2 &&
                     !entity_equal(&a->entities[e], &b->entities[e]))
