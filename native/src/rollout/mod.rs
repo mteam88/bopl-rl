@@ -4999,6 +4999,12 @@ impl RolloutWorld {
         }
         if has(ABILITY_PORTAL_GUN) {
             self.portal_shots_tick(data, updater_dt);
+        }
+        // DynamicAbilityPickup shares the updater-order walk implemented by
+        // portals_tick, but authored map spawners can create pickups without
+        // any player owning Portal Gun. Keep that walk map/pickup-gated rather
+        // than ability-gated so the pickup enables, rerolls, and moves.
+        if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
             self.portals_tick(data, updater_dt);
         }
         if has(ABILITY_THROW) {

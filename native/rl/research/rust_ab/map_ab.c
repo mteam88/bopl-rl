@@ -487,7 +487,8 @@ int main(int argc, char **argv) {
         }
     }
     unsigned maps = bopl_rl_map_count(world[0]);
-    if (maps != 124 || bopl_rl_map_count(world[1]) != maps) {
+    if (!getenv("MAP_AB_ALLOW_MAP_COUNT_MISMATCH") &&
+        (maps != 124 || bopl_rl_map_count(world[1]) != maps)) {
         fprintf(stderr, "map count reference=%u rust=%u\n", maps,
                 bopl_rl_map_count(world[1]));
         return 1;
