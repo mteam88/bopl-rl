@@ -83,7 +83,7 @@ class EvaluationProtocolTests(unittest.TestCase):
         self.assertEqual([scripted_opponent(f'{k}-v2-hard')[0] for k in ('archer','pursuer','evasive','mixed')],[6,7,8,9])
 
     def test_invalid_maps_and_counts_fail(self):
-        for value in ('','0,0','-1','31'):
+        for value in ('','0,0','-1','62'):
             with self.assertRaises(ValueError): map_ids(value)
         with self.assertRaises(ValueError): schedule([0,1],[1],[],8,4,16,1,2,3)
         with self.assertRaises(ValueError): schedule([0],[1],[],7,4,16,1,2,3)
