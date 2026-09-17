@@ -9966,10 +9966,10 @@ impl RolloutWorld {
             return;
         }
         let platform_index = self.spike_attacks[spike_index].platform_index;
-        if let Some((owner, slot)) = self.spike_attacks[spike_index].owner_slot {
-            if self.players[owner].spike_attacks[slot] == Some(spike_index) {
-                self.players[owner].spike_attacks[slot] = None;
-            }
+        if let Some((owner, slot)) = self.spike_attacks[spike_index].owner_slot
+            && self.players[owner].spike_attacks[slot] == Some(spike_index)
+        {
+            self.players[owner].spike_attacks[slot] = None;
         }
         self.spike_attacks[spike_index].active = false;
         self.spike_attacks[spike_index].macho_carried = false;
@@ -21631,12 +21631,11 @@ impl RolloutWorld {
             .iter()
             .copied()
             .enumerate()
-            .filter(|(_, row)| {
+            .rfind(|(_, row)| {
                 row.kind == 2
                     && row.flags & E_ACTIVE != 0
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
-            .last()
             .map(|(entity, _)| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
@@ -21999,13 +21998,12 @@ impl RolloutWorld {
             .iter()
             .copied()
             .enumerate()
-            .filter(|(entity, row)| {
+            .rfind(|(entity, row)| {
                 row.kind == 2
                     && row.flags & E_ACTIVE != 0
                     && excluded != Some(*entity)
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
-            .last()
             .map(|(entity, _)| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
@@ -22551,11 +22549,10 @@ impl RolloutWorld {
             .iter()
             .copied()
             .enumerate()
-            .filter(|(_, row)| {
+            .rfind(|(_, row)| {
                 row.flags & E_ACTIVE != 0
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
-            .last()
             .map(|(entity, _)| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
@@ -32356,13 +32353,12 @@ mod tests {
             .entities
             .iter()
             .enumerate()
-            .filter(|(_, row)| {
+            .rfind(|(_, row)| {
                 row.kind == 2
                     && row.flags & E_ACTIVE != 0
                     && RolloutWorld::entity_rounded_rect(**row)
                         .is_some_and(|shape| shape.overlaps(center))
             })
-            .last()
             .map(|(entity, _)| entity);
         assert_eq!(selected, Some(world.platform_entities[last]));
 
@@ -32422,7 +32418,7 @@ mod tests {
             .magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), None)
             .expect("inserted platform blocks the ray");
         let excluded = world.magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), Some(near));
-        assert!(excluded.map_or(true, |distance| distance > included));
+        assert!(excluded.is_none_or(|distance| distance > included));
     }
 
     #[test]
