@@ -155,6 +155,11 @@ fixed entry is committed separately with its finding id in the subject.
   reassert it on their first scheduled `UpdateSim`, before advancing flight
   time. Birth-pass Black Hole, Magnet, Gust, or contact perturbations no
   longer survive the source's one-time `fireApplied` reset.
+- **#40 — fixed.** Ring-evicted Tesla nodes now retain an immutable contact
+  snapshot through the current DetPhysics callback phase. The old node circle
+  and lightning box therefore remain lethal to players, Mines, and Smoke for
+  the eviction pass, then disappear after contacts when C# runs the node's
+  `OnDestroyUpdatable` teardown.
 - **#44 — fixed.** Grounded Blink release still chooses its destination from
   active rounded rectangles, but the 20 sampled player positions are now
   blocked by every registered rounded rectangle, including inactive ones.

@@ -2265,6 +2265,7 @@ pub struct RolloutWorld {
     pub engines: Vec<SpawnedEngine>,
     pub tesla_nodes: Vec<SpawnedTeslaNode>,
     pub destroyed_tesla_lines: Vec<DestroyedTeslaLine>,
+    pub retired_tesla_contacts: Vec<SpawnedTeslaNode>,
     pub meteor_smears: Vec<MeteorSmear>,
     pub meteor_waves: Vec<MeteorWave>,
     pub frozen_solids: Vec<FrozenSolidState>,
@@ -2403,6 +2404,7 @@ impl RolloutWorld {
             engines: Vec::with_capacity(32),
             tesla_nodes: Vec::with_capacity(32),
             destroyed_tesla_lines: Vec::with_capacity(32),
+            retired_tesla_contacts: Vec::with_capacity(8),
             meteor_smears: Vec::with_capacity(16),
             meteor_waves: Vec::with_capacity(16),
             frozen_solids: Vec::with_capacity(32),
@@ -2500,6 +2502,8 @@ impl RolloutWorld {
         self.tesla_nodes.clone_from(&src.tesla_nodes);
         self.destroyed_tesla_lines
             .clone_from(&src.destroyed_tesla_lines);
+        self.retired_tesla_contacts
+            .clone_from(&src.retired_tesla_contacts);
         self.meteor_smears.clone_from(&src.meteor_smears);
         self.meteor_waves.clone_from(&src.meteor_waves);
         self.frozen_solids.clone_from(&src.frozen_solids);
@@ -2595,6 +2599,7 @@ impl RolloutWorld {
             engines: _,
             tesla_nodes: _,
             destroyed_tesla_lines: _,
+            retired_tesla_contacts: _,
             meteor_smears: _,
             meteor_waves: _,
             frozen_solids: _,
@@ -2714,6 +2719,7 @@ impl RolloutWorld {
         self.engines.clear();
         self.tesla_nodes.clear();
         self.destroyed_tesla_lines.clear();
+        self.retired_tesla_contacts.clear();
         self.meteor_smears.clear();
         self.meteor_waves.clear();
         self.frozen_solids.clear();
@@ -9453,7 +9459,9 @@ impl RolloutWorld {
         if let Some(oldest) = evicted {
             if let Some(parent) = self.tesla_nodes[oldest].parent {
                 self.update_tesla_line_geometry(parent, data);
+                self.retired_tesla_contacts.push(self.tesla_nodes[parent]);
             }
+            self.retired_tesla_contacts.push(self.tesla_nodes[oldest]);
             self.remove_tesla_node(oldest);
         }
         self.platforms_changed();
@@ -10438,7 +10446,12 @@ impl RolloutWorld {
 
     fn tesla_contacts(&mut self, data: &data::RolloutData) {
         let mut victims = [false; MAX_PLAYERS];
-        for node in self.tesla_nodes.iter().copied() {
+        for node in self
+            .tesla_nodes
+            .iter()
+            .chain(&self.retired_tesla_contacts)
+            .copied()
+        {
             if !node.active || node.macho_carried || !node.lethal {
                 continue;
             }
@@ -10581,6 +10594,7 @@ impl RolloutWorld {
                 self.kill(player_index, 0, CAUSE_OTHER, true, true);
             }
         }
+        self.retired_tesla_contacts.clear();
     }
 
     fn revival_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -32223,6 +32237,29 @@ mod tests {
         assert_eq!(world.players[0].ragdoll.duration, Fix::from_f32(0.35));
         assert_eq!(world.players[0].base.velocity, Vec2::new(Fix::ZERO, Fix::from_int(4)));
         assert_eq!(world.players[0].timers, [Fix::ZERO; 3]);
+    }
+
+    #[test]
+    fn evicted_tesla_remains_lethal_for_current_contacts() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let entity = world.players[1].body_entity;
+        let position = Vec2::new(
+            Fix::from_raw(world.entities[entity].x),
+            Fix::from_raw(world.entities[entity].y),
+        );
+        world.retired_tesla_contacts.push(SpawnedTeslaNode {
+            active: true,
+            lethal: true,
+            collider_center: position,
+            collider_scale: Fix::ONE,
+            ..SpawnedTeslaNode::default()
+        });
+
+        world.tesla_contacts(data::get());
+
+        assert_eq!(world.players[1].deaths, 1);
+        assert!(world.retired_tesla_contacts.is_empty());
     }
 
     #[test]
