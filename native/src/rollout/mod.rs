@@ -2621,6 +2621,8 @@ impl RolloutWorld {
         self.engines.clear();
         self.tesla_nodes.clear();
         self.destroyed_tesla_lines.clear();
+        self.meteor_smears.clear();
+        self.meteor_waves.clear();
         self.frozen_solids.clear();
         self.scale_changers.clear();
         self.ability_spawner_enabled =
