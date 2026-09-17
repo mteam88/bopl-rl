@@ -47,6 +47,11 @@ fixed entry is committed separately with its finding id in the subject.
 - **#32 — fixed.** Tesla nodes now retain separate raw FixTransform and
   clamped DPhysicsCircle scales. Surface/hitbox offsets use the raw caster
   scale while collider radius honors the authored `0.6..5` clamp.
+- **#35 — fixed.** On the pass after a scale ray changes a spawned
+  `ResizablePlatform` collider, its updater now recomputes inverse mass and
+  moment of inertia from the live extents and bevel radius. This follows
+  `ResizablePlatform.UpdateSim` calling `ResizePlatform` every pass rather
+  than applying `BoplBody`'s ordinary linear scale adjustment.
 
 ## Projectiles
 

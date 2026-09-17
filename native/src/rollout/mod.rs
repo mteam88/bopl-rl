@@ -26789,11 +26789,34 @@ impl RolloutWorld {
                 continue;
             }
             let inner = self.platforms[i].collider.inner;
-            self.platforms[i].surface.extents = Vec2::new(
+            let extents = Vec2::new(
                 Fix::ONE / inner.inverse_extents.x,
                 Fix::ONE / inner.inverse_extents.y,
             );
-            self.platforms[i].surface.radius = self.platforms[i].collider.radius;
+            let radius = self.platforms[i].collider.radius;
+            self.platforms[i].surface.extents = extents;
+            self.platforms[i].surface.radius = radius;
+            if self.platform_dynamics[i].body_resizable {
+                // ResizablePlatform.UpdateSim calls ResizePlatform from the
+                // live rounded-rectangle dimensions every pass. A scale ray
+                // changes those dimensions after this updater, so the next
+                // pass must recompute mass and inertia from the new geometry.
+                let mass = Fix::from_int(10)
+                    + data.platform.spawn_mass_per_area
+                        * platform_area(extents.y, extents.x, radius);
+                let w = extents.x + radius;
+                let h = extents.y + radius;
+                let longest = w.max(h);
+                let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
+                self.platform_dynamics[i].body.inverse_mass = Fix::ONE / mass;
+                self.platform_dynamics[i].body.inverse_inertia = Fix::ONE / inertia;
+                if self.platform_dynamics[i].attached_children == 0 {
+                    self.platform_dynamics[i].root_body.inverse_mass =
+                        self.platform_dynamics[i].body.inverse_mass;
+                    self.platform_dynamics[i].root_body.inverse_inertia =
+                        self.platform_dynamics[i].body.inverse_inertia;
+                }
+            }
             self.platform_dynamics[i].surface_shape_dirty = false;
             self.platforms_changed();
         }
@@ -30954,6 +30977,41 @@ mod tests {
         assert_eq!(world.platform_dynamics[index].home_rotation, orientation);
         assert_eq!(world.platforms[index].surface.right, right);
         assert_eq!(world.platforms[index].surface.up, up);
+    }
+
+    #[test]
+    fn scaled_resizable_platform_recomputes_mass_and_inertia() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let index = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
+        let before = world.platform_dynamics[index].body;
+        let ratio = Fix::from_int(2);
+        world.platforms[index].collider.radius *= ratio;
+        world.platforms[index].collider.inner.right *= ratio;
+        world.platforms[index].collider.inner.up *= ratio;
+        world.platforms[index].collider.inner.inverse_extents =
+            world.platforms[index].collider.inner.inverse_extents / ratio;
+        world.platform_dynamics[index].scale *= ratio;
+        world.platform_dynamics[index].surface_shape_dirty = true;
+
+        world.platform_updaters_tick(data::get(), DT);
+
+        assert_ne!(
+            world.platform_dynamics[index].body.inverse_mass,
+            before.inverse_mass
+        );
+        assert_ne!(
+            world.platform_dynamics[index].body.inverse_inertia,
+            before.inverse_inertia
+        );
+        assert_eq!(
+            world.platform_dynamics[index].root_body.inverse_mass,
+            world.platform_dynamics[index].body.inverse_mass
+        );
+        assert_eq!(
+            world.platform_dynamics[index].root_body.inverse_inertia,
+            world.platform_dynamics[index].body.inverse_inertia
+        );
     }
 
     #[test]
