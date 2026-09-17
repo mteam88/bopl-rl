@@ -1261,6 +1261,9 @@ pub struct PlatformDef {
     /// incrementally (`inverseExtents /= ratio`), which is observably different
     /// from recomputing `One / finalExtents` before the first contact.
     pub collider_inverse_extents: Vec2,
+    /// Box.right/up are scaled directly by GrowOnStart's ratio. They therefore
+    /// retain a different rounding history from `One / inverseExtents`.
+    pub collider_axis_extents: Vec2,
     pub hierarchy: u32,
     pub updatable_count: u32,
     pub duplicate_collider_hierarchy: u32,
@@ -2422,6 +2425,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                 Fix::ONE / collider_inverse_extents.x,
                 Fix::ONE / collider_inverse_extents.y,
             );
+            let collider_axis_extents = authored_extents * grow_scale;
             let mut platform_body = body(&p.body, rotation);
             // GrowOnStart.Init writes the FixTransform scale before the first
             // BoplBody updater pass. Non-resizable bodies then multiply both
@@ -2444,6 +2448,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                     radius: Fix::from_raw(p.radius) * base_scale,
                 },
                 collider_inverse_extents,
+                collider_axis_extents,
                 hierarchy: p.hierarchy,
                 updatable_count: p.updatable_count,
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,

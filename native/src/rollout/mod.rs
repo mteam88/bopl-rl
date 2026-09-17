@@ -1928,6 +1928,10 @@ pub struct PlayerSlot {
     pub kills: u32,
     pub deaths: u32,
     pub cause_of_death: u32,
+    /// Updater.SimulationTicks passed to Player.Kill for the elimination that
+    /// removed the player's final body. GameSessionHandler uses this to pick
+    /// the most recently eliminated player(s) when every team is out.
+    pub death_tick: u32,
     pub won: bool,
     pub out: bool, // dead with no stock left
     /// Ability catalog ids per slot, and which slots this backend simulates.
@@ -2196,6 +2200,9 @@ struct PlatformScratch {
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
+    pickup_order: Vec<usize>,
+    pickup_window: Vec<usize>,
+    pickup_contacts: Vec<(usize, usize, Contact)>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
@@ -2398,6 +2405,9 @@ impl RolloutWorld {
                 item_window: Vec::with_capacity(192),
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
+                pickup_order: Vec::with_capacity(16),
+                pickup_window: Vec::with_capacity(16),
+                pickup_contacts: Vec::with_capacity(32),
                 missile_contacts: Vec::with_capacity(256),
                 missile_detonations: Vec::with_capacity(128),
                 arrow_platform_contacts: Vec::with_capacity(64),
@@ -3288,6 +3298,7 @@ impl RolloutWorld {
             self.platforms.push(make_platform_with_inverse(
                 self.next_platform_id,
                 &intro_surface,
+                p.collider_axis_extents,
                 p.collider_inverse_extents,
                 p.ice,
             ));
@@ -3433,6 +3444,7 @@ impl RolloutWorld {
                 kills: 0,
                 deaths: 0,
                 cause_of_death: CAUSE_NOT_DEAD_YET,
+                death_tick: 0,
                 won: false,
                 out: false,
                 abilities,
@@ -3612,12 +3624,14 @@ impl RolloutWorld {
             }
             if i == SLIME_AWAKE_TICK {
                 spawn_anim = data.player.spawn_anim_ticks;
+                self.spawn_animation_overlap_pushes();
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT, DT);
                 }
                 continue;
             }
             if spawn_anim > 0 {
+                self.spawn_animation_overlap_pushes();
                 spawn_anim -= 1;
                 if spawn_anim == 0 {
                     for slot in &mut self.players {
@@ -3658,6 +3672,23 @@ impl RolloutWorld {
         self.observe_main();
         self.valid = true;
         Ok(())
+    }
+
+    /// BeforeSpawnInit leaves the Player-layer hurtbox enabled while the body
+    /// is not simulated. DetPhysics therefore still dispatches player overlap
+    /// callbacks throughout the spawn animation; the pushes accumulate in
+    /// `externalVelocity` and are present when Spawn launches the body.
+    fn spawn_animation_overlap_pushes(&mut self) {
+        for a in 0..self.players.len() {
+            for b in a + 1..self.players.len() {
+                let a_pos = self.players[a].base.position;
+                let b_pos = self.players[b].base.position;
+                if self.players[a].base.alive && self.players[b].base.alive {
+                    self.players[a].base.push_from(b_pos, true);
+                    self.players[b].base.push_from(a_pos, false);
+                }
+            }
+        }
     }
 
     fn next_id(&mut self) -> u32 {
@@ -3756,7 +3787,7 @@ impl RolloutWorld {
         }
     }
 
-    fn ability_pickup_tick(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
+    fn ability_pickup_tick(&mut self, index: usize, data: &data::RolloutData, _updater_dt: Fix) {
         let pickup = &data.pickup;
         if self.blink_object_hidden(self.ability_pickups[index].entity) {
             return;
@@ -3780,8 +3811,10 @@ impl RolloutWorld {
         if stopped {
             self.ability_pickups[index].body.velocity = Vec2::ZERO;
         } else {
-            self.ability_pickups[index].time_passed += updater_dt;
-            self.ability_pickups[index].time_since_swap += updater_dt;
+            // UpdateSim receives Updater's unscaled simulation step. Only
+            // DetPhysics scales its integration by PlayerTimeScale.
+            self.ability_pickups[index].time_passed += DT;
+            self.ability_pickups[index].time_since_swap += DT;
         }
         if self.ability_pickups[index].time_passed >= pickup.disabled_seconds {
             self.ability_pickups[index].enabled = true;
@@ -3808,22 +3841,36 @@ impl RolloutWorld {
         // DPhysicsCircle.position exposes its root FixTransform position,
         // while the observation collider centre includes `offset`.
         let center = self.ability_pickups[index].position;
-        let mut height = self.ability_pickups[index].position.y - Fix::from_f32(-11.22);
+        let floor = if data.maps[self.map].is_space() {
+            Fix::from_int(-1000)
+        } else {
+            Fix::from_f32(-11.22)
+        };
+        let mut height = self.ability_pickups[index].position.y - floor;
+        let mut platform_height = None;
         for platform in &self.platforms {
             if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
-                && hit.near < height
+                && platform_height.is_none_or(|nearest| hit.near < nearest)
             {
-                height = hit.near;
+                platform_height = Some(hit.near);
             }
         }
+        // RaycastToClosestRoundedRect replaces the water-derived fallback
+        // whenever it hits any platform, even when that platform is farther
+        // away than the water plane.
+        if let Some(nearest) = platform_height {
+            height = nearest;
+        }
         if height < Fix::from_f32(0.5) {
+            // The C# literal is a double (`(Fix)0.95`), not a float. Its Q32
+            // encoding is 51 raw units above the f32-rounded value.
             self.ability_pickups[index].body.velocity *= Fix::from_f64(0.95);
         }
         let divisor = height.max(Fix::ONE);
         let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
         let wobble = (sim_time * pickup.wobble_speed).sin() * pickup.wobble_amount;
         let state = &mut self.ability_pickups[index];
-        state.body.velocity.y -= pickup.gravity * updater_dt;
+        state.body.velocity.y -= pickup.gravity * DT;
         state.body.force.y += wobble + pickup.up_force / divisor;
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
@@ -3875,11 +3922,217 @@ impl RolloutWorld {
         }
     }
 
+    /// Weapon-layer pickups ignore walls but collide physically with one
+    /// another. DetPhysics resolves their Circle/Circle manifolds before the
+    /// DynamicAbilityPickup callbacks that may hand one to a slime.
+    fn ability_pickup_pair_contacts(&mut self, data: &data::RolloutData) {
+        if self
+            .ability_pickups
+            .iter()
+            .filter(|pickup| pickup.active && pickup.enabled)
+            .take(2)
+            .count()
+            < 2
+        {
+            return;
+        }
+        let mut mean = Vec2::ZERO;
+        let mut active_count = 0usize;
+        for platform in &self.platforms {
+            if platform.active {
+                mean += platform.surface.center;
+                active_count += 1;
+            }
+        }
+        for entity in self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind != 2 && entity.flags & 3 == 3)
+        {
+            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            active_count += 1;
+        }
+        if active_count != 0 {
+            mean = mean / Fix::from_int(active_count as i64);
+        }
+        let mut variance = Vec2::ZERO;
+        for platform in &self.platforms {
+            let delta = mean - platform.surface.center;
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        for entity in self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind != 2 && entity.flags & E_REMOVED == 0)
+        {
+            let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        let sweep_x = variance.x > variance.y;
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
+        let center = |pickup: AbilityPickup| pickup.position + data.pickup.offset * pickup.scale;
+        let radius = |pickup: AbilityPickup| data.pickup.radius * pickup.scale;
+
+        let mut order = std::mem::take(&mut self.scratch.pickup_order);
+        order.clear();
+        order.extend(
+            self.ability_pickups
+                .iter()
+                .enumerate()
+                .filter_map(|(index, pickup)| {
+                    (pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity))
+                        .then_some(index)
+                }),
+        );
+        order.sort_unstable_by(|&a, &b| {
+            let a_min = axis(center(self.ability_pickups[a])) - radius(self.ability_pickups[a]);
+            let b_min = axis(center(self.ability_pickups[b])) - radius(self.ability_pickups[b]);
+            a_min.cmp(&b_min).then(a.cmp(&b))
+        });
+        let mut window = std::mem::take(&mut self.scratch.pickup_window);
+        let mut contacts = std::mem::take(&mut self.scratch.pickup_contacts);
+        window.clear();
+        contacts.clear();
+        for &current in order.iter() {
+            let current_pickup = self.ability_pickups[current];
+            let current_center = center(current_pickup);
+            let current_radius = radius(current_pickup);
+            let current_min = axis(current_center) - current_radius;
+            window.retain(|&prior| {
+                axis(center(self.ability_pickups[prior])) + radius(self.ability_pickups[prior])
+                    > current_min
+            });
+            for &prior in window.iter() {
+                let prior_pickup = self.ability_pickups[prior];
+                let prior_center = center(prior_pickup);
+                let prior_radius = radius(prior_pickup);
+                if other(prior_center) + prior_radius <= other(current_center) - current_radius
+                    || other(prior_center) - prior_radius >= other(current_center) + current_radius
+                {
+                    continue;
+                }
+                if let Some(contact) = crate::physics::contact::circle_circle(
+                    Circle {
+                        center: prior_center,
+                        radius: prior_radius,
+                    },
+                    Circle {
+                        center: current_center,
+                        radius: current_radius,
+                    },
+                ) {
+                    contacts.push((prior, current, contact));
+                }
+            }
+            window.push(current);
+        }
+        for &(a_index, b_index, contact) in contacts.iter() {
+            let a = self.ability_pickups[a_index];
+            let b = self.ability_pickups[b_index];
+            let mut body_a = a.body;
+            let mut body_b = b.body;
+            resolve(contact, &mut body_a, &mut body_b, center(a), center(b));
+            let correction =
+                positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+            if a_index < b_index {
+                let (left, right) = self.ability_pickups.split_at_mut(b_index);
+                left[a_index].body = body_a;
+                left[a_index].position += correction[0];
+                right[0].body = body_b;
+                right[0].position += correction[1];
+            } else {
+                let (left, right) = self.ability_pickups.split_at_mut(a_index);
+                right[0].body = body_a;
+                right[0].position += correction[0];
+                left[b_index].body = body_b;
+                left[b_index].position += correction[1];
+            }
+        }
+        for pickup in &self.ability_pickups {
+            let Some(entity) = pickup.entity.filter(|_| pickup.active) else {
+                continue;
+            };
+            let row = &mut self.entities[entity];
+            let position = center(*pickup);
+            row.x = position.x.raw();
+            row.y = position.y.raw();
+            row.vx = pickup.body.velocity.x.raw();
+            row.vy = pickup.body.velocity.y.raw();
+        }
+        order.clear();
+        window.clear();
+        contacts.clear();
+        self.scratch.pickup_order = order;
+        self.scratch.pickup_window = window;
+        self.scratch.pickup_contacts = contacts;
+    }
+
     /// DynamicAbilityPickup.OnCollide only accepts the FixTransform carrying
     /// SlimeController itself. Ability-form hurtboxes are also on the player
     /// layer, but do not have that component and therefore cannot collect.
     fn ability_pickups_contacts(&mut self, data: &data::RolloutData) {
-        for pickup_index in 0..self.ability_pickups.len() {
+        if !self
+            .ability_pickups
+            .iter()
+            .any(|pickup| pickup.active && pickup.enabled)
+        {
+            return;
+        }
+        // Circle/Box callbacks follow DetPhysics' global sort-and-sweep order,
+        // not prefab registration order. This matters when two death drops
+        // overlap one slime on the same pass: AddAdditionalAbility replaces
+        // the third slot twice, so the later callback wins.
+        let mut mean = Vec2::ZERO;
+        let mut active_count = 0usize;
+        for platform in &self.platforms {
+            if platform.active {
+                mean += platform.surface.center;
+                active_count += 1;
+            }
+        }
+        for entity in self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind != 2 && entity.flags & 3 == 3)
+        {
+            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            active_count += 1;
+        }
+        if active_count != 0 {
+            mean = mean / Fix::from_int(active_count as i64);
+        }
+        let mut variance = Vec2::ZERO;
+        for platform in &self.platforms {
+            let delta = mean - platform.surface.center;
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        for entity in self
+            .entities
+            .iter()
+            .filter(|entity| entity.kind != 2 && entity.flags & E_REMOVED == 0)
+        {
+            let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        let sweep_x = variance.x > variance.y;
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let mut order = std::mem::take(&mut self.scratch.pickup_order);
+        order.clear();
+        order.extend(
+            self.ability_pickups
+                .iter()
+                .enumerate()
+                .filter_map(|(index, pickup)| (pickup.active && pickup.enabled).then_some(index)),
+        );
+        order.sort_unstable_by(|&a, &b| {
+            let a_min =
+                axis(self.ability_pickups[a].position + data.pickup.offset) - data.pickup.radius;
+            let b_min =
+                axis(self.ability_pickups[b].position + data.pickup.offset) - data.pickup.radius;
+            a_min.cmp(&b_min).then(a.cmp(&b))
+        });
+        for &pickup_index in &order {
             let pickup = self.ability_pickups[pickup_index];
             if !pickup.active || !pickup.enabled {
                 continue;
@@ -3942,6 +4195,8 @@ impl RolloutWorld {
                 self.entities[entity].flags = E_DESTROYED;
             }
         }
+        order.clear();
+        self.scratch.pickup_order = order;
     }
 
     fn register_pending_picked_abilities(&mut self, data: &data::RolloutData) {
@@ -4994,6 +5249,7 @@ impl RolloutWorld {
         if self.intro_phase == 3 {
             self.platforms_tick(data, updater_dt, physics_dt);
         }
+        self.ability_pickup_pair_contacts(data);
         if has_rope {
             self.ropes_physics(physics_dt);
         }
@@ -28343,7 +28599,10 @@ impl RolloutWorld {
 
                 let next_position = position + delta;
                 self.platforms[platform_index].surface.center = next_position;
-                self.platforms[platform_index].collider.inner.center = next_position;
+                // VectorFieldPlatform writes the FixTransform during the
+                // updatable phase. DetPhysics does not sync its registered
+                // rounded collider until the later physics pass, so player
+                // raycasts in between still see the prior collider center.
                 let dynamics = &mut self.platform_dynamics[platform_index];
                 dynamics.composite_position += delta;
                 dynamics.body.velocity = new_velocity;
@@ -29588,11 +29847,10 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
     ) {
-        // Player.Kill returns before every side effect once this player has
-        // won the round, including telemetry and killer credit.
-        if self.players[index].won {
-            return;
-        }
+        // Player.Kill itself is a no-op after WinGame, but
+        // PlayerCollision.killPlayer still drops abilities and destroys the
+        // slime and its ability objects around that call.
+        let already_won = self.players[index].won;
         // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
         // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
         // ordinary collision callbacks do not.
@@ -29641,26 +29899,32 @@ impl RolloutWorld {
         }
         self.deactivate_drill_hitboxes(index);
         let rope_drop_icon_overridden = self.rope_drop_icon_overridden(index, data::get());
-        let revival_marker = self.players[index]
-            .revival_markers
-            .iter()
-            .flatten()
-            .copied()
-            .next();
+        let revival_marker = (!already_won)
+            .then(|| {
+                self.players[index]
+                    .revival_markers
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .find(|&marker| self.revival_marker_pool[marker].active)
+            })
+            .flatten();
         let slot = &mut self.players[index];
         slot.base.alive = false;
         slot.blink_tunnel_active = false;
-        slot.deaths += 1;
-        slot.cause_of_death = cause;
-        // Telemetry mirrors RlTelemetry.Death.
-        if killer == ENVIRONMENT {
-            slot.telemetry.deaths_environment += 1;
-        } else if killer == slot.base.id {
-            slot.telemetry.deaths_self += 1;
-        } else if killer >= 1 && killer <= players as u32 {
-            slot.telemetry.deaths_opponent += 1;
-        } else {
-            slot.telemetry.deaths_other += 1;
+        if !already_won {
+            slot.deaths += 1;
+            slot.cause_of_death = cause;
+            // Telemetry mirrors RlTelemetry.Death.
+            if killer == ENVIRONMENT {
+                slot.telemetry.deaths_environment += 1;
+            } else if killer == slot.base.id {
+                slot.telemetry.deaths_self += 1;
+            } else if killer >= 1 && killer <= players as u32 {
+                slot.telemetry.deaths_opponent += 1;
+            } else {
+                slot.telemetry.deaths_other += 1;
+            }
         }
         // SlimeController.DropAbilities reads the slime body. A death inside
         // an ability first moves that body to the ability object's position
@@ -29679,7 +29943,7 @@ impl RolloutWorld {
         slot.portal_blue = [None; 3];
         slot.portal_orange = [None; 3];
         slot.spike_attacks = [None; 3];
-        if killer >= 1 && killer <= players as u32 {
+        if !already_won && killer >= 1 && killer <= players as u32 {
             self.players[killer as usize - 1].kills += 1;
         }
         let slot = &mut self.players[index];
@@ -29758,7 +30022,7 @@ impl RolloutWorld {
         // Stocks: spawn the replacement clone at the chooser's safe center
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
-        if slot.stocks > 0 && !self.sudden_death {
+        if !already_won && slot.stocks > 0 && !self.sudden_death {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
@@ -29836,7 +30100,10 @@ impl RolloutWorld {
             slot.cause_of_death = CAUSE_NOT_DEAD_YET;
             slot.timers.fill(Fix::from_f32(-1.5));
         } else {
-            slot.out = true;
+            if !already_won {
+                slot.out = true;
+                slot.death_tick = self.tick;
+            }
             // PlayerCollision destroys the slime and its ability objects
             // (PlayerCollision.cs:201-210). DetPhysics drops updatable-phase
             // casualties before this pass's contacts; callback casualties are
@@ -30014,7 +30281,28 @@ impl RolloutWorld {
             if alive_teams.len() == 1 {
                 let winner = alive_teams[0];
                 for p in &mut self.players {
-                    if p.team == winner && !p.out {
+                    // WinGame(team) awards every player on the winning team,
+                    // including a teammate eliminated earlier in the round.
+                    if p.team == winner {
+                        p.won = true;
+                    }
+                }
+            } else {
+                // DeclareGameUndecided awards the player(s) killed at the
+                // greatest SimulationTicks value, then expands that result to
+                // every member of their team. This is observable when the last
+                // bodies die during the same DetPhysics pass.
+                let latest = self.players.iter().map(|p| p.death_tick).max().unwrap_or(0);
+                let mut winning_teams = [0u32; MAX_PLAYERS];
+                let mut winning_count = 0;
+                for p in self.players.iter().filter(|p| p.death_tick == latest) {
+                    if !winning_teams[..winning_count].contains(&p.team) {
+                        winning_teams[winning_count] = p.team;
+                        winning_count += 1;
+                    }
+                }
+                for p in &mut self.players {
+                    if winning_teams[..winning_count].contains(&p.team) {
                         p.won = true;
                     }
                 }
@@ -32082,7 +32370,10 @@ impl RolloutWorld {
         };
         for (i, slot) in players.iter().enumerate() {
             let mut player_flags = 0;
-            if slot.base.alive {
+            // A winning player's later Player.Kill is ignored even though
+            // PlayerCollision still destroys the physical slime object.
+            let handler_alive = if slot.won { !slot.out } else { slot.base.alive };
+            if handler_alive {
                 player_flags |= 1;
             }
             if slot.won {
@@ -32112,7 +32403,7 @@ impl RolloutWorld {
                 id: slot.base.id,
                 team: slot.team,
                 flags: player_flags,
-                alive_bodies: u32::from(slot.base.alive)
+                alive_bodies: u32::from(handler_alive)
                     + abilityless_clones
                         .iter()
                         .filter(|clone| clone.active && clone.owner == i)
@@ -32156,6 +32447,7 @@ fn make_platform(id: u32, surface: &Surface, collider_extents: Vec2, ice: bool) 
 fn make_platform_with_inverse(
     id: u32,
     surface: &Surface,
+    axis_extents: Vec2,
     inverse_extents: Vec2,
     ice: bool,
 ) -> Platform {
@@ -32166,8 +32458,8 @@ fn make_platform_with_inverse(
         collider: RoundedRect {
             inner: OrientedBox {
                 center: surface.center,
-                right: (Vec2::RIGHT / inverse_extents.x).complex_mul(surface.right),
-                up: (Vec2::UP / inverse_extents.y).complex_mul(surface.right),
+                right: (Vec2::RIGHT * axis_extents.x).complex_mul(surface.right),
+                up: (Vec2::UP * axis_extents.y).complex_mul(surface.right),
                 inverse_extents,
             },
             radius: surface.radius,
