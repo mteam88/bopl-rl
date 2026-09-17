@@ -29,6 +29,10 @@ fixed entry is committed separately with its finding id in the subject.
 - **S5 — fixed.** Revival and Teleport markers now pass the same strictly
   positive live `BoplBody.InverseMass` gate as every other portalable body,
   both when recording entry and when performing transit.
+- **S6 — fixed by the marker-physics correction.** Teleport markers retain
+  their live `BoplBody`, receive gravity, and integrate position on every
+  DetPhysics pass alongside Revival markers. They are no longer positionally
+  static between placement and activation.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
