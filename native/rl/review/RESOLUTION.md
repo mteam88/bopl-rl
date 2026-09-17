@@ -33,6 +33,13 @@ fixed entry is committed separately with its finding id in the subject.
   their live `BoplBody`, receive gravity, and integrate position on every
   DetPhysics pass alongside Revival markers. They are no longer positionally
   static between placement and activation.
+- **S7 — not a divergence in the modeled object set.** Every represented
+  movable teleport target owns one registered teleportable collider and thus
+  contributes one `PhysicsParent` to each C# `CircleCastAll`. Composite
+  platform children are separate transforms and the attachable ones take
+  `teleportObject`'s early return; trigger-only auxiliary rows have no
+  `SpriteRenderer` and return before mutation. Rust's one entity hit therefore
+  produces the same single positional shift for every reachable target.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
