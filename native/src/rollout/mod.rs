@@ -11609,21 +11609,22 @@ impl RolloutWorld {
         }
 
         // Equal holes use SpriteRenderer.sortingOrder as a deterministic
-        // tiebreak: the later-created one consumes the older one.
-        for newer in 0..self.black_holes.len() {
-            if !self.black_holes[newer].active
-                || self.blink_object_hidden(self.black_holes[newer].entity)
+        // tiebreak: the later-created one consumes the older one. Pool slots
+        // are reused, so hierarchy allocation order carries that identity.
+        for a_index in 0..self.black_holes.len() {
+            if !self.black_holes[a_index].active
+                || self.blink_object_hidden(self.black_holes[a_index].entity)
             {
                 continue;
             }
-            for older in 0..newer {
-                if !self.black_holes[older].active
-                    || self.blink_object_hidden(self.black_holes[older].entity)
+            for b_index in 0..a_index {
+                if !self.black_holes[b_index].active
+                    || self.blink_object_hidden(self.black_holes[b_index].entity)
                 {
                     continue;
                 }
-                let a = self.black_holes[newer];
-                let b = self.black_holes[older];
+                let a = self.black_holes[a_index];
+                let b = self.black_holes[b_index];
                 if crate::physics::contact::circle_circle(
                     Circle {
                         center: a.position,
@@ -11638,14 +11639,24 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let consumer = if a.mass >= Fix::ZERO && a.mass >= b.mass {
-                    newer
+                let consumer = if a.mass >= Fix::ZERO && a.mass > b.mass {
+                    a_index
                 } else if b.mass >= Fix::ZERO && b.mass > a.mass {
-                    older
+                    b_index
+                } else if a.mass >= Fix::ZERO && a.mass == b.mass {
+                    if a.hierarchy_base > b.hierarchy_base {
+                        a_index
+                    } else {
+                        b_index
+                    }
                 } else {
                     continue;
                 };
-                let consumed = if consumer == newer { older } else { newer };
+                let consumed = if consumer == a_index {
+                    b_index
+                } else {
+                    a_index
+                };
                 Self::black_hole_grow(
                     &mut self.black_holes[consumer],
                     -Fix::ONE,
@@ -11656,7 +11667,7 @@ impl RolloutWorld {
                 if let Some(entity) = self.black_holes[consumed].entity {
                     self.entities[entity].flags = E_DESTROYED;
                 }
-                if consumed == newer {
+                if consumed == a_index {
                     break;
                 }
             }
@@ -32020,6 +32031,34 @@ mod tests {
             world.black_holes[1].previous_target_size,
             Fix::from_int(100)
         );
+    }
+
+    #[test]
+    fn equal_black_holes_use_creation_order_after_pool_reuse() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let position = Vec2::new(Fix::from_int(1_000), Fix::from_int(1_000));
+        world.black_holes.push(BlackHoleState {
+            active: true,
+            hierarchy_base: 200,
+            position,
+            radius: Fix::ONE,
+            mass: Fix::ONE,
+            ..BlackHoleState::default()
+        });
+        world.black_holes.push(BlackHoleState {
+            active: true,
+            hierarchy_base: 100,
+            position,
+            radius: Fix::ONE,
+            mass: Fix::ONE,
+            ..BlackHoleState::default()
+        });
+
+        world.black_hole_contacts(data::get());
+
+        assert!(world.black_holes[0].active);
+        assert!(!world.black_holes[1].active);
     }
 
     #[test]

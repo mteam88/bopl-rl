@@ -147,6 +147,10 @@ fixed entry is committed separately with its finding id in the subject.
   effect scale and the source wall's DPhysics scale. The destination is
   recomputed from the captured center/basis and current effect-scaled
   extents/radius before overlap forces and the eventual clone spawn.
+- **#43 — fixed.** Equal-mass Black Hole merges now compare monotonic prefab
+  hierarchy allocation order, the rollout equivalent of C#'s incrementing
+  `BlackHoleIndex`/sorting order. Reusing an earlier vector slot can no longer
+  make an older hole consume the later-created one.
 - **#35 — fixed.** On the pass after a scale ray changes a spawned
   `ResizablePlatform` collider, its updater now recomputes inverse mass and
   moment of inertia from the live extents and bevel radius. This follows
