@@ -62,6 +62,12 @@ fixed entry is committed separately with its finding id in the subject.
   Thus an already-ended or submerged Engine enters its stopping animation
   during Time Stop exactly as `RocketEngine.UpdateSim` does; only animation
   advancement and force application remain frozen.
+- **S12 — not a divergence in the exported rollout maps.** Every one of the
+  33 extracted platform `AnimateVelocity` components has positive speed and
+  serialized `HomeIsMovable = true`, so Rust's firing-phase home-position
+  update reaches exactly the same set. `inRotationMode` is private, starts
+  false, and `ActivateRotationMode` has no gameplay caller in this build, so
+  the source always updates `homeRotation` too.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
