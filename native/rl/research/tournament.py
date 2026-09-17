@@ -10,7 +10,6 @@ import multiprocessing
 import os
 from pathlib import Path
 import sys
-import threading
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -246,28 +245,45 @@ def print_roster(roster, skipped):
               f"{(row['interval'][1]-row['interval'][0]) if row else 0:8.1f}  {member['name']}", flush=True)
 
 
-def play_family(roster, family, pool_v7, args, game):
+def play_task_shard(subset, family, pool_v7, args, game, tasks, worker):
     os.environ['BOPL_RL_BACKEND'] = 'rust'
     os.environ['BOPL4_ABLATE'] = str(family)
     os.environ['BOPL_RESEARCH_LIBRARY'] = str(args.research_library.resolve())
-    reference_pool.configure_games(args.out, game)
-    subset = [member for member in roster if writer_ablation(member) in (None, family)]
+    reference_pool.configure_games(args.out / f'workers/family-{family}-{worker}', game)
     by_name = playable(subset, args.library.resolve())
     members = {member['name']: member for member in subset}
     games_path = args.out / 'games.jsonl'
-    existing = load_games(games_path)
-    tasks = plan_tasks(list(by_name), pool_v7['maps'], args.games_per_pair, existing)
-    print(f'family={family} members={len(subset)} games_existing={len(existing)} games_missing={len(tasks)}', flush=True)
-    lock = threading.Lock()
-    with games_path.open('a', buffering=1) as handle:
+    descriptor = os.open(games_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
         def persist(raw):
             row = game_row(raw, members)
-            with lock:
-                handle.write(json.dumps(row, separators=(',', ':')) + '\n')
-                handle.flush()
-        elo_ladder.play_games(by_name, tasks, int(pool_v7['episode_ticks']), args.workers,
+            os.write(descriptor, (json.dumps(row, separators=(',', ':')) + '\n').encode())
+        elo_ladder.play_games(by_name, tasks, int(pool_v7['episode_ticks']), 1,
                               SEED_BASE, delay=int(pool_v7.get('observation_delay_ticks', 9)),
                               on_result=persist)
+    finally:
+        os.close(descriptor)
+
+
+def play_family(roster, family, pool_v7, args, game):
+    subset = [member for member in roster if writer_ablation(member) in (None, family)]
+    names = [member['name'] for member in subset]
+    existing = load_games(args.out / 'games.jsonl')
+    tasks = plan_tasks(names, pool_v7['maps'], args.games_per_pair, existing)
+    print(f'family={family} members={len(subset)} games_existing={len(existing)} games_missing={len(tasks)}', flush=True)
+    context = multiprocessing.get_context('spawn')
+    shards = [tasks[index::args.workers] for index in range(args.workers)]
+    processes = []
+    for worker, shard in enumerate(shards):
+        process = context.Process(target=play_task_shard,
+                                  args=(subset, family, pool_v7, args, game, shard, worker))
+        process.start()
+        processes.append(process)
+    for process in processes:
+        process.join()
+    failed = [process.exitcode for process in processes if process.exitcode]
+    if failed:
+        raise RuntimeError(f'writer family {family} worker exits: {failed}')
 
 
 def schedule_counts(roster, games_per_pair):
