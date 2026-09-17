@@ -67,6 +67,10 @@ fixed entry is committed separately with its finding id in the subject.
   `(Fix.One / oldScale) * newScale` first, then multiply each collider
   dimension. The algebraically equivalent `new / old` and
   `(radius / old) * new` forms round differently in fixed point.
+- **#19 — fixed.** Magnet's three held-item wall rays now exclude the held
+  Macho boulder's rounded-platform collider. This mirrors the source
+  temporarily deactivating an item GameObject around both `RaycastForWalls`
+  and `UpdateHeldPosition`, preventing the boulder from clamping itself.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

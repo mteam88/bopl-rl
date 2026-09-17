@@ -18428,9 +18428,18 @@ impl RolloutWorld {
         slot.base.position + up * offset.y + right * offset.x
     }
 
-    fn magnet_wall_ray(&self, origin: Vec2, direction: Vec2, distance: Fix) -> Option<Fix> {
+    fn magnet_wall_ray(
+        &self,
+        origin: Vec2,
+        direction: Vec2,
+        distance: Fix,
+        excluded_platform: Option<usize>,
+    ) -> Option<Fix> {
         let mut nearest = Fix::MAX;
-        for platform in &self.platforms {
+        for (platform_index, platform) in self.platforms.iter().enumerate() {
+            if excluded_platform == Some(platform_index) {
+                continue;
+            }
             if let Some(hit) = platform
                 .collider
                 .raycast(origin, direction)
@@ -18455,16 +18464,23 @@ impl RolloutWorld {
         let root = firepoint - slot.magnet.body_right * offset_x;
         let side = data.magnet.raycast_offset * slot.base.scale;
         let distance = offset_x + Fix::from_int(1000);
-        let center = self.magnet_wall_ray(slot.base.position, direction, distance);
+        let excluded_platform = match slot.magnet.held {
+            MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
+            _ => None,
+        };
+        let center =
+            self.magnet_wall_ray(slot.base.position, direction, distance, excluded_platform);
         let upper = self.magnet_wall_ray(
             root + direction * side.x + direction.perp() * side.y,
             direction,
             distance,
+            excluded_platform,
         );
         let lower = self.magnet_wall_ray(
             root + direction * side.x + direction.perp_cw() * side.y,
             direction,
             distance,
+            excluded_platform,
         );
         let mut allowed = center.unwrap_or(offset_x);
         if let (Some(upper), Some(lower)) = (upper, lower) {
@@ -18870,8 +18886,17 @@ impl RolloutWorld {
             target.normalized_safe(),
             data.magnet.held_lerp,
         );
+        let excluded_platform = match self.players[index].magnet.held {
+            MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
+            _ => None,
+        };
         if raycast_walls
-            && let Some(wall) = self.magnet_wall_ray(body_position, direction, Fix::from_int(1000))
+            && let Some(wall) = self.magnet_wall_ray(
+                body_position,
+                direction,
+                Fix::from_int(1000),
+                excluded_platform,
+            )
         {
             distance = distance.min(wall);
         }
@@ -31245,6 +31270,24 @@ mod tests {
             world.scale_changers[0].current_scale,
             world.scale_changers[1].current_scale
         );
+    }
+
+    #[test]
+    fn magnet_wall_ray_can_exclude_held_boulder_platform() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let near = world.spawn_ability_platform(
+            0,
+            Vec2::new(Fix::from_int(5), Fix::from_int(30)),
+            Fix::ONE,
+        );
+        let origin = Vec2::new(Fix::ZERO, Fix::from_int(30));
+
+        let included = world
+            .magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), None)
+            .expect("inserted platform blocks the ray");
+        let excluded = world.magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), Some(near));
+        assert!(excluded.map_or(true, |distance| distance > included));
     }
 
     #[test]
