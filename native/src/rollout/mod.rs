@@ -8325,7 +8325,12 @@ impl RolloutWorld {
         } else {
             input * data.push.platform_force
         };
-        if !self.sudden_death {
+        let is_boulder = self
+            .macho_boulders
+            .iter()
+            .any(|boulder| boulder.active && boulder.platform_index == platform_index);
+        let has_animate_velocity = !is_boulder;
+        if has_animate_velocity && !self.sudden_death {
             let dynamics = &mut self.platform_dynamics[platform_index];
             let weight = DT * data.push.home_position_lerp_speed;
             // GetGroundBody returns the rounded root's BoplBody even when its
@@ -8339,13 +8344,15 @@ impl RolloutWorld {
                     Fix::from_raw(-417_771_454_464) + data.push.scene_bound_limit_offset,
                     Fix::from_raw(419_188_801_536) - data.push.scene_bound_limit_offset,
                 ),
-                home.y
-                    .min(Fix::from_raw(171_798_691_840) - data.push.scene_bound_limit_offset),
+                home.y.clamp(
+                    Fix::from_int(-10_000),
+                    Fix::from_raw(171_798_691_840) - data.push.scene_bound_limit_offset,
+                ),
             );
         }
         let platform_position = self.platforms[platform_index].surface.center;
         let arm = (self.players[index].base.position - platform_position).normalized_safe();
-        let force = if self.sudden_death {
+        let force = if !has_animate_velocity || self.sudden_death {
             force * data.push.boulder_force_multiplier
         } else {
             force
@@ -8372,9 +8379,6 @@ impl RolloutWorld {
         slot.active = ActiveAbility::None;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
-        slot.base.velocity = Vec2::ZERO;
-        slot.base.external_velocity = Vec2::ZERO;
-        slot.base.grounded_speed = Fix::ZERO;
         slot.obs_state = STATE_IDLE;
         slot.state_ticks = 0;
         if let Some(platform) =

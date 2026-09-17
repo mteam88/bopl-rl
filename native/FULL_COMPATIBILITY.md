@@ -2848,12 +2848,27 @@ is retained scalar state and adds no allocation to the tick path. The time-stop
 early return also preserves ControlPlatform's preceding 0.8 external-velocity
 damping.
 
-`push_ability_ab.c` compares 420 NativeAOT/Rust Q32 ticks exactly through
+The whole-source completion distinguishes an ordinary platform from a Macho
+boulder, whose prefab has no `AnimateVelocity`: boulders therefore receive the
+serialized half-force path even outside sudden death. Ordinary platforms keep
+full force and the source home interpolation, including both horizontal camera
+clamps and the -10,000/upper-camera vertical clamp. Sudden death also selects
+the half-force path. Composite parents carry the impulse, so attached
+Spike/Engine/Tesla bodies and ropes follow without a second scan.
+
+Exit now preserves the form's live self-imposed, external and grounded velocity
+channels in `AbilityExitInfo`. This matters after Gust, Meteor, Black Hole,
+contacts or platform loss; entry still clears both channels as the source does.
+The Time Stop branch retains its pre-return 0.8 damping, and platform removal,
+death, boundary handling and pickup replacement flow through the common form
+exit/kill machinery without tick allocation.
+
+`push_broad_ab.sh` compares 420 NativeAOT/Rust Q32 ticks exactly through
 grounded entry, collider activation, 120 controlled frames, platform linear and
 angular motion, spring-home movement, channel timing, button release, inactive
-collider state, and restored slime movement. Platform destruction, sudden death,
-and overlapping-player scenarios remain to be separately goldened, so coverage
-is marked partial.
+collider state and restored slime movement. Platform destruction, sudden death,
+boulder control, overlapping players, external forces and acquired-pickup use
+are source-ported but have not each been isolated in a public differential.
 
 ### Executable Freeze ray and FrozenSolid (2026-09-14)
 

@@ -574,11 +574,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   the placement scenario retains the documented <=16-raw-unit fixed-point
   root/collider reconstruction bound. The newly translated scale, destruction,
   Macho and mixed-attachment compositions are not individually measured.
-  Push is exact through grounded entry, animation/channel timing, direct
-  control of an `AnimateVelocity` platform, home-spring retargeting, rigid-body
-  force and torque, collider publication, and button-release restoration.
-  Platform removal, sudden death, and overlapping-player cases remain to be
-  exercised by dedicated differential scenarios.
+  Push is source-ported wholesale through grounded entry, animation/channel
+  timing, form damping and Time Stop, loss-of-ground exit, ordinary
+  `AnimateVelocity` control, boulder/sudden-death half force, bounded home
+  retargeting, composite force/torque and release with both accumulated velocity
+  channels preserved. `push_broad_ab.sh` gates 420 exact optimized-Q32 ticks
+  through entry, 120 controlled frames, platform motion and restored slime
+  movement. Destruction, boulder/sudden-death, overlapping-player, external
+  force and acquired-pickup compositions are not individually measured.
   Freeze ray executes the shared `GunTransform` form, its authored slow-motion
   aiming and recoil physics, hitscan, one-pass water reflection, and
   `FrozenSolid` pin/ragdoll/thaw lifecycle. The frozen effect is stored in a

@@ -182,8 +182,8 @@
       "name": "Push",
       "prefab": "Assets/GameObject/Push.prefab",
       "prefab_guid": "df77479189541ac49a8b01eb919f04b1",
-      "native_status": "partial",
-      "verification": "push_ability_ab matches 420 NativeAOT/Rust Q32 ticks through grounded entry, exact box activation and offset basis, 120 frames of platform force/torque and AnimateVelocity home retargeting, ten-tick channel animation, release, inactive collider, and restored slime movement. Platform destruction, sudden death, and overlapping-player scenarios remain to be separately goldened. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
+      "native_status": "ported",
+      "verification": "ControlPlatform is source-ported wholesale: grounded entry, velocity reset, form motion/damping, Time Stop early return, loss-of-ground exit, ten-tick channel boundary, input/deadzone animation state, ordinary AnimateVelocity home retargeting and full force, boulder or sudden-death half force, scene clamps, composite force/torque, release and preservation of accumulated exit velocities. push_broad_ab.sh compares 420 optimized-Q32 NativeAOT/Rust ticks exactly through entry, 120 controlled frames, platform motion, channeling, release and restored slime movement. Supporting-platform destruction, sudden death, boulder control, overlapping players, external forces and pickup-driven acquired use are source-ported but not individually differentially measured."
     },
     {
       "id": 23,
