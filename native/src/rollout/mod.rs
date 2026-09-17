@@ -1726,6 +1726,8 @@ pub struct PortalShotState {
     pub hierarchy_base: u32,
     pub position: Vec2,
     pub body: Body,
+    pub fire_velocity: Vec2,
+    pub fire_applied: bool,
     pub time_alive: Fix,
 }
 
@@ -5017,6 +5019,8 @@ impl RolloutWorld {
             hierarchy_base,
             position,
             body,
+            fire_velocity: body.velocity,
+            fire_applied: false,
             ..PortalShotState::default()
         };
         let shot_index = self
@@ -5076,6 +5080,11 @@ impl RolloutWorld {
             // following pass.
             if self.portal_shots[shot_index].born_tick == self.tick {
                 continue;
+            }
+            if !self.portal_shots[shot_index].fire_applied {
+                self.portal_shots[shot_index].fire_applied = true;
+                self.portal_shots[shot_index].body.velocity =
+                    self.portal_shots[shot_index].fire_velocity;
             }
             self.portal_shots[shot_index].time_alive += updater_dt * self.player_time_scale;
             if self.portal_shots[shot_index].time_alive > data.portal_gun.max_flight_seconds {
@@ -32142,6 +32151,21 @@ mod tests {
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
         assert_eq!(world.abilityless_clones[0].captured_by_ball, Some(0));
         assert!(world.abilityless_clones[0].poke_invulnerable);
+    }
+
+    #[test]
+    fn portal_shot_reasserts_fire_velocity_on_first_update() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.spawn_portal_shot(0, 0, Vec2::RIGHT, data::get());
+        let expected = Vec2::RIGHT * data::get().portal_gun.shot_speed;
+        world.portal_shots[0].body.velocity = Vec2::UP;
+        world.tick += 1;
+
+        world.portal_shots_tick(data::get(), DT);
+
+        assert_eq!(world.portal_shots[0].body.velocity, expected);
+        assert!(world.portal_shots[0].fire_applied);
     }
 
     #[test]
