@@ -480,6 +480,14 @@ fixed entry is committed separately with its finding id in the subject.
   ability-generation identity. Each non-duplicated burst evicts against the
   one 40-entry FIFO shared by that player's live Smoke ability instance,
   rather than a private ring keyed to the individual grenade cast.
+- **G5 — deferred: requires one global pending-registration scheduler.** C#
+  assigns hierarchy numbers at instantiation, then the next `Updater` pass
+  initializes and registers all pending objects in that single global order.
+  Rust still drains type-specific pools in fixed category order. The faithful
+  change is to reserve hierarchy at every spawn, enqueue a typed pending
+  handle into one ordered list, and dispatch each object's existing Init and
+  collider-registration routine from that list before any updater runs;
+  same-pass manual initializers must remain immediate and outside the queue.
 - **G6 — fixed.** A last-slot Grappling Hook or Web Swing now suppresses its
   death pickup while C#'s rope-icon override is active: either the live rope
   reports zero cooldown, or another player's box overlaps the authored rope
