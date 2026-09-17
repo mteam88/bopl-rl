@@ -91,6 +91,11 @@ fixed entry is committed separately with its finding id in the subject.
   mask contains bit 26 but not 18, and Magnet's pull/pickup masks likewise do
   not contain bit 18, so neither C# query reaches a live Beam orb. Rust omits
   the same target from both scans.
+- **S18 — not a divergence.** `platform_dynamics[i].body` is the live combined
+  composite body whenever attachments exist; the uncombined authored child is
+  stored separately as `root_body`. Applying Magnet's off-centre impulse to
+  `.body` therefore matches `DPhysicsRoundedRect.AddForceAtPosition`, which
+  redirects through `compositeParent.combinedBody` in C#.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
