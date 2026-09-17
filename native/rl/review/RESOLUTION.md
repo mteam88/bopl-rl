@@ -12,6 +12,10 @@ fixed entry is committed separately with its finding id in the subject.
   the authored `20`-pass grace), while the new copy receives the permanent
   `i32::MAX` lifetime. The expiry path also mirrors duplicated-object shake
   displacement and removes the old platform from physics.
+- **#37 — fixed.** Death now consumes an owned Revival marker reference even
+  when the marker object was already destroyed by a Black Hole. C# leaves the
+  destroyed component in `Player.RespawnPositions`, and `killPlayer` tests the
+  list count before calling the stale indicator's retained `GetPos()`.
 
 ## Cross-cutting
 

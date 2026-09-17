@@ -28110,7 +28110,7 @@ impl RolloutWorld {
             .iter()
             .flatten()
             .copied()
-            .find(|&marker| self.revival_marker_pool[marker].active);
+            .next();
         let slot = &mut self.players[index];
         slot.base.alive = false;
         slot.blink_tunnel_active = false;
@@ -30931,6 +30931,31 @@ mod tests {
         world.session_result_tick();
         assert!(world.terminal);
         assert!(world.players[1].won);
+    }
+
+    #[test]
+    fn destroyed_revival_marker_still_revives() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.stocks = 0;
+        world.reset(&config).unwrap();
+        let position = Vec2::new(Fix::from_int(3), Fix::from_int(4));
+        world.revival_marker_pool.push(RevivalMarker {
+            active: false,
+            registered: false,
+            owner: 0,
+            ability_slot: 0,
+            position,
+            ..RevivalMarker::default()
+        });
+        world.players[0].revival_markers[0] = Some(0);
+
+        world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, true, true);
+
+        assert!(world.players[0].base.alive);
+        assert!(world.players[0].revival_clone_pending);
+        assert_eq!(world.players[0].revival_target_marker, Some(0));
+        assert_eq!(world.revival_marker_pool[0].position, position);
     }
 
     #[test]
