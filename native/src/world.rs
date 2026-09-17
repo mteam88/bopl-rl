@@ -590,7 +590,24 @@ impl Player {
         self.move_grounded_scaled(input, Fix::ONE, terrain);
     }
     fn move_grounded_scaled(&mut self, input: Vec2, speed_scale: Fix, terrain: Terrain) {
-        let (platform_index, platform) = self.platform_indexed(terrain.platforms).unwrap();
+        // PlayerPhysics.Move computes ground input against the retained
+        // attachedGround reference before testing activeSelf. Blink therefore
+        // leaves one legal pass where the platform is present but inactive.
+        let Some((platform_index, platform)) = terrain
+            .platforms
+            .iter()
+            .enumerate()
+            .find(|(_, p)| Some(p.id) == self.ground)
+        else {
+            // SlimeController.UpdateSim handles a destroyed retained ground
+            // before calling Move: it zeros rotation, then UnGround(false).
+            self.rotation = Fix::ZERO;
+            self.up = Vec2::UP;
+            let mut motion = self.ground_state();
+            motion.unground(None, false);
+            self.apply_ground_state(motion);
+            return;
+        };
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
         let alignment = self.normalized_input(input).dot(forward);
@@ -615,6 +632,12 @@ impl Player {
                 self.constants.accel,
                 DT,
             );
+        }
+        if !platform.active {
+            let mut motion = self.ground_state();
+            motion.unground(Some(&platform.surface), true);
+            self.apply_ground_state(motion);
+            return;
         }
         // The position has not moved since `normal` was evaluated above.
         self.align_to(normal);
