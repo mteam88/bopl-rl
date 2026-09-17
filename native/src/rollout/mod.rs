@@ -11887,6 +11887,13 @@ impl RolloutWorld {
         }
     }
 
+    fn drill_platform_velocity(&self, platform_index: usize, position: Vec2) -> Vec2 {
+        let offset = position - self.platforms[platform_index].surface.center;
+        let angular = self.platform_dynamics[platform_index].body.angular_velocity;
+        offset.length() * angular * offset.normalized_safe().perp()
+            + self.platform_dynamics[platform_index].body.velocity
+    }
+
     fn drill_tick(
         &mut self,
         index: usize,
@@ -12037,11 +12044,8 @@ impl RolloutWorld {
         }
 
         if let Some(platform_index) = current_platform {
-            let offset = self.players[index].base.position
-                - self.platform_dynamics[platform_index].composite_position;
-            let angular = self.platform_dynamics[platform_index].body.angular_velocity;
-            let point_velocity = offset.length() * angular * offset.normalized_safe().perp()
-                + self.platform_dynamics[platform_index].body.velocity;
+            let point_velocity =
+                self.drill_platform_velocity(platform_index, self.players[index].base.position);
             self.players[index].base.position += point_velocity * DT;
         }
 
@@ -32139,6 +32143,20 @@ mod tests {
         assert!(world.players[0].active == ActiveAbility::Spike);
         assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
         assert_ne!(world.players[0].base.external_velocity, Vec2::ZERO);
+    }
+
+    #[test]
+    fn drill_platform_velocity_uses_root_transform_position() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let platform = 0;
+        let center = world.platforms[platform].surface.center;
+        world.platform_dynamics[platform].composite_position = center + Vec2::RIGHT * Fix::from_int(9);
+        world.platform_dynamics[platform].body.angular_velocity = Fix::ONE;
+        let body_position = center + Vec2::RIGHT * Fix::from_int(2);
+        let point_velocity = world.drill_platform_velocity(platform, body_position);
+
+        assert_eq!(point_velocity, Vec2::UP * Fix::from_int(2));
     }
 
     #[test]

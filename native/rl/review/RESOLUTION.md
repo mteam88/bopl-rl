@@ -258,6 +258,11 @@ fixed entry is committed separately with its finding id in the subject.
   `PlayerPhysics.SyncPhysicsTo`: it clears self-imposed velocity while keeping
   the captured external velocity and grounded speed. A same-pass shove can no
   longer leak into the Spike form's grounded body channel.
+- **S5 — fixed.** Drill's moving-platform angular contribution now measures
+  the player from the rounded root's synchronized `FixTransform` position,
+  not the composite center. Child-collider positional correction can move the
+  latter independently during DetPhysics, exactly the case where the two
+  source positions differ.
 
 ## Cross-cutting
 
