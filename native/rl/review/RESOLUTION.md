@@ -296,6 +296,11 @@ fixed entry is committed separately with its finding id in the subject.
   no `Projectile` or ancestor `Ability`. Its source id therefore remains zero,
   but the row now carries `E_EXPLOSIVE` rather than the incorrect
   `E_PROJECTILE` component flag.
+- **S3 — not a divergence.** Beam rows are emitted by `RlObservation` with a
+  null transform, so they can never inherit an `Ability`. Tesla's chain
+  lightning and BlackHole2 are both instantiated as unparented root prefabs
+  and neither prefab contains `Ability`; they likewise do not receive
+  `E_CONTACT_DAMAGE_KNOWN` or a source id in C#. Rust's zero metadata matches.
 - **S5 — fixed.** PortalShot and Portal clocks now advance by the already
   player-scaled updater delta exactly once. This matches each C# component's
   raw `SimDeltaTime * GameTime.PlayerTimeScale` expression at fractional
