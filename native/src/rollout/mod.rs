@@ -16889,8 +16889,6 @@ impl RolloutWorld {
             self.players[index].missile.ticks = 0;
         }
 
-        self.steer_active_missile(index, action, DT, data);
-
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -16918,12 +16916,12 @@ impl RolloutWorld {
                 }
             }
             if self.players[index].base.grounded {
-                self.players[index]
-                    .base
-                    .move_only(Vec2::ZERO, terrain!(self));
                 let slot = &mut self.players[index];
-                slot.base.position += slot.base.external_velocity * DT;
-                slot.base.external_velocity *= Fix::from_f64(0.95);
+                slot.active = ActiveAbility::None;
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS + 2;
+                slot.reported_position = slot.base.position;
+                return;
             } else {
                 self.players[index].base.collision_rays(terrain!(self));
                 if self.players[index].base.grounded {
@@ -16949,6 +16947,7 @@ impl RolloutWorld {
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
         }
+        self.steer_active_missile(index, action, DT, data);
     }
 
     /// Original ThrowItem ability used only by Mine. It differs materially
@@ -31883,6 +31882,40 @@ mod tests {
             Fix::from_f64(0.5)
         );
         assert_eq!(world.thrown_items[0].body.force.x, Fix::ZERO);
+    }
+
+    #[test]
+    fn missile_landing_exits_before_projectile_steering() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let platform = &world.platforms[0];
+        let landing = platform
+            .surface
+            .position(Fix::ZERO, world.players[0].base.radius);
+        let normal = platform.surface.normal(landing);
+        world.players[0].active = ActiveAbility::Missile;
+        world.players[0].missile.phase = 2;
+        world.players[0].missile.projectile = Some(0);
+        world.players[0].base.position = landing + normal * Fix::from_f64(0.01);
+        world.players[0].base.velocity = -normal * Fix::from_int(10);
+        world.players[0].base.grounded = false;
+        world.players[0].base.ground = None;
+        world.guided_missiles.push(GuidedMissile {
+            active: true,
+            registered: true,
+            instability_ticks: 7,
+            body: Body {
+                velocity: Vec2::UP,
+                ..Body::default()
+            },
+            up: Vec2::UP,
+            ..GuidedMissile::default()
+        });
+
+        world.missile_form_tick(0, Action::default(), data::get());
+
+        assert!(world.players[0].active == ActiveAbility::None);
+        assert_eq!(world.guided_missiles[0].instability_ticks, 7);
     }
 
     #[test]
