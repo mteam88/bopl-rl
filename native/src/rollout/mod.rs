@@ -22262,17 +22262,21 @@ impl RolloutWorld {
         let surface = &self.platforms[source].surface;
         let extents = surface.extents;
         let scale = self.platform_dynamics[source].scale;
-        let vertical = surface.up.dot(direction);
-        let horizontal = surface.right.dot(direction);
+        let (right, up) = if extents.x < Fix::from_f32(0.05) && extents.y < Fix::from_f32(0.05) {
+            (Vec2::RIGHT, Vec2::UP)
+        } else {
+            (surface.right, surface.up)
+        };
+        let vertical = up.dot(direction);
+        let horizontal = right.dot(direction);
         let spawn_position = if vertical.abs() > horizontal.abs() {
             surface.center
-                + surface.up
-                    * Fix::from_int(vertical.sign())
+                + up * Fix::from_int(vertical.sign())
                     * Fix::from_int(2)
                     * (surface.radius + extents.y + scale)
         } else {
             surface.center
-                + surface.right
+                + right
                     * Fix::from_int(horizontal.sign())
                     * Fix::from_int(2)
                     * (surface.radius + extents.x + scale)
@@ -31288,6 +31292,28 @@ mod tests {
             .expect("inserted platform blocks the ray");
         let excluded = world.magnet_wall_ray(origin, Vec2::RIGHT, Fix::from_int(100), Some(near));
         assert!(excluded.map_or(true, |distance| distance > included));
+    }
+
+    #[test]
+    fn duplicate_tiny_platform_uses_world_axes_for_spawn() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let platform = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
+        world.platforms[platform].surface.extents =
+            Vec2::new(Fix::from_f32(0.01), Fix::from_f32(0.02));
+        world.platforms[platform].surface.right = Vec2::UP;
+        world.platforms[platform].surface.up = -Vec2::RIGHT;
+
+        world.begin_duplicate_platform(platform, Vec2::ZERO, Vec2::RIGHT, 0, data::get());
+
+        let spawn = world
+            .duplicate_platform_effects
+            .iter()
+            .find(|effect| effect.active)
+            .unwrap()
+            .spawn_position;
+        assert!(spawn.x > Fix::ZERO);
+        assert_eq!(spawn.y, Fix::ZERO);
     }
 
     #[test]

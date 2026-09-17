@@ -71,6 +71,10 @@ fixed entry is committed separately with its finding id in the subject.
   Macho boulder's rounded-platform collider. This mirrors the source
   temporarily deactivating an item GameObject around both `RaycastForWalls`
   and `UpdateHeldPosition`, preventing the boulder from clamping itself.
+- **#20 — fixed (the report mislabeled this as Scale-ray/Blink).**
+  Duplicator's platform spawn-position helper now replaces a degenerate
+  rounded rectangle's rotated axes with world right/up when both extents are
+  below `1/20`, exactly as `ShootDuplicator.PlatformSpawnPos` does.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
