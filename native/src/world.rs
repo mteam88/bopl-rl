@@ -775,7 +775,10 @@ impl Player {
     pub(crate) fn outside_bounds(&self) -> bool {
         self.position.y
             < if self.space {
-                Fix::from_int(-50)
+                // DestroyIfOutsideSceneBounds uses Camera_YMin in space;
+                // SceneBounds.WaterHeight (-50) is only the off-screen water
+                // plane used by other component-specific queries.
+                Fix::from_int(-26)
             } else {
                 Fix::from_f32(-11.3)
             }

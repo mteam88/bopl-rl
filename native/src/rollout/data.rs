@@ -1335,7 +1335,9 @@ impl MapDef {
 
     pub fn lower_boundary(&self) -> Fix {
         if self.is_space() {
-            Fix::from_int(-50)
+            // DestroyIfOutsideSceneBounds uses SceneBounds.Camera_YMin for
+            // space objects, not the separate -50 space water height.
+            Fix::from_int(-26)
         } else {
             // SceneBounds.WaterHeight, distinct from Constants.WATER_HEIGHT.
             Fix::from_f32(-11.3)
