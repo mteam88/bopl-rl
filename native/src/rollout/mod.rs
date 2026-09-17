@@ -9833,7 +9833,10 @@ impl RolloutWorld {
         dynamics.body.velocity = old.velocity;
         dynamics.body.angular_velocity = old.angular_velocity;
         dynamics.body.orientation = old.orientation;
-        dynamics.body.force = old.force;
+        // Remove*FromComposite rebuilds from the root child body, whose force
+        // was cleared when it first joined the composite. The source copies
+        // only velocity and angularVelocity from the retired combined body.
+        dynamics.body.force = Vec2::ZERO;
         dynamics.attached_children = count;
         dynamics.composite_position = self.platforms[platform_index].surface.center;
         dynamics.basis = None;
@@ -33413,6 +33416,18 @@ mod tests {
         world.engines_tick(data::get(), Fix::ZERO);
 
         assert_eq!(world.engines[0].phase, 2);
+    }
+
+    #[test]
+    fn composite_rebuild_drops_retired_combined_force() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.platform_dynamics[0].body.force =
+            Vec2::new(Fix::from_int(7), Fix::from_int(-3));
+
+        world.rebuild_platform_attachment_body(0);
+
+        assert_eq!(world.platform_dynamics[0].body.force, Vec2::ZERO);
     }
 
     #[test]

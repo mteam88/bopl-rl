@@ -68,6 +68,11 @@ fixed entry is committed separately with its finding id in the subject.
   update reaches exactly the same set. `inRotationMode` is private, starts
   false, and `ActivateRotationMode` has no gameplay caller in this build, so
   the source always updates `homeRotation` too.
+- **S13 — fixed.** Rebuilding a platform composite now clears the retired
+  combined body's accumulated force. C# reconstructs from child bodies whose
+  force was cleared on attachment, then explicitly copies only velocity and
+  angular velocity from the old composite; carrying Rust's old force applied
+  an extra impulse after any child removal.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
