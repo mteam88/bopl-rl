@@ -20949,11 +20949,12 @@ impl RolloutWorld {
             .iter()
             .copied()
             .enumerate()
-            .find(|(_, row)| {
+            .filter(|(_, row)| {
                 row.kind == 2
                     && row.flags & E_ACTIVE != 0
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
+            .last()
             .map(|(entity, _)| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
@@ -21262,12 +21263,13 @@ impl RolloutWorld {
             .iter()
             .copied()
             .enumerate()
-            .find(|(entity, row)| {
+            .filter(|(entity, row)| {
                 row.kind == 2
                     && row.flags & E_ACTIVE != 0
                     && excluded != Some(*entity)
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
+            .last()
             .map(|(entity, _)| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
@@ -21732,10 +21734,11 @@ impl RolloutWorld {
             .iter()
             .copied()
             .enumerate()
-            .find(|(_, row)| {
+            .filter(|(_, row)| {
                 row.flags & E_ACTIVE != 0
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
+            .last()
             .map(|(entity, _)| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
@@ -31153,6 +31156,37 @@ mod tests {
             1
         );
         assert!(world.abilityless_clones[0].base.velocity.y > Fix::ZERO);
+    }
+
+    #[test]
+    fn ray_point_query_uses_last_overlapping_rounded_rect() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let center = Vec2::new(Fix::ZERO, Fix::from_int(30));
+        let _first = world.spawn_ability_platform(0, center, Fix::ONE);
+        let last = world.spawn_ability_platform(1, center, Fix::ONE);
+        world.refresh_platform_entities();
+        let selected = world
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.kind == 2
+                    && row.flags & E_ACTIVE != 0
+                    && RolloutWorld::entity_rounded_rect(**row)
+                        .is_some_and(|shape| shape.overlaps(center))
+            })
+            .last()
+            .map(|(entity, _)| entity);
+        assert_eq!(selected, Some(world.platform_entities[last]));
+
+        world.shoot_scale_ray(center, Vec2::RIGHT, 0, true, data::get());
+
+        assert!(
+            world.scale_changers.iter().any(|effect| {
+                effect.active && effect.target_kind == 2 && effect.victim == last
+            })
+        );
     }
 
     #[test]
