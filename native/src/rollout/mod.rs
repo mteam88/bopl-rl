@@ -648,6 +648,9 @@ pub struct TimeStopEffect {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedSpike {
     pub active: bool,
+    /// The owning player's ability slot for a cast spike. Duplicator copies
+    /// are not referenced by a Spike ability instance.
+    pub owner_slot: Option<(usize, usize)>,
     /// MachoThrow2 detached this box from its composite while the boulder is
     /// still represented only by the player's dummy sprite.
     pub macho_carried: bool,
@@ -9855,6 +9858,7 @@ impl RolloutWorld {
         });
         let attack = SpawnedSpike {
             active: true,
+            owner_slot: Some((index, ability_slot)),
             macho_carried: false,
             born_tick: self.tick,
             hierarchy_base,
@@ -9916,6 +9920,11 @@ impl RolloutWorld {
             return;
         }
         let platform_index = self.spike_attacks[spike_index].platform_index;
+        if let Some((owner, slot)) = self.spike_attacks[spike_index].owner_slot {
+            if self.players[owner].spike_attacks[slot] == Some(spike_index) {
+                self.players[owner].spike_attacks[slot] = None;
+            }
+        }
         self.spike_attacks[spike_index].active = false;
         self.spike_attacks[spike_index].macho_carried = false;
         if let Some(entity) = self.spike_attacks[spike_index].entity {
@@ -20624,6 +20633,7 @@ impl RolloutWorld {
         });
         let clone = SpawnedSpike {
             active: true,
+            owner_slot: None,
             macho_carried: false,
             born_tick: self.tick,
             hierarchy_base,

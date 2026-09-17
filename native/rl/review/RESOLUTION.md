@@ -244,6 +244,10 @@ fixed entry is committed separately with its finding id in the subject.
   unscaled incoming self-imposed plus external velocity before applying the
   authored `0.6667f` body-velocity factor. A rope's first force sample thus
   uses the same delta as `BounceBall.Initialize`.
+- **S3 — fixed.** Cast Spike attacks now retain the owning player/ability-slot
+  reference, while Duplicator copies explicitly have none. Every destruction
+  route clears the slot only when it still points at that pooled entry, so a
+  later reuse cannot make the original caster remove another player's Spike.
 
 ## Cross-cutting
 
