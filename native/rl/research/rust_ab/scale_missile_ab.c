@@ -272,7 +272,7 @@ static int run_case(BoplRl **world, BoplRlConfig *config, unsigned ability,
             }
             if (entity->kind == 1 && entity->layer == 18) {
                 explosions += (entity->flags & 1) != 0;
-                disabled |= entity->flags == 9;
+                disabled |= entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE);
             }
         }
         if (previous_missiles && !missiles && !missile_end) missile_end = tick;

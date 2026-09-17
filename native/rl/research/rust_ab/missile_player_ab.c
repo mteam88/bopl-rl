@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
             }
             if (entity->kind == 1 && entity->layer == 18) {
                 live_explosion |= (entity->flags & 1) != 0;
-                disabled_explosion |= entity->flags == 9;
+                disabled_explosion |= entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE);
             }
             if (entity->kind == 0 && entity->layer == 27 && entity->owner == 2 &&
                 (entity->flags & 1))

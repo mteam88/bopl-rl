@@ -196,7 +196,7 @@ int main(int argc, char **argv) {
             const BoplRlEntity *entity = &reference->entities[i];
             if (entity->kind == 1 && entity->layer == 18) {
                 saw_explosion = 1;
-                if (entity->flags == 9) saw_disabled_explosion = 1;
+                if (entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE)) saw_disabled_explosion = 1;
             }
             if (entity->kind == 0 && entity->layer == 27) saw_choice = 1;
         }

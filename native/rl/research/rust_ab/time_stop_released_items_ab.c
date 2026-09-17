@@ -248,7 +248,7 @@ int main(int argc, char **argv) {
             const BoplRlEntity *entity = &reference->entities[i];
             if (entity->kind == 1 && entity->layer == 18) {
                 live_explosion |= (entity->flags & 1) != 0;
-                disabled_explosion |= entity->flags == 9;
+                disabled_explosion |= entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE);
             }
         }
         if (previous_item && !item && !item_gone_tick) item_gone_tick = tick;

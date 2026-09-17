@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
             }
             if (entity->kind == 1 && entity->layer == 18) {
                 live_explosion |= (entity->flags & 1) != 0;
-                disabled_explosion |= entity->flags == 9;
+                disabled_explosion |= entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE);
             }
         }
         if (!grenade_registered && live_grenade) grenade_registered = tick;

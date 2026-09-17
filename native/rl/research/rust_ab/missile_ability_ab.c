@@ -205,7 +205,7 @@ int main(int argc, char **argv) {
             if (entity->kind == 1 && entity->layer == 18) {
                 live_explosion = 1;
                 saw_explosion = 1;
-                if (entity->flags == 9) saw_disabled_explosion = 1;
+                if (entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE)) saw_disabled_explosion = 1;
             }
         }
         if (saw_explosion && !live_explosion) saw_explosion_end = 1;
