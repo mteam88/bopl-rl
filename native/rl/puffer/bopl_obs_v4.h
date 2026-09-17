@@ -10,11 +10,17 @@
  * read once per process (train.py --v4-ablate, recorded in the checkpoint's
  * v4_shape so the evaluator applies the same one). The row keeps its shape;
  * the ablated block is zero. */
-enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4 };
+/* BOPL4_ABLATE_AIM is layout v4.1 (POLICY_V4_PLAN.md 7b), not an ablation:
+ * the two down rays that duplicate around rays (-135 and -45 degrees are
+ * around rays 20 and 28) carry the aim ray and the line of sight instead. */
+enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8 };
+enum { BOPL4_AIM_RAY=BOPL4_RAYS_AROUND+0, BOPL4_LOS_RAY=BOPL4_RAYS_AROUND+3 };
+static int bopl4_ablation_value=-1;
+/* The in-game shim sets the checkpoint's bits before its first row (no environment there). */
+static void bopl4_set_ablation(int bits) { bopl4_ablation_value=bits; }
 static int bopl4_ablation(void) {
-    static int value=-1;
-    if (value<0) { const char *v=getenv("BOPL4_ABLATE"); value=v&&v[0]?atoi(v):0; }
-    return value;
+    if (bopl4_ablation_value<0) { const char *v=getenv("BOPL4_ABLATE"); bopl4_ablation_value=v&&v[0]?atoi(v):0; }
+    return bopl4_ablation_value;
 }
 
 /* Relational block (BOPL4_RELATION) of a body at relative position r moving
@@ -319,27 +325,58 @@ static void bopl4_ray_finish(const Bopl4Terrain *t, double x, double y, double d
     for (int c=0; c<6; c++) out[1+c]=class==c;
     out[7]=class>=3?bopl_clip(closing/BOPL4_VELOCITY_SCALE):0.0f;
 }
-/* `count` rays of the fan (indices k[]) from (x, y): the closed-form surfaces
- * per ray, then the wall marches in groups of BOPL4_MARCH, each cut off once
- * it passes the ray's nearest other surface. */
+/* Up to BOPL4_MARCH rays from (x, y) along (dx, dy)[i] into out[i]: the
+ * closed-form surfaces per ray, then the wall marches together, each cut off
+ * once it passes the ray's nearest other surface. */
+static void bopl4_cast_group(const Bopl4Terrain *t, double x, double y, double svx, double svy, int n,
+                             const double *dx, const double *dy, float *const *out) {
+    double best[BOPL4_MARCH], closing[BOPL4_MARCH], limit[BOPL4_MARCH], wall[BOPL4_MARCH], ox[BOPL4_MARCH], oy[BOPL4_MARCH];
+    int class[BOPL4_MARCH];
+    for (int i=0; i<n; i++) {
+        ox[i]=x; oy[i]=y;
+        best[i]=bopl4_ray_other(t, x, y, dx[i], dy[i], svx, svy, &class[i], &closing[i]);
+        limit[i]=best[i]+1.0;
+        wall[i]=BOPL4_RAY_LENGTH;
+    }
+    if (t->view.wall_count) bopl4_march(&t->view, ox, oy, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
+    for (int i=0; i<n; i++) bopl4_ray_finish(t, x, y, dx[i], dy[i], best[i], class[i], closing[i], wall[i], out[i]);
+}
+/* `count` rays of the fan (indices k[]) from (x, y), in groups of BOPL4_MARCH. */
 static void bopl4_rays(const Bopl4Terrain *t, double x, double y, double svx, double svy, const int *k, int count, float *obs) {
     for (int start=0; start<count; start+=BOPL4_MARCH) {
         int n=count-start<BOPL4_MARCH?count-start:BOPL4_MARCH;
-        double dx[BOPL4_MARCH], dy[BOPL4_MARCH], best[BOPL4_MARCH], closing[BOPL4_MARCH], limit[BOPL4_MARCH], wall[BOPL4_MARCH];
-        double ox[BOPL4_MARCH], oy[BOPL4_MARCH];
-        int class[BOPL4_MARCH];
+        double dx[BOPL4_MARCH], dy[BOPL4_MARCH]; float *out[BOPL4_MARCH];
         for (int i=0; i<n; i++) {
-            ox[i]=x; oy[i]=y;
             bopl4_ray_direction(k[start+i], &dx[i], &dy[i]);
-            best[i]=bopl4_ray_other(t, x, y, dx[i], dy[i], svx, svy, &class[i], &closing[i]);
-            limit[i]=best[i]+1.0;
-            wall[i]=BOPL4_RAY_LENGTH;
+            out[i]=obs+BOPL4_OBS_RAY_OFFSET+(size_t)k[start+i]*BOPL4_RAY_FEATURES;
         }
-        if (t->view.wall_count) bopl4_march(&t->view, ox, oy, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
-        for (int i=0; i<n; i++)
-            bopl4_ray_finish(t, x, y, dx[i], dy[i], best[i], class[i], closing[i], wall[i],
-                             obs+BOPL4_OBS_RAY_OFFSET+(size_t)k[start+i]*BOPL4_RAY_FEATURES);
+        bopl4_cast_group(t, x, y, svx, svy, n, dx, dy, out);
     }
+}
+/* Layout v4.1 (BOPL4_ABLATE_AIM): in ray slot BOPL4_AIM_RAY the aim ray, cast
+ * from the body along the aim of the decision applied this step (the direction
+ * the next arrow follows; zero when that decision had no aim), the fan's 8
+ * fields: its class one-hot says what the shot meets first, the opponent
+ * body class being "the shot is on target". In slot BOPL4_LOS_RAY the line of
+ * sight: the cast toward the opponent's centre, so the opponent-body class is
+ * a clear line and any other class names what blocks it (a wall or lethal
+ * wall, water, a projectile or object) at that distance; zero when the
+ * opponent's position is unknown. */
+static void bopl4_aim_rays(const Bopl4Terrain *t, double x, double y, double svx, double svy, BoplRlAction applied,
+                           const Bopl4Enemy *enemy, float *obs) {
+    double dx[2], dy[2]; float *out[2]; int n=0;
+    float *aim=obs+BOPL4_OBS_RAY_OFFSET+(size_t)BOPL4_AIM_RAY*BOPL4_RAY_FEATURES;
+    float *los=obs+BOPL4_OBS_RAY_OFFSET+(size_t)BOPL4_LOS_RAY*BOPL4_RAY_FEATURES;
+    memset(aim, 0, BOPL4_RAY_FEATURES*sizeof(float)); memset(los, 0, BOPL4_RAY_FEATURES*sizeof(float));
+    if (applied.angle) {
+        pthread_once(&bopl_aim_table_once, bopl_aim_table_init);   /* the first step's rows precede the tail that fills it */
+        dx[n]=bopl_aim_table[applied.angle][0]; dy[n]=bopl_aim_table[applied.angle][1]; out[n++]=aim;
+    }
+    if (enemy->known) {
+        double ex=enemy->x-x, ey=enemy->y-y, len=sqrt(ex*ex+ey*ey);
+        if (len>1e-9) { dx[n]=ex/len; dy[n]=ey/len; out[n++]=los; }
+    }
+    if (n) bopl4_cast_group(t, x, y, svx, svy, n, dx, dy, out);
 }
 static double bopl4_drop(const Bopl4Terrain *t, double x, double y, double cap) {
     double d=t->view.wall_count?bot_raycast(&t->view, x, y, 0, -1, cap):cap;
@@ -586,6 +623,7 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
             wanted[n_wanted++]=k;
         }
         bopl4_rays(&terrain, self_x, self_y, self_vx, self_vy, wanted, n_wanted, obs);
+        if (bopl4_ablation()&BOPL4_ABLATE_AIM) bopl4_aim_rays(&terrain, self_x, self_y, self_vx, self_vy, env->applied[a], &enemy, obs);
     }
 
     uint32_t player_count=state->header.player_count<BOPL4_PLAYERS?state->header.player_count:BOPL4_PLAYERS;

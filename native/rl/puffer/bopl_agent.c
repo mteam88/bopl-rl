@@ -213,6 +213,9 @@ static int bopl_agent_open_policy(BoplAgent *a, const char *path, char *error, s
         if (!bopl_json_int(j, shape_keys[k], &value)) { free(data); free(json); bopl_agent_error(error, capacity, "sidecar %s lacks v4_shape.%s", sidecar, shape_keys[k]); return -1; }
         shape[k]=(int)value;
     }
+    /* The writer bits the checkpoint trained under (v4_shape.ablate: the
+     * ablations and layout v4.1's aim rays), applied before the first row. */
+    if (v4) bopl4_set_ablation(bopl_json_int(j, "ablate", &value)?(int)value:0);
     char actual[65]; bopl_sha256_hex(data, length, actual);
     if (strcmp(actual, sha)) { free(data); free(json); bopl_agent_error(error, capacity, "weights sha256 %s does not match sidecar %s", actual, sha); return -1; }
     if (length%sizeof(float)) { free(data); free(json); bopl_agent_error(error, capacity, "checkpoint size %zu is not float32", length); return -1; }

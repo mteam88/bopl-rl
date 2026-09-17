@@ -367,6 +367,30 @@ puts in the reserved/zeroed slots or replaces the least useful down rays):
 - (c) candidate: the same for the opponent's aim toward us (their arrow
   path): first hit is us, distance, so the policy can read incoming shots.
 
+Built 2026-09-16 as writer bit 8 (`v4_ablate = 8`, `BOPL4_ABLATE_AIM`,
+bopl_obs_v4.h `bopl4_aim_rays`; config `v4-aim.toml` = `v4-full` plus the
+bit, gpu-queue job 19). Rows stay 4812 and the encoder build is untouched:
+two of the four down rays duplicate around rays (-135 and -45 degrees are
+around rays 20 and 28, 11.25-degree multiples), so their slots (ray indices
+32 and 35) carry the new casts, each in the fan's 8 fields (distance /40,
+hit class one-hot, closing speed):
+- slot 32, the aim ray: from the body along the aim of the decision applied
+  this step (`BoplPuffer.applied`, set in `bopl_step_finish_from` before the
+  rows are encoded; the shim and the evaluator share that path), zero when
+  that decision had no aim. The opponent-body class is "the shot is on
+  target", a wall class is "shooting into terrain" at that distance.
+- slot 35, the line of sight: the cast toward the opponent's centre. The
+  opponent-body class is a clear line; a wall, water or object class names
+  the blocker at its distance; all zero when the opponent is unseen.
+- (c) is not buildable: the wire state carries no opponent aim (only arrows
+  in flight, which the rays and entity rows already show).
+Over 10k bot-game rows: the aim ray is present in 98% (56% meets nothing
+within 40, 36% a wall, 4% the opponent); the line of sight is clear in 40%,
+wall-blocked in 46%, beyond 40 units in 11%. The in-game shim applies the
+sidecar's `v4_shape.ablate` (it ignored it before; the ablations were never
+shipped), so a `v4-aim` checkpoint plays with its own rows
+(check_agent_fidelity.py passes with the bit on).
+
 Evidence check before building: the human replays are on the Mac at
 `~/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/human/.excluded/20260916-1717*.rep`
 (excluded from the ladder at Matthew's request); the taxonomy tooling can

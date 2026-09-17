@@ -191,6 +191,9 @@ typedef struct {
      * history, BOPL4_HISTORY): [p][0] the previous decision, [p][1] the one
      * before. Zero (no aim, no buttons) at the episode start. */
     BoplRlAction action_history[6][2];
+    /* The decision applied this step, set before the rows are encoded: layout
+     * v4.1's aim ray (bopl_obs_v4.h bopl4_aim_rays). Zero at the episode start. */
+    BoplRlAction applied[6];
     /* Scripted opponents (bopl_bots.h, SCRIPTED_BOTS.md). Training: banks whose
      * nibble in scripted_kinds is set play a bot instead of frozen weights (the
      * bank's GPU rows still run; their sampled actions are ignored). Evaluation:
@@ -811,6 +814,7 @@ static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
  * own-action tail and the masks. Shared with the agent shim (bopl_agent.c),
  * which is fed states from a running game instead of a world it steps. */
 static void bopl_reset_observations(BoplPuffer *env, const BoplRlState *state) {
+    memset(env->applied, 0, sizeof(env->applied));   /* before the rows: no aim ray at the episode start */
     compute_observations_from(env, state);
     /* The first two delayed decisions observe this same first state. */
     for (int i=0; i<2; i++) bopl_state_copy(&env->delayed[i], state);
@@ -987,6 +991,7 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     const BoplRlAction *actions=phase->actions;
     const int *fresh=phase->fresh, *holds=phase->holds;
     uint32_t ticks=phase->ticks;
+    for (int i=0; i<env->players; i++) env->applied[i]=actions[i];
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
     for (int i=0; i<env->players; i++) {
