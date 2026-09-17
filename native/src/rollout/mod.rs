@@ -1847,23 +1847,8 @@ impl GustWave {
         self.arrow_count = 0;
         self.missile_count = 0;
         self.portal_shot_count = 0;
+        self.smoke_count = 0;
         self.black_hole_count = 0;
-    }
-
-    #[inline]
-    fn retained_count(&self) -> usize {
-        self.target_count
-            + self.item_count
-            + self.arrow_count
-            + self.missile_count
-            + self.portal_shot_count
-            + self.smoke_count
-            + self.black_hole_count
-    }
-
-    #[inline]
-    fn retained_full(&self) -> bool {
-        self.retained_count() == self.platform_ids.len()
     }
 }
 
@@ -15946,13 +15931,49 @@ impl RolloutWorld {
                 center: wave.position,
                 radius: data.gust.radius * wave.scale,
             };
-            for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
-                if wave.retained_full() {
-                    break;
+            // DetPhysics.CircleCastAll fills Shockwave's 50-entry buffer in
+            // circle -> box -> rounded-rectangle registration order. Hits
+            // that Shockwave later ignores still consume a slot.
+            const GUST_COLLISION_MASK: u32 = 79_761_152;
+            let mut hit_entities = [usize::MAX; 50];
+            let mut hit_count = 0;
+            for kind in 0..=2 {
+                let mut previous_id = 0;
+                while hit_count < hit_entities.len() {
+                    let mut next = None;
+                    for (entity, row) in self.entities.iter().enumerate() {
+                        if row.kind != kind
+                            || row.id <= previous_id
+                            || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                            || GUST_COLLISION_MASK & (1 << row.layer) == 0
+                            || !self.circle_overlaps_entity(query, entity)
+                        {
+                            continue;
+                        }
+                        if next.is_none_or(|(_, id)| row.id < id) {
+                            next = Some((entity, row.id));
+                        }
+                    }
+                    let Some((entity, id)) = next else {
+                        break;
+                    };
+                    hit_entities[hit_count] = entity;
+                    hit_count += 1;
+                    previous_id = id;
                 }
+            }
+            let retained = &hit_entities[..hit_count];
+
+            for (platform_index, (platform, dynamics)) in self
+                .platforms
+                .iter()
+                .zip(&self.platform_dynamics)
+                .enumerate()
+            {
                 if crate::physics::contact::circle_rounded(query, platform.collider)
                     .is_some_and(|contact| contact.penetration > Fix::ZERO)
                     && dynamics.body.inverse_mass >= Fix::ZERO
+                    && retained.contains(&self.platform_entities[platform_index])
                 {
                     wave.platform_ids[wave.target_count] = platform.id;
                     wave.target_count += 1;
@@ -15963,7 +15984,7 @@ impl RolloutWorld {
             // Thrown items are pooled, so retain stable pool indices rather
             // than allocating a per-wave object set.
             for (item_index, item) in self.thrown_items.iter().enumerate() {
-                if wave.retained_full() || !item.active || item.entity.is_none() {
+                if !item.active || item.entity.is_none_or(|entity| !retained.contains(&entity)) {
                     continue;
                 }
                 let radius = thrown_item_radius(data, *item);
@@ -15981,7 +16002,10 @@ impl RolloutWorld {
                 }
             }
             for (arrow_index, arrow) in self.arrows.iter().enumerate() {
-                if wave.retained_full() || !arrow.active || !arrow.registered {
+                if !arrow.active
+                    || !arrow.registered
+                    || arrow.entity.is_none_or(|entity| !retained.contains(&entity))
+                {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -15998,7 +16022,10 @@ impl RolloutWorld {
                 }
             }
             for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-                if wave.retained_full() || !missile.active || !missile.registered {
+                if !missile.active
+                    || !missile.registered
+                    || missile.entity.is_none_or(|entity| !retained.contains(&entity))
+                {
                     continue;
                 }
                 let collider = OrientedBox::from_basis(
@@ -16015,7 +16042,10 @@ impl RolloutWorld {
             // PortalShot is the only live rigid spell collider in the source
             // catalog; retain its pooled index exactly as for other bodies.
             for (shot_index, shot) in self.portal_shots.iter().enumerate() {
-                if wave.retained_full() || !shot.active || !shot.registered {
+                if !shot.active
+                    || !shot.registered
+                    || shot.entity.is_none_or(|entity| !retained.contains(&entity))
+                {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -16032,7 +16062,10 @@ impl RolloutWorld {
                 }
             }
             for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if wave.retained_full() || !cloud.active || !cloud.registered {
+                if !cloud.active
+                    || !cloud.registered
+                    || cloud.entity.is_none_or(|entity| !retained.contains(&entity))
+                {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -16051,7 +16084,9 @@ impl RolloutWorld {
             // RigidBodyAffector bypasses IPhysicsCollider and calls
             // BlackHole.AddForce during every curve sample.
             for (hole_index, hole) in self.black_holes.iter().enumerate() {
-                if wave.retained_full() || !hole.active {
+                if !hole.active
+                    || hole.entity.is_none_or(|entity| !retained.contains(&entity))
+                {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -16071,7 +16106,7 @@ impl RolloutWorld {
             // Shockwave applies the BoplBody fallback force immediately and
             // does not add them to its persistent HashSet.
             for rock in &mut self.duplicated_rocks {
-                if !rock.active {
+                if !rock.active || rock.entity.is_none_or(|entity| !retained.contains(&entity)) {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -16151,6 +16186,9 @@ impl RolloutWorld {
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
                     continue;
                 }
+                if !retained.contains(&entity) {
+                    continue;
+                }
                 let row = self.entities[entity];
                 let overlaps = if row.kind == 0 {
                     crate::physics::contact::circle_circle(
@@ -16199,6 +16237,26 @@ impl RolloutWorld {
                     delta * force
                 };
                 target.base.external_velocity += force * Fix::from_int(35);
+            }
+            for clone in &mut self.abilityless_clones {
+                let Some(entity) = clone.entity.filter(|entity| {
+                    clone.active && retained.contains(entity)
+                }) else {
+                    continue;
+                };
+                if self.entities[entity].flags & E_ACTIVE == 0 {
+                    continue;
+                }
+                let delta = clone.base.position - wave.position;
+                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
+                let force = scale_force * data.gust.default_force / distance;
+                let force = if clone.base.grounded {
+                    data.gust.grounded_multiplier * delta * force
+                } else {
+                    delta * force
+                };
+                clone.base.external_velocity += force * Fix::from_int(35);
             }
             self.gust_waves[wave_index] = wave;
             self.gust_wave_apply(wave_index, Fix::ZERO, false, data);
@@ -32909,10 +32967,23 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        let cloud_position = center + Vec2::RIGHT;
+        let cloud_entity = world.entities.len();
+        world.entities.push(CEntity {
+            id: 900_001,
+            kind: 0,
+            layer: 22,
+            flags: E_ACTIVE | E_ENABLED,
+            x: cloud_position.x.raw(),
+            y: cloud_position.y.raw(),
+            radius: data::get().smoke.cloud_base_radius.raw(),
+            ..CEntity::default()
+        });
         world.smoke_clouds.push(SmokeCloud {
             active: true,
             registered: true,
-            position: center + Vec2::RIGHT,
+            entity: Some(cloud_entity),
+            position: cloud_position,
             body: data::get().smoke.cloud_body,
             scale: Fix::ONE,
             ..SmokeCloud::default()
@@ -32935,9 +33006,22 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        let rock_position = center + Vec2::RIGHT;
+        let rock_entity = world.entities.len();
+        world.entities.push(CEntity {
+            id: 900_001,
+            kind: 0,
+            layer: 16,
+            flags: E_ACTIVE | E_ENABLED,
+            x: rock_position.x.raw(),
+            y: rock_position.y.raw(),
+            radius: data::get().rock.radius.raw(),
+            ..CEntity::default()
+        });
         world.duplicated_rocks.push(DuplicatedRock {
             active: true,
-            position: center + Vec2::RIGHT,
+            entity: Some(rock_entity),
+            position: rock_position,
             body: data::get().rock.body,
             scale: Fix::ONE,
             ..DuplicatedRock::default()
@@ -32952,6 +33036,36 @@ mod tests {
         world.gust_waves_init(data::get());
 
         assert!(world.duplicated_rocks[0].body.force.x > Fix::ZERO);
+    }
+
+    #[test]
+    fn gust_player_circle_hits_consume_the_shared_fifty_hit_buffer() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        world.spawn_ability_platform(0, center, Fix::ONE);
+        for id in 1..=50 {
+            world.entities.push(CEntity {
+                id: 1_000_000 + id,
+                kind: 0,
+                layer: LAYER_PLAYER,
+                flags: E_ACTIVE | E_ENABLED,
+                x: center.x.raw(),
+                y: center.y.raw(),
+                radius: Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+        }
+        world.gust_waves[0] = GustWave {
+            active: true,
+            born_tick: world.tick.saturating_sub(1),
+            position: center,
+            ..GustWave::default()
+        };
+
+        world.gust_waves_init(data::get());
+
+        assert_eq!(world.gust_waves[0].target_count, 0);
     }
 
     #[test]
