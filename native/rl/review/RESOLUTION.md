@@ -16,6 +16,12 @@ fixed entry is committed separately with its finding id in the subject.
   Rust-only row would create the distribution split the report intended to
   prevent.
 
+- **C2 — not a divergence.** The report conflated the generic `Orb` used by
+  `UseOrb` with Beam's visual orb. Beam instantiates `orbAnim.prefab`, whose
+  components include `DPhysicsCircle`, `Explosion`, animation, and
+  `DisableIfNotHeld_deter`, but no `Projectile`. A fresh NativeAOT build
+  confirms the live layer-18 Beam circle lacks `E_PROJECTILE`, matching Rust.
+
 - **G3 — fixed.** `Player.Kill` returns immediately when `WonThisRound` is set
   (`sim/Gameplay/Player.cs`), before rumble, death accounting, telemetry, or
   killer credit. `RolloutWorld::kill` now performs the same guard before any
