@@ -266,3 +266,7 @@ fixed entry is committed separately with its finding id in the subject.
   The pickup is destroyed only after those callbacks, so simultaneous
   overlaps instantiate one replacement ability for each player in callback
   order just as C# does.
+- **G8 — fixed.** Expiring Time Stop effects now preserve zero player time
+  scale and the last protection bits once the session has ended. C# still
+  destroys the effect object, but `TimeStop.End` returns before its teardown
+  writes when `HasGameEnded()` is true; Rust now makes the same distinction.

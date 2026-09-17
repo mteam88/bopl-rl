@@ -9978,8 +9978,13 @@ impl RolloutWorld {
             {
                 effect.active = false;
                 effect.registered = false;
-                self.player_time_scale = Fix::ONE;
-                self.time_stop_protected = [false; MAX_PLAYERS];
+                // TimeStop.End is a no-op after GameSessionHandler has ended
+                // the round. Preserve the frozen scale and protection bits
+                // that its final UpdateSim wrote before destroying itself.
+                if !self.terminal {
+                    self.player_time_scale = Fix::ONE;
+                    self.time_stop_protected = [false; MAX_PLAYERS];
+                }
             } else {
                 let team = self.players[effect.caster].team;
                 for index in 0..self.players.len() {
@@ -32753,6 +32758,28 @@ mod tests {
             world.players[0].base.position,
             start + data::get().time_stop.exit_offset * Fix::from_int(2)
         );
+    }
+
+    #[test]
+    fn expired_time_stop_does_not_teardown_after_game_end() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.terminal = true;
+        world.player_time_scale = Fix::ZERO;
+        world.time_stop_protected[0] = true;
+        world.time_stop_effects.push(TimeStopEffect {
+            active: true,
+            registered: true,
+            seconds_elapsed: data::get().time_stop.duration_f32
+                + data::get().time_stop.exit_seconds_f32,
+            ..TimeStopEffect::default()
+        });
+
+        world.time_stop_effects_tick(data::get());
+
+        assert!(!world.time_stop_effects[0].active);
+        assert_eq!(world.player_time_scale, Fix::ZERO);
+        assert!(world.time_stop_protected[0]);
     }
 
     #[test]
