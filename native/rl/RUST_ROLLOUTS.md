@@ -416,8 +416,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   lifecycle boundary matches.
   A live Bow Arrow also receives the hole's circle-array force before physics,
   integrates to the exact source pose, and is consumed by the trigger callback
-  while the hole grows. Other projectile and item prefabs still need composed
-  differential scenarios.
+  while the hole grows. The same allocation-free registry pass now handles
+  pickups, every released ThrowItem2 body, Portal shots, guided Missiles,
+  active/duplicated Rocks, attached Spike/Engine/Tesla bodies, positive and
+  negative hole merge ordering, and Grappling Hook attachment/reeling. The
+  three existing scenarios run together in `black_hole_broad_ab.sh`; generic
+  bodies and rope/merge branches are source-ported but not individually
+  differentially isolated.
   Throw executes its separate MachoThrow2 form, animation callbacks, movement,
   eight ground-shrink passes and both release paths. Quick release creates and
   launches its boulder in one pass; a full pickup holds the zero-velocity body

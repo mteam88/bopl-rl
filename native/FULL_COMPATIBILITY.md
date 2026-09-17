@@ -3351,12 +3351,27 @@ Arrow disappears on tick 200, when the radius grows from raw Q32 `5425903114`
 to `6444168753`. The implementation reuses the existing Arrow vector and adds
 no contact allocation.
 
-Other projectile/item force and consumption paths remain to be exercised as
-their catalog abilities are composed with Black Hole, so coverage is marked
-partial. `time_stop_black_hole_ab.c` separately covers an already released
-hole through all 690 stopped passes and restored growth. Hole and contact state
-reuse capacity-retained vectors and fixed player arrays; the tick path adds no
-allocation.
+The completed source pass walks every represented DetPhysics body without
+allocating: AbilitySpawner pickups, all released ThrowItem2 payloads, Portal
+shots, guided Missiles, active and duplicated Rocks, and Spike/Engine/Tesla
+composite children receive the source inverse-mass force before integration.
+The generic callback path consumes every positive-mass circle or box, retains
+the one-pass `DestroyFix` observation, grows from the live inverse mass and
+rebuilds a consumed attachment's composite body. Player circle forms preserve
+the shipped distinction: only Rock has a movable positive-mass body, while
+box forms receive the separate `PlayerPhysics`/`PlayerBody` force. Equal-mass
+holes still choose the later sorting order; unequal merges now also cover an
+older positive hole consuming a newer negative hole. Grappling Hook can attach
+to a hole, follows its animated scale, reels at the authored early/late cadence
+and detaches when the hole becomes nonpositive or is destroyed.
+
+`black_hole_broad_ab.sh` gates the 500-tick form/wall/player scenario, the
+205-tick Arrow scenario and the 1,540-tick Time Stop scenario together. All
+2,245 ticks pass optimized Q32 against NativeAOT. The newly translated generic
+body, unequal/negative merge and rope branches are visible through the public
+entity/rope rows but do not each have an isolated differential. Hole and
+contact state reuse capacity-retained vectors and fixed player arrays; the tick
+path adds no allocation.
 
 ### Executable Throw form and Macho boulders (2026-09-15)
 

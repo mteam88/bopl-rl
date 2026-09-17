@@ -9850,7 +9850,84 @@ impl RolloutWorld {
         hole.time_since_growth = Fix::ZERO;
     }
 
+    #[inline]
+    fn black_hole_force(
+        hole_position: Vec2,
+        body_position: Vec2,
+        hole_radius: Fix,
+        hole_mass: Fix,
+        inverse_mass: Fix,
+        data: &data::RolloutData,
+    ) -> Option<Vec2> {
+        if inverse_mass == Fix::ZERO {
+            return None;
+        }
+        let vector = hole_position - body_position;
+        let squared = vector.length_squared();
+        if squared == Fix::ZERO {
+            return None;
+        }
+        let distance = squared.sqrt().expect("Black Hole distance");
+        if distance >= hole_radius * data.black_hole.influence_radius_multiplier {
+            return None;
+        }
+        let cube = distance * distance * distance;
+        if cube == Fix::ZERO {
+            return None;
+        }
+        let magnitude = data.black_hole.gravity * (Fix::ONE / inverse_mass) * hole_mass;
+        Some(vector * magnitude / cube)
+    }
+
     fn black_holes_tick(&mut self, data: &data::RolloutData, dt: Fix) {
+        // DestroyFix casualties remain visible for their callback frame and
+        // leave DetPhysics at the start of the following simulation pass.
+        for entity in self
+            .black_holes
+            .iter()
+            .filter(|hole| !hole.active)
+            .filter_map(|hole| hole.entity)
+            .chain(
+                self.duplicated_rocks
+                    .iter()
+                    .filter(|rock| !rock.active)
+                    .filter_map(|rock| rock.entity),
+            )
+            .chain(
+                self.revival_marker_pool
+                    .iter()
+                    .filter(|marker| !marker.active)
+                    .filter_map(|marker| marker.entity),
+            )
+            .chain(
+                self.teleport_marker_pool
+                    .iter()
+                    .filter(|marker| !marker.active)
+                    .filter_map(|marker| marker.entity),
+            )
+            .chain(
+                self.spike_attacks
+                    .iter()
+                    .filter(|spike| !spike.active)
+                    .filter_map(|spike| spike.entity),
+            )
+            .chain(
+                self.engines
+                    .iter()
+                    .filter(|engine| !engine.active)
+                    .filter_map(|engine| engine.entity),
+            )
+            .chain(
+                self.tesla_nodes
+                    .iter()
+                    .filter(|node| !node.active)
+                    .filter_map(|node| node.entity),
+            )
+        {
+            if self.entities[entity].flags & E_DESTROYED != 0 {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for hole_index in 0..self.black_holes.len() {
             if !self.black_holes[hole_index].active
@@ -9879,16 +9956,106 @@ impl RolloutWorld {
             let radius = hole.radius;
             let mass = hole.mass;
 
-            for player in &mut self.players {
+            for player_index in 0..self.players.len() {
+                let player = &self.players[player_index];
                 if !player.base.alive || player.out || player.respawn_ticks > 0 {
                     continue;
                 }
-                let vector = position - player.base.collider.center;
+                let entity = match player.active {
+                    ActiveAbility::None => player.body_entity,
+                    ActiveAbility::Dash => player.dash_entity,
+                    ActiveAbility::Bow => player.bow_entity,
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
+                    | ActiveAbility::Missile => player.throw_entity,
+                    ActiveAbility::Mine => player.mine_entity,
+                    ActiveAbility::Rock => player.rock_entity,
+                    ActiveAbility::Roll => player.roll_entity,
+                    ActiveAbility::Meteor => player.meteor_entity,
+                    ActiveAbility::Push => player.push_entity,
+                    ActiveAbility::Freeze => player.freeze_entity,
+                    ActiveAbility::Blink => player.blink_entity,
+                    ActiveAbility::GrowthRay => player.growth_ray_entity,
+                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                    ActiveAbility::Duplicator => player.duplicator_entity,
+                    ActiveAbility::Magnet => player.magnet_entity,
+                    ActiveAbility::Spike => player.spike_entity,
+                    ActiveAbility::Engine => player.engine_entity,
+                    ActiveAbility::Tesla => player.tesla_entity,
+                    ActiveAbility::TimeStop => player.time_stop_entity,
+                    ActiveAbility::Gust => player.gust_entity,
+                    ActiveAbility::Revival => player.revival_entity,
+                    ActiveAbility::BlackHole => player.black_hole_entity,
+                    ActiveAbility::Throw => player.macho_throw_entity,
+                    ActiveAbility::Drill => player.drill_entity,
+                    ActiveAbility::Beam => player.beam_entity,
+                    ActiveAbility::Platform => player.circle_entity,
+                };
+                if entity == usize::MAX {
+                    continue;
+                }
+                let row = self.entities[entity];
+                // PlayerPhysics updates its live collider centre before the
+                // later BlackHole updater. The observation row is the prior
+                // DetPhysics publication and can lag that body by one pass.
+                let body_position = if row.kind == 1 {
+                    self.players[player_index].base.collider.center
+                } else {
+                    Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
+                };
+                if self.players[player_index].active == ActiveAbility::Rock {
+                    if let Some(force) = Self::black_hole_force(
+                        position,
+                        body_position,
+                        radius,
+                        mass,
+                        self.players[player_index].rock.body.inverse_mass,
+                        data,
+                    ) {
+                        self.players[player_index].rock.body.force += force;
+                    }
+                } else if row.kind == 1 {
+                    // Box-shaped Player/Ability hurtboxes carry an inert
+                    // PhysicsBody. BlackHole additionally calls PlayerPhysics
+                    // or PlayerBody with the opposite of that body's force.
+                    let vector = position - body_position;
+                    let squared = vector.length_squared();
+                    if squared == Fix::ZERO {
+                        continue;
+                    }
+                    let distance = squared.sqrt().expect("Black Hole Player distance");
+                    if distance >= radius * data.black_hole.influence_radius_multiplier {
+                        continue;
+                    }
+                    let cube = distance * distance * distance;
+                    if cube == Fix::ZERO {
+                        continue;
+                    }
+                    let force = vector * (-(data.black_hole.gravity * mass)) / cube;
+                    self.players[player_index].base.external_velocity +=
+                        (-force * data.black_hole.player_force) * Fix::from_int(35);
+                }
+                // Circle-shaped non-Rock forms only receive force on their
+                // negative-mass collider body, which DetPhysics never moves.
+            }
+
+            for clone_index in 0..self.abilityless_clones.len() {
+                let clone = &self.abilityless_clones[clone_index];
+                if !clone.active {
+                    continue;
+                }
+                let Some(_entity) = clone.entity else {
+                    continue;
+                };
+                let vector = position - self.abilityless_clones[clone_index].base.collider.center;
                 let squared = vector.length_squared();
                 if squared == Fix::ZERO {
                     continue;
                 }
-                let distance = squared.sqrt().expect("Black Hole distance");
+                let distance = squared.sqrt().expect("Black Hole clone distance");
                 if distance >= radius * data.black_hole.influence_radius_multiplier {
                     continue;
                 }
@@ -9896,11 +10063,8 @@ impl RolloutWorld {
                 if cube == Fix::ZERO {
                     continue;
                 }
-                // Player/ability hurtboxes have an infinite-mass trigger
-                // PhysicsBody. BlackHole applies its separate PlayerPhysics
-                // force in addition to the inert collider-body force.
                 let force = vector * (-(data.black_hole.gravity * mass)) / cube;
-                player.base.external_velocity +=
+                self.abilityless_clones[clone_index].base.external_velocity +=
                     (-force * data.black_hole.player_force) * Fix::from_int(35);
             }
 
@@ -9932,6 +10096,145 @@ impl RolloutWorld {
                 let mass_force =
                     data.black_hole.gravity * (Fix::ONE / data.arrow.body.inverse_mass) * mass;
                 arrow.force += vector * mass_force / cube;
+            }
+
+            // Remaining registered circle bodies, in source registry groups.
+            for pickup_index in 0..self.ability_pickups.len() {
+                let pickup = self.ability_pickups[pickup_index];
+                if !pickup.active || self.blink_object_hidden(pickup.entity) {
+                    continue;
+                }
+                let center = pickup.position + data.pickup.offset * pickup.scale;
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    center,
+                    radius,
+                    mass,
+                    pickup.body.inverse_mass,
+                    data,
+                ) {
+                    self.ability_pickups[pickup_index].body.force += force;
+                }
+            }
+            for item_index in 0..self.thrown_items.len() {
+                let item = self.thrown_items[item_index];
+                if !item.active || item.entity.is_none() || self.blink_object_hidden(item.entity) {
+                    continue;
+                }
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    item.position,
+                    radius,
+                    mass,
+                    item.body.inverse_mass,
+                    data,
+                ) {
+                    self.thrown_items[item_index].body.force += force;
+                }
+            }
+            for shot_index in 0..self.portal_shots.len() {
+                let shot = self.portal_shots[shot_index];
+                if !shot.active || !shot.registered || self.blink_object_hidden(shot.entity) {
+                    continue;
+                }
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    shot.position,
+                    radius,
+                    mass,
+                    shot.body.inverse_mass,
+                    data,
+                ) {
+                    self.portal_shots[shot_index].body.force += force;
+                }
+            }
+            for rock_index in 0..self.duplicated_rocks.len() {
+                let rock = self.duplicated_rocks[rock_index];
+                if !rock.active || self.blink_object_hidden(rock.entity) {
+                    continue;
+                }
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    rock.position,
+                    radius,
+                    mass,
+                    rock.body.inverse_mass,
+                    data,
+                ) {
+                    self.duplicated_rocks[rock_index].body.force += force;
+                }
+            }
+
+            // Guided Missile is the only independent positive-mass box body.
+            for missile_index in 0..self.guided_missiles.len() {
+                let missile = self.guided_missiles[missile_index];
+                if !missile.active
+                    || !missile.registered
+                    || self.blink_object_hidden(missile.entity)
+                {
+                    continue;
+                }
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    missile.position,
+                    radius,
+                    mass,
+                    missile.body.inverse_mass,
+                    data,
+                ) {
+                    self.guided_missiles[missile_index].body.force += force;
+                }
+            }
+
+            // Composite children retain their own collider centres, but the
+            // DetPhysics entry points at the parent's combined PhysicsBody.
+            for spike in &self.spike_attacks {
+                if !spike.active || spike.platform_index >= self.platform_dynamics.len() {
+                    continue;
+                }
+                let parent = &mut self.platform_dynamics[spike.platform_index].body;
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    spike.collider_center,
+                    radius,
+                    mass,
+                    parent.inverse_mass,
+                    data,
+                ) {
+                    parent.force += force;
+                }
+            }
+            for engine in &self.engines {
+                if !engine.active || engine.platform_index >= self.platform_dynamics.len() {
+                    continue;
+                }
+                let parent = &mut self.platform_dynamics[engine.platform_index].body;
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    engine.collider_center,
+                    radius,
+                    mass,
+                    parent.inverse_mass,
+                    data,
+                ) {
+                    parent.force += force;
+                }
+            }
+            for node in &self.tesla_nodes {
+                if !node.active || node.platform_index >= self.platform_dynamics.len() {
+                    continue;
+                }
+                let parent = &mut self.platform_dynamics[node.platform_index].body;
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    node.collider_center,
+                    radius,
+                    mass,
+                    parent.inverse_mass,
+                    data,
+                ) {
+                    parent.force += force;
+                }
             }
 
             let controlled_ground = self.players.iter().find_map(|player| {
@@ -10083,11 +10386,261 @@ impl RolloutWorld {
             }
         }
 
+        // The remaining positive-mass circles and boxes take the generic
+        // BlackHole.OnCollide path: grow from the collider's live inverse
+        // mass, then DestroyFix the whole object. Shape rows are the collision
+        // snapshot, so this also preserves scale and offsets without another
+        // source-specific approximation.
+        for hole_index in 0..self.black_holes.len() {
+            let hole = self.black_holes[hole_index];
+            if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
+                continue;
+            }
+            let query = Circle {
+                center: hole.position,
+                radius: hole.radius,
+            };
+
+            for pickup_index in 0..self.ability_pickups.len() {
+                let pickup = self.ability_pickups[pickup_index];
+                let Some(entity) = pickup.entity else {
+                    continue;
+                };
+                if !pickup.active
+                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
+                        != (E_ACTIVE | E_ENABLED)
+                    || pickup.body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    pickup.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.ability_pickups[pickup_index].active = false;
+                self.entities[entity].flags = E_DESTROYED;
+            }
+
+            for item_index in 0..self.thrown_items.len() {
+                let item = self.thrown_items[item_index];
+                let Some(entity) = item.entity else {
+                    continue;
+                };
+                if !item.active
+                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
+                        != (E_ACTIVE | E_ENABLED)
+                    || item.body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    item.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.remove_thrown_item(item_index, true);
+            }
+
+            for shot_index in 0..self.portal_shots.len() {
+                let shot = self.portal_shots[shot_index];
+                let Some(entity) = shot.entity else {
+                    continue;
+                };
+                if !shot.active
+                    || !shot.registered
+                    || shot.body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    shot.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.portal_shots[shot_index].active = false;
+                self.portal_shots[shot_index].registered = false;
+                self.portal_shots[shot_index].remove_next_tick = true;
+                self.entities[entity].flags = E_DESTROYED;
+            }
+
+            for rock_index in 0..self.duplicated_rocks.len() {
+                let rock = self.duplicated_rocks[rock_index];
+                let Some(entity) = rock.entity else {
+                    continue;
+                };
+                if !rock.active
+                    || rock.body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    rock.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.duplicated_rocks[rock_index].active = false;
+                self.entities[entity].flags = E_DESTROYED;
+            }
+
+            for missile_index in 0..self.guided_missiles.len() {
+                let missile = self.guided_missiles[missile_index];
+                let Some(entity) = missile.entity else {
+                    continue;
+                };
+                if !missile.active
+                    || !missile.registered
+                    || missile.body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    missile.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.destroy_guided_missile(missile_index, true);
+            }
+
+            for marker_index in 0..self.revival_marker_pool.len() {
+                let marker = self.revival_marker_pool[marker_index];
+                let Some(entity) = marker.entity else {
+                    continue;
+                };
+                if !marker.active
+                    || !marker.registered
+                    || data.revival.marker_body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    data.revival.marker_body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.revival_marker_pool[marker_index].active = false;
+                self.revival_marker_pool[marker_index].registered = false;
+                self.entities[entity].flags = E_DESTROYED;
+            }
+            for marker_index in 0..self.teleport_marker_pool.len() {
+                let marker = self.teleport_marker_pool[marker_index];
+                let Some(entity) = marker.entity else {
+                    continue;
+                };
+                if !marker.active
+                    || !marker.registered
+                    || data.teleport.marker_body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    data.teleport.marker_body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.teleport_marker_pool[marker_index].active = false;
+                self.teleport_marker_pool[marker_index].registered = false;
+                self.entities[entity].flags = E_DESTROYED;
+            }
+
+            for spike_index in 0..self.spike_attacks.len() {
+                let spike = self.spike_attacks[spike_index];
+                let Some(entity) = spike.entity else {
+                    continue;
+                };
+                if !spike.active
+                    || spike.platform_index >= self.platform_dynamics.len()
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                let inverse_mass = self.platform_dynamics[spike.platform_index]
+                    .body
+                    .inverse_mass;
+                if inverse_mass <= Fix::ZERO {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.remove_spike(spike_index);
+                self.entities[entity].flags = E_DESTROYED;
+            }
+            for engine_index in 0..self.engines.len() {
+                let engine = self.engines[engine_index];
+                let Some(entity) = engine.entity else {
+                    continue;
+                };
+                if !engine.active
+                    || engine.platform_index >= self.platform_dynamics.len()
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                let inverse_mass = self.platform_dynamics[engine.platform_index]
+                    .body
+                    .inverse_mass;
+                if inverse_mass <= Fix::ZERO {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.remove_engine(engine_index);
+                self.entities[entity].flags = E_DESTROYED;
+            }
+            for node_index in 0..self.tesla_nodes.len() {
+                let node = self.tesla_nodes[node_index];
+                let Some(entity) = node.entity else {
+                    continue;
+                };
+                if !node.active
+                    || node.platform_index >= self.platform_dynamics.len()
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                let inverse_mass = self.platform_dynamics[node.platform_index]
+                    .body
+                    .inverse_mass;
+                if inverse_mass <= Fix::ZERO {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.remove_tesla_node(node_index);
+                self.entities[entity].flags = E_DESTROYED;
+            }
+        }
+
         // Equal holes use SpriteRenderer.sortingOrder as a deterministic
         // tiebreak: the later-created one consumes the older one.
         for newer in 0..self.black_holes.len() {
             if !self.black_holes[newer].active
-                || self.black_holes[newer].mass < Fix::ZERO
                 || self.blink_object_hidden(self.black_holes[newer].entity)
             {
                 continue;
@@ -10114,7 +10667,13 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let consumer = if a.mass >= b.mass { newer } else { older };
+                let consumer = if a.mass >= Fix::ZERO && a.mass >= b.mass {
+                    newer
+                } else if b.mass >= Fix::ZERO && b.mass > a.mass {
+                    older
+                } else {
+                    continue;
+                };
                 let consumed = if consumer == newer { older } else { newer };
                 Self::black_hole_grow(
                     &mut self.black_holes[consumer],
@@ -10124,7 +10683,7 @@ impl RolloutWorld {
                 );
                 self.black_holes[consumed].active = false;
                 if let Some(entity) = self.black_holes[consumed].entity {
-                    self.entities[entity].flags = E_REMOVED;
+                    self.entities[entity].flags = E_DESTROYED;
                 }
                 if consumed == newer {
                     break;

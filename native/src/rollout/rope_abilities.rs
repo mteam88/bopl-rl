@@ -56,6 +56,9 @@ pub(crate) struct RolloutRope {
     pub time_air_end: Fix,
     pub platform: Option<usize>,
     pub platform_local: Fix,
+    pub black_hole: Option<usize>,
+    pub black_hole_local: Vec2,
+    pub black_hole_reel_frames: usize,
     pub segment_ids: [u32; MAX_SEGMENTS - 1],
     pub hook_active: bool,
     pub hook_remove_next: bool,
@@ -94,6 +97,9 @@ fn empty_rope() -> RolloutRope {
         time_air_end: Fix::ZERO,
         platform: None,
         platform_local: Fix::ZERO,
+        black_hole: None,
+        black_hole_local: Vec2::ZERO,
+        black_hole_reel_frames: 0,
         segment_ids: [0; MAX_SEGMENTS - 1],
         hook_active: false,
         hook_remove_next: false,
@@ -143,6 +149,9 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.number = 0;
         rope.segment_ids = [0; MAX_SEGMENTS - 1];
         rope.platform = None;
+        rope.black_hole = None;
+        rope.black_hole_local = Vec2::ZERO;
+        rope.black_hole_reel_frames = 0;
         rope.hook_active = false;
         rope.hook_remove_next = false;
         rope.hook_entity = None;
@@ -183,6 +192,9 @@ impl RolloutWorld {
         };
         rope.platform = platform;
         rope.platform_local = platform_local;
+        rope.black_hole = None;
+        rope.black_hole_local = Vec2::ZERO;
+        rope.black_hole_reel_frames = 0;
         rope.segment_ids = segment_ids;
         let body = &mut rope.physics;
         body.count = SEGMENTS;
@@ -772,6 +784,45 @@ impl RolloutWorld {
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
             }
+            if let Some(hole_index) = self.ropes[index].black_hole {
+                if hole_index >= self.black_holes.len()
+                    || !self.black_holes[hole_index].active
+                    || self.blink_object_hidden(self.black_holes[hole_index].entity)
+                    || self.black_holes[hole_index].mass <= Fix::ZERO
+                {
+                    self.ropes[index].physics.set_mass(
+                        data::get().ropes.non_platform_mass,
+                        true,
+                        Fix::ONE,
+                    );
+                    self.ropes[index].time_air_start = Fix::from_int(100);
+                    self.ropes[index].physics.force_start = Vec2::ZERO;
+                    self.ropes[index].physics.detach(true);
+                    self.ropes[index].black_hole = None;
+                    continue;
+                }
+                let hole = self.black_holes[hole_index];
+                let scale =
+                    hole.radius / (data::get().black_hole.start_radius * Fix::from_f32(0.01));
+                let anchor = hole.position + self.ropes[index].black_hole_local * scale;
+                if self.ropes[index].physics.time_since_hook_arrived > Fix::ZERO
+                    && !self.ropes[index].physics.detached
+                    && !stopped
+                {
+                    self.ropes[index].black_hole_reel_frames += 1;
+                    let frame = self.ropes[index].black_hole_reel_frames;
+                    if ((frame > 60 && frame.is_multiple_of(3))
+                        || (frame <= 60 && frame.is_multiple_of(8))
+                        || self.ropes[index].physics.count < 8)
+                        && !self.ropes[index].physics.reel(3, false)
+                    {
+                        let far = self.ropes[index].physics.count - 1;
+                        self.ropes[index].physics.segment[far] = hole.position;
+                    }
+                }
+                self.ropes[index].physics.segment[0] = anchor;
+                continue;
+            }
             let Some(platform) = self.ropes[index].platform else {
                 continue;
             };
@@ -907,6 +958,49 @@ impl RolloutWorld {
                 }
                 continue;
             }
+            let mut attached_hole = None;
+            for hole_index in 0..self.black_holes.len() {
+                let hole = self.black_holes[hole_index];
+                if !hole.active
+                    || self.blink_object_hidden(hole.entity)
+                    || crate::physics::contact::circle_circle(
+                        circle,
+                        Circle {
+                            center: hole.position,
+                            radius: hole.radius,
+                        },
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                attached_hole = Some(hole_index);
+                break;
+            }
+            if let Some(hole_index) = attached_hole {
+                let hole = self.black_holes[hole_index];
+                let scale =
+                    hole.radius / (data::get().black_hole.start_radius * Fix::from_f32(0.01));
+                let rope = &mut self.ropes[rope_index];
+                rope.physics.mass_start = Fix::ONE;
+                rope.physics.force_start = Vec2::ZERO;
+                rope.physics.time_since_hook_arrived = Fix::ZERO;
+                rope.physics
+                    .set_mass(data::get().ropes.non_platform_mass, true, scale);
+                rope.time_air_start = Fix::ONE;
+                rope.platform = None;
+                rope.black_hole = Some(hole_index);
+                rope.black_hole_local = (position - hole.position) / scale;
+                rope.black_hole_reel_frames = 0;
+                rope.reel_in = true;
+                rope.hook_active = false;
+                rope.hook_remove_next = true;
+                if let Some(entity) = rope.hook_entity {
+                    self.entities[entity].flags =
+                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                }
+                continue;
+            }
             let owner = self.ropes[rope_index].owner;
             let end_player = self.ropes[rope_index].hook_end_player;
             let mut victim = None;
@@ -1030,6 +1124,16 @@ impl RolloutWorld {
                 rope.physics.segment[0] = self.platforms[platform]
                     .surface
                     .position(rope.platform_local, Fix::ZERO);
+            }
+            if rope.born_tick != self.tick
+                && let Some(hole_index) = rope.black_hole
+                && hole_index < self.black_holes.len()
+                && self.black_holes[hole_index].active
+            {
+                let hole = self.black_holes[hole_index];
+                let scale =
+                    hole.radius / (data::get().black_hole.start_radius * Fix::from_f32(0.01));
+                rope.physics.segment[0] = hole.position + rope.black_hole_local * scale;
             }
             if rope.hook_active {
                 rope.physics.segment[0] = rope.hook_position;
