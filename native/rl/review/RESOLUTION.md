@@ -96,6 +96,10 @@ fixed entry is committed separately with its finding id in the subject.
   stored separately as `root_body`. Applying Magnet's off-centre impulse to
   `.body` therefore matches `DPhysicsRoundedRect.AddForceAtPosition`, which
   redirects through `compositeParent.combinedBody` in C#.
+- **S19 — resolved by confirmed finding #37.** NativeAOT preserves the
+  destroyed Revival component wrapper in `Player.RespawnPositions`, and its
+  retained `FixTransform` still supplies `GetPos()`. Rust now retains and
+  consumes the same stale marker position instead of eliminating the player.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
