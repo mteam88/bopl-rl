@@ -4211,6 +4211,21 @@ impl RolloutWorld {
             self.players[index].reported_tick = self.tick;
             self.players[index].base.step(*action, terrain!(self));
         }
+        // Spawned slimes already have live Player-layer hurtboxes once the
+        // animation enables simulation. DetPhysics dispatches those overlap
+        // callbacks during the level warmup exactly as it does after the
+        // episode starts, so clustered authored spawns must accumulate the
+        // same one-sided external pushes before their next movement pass.
+        for a in 0..self.players.len() {
+            for b in a + 1..self.players.len() {
+                let a_pos = self.players[a].base.position;
+                let b_pos = self.players[b].base.position;
+                if self.players[a].base.alive && self.players[b].base.alive {
+                    self.players[a].base.push_from(b_pos, true);
+                    self.players[b].base.push_from(a_pos, false);
+                }
+            }
+        }
         // RewindRecorder.UpdateSim is after PlayerBody.UpdateSim but before
         // PlayerPhysics.LateUpdateSim snaps grounded riders to their surface.
         self.record_warmup_rewind(warmup_tick);
