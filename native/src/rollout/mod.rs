@@ -16067,6 +16067,30 @@ impl RolloutWorld {
                     wave.black_hole_count += 1;
                 }
             }
+            // Non-attachable LethalTerrain bodies are activation-only hits:
+            // Shockwave applies the BoplBody fallback force immediately and
+            // does not add them to its persistent HashSet.
+            for rock in &mut self.duplicated_rocks {
+                if !rock.active {
+                    continue;
+                }
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: rock.position,
+                        radius: data.rock.radius * rock.scale,
+                    },
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                let delta = rock.position - wave.position;
+                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+                let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
+                let force = scale_force * data.gust.default_force / distance;
+                rock.body.force += delta * force * Fix::from_int(9000);
+            }
             // Player-layer colliders are processed during activation and are
             // deliberately excluded from the persistent target set.
             for player_index in 0..self.players.len() {
@@ -32904,6 +32928,30 @@ mod tests {
 
         assert_eq!(world.gust_waves[0].smoke_count, 1);
         assert!(world.smoke_clouds[0].body.velocity.x > Fix::ZERO);
+    }
+
+    #[test]
+    fn gust_applies_activation_force_to_duplicated_lethal_rock() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
+        world.duplicated_rocks.push(DuplicatedRock {
+            active: true,
+            position: center + Vec2::RIGHT,
+            body: data::get().rock.body,
+            scale: Fix::ONE,
+            ..DuplicatedRock::default()
+        });
+        world.gust_waves[0] = GustWave {
+            active: true,
+            born_tick: world.tick.saturating_sub(1),
+            position: center,
+            ..GustWave::default()
+        };
+
+        world.gust_waves_init(data::get());
+
+        assert!(world.duplicated_rocks[0].body.force.x > Fix::ZERO);
     }
 
     #[test]
