@@ -50,6 +50,12 @@ fixed entry is committed separately with its finding id in the subject.
   `0.6..5` for SimpleSparkNode, `0.15..1000000` for BlackHole2, and the
   default `0.1..5` elsewhere. Spawned ResizablePlatform uses its authored
   maximum `6` instead of the map-platform default `5`.
+- **S10 — not a divergence in the 39-ability lifecycle.** The only reachable
+  invulnerability bit while a rollout-visible target collider is active is
+  Poke Ball's mask-16 capture, which Rust checks. Spawn mask 4 is confined to
+  the hidden replacement/spawn phase, and Machoman's mask-2 block belongs to
+  an unported ability (distinct from the ported Macho Throw), so neither can
+  be struck by Freeze through this rollout ABI.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
