@@ -731,6 +731,17 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   loss/exit cleanup are allocation-free. `magnet_broad_ab.sh` runs the 12 exact
   Magnet compositions above as one gate. Exact episodes for those newly ported
   targets and generic weapon/spell rigid bodies remain open.
+  Poke Ball is source-ported wholesale through its shared grounded/airborne
+  ThrowItem2 form, release, owner/spin initialization, contacts, strict fizzle,
+  scaled nearest-victim query, capture pin, pop/ejection and victim-loss paths.
+  Separate retained-pin and mask-16 states reproduce queued multi-captor
+  callbacks without reference-counting Unity's shared invulnerability bit.
+  Item mass observes the preceding scale pass, its circle retains incremental
+  fixed-point radius updates, and the proximity query applies the source's
+  second Scale multiplication. `poke_ball_broad_ab.sh` gates 4,668 Q32 ticks
+  across ordinary and duplicated capture, Growth/Shrink, Arrow, Gust, Magnet
+  and Time Stop. Multi-captor expiry, Portal/Black Hole and acquired-pickup
+  compositions are translated but not individually measured.
   Revival's public death
   path currently supports one live marker; multiple simultaneous markers
   require the general multi-clone rollout representation. Teleport's player

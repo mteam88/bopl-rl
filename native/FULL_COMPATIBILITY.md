@@ -3303,20 +3303,31 @@ capture duration is 1.92 seconds, not the class initializer's 2.4 seconds.
 Release preserves the previous invisibility clocks for the callback frame,
 then ejects at the ball position plus 0.4 units with horizontal velocity divided
 by 4.5, vertical velocity 8.5, and orientation derived from the pre-ragdoll
-ejection vector. The existing entity pool owns all state; update and contact
-paths allocate nothing per tick.
+ejection vector. Multiple manifolds may capture one slime in the same callback
+batch. Each ball retains its own victim, but mask 16 is a shared bit rather than
+a reference count: one release clears invulnerability and visibility while a
+remaining ball can still pin the body. Rust preserves those separate states in
+the fixed player/item pools.
 
-`poke_ball_ability_ab.c` compares the complete 500-tick no-hit lifecycle exactly,
-including form, item ownership, ballistic contacts and fizzle removal.
-`poke_ball_capture_ab.c` drives an opponent across a moving-platform contact,
-then observes capture on tick 116 and release on tick 232 in both NativeAOT and
-Rust. Flags, invisibility clocks, ragdoll state, ownership, timers and entity
-topology are exact. The scenario inherits the rollout's known player/platform
-contact drift after traversal; spatial values remain within 750,000,000 raw
-Q32 units (0.175 world units), while the selected victim and every capture
-boundary remain unchanged. Shared `Item.Duplicate` and isolated boundary/time
-stop interactions still need dedicated differential scenarios, so coverage
-remains partial.
+Live scale now follows all three source phases. The older item `BoplBody` adopts
+the preceding pass's scale for inverse mass and inertia before the later
+`ScaleChanger`; `DPhysicsCircle.Scale` updates its stored radius through
+`(1 / oldScale) * newScale`, preserving the fixed-point history; and PokeBall's
+proximity query intentionally multiplies that already-scaled collider radius by
+`Scale` a second time. These paths add no allocation or extra hot-loop scan.
+
+`poke_ball_broad_ab.sh` gates eight programs and 4,668 Q32 NativeAOT/Rust
+ticks. It includes the exact 500-tick no-hit lifecycle; the 500-tick moving
+platform capture with matching tick-116 capture and tick-232 release; duplicated
+callback capture by two balls; exact Growth and Shrink of the released item;
+dynamic Bow Arrow contact; the complete Gust curve; Magnet pickup/pin/fire; and
+a live capture held through all 690 Time Stop passes. The scale programs compare
+mass, radius and lifecycle exactly while allowing at most 64 raw Q32 units in
+the already documented ThrowItem2/GunTransform pose reconstruction. The
+moving-platform capture retains its established 0.175-world-unit inherited
+contact bound without changing victim selection or any lifecycle boundary.
+Multi-captor expiry/ejection, Portal/Black Hole and acquired-pickup compositions
+are source-ported but have not each been isolated in a public differential.
 
 ### Live AbilitySpawner pickup flight (2026-09-15)
 

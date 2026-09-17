@@ -408,6 +408,9 @@ pub struct ThrownItem {
     /// reflected in mass on the following updater pass, as in the source.
     pub scale: Fix,
     pub body_scale: Fix,
+    /// DPhysicsCircle's live radius. Scale mutates this incrementally through
+    /// `(1 / old_scale) * new_scale`, retaining its fixed-point history.
+    pub collider_radius: Fix,
     pub fuse: Fix,
     pub hurt_owner_delay: Fix,
     pub detonates_on_owner: bool,
@@ -873,13 +876,8 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
 }
 
 #[inline]
-fn thrown_item_radius(data: &data::RolloutData, item: ThrownItem) -> Fix {
-    let authored = if item.ability == ABILITY_MINE {
-        data.mine.item_radius
-    } else {
-        throw_config(data, item.ability).item_radius
-    };
-    authored * item.scale
+fn thrown_item_radius(_data: &data::RolloutData, item: ThrownItem) -> Fix {
+    item.collider_radius
 }
 
 const REWIND_CAPACITY: usize = 188;
@@ -1872,8 +1870,14 @@ pub struct PlayerSlot {
     /// EnterFall after a grounded ragdoll timeout has no new landing callback,
     /// so its visible state stays Fall until the body detaches.
     pub ragdoll_grounded_fall: bool,
-    /// Index of the Poke Ball that owns this pinned victim.
+    /// One live Poke Ball pinning this victim. More than one physics callback
+    /// can capture the same slime from a prebuilt manifold set; this points to
+    /// a remaining captor when another one pops.
     pub captured_by_ball: Option<usize>,
+    /// PlayerCollision's mask-16 bit. It is deliberately not reference
+    /// counted: every Poke Ball release clears the shared bit even when a
+    /// second ball still retains and pins the same victim.
+    pub poke_invulnerable: bool,
     /// PokeBall mutates a victim after RlObservation has sampled the slime's
     /// controller fields. Preserve that pre-callback row for the current pass.
     pub late_obs_tick: u32,
@@ -3233,6 +3237,7 @@ impl RolloutWorld {
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
                 captured_by_ball: None,
+                poke_invulnerable: false,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
                 late_obs_velocity: Vec2::ZERO,
@@ -4376,6 +4381,11 @@ impl RolloutWorld {
         self.engines_tick(data, updater_dt);
         self.tesla_nodes_tick(data, updater_dt);
         self.frozen_solids_tick(updater_dt);
+        // Spawned item BoplBody updaters precede ScaleChanger instances in
+        // the global hierarchy. They therefore adopt the preceding pass's
+        // collider scale before the later ray effect writes its next value.
+        self.thrown_item_scale_mass_tick();
+        self.poke_balls_tick(data, updater_dt);
         self.scale_changers_tick(data);
         self.duplicate_platform_effects_tick(data, updater_dt);
         self.meteor_smears_tick(data);
@@ -14827,6 +14837,7 @@ impl RolloutWorld {
             slot.freeze_form_exit_tick = u32::MAX;
             slot.ragdoll_grounded_fall = false;
             slot.captured_by_ball = None;
+            slot.poke_invulnerable = false;
             slot.late_obs_tick = u32::MAX;
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
@@ -15271,6 +15282,7 @@ impl RolloutWorld {
             slot.freeze_form_exit_tick = u32::MAX;
             slot.ragdoll_grounded_fall = false;
             slot.captured_by_ball = None;
+            slot.poke_invulnerable = false;
             slot.late_obs_tick = u32::MAX;
             slot.missile = MissileFormState::default();
             slot.throw_item = ThrowItemState::default();
@@ -16599,6 +16611,7 @@ impl RolloutWorld {
             },
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
+            collider_radius: data.mine.item_radius * self.players[index].player_scale,
             fuse: Fix::MAX,
             hurt_owner_delay: Fix::ZERO,
             detonates_on_owner: false,
@@ -16842,6 +16855,7 @@ impl RolloutWorld {
             },
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
+            collider_radius: config.item_radius * self.players[index].player_scale,
             fuse: match ability {
                 ABILITY_GRENADE => data.grenade.detonation_time,
                 ABILITY_SMOKE => data.smoke.detonation_time,
@@ -21223,7 +21237,7 @@ impl RolloutWorld {
             // rollout ABI is Poke Ball capture. Spawn shielding and Machoman's
             // block do not expose an actionable ordinary slime/form collider
             // in the currently ported public lifecycle.
-            if self.players[victim].captured_by_ball.is_some() {
+            if self.players[victim].poke_invulnerable {
                 return;
             }
             let deferred_bow_exit = if self.players[victim].active != ActiveAbility::None
@@ -21553,10 +21567,13 @@ impl RolloutWorld {
                 } else {
                     ray.multiplier
                 };
+                let previous = item.scale;
                 item.scale = (item.scale + ray.scale_curve.evaluate(time) * multiplier)
                     .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+                let ratio = (Fix::ONE / previous) * item.scale;
+                item.collider_radius *= ratio;
                 if let Some(entity) = item.entity {
-                    self.entities[entity].radius = thrown_item_radius(data, *item).raw();
+                    self.entities[entity].radius = item.collider_radius.raw();
                 }
                 self.scale_changers[index].time = time;
                 continue;
@@ -23368,6 +23385,7 @@ impl RolloutWorld {
             slot.late_obs_rotation = slot.base.rotation;
             slot.late_obs_state = slot.obs_state;
             slot.captured_by_ball = Some(item_index);
+            slot.poke_invulnerable = true;
             slot.invisible = true;
             slot.base.force_unground(&self.platforms);
             slot.base.position = capture_position;
@@ -23453,28 +23471,7 @@ impl RolloutWorld {
         None
     }
 
-    fn thrown_items_integrate(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        physics_dt: Fix,
-    ) {
-        // BoplBody.UpdateSim decrements the Hold frame count after player
-        // prefabs have had a chance to refresh it. A paused/destroyed Magnet
-        // therefore releases its item without retaining a stale owner.
-        for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
-            }
-            let item = &mut self.thrown_items[item_index];
-            if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
-                item.magnet_hold_ticks -= 1;
-                if item.magnet_hold_ticks == 0 {
-                    item.magnet_holder = None;
-                    item.magnet_hold_ticks = -1;
-                }
-            }
-        }
+    fn poke_balls_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         // PokeBall.UpdateSim starts on the first pass after ThrowItem2 releases
         // the manually initialized circle. Its victim search and capture state
         // are fixed-size scans over the player slots.
@@ -23542,7 +23539,11 @@ impl RolloutWorld {
             }
 
             let position = self.thrown_items[item_index].position;
-            let radius = data.poke_ball.item_radius;
+            let item_scale = self.thrown_items[item_index].scale;
+            let collider_radius = self.thrown_items[item_index].collider_radius;
+            // PokeBall multiplies its already scaled DPhysicsCircle radius by
+            // Scale once more when constructing the proximity query.
+            let radius = collider_radius * item_scale;
             let owner = self.thrown_items[item_index].owner;
             let mut nearest = Fix::MAX;
             let mut victim = None;
@@ -23552,7 +23553,7 @@ impl RolloutWorld {
                     || !self.playable_slot(player)
                     || player.active != ActiveAbility::None
                     || player.base.dash.active
-                    || player.captured_by_ball.is_some()
+                    || player.poke_invulnerable
                 {
                     continue;
                 }
@@ -23569,7 +23570,51 @@ impl RolloutWorld {
                 self.capture_poke_victim(item_index, victim, data, true);
             }
         }
+    }
 
+    fn thrown_item_scale_mass_tick(&mut self) {
+        for item_index in 0..self.thrown_items.len() {
+            if !self.thrown_items[item_index].active
+                || self.blink_object_hidden(self.thrown_items[item_index].entity)
+            {
+                continue;
+            }
+            let item = &mut self.thrown_items[item_index];
+            if item.scale == item.body_scale
+                || item.body.inverse_mass == Fix::ZERO
+                || item.body.inverse_inertia == Fix::ZERO
+            {
+                continue;
+            }
+            let ratio = item.body_scale / item.scale;
+            item.body.inverse_mass *= ratio;
+            item.body.inverse_inertia *= ratio;
+            item.body_scale = item.scale;
+        }
+    }
+
+    fn thrown_items_integrate(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        physics_dt: Fix,
+    ) {
+        // BoplBody.UpdateSim decrements the Hold frame count after player
+        // prefabs have had a chance to refresh it. A paused/destroyed Magnet
+        // therefore releases its item without retaining a stale owner.
+        for item_index in 0..self.thrown_items.len() {
+            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+                continue;
+            }
+            let item = &mut self.thrown_items[item_index];
+            if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
+                item.magnet_hold_ticks -= 1;
+                if item.magnet_hold_ticks == 0 {
+                    item.magnet_holder = None;
+                    item.magnet_hold_ticks = -1;
+                }
+            }
+        }
         // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
         // updater pass after Fire, pins a settled tack before each integration,
         // and performs the armed proximity query without allocating.
@@ -23613,9 +23658,7 @@ impl RolloutWorld {
             let radius = data.tack.item_radius + Fix::from_f32(0.75);
             let mut victim = None;
             for player_index in 0..self.players.len() {
-                if !self.playable(player_index)
-                    || self.players[player_index].captured_by_ball.is_some()
-                {
+                if !self.playable(player_index) || self.players[player_index].poke_invulnerable {
                     continue;
                 }
                 let in_range = (self.players[player_index].base.position - position)
@@ -23704,7 +23747,7 @@ impl RolloutWorld {
                 if player_index == owner
                     || !self.playable(player_index)
                     || self.players[player_index].active != ActiveAbility::None
-                    || self.players[player_index].captured_by_ball.is_some()
+                    || self.players[player_index].poke_invulnerable
                     || item.killed_players & (1 << player_index) != 0
                 {
                     continue;
@@ -23744,7 +23787,7 @@ impl RolloutWorld {
                 if player_index == owner
                     || !self.playable(player_index)
                     || self.players[player_index].active == ActiveAbility::None
-                    || self.players[player_index].captured_by_ball.is_some()
+                    || self.players[player_index].poke_invulnerable
                     || (item.killed_players | victims) & (1 << player_index) != 0
                 {
                     continue;
@@ -23839,18 +23882,6 @@ impl RolloutWorld {
             if !self.thrown_items[item_index].active {
                 continue;
             }
-            {
-                let item = &mut self.thrown_items[item_index];
-                if item.scale != item.body_scale
-                    && item.body.inverse_mass != Fix::ZERO
-                    && item.body.inverse_inertia != Fix::ZERO
-                {
-                    let ratio = item.body_scale / item.scale;
-                    item.body.inverse_mass *= ratio;
-                    item.body.inverse_inertia *= ratio;
-                    item.body_scale = item.scale;
-                }
-            }
             let ability = self.thrown_items[item_index].ability;
             // DestroyIfOutsideSceneBounds precedes Grenade/Item updaters.
             // Grenade, Smoke and Mine instantiate the two-updatable water
@@ -23927,7 +23958,7 @@ impl RolloutWorld {
             row.vy = item.body.velocity.y.raw();
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
-            row.radius = thrown_item_radius(data, *item).raw();
+            row.radius = item.collider_radius.raw();
             row.inverse_mass = item.body.inverse_mass.raw();
         }
     }
@@ -23947,8 +23978,19 @@ impl RolloutWorld {
             return;
         }
         let item = self.thrown_items[item_index];
+        let remaining_captor = self
+            .thrown_items
+            .iter()
+            .enumerate()
+            .find(|(index, other)| {
+                *index != item_index && other.active && other.capture_victim == Some(victim)
+            })
+            .map(|(index, _)| index);
         let slot = &mut self.players[victim];
-        slot.captured_by_ball = None;
+        slot.captured_by_ball = remaining_captor;
+        // PlayerCollision.SetInvulnerable(false, 16) clears the bit rather
+        // than decrementing a captor count.
+        slot.poke_invulnerable = false;
         slot.invisible = false;
         slot.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
         slot.base.velocity = Vec2::new(
@@ -26745,7 +26787,6 @@ impl RolloutWorld {
                 if victim == rock_index
                     || !self.playable(victim)
                     || self.players[victim].active == ActiveAbility::Rock
-                    || self.players[victim].captured_by_ball.is_some()
                 {
                     continue;
                 }
@@ -27477,7 +27518,7 @@ impl RolloutWorld {
         // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
         // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
         // ordinary collision callbacks do not.
-        if self.players[index].captured_by_ball.is_some()
+        if self.players[index].poke_invulnerable
             && !(killer == ENVIRONMENT && cause == CAUSE_ACCIDENT)
         {
             return;
