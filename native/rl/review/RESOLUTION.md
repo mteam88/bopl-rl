@@ -39,6 +39,10 @@ fixed entry is committed separately with its finding id in the subject.
   `PlayerPhysics.Move` path on every charging pass. This decays the inherited
   grounded speed, updates its retained surface-local coordinate, and performs
   the same live-platform/drop checks as C# before release.
+- **#5 — fixed.** Grounded Roll exit now replaces the ordinary slime's
+  grounded speed with the magnitude of the form's total `PlayerBody.Velocity`
+  (self-imposed plus external), matching the `AbilityExitInfo` populated by
+  C# instead of retaining pre-entry motion.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

@@ -8023,6 +8023,9 @@ impl RolloutWorld {
     fn exit_roll(&mut self, index: usize, just_landed: bool, data: &data::RolloutData) {
         let grounded = self.players[index].base.grounded;
         let ground = self.players[index].base.ground;
+        let grounded_speed = (self.players[index].base.velocity
+            + self.players[index].base.external_velocity)
+            .length();
         let mut exit_position = self.players[index].base.position;
         if grounded
             && let Some(platform) =
@@ -8041,6 +8044,9 @@ impl RolloutWorld {
         slot.base.radius = data.player.radius * slot.player_scale;
         slot.base.rotation = Fix::ZERO;
         if grounded {
+            // Roll.ExitAbility publishes |PlayerBody.Velocity|, not the
+            // private Roll travel speed or the pre-entry slime speed.
+            slot.base.grounded_speed = grounded_speed;
             slot.base.position = exit_position;
             if let Some(platform) =
                 ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
@@ -31037,6 +31043,21 @@ mod tests {
         world.roll_move_grounded(0, data::get());
 
         assert_eq!(world.players[0].base.grounded_speed, expected);
+    }
+
+    #[test]
+    fn grounded_roll_exit_uses_body_velocity_magnitude() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        assert!(world.players[0].base.grounded);
+        world.players[0].active = ActiveAbility::Roll;
+        world.players[0].base.velocity = Vec2::new(Fix::from_int(3), Fix::from_int(4));
+        world.players[0].base.external_velocity = Vec2::ZERO;
+        world.players[0].base.grounded_speed = Fix::from_int(99);
+
+        world.exit_roll(0, false, data::get());
+
+        assert_eq!(world.players[0].base.grounded_speed, Fix::from_int(5));
     }
 
     #[test]
