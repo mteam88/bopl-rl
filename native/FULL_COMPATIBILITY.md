@@ -930,24 +930,40 @@ numbers. While the marker exists, every released tick resets the slot timer to
 the exact three-second cooldown. A held second press first increments past that
 strict threshold, then queues the indicator update later in the same pass.
 
-The indicator performs the original two circle queries, de-duplicates the
-marker-side results against the caster-side list, ungrounds matched players,
-zeros their imposed velocity and applies opposite offsets. Each moved object is
-inactive for the strict 0.6-second `TeleportedObjectEffect` interval. Its visual
-has no policy row, but `RandomInsideUnitCircle` consumes four RNG state advances
-on every update, including the removal pass; Rust preserves those advances and
-the stale `Player.Position` publication while the player object is inactive.
-The implementation uses fixed six-player query arrays and allocation-reusing
-marker/entity pools, with no hot-path allocation.
+The indicator performs the original two `CircleCastAll` queries in circle, box,
+rounded-rectangle registry order, retains the source's fixed 100-result limit,
+and de-duplicates the marker-side results against the caster-side list. The
+extracted mask covers players, projectiles, items, tagged boulders, weapons,
+lethal terrain, effectors, smoke, rigid-body affectors and orbs. PlayerPhysics
+victims detach ropes, unground and zero imposed velocity; Rock and Drill take
+the source no-PlayerPhysics path. Arrows, pickups, thrown items, Missiles,
+positive Black Holes, duplicated Rocks, Smoke, Revival markers, Portal shots,
+Beam orbs, Tesla lightning and Macho boulders relocate through their live
+runtime state. Attached Spike/Tesla bodies take the source
+`IPlatformAttachable` exclusion, and ordinary walls remain excluded.
+
+Each moved object is inactive for the strict 0.6-second
+`TeleportedObjectEffect` interval. Its own updater and physics body remain
+disabled during that interval, including abilityless clones and Macho boulders.
+The effect clock and visual RNG freeze under Time Stop. Otherwise
+`RandomInsideUnitCircle` consumes four RNG state advances on every update,
+including the removal pass; Rust preserves those advances and the stale
+`Player.Position` publication while a player object is inactive. Growth and
+Shrink update a persistent indicator's capture radius through its live scale.
+The implementation uses fixed 100-entry query arrays and allocation-reusing
+marker/effect/entity pools, with no hot-path allocation.
 
 `teleport_ability_ab.c` matches all NativeAOT public fields for 300 ticks through
 the stationary caster transfer. `teleport_multi_ab.c` uses three players and
 moves the caster away from a teammate left at the marker; both directions of
 the swap, both inactive effects and reactivation match exactly for 450 ticks.
 That test also exposed the source's sorted-team spawn mapping and alternating
-teammate offsets, now reproduced at reset. Projectile, item and tagged-boulder
-targets are part of Teleport's mask but cannot be certified until their dynamic
-entity types are present in the rollout backend; the player mechanic is exact.
+teammate offsets, now reproduced at reset. `teleport_broad_ab.sh` gates both
+scenarios as one optimized-Q32 ability differential. The player query, opposite
+area swaps and effect lifetime are exact. The newly source-ported nonplayer
+branches are represented by live rollout entities but do not each have an
+isolated public composition; this is a verification-coverage distinction, not
+a known semantic approximation.
 
 ### Dash ray collision with active Rock (2026-09-15)
 

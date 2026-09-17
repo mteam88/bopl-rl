@@ -534,6 +534,7 @@ def main():
     out["prefabs"]["teleport"] = {
         "up_cast_offset": fix(teleport_spell, "upCastOffset"),
         "player_radius": fix(teleport_spell, "radius"),
+        "teleportable_mask": teleport_indicator["teleportableThings.m_Bits"],
         "marker": {
             "layer": teleport_marker["data"].get("layer"),
             "updatable_count": updater_count(teleport_marker),

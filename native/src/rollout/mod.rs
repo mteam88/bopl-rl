@@ -1566,6 +1566,7 @@ pub struct TeleportMarker {
     pub hierarchy_base: u32,
     pub position: Vec2,
     pub velocity: Vec2,
+    pub scale: Fix,
 }
 
 /// A PortalShot rigid body. The projectile is registered immediately by
@@ -1598,6 +1599,18 @@ pub struct BlinkObjectTunnel {
     pub entity_id: u32,
     pub age: Fix,
     pub duration: Fix,
+    pub restore_flags: u32,
+}
+
+/// One `TeleportedObjectEffect` retaining an inactive non-player GameObject.
+/// The entity id distinguishes a reused pool row from the original target.
+#[derive(Clone, Copy, Default)]
+pub struct TeleportObjectEffect {
+    pub active: bool,
+    pub born_tick: u32,
+    pub entity: usize,
+    pub entity_id: u32,
+    pub age: Fix,
     pub restore_flags: u32,
 }
 
@@ -2100,6 +2113,7 @@ pub struct RolloutWorld {
     pub teleport_marker_pool: Vec<TeleportMarker>,
     pub portal_shots: Vec<PortalShotState>,
     pub blink_object_tunnels: Vec<BlinkObjectTunnel>,
+    pub teleport_object_effects: Vec<TeleportObjectEffect>,
     pub portals: Vec<PortalEndpoint>,
     pub beam_orbs: Vec<BeamOrbState>,
     pub beam_pool: Vec<BeamPoolSlot>,
@@ -2233,6 +2247,7 @@ impl RolloutWorld {
             teleport_marker_pool: Vec::with_capacity(64),
             portal_shots: Vec::with_capacity(32),
             blink_object_tunnels: Vec::with_capacity(32),
+            teleport_object_effects: Vec::with_capacity(64),
             portals: Vec::with_capacity(32),
             portal_body_inside: Vec::with_capacity(192),
             portal_body_ids: Vec::with_capacity(192),
@@ -2331,6 +2346,8 @@ impl RolloutWorld {
         self.portal_shots.clone_from(&src.portal_shots);
         self.blink_object_tunnels
             .clone_from(&src.blink_object_tunnels);
+        self.teleport_object_effects
+            .clone_from(&src.teleport_object_effects);
         self.portals.clone_from(&src.portals);
         self.portal_body_inside.clone_from(&src.portal_body_inside);
         self.portal_body_ids.clone_from(&src.portal_body_ids);
@@ -2419,6 +2436,7 @@ impl RolloutWorld {
             teleport_marker_pool: _,
             portal_shots: _,
             blink_object_tunnels: _,
+            teleport_object_effects: _,
             portals: _,
             portal_body_inside: _,
             portal_body_ids: _,
@@ -2538,6 +2556,7 @@ impl RolloutWorld {
         self.teleport_marker_pool.clear();
         self.portal_shots.clear();
         self.blink_object_tunnels.clear();
+        self.teleport_object_effects.clear();
         self.portals.clear();
         self.portal_body_inside.clear();
         self.portal_body_ids.clear();
@@ -4294,7 +4313,7 @@ impl RolloutWorld {
         self.gust_waves_update(data, updater_dt);
         self.meteor_waves_update(data);
         self.revival_effects_tick(data);
-        self.teleport_effects_tick(data);
+        self.teleport_effects_tick(data, updater_dt);
         self.teleport_pending_tick(data);
         self.blink_tunnels_tick(data, updater_dt);
         self.blink_platform_tunnels_tick(data, updater_dt);
@@ -5915,6 +5934,7 @@ impl RolloutWorld {
                                 position: self.players[index].base.position
                                     + Vec2::UP * data.teleport.up_cast_offset,
                                 velocity: Vec2::ZERO,
+                                scale: self.players[index].player_scale,
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
@@ -12174,7 +12194,7 @@ impl RolloutWorld {
                     + data.teleport.marker_collider_hierarchy,
                 x: (marker.position + data.teleport.marker_offset).x.raw(),
                 y: (marker.position + data.teleport.marker_offset).y.raw(),
-                radius: data.teleport.marker_radius.raw(),
+                radius: (data.teleport.marker_radius * marker.scale).raw(),
                 inverse_mass: data.teleport.marker_body.inverse_mass.raw(),
                 ..CEntity::default()
             });
@@ -12667,12 +12687,12 @@ impl RolloutWorld {
         }
     }
 
-    fn teleport_effects_tick(&mut self, data: &data::RolloutData) {
+    fn teleport_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for index in 0..self.players.len() {
             if !self.players[index].teleport_effect_active {
                 continue;
             }
-            self.players[index].teleport_effect_time += DT;
+            self.players[index].teleport_effect_time += updater_dt;
             if self.players[index].teleport_effect_time > data.teleport.effect_duration {
                 self.players[index].teleport_effect_active = false;
                 self.players[index].teleport_effect_time = Fix::ZERO;
@@ -12681,9 +12701,285 @@ impl RolloutWorld {
             // destruction pass. RandomInsideUnitCircle performs two
             // RandomFix calls; each spans integer floors and consumes two
             // Unity.Mathematics.Random samples.
-            let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            if self.player_time_scale >= Fix::from_f32(0.01) {
+                let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+                let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            }
         }
+        for index in 0..self.teleport_object_effects.len() {
+            let effect = self.teleport_object_effects[index];
+            if !effect.active || effect.born_tick == self.tick {
+                continue;
+            }
+            self.teleport_object_effects[index].age += updater_dt;
+            if self.teleport_object_effects[index].age > data.teleport.effect_duration {
+                if effect.entity < self.entities.len()
+                    && self.entities[effect.entity].id == effect.entity_id
+                    && self.entities[effect.entity].flags & (E_REMOVED | E_DESTROYED) == 0
+                {
+                    self.entities[effect.entity].flags = effect.restore_flags;
+                    if let Some(platform_index) = self
+                        .platform_entities
+                        .iter()
+                        .position(|&candidate| candidate == effect.entity)
+                    {
+                        self.platforms[platform_index].active = true;
+                        self.platforms_changed();
+                    }
+                }
+                self.teleport_object_effects[index].active = false;
+            }
+            if self.player_time_scale >= Fix::from_f32(0.01) {
+                let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+                let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            }
+        }
+    }
+
+    fn teleport_query(&self, query: Circle, mask: u32, hits: &mut [usize; 100]) -> usize {
+        let mut count = 0usize;
+        // DetPhysics.CircleCastAll visits its circle, box and rounded-rect
+        // registries in that order and stops at the fixed 100-entry buffer.
+        for kind in [0u32, 1, 2] {
+            for (entity, row) in self.entities.iter().copied().enumerate() {
+                if row.kind != kind
+                    || row.flags & E_ACTIVE == 0
+                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
+                    || mask & (1u32 << row.layer) == 0
+                {
+                    continue;
+                }
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let overlaps = match kind {
+                    0 => crate::physics::contact::circle_circle(
+                        query,
+                        Circle {
+                            center,
+                            radius: Fix::from_raw(row.radius),
+                        },
+                    )
+                    .is_some(),
+                    1 => {
+                        let right =
+                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                        right != Vec2::ZERO
+                            && up != Vec2::ZERO
+                            && crate::physics::contact::circle_box(
+                                query,
+                                OrientedBox {
+                                    center,
+                                    right,
+                                    up,
+                                    inverse_extents: Vec2::new(
+                                        Fix::ONE / right.length(),
+                                        Fix::ONE / up.length(),
+                                    ),
+                                },
+                            )
+                            .is_some()
+                    }
+                    _ => Self::entity_rounded_rect(row)
+                        .and_then(|rounded| crate::physics::contact::circle_rounded(query, rounded))
+                        .is_some(),
+                };
+                if overlaps {
+                    hits[count] = entity;
+                    count += 1;
+                    if count == hits.len() {
+                        return count;
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    fn teleport_skips_entity(&self, entity: usize) -> bool {
+        let layer = self.entities[entity].layer;
+        if layer == LAYER_WALL {
+            return !self.macho_boulders.iter().any(|boulder| {
+                boulder.active
+                    && boulder.platform_index < self.platform_entities.len()
+                    && self.platform_entities[boulder.platform_index] == entity
+            });
+        }
+        if layer == 16 {
+            // SpikeAttack and SimpleSparkNode both implement
+            // IPlatformAttachable, selecting TeleportIndicator's early return.
+            return self
+                .spike_attacks
+                .iter()
+                .any(|spike| spike.active && spike.entity == Some(entity))
+                || self
+                    .tesla_nodes
+                    .iter()
+                    .any(|node| node.active && node.entity == Some(entity));
+        }
+        false
+    }
+
+    fn teleport_entity(&mut self, entity: usize, shift: Vec2, data: &data::RolloutData) {
+        if entity >= self.entities.len()
+            || self.entities[entity].flags & E_ACTIVE == 0
+            || self.teleport_skips_entity(entity)
+        {
+            return;
+        }
+
+        if let Some(player_index) = self
+            .players
+            .iter()
+            .position(|slot| slot.base.alive && Self::blink_player_entity(slot) == entity)
+        {
+            let has_player_physics = !matches!(
+                self.players[player_index].active,
+                ActiveAbility::Rock | ActiveAbility::Drill
+            );
+            if has_player_physics {
+                let rope_top = self.players[player_index].rope_top;
+                self.attach_player_rope(player_index, None, rope_top);
+                self.players[player_index].base.velocity = Vec2::ZERO;
+                self.players[player_index]
+                    .base
+                    .force_unground(&self.platforms);
+                self.players[player_index].base.rotation = Fix::ZERO;
+                self.players[player_index].base.up = Vec2::UP;
+                self.players[player_index].obs_state = STATE_FALL;
+                self.players[player_index].state_ticks = 0;
+            }
+            self.players[player_index].base.position += shift;
+            self.players[player_index].base.sync_collider();
+            self.players[player_index].teleport_effect_active = true;
+            self.players[player_index].teleport_effect_time = Fix::ZERO;
+            self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
+            self.entities[entity].x += shift.x.raw();
+            self.entities[entity].y += shift.y.raw();
+            self.entities[entity].flags &= !E_ACTIVE;
+            return;
+        }
+
+        if let Some(clone_index) = self
+            .abilityless_clones
+            .iter()
+            .position(|clone| clone.active && clone.base.alive && clone.entity == Some(entity))
+        {
+            let clone = &mut self.abilityless_clones[clone_index];
+            clone.base.velocity = Vec2::ZERO;
+            clone.base.force_unground(&self.platforms);
+            clone.base.rotation = Fix::ZERO;
+            clone.base.up = Vec2::UP;
+            clone.base.position += shift;
+            clone.base.sync_collider();
+            clone.obs_state = STATE_FALL;
+            self.entities[entity].x += shift.x.raw();
+            self.entities[entity].y += shift.y.raw();
+            self.begin_teleport_object_effect(entity, data);
+            return;
+        }
+
+        let mut moved = false;
+        if let Some(arrow) = self
+            .arrows
+            .iter_mut()
+            .find(|arrow| arrow.active && arrow.entity == Some(entity))
+        {
+            arrow.position += shift;
+            moved = true;
+        } else if let Some(pickup) = self
+            .ability_pickups
+            .iter_mut()
+            .find(|pickup| pickup.active && pickup.entity == Some(entity))
+        {
+            pickup.position += shift;
+            moved = true;
+        } else if let Some(item) = self
+            .thrown_items
+            .iter_mut()
+            .find(|item| item.active && item.entity == Some(entity))
+        {
+            item.position += shift;
+            moved = true;
+        } else if let Some(missile) = self
+            .guided_missiles
+            .iter_mut()
+            .find(|missile| missile.active && missile.entity == Some(entity))
+        {
+            missile.position += shift;
+            moved = true;
+        } else if let Some(hole) = self
+            .black_holes
+            .iter_mut()
+            .find(|hole| hole.active && hole.entity == Some(entity))
+        {
+            hole.position += shift;
+            moved = true;
+        } else if let Some(rock) = self
+            .duplicated_rocks
+            .iter_mut()
+            .find(|rock| rock.active && rock.entity == Some(entity))
+        {
+            rock.position += shift;
+            moved = true;
+        } else if let Some(cloud) = self
+            .smoke_clouds
+            .iter_mut()
+            .find(|cloud| cloud.active && cloud.entity == Some(entity))
+        {
+            cloud.position += shift;
+            moved = true;
+        } else if let Some(marker) = self
+            .revival_marker_pool
+            .iter_mut()
+            .find(|marker| marker.active && marker.entity == Some(entity))
+        {
+            marker.position += shift;
+            moved = true;
+        } else if let Some(shot) = self
+            .portal_shots
+            .iter_mut()
+            .find(|shot| shot.active && shot.entity == Some(entity))
+        {
+            shot.position += shift;
+            moved = true;
+        } else if let Some(orb) = self
+            .beam_orbs
+            .iter_mut()
+            .find(|orb| orb.active && orb.entity == Some(entity))
+        {
+            orb.position += shift;
+            moved = true;
+        } else if let Some(node) = self
+            .tesla_nodes
+            .iter_mut()
+            .find(|node| node.line_active && node.line_entity == Some(entity))
+        {
+            node.line_center += shift;
+            moved = true;
+        } else if let Some(platform_index) = self
+            .platform_entities
+            .iter()
+            .position(|&candidate| candidate == entity)
+            && self
+                .macho_boulders
+                .iter()
+                .any(|boulder| boulder.active && boulder.platform_index == platform_index)
+        {
+            self.platforms[platform_index].surface.center += shift;
+            self.platforms[platform_index].collider.inner.center += shift;
+            self.platform_dynamics[platform_index].composite_position += shift;
+            self.platforms_changed();
+            moved = true;
+        }
+        if !moved {
+            // The source returns when neither the object nor its slime child
+            // supplies a SpriteRenderer. Unrepresented trigger-only rows take
+            // that path rather than receiving a generic positional mutation.
+            return;
+        }
+        self.entities[entity].x += shift.x.raw();
+        self.entities[entity].y += shift.y.raw();
+        self.begin_teleport_object_effect(entity, data);
     }
 
     fn teleport_pending_tick(&mut self, data: &data::RolloutData) {
@@ -12699,45 +12995,31 @@ impl RolloutWorld {
             let diff = marker.position - from;
             let player_query = Circle {
                 center: from,
-                radius: data.teleport.player_radius,
+                radius: data.teleport.player_radius * self.players[owner].player_scale,
             };
             let marker_query = Circle {
                 center: marker.position,
-                radius: data.teleport.marker_teleport_radius,
+                radius: data.teleport.marker_teleport_radius * marker.scale,
             };
-            let mut at_player = [false; MAX_PLAYERS];
-            let mut at_marker = [false; MAX_PLAYERS];
-            for target in 0..self.players.len() {
-                if !self.players[target].base.alive || self.players[target].teleport_effect_active {
-                    continue;
-                }
-                let collider = self.players[target].base.collider;
-                at_player[target] =
-                    crate::physics::contact::circle_box_overlaps(player_query, collider);
-                at_marker[target] =
-                    crate::physics::contact::circle_box_overlaps(marker_query, collider);
+            let mut player_hits = [usize::MAX; 100];
+            let mut marker_hits = [usize::MAX; 100];
+            let player_count = self.teleport_query(
+                player_query,
+                data.teleport.teleportable_mask,
+                &mut player_hits,
+            );
+            let marker_count = self.teleport_query(
+                marker_query,
+                data.teleport.teleportable_mask,
+                &mut marker_hits,
+            );
+            for &entity in &player_hits[..player_count] {
+                self.teleport_entity(entity, diff, data);
             }
-            for target in 0..self.players.len() {
-                let offset = if at_player[target] {
-                    Some(diff)
-                } else if at_marker[target] {
-                    Some(-diff)
-                } else {
-                    None
-                };
-                let Some(offset) = offset else { continue };
-                let slot = &mut self.players[target];
-                slot.base.force_unground(&self.platforms);
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
-                slot.base.velocity = Vec2::ZERO;
-                slot.base.position += offset;
-                slot.base.sync_collider();
-                slot.obs_state = STATE_FALL;
-                slot.state_ticks = 0;
-                slot.teleport_effect_active = true;
-                slot.teleport_effect_time = Fix::ZERO;
-                self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
+            for &entity in &marker_hits[..marker_count] {
+                if !player_hits[..player_count].contains(&entity) {
+                    self.teleport_entity(entity, -diff, data);
+                }
             }
             let marker = &mut self.teleport_marker_pool[marker_index];
             marker.active = false;
@@ -16659,28 +16941,24 @@ impl RolloutWorld {
         let held = self.players[index].magnet.held;
         let valid = match held {
             MagnetHeld::Nothing => false,
-            MagnetHeld::ThrownItem(i) => self
-                .thrown_items
-                .get(i)
-                .is_some_and(|v| v.active && v.magnet_holder == Some(index)),
-            MagnetHeld::Missile(i) => self
-                .guided_missiles
-                .get(i)
-                .is_some_and(|v| v.active && v.magnet_holder == Some(index)),
-            MagnetHeld::Arrow(i) => self
-                .arrows
-                .get(i)
-                .is_some_and(|v| v.active && v.magnet_holder == Some(index)),
+            MagnetHeld::ThrownItem(i) => self.thrown_items.get(i).is_some_and(|v| {
+                v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
+            }),
+            MagnetHeld::Missile(i) => self.guided_missiles.get(i).is_some_and(|v| {
+                v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
+            }),
+            MagnetHeld::Arrow(i) => self.arrows.get(i).is_some_and(|v| {
+                v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
+            }),
             MagnetHeld::Player(i) => i < self.players.len() && self.playable(i),
             MagnetHeld::Rock(i) => {
                 i < self.players.len()
                     && self.playable(i)
                     && self.players[i].active == ActiveAbility::Rock
             }
-            MagnetHeld::BlackHole(i) => self
-                .black_holes
-                .get(i)
-                .is_some_and(|v| v.active && v.mass > Fix::ZERO),
+            MagnetHeld::BlackHole(i) => self.black_holes.get(i).is_some_and(|v| {
+                v.active && v.mass > Fix::ZERO && !self.blink_object_hidden(v.entity)
+            }),
             MagnetHeld::Boulder(i) => self.macho_boulders.get(i).is_some_and(|v| {
                 v.active
                     && v.platform_index < self.platforms.len()
@@ -19045,6 +19323,43 @@ impl RolloutWorld {
         self.entities[entity].flags &= !E_ACTIVE;
     }
 
+    fn begin_teleport_object_effect(&mut self, entity: usize, data: &data::RolloutData) {
+        if entity >= self.entities.len() || self.entities[entity].flags & E_ACTIVE == 0 {
+            return;
+        }
+        let entity_id = self.entities[entity].id;
+        let effect = TeleportObjectEffect {
+            active: true,
+            born_tick: self.tick,
+            entity,
+            entity_id,
+            age: Fix::ZERO,
+            restore_flags: self.entities[entity].flags,
+        };
+        if let Some(index) = self
+            .teleport_object_effects
+            .iter()
+            .position(|candidate| !candidate.active)
+        {
+            self.teleport_object_effects[index] = effect;
+        } else {
+            self.teleport_object_effects.push(effect);
+        }
+        self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
+        self.entities[entity].flags &= !E_ACTIVE;
+        if let Some(platform_index) = self
+            .platform_entities
+            .iter()
+            .position(|&candidate| candidate == entity)
+        {
+            // Macho's boulder is a normal rounded-body GameObject. Disabling
+            // it removes both its updater and DetPhysics body until the
+            // TeleportedObjectEffect reactivates the same object.
+            self.platforms[platform_index].active = false;
+            self.platforms_changed();
+        }
+    }
+
     #[inline]
     fn blink_object_hidden(&self, entity: Option<usize>) -> bool {
         let Some(entity) = entity else {
@@ -19054,6 +19369,9 @@ impl RolloutWorld {
         self.blink_object_tunnels
             .iter()
             .any(|tunnel| tunnel.active && tunnel.entity == entity && tunnel.entity_id == entity_id)
+            || self.teleport_object_effects.iter().any(|effect| {
+                effect.active && effect.entity == entity && effect.entity_id == entity_id
+            })
     }
 
     /// Generic QuantumTunnel victims stay allocated but their GameObject is
@@ -19569,6 +19887,11 @@ impl RolloutWorld {
                 row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
                 if row.inverse_mass > 0 {
                     row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
+                }
+                for marker in &mut self.teleport_marker_pool {
+                    if marker.active && marker.entity == Some(effect.victim) {
+                        marker.scale = scale;
+                    }
                 }
                 self.scale_changers[index].time = time;
                 self.scale_changers[index].current_scale = scale;
@@ -24273,6 +24596,7 @@ impl RolloutWorld {
         for clone_index in 0..self.abilityless_clones.len() {
             if !self.abilityless_clones[clone_index].active
                 || self.abilityless_clones[clone_index].born_tick >= self.tick
+                || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
             {
                 continue;
             }
@@ -24351,7 +24675,9 @@ impl RolloutWorld {
 
     fn abilityless_clone_contacts(&mut self) {
         for clone_index in 0..self.abilityless_clones.len() {
-            if !self.abilityless_clones[clone_index].active {
+            if !self.abilityless_clones[clone_index].active
+                || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
+            {
                 continue;
             }
             let clone_entity = self.abilityless_clones[clone_index].entity;
@@ -24417,7 +24743,9 @@ impl RolloutWorld {
 
     fn duplicated_rocks_integrate(&mut self, physics_dt: Fix, data: &data::RolloutData) {
         for rock_index in 0..self.duplicated_rocks.len() {
-            if !self.duplicated_rocks[rock_index].active {
+            if !self.duplicated_rocks[rock_index].active
+                || self.blink_object_hidden(self.duplicated_rocks[rock_index].entity)
+            {
                 continue;
             }
             let shift = self.duplicated_rocks[rock_index]
@@ -25946,13 +26274,18 @@ impl RolloutWorld {
             if child_index >= self.tesla_nodes.len() || !self.tesla_nodes[child_index].active {
                 continue;
             }
+            let line_hidden = self.blink_object_hidden(Some(line_entity));
             self.entities[line_entity] = CEntity {
                 id: self.entities[line_entity].id,
                 kind: 1,
                 layer: data.tesla.lightning_layer,
                 owner: node.owner as u32 + 1,
                 flags: E_TRIGGER
-                    | if node.line_active { E_ACTIVE } else { 0 }
+                    | if node.line_active && !line_hidden {
+                        E_ACTIVE
+                    } else {
+                        0
+                    }
                     | if node.line_collider_enabled {
                         E_ENABLED
                     } else {

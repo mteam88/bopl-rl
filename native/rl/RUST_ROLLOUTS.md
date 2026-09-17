@@ -241,11 +241,14 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   Teleport is an instant two-stage cast. Its first cast creates the extracted
   portal body on the next updater pass; releasing the button keeps the slot at
   exact cooldown so the next press can cross the strict ready boundary. The
-  second cast performs both source and marker circle queries, swaps all matched
-  players once, ungrounds and zeros their imposed velocity, removes the marker,
-  and disables each moved GameObject for the strict 0.6-second visual-effect
-  interval. Each effect consumes the same four RNG samples per active tick,
-  including its removal pass.
+  second cast performs both source and marker circle queries in DetPhysics shape
+  order with the authored 100-hit cap, then swaps each player, projectile, item,
+  movable ability body, orb or tagged boulder exactly once. PlayerPhysics
+  victims detach ropes, unground and clear imposed velocity. Each moved
+  GameObject and its updater/physics body remain inactive for the strict
+  0.6-second visual-effect interval. The effect clock and RNG freeze during
+  Time Stop; otherwise each pass, including removal, consumes the source's four
+  RNG state advances. Indicator scale changes also resize its live query.
   Rewind records the live body and all three cooldown clocks in a fixed
   188-sample ring. A cast follows the source's arc-length-parametrized
   Catmull-Rom path for 17/25 of the recorded interval, suppresses input and

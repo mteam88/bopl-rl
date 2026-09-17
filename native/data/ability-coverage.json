@@ -206,8 +206,8 @@
       "name": "Teleport",
       "prefab": "Assets/GameObject/Teleport.prefab",
       "prefab_guid": "96597c44420b8d146b7e554c170e3564",
-      "native_status": "partial",
-      "verification": "Exact public Q32 goldens cover the first-cast marker, release-to-ready second cast, single-caster transfer, two-way three-player area swap, disabled-object interval, four RNG samples per effect tick, reactivation, entity ordering and teammate spawn offsets for 300/450 ticks. Projectile/item/boulder targets remain pending on those entity ports. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
+      "native_status": "ported",
+      "verification": "Teleport, TeleportIndicator and TeleportedObjectEffect are source-ported wholesale: both CircleCastAll sets in circle/box/rounded-rectangle registry order with the authored 100-hit cap and layer mask; player-side de-duplication; rope detach, unground and imposed-velocity clearing for PlayerPhysics forms; Rock/Drill no-PlayerPhysics behavior; arrows, pickups, thrown items, Missiles, positive Black Holes, duplicated Rocks, Smoke, Revival markers, Portal shots, Beam orbs, Tesla lightning and tagged Macho-boulder relocation; IPlatformAttachable and ordinary-wall exclusions; scale-aware player/marker radii; strict inactive lifetime; object updater/physics suppression; Time Stop; and allocation-reusing pools. teleport_broad_ab.sh runs the 300-tick stationary and 450-tick moving three-player optimized-Q32 NativeAOT/Rust scenarios as one gate, covering both query directions, mixed-team overlap, exact inactive/reactivation timing, RNG and subsequent airborne movement. The nonplayer branches are source-ported and observable through live entity rows but do not each have an isolated differential."
     },
     {
       "id": 26,

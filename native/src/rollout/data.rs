@@ -1086,6 +1086,7 @@ struct RawGust {
 struct RawTeleport {
     up_cast_offset: i64,
     player_radius: i64,
+    teleportable_mask: u32,
     marker: RawTeleportMarker,
     effect_updatable_count: u32,
     effect_duration: i64,
@@ -1419,6 +1420,7 @@ pub struct RevivalData {
 pub struct TeleportData {
     pub up_cast_offset: Fix,
     pub player_radius: Fix,
+    pub teleportable_mask: u32,
     pub marker_layer: u32,
     pub marker_updatable_count: u32,
     pub marker_collider_hierarchy: u32,
@@ -2619,6 +2621,7 @@ pub fn get() -> &'static RolloutData {
                 TeleportData {
                     up_cast_offset: Fix::from_raw(teleport.up_cast_offset),
                     player_radius: Fix::from_raw(teleport.player_radius),
+                    teleportable_mask: teleport.teleportable_mask,
                     marker_layer: teleport.marker.layer,
                     marker_updatable_count: teleport.marker.updatable_count,
                     marker_collider_hierarchy: teleport.marker.collider_hierarchy,
