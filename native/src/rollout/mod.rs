@@ -749,7 +749,10 @@ pub struct SpawnedTeslaNode {
     pub collider_center: Vec2,
     pub collider_rotation: Fix,
     pub surface_offset: Fix,
+    /// Raw FixTransform scale drives authored attachment offsets.
     pub scale: Fix,
+    /// DPhysicsCircle clamps that raw scale to its prefab limits.
+    pub collider_scale: Fix,
     /// SimpleSparkNode.prevScale, separate from the live circle scale for the
     /// source's one-updater-late SurfaceOffset/_hitBoxOffsetY update.
     pub offset_scale: Fix,
@@ -9249,9 +9252,8 @@ impl RolloutWorld {
             return false;
         };
         let normal = self.platforms[platform_index].surface.normal(closest);
-        let scale = self.players[index]
-            .player_scale
-            .clamp(Fix::from_f32(0.6), Fix::from_int(5));
+        let scale = self.players[index].player_scale;
+        let collider_scale = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
         let ability_slot = self.players[index].active_slot;
         let ability_generation = self.players[index].ability_generation;
 
@@ -9318,7 +9320,7 @@ impl RolloutWorld {
             owner: index as u32 + 1,
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
-            radius: (data.tesla.node_radius * scale).raw(),
+            radius: (data.tesla.node_radius * collider_scale).raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -9340,6 +9342,7 @@ impl RolloutWorld {
             collider_rotation: node_rotation,
             surface_offset,
             scale,
+            collider_scale,
             offset_scale: scale,
             body: data.tesla.node_body,
             child,
@@ -10356,7 +10359,7 @@ impl RolloutWorld {
             }
             let node_circle = Circle {
                 center: node.collider_center,
-                radius: data.tesla.node_radius * node.scale,
+                radius: data.tesla.node_radius * node.collider_scale,
             };
             let line = if node.line_active && node.line_collider_enabled {
                 Some(OrientedBox {
@@ -20279,7 +20282,7 @@ impl RolloutWorld {
             owner: caster as u32 + 1,
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
-            radius: (data.tesla.node_radius * source.scale).raw(),
+            radius: (data.tesla.node_radius * source.collider_scale).raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -20301,6 +20304,7 @@ impl RolloutWorld {
             collider_rotation: rotation,
             surface_offset,
             scale: source.scale,
+            collider_scale: source.collider_scale,
             offset_scale: source.scale,
             body: data.tesla.node_body,
             duplicated: true,
@@ -21186,10 +21190,13 @@ impl RolloutWorld {
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
                 + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
             self.tesla_nodes[index].scale = scale;
+            self.tesla_nodes[index].collider_scale =
+                scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
             self.tesla_nodes[index].relative_center = relative_center;
             self.tesla_nodes[index].collider_center = parent_position
                 + relative_center.complex_mul(self.platforms[platform].surface.right);
-            self.entities[entity].radius = (data.tesla.node_radius * scale).raw();
+            self.entities[entity].radius =
+                (data.tesla.node_radius * self.tesla_nodes[index].collider_scale).raw();
             self.entities[entity].x = self.tesla_nodes[index].collider_center.x.raw();
             self.entities[entity].y = self.tesla_nodes[index].collider_center.y.raw();
             return true;
@@ -28936,7 +28943,7 @@ impl RolloutWorld {
                     hierarchy: self.entities[entity].hierarchy,
                     x: node.collider_center.x.raw(),
                     y: node.collider_center.y.raw(),
-                    radius: (data.tesla.node_radius * node.scale).raw(),
+                    radius: (data.tesla.node_radius * node.collider_scale).raw(),
                     rotation: node.collider_rotation.raw(),
                     inverse_mass: node.body.inverse_mass.raw(),
                     ..CEntity::default()
@@ -31187,6 +31194,23 @@ mod tests {
         assert_eq!(
             world.players[0].base.radius,
             data::get().player.radius * Fix::from_int(2)
+        );
+    }
+
+    #[test]
+    fn tesla_offsets_use_raw_scale_while_collider_clamps() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].player_scale = Fix::from_f32(0.3);
+
+        assert!(world.spawn_tesla_node(0, data::get()));
+
+        let node = world.tesla_nodes[0];
+        assert_eq!(node.scale, Fix::from_f32(0.3));
+        assert_eq!(node.collider_scale, Fix::from_f32(0.6));
+        assert_eq!(
+            node.surface_offset,
+            data::get().tesla.plant_offset.y * Fix::from_f32(0.3)
         );
     }
 
