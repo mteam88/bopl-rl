@@ -317,6 +317,11 @@ fixed entry is committed separately with its finding id in the subject.
   collisions cannot occur until the fully built queue is dispatched. The
   ported gameplay never destroys a callback component independently of its
   collider GameObject, so no live pair can expose the typo.
+- **S7 — not a divergence.** `Player.UpdatePlayer` only advances invisibility
+  clocks and rotates the position-setter references; it has no death or stock
+  path. Every death remains in later updatables, DetPhysics callbacks, or the
+  scene-boundary phase, so evaluating Rust's pending match result before its
+  player loop cannot delay a result caused by `UpdatePlayer`.
 
 - **C1 — not a divergence.** The `TimeStop` metadata branch in
   `RlObservation.Entity` is unreachable in the C# oracle. `Write` emits only
