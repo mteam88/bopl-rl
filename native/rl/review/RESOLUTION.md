@@ -310,6 +310,13 @@ fixed entry is committed separately with its finding id in the subject.
   player-scaled updater delta exactly once. This matches each C# component's
   raw `SimDeltaTime * GameTime.PlayerTimeScale` expression at fractional
   reference-harness scales instead of squaring the scale.
+- **S6 — not a gameplay divergence.** C# does mistakenly test p1's callback
+  while deciding whether to enqueue p2. At queue construction, however,
+  `RemoveDestroyedColliders` has already removed every collider whose
+  GameObject was destroyed before the pass, while destruction from current
+  collisions cannot occur until the fully built queue is dispatched. The
+  ported gameplay never destroys a callback component independently of its
+  collider GameObject, so no live pair can expose the typo.
 
 - **C1 — not a divergence.** The `TimeStop` metadata branch in
   `RlObservation.Entity` is unreachable in the C# oracle. `Write` emits only
