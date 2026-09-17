@@ -1,5 +1,6 @@
 """Append cross-family v4 games using the per-player writer-ablation stack."""
 import argparse
+import importlib.util
 import json
 import multiprocessing
 import os
@@ -20,6 +21,11 @@ import environment  # noqa: E402
 import elo_ladder  # noqa: E402
 
 import tournament as base  # noqa: E402
+
+_callback_spec = importlib.util.spec_from_file_location(
+    'tournament_callback_ladder', Path(__file__).with_name('elo_ladder.py'))
+callback_ladder = importlib.util.module_from_spec(_callback_spec)
+_callback_spec.loader.exec_module(callback_ladder)
 
 
 def cross_tasks(roster, maps, games_per_pair, existing):
@@ -78,8 +84,8 @@ def play_shard(roster, pool, args, game, tasks, worker):
         def persist(raw):
             row = base.game_row(raw, members)
             os.write(descriptor, (json.dumps(row, separators=(',', ':')) + '\n').encode())
-        elo_ladder.play_games(players, tasks, int(pool['episode_ticks']), 1, base.SEED_BASE,
-                              delay=int(pool.get('observation_delay_ticks', 9)), on_result=persist)
+        callback_ladder.play_games(players, tasks, int(pool['episode_ticks']), 1, base.SEED_BASE,
+                                   delay=int(pool.get('observation_delay_ticks', 9)), on_result=persist)
     finally:
         os.close(descriptor)
 
@@ -113,9 +119,15 @@ def run(args):
     game = Path(pool['game']['path']).resolve()
     if base.sha256_file(game) != pool['game']['sha256']:
         raise RuntimeError('pool-v7 simulator SHA changed')
-    runs, before_now = base.fit_ladder(args.base_root.resolve())
-    base_out = args.base_root.resolve() / 'sweeps/anchors' / args.out.name
-    roster, skipped = base.select_roster(args.top, pool, runs, before_now, base_out)
+    partial_pool = json.loads((args.out / 'tournament.json').read_text())
+    roster = []
+    for member in partial_pool['members']:
+        item = {key: member[key] for key in ('name', 'kind', 'sha256', 'metadata_sha256', 'path')
+                if member.get(key) is not None}
+        if item['kind'] == 'checkpoint':
+            item['source'] = (args.base_out / item['path']).resolve()
+        roster.append(item)
+    skipped = int(partial.get('skipped_missing') or 0)
     smoke(roster, pool, game, args.out)
     existing = base.load_games(args.out / 'games.jsonl')
     pairs, tasks = cross_tasks(roster, pool['maps'], args.games_per_pair, existing)
