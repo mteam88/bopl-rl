@@ -3787,7 +3787,8 @@ impl RolloutWorld {
                 center: pickup.position + data.pickup.offset * pickup.scale,
                 radius: data.pickup.radius * pickup.scale,
             };
-            let mut collector = None;
+            let mut collectors = [usize::MAX; MAX_PLAYERS];
+            let mut collector_count = 0;
             for player_index in 0..self.players.len() {
                 let slot = &self.players[player_index];
                 if !self.playable(player_index)
@@ -3806,13 +3807,13 @@ impl RolloutWorld {
                     inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
                 };
                 if crate::physics::contact::circle_box(circle, body).is_some() {
-                    collector = Some(player_index);
-                    break;
+                    collectors[collector_count] = player_index;
+                    collector_count += 1;
                 }
             }
-            let Some(player_index) = collector else {
+            if collector_count == 0 {
                 continue;
-            };
+            }
 
             // AddAdditionalAbility replaces the third reference, changes the
             // loadout used by future clones, and makes the new slot ready far
@@ -3820,17 +3821,19 @@ impl RolloutWorld {
             // is not destroyed and its registered collider row stays behind.
             let ability = pickup.ability;
             self.active_subsystems |= ability_bit(ability);
-            let slot = &mut self.players[player_index];
-            slot.abilities[2] = ability;
-            slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
-            slot.timers[2] = Fix::from_int(100_000);
-            slot.ability_instantiated[2] = false;
-            slot.drill_hitbox_entities[2] = [usize::MAX; 3];
-            slot.black_hole_castable[2] = true;
-            slot.portal_blue[2] = None;
-            slot.portal_orange[2] = None;
-            slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+            for &player_index in &collectors[..collector_count] {
+                let slot = &mut self.players[player_index];
+                slot.abilities[2] = ability;
+                slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
+                slot.timers[2] = Fix::from_int(100_000);
+                slot.ability_instantiated[2] = false;
+                slot.drill_hitbox_entities[2] = [usize::MAX; 3];
+                slot.black_hole_castable[2] = true;
+                slot.portal_blue[2] = None;
+                slot.portal_orange[2] = None;
+                slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+            }
 
             let state = &mut self.ability_pickups[pickup_index];
             state.active = false;
@@ -32969,6 +32972,35 @@ mod tests {
 
         assert_eq!(world.ability_pickups.len(), pickups);
         assert_eq!(world.rng.state, expected_rng.state);
+    }
+
+    #[test]
+    fn one_pickup_callback_reaches_every_overlapping_slime() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let position = world.players[0].base.position;
+        let first_row = world.entities[world.players[0].body_entity];
+        let second_entity = world.players[1].body_entity;
+        world.entities[second_entity].x = first_row.x;
+        world.entities[second_entity].y = first_row.y;
+        world.spawn_ability_pickup(position, ABILITY_MINE, Vec2::ZERO, data::get());
+        let pickup_index = world.ability_pickups.len() - 1;
+        world.ability_pickups[pickup_index].enabled = true;
+        let pickup_entity = world.ability_pickups[pickup_index].entity.unwrap();
+        world.entities[pickup_entity].flags |= E_ENABLED;
+        let hierarchy = world.next_spawn_hierarchy;
+
+        world.ability_pickups_contacts(data::get());
+
+        for player in &world.players {
+            assert_eq!(player.abilities[2], ABILITY_MINE);
+            assert_eq!(player.timers[2], Fix::from_int(100_000));
+        }
+        assert_eq!(
+            world.next_spawn_hierarchy,
+            hierarchy + data::get().abilities[ABILITY_MINE as usize].updatable_count * 2
+        );
+        assert!(!world.ability_pickups[pickup_index].active);
     }
 
     #[test]

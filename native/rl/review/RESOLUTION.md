@@ -261,3 +261,8 @@ fixed entry is committed separately with its finding id in the subject.
   reports zero cooldown, or another player's box overlaps the authored rope
   proximity circle. The launch-direction RNG sample is still consumed before
   the failed icon lookup, preserving `DropAbilities` ordering exactly.
+- **G7 — fixed.** Pickup contact dispatch now applies `AddAdditionalAbility`
+  to every ordinary slime whose collision was queued in the physics pass.
+  The pickup is destroyed only after those callbacks, so simultaneous
+  overlaps instantiate one replacement ability for each player in callback
+  order just as C# does.
