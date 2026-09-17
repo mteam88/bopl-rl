@@ -22,6 +22,10 @@ fixed entry is committed separately with its finding id in the subject.
   same scale. BlackHole growth changes the Unity visual scale and DPhysics
   circle radius directly; it never changes the authoritative FixTransform
   scale used by `RopeAttachment`.
+- **S4 — fixed.** Portal entry marking and transit now reject every modeled
+  Magnet-held BoplBody (arrows, thrown items, missiles, and both spell
+  markers). A held object no longer acquires a stale inside bit or teleports,
+  matching `Portal.IsPortalable`'s `!body.IsBeingHeld()` predicate.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the

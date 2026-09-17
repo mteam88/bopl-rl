@@ -5504,7 +5504,9 @@ impl RolloutWorld {
         }
         let bit = 1u64 << endpoint_index;
         for arrow in &self.arrows {
-            if let Some(entity) = arrow.entity.filter(|_| arrow.active && arrow.registered)
+            if let Some(entity) = arrow.entity.filter(|_| {
+                arrow.active && arrow.registered && arrow.magnet_holder.is_none()
+            })
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, arrow.position, data)
             {
@@ -5536,7 +5538,11 @@ impl RolloutWorld {
         for item in &self.thrown_items {
             if let Some(entity) = item
                 .entity
-                .filter(|_| item.active && item.body.inverse_mass > Fix::ZERO)
+                .filter(|_| {
+                    item.active
+                        && item.body.inverse_mass > Fix::ZERO
+                        && item.magnet_holder.is_none()
+                })
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, item.position, data)
             {
@@ -5551,7 +5557,10 @@ impl RolloutWorld {
         }
         for missile in &self.guided_missiles {
             if let Some(entity) = missile.entity.filter(|_| {
-                missile.active && missile.registered && missile.body.inverse_mass > Fix::ZERO
+                missile.active
+                    && missile.registered
+                    && missile.body.inverse_mass > Fix::ZERO
+                    && missile.magnet_holder.is_none()
             }) && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, missile.position, data)
             {
@@ -5565,7 +5574,9 @@ impl RolloutWorld {
             }
         }
         for marker in &self.revival_marker_pool {
-            if let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered)
+            if let Some(entity) = marker.entity.filter(|_| {
+                marker.active && marker.registered && marker.magnet_holder.is_none()
+            })
                 && Self::portal_inside(endpoint, marker.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -5578,7 +5589,9 @@ impl RolloutWorld {
             }
         }
         for marker in &self.teleport_marker_pool {
-            if let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered)
+            if let Some(entity) = marker.entity.filter(|_| {
+                marker.active && marker.registered && marker.magnet_holder.is_none()
+            })
                 && Self::portal_inside(endpoint, marker.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -5771,7 +5784,9 @@ impl RolloutWorld {
         let entry = self.portals[endpoint_index];
         for index in 0..self.arrows.len() {
             let arrow = self.arrows[index];
-            let Some(entity) = arrow.entity.filter(|_| arrow.active && arrow.registered) else {
+            let Some(entity) = arrow.entity.filter(|_| {
+                arrow.active && arrow.registered && arrow.magnet_holder.is_none()
+            }) else {
                 continue;
             };
             if self.entities[entity].flags & E_ACTIVE == 0 {
@@ -5806,7 +5821,11 @@ impl RolloutWorld {
             let item = self.thrown_items[index];
             let Some(entity) = item
                 .entity
-                .filter(|_| item.active && item.body.inverse_mass > Fix::ZERO)
+                .filter(|_| {
+                    item.active
+                        && item.body.inverse_mass > Fix::ZERO
+                        && item.magnet_holder.is_none()
+                })
             else {
                 continue;
             };
@@ -5824,7 +5843,10 @@ impl RolloutWorld {
         for index in 0..self.guided_missiles.len() {
             let missile = self.guided_missiles[index];
             let Some(entity) = missile.entity.filter(|_| {
-                missile.active && missile.registered && missile.body.inverse_mass > Fix::ZERO
+                missile.active
+                    && missile.registered
+                    && missile.body.inverse_mass > Fix::ZERO
+                    && missile.magnet_holder.is_none()
             }) else {
                 continue;
             };
@@ -5844,7 +5866,9 @@ impl RolloutWorld {
         }
         for index in 0..self.revival_marker_pool.len() {
             let marker = self.revival_marker_pool[index];
-            let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered) else {
+            let Some(entity) = marker.entity.filter(|_| {
+                marker.active && marker.registered && marker.magnet_holder.is_none()
+            }) else {
                 continue;
             };
             if let Some((exit, position)) =
@@ -5857,7 +5881,9 @@ impl RolloutWorld {
         }
         for index in 0..self.teleport_marker_pool.len() {
             let marker = self.teleport_marker_pool[index];
-            let Some(entity) = marker.entity.filter(|_| marker.active && marker.registered) else {
+            let Some(entity) = marker.entity.filter(|_| {
+                marker.active && marker.registered && marker.magnet_holder.is_none()
+            }) else {
                 continue;
             };
             if let Some((exit, position)) =
