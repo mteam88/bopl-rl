@@ -604,6 +604,9 @@ pub struct PlantCastState {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedEngine {
     pub active: bool,
+    /// MachoThrow2 detached this child from its platform composite and hid
+    /// the GameObject while the replacement boulder is being animated.
+    pub macho_carried: bool,
     pub born_tick: u32,
     pub owner: usize,
     pub ability_slot: usize,
@@ -1458,6 +1461,9 @@ pub struct MachoThrowState {
     pub facing_right: bool,
     pub current_dummy_pos: Vec2,
     pub held_boulder: Option<usize>,
+    /// RocketEngine selected by pickUpNearbyAttachables. The source keeps the
+    /// same inactive object until SpawnBoulder reparents and reinitializes it.
+    pub picked_engine: Option<usize>,
     pub collider_position: Vec2,
     pub collider_right: Vec2,
     pub collider_rotation: Fix,
@@ -5210,16 +5216,18 @@ impl RolloutWorld {
             }
         }
         for engine in &self.engines {
-            if !engine.active || engine.platform_index >= self.platform_dynamics.len() {
+            if !engine.active
+                || engine.macho_carried
+                || engine.platform_index >= self.platform_dynamics.len()
+            {
                 continue;
             }
             let right = Vec2::angle(engine.collider_rotation);
             let position = engine.collider_center
                 - (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
-            if let Some(entity) = engine
-                .entity
-                .filter(|_| engine.active && engine.body.inverse_mass > Fix::ZERO)
-                && self.entities[entity].flags & E_ACTIVE != 0
+            if let Some(entity) = engine.entity.filter(|_| {
+                engine.active && !engine.macho_carried && engine.body.inverse_mass > Fix::ZERO
+            }) && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, position, data)
             {
                 Self::mark_portal_body_bit(
@@ -9146,6 +9154,7 @@ impl RolloutWorld {
         });
         let engine = SpawnedEngine {
             active: true,
+            macho_carried: false,
             born_tick: self.tick,
             owner: index,
             ability_slot,
@@ -9210,10 +9219,13 @@ impl RolloutWorld {
         }
         let platform_index = self.engines[engine_index].platform_index;
         self.engines[engine_index].active = false;
+        self.engines[engine_index].macho_carried = false;
         if let Some(entity) = self.engines[engine_index].entity {
             self.entities[entity].flags = E_REMOVED;
         }
-        self.rebuild_platform_attachment_body(platform_index);
+        if platform_index < self.platforms.len() {
+            self.rebuild_platform_attachment_body(platform_index);
+        }
         self.platforms_changed();
     }
 
@@ -9236,7 +9248,7 @@ impl RolloutWorld {
             }
         }
         for engine in &self.engines {
-            if engine.active && engine.platform_index == platform_index {
+            if engine.active && !engine.macho_carried && engine.platform_index == platform_index {
                 mass += Fix::ONE / engine.body.inverse_mass;
                 moment += Fix::ONE / engine.body.inverse_inertia;
                 count += 1;
@@ -9518,7 +9530,7 @@ impl RolloutWorld {
             .map_or(Fix::ZERO, |key| key.time);
         let mut platforms_changed = false;
         for engine in &mut self.engines {
-            if !engine.active || engine.born_tick == self.tick {
+            if !engine.active || engine.macho_carried || engine.born_tick == self.tick {
                 continue;
             }
             match engine.phase {
@@ -10629,7 +10641,10 @@ impl RolloutWorld {
                 }
             }
             for engine in &self.engines {
-                if !engine.active || engine.platform_index >= self.platform_dynamics.len() {
+                if !engine.active
+                    || engine.macho_carried
+                    || engine.platform_index >= self.platform_dynamics.len()
+                {
                     continue;
                 }
                 let parent = &mut self.platform_dynamics[engine.platform_index].body;
@@ -11013,6 +11028,7 @@ impl RolloutWorld {
                     continue;
                 };
                 if !engine.active
+                    || engine.macho_carried
                     || engine.platform_index >= self.platform_dynamics.len()
                     || !self.circle_overlaps_entity(query, entity)
                 {
@@ -12642,6 +12658,156 @@ impl RolloutWorld {
         }
     }
 
+    /// MachoThrow2.pickUpNearbyAttachables scans platform children first and
+    /// rope updaters second, retaining the nearest perimeter coordinate. This
+    /// Engine pass also considers the other attachable kinds so a farther
+    /// RocketEngine cannot win merely because their transfer ports are owned
+    /// by the corresponding ability passes.
+    fn macho_pick_up_engine(&mut self, owner: usize, data: &data::RolloutData) {
+        let Some(platform_index) = self.players[owner]
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
+        else {
+            return;
+        };
+        let player_local = self.players[owner].base.local;
+        let circumference = self.platforms[platform_index].surface.circumference();
+        let mut best_fraction = Fix::MAX;
+        let mut best_hierarchy = u32::MAX;
+        let mut best_engine = None;
+        let mut consider = |local: Fix, hierarchy: u32, engine: Option<usize>| {
+            let direct = (local - player_local).abs();
+            let fraction = direct.min(Fix::ONE - direct);
+            if fraction * circumference >= data.macho_throw.max_attachable_distance {
+                return;
+            }
+            if fraction < best_fraction || (fraction == best_fraction && hierarchy < best_hierarchy)
+            {
+                best_fraction = fraction;
+                best_hierarchy = hierarchy;
+                best_engine = engine;
+            }
+        };
+        for spike in &self.spike_attacks {
+            if spike.active && spike.platform_index == platform_index {
+                consider(spike.local, spike.hierarchy_base, None);
+            }
+        }
+        for (engine_index, engine) in self.engines.iter().enumerate() {
+            if engine.active && !engine.macho_carried && engine.platform_index == platform_index {
+                consider(engine.local, engine.hierarchy_base, Some(engine_index));
+            }
+        }
+        for node in &self.tesla_nodes {
+            if node.active && node.platform_index == platform_index {
+                consider(node.local, node.hierarchy_base, None);
+            }
+        }
+        // Ropes are scanned after Transform children and only replace a
+        // candidate at a strictly smaller distance.
+        for rope in &self.ropes {
+            if rope.physics.enabled && rope.platform == Some(platform_index) {
+                let direct = (rope.platform_local - player_local).abs();
+                let fraction = direct.min(Fix::ONE - direct);
+                if fraction * circumference < data.macho_throw.max_attachable_distance
+                    && fraction < best_fraction
+                {
+                    best_fraction = fraction;
+                    best_engine = None;
+                }
+            }
+        }
+        let Some(engine_index) = best_engine else {
+            return;
+        };
+        let old_platform = self.engines[engine_index].platform_index;
+        self.engines[engine_index].macho_carried = true;
+        self.engines[engine_index].platform_index = usize::MAX;
+        if let Some(entity) = self.engines[engine_index].entity {
+            self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+        }
+        self.players[owner].macho_throw.picked_engine = Some(engine_index);
+        self.rebuild_platform_attachment_body(old_platform);
+        self.platforms_changed();
+    }
+
+    /// Reparent the exact detached RocketEngine object to the newly created
+    /// boulder. RocketEngineInit(skipInit:true) resets its fire animation and
+    /// force clock while preserving ownership, scale, duplication metadata,
+    /// collider identity and authored surface offset.
+    fn macho_attach_engine_to_boulder(
+        &mut self,
+        owner: usize,
+        platform_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let Some(engine_index) = self.players[owner].macho_throw.picked_engine.take() else {
+            return;
+        };
+        if engine_index >= self.engines.len()
+            || !self.engines[engine_index].active
+            || !self.engines[engine_index].macho_carried
+        {
+            return;
+        }
+        let source = self.engines[engine_index];
+        let parent_position = self.platforms[platform_index].surface.center;
+        let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
+        let desired_rotation = parent_rotation
+            + Fix::HALF_PI
+            + if self.players[owner].macho_throw.facing_right {
+                Fix::ZERO
+            } else {
+                Fix::PI
+            };
+        let desired_right = Vec2::angle(desired_rotation);
+        let desired_up = desired_right.perp();
+        let old_right = Vec2::angle(source.collider_rotation);
+        let old_root = source.collider_center
+            - (data.engine.rocket_collider_offset * source.scale).complex_mul(old_right);
+        let probe = old_root + desired_up * Fix::from_int(1000);
+        let Ok(closest) = self.platforms[platform_index].surface.closest_point(probe) else {
+            return;
+        };
+        let Ok(local) = self.platforms[platform_index]
+            .surface
+            .local_position(closest, Fix::ZERO)
+        else {
+            return;
+        };
+        let root = self.platforms[platform_index]
+            .surface
+            .position(local, Fix::ZERO)
+            + desired_up * source.surface_offset;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let relative_right = desired_right.complex_mul(inverse_basis);
+        let relative_center = (root - parent_position).complex_mul(inverse_basis)
+            + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
+        let mut child = source.body;
+        child.orientation = desired_rotation;
+        self.attach_engine_body(platform_index, child);
+        let engine = &mut self.engines[engine_index];
+        engine.macho_carried = false;
+        engine.born_tick = self.tick;
+        engine.platform_index = platform_index;
+        engine.local = local;
+        engine.relative_center = relative_center;
+        engine.relative_rotation = desired_rotation - parent_rotation;
+        engine.collider_center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        engine.collider_rotation = desired_rotation;
+        engine.time = Fix::ZERO;
+        engine.phase = 0;
+        engine.ticks = 0;
+        engine.body = child;
+        if let Some(entity) = engine.entity {
+            self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
+            self.entities[entity].inverse_mass = child.inverse_mass.raw();
+        }
+        self.platforms_changed();
+    }
+
     fn spawn_macho_boulder(
         &mut self,
         owner: usize,
@@ -12740,6 +12906,7 @@ impl RolloutWorld {
         if held {
             self.players[owner].macho_throw.held_boulder = Some(boulder_index);
         }
+        self.macho_attach_engine_to_boulder(owner, platform_index, data);
         boulder_index
     }
 
@@ -12925,6 +13092,7 @@ impl RolloutWorld {
                 match phase {
                     0 => {
                         self.next_spawn_hierarchy += data.macho_throw.smoke_updatable_count;
+                        self.macho_pick_up_engine(index, data);
                         let state = &mut self.players[index].macho_throw;
                         state.phase = 1;
                         state.ticks = 0;
@@ -18594,11 +18762,9 @@ impl RolloutWorld {
             self.duplicate_attached_spike(spike_index, direction, data);
             return;
         }
-        if let Some(engine_index) = self
-            .engines
-            .iter()
-            .position(|engine| engine.active && engine.entity == Some(hit.entity))
-        {
+        if let Some(engine_index) = self.engines.iter().position(|engine| {
+            engine.active && !engine.macho_carried && engine.entity == Some(hit.entity)
+        }) {
             self.duplicate_attached_engine(engine_index, direction, caster, data);
             return;
         }
@@ -19242,6 +19408,7 @@ impl RolloutWorld {
         });
         let clone = SpawnedEngine {
             active: true,
+            macho_carried: false,
             born_tick: self.tick,
             owner: caster,
             ability_slot: self.players[caster].active_slot,
@@ -21866,7 +22033,7 @@ impl RolloutWorld {
             }
         }
         for engine in &mut self.engines {
-            if !engine.active {
+            if !engine.active || engine.macho_carried {
                 continue;
             }
             if engine.platform_index == index {
@@ -26509,7 +26676,10 @@ impl RolloutWorld {
         // Positional corrections later in this pass move CompositeBody.position
         // while leaving each child collider center stale until the next pass.
         for engine in &mut self.engines {
-            if !engine.active || engine.platform_index >= self.platforms.len() {
+            if !engine.active
+                || engine.macho_carried
+                || engine.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             let platform = engine.platform_index;
@@ -26677,7 +26847,10 @@ impl RolloutWorld {
         // SpikeAttack child, but has no collision callback of its own.
         scratch.engine_wall_contacts.clear();
         for (engine_index, engine) in self.engines.iter().enumerate() {
-            if !engine.active || engine.platform_index >= self.platforms.len() {
+            if !engine.active
+                || engine.macho_carried
+                || engine.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             let parent_index = engine.platform_index;
@@ -27439,7 +27612,10 @@ impl RolloutWorld {
     fn refresh_engine_entities(&mut self) {
         let data = data::get();
         for engine in &self.engines {
-            if !engine.active || engine.platform_index >= self.platforms.len() {
+            if !engine.active
+                || engine.macho_carried
+                || engine.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             let Some(entity) = engine.entity else {

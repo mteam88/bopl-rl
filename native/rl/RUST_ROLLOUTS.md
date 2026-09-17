@@ -546,8 +546,13 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   registration, composite mass and inertia, cast impulse, startup delay, fixed
   thrust curve, parent spring re-homing, and the resulting platform collisions.
   Its flame ignites the first overlapping Smoke collider without allocation.
-  Smoke chaining, ring eviction, scale changes, platform destruction, time stop,
-  and multiple simultaneous engines still need dedicated differential scenarios.
+  The full source pass also preserves four-entry per-instance eviction, scale,
+  water and destruction handling, startup/live Time Stop, Duplicator lifetime,
+  and the nearest-child MachoThrow detachment/reinitialization onto a boulder.
+  `engine_broad_ab.sh` gates 2,040 optimized-Q32 ticks across the ordinary
+  lifecycle and all 690 stopped passes exactly. Smoke chaining, ring eviction,
+  scale changes, destruction, multiple simultaneous engines and Macho transfer
+  are translated but do not each have a dedicated differential scenario.
   Tesla coil is exact within 16 raw Q32 position units through grounded
   placement, two-node connection, staggered orb activation, lightning flicker,
   and third-cast ring eviction. It preserves DetPhysics' temporary four-body

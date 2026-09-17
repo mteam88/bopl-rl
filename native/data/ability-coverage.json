@@ -46,8 +46,8 @@
       "name": "Engine",
       "prefab": "Assets/GameObject/Engine.prefab",
       "prefab_guid": "06006cbd8160cbe4e8f343b1ec17a96c",
-      "native_status": "partial",
-      "verification": "engine_ability_ab matches 500 exact NativeAOT/Rust Q32 ticks through grounded placement, cast and recovery callbacks, scaled RocketEngine registration, persistent layer-21 box export, composite mass/inertia, cast impulse, startup delay, the full fixed thrust curve, platform spring re-homing, and composite platform collision response. time_stop_engine_ab adds 1,540 exact ticks across all 690 stopped passes for a live attached engine and composite platform, followed by restored force-clock and platform motion. Smoke ignition is source-ported; dedicated smoke-chain, four-slot ring eviction, scale-change, platform-destruction, time-stop, and multi-engine scenarios remain to be goldened. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
+      "native_status": "ported",
+      "verification": "PlantObjectOnPlatform, PlaceRocketEngine and RocketEngine are source-ported wholesale: grounded cast/recovery and failed-ground exit; scale-clamped placement; per-ability four-entry eviction; composite attach/detach mass and inertia; startup, loop and shutdown animations; scaled thrust and Smoke ignition; water shutdown; Time Stop; movable-platform re-homing; platform destruction; Duplicator lifetime; Portal, Black Hole and collision behavior; and nearest-child MachoThrow2 detachment, hidden carry and same-object boulder reinitialization with preserved ownership, scale and collider identity. engine_broad_ab.sh runs 2,040 optimized-Q32 NativeAOT/Rust ticks through ordinary placement, the complete thrust/collision lifecycle and live thrust across all 690 Time Stop passes with restored force clock; both scenarios are exact. Ring eviction, simultaneous engines, Smoke chains, scale effects, destruction, pickup use and the newly translated Macho transfer remain source-ported without separate focused public differentials."
     },
     {
       "id": 6,

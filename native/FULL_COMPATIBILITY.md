@@ -3126,11 +3126,22 @@ value until the next physics pass. Preserving both rules removed a same-pass
 0.00024-unit platform displacement and 0.0134-unit attached-box observation
 difference without changing the previously matched pre-contact trajectory.
 
-`engine_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks exactly through the
-cast, recovery, persistent engine export, startup, sustained thrust, platform
-spring response and the first platform collision. Dedicated smoke-chain,
-four-engine eviction, scale-change, platform-destruction, time-stop and
-multi-engine goldens remain open, so coverage is marked partial.
+The whole-source completion also ports `MachoThrow2`'s nearest-child handoff.
+At the end of Throw's enter animation, the platform perimeter scan arbitrates
+Spike, Engine, Tesla and rope children by wrapped local distance. A selected
+RocketEngine is removed from the old composite and hidden while the boulder is
+formed. The same object is then reparented and reinitialized on the boulder:
+ownership, scale, collider identity and duplication metadata survive, while
+the startup animation and thrust clock restart exactly as `RocketEngineInit`
+requires. The retained record and fixed candidate scan add no tick allocation.
+
+`engine_broad_ab.sh` gates 2,040 optimized-Q32 NativeAOT/Rust ticks. The first
+500 are exact through cast, recovery, persistent export, startup, the complete
+thrust curve, platform spring response and collision. The second 1,540 are
+exact through a live attached engine, all 690 stopped passes, and restored
+force-clock and platform motion. Ring eviction, simultaneous engines, Smoke
+chains, scale changes, platform destruction, pickup use and Macho transfer are
+source-ported but do not each have a standalone public differential.
 
 ### Executable Tesla coil and connected lightning (2026-09-15)
 
