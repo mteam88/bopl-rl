@@ -95,6 +95,10 @@ fixed entry is committed separately with its finding id in the subject.
 - **#9 — fixed.** Duplicated Black Holes now enter DetPhysics' duplicate
   expiry list with the explicit source lifespan of 480 passes (eight seconds),
   rather than inheriting the generic 1800-pass object lifetime.
+- **#10 — fixed.** A duplicated Black Hole now starts with
+  `previous_target_size = 100`, matching the `BlackHole.Init` call made by
+  Unity instantiation before Duplicator assigns its copied mass. Its first
+  growth interpolation therefore has the source radius and pull/eat reach.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
