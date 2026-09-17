@@ -5516,9 +5516,9 @@ impl RolloutWorld {
         }
         let bit = 1u64 << endpoint_index;
         for arrow in &self.arrows {
-            if let Some(entity) = arrow.entity.filter(|_| {
-                arrow.active && arrow.registered && arrow.magnet_holder.is_none()
-            })
+            if let Some(entity) = arrow
+                .entity
+                .filter(|_| arrow.active && arrow.registered && arrow.magnet_holder.is_none())
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, arrow.position, data)
             {
@@ -5548,14 +5548,9 @@ impl RolloutWorld {
             }
         }
         for item in &self.thrown_items {
-            if let Some(entity) = item
-                .entity
-                .filter(|_| {
-                    item.active
-                        && item.body.inverse_mass > Fix::ZERO
-                        && item.magnet_holder.is_none()
-                })
-                && self.entities[entity].flags & E_ACTIVE != 0
+            if let Some(entity) = item.entity.filter(|_| {
+                item.active && item.body.inverse_mass > Fix::ZERO && item.magnet_holder.is_none()
+            }) && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, item.position, data)
             {
                 Self::mark_portal_body_bit(
@@ -5591,8 +5586,7 @@ impl RolloutWorld {
                     && marker.registered
                     && marker.body.inverse_mass > Fix::ZERO
                     && marker.magnet_holder.is_none()
-            })
-                && Self::portal_inside(endpoint, marker.position, data)
+            }) && Self::portal_inside(endpoint, marker.position, data)
             {
                 Self::mark_portal_body_bit(
                     &mut self.portal_body_inside,
@@ -5609,8 +5603,7 @@ impl RolloutWorld {
                     && marker.registered
                     && marker.body.inverse_mass > Fix::ZERO
                     && marker.magnet_holder.is_none()
-            })
-                && Self::portal_inside(endpoint, marker.position, data)
+            }) && Self::portal_inside(endpoint, marker.position, data)
             {
                 Self::mark_portal_body_bit(
                     &mut self.portal_body_inside,
@@ -5802,9 +5795,10 @@ impl RolloutWorld {
         let entry = self.portals[endpoint_index];
         for index in 0..self.arrows.len() {
             let arrow = self.arrows[index];
-            let Some(entity) = arrow.entity.filter(|_| {
-                arrow.active && arrow.registered && arrow.magnet_holder.is_none()
-            }) else {
+            let Some(entity) = arrow
+                .entity
+                .filter(|_| arrow.active && arrow.registered && arrow.magnet_holder.is_none())
+            else {
                 continue;
             };
             if self.entities[entity].flags & E_ACTIVE == 0 {
@@ -5837,14 +5831,9 @@ impl RolloutWorld {
         }
         for index in 0..self.thrown_items.len() {
             let item = self.thrown_items[index];
-            let Some(entity) = item
-                .entity
-                .filter(|_| {
-                    item.active
-                        && item.body.inverse_mass > Fix::ZERO
-                        && item.magnet_holder.is_none()
-                })
-            else {
+            let Some(entity) = item.entity.filter(|_| {
+                item.active && item.body.inverse_mass > Fix::ZERO && item.magnet_holder.is_none()
+            }) else {
                 continue;
             };
             if self.entities[entity].flags & E_ACTIVE == 0 {
@@ -9342,10 +9331,7 @@ impl RolloutWorld {
         {
             slot.base.up = up;
             slot.base.rotation = up.perp_cw().normalized_angle();
-            let alignment = slot
-                .last_movement_input
-                .normalized_safe()
-                .dot(up.perp_cw());
+            let alignment = slot.last_movement_input.normalized_safe().dot(up.perp_cw());
             let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
                 && (alignment >= Fix::ZERO) == slot.facing_right;
             slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
@@ -16092,7 +16078,9 @@ impl RolloutWorld {
             for (arrow_index, arrow) in self.arrows.iter().enumerate() {
                 if !arrow.active
                     || !arrow.registered
-                    || arrow.entity.is_none_or(|entity| !retained.contains(&entity))
+                    || arrow
+                        .entity
+                        .is_none_or(|entity| !retained.contains(&entity))
                 {
                     continue;
                 }
@@ -16112,7 +16100,9 @@ impl RolloutWorld {
             for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
                 if !missile.active
                     || !missile.registered
-                    || missile.entity.is_none_or(|entity| !retained.contains(&entity))
+                    || missile
+                        .entity
+                        .is_none_or(|entity| !retained.contains(&entity))
                 {
                     continue;
                 }
@@ -16152,7 +16142,9 @@ impl RolloutWorld {
             for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active
                     || !cloud.registered
-                    || cloud.entity.is_none_or(|entity| !retained.contains(&entity))
+                    || cloud
+                        .entity
+                        .is_none_or(|entity| !retained.contains(&entity))
                 {
                     continue;
                 }
@@ -16172,9 +16164,7 @@ impl RolloutWorld {
             // RigidBodyAffector bypasses IPhysicsCollider and calls
             // BlackHole.AddForce during every curve sample.
             for (hole_index, hole) in self.black_holes.iter().enumerate() {
-                if !hole.active
-                    || hole.entity.is_none_or(|entity| !retained.contains(&entity))
-                {
+                if !hole.active || hole.entity.is_none_or(|entity| !retained.contains(&entity)) {
                     continue;
                 }
                 if crate::physics::contact::circle_circle(
@@ -16327,9 +16317,10 @@ impl RolloutWorld {
                 target.base.external_velocity += force * Fix::from_int(35);
             }
             for clone in &mut self.abilityless_clones {
-                let Some(entity) = clone.entity.filter(|entity| {
-                    clone.active && retained.contains(entity)
-                }) else {
+                let Some(entity) = clone
+                    .entity
+                    .filter(|entity| clone.active && retained.contains(entity))
+                else {
                     continue;
                 };
                 if self.entities[entity].flags & E_ACTIVE == 0 {
@@ -19473,9 +19464,7 @@ impl RolloutWorld {
         let mut firepoint = self.magnet_firepoint(index, data);
         if !matches!(
             held,
-            MagnetHeld::BlackHole(_)
-                | MagnetHeld::RevivalMarker(_)
-                | MagnetHeld::TeleportMarker(_)
+            MagnetHeld::BlackHole(_) | MagnetHeld::RevivalMarker(_) | MagnetHeld::TeleportMarker(_)
         ) {
             firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
         }
@@ -21185,12 +21174,22 @@ impl RolloutWorld {
         }
         for (index, pickup) in self.ability_pickups.iter().enumerate() {
             if pickup.active && pickup.duplicated {
-                add(pickup.hierarchy_base, PICKUP, index, pickup.duplicate_lifespan);
+                add(
+                    pickup.hierarchy_base,
+                    PICKUP,
+                    index,
+                    pickup.duplicate_lifespan,
+                );
             }
         }
         for (index, hole) in self.black_holes.iter().enumerate() {
             if hole.active && hole.duplicated {
-                add(hole.hierarchy_base, BLACK_HOLE, index, hole.duplicate_lifespan);
+                add(
+                    hole.hierarchy_base,
+                    BLACK_HOLE,
+                    index,
+                    hole.duplicate_lifespan,
+                );
             }
         }
         for (index, rock) in self.duplicated_rocks.iter().enumerate() {
@@ -21213,7 +21212,12 @@ impl RolloutWorld {
         }
         for (index, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active && missile.duplicated {
-                add(missile.hierarchy_base, MISSILE, index, missile.duplicate_lifespan);
+                add(
+                    missile.hierarchy_base,
+                    MISSILE,
+                    index,
+                    missile.duplicate_lifespan,
+                );
             }
         }
         for (index, spike) in self.spike_attacks.iter().enumerate() {
@@ -21223,7 +21227,12 @@ impl RolloutWorld {
         }
         for (index, engine) in self.engines.iter().enumerate() {
             if engine.active && engine.duplicated {
-                add(engine.hierarchy_base, ENGINE, index, engine.duplicate_lifespan);
+                add(
+                    engine.hierarchy_base,
+                    ENGINE,
+                    index,
+                    engine.duplicate_lifespan,
+                );
             }
         }
         for (index, node) in self.tesla_nodes.iter().enumerate() {
@@ -23221,11 +23230,7 @@ impl RolloutWorld {
             if self.duplicate_platform_effects[effect_index].time
                 > data.duplicator.platform_shake_duration
             {
-                spawn.push((
-                    snapshot.source,
-                    spawn_position,
-                    snapshot.spawner_hierarchy,
-                ));
+                spawn.push((snapshot.source, spawn_position, snapshot.spawner_hierarchy));
                 self.duplicate_platform_effects[effect_index].active = false;
             }
         }
@@ -23594,8 +23599,8 @@ impl RolloutWorld {
             }
             PLATFORM_ROTATION => {
                 let platform_index = self.players[index].platform.platform_index;
-                let enter_size = self.players[index].platform.ticks
-                    > pd.anticipation_ticks + pd.enter_ticks;
+                let enter_size =
+                    self.players[index].platform.ticks > pd.anticipation_ticks + pd.enter_ticks;
                 if !self.platform_ability_platform_live(index, platform_index) {
                     if enter_size {
                         self.players[index].platform.phase = PLATFORM_SIZE;
@@ -25117,9 +25122,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let distance = (player.base.position - position).length_squared();
-                if distance < nearest
-                    || (distance == nearest && player_index < victim_owner)
-                {
+                if distance < nearest || (distance == nearest && player_index < victim_owner) {
                     nearest = distance;
                     let capture_radius = radius + Fix::from_f32(0.8) * player.player_scale;
                     victim = (distance < capture_radius * capture_radius).then_some(player_index);
@@ -25646,9 +25649,7 @@ impl RolloutWorld {
     }
 
     fn release_poke_clone(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
-        if victim >= self.abilityless_clones.len()
-            || !self.abilityless_clones[victim].base.alive
-        {
+        if victim >= self.abilityless_clones.len() || !self.abilityless_clones[victim].base.alive {
             return;
         }
         let item = self.thrown_items[item_index];
@@ -27254,7 +27255,8 @@ impl RolloutWorld {
                         if !clone.active || !clone.base.alive || clone.owner == owner {
                             continue;
                         }
-                        if crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
+                        if crate::physics::contact::circle_box(circle, clone.base.collider)
+                            .is_some()
                         {
                             victim = Some(clone_index);
                             victim_is_clone = true;
@@ -28134,27 +28136,27 @@ impl RolloutWorld {
     }
 
     fn sync_abilityless_clone_entity(&mut self, clone_index: usize) {
-            let clone = &self.abilityless_clones[clone_index];
-            if let Some(entity) = clone.entity {
-                let collider = clone.base.collider;
-                self.entities[entity] = CEntity {
-                    id: self.entities[entity].id,
-                    kind: 1,
-                    layer: LAYER_PLAYER,
-                    owner: clone.base.id,
-                    flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-                    hierarchy: self.entities[entity].hierarchy,
-                    x: collider.center.x.raw(),
-                    y: collider.center.y.raw(),
-                    right_x: (collider.right * clone.base.scale).x.raw(),
-                    right_y: (collider.right * clone.base.scale).y.raw(),
-                    up_x: (collider.up * clone.base.scale).x.raw(),
-                    up_y: (collider.up * clone.base.scale).y.raw(),
-                    rotation: clone.base.rotation.raw(),
-                    inverse_mass: -Fix::ONE.raw(),
-                    ..CEntity::default()
-                };
-            }
+        let clone = &self.abilityless_clones[clone_index];
+        if let Some(entity) = clone.entity {
+            let collider = clone.base.collider;
+            self.entities[entity] = CEntity {
+                id: self.entities[entity].id,
+                kind: 1,
+                layer: LAYER_PLAYER,
+                owner: clone.base.id,
+                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                hierarchy: self.entities[entity].hierarchy,
+                x: collider.center.x.raw(),
+                y: collider.center.y.raw(),
+                right_x: (collider.right * clone.base.scale).x.raw(),
+                right_y: (collider.right * clone.base.scale).y.raw(),
+                up_x: (collider.up * clone.base.scale).x.raw(),
+                up_y: (collider.up * clone.base.scale).y.raw(),
+                rotation: clone.base.rotation.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            };
+        }
     }
 
     fn kill_abilityless_clone(&mut self, clone_index: usize, killer: u32) {
@@ -28668,108 +28670,106 @@ impl RolloutWorld {
         {
             return;
         }
-            let mut centers = [Vec2::ZERO; 31];
-            let swept_len = usize::from(self.players[roller].roll.swept_len);
-            centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
-            centers[swept_len] = self.players[roller].base.position;
-            let roller_entity = self.players[roller].roll_entity;
-            let roller_id = self.players[roller].base.id;
+        let mut centers = [Vec2::ZERO; 31];
+        let swept_len = usize::from(self.players[roller].roll.swept_len);
+        centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
+        centers[swept_len] = self.players[roller].base.position;
+        let roller_entity = self.players[roller].roll_entity;
+        let roller_id = self.players[roller].base.id;
 
-            for &center in &centers[..=swept_len] {
-                self.scratch.ray_hits.clear();
-                let query = Circle {
-                    center,
-                    radius: data.roll.radius * self.players[roller].player_scale,
-                };
-                for (entity, row) in self.entities.iter().copied().enumerate() {
-                    if entity == roller_entity
-                        || row.kind > 1
-                        || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                        || data.roll.collision_mask & (1u32 << row.layer) == 0
-                        || !self.circle_overlaps_entity(query, entity)
-                    {
-                        continue;
-                    }
-                    self.scratch.ray_hits.push(SortedRayHit {
-                        distance: Fix::ZERO,
-                        hierarchy: row.id,
-                        kind: row.kind as u8,
-                        index: entity,
-                    });
+        for &center in &centers[..=swept_len] {
+            self.scratch.ray_hits.clear();
+            let query = Circle {
+                center,
+                radius: data.roll.radius * self.players[roller].player_scale,
+            };
+            for (entity, row) in self.entities.iter().copied().enumerate() {
+                if entity == roller_entity
+                    || row.kind > 1
+                    || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || data.roll.collision_mask & (1u32 << row.layer) == 0
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
                 }
-                // CircleCastAll writes circles before boxes in collider
-                // registration order and truncates Roll's retained buffer at
-                // ten PhysicsParents.
-                self.scratch
-                    .ray_hits
-                    .sort_unstable_by_key(|hit| (hit.kind, hit.hierarchy));
-                let hit_count = self.scratch.ray_hits.len().min(10);
+                self.scratch.ray_hits.push(SortedRayHit {
+                    distance: Fix::ZERO,
+                    hierarchy: row.id,
+                    kind: row.kind as u8,
+                    index: entity,
+                });
+            }
+            // CircleCastAll writes circles before boxes in collider
+            // registration order and truncates Roll's retained buffer at
+            // ten PhysicsParents.
+            self.scratch
+                .ray_hits
+                .sort_unstable_by_key(|hit| (hit.kind, hit.hierarchy));
+            let hit_count = self.scratch.ray_hits.len().min(10);
 
-                // CollideExtraHurtBoxes invokes every target callback before
-                // it begins the reciprocal Roll hurtbox callback walk.
-                for hit_offset in 0..hit_count {
-                    let entity = self.scratch.ray_hits[hit_offset].index;
-                    if let Some(target) = self.players.iter().position(|slot| {
-                        self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
-                    }) {
-                        self.kill(target, roller_id, CAUSE_OTHER, true, true);
-                        continue;
-                    }
-                    if let Some(clone) = self
-                        .abilityless_clones
-                        .iter()
-                        .position(|clone| clone.active && clone.entity == Some(entity))
-                    {
-                        self.kill_abilityless_clone(clone, roller_id);
-                        continue;
-                    }
-                    self.player_form_target_callback(entity, center, roller, data);
+            // CollideExtraHurtBoxes invokes every target callback before
+            // it begins the reciprocal Roll hurtbox callback walk.
+            for hit_offset in 0..hit_count {
+                let entity = self.scratch.ray_hits[hit_offset].index;
+                if let Some(target) = self.players.iter().position(|slot| {
+                    self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
+                }) {
+                    self.kill(target, roller_id, CAUSE_OTHER, true, true);
+                    continue;
                 }
+                if let Some(clone) = self
+                    .abilityless_clones
+                    .iter()
+                    .position(|clone| clone.active && clone.entity == Some(entity))
+                {
+                    self.kill_abilityless_clone(clone, roller_id);
+                    continue;
+                }
+                self.player_form_target_callback(entity, center, roller, data);
+            }
 
-                for hit_offset in 0..hit_count {
-                    if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll
-                    {
-                        break;
-                    }
-                    let entity = self.scratch.ray_hits[hit_offset].index;
-                    if let Some(target) = self.players.iter().position(|slot| {
-                        self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
-                    }) {
-                        if self.players[target].active == ActiveAbility::Rock
-                            || (self.players[target].active == ActiveAbility::Roll
-                                && self.players[target].roll.lethal)
-                        {
-                            let killer = self.players[target].base.id;
-                            self.kill(roller, killer, CAUSE_OTHER, true, true);
-                            break;
-                        }
-                        continue;
-                    }
-                    let row = self.entities[entity];
-                    if row.flags & E_DESTROYED != 0
-                        || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
-                    {
-                        continue;
-                    }
-                    let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
-                    if killer != roller_id || can_hurt_owner {
-                        self.kill(
-                            roller,
-                            killer,
-                            if killer == roller_id {
-                                CAUSE_ACCIDENT
-                            } else {
-                                cause
-                            },
-                            true,
-                            true,
-                        );
-                        break;
-                    }
-                }
+            for hit_offset in 0..hit_count {
                 if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
                     break;
                 }
+                let entity = self.scratch.ray_hits[hit_offset].index;
+                if let Some(target) = self.players.iter().position(|slot| {
+                    self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
+                }) {
+                    if self.players[target].active == ActiveAbility::Rock
+                        || (self.players[target].active == ActiveAbility::Roll
+                            && self.players[target].roll.lethal)
+                    {
+                        let killer = self.players[target].base.id;
+                        self.kill(roller, killer, CAUSE_OTHER, true, true);
+                        break;
+                    }
+                    continue;
+                }
+                let row = self.entities[entity];
+                if row.flags & E_DESTROYED != 0 || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
+                {
+                    continue;
+                }
+                let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
+                if killer != roller_id || can_hurt_owner {
+                    self.kill(
+                        roller,
+                        killer,
+                        if killer == roller_id {
+                            CAUSE_ACCIDENT
+                        } else {
+                            cause
+                        },
+                        true,
+                        true,
+                    );
+                    break;
+                }
+            }
+            if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
+                break;
+            }
         }
     }
 
@@ -32276,7 +32276,8 @@ mod tests {
         world.reset(&test_config()).unwrap();
         let platform = 0;
         let center = world.platforms[platform].surface.center;
-        world.platform_dynamics[platform].composite_position = center + Vec2::RIGHT * Fix::from_int(9);
+        world.platform_dynamics[platform].composite_position =
+            center + Vec2::RIGHT * Fix::from_int(9);
         world.platform_dynamics[platform].body.angular_velocity = Fix::ONE;
         let body_position = center + Vec2::RIGHT * Fix::from_int(2);
         let point_velocity = world.drill_platform_velocity(platform, body_position);
@@ -32517,8 +32518,7 @@ mod tests {
         world.tick += 1;
         world.duplicate_platform_effects_tick(data::get(), DT);
 
-        let expected = Fix::from_int(2) * (Fix::ONE - Fix::from_f64(0.2))
-            + Fix::from_f64(0.2);
+        let expected = Fix::from_int(2) * (Fix::ONE - Fix::from_f64(0.2)) + Fix::from_f64(0.2);
         assert_eq!(world.platform_dynamics[source].scale, expected);
         let effect = world
             .duplicate_platform_effects
@@ -32770,7 +32770,10 @@ mod tests {
         assert_eq!(world.players[0].frozen_solid_count, 0);
         assert!(world.players[0].ragdoll.active);
         assert_eq!(world.players[0].ragdoll.duration, Fix::from_f32(0.35));
-        assert_eq!(world.players[0].base.velocity, Vec2::new(Fix::ZERO, Fix::from_int(4)));
+        assert_eq!(
+            world.players[0].base.velocity,
+            Vec2::new(Fix::ZERO, Fix::from_int(4))
+        );
         assert_eq!(world.players[0].timers, [Fix::ZERO; 3]);
     }
 
@@ -32988,7 +32991,10 @@ mod tests {
 
         world.players[0].player_scale = first;
         world.magnet_ability_update_scale(0);
-        assert_eq!(world.players[0].magnet_firepoint_offsets[0], authored * first);
+        assert_eq!(
+            world.players[0].magnet_firepoint_offsets[0],
+            authored * first
+        );
 
         world.players[0].player_scale = second;
         world.magnet_ability_update_scale(0);
@@ -33035,10 +33041,7 @@ mod tests {
         world.teleport_marker_pool[0].body.force = Vec2::ZERO;
 
         world.magnet_try_pickup_item(0, data);
-        assert_eq!(
-            world.players[0].magnet.held,
-            MagnetHeld::RevivalMarker(0)
-        );
+        assert_eq!(world.players[0].magnet.held, MagnetHeld::RevivalMarker(0));
         world.magnet_update_held_item(0, data);
         assert_eq!(world.revival_marker_pool[0].magnet_holder, Some(0));
         world.magnet_fire_held_item(0, Vec2::RIGHT, data);
@@ -33070,7 +33073,12 @@ mod tests {
         world.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
         let position = world.abilityless_clones[0].base.position;
 
-        world.shoot_blink_ray(position - Vec2::RIGHT * Fix::from_int(10), Vec2::RIGHT, 0, data);
+        world.shoot_blink_ray(
+            position - Vec2::RIGHT * Fix::from_int(10),
+            Vec2::RIGHT,
+            0,
+            data,
+        );
 
         assert!(world.abilityless_clones[0].blink_tunnel_active);
         assert!(world.blink_object_tunnels.is_empty());
@@ -33152,8 +33160,7 @@ mod tests {
             let older = Vec2::angle(rng.fix_range(Fix::ZERO, Fix::TAU));
             (newer, older)
         };
-        let amplitude = (Fix::ONE - Fix::from_int(59) / Fix::from_int(60))
-            * Fix::from_f32(0.25);
+        let amplitude = (Fix::ONE - Fix::from_int(59) / Fix::from_int(60)) * Fix::from_f32(0.25);
 
         world.duplicated_objects_tick();
 
@@ -33435,13 +33442,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         world.tick = 1;
-        let end_time = data::get()
-            .engine
-            .force
-            .keys
-            .last()
-            .unwrap()
-            .time;
+        let end_time = data::get().engine.force.keys.last().unwrap().time;
         world.engines.push(SpawnedEngine {
             active: true,
             phase: 1,
@@ -33459,8 +33460,7 @@ mod tests {
     fn composite_rebuild_drops_retired_combined_force() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.platform_dynamics[0].body.force =
-            Vec2::new(Fix::from_int(7), Fix::from_int(-3));
+        world.platform_dynamics[0].body.force = Vec2::new(Fix::from_int(7), Fix::from_int(-3));
 
         world.rebuild_platform_attachment_body(0);
 
@@ -33726,7 +33726,9 @@ mod tests {
         config.player[0].abilities[0] = ABILITY_ROCK;
         world.reset(&config).unwrap();
         let platform = &world.platforms[0];
-        let position = platform.surface.position(Fix::ZERO, world.players[0].base.radius);
+        let position = platform
+            .surface
+            .position(Fix::ZERO, world.players[0].base.radius);
         world.players[0].base.position = position;
         world.players[0].base.grounded = true;
         world.players[0].base.ground = Some(platform.id);
@@ -33796,7 +33798,9 @@ mod tests {
         let five_child_inverse_mass = Fix::ONE
             / (Fix::ONE / before.inverse_mass + Fix::ONE / data.engine.rocket_body.inverse_mass);
         let body_position = world.players[0].base.position;
-        let normal = world.platforms[platform_index].surface.normal(body_position);
+        let normal = world.platforms[platform_index]
+            .surface
+            .normal(body_position);
 
         world.tick += 1;
         assert!(world.spawn_engine(0, data));
@@ -33806,7 +33810,8 @@ mod tests {
             before.velocity + five_child_inverse_mass * (-normal * data.engine.cast_force)
         );
         assert_eq!(
-            world.engines
+            world
+                .engines
                 .iter()
                 .filter(|engine| engine.active && engine.owner == 0)
                 .count(),
