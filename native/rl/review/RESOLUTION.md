@@ -123,6 +123,11 @@ fixed entry is committed separately with its finding id in the subject.
   nearest FixTransform position, stolen, held without item wall raycasts,
   and fired with `FireForce * BoplBody.Scale` (Revival's live scale and
   Teleport's unchanged transform scale), matching the source spell branch.
+- **#31 — fixed.** Blink now recognizes abilityless clone Player entities as
+  players rather than generic objects. Hits apply the player cooldown and
+  1.2-second player tunnel, detach through the player relocation path, use
+  the player release-position RNG/geometry, and reactivate after the same
+  strict lifetime boundary instead of taking the four-second object path.
 - **#32 — fixed.** Tesla nodes now retain separate raw FixTransform and
   clamped DPhysicsCircle scales. Surface/hitbox offsets use the raw caster
   scale while collider radius honors the authored `0.6..5` clamp.

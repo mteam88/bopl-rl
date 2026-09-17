@@ -1556,6 +1556,11 @@ pub struct AbilitylessClone {
     pub owner: usize,
     pub base: Player,
     pub obs_state: u32,
+    pub blink_tunnel_active: bool,
+    pub blink_tunnel_born_tick: u32,
+    pub blink_tunnel_age: Fix,
+    pub blink_tunnel_released: bool,
+    pub blink_reactivated_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -4759,6 +4764,9 @@ impl RolloutWorld {
         }
         if has(ABILITY_GOLD_MUSHROOM) {
             self.abilityless_clones_tick(actions);
+        }
+        if has(ABILITY_GOLD_MUSHROOM) && has(ABILITY_BLINK) {
+            self.blink_clone_tunnels_tick(data, updater_dt);
         }
         let physics_dt = DT * self.player_time_scale;
         if has(ABILITY_BOW) {
@@ -20258,6 +20266,11 @@ impl RolloutWorld {
             owner: victim,
             base,
             obs_state: STATE_FALL,
+            blink_tunnel_active: false,
+            blink_tunnel_born_tick: 0,
+            blink_tunnel_age: Fix::ZERO,
+            blink_tunnel_released: false,
+            blink_reactivated_tick: None,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -21593,6 +21606,14 @@ impl RolloutWorld {
             self.begin_blink_tunnel(caster, victim, data);
             return;
         }
+        if let Some(clone) = self
+            .abilityless_clones
+            .iter()
+            .position(|clone| clone.active && clone.entity == Some(entity))
+        {
+            self.begin_blink_clone_tunnel(caster, clone, data);
+            return;
+        }
         if let Some(platform_index) = self
             .platform_entities
             .iter()
@@ -21685,6 +21706,28 @@ impl RolloutWorld {
         slot.blink_tunnel_born_tick = self.tick;
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
+    }
+
+    fn begin_blink_clone_tunnel(
+        &mut self,
+        caster: usize,
+        clone_index: usize,
+        data: &data::RolloutData,
+    ) {
+        let caster_slot = self.players[caster].active_slot;
+        self.players[caster].cooldowns[caster_slot] = data.blink.on_player_hit_cooldown;
+        let clone = &mut self.abilityless_clones[clone_index];
+        if !clone.blink_tunnel_active {
+            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+        }
+        clone.blink_tunnel_active = true;
+        clone.blink_tunnel_born_tick = self.tick;
+        clone.blink_tunnel_age = Fix::ZERO;
+        clone.blink_tunnel_released = false;
+        clone.blink_reactivated_tick = None;
+        if let Some(entity) = clone.entity {
+            self.entities[entity].flags &= !E_ACTIVE;
+        }
     }
 
     fn begin_blink_object_tunnel(
@@ -21837,6 +21880,57 @@ impl RolloutWorld {
                 }
                 self.players[victim].base.sync_collider();
                 self.players[victim].blink_tunnel_released = true;
+            }
+        }
+    }
+
+    fn blink_clone_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for clone_index in 0..self.abilityless_clones.len() {
+            if !self.abilityless_clones[clone_index].active {
+                self.abilityless_clones[clone_index].blink_tunnel_active = false;
+                continue;
+            }
+            if !self.abilityless_clones[clone_index].blink_tunnel_active
+                || self.abilityless_clones[clone_index].blink_tunnel_born_tick == self.tick
+            {
+                continue;
+            }
+            if self.abilityless_clones[clone_index].blink_tunnel_age > data.blink.player_duration {
+                let clone = &mut self.abilityless_clones[clone_index];
+                clone.blink_tunnel_active = false;
+                clone.blink_reactivated_tick = Some(self.tick);
+                if let Some(entity) = clone.entity
+                    && self.entities[entity].flags & (E_REMOVED | E_DESTROYED) == 0
+                {
+                    self.entities[entity].flags |= E_ACTIVE;
+                }
+            }
+            self.abilityless_clones[clone_index].blink_tunnel_age += updater_dt;
+            if !self.abilityless_clones[clone_index].blink_tunnel_released
+                && self.abilityless_clones[clone_index].blink_tunnel_age
+                    >= data.blink.player_duration - data.blink.tunnel_release_duration
+            {
+                let owner = self.abilityless_clones[clone_index].owner;
+                std::mem::swap(
+                    &mut self.players[owner].base,
+                    &mut self.abilityless_clones[clone_index].base,
+                );
+                if self.players[owner].base.grounded {
+                    self.release_grounded_blink_player(owner);
+                } else {
+                    self.release_airborne_blink_player(owner);
+                }
+                self.players[owner].base.sync_collider();
+                std::mem::swap(
+                    &mut self.players[owner].base,
+                    &mut self.abilityless_clones[clone_index].base,
+                );
+                self.abilityless_clones[clone_index].blink_tunnel_released = true;
+            }
+            if self.abilityless_clones[clone_index].blink_tunnel_active
+                && let Some(entity) = self.abilityless_clones[clone_index].entity
+            {
+                self.entities[entity].flags &= !E_ACTIVE;
             }
         }
     }
@@ -27330,6 +27424,8 @@ impl RolloutWorld {
         for clone_index in 0..self.abilityless_clones.len() {
             if !self.abilityless_clones[clone_index].active
                 || self.abilityless_clones[clone_index].born_tick >= self.tick
+                || self.abilityless_clones[clone_index].blink_tunnel_active
+                || self.abilityless_clones[clone_index].blink_reactivated_tick == Some(self.tick)
                 || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
             {
                 continue;
@@ -31702,6 +31798,41 @@ mod tests {
             world.teleport_marker_pool[0].body.force,
             Vec2::RIGHT * data.magnet.fire_force
         );
+    }
+
+    #[test]
+    fn blink_routes_abilityless_clone_through_player_tunnel() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let data = data::get();
+        world.duplicate_player_target(1, Vec2::ZERO, Vec2::UP, data);
+        let entity = world.abilityless_clones[0].entity.unwrap();
+        for row in &mut world.entities {
+            row.flags = 0;
+        }
+        world.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+        let position = world.abilityless_clones[0].base.position;
+
+        world.shoot_blink_ray(position - Vec2::RIGHT * Fix::from_int(10), Vec2::RIGHT, 0, data);
+
+        assert!(world.abilityless_clones[0].blink_tunnel_active);
+        assert!(world.blink_object_tunnels.is_empty());
+        assert_eq!(
+            world.players[0].cooldowns[world.players[0].active_slot],
+            data.blink.on_player_hit_cooldown
+        );
+        assert_eq!(world.entities[entity].flags & E_ACTIVE, 0);
+
+        for _ in 0..100 {
+            world.tick += 1;
+            world.blink_clone_tunnels_tick(data, DT);
+            if !world.abilityless_clones[0].blink_tunnel_active {
+                break;
+            }
+        }
+        assert!(!world.abilityless_clones[0].blink_tunnel_active);
+        assert_ne!(world.entities[entity].flags & E_ACTIVE, 0);
+        assert!(world.abilityless_clones[0].blink_tunnel_released);
     }
 
     #[test]
