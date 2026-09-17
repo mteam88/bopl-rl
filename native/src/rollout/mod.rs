@@ -19468,6 +19468,15 @@ impl RolloutWorld {
             };
         }
 
+        // ShootDuplicator overwrites an initial below-water hit with the
+        // casting gun's own Player body, then duplicates it upward. This is
+        // independent of whether the triple ray found another collider.
+        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
+            let position = self.players[caster].base.position;
+            self.duplicate_player_target(caster, position, Vec2::UP, data);
+            return;
+        }
+
         let Some(hit) = selected else {
             return;
         };
@@ -31125,6 +31134,25 @@ mod tests {
 
         world.shoot_blink_ray(origin, Vec2::RIGHT, 1, data::get());
         assert!(world.players[1].blink_tunnel_active);
+    }
+
+    #[test]
+    fn duplicator_self_clones_below_scene_water_height() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let origin = Vec2::new(Fix::ZERO, Fix::from_f32(-11.5));
+
+        world.shoot_duplicator_ray(origin, Vec2::RIGHT, 0, data::get(), false);
+
+        assert_eq!(
+            world
+                .abilityless_clones
+                .iter()
+                .filter(|clone| clone.active && clone.owner == 0)
+                .count(),
+            1
+        );
+        assert!(world.abilityless_clones[0].base.velocity.y > Fix::ZERO);
     }
 
     #[test]

@@ -49,6 +49,10 @@ fixed entry is committed separately with its finding id in the subject.
   water collider top (`-11.95`), so muzzles in the intervening band fired an
   ordinary ray. The report's described gameplay consequence and cited C#
   lines were correct; only its opening value attribution was backwards.
+- **#3 — fixed.** An initial Duplicator shot at or below
+  `SceneBounds.WaterHeight` now replaces the ray result with the casting gun's
+  own Player body and spawns the self-clone upward. Reflected water hits keep
+  the existing recursive no-water-mask path.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
