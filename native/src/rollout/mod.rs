@@ -28966,6 +28966,13 @@ impl RolloutWorld {
     /// into the collider every pass (DetPhysics.cs:2498-2530), so inactive
     /// rows keep the position of their last active pass.
     fn refresh_actor_entities(&mut self) {
+        let simple_mask = ability_bit(ABILITY_DASH)
+            | ability_bit(ABILITY_GUST)
+            | ability_bit(ABILITY_INVISIBILITY);
+        if self.active_subsystems & !simple_mask == 0 && self.ability_pickups.is_empty() {
+            self.refresh_simple_actor_entities();
+            return;
+        }
         let data = data::get();
         for index in 0..self.players.len() {
             let (
@@ -30111,6 +30118,124 @@ impl RolloutWorld {
             e.y = position.y.raw();
             e.vx = marker.velocity.x.raw();
             e.vy = marker.velocity.y.raw();
+        }
+    }
+
+    /// Refresh the only actor rows populated by the default loadout without
+    /// walking the other twenty-four empty ability slots. The formulas and
+    /// exit-pass handling are identical to `refresh_actor_entities` above.
+    fn refresh_simple_actor_entities(&mut self) {
+        let data = data::get();
+        for slot in &self.players {
+            if slot.out || slot.revival_clone_pending || slot.stock_clone_pending {
+                continue;
+            }
+
+            let alive = slot.base.alive && slot.unspawned == 0;
+            let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
+            let teleporting = slot.teleport_effect_active || slot.blink_tunnel_active;
+            let dashing = slot.base.dash.active;
+            let in_ability = slot.active != ActiveAbility::None;
+            let synced = slot.base.collider.center;
+            let rotation = slot.base.collider_rotation;
+            let exit_position = slot.reported_position;
+
+            let body = &mut self.entities[slot.body_entity];
+            let body_was_active = body.flags & E_ACTIVE != 0;
+            if !alive {
+                body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
+            } else if teleporting {
+                body.flags = E_ENABLED | E_TRIGGER;
+            } else if choosing_respawn {
+                body.flags = E_ACTIVE | E_TRIGGER;
+            } else if dashing || in_ability {
+                body.flags = E_ENABLED | E_TRIGGER;
+            } else {
+                body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+            }
+            let body_active = body.flags & E_ACTIVE != 0;
+            let (center, angle) = if body_active || teleporting {
+                (synced, rotation)
+            } else {
+                (slot.ability_origin, slot.ability_origin_rotation)
+            };
+            if body_active || body_was_active || teleporting {
+                body.x = center.x.raw();
+                body.y = center.y.raw();
+                body.vx = 0;
+                body.vy = 0;
+                let (right, up) = if body_active || teleporting {
+                    (slot.base.collider.right, slot.base.collider.up)
+                } else {
+                    let basis = Vec2::angle(angle);
+                    (
+                        (Vec2::RIGHT / slot.body_inverse_extents.x).complex_mul(basis),
+                        (Vec2::UP / slot.body_inverse_extents.y).complex_mul(basis),
+                    )
+                };
+                body.right_x = right.x.raw();
+                body.right_y = right.y.raw();
+                body.up_x = up.x.raw();
+                body.up_y = up.y.raw();
+                body.rotation = angle.raw();
+            }
+
+            if slot.dash_entity != usize::MAX {
+                let dash_box = &mut self.entities[slot.dash_entity];
+                let dash_was_active = dash_box.flags & E_ACTIVE != 0;
+                if alive && dashing {
+                    dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
+                    dash_box.owner = slot.base.id;
+                } else {
+                    dash_box.flags = E_ENABLED | E_TRIGGER;
+                }
+                if (alive && dashing) || dash_was_active {
+                    let (center, angle) = if alive && dashing {
+                        (synced, rotation)
+                    } else {
+                        (exit_position, slot.base.dash.exit_rotation)
+                    };
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(angle),
+                        data.dash.hurtbox_extents,
+                    );
+                    dash_box.x = center.x.raw();
+                    dash_box.y = center.y.raw();
+                    dash_box.vx = 0;
+                    dash_box.vy = 0;
+                    dash_box.right_x = collider.right.x.raw();
+                    dash_box.right_y = collider.right.y.raw();
+                    dash_box.up_x = collider.up.x.raw();
+                    dash_box.up_y = collider.up.y.raw();
+                    dash_box.rotation = angle.raw();
+                }
+            }
+
+            if slot.gust_entity != usize::MAX {
+                let circle = &mut self.entities[slot.gust_entity];
+                let was_active = circle.flags & E_ACTIVE != 0;
+                let gusting = alive && slot.active == ActiveAbility::Gust;
+                circle.flags = if gusting {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
+                } else {
+                    E_ENABLED | E_TRIGGER
+                };
+                if gusting {
+                    circle.owner = slot.base.id;
+                }
+                if gusting || was_active {
+                    let (position, rotation) = if gusting {
+                        (slot.base.position, slot.base.rotation)
+                    } else {
+                        (exit_position, Fix::ZERO)
+                    };
+                    let offset = Vec2::angle(rotation).complex_mul(data.gust.collider_offset);
+                    circle.x = (position + offset).x.raw();
+                    circle.y = (position + offset).y.raw();
+                    circle.rotation = rotation.raw();
+                }
+            }
         }
     }
 
