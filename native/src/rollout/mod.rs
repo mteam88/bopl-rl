@@ -6731,6 +6731,8 @@ impl RolloutWorld {
                     }
                     ABILITY_ROLL => {
                         let grounded = self.players[index].base.grounded;
+                        let roll_physics_radius =
+                            data.roll.physics_radius * self.players[index].player_scale;
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -6738,9 +6740,7 @@ impl RolloutWorld {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
                                 .map_or(base.position, |platform| {
-                                    platform
-                                        .surface
-                                        .position(base.local, data.roll.physics_radius)
+                                    platform.surface.position(base.local, roll_physics_radius)
                                 })
                         } else {
                             self.players[index].base.position
@@ -6757,7 +6757,7 @@ impl RolloutWorld {
                             ..RollState::default()
                         };
                         slot.base.position = form_position;
-                        slot.base.radius = data.roll.physics_radius;
+                        slot.base.radius = roll_physics_radius;
                         slot.base.constants = data.roll.constants.clone();
                         slot.base.rotation = if grounded {
                             slot.base.rotation
@@ -7895,7 +7895,8 @@ impl RolloutWorld {
         if self.players[index].roll.charging || speed == Fix::ZERO {
             return;
         }
-        let count = (speed.abs() * DT * data.roll.move_collision_density / data.roll.radius)
+        let hurtbox_radius = data.roll.radius * self.players[index].player_scale;
+        let count = (speed.abs() * DT * data.roll.move_collision_density / hurtbox_radius)
             .to_int()
             .max(0) as usize
             + 1;
@@ -7933,6 +7934,7 @@ impl RolloutWorld {
         visited: &mut [u32; 5],
         data: &data::RolloutData,
     ) {
+        let physics_radius = data.roll.physics_radius * self.players[index].player_scale;
         // The source recurses until a hop has no blocker. The five entries
         // limit only which prior platforms are excluded, not recursion depth;
         // the residual movement is multiplied by dt on every hop.
@@ -7953,7 +7955,7 @@ impl RolloutWorld {
             let sign = movement.sign();
             let origin = self.platforms[platform_index]
                 .surface
-                .position(self.players[index].base.local, data.roll.physics_radius);
+                .position(self.players[index].base.local, physics_radius);
             let direction =
                 self.platforms[platform_index].surface.forward(origin) * Fix::from_int(sign);
             let mut nearest = Fix::from_int(1_000_000_000);
@@ -7980,13 +7982,13 @@ impl RolloutWorld {
             let allowed = movement.abs().min(nearest) * Fix::from_int(sign);
             let next_local = self.platforms[platform_index].surface.move_unblocked(
                 self.players[index].base.local,
-                data.roll.physics_radius,
+                physics_radius,
                 allowed,
                 Fix::ONE,
             );
             let next_position = self.platforms[platform_index]
                 .surface
-                .position(next_local, data.roll.physics_radius);
+                .position(next_local, physics_radius);
             self.players[index].base.local = next_local;
             self.players[index].base.position = next_position;
             let Some(blocking) = blocking else {
@@ -7994,7 +7996,7 @@ impl RolloutWorld {
             };
             let Ok(local) = self.platforms[blocking]
                 .surface
-                .local_position(next_position, data.roll.physics_radius)
+                .local_position(next_position, physics_radius)
             else {
                 return;
             };
@@ -8013,15 +8015,17 @@ impl RolloutWorld {
             && let Some(platform) =
                 ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
         {
+            let scale = self.players[index].player_scale;
             exit_position -= platform.surface.normal(exit_position)
-                * (data.roll.physics_radius - data.player.radius);
+                * (data.roll.physics_radius - data.player.radius)
+                * scale;
         }
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
         // Roll.ExitAbility leaves Ability.KillPlayersOnContact unchanged on
         // the now-inactive prefab; the next OnEnterAbility clears it.
         slot.base.constants = data.player.constants.clone();
-        slot.base.radius = data.player.radius;
+        slot.base.radius = data.player.radius * slot.player_scale;
         slot.base.rotation = Fix::ZERO;
         if grounded {
             slot.base.position = exit_position;
@@ -27522,7 +27526,7 @@ impl RolloutWorld {
                 self.scratch.ray_hits.clear();
                 let query = Circle {
                     center,
-                    radius: data.roll.radius,
+                    radius: data.roll.radius * self.players[roller].player_scale,
                 };
                 for (entity, row) in self.entities.iter().copied().enumerate() {
                     if entity == roller_entity
@@ -29446,7 +29450,7 @@ impl RolloutWorld {
                     circle.y = position.y.raw();
                     circle.vx = 0;
                     circle.vy = 0;
-                    circle.radius = data.roll.radius.raw();
+                    circle.radius = (data.roll.radius * slot.player_scale).raw();
                     circle.rotation = rotation.raw();
                 }
             }

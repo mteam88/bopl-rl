@@ -32,6 +32,9 @@ fixed entry is committed separately with its finding id in the subject.
   three phases now match the environment-owned C# components.
 - **#38 — fixed.** Time Stop's exit offset now multiplies by the caster's live
   player scale, matching `CastSpell.ExitAbility`.
+- **#6 — fixed.** Roll now scales its physics radius, lethal hurtbox radius,
+  swept-contact radius, platform-hop geometry, and exit radius/offset by the
+  player's live scale.
 
 ## Projectiles
 
