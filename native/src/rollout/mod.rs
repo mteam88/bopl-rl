@@ -17021,8 +17021,8 @@ impl RolloutWorld {
                 Fix::ONE
             };
         let position = self.players[index].base.position
-            + side * data.mine.throw_position.x
-            + up * data.mine.throw_position.y;
+            + side * data.mine.throw_position.x * self.players[index].player_scale
+            + up * data.mine.throw_position.y * self.players[index].player_scale;
         let velocity = if grounded {
             let strength = if self.players[index].throw_item.direction.dot(up) < Fix::ZERO {
                 data.mine.min_throw_strength
@@ -31082,6 +31082,27 @@ mod tests {
             item.hurt_owner_delay,
             grenade.hurt_owner_delay * Fix::from_int(2)
         );
+    }
+
+    #[test]
+    fn mine_spawn_offset_uses_caster_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let start = world.players[0].base.position;
+        world.players[0].active = ActiveAbility::Mine;
+        world.players[0].active_slot = 0;
+        world.players[0].player_scale = Fix::from_int(2);
+        world.players[0].facing_right = false;
+        world.players[0].throw_item.grounded = false;
+
+        world.fire_mine(0, data::get());
+
+        let item = world.thrown_items[world.players[0].throw_item.item.unwrap()];
+        let offset = Vec2::new(
+            data::get().mine.throw_position.x,
+            data::get().mine.throw_position.y,
+        ) * Fix::from_int(2);
+        assert_eq!(item.position, start + offset);
     }
 
     #[test]
