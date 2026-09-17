@@ -634,11 +634,25 @@ def tally_counts(names, records):
     return counts
 
 
+class _ExcludedRounds(set):
+    """(session, round) pairs plus whole sessions (an excluded.json entry without 'rounds')."""
+
+    def __init__(self):
+        super().__init__()
+        self.sessions = set()
+
+    def __contains__(self, pair):
+        return super().__contains__(pair) or (isinstance(pair, tuple) and pair and pair[0] in self.sessions)
+
+
 def excluded_rounds(path):
+    pairs = _ExcludedRounds()
     if not path or not Path(path).is_file():
-        return set()
-    pairs = set()
+        return pairs
     for item in json.loads(Path(path).read_text()):
+        if 'rounds' not in item:
+            pairs.sessions.add(item['session'])
+            continue
         for round_id in item.get('rounds') or ():
             pairs.add((item['session'], int(round_id)))
     return pairs

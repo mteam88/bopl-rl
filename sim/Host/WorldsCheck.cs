@@ -154,7 +154,7 @@ namespace BoplSim.Host
 						terminal = started && GameSessionHandler.HasGameEnded();
 					}
 					wire.SetLength(0);
-					RlObservation.Write(payload, 2, episodeTicks, terminal ? 1u : 0u, 240);
+					RlObservation.Write(payload, 3, episodeTicks, terminal ? 1u : 0u, 240);
 					payload.Flush();
 					checksum = Fnv(checksum, wire.GetBuffer(), (int)wire.Length);
 					result.PerStep.Add(checksum);

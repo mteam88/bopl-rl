@@ -31,7 +31,7 @@ pub mod abi;
 pub mod data;
 mod rope_abilities;
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 pub const MAP_COUNT: u32 = 5;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
 pub const ABILITY_COUNT: u32 = 39;
@@ -163,6 +163,8 @@ pub struct CEntity {
     pub rotation: i64,
     pub angular_velocity: i64,
     pub inverse_mass: i64,
+    /// Q32.32 nominal timer ticks consumed per simulation tick.
+    pub clock_rate: i64,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -195,6 +197,9 @@ pub struct CHeader {
     pub slime_count: u32,
     pub simulation_time: i64,
     pub player_time_scale: i64,
+    pub simulation_time_since_level_loaded: i64,
+    pub sudden_death: u32,
+    pub reserved: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -229,6 +234,16 @@ const E_TRIGGER: u32 = 8;
 /// Collider belongs to a DetPhysics CompositeBody. This is exported by the
 /// oracle for both the rounded-rect root and each attached child.
 const E_COMPOSITE: u32 = 16;
+const E_DETACHED: u32 = 1 << 5;
+const E_TIMER_KNOWN: u32 = 1 << 6;
+const E_PICKUP: u32 = 1 << 7;
+const E_PROJECTILE: u32 = 1 << 8;
+const E_SPARK_NODE: u32 = 1 << 9;
+const E_FLAMMABLE_SMOKE: u32 = 1 << 10;
+const E_EXPLOSIVE: u32 = 1 << 11;
+const E_HITBOX: u32 = 1 << 12;
+const E_CONTACT_DAMAGE: u32 = 1 << 13;
+const E_CONTACT_DAMAGE_KNOWN: u32 = 1 << 14;
 /// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
 /// updatable are removed before the same pass's contacts and never observed;
 /// one destroyed by a collision callback is observed once, flagged
@@ -236,12 +251,45 @@ const E_COMPOSITE: u32 = 16;
 /// remove-destroyed step). Such rows are not emitted.
 const E_REMOVED: u32 = 1 << 31;
 
+#[inline]
+const fn ability_collider_flags(ability: u32) -> u32 {
+    E_CONTACT_DAMAGE_KNOWN
+        | if ability == ABILITY_ROCK {
+            E_CONTACT_DAMAGE
+        } else {
+            0
+        }
+}
+
 // Slime flags (RlObservation.Slime).
 const S_ACTIVE: u32 = 1;
 const S_SPAWNED: u32 = 2;
 const S_IN_ABILITY: u32 = 4;
 const S_SUPPRESS_INPUT: u32 = 8;
 const S_SIMULATED: u32 = 16;
+const S_ABILITYLESS: u32 = 32;
+const S_PICKUP_SLOT_SHIFT: u32 = 6;
+
+const E_COMPONENT_METADATA: u32 = E_TIMER_KNOWN
+    | E_PICKUP
+    | E_PROJECTILE
+    | E_SPARK_NODE
+    | E_FLAMMABLE_SMOKE
+    | E_EXPLOSIVE
+    | E_HITBOX
+    | E_CONTACT_DAMAGE
+    | E_CONTACT_DAMAGE_KNOWN;
+
+#[inline]
+fn remaining_ticks(seconds: Fix) -> u32 {
+    if seconds <= Fix::ZERO {
+        return 0;
+    }
+    let raw = seconds.raw();
+    let step = DT.raw();
+    let ticks = ((raw - 1) / step + 1) as u64;
+    ticks.min(u64::from(u32::MAX)) as u32
+}
 
 // Slime states (SlimeController.State).
 const STATE_IDLE: u32 = 0;
@@ -2725,7 +2773,8 @@ impl RolloutWorld {
                     kind: 0,
                     layer: LAYER_PLAYER,
                     owner: 0,
-                    flags: E_TRIGGER,
+                    flags: E_TRIGGER | ability_collider_flags(ability),
+                    reserved: [ability, 0],
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: offset.x.raw(),
                     y: offset.y.raw(),
@@ -2921,12 +2970,17 @@ impl RolloutWorld {
                 };
                 *target = self.entities.len();
                 let id = self.next_id();
+                let ability = if body {
+                    ABILITY_NULL
+                } else {
+                    resolved_abilities[i][s - 1]
+                };
                 self.entities.push(CEntity {
                     id,
                     kind: 1,
                     layer: LAYER_PLAYER,
                     owner: if body { i as u32 + 1 } else { 0 },
-                    flags: if body {
+                    flags: (if body {
                         E_ACTIVE | E_ENABLED | E_TRIGGER
                     } else if matches!(
                         resolved_abilities[i][s - 1],
@@ -2948,7 +3002,12 @@ impl RolloutWorld {
                         E_ENABLED | E_TRIGGER
                     } else {
                         E_TRIGGER
+                    }) | if body {
+                        0
+                    } else {
+                        ability_collider_flags(ability)
                     },
+                    reserved: [ability, 0],
                     hierarchy,
                     x: if !body && resolved_abilities[i][s - 1] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
@@ -3430,12 +3489,14 @@ impl RolloutWorld {
             id,
             kind: 0,
             layer: pickup.layer,
-            flags: E_ACTIVE,
+            flags: E_ACTIVE | E_TIMER_KNOWN | E_PICKUP,
+            reserved: [ability, remaining_ticks(pickup.swap_period)],
             hierarchy: 100_000_000 + hierarchy_base + pickup.collider_hierarchy,
             x: (position + pickup.offset).x.raw(),
             y: (position + pickup.offset).y.raw(),
             radius: pickup.radius.raw(),
             inverse_mass: body.inverse_mass.raw(),
+            clock_rate: Fix::ONE.raw(),
             ..CEntity::default()
         });
         self.ability_pickups.push(AbilityPickup {
@@ -3724,7 +3785,8 @@ impl RolloutWorld {
                 id,
                 kind: 0,
                 layer: LAYER_PLAYER,
-                flags: E_ENABLED | E_TRIGGER,
+                flags: E_ENABLED | E_TRIGGER | ability_collider_flags(ability),
+                reserved: [ability, 0],
                 hierarchy: 100_000_000 + hierarchy_base + relative_hierarchy,
                 x: offset.x.raw(),
                 y: offset.y.raw(),
@@ -3858,7 +3920,8 @@ impl RolloutWorld {
             id,
             kind: 1,
             layer: LAYER_PLAYER,
-            flags: E_ENABLED | E_TRIGGER,
+            flags: E_ENABLED | E_TRIGGER | ability_collider_flags(ability),
+            reserved: [ability, 0],
             hierarchy: 100_000_000 + hierarchy_base + relative_hierarchy,
             x: offset.x.raw(),
             y: offset.y.raw(),
@@ -4697,7 +4760,7 @@ impl RolloutWorld {
             kind: 0,
             layer: data.portal_gun.shot_layer,
             owner: self.players[owner].base.id,
-            flags: E_ACTIVE | E_ENABLED,
+            flags: E_ACTIVE | E_ENABLED | E_PROJECTILE,
             hierarchy: 100_000_000 + hierarchy_base + data.portal_gun.shot_collider_hierarchy,
             x: position.x.raw(),
             y: position.y.raw(),
@@ -14612,7 +14675,8 @@ impl RolloutWorld {
                     id,
                     kind: 0,
                     layer: LAYER_PLAYER,
-                    flags: E_ENABLED | E_TRIGGER,
+                    flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
+                    reserved: [abilities[slot], 0],
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: offset.x.raw(),
                     y: offset.y.raw(),
@@ -14758,7 +14822,8 @@ impl RolloutWorld {
                     id,
                     kind: 1,
                     layer: LAYER_PLAYER,
-                    flags: E_ENABLED | E_TRIGGER,
+                    flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
+                    reserved: [abilities[slot], 0],
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
@@ -15040,7 +15105,8 @@ impl RolloutWorld {
                 self.entities.push(CEntity {
                     kind: 0,
                     layer: LAYER_PLAYER,
-                    flags: E_ENABLED | E_TRIGGER,
+                    flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
+                    reserved: [abilities[slot], 0],
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: offset.x.raw(),
                     y: offset.y.raw(),
@@ -15214,7 +15280,8 @@ impl RolloutWorld {
                 self.entities.push(CEntity {
                     kind: 1,
                     layer: LAYER_PLAYER,
-                    flags: E_ENABLED | E_TRIGGER,
+                    flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
+                    reserved: [abilities[slot], 0],
                     hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
                     x: if abilities[slot] == ABILITY_SPIKE {
                         data.spike.collider_offset.x.raw()
@@ -22495,6 +22562,7 @@ impl RolloutWorld {
             layer: LAYER_WALL,
             owner: 0,
             flags: E_ACTIVE | E_ENABLED,
+            reserved: [ABILITY_PLATFORM, 0],
             hierarchy: 300_000_000 + id,
             inverse_mass: pd.spawn_body.inverse_mass.raw(),
             ..CEntity::default()
@@ -22944,7 +23012,8 @@ impl RolloutWorld {
                 kind: 0,
                 layer: LAYER_PROJECTILE,
                 owner: arrow.owner,
-                flags: E_ACTIVE | E_ENABLED,
+                flags: E_ACTIVE | E_ENABLED | E_PROJECTILE,
+                reserved: [ABILITY_BOW, 0],
                 hierarchy: 100_000_000
                     + arrow.hierarchy_base
                     + data::get().arrow.collider_hierarchy,
@@ -28123,6 +28192,7 @@ impl RolloutWorld {
             self.warmup,
             flags,
             self.player_time_scale,
+            self.sudden_death,
         );
         self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
@@ -28149,6 +28219,7 @@ impl RolloutWorld {
             self.warmup,
             flags,
             self.player_time_scale,
+            self.sudden_death,
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
@@ -28195,6 +28266,172 @@ impl RolloutWorld {
         self.refresh_engine_entities();
         self.refresh_tesla_entities();
         self.refresh_platform_entities();
+        self.refresh_entity_metadata();
+    }
+
+    /// Rebuild ABI-v3 semantic metadata after collider refreshes. Several
+    /// gameplay paths replace a complete `CEntity` to mirror DetPhysics, so
+    /// component flags and timer fields are applied in one final allocation-
+    /// free pass immediately before publishing the observation.
+    fn refresh_entity_metadata(&mut self) {
+        for row in &mut self.entities {
+            row.flags &= !E_COMPONENT_METADATA;
+            row.reserved[1] = 0;
+            row.clock_rate = 0;
+            // Ability prefab colliders keep their source id even after a
+            // pickup replaces the slot and the inactive collider is orphaned.
+            if row.layer == LAYER_PLAYER && row.reserved[0] != ABILITY_NULL {
+                row.flags |= ability_collider_flags(row.reserved[0]);
+            }
+        }
+
+        for slot in &self.players {
+            if slot.rock_entity != usize::MAX {
+                let row = &mut self.entities[slot.rock_entity];
+                row.reserved[0] = ABILITY_ROCK;
+                row.flags |= ability_collider_flags(ABILITY_ROCK);
+            }
+            if slot.roll_entity != usize::MAX && slot.roll.lethal {
+                self.entities[slot.roll_entity].flags |= E_CONTACT_DAMAGE;
+            }
+            if slot.meteor_entity != usize::MAX
+                && slot.active == ActiveAbility::Meteor
+                && slot.meteor.phase == 3
+            {
+                self.entities[slot.meteor_entity].flags |= E_CONTACT_DAMAGE;
+            }
+            for entities in &slot.drill_hitbox_entities {
+                for &entity in entities {
+                    if entity != usize::MAX {
+                        let row = &mut self.entities[entity];
+                        row.flags |= E_HITBOX | E_CONTACT_DAMAGE_KNOWN;
+                        row.reserved[0] = ABILITY_DRILL;
+                    }
+                }
+            }
+        }
+
+        let pickup_clock = if self.player_time_scale < Fix::from_f32(0.01) {
+            Fix::ZERO
+        } else {
+            Fix::ONE
+        };
+        let swap_period = data::get().pickup.swap_period;
+        for pickup in &self.ability_pickups {
+            let Some(entity) = pickup.entity else {
+                continue;
+            };
+            let row = &mut self.entities[entity];
+            row.flags |= E_PICKUP | E_TIMER_KNOWN;
+            row.reserved = [
+                pickup.ability,
+                remaining_ticks(swap_period - pickup.time_since_swap),
+            ];
+            row.clock_rate = pickup_clock.raw();
+        }
+        for arrow in &self.arrows {
+            let Some(entity) = arrow.entity else { continue };
+            let row = &mut self.entities[entity];
+            row.flags |= E_PROJECTILE;
+            row.reserved[0] = ABILITY_BOW;
+        }
+        for shot in &self.portal_shots {
+            if let Some(entity) = shot.entity {
+                let row = &mut self.entities[entity];
+                row.flags |= E_PROJECTILE;
+                // The NativeAOT observer's generic Projectile fallback
+                // credits the owner's Bow slot when one exists.
+                row.reserved[0] = self.players[shot.owner]
+                    .abilities
+                    .iter()
+                    .copied()
+                    .find(|&ability| ability == ABILITY_BOW)
+                    .unwrap_or(ABILITY_NULL);
+            }
+        }
+        for smear in &self.meteor_smears {
+            if let Some(entity) = smear.entity {
+                self.entities[entity].flags |= E_PROJECTILE;
+            }
+        }
+        for item in &self.thrown_items {
+            let Some(entity) = item.entity else { continue };
+            let row = &mut self.entities[entity];
+            if item.ability != ABILITY_MINE {
+                row.flags |= E_EXPLOSIVE;
+            }
+            if matches!(
+                item.ability,
+                ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
+            ) {
+                row.flags |= E_PROJECTILE;
+            }
+            if item.ability != ABILITY_MINE {
+                row.reserved[0] = item.ability;
+            }
+            if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse != Fix::MAX {
+                row.flags |= E_TIMER_KNOWN;
+                row.reserved[1] = remaining_ticks(item.fuse);
+                row.clock_rate = self.player_time_scale.raw();
+            }
+        }
+        for cloud in &self.smoke_clouds {
+            let Some(entity) = cloud.entity else { continue };
+            let row = &mut self.entities[entity];
+            row.flags |= E_FLAMMABLE_SMOKE;
+            if cloud.ignition_time >= Fix::ZERO {
+                row.flags |= E_TIMER_KNOWN;
+                row.reserved[1] = remaining_ticks(cloud.ignition_delay - cloud.ignition_time);
+                row.clock_rate = self.player_time_scale.raw();
+            }
+        }
+        for node in &self.tesla_nodes {
+            if let Some(entity) = node.entity {
+                let row = &mut self.entities[entity];
+                row.flags |= E_SPARK_NODE | E_EXPLOSIVE;
+                row.reserved[0] = self.players[node.owner]
+                    .abilities
+                    .iter()
+                    .copied()
+                    .find(|&ability| matches!(ability, ABILITY_TESLA | ABILITY_MISSILE))
+                    .unwrap_or(ABILITY_NULL);
+            }
+        }
+        for spike in &self.spike_attacks {
+            if let Some(entity) = spike.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
+        for orb in &self.beam_orbs {
+            if let Some(entity) = orb.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
+        for beam in &self.beam_pool {
+            if let Some(entity) = beam.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
+        for rock in &self.duplicated_rocks {
+            if let Some(entity) = rock.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
+        for explosion in &self.grenade_explosions {
+            if let Some(entity) = explosion.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
+        for explosion in &self.missile_explosions {
+            if let Some(entity) = explosion.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
+        for explosion in &self.smoke_explosions {
+            if let Some(entity) = explosion.entity {
+                self.entities[entity].flags |= E_EXPLOSIVE;
+            }
+        }
     }
 
     fn refresh_tesla_entities(&mut self) {
@@ -29578,6 +29815,9 @@ impl RolloutWorld {
             if !in_ability && !respawning {
                 flags |= S_SIMULATED;
             }
+            // This backend's pickup path replaces slot two; expose that
+            // target through the same two ABI-v3 bits as SlimeController.
+            flags |= 2 << S_PICKUP_SLOT_SHIFT;
             let mut ability_flags = [0u32; 3];
             for (s, flags) in ability_flags.iter_mut().enumerate() {
                 if slot.abilities[s] == 0 {
@@ -29673,7 +29913,7 @@ impl RolloutWorld {
             slimes.push(CSlime {
                 id: clone.entity.map_or(0, |entity| self.entities[entity].id),
                 owner: clone.base.id,
-                flags: S_ACTIVE | S_SPAWNED | S_SIMULATED,
+                flags: S_ACTIVE | S_SPAWNED | S_SIMULATED | S_ABILITYLESS,
                 state: clone.obs_state,
                 x: clone.base.position.x.raw(),
                 y: clone.base.position.y.raw(),
@@ -29702,6 +29942,7 @@ impl RolloutWorld {
         warmup: u32,
         flags: u32,
         player_time_scale: Fix,
+        sudden_death: bool,
     ) {
         state.header = CHeader {
             version: ABI_VERSION,
@@ -29714,6 +29955,9 @@ impl RolloutWorld {
             slime_count: slimes.len() as u32,
             simulation_time: (Fix::from_int(i64::from(tick)) * DT).raw(),
             player_time_scale: player_time_scale.raw(),
+            simulation_time_since_level_loaded: (Fix::from_int(i64::from(tick)) * DT).raw(),
+            sudden_death: u32::from(sudden_death),
+            reserved: 0,
         };
         for (i, slot) in players.iter().enumerate() {
             let mut player_flags = 0;

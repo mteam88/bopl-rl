@@ -3,6 +3,10 @@
 #define bopl_rl_reset sampling_reset
 #define bopl_rl_map_count sampling_map_count
 #define bopl_rl_error sampling_error
+#define bopl_rl_ability_count sampling_ability_count
+#define bopl_rl_reset_pending sampling_reset_pending
+#define bopl_rl_reset_begin sampling_reset_begin
+#define bopl_rl_reset_finish sampling_reset_finish
 #include "../puffer/bopl_puffer.h"
 #include <assert.h>
 
@@ -11,6 +15,10 @@ static BoplRlConfig last;
 const BoplRlState *sampling_state(const BoplRl *world) { (void)world; return &state; }
 const char *sampling_error(const BoplRl *world) { (void)world; return "sampling test"; }
 uint32_t sampling_map_count(const BoplRl *world) { (void)world; return 5; }
+uint32_t sampling_ability_count(const BoplRl *world) { (void)world; return BOPL_ABILITY_COUNT; }
+int sampling_reset_pending(const BoplRl *world) { (void)world; return 0; }
+int sampling_reset_begin(BoplRl *world, const BoplRlConfig *config) { return sampling_reset(world,config); }
+int sampling_reset_finish(BoplRl *world) { (void)world; return 0; }
 int sampling_reset(BoplRl *world, const BoplRlConfig *config) {
     (void)world; last=*config; memset(&state,0,sizeof(state));
     state.header.player_count=2;
@@ -18,15 +26,17 @@ int sampling_reset(BoplRl *world, const BoplRlConfig *config) {
 }
 
 int main(int argc, char **argv) {
-    BoplPuffer env={0};env.num_agents=2;env.config.max_episode_ticks=3600;
+    BoplPuffer env={0};env.num_agents=2;env.players=2;env.config.max_episode_ticks=3600;
+    env.world=(BoplRl*)1;env.world_checked=1;
     env.observations=calloc(2*BOPL_OBS_SIZE,sizeof(float));
+    env.scratch=env.observations;
     if (argc==2 && strcmp(argv[1],"overflow")==0) {
         BoplRlEntity entities[BOPL_OBS_ENTITIES+1]={{0}};
         state.header.player_count=2;state.header.entity_count=BOPL_OBS_ENTITIES+1;
         state.entities=entities;
         for (int i=0;i<BOPL_OBS_ENTITIES+1;i++) entities[i].flags=1;
         compute_observations(&env);
-        return env.log.observation_overflow==1 ? 2 : 3; /* Overflow is logged and truncated, never fatal. */
+        return env.log.observation_overflow==2 ? 2 : 3; /* One count per encoded player row; never fatal. */
     }
     assert(argc==1);
     /* The old single-map default consumes exactly its one episode-seed draw. */

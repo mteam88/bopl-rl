@@ -38,218 +38,118 @@
 #define BR_MAX_GROUPS 9   // learner + up to 8 frozen banks
 #define BR_MAX_LAYERS 4
 
-// Rollout encoder tiling (the original bs_fused_forward layout: 12 slot
-// groups x 8 channels per BS_FWD_TPR=96-thread row). The training encoder in
-// bopl_set_encoder.cu moved to its own tiling and no longer defines these.
-static constexpr int BS_FWD_SLOTS = 8;                 // slots per thread
-static constexpr int BS_XT_STRIDE = 100;               // >= BS_N_ENT, multiple of 4
-static constexpr int BS_WSL_STRIDE = BS_W_SLIME + 1;   // conflict-free per-channel reads
-static_assert(BS_N_ENT / BS_FWD_SLOTS * BS_FWD_CH == BS_FWD_TPR, "rollout encoder tiling");
-
 struct BrGroups {
     int n;
-    int end[BR_MAX_GROUPS + 1];  // end[0] = 0; group g owns rows [end[g], end[g+1])
+    int end[BR_MAX_GROUPS + 1];
 };
-struct BrLinear { const float* w[BR_MAX_GROUPS]; };  // per-group (N, K) row-major weights
+struct BrLinear { const float* w[BR_MAX_GROUPS]; };
 
-__device__ __forceinline__ int br_group_of(const BrGroups& g, int row) {
-    int k = 0;
-    while (k + 1 < g.n && row >= g.end[k + 1]) k++;
-    return k;
+__device__ __forceinline__ int br_group_of(const BrGroups& groups, int row) {
+    int group=0;
+    while(group+1<groups.n && row>=groups.end[group+1]) group++;
+    return group;
 }
 
-// ---------------------------------------------------------------------------
-// Set encoder, one row per block (BS_FWD_TPR threads). Same math as
-// bs_fused_forward: the row is staged in shared memory once (it may live in
-// host memory), then feeds the rollout copy, flat_input and the entity tile.
+// Layout-v3 rollout encoder. The copy/flat path and the three small sets share
+// one row-sized staging block. The entity set runs in its own 64-thread block:
+// keeping its much longer 64x33 loop in the 256-thread block left six warps
+// idle and limited each SM to only six useful entity warps.
+static constexpr int BR_ENCODE_THREADS=192;
+
 struct BrEncodeArgs {
-    const float* obs;          // (rows, BS_OBS) env observations (chunk base)
-    const float* rewards;      // (rows,) env rewards (chunk base)
-    const float* terminals;    // (rows,) env terminals (chunk base)
-    float* rollout_obs;        // (rows, BS_OBS) rollout slice for this step
-    float* rollout_rewards;    // (rows,)
-    float* rollout_terminals;  // (rows,)
-    float* flat_input;         // (rows, BS_FLAT)
-    float* joined;             // (rows, H + 2*BS_E)
-    int H, rows;
-    int sparse;                // 1: read only the populated slots (see br_encode)
+    const float* obs;
+    const float* rewards;
+    const float* terminals;
+    float* rollout_obs;
+    float* rollout_rewards;
+    float* rollout_terminals;
+    float* flat_input;
+    float* joined;
+    int H, rows, sparse;
     BrGroups g;
-    BrLinear w_ent, w_slime;
+    BrLinear w_player, w_slot, w_entity, w_slime, w_embedding;
 };
 
-static constexpr int BR_ROW_STRIDE = BS_OBS + 2;  // even, keeps float2 staging aligned
-static_assert(BS_OBS % 2 == 0 && BS_FLAT % 2 == 0, "float2 staging");
-static_assert(BS_PREFIX == 10 + 6 * BOPL_PLAYER_FEATURES && BOPL_PLAYER_FEATURES % 2 == 0, "sparse staging: player block");
-static_assert(BS_ENTITY_OFFSET % 2 == 0 && BS_SLIME_OFFSET % 2 == 0 && BS_PREVIOUS_OFFSET % 2 == 0 && BS_W_SLIME % 2 == 0, "sparse staging");
+static constexpr int BR_ROW_STRIDE=(BS_OBS+3)&~3;
 
-// The observation row is written by bopl_encode (bopl_puffer.h): the header
-// holds obs[3] = player_count / 6, obs[4] = min(entities, 96) / 96 and
-// obs[6] = min(slimes, 12) / 12, the players / entities / slimes are packed
-// from slot 0 and every slot past the counts is zero. Reading only the packed
-// slots (plus the previous-decision tail) is therefore exact and cuts the
-// PCIe traffic of a zero-copy row by 3-4x. BOPL_OBS_SPARSE=0 stages the whole
-// row (same result, used to check the assumption).
-struct BrRanges { int lo[4], hi[4]; };  // float2 units, concatenated
+__global__ void __launch_bounds__(BR_ENCODE_THREADS, 3) br_encode(BrEncodeArgs a) {
+    __shared__ __align__(16) float row_data[BR_ROW_STRIDE];
+    int row=blockIdx.x, thread=threadIdx.x;
+    if(row>=a.rows) return;
+    const float* source=a.obs+(long)row*BS_OBS;
+    int entity_count=BS_N_ENT, slime_count=BS_N_SLIME;
+    if(a.sparse) {
+        entity_count=max(0,min(BS_N_ENT,__float2int_rn(source[4]*BS_N_ENT)));
+        slime_count=max(0,min(BS_N_SLIME,__float2int_rn(source[6]*BS_N_SLIME)));
+    }
+    for(int i=thread;i<BR_ROW_STRIDE;i+=BR_ENCODE_THREADS) {
+        bool read=i<BS_OBS && (!a.sparse || i<BS_ENTITY_OFFSET
+            || (i>=BS_ENTITY_OFFSET && i<BS_ENTITY_OFFSET+entity_count*BS_W_ENT)
+            || (i>=BS_SLIME_OFFSET && i<BS_SLIME_OFFSET+slime_count*BS_W_SLIME)
+            || i>=BS_PREVIOUS_OFFSET);
+        row_data[i]=read?source[i]:0.0f;
+    }
+    if(thread==0) {
+        a.rollout_rewards[row]=a.rewards[row];
+        a.rollout_terminals[row]=a.terminals[row];
+    }
+    __syncthreads();
+    for(int i=thread;i<BS_OBS;i+=BR_ENCODE_THREADS)
+        a.rollout_obs[(long)row*BS_OBS+i]=row_data[i];
+    for(int i=thread;i<BS_FLAT;i+=BR_ENCODE_THREADS) {
+        if(i<BS_PREFIX) a.flat_input[(long)row*BS_FLAT+i]=row_data[i];
+        else if(i<BS_PREFIX+BOPL_SELF_FEATURES)
+            a.flat_input[(long)row*BS_FLAT+i]=row_data[BOPL_OBS_SELF_OFFSET+i-BS_PREFIX];
+        else a.flat_input[(long)row*BS_FLAT+i]=row_data[BS_PREVIOUS_OFFSET+i-BS_PREFIX-BOPL_SELF_FEATURES];
+    }
 
-__device__ __forceinline__ int br_count(float h, int per, int cap) {
-    int c = __float2int_rn(h * (float)per);
-    return c < 0 ? 0 : (c > cap ? cap : c);
+    int pool=thread/BS_E, channel=thread%BS_E;
+    int group=br_group_of(a.g,row);
+    const float *block=nullptr, *weights=nullptr, *embedding=nullptr;
+    int count=0, width=0, projected=0, id_column=-1;
+    if(pool==0) {
+        block=row_data+BS_PLAYER_OFFSET; weights=a.w_player.w[group];
+        count=BS_N_PLAYER; width=BS_W_PLAYER; projected=BS_K_PLAYER;
+    } else if(pool==1) {
+        block=row_data+BS_SLOT_OFFSET; weights=a.w_slot.w[group]; embedding=a.w_embedding.w[group];
+        count=BS_N_SLOT; width=BS_W_SLOT; projected=BS_K_SLOT; id_column=BOPL_SLOT_ABILITY_ID;
+    } else {
+        block=row_data+BS_SLIME_OFFSET; weights=a.w_slime.w[group];
+        count=BS_N_SLIME; width=BS_W_SLIME; projected=BS_K_SLIME;
+    }
+    float best=0.0f;
+    for(int slot=0;slot<count;slot++) {
+        const float* x=block+slot*width;
+        if(x[0]==0.0f) break;
+        float sum=0.0f;
+        if(id_column>=0) sum=embedding[bs_embedding_id(x[id_column])*BS_E+channel];
+        for(int k=0;k<projected;k++) sum=fmaf(x[k],weights[channel*projected+k],sum);
+        best=fmaxf(best,sum);
+    }
+    int joined_pool=pool<2 ? pool : 3;
+    a.joined[(long)row*(a.H+BS_JOINED_POOLS)+a.H+joined_pool*BS_E+channel]=best;
 }
 
-__global__ void __launch_bounds__(BS_FWD_TPR, 3) br_encode(BrEncodeArgs a) {
-    __shared__ __align__(16) float Row[BR_ROW_STRIDE];
-    __shared__ __align__(16) float Xt[BS_W_ENT * BS_XT_STRIDE];  // [k][slot]
-    __shared__ __align__(16) float Wt[BS_W_ENT][BS_E];          // [k][channel]
-    __shared__ float Wsl[BS_E * BS_WSL_STRIDE];
-    __shared__ float red_v[2][BS_E];
-    __shared__ int red_i[2][BS_E];
-    __shared__ BrRanges rng;
-
-    const int row = blockIdx.x;
-    if (row >= a.rows) return;
-    const int tr = threadIdx.x;
-    const int warp_in_row = tr >> 5, lane = tr & 31;
-    const int sg = tr >> 3, cg = tr & 7;
-    const int JW = a.H + 2 * BS_E;
-    const int grp = br_group_of(a.g, row);
-    const float* w_ent = a.w_ent.w[grp];
-    const float* w_slime = a.w_slime.w[grp];
-    const float2* src = (const float2*)(a.obs + (long)row * BS_OBS);
-    // Header first (one dependent round trip to host memory); the zero fill of
-    // the staging row overlaps it.
-    float hdr = 0.f;
-    if (warp_in_row == 0 && lane < 8 && a.sparse) hdr = ((const float*)src)[lane];
-    for (int i = tr; i < BR_ROW_STRIDE / 2; i += BS_FWD_TPR) ((float2*)Row)[i] = make_float2(0.f, 0.f);
-    if (warp_in_row == 0) {
-        float h3 = __shfl_sync(0xffffffffu, hdr, 3), h4 = __shfl_sync(0xffffffffu, hdr, 4), h6 = __shfl_sync(0xffffffffu, hdr, 6);
-        if (lane == 0) {
-            if (a.sparse) {
-                int pc = br_count(h3, 6, 6), ec = br_count(h4, BS_N_ENT, BS_N_ENT), sc = br_count(h6, BS_N_SLIME, BS_N_SLIME);
-                int ent = (ec * BS_W_ENT + 1) & ~1;  // an odd count reads one zero float past the last slot
-                rng.lo[0] = 0;                        rng.hi[0] = (10 + pc * BOPL_PLAYER_FEATURES) / 2;
-                rng.lo[1] = BS_ENTITY_OFFSET / 2;     rng.hi[1] = (BS_ENTITY_OFFSET + ent) / 2;
-                rng.lo[2] = BS_SLIME_OFFSET / 2;      rng.hi[2] = (BS_SLIME_OFFSET + sc * BS_W_SLIME) / 2;
-                rng.lo[3] = BS_PREVIOUS_OFFSET / 2;   rng.hi[3] = BS_OBS / 2;
-            } else {
-                rng.lo[0] = 0; rng.hi[0] = BS_OBS / 2;
-                rng.lo[1] = rng.hi[1] = rng.lo[2] = rng.hi[2] = rng.lo[3] = rng.hi[3] = 0;
-            }
-        }
-    }
-    __syncthreads();
-    // Stage the populated ranges: every load in flight (one batch covers a
-    // whole row) while the weights are staged.
-    {
-        constexpr int BR_STAGE = (BS_OBS / 2 + BS_FWD_TPR - 1) / BS_FWD_TPR;
-        const int n0 = rng.hi[0] - rng.lo[0], n1 = rng.hi[1] - rng.lo[1], n2 = rng.hi[2] - rng.lo[2], n3 = rng.hi[3] - rng.lo[3];
-        const int total = n0 + n1 + n2 + n3;
-        float2 v[BR_STAGE]; int at[BR_STAGE];
+__global__ void __launch_bounds__(BS_E, 12) br_encode_entity(BrEncodeArgs a) {
+    int row=blockIdx.x, channel=threadIdx.x;
+    if(row>=a.rows || channel>=BS_E) return;
+    const float* source=a.obs+(long)row*BS_OBS;
+    int count=BS_N_ENT;
+    if(a.sparse) count=max(0,min(BS_N_ENT,__float2int_rn(source[4]*BS_N_ENT)));
+    int group=br_group_of(a.g,row);
+    const float* weights=a.w_entity.w[group];
+    const float* embedding=a.w_embedding.w[group];
+    const float* block=source+BS_ENTITY_OFFSET;
+    float best=0.0f;
+    for(int slot=0;slot<count;slot++) {
+        const float* x=block+slot*BS_W_ENT;
+        if(x[0]==0.0f) break;
+        float sum=embedding[bs_embedding_id(x[BOPL_ENTITY_ABILITY_ID])*BS_E+channel];
         #pragma unroll
-        for (int it = 0; it < BR_STAGE; it++) {
-            int i = it * BS_FWD_TPR + tr, j = i;
-            at[it] = -1;
-            if (i < total) {
-                if (j < n0) at[it] = rng.lo[0] + j;
-                else if ((j -= n0) < n1) at[it] = rng.lo[1] + j;
-                else if ((j -= n1) < n2) at[it] = rng.lo[2] + j;
-                else at[it] = rng.lo[3] + (j - n2);
-                v[it] = src[at[it]];
-            }
-        }
-        for (int i = tr; i < BS_E * BS_W_ENT; i += BS_FWD_TPR) Wt[i % BS_W_ENT][i / BS_W_ENT] = w_ent[i];
-        for (int i = tr; i < BS_E * BS_W_SLIME; i += BS_FWD_TPR) Wsl[(i / BS_W_SLIME) * BS_WSL_STRIDE + i % BS_W_SLIME] = w_slime[i];
-        float2* d = (float2*)Row;
-        #pragma unroll
-        for (int it = 0; it < BR_STAGE; it++) if (at[it] >= 0) d[at[it]] = v[it];
+        for(int k=0;k<BS_K_ENT;k++) sum=fmaf(x[k],weights[channel*BS_K_ENT+k],sum);
+        best=fmaxf(best,sum);
     }
-    if (tr == 0) {
-        a.rollout_rewards[row] = a.rewards[row];
-        a.rollout_terminals[row] = a.terminals[row];
-    }
-    __syncthreads();
-    // Rollout copy, flat input (prefix + previous), entity tile [k][slot].
-    {
-        const float2* s = (const float2*)Row;
-        float2* d = (float2*)(a.rollout_obs + (long)row * BS_OBS);
-        for (int i = tr; i < BS_OBS / 2; i += BS_FWD_TPR) d[i] = s[i];
-        float2* flat = (float2*)(a.flat_input + (long)row * BS_FLAT);
-        for (int i = tr; i < BS_PREFIX / 2; i += BS_FWD_TPR) flat[i] = s[i];
-        for (int i = tr; i < BS_PREVIOUS / 2; i += BS_FWD_TPR) flat[BS_PREFIX / 2 + i] = s[BS_PREVIOUS_OFFSET / 2 + i];
-        for (int e = tr; e < BS_ENT_FLOATS; e += BS_FWD_TPR) {
-            int slot = e / BS_W_ENT, k = e - slot * BS_W_ENT;
-            Xt[k * BS_XT_STRIDE + slot] = Row[BS_ENTITY_OFFSET + e];
-        }
-    }
-    __syncthreads();
-
-    // Entity projections for this thread's 8 slots x 8 channels.
-    float acc[BS_FWD_SLOTS][BS_FWD_CH];
-    #pragma unroll
-    for (int s = 0; s < BS_FWD_SLOTS; s++)
-        #pragma unroll
-        for (int j = 0; j < BS_FWD_CH; j++) acc[s][j] = 0.0f;
-    const float* xt = Xt + sg * BS_FWD_SLOTS;
-    #pragma unroll
-    for (int k = 0; k < BS_W_ENT; k++) {
-        float4 w0 = *(const float4*)&Wt[k][cg * 4], w1 = *(const float4*)&Wt[k][32 + cg * 4];
-        float4 x0 = *(const float4*)&xt[k * BS_XT_STRIDE], x1 = *(const float4*)&xt[k * BS_XT_STRIDE + 4];
-        const float w[BS_FWD_CH] = {w0.x, w0.y, w0.z, w0.w, w1.x, w1.y, w1.z, w1.w};
-        const float x[BS_FWD_SLOTS] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
-        #pragma unroll
-        for (int s = 0; s < BS_FWD_SLOTS; s++)
-            #pragma unroll
-            for (int j = 0; j < BS_FWD_CH; j++) acc[s][j] = fmaf(x[s], w[j], acc[s][j]);
-    }
-    float bv[BS_FWD_CH]; int bi[BS_FWD_CH];
-    #pragma unroll
-    for (int j = 0; j < BS_FWD_CH; j++) { bv[j] = 0.0f; bi[j] = -1; }
-    #pragma unroll
-    for (int s = 0; s < BS_FWD_SLOTS; s++) {
-        bool valid = xt[s] != 0.0f;  // feature 0 of the slot
-        #pragma unroll
-        for (int j = 0; j < BS_FWD_CH; j++)
-            if (valid && acc[s][j] > bv[j]) { bv[j] = acc[s][j]; bi[j] = sg * BS_FWD_SLOTS + s; }
-    }
-    #pragma unroll
-    for (int off = 8; off <= 16; off <<= 1)
-        #pragma unroll
-        for (int j = 0; j < BS_FWD_CH; j++) {
-            float ov = __shfl_xor_sync(0xffffffffu, bv[j], off);
-            int oi = __shfl_xor_sync(0xffffffffu, bi[j], off);
-            bs_better(bv[j], bi[j], ov, oi);
-        }
-    if (warp_in_row > 0 && lane < 8) {
-        #pragma unroll
-        for (int j = 0; j < BS_FWD_CH; j++) {
-            int c = bs_fwd_channel(cg, j);
-            red_v[warp_in_row - 1][c] = bv[j]; red_i[warp_in_row - 1][c] = bi[j];
-        }
-    }
-    // Slime: thread = channel for the first 64 threads.
-    float sv = 0.0f;
-    if (tr < BS_E) {
-        const float* wsl = Wsl + tr * BS_WSL_STRIDE;
-        #pragma unroll 1
-        for (int s = 0; s < BS_N_SLIME; s++) {
-            const float* xs = Row + BS_SLIME_OFFSET + s * BS_W_SLIME;
-            if (xs[0] == 0.0f) continue;
-            float acc_s = 0.0f;
-            #pragma unroll
-            for (int k = 0; k < BS_W_SLIME; k++) acc_s = fmaf(xs[k], wsl[k], acc_s);
-            if (acc_s > sv) sv = acc_s;
-        }
-    }
-    __syncthreads();
-    if (warp_in_row == 0 && lane < 8) {
-        #pragma unroll
-        for (int j = 0; j < BS_FWD_CH; j++) {
-            int c = bs_fwd_channel(cg, j);
-            bs_better(bv[j], bi[j], red_v[0][c], red_i[0][c]);
-            bs_better(bv[j], bi[j], red_v[1][c], red_i[1][c]);
-            a.joined[(long)row * JW + a.H + c] = bv[j];
-        }
-    }
-    if (tr < BS_E) a.joined[(long)row * JW + a.H + BS_E + tr] = sv;
+    a.joined[(long)row*(a.H+BS_JOINED_POOLS)+a.H+2*BS_E+channel]=best;
 }
 
 // ---------------------------------------------------------------------------
@@ -786,7 +686,7 @@ static void br_init(PuffeRL* pufferl) {
     p->sparse = br_env_int("BOPL_OBS_SPARSE", 1) != 0;
     p->ld_dec = br_pad8(p->dec_cols + 1);
     p->acts = (BrActs*)calloc(hypers.num_buffers, sizeof(BrActs));
-    int H = p->H, JW = H + 2 * BS_E;
+    int H = p->H, JW = H + BS_JOINED_POOLS;
     auto zalloc = [](float** ptr, size_t n) {
         assert(cudaMalloc((void**)ptr, n * sizeof(float)) == cudaSuccess);
         cudaMemset(*ptr, 0, n * sizeof(float));
@@ -854,7 +754,7 @@ static void br_group_weights(PuffeRL* pufferl, int g, int buf, PolicyWeights** w
 // per rollout.
 static void br_prepare(PuffeRL* pufferl, cudaStream_t stream) {
     BrPlan& p = *pufferl->br;
-    int H = p.H, JW = H + 2 * BS_E;
+    int H = p.H, JW = H + BS_JOINED_POOLS;
     BrLinear s_flat = {}, s_fus = {}, s_dec = {}, s_gru[BR_MAX_LAYERS] = {};
     BrLinear d_flat = {}, d_fus = {}, d_dec = {}, d_gru[BR_MAX_LAYERS] = {};
     for (int g = 0; g < p.g.n; g++) {
@@ -904,7 +804,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     StaticVec* vec = pufferl->vec;
     RolloutBuf rollouts = rollout_slot_view(pufferl->rollouts, pufferl->write_slot, hypers.horizon);
     int apb = vec->total_agents / hypers.num_buffers;
-    int start = buf * apb, rows = p.rows, H = p.H, JW = H + 2 * BS_E;
+    int start = buf * apb, rows = p.rows, H = p.H, JW = H + BS_JOINED_POOLS;
     BrActs& A = p.acts[buf];
 
     // Env buffers: mapped host memory (zero_copy), the packed device staging
@@ -930,13 +830,16 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
 
     // Per-group weights (set-encoder MLPs as stored, GEMM weights transposed by
     // br_prepare) and recurrent state (group 0 = learner snapshot).
-    BrLinear w_ent = {}, w_slime = {}, w_flat = {}, w_fusion = {}, w_dec = {}, w_gru[BR_MAX_LAYERS] = {};
+    BrLinear w_player = {}, w_slot = {}, w_entity = {}, w_slime = {}, w_embedding = {};
+    BrLinear w_flat = {}, w_fusion = {}, w_dec = {}, w_gru[BR_MAX_LAYERS] = {};
     BrGateArgs gate = {};
     for (int g = 0; g < p.g.n; g++) {
         PolicyWeights* w; PrecisionTensor* s;
         br_group_weights(pufferl, g, buf, &w, &s);
         BoplSetWeights* sw = (BoplSetWeights*)w->encoder;
-        w_ent.w[g] = sw->entity.data; w_slime.w[g] = sw->slime.data;
+        w_player.w[g] = sw->player.data; w_slot.w[g] = sw->slot.data;
+        w_entity.w[g] = sw->entity.data; w_slime.w[g] = sw->slime.data;
+        w_embedding.w[g] = sw->embedding.data;
         w_flat.w[g] = p.wt[g].flat; w_fusion.w[g] = p.wt[g].fusion;
         for (int l = 0; l < p.layers; l++) w_gru[l].w[g] = p.wt[g].gru[l];
         w_dec.w[g] = p.wt[g].dec;
@@ -957,8 +860,10 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     enc.obs = obs; enc.rewards = rewards; enc.terminals = terminals;
     enc.rollout_obs = obs_dst.data; enc.rollout_rewards = rew_dst.data; enc.rollout_terminals = term_dst.data;
     enc.flat_input = A.flat; enc.joined = A.joined; enc.H = H; enc.rows = rows; enc.sparse = p.sparse; enc.g = p.g;
-    enc.w_ent = w_ent; enc.w_slime = w_slime;
-    br_encode<<<rows, BS_FWD_TPR, 0, stream>>>(enc);
+    enc.w_player = w_player; enc.w_slot = w_slot; enc.w_entity = w_entity;
+    enc.w_slime = w_slime; enc.w_embedding = w_embedding;
+    br_encode<<<rows, BR_ENCODE_THREADS, 0, stream>>>(enc);
+    br_encode_entity<<<rows, BS_E, 0, stream>>>(enc);
 
     br_gemm_launch(p, A.flat, BS_FLAT, A.joined, JW, BS_FLAT, H, H, 1, w_flat, stream);
     br_gemm_launch(p, A.joined, JW, A.enc, H, JW, H, H, 1, w_fusion, stream);

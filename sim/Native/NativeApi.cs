@@ -11,7 +11,7 @@ using UnityShim;
 
 namespace BoplSim.Native
 {
-	// In-process implementation of native/rl/bopl_rl.h (ABI version 2).
+	// In-process implementation of native/rl/bopl_rl.h (ABI version 3).
 	//
 	// The socket path is: bopl_rl.c <-> unix socket <-> RlBridge.Pump inside a
 	// Unity player. This library removes the process and the socket: it is the
@@ -34,7 +34,7 @@ namespace BoplSim.Native
 	// static).
 	public static unsafe class NativeApi
 	{
-		private const uint Version = 2; // RlBridge.Version
+		private const uint Version = 3; // RlBridge.Version
 		// RlBridge.CommandsPerFrame: simulation ticks per engine frame. Raw
 		// Object.Destroy drains at frame end and queued Starts run at the top of
 		// the next frame, so the cadence is gameplay-observable and must match
@@ -56,12 +56,12 @@ namespace BoplSim.Native
 		private static readonly ConcurrentDictionary<IntPtr, RlWorld> worlds = new ConcurrentDictionary<IntPtr, RlWorld>();
 
 		// ---- BoplRlState layout (bopl_rl.h, _Static_asserts in bopl_rl.c) ---
-		private const int HeaderSize = 48, PlayerSize = 72, EntitySize = 128, SlimeSize = 136, TelemetrySize = 36;
-		private const int PlayersOffset = HeaderSize;                    // 48
-		private const int EntitiesPtrOffset = PlayersOffset + 6 * PlayerSize; // 480
-		private const int SlimesPtrOffset = EntitiesPtrOffset + 8;       // 488
-		private const int TelemetryOffset = SlimesPtrOffset + 8;         // 496
-		private const int StateSize = TelemetryOffset + 6 * TelemetrySize; // 712
+		private const int HeaderSize = 64, PlayerSize = 72, EntitySize = 136, SlimeSize = 136, TelemetrySize = 36;
+		private const int PlayersOffset = HeaderSize;                    // 64
+		private const int EntitiesPtrOffset = PlayersOffset + 6 * PlayerSize; // 496
+		private const int SlimesPtrOffset = EntitiesPtrOffset + 8;       // 504
+		private const int TelemetryOffset = SlimesPtrOffset + 8;         // 512
+		private const int StateSize = TelemetryOffset + 6 * TelemetrySize; // 728
 
 		private struct Snapshot
 		{

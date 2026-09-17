@@ -1,5 +1,5 @@
 /* Smoke test for the in-process port of the RL ABI (sim/Native ->
- * BoplSimNative.so). dlopens the library, opens the single per-process world,
+ * BoplSimNative.so). dlopens the library, opens an in-process world,
  * resets with the default config for 2 players, steps 240 times with zero
  * actions, and prints ticks/s plus an FNV-1a checksum over every post-step
  * state (header, players, entities, slimes, telemetry). The same sequence
@@ -21,6 +21,7 @@
 #include <time.h>
 
 typedef uint32_t (*abi_version_fn)(void);
+typedef uint32_t (*world_capacity_fn)(void);
 typedef void (*default_config_fn)(BoplRlConfig *, uint32_t);
 typedef BoplRl *(*open_fn)(const char *, const char *, const char *, uint32_t, char *, size_t);
 typedef int (*reset_fn)(BoplRl *, const BoplRlConfig *);
@@ -63,6 +64,7 @@ int main(int argc, char **argv)
 #define RESOLVE(type, name) type name = (type)dlsym(library, "bopl_rl_" #name); \
     if (!name) { fprintf(stderr, "dlsym bopl_rl_%s: %s\n", #name, dlerror()); return 1; }
     RESOLVE(abi_version_fn, abi_version)
+    RESOLVE(world_capacity_fn, world_capacity)
     RESOLVE(default_config_fn, default_config)
     RESOLVE(open_fn, open)
     RESOLVE(reset_fn, reset)
@@ -74,7 +76,7 @@ int main(int argc, char **argv)
     RESOLVE(close_fn, close)
 #undef RESOLVE
 
-    if (abi_version() != 2) { fprintf(stderr, "unexpected ABI version %u\n", abi_version()); return 1; }
+    if (abi_version() != 3) { fprintf(stderr, "unexpected ABI version %u\n", abi_version()); return 1; }
 
     /* Paths satisfy the shared argument contract; the in-process library only
      * uses the log path (its -logFile equivalent). */
@@ -83,11 +85,21 @@ int main(int argc, char **argv)
     if (!world) { fprintf(stderr, "open failed: %s\n", message); return 1; }
     printf("opened: maps=%u abilities=%u\n", map_count(world), ability_count(world));
 
-    /* One world per process: a second open must fail. */
-    if (open("/usr/bin/true", "/dev/null", "/tmp/bopl-native-check2.log", 60000, message, sizeof(message))) {
-        fprintf(stderr, "second open unexpectedly succeeded\n"); return 1;
+    /* NativeAOT supports multiple independent worlds up to its advertised
+     * capacity. Exercise a second handle so this smoke test also catches a
+     * stale singleton implementation or a broken handle registry. */
+    uint32_t capacity_count = world_capacity();
+    BoplRl *second = open("/usr/bin/true", "/dev/null", "/tmp/bopl-native-check2.log", 60000,
+                          message, sizeof(message));
+    if (capacity_count > 1 && !second) {
+        fprintf(stderr, "second open failed with capacity %u: %s\n", capacity_count, message); return 1;
     }
-    printf("second open rejected: %s\n", message);
+    if (capacity_count <= 1 && second) {
+        fprintf(stderr, "second open unexpectedly succeeded with capacity %u\n", capacity_count); return 1;
+    }
+    if (second) close(second);
+    printf("world capacity=%u; second handle %s\n", capacity_count,
+           second ? "opened and closed" : "correctly rejected");
 
     BoplRlConfig config;
     default_config(&config, 2);

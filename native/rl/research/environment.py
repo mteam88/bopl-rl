@@ -16,11 +16,13 @@ from reference import resolve_game
 class Player(C.Structure):
     _fields_ = [(name, C.c_uint32) for name in ('id','team','flags','alive_bodies','stocks','kills','deaths','cause_of_death')] + [(name,C.c_int64) for name in ('x','y','scale','invisible_time','ability_time')]
 class Entity(C.Structure):
-    _fields_ = [(name, C.c_uint32) for name in ('id','kind','layer','owner','flags','hierarchy','reserved0','reserved1')] + [(name,C.c_int64) for name in ('x','y','vx','vy','right_x','right_y','up_x','up_y','radius','rotation','angular_velocity','inverse_mass')]
+    _fields_ = [(name, C.c_uint32) for name in ('id','kind','layer','owner','flags','hierarchy','reserved0','reserved1')] + [(name,C.c_int64) for name in ('x','y','vx','vy','right_x','right_y','up_x','up_y','radius','rotation','angular_velocity','inverse_mass','clock_rate')]
 class Slime(C.Structure):
     _fields_ = [(name,C.c_uint32) for name in ('id','owner','flags','state')] + [(name,C.c_int64) for name in ('x','y','vx','vy','rotation','scale')] + [('abilities',C.c_uint32*3),('ability_flags',C.c_uint32*3),('cooldowns',C.c_int64*3),('timers',C.c_int64*3)]
 class Header(C.Structure):
-    _fields_ = [(name,C.c_uint32) for name in ('version','tick','episode_ticks','flags','player_count','entity_count','warmup_ticks','slime_count')] + [('simulation_time',C.c_int64),('player_time_scale',C.c_int64)]
+    _fields_ = ([(name,C.c_uint32) for name in ('version','tick','episode_ticks','flags','player_count','entity_count','warmup_ticks','slime_count')]
+                + [(name,C.c_int64) for name in ('simulation_time','player_time_scale','simulation_time_since_level_loaded')]
+                + [(name,C.c_uint32) for name in ('sudden_death','reserved')])
 class Telemetry(C.Structure):
     _fields_ = [(name,C.c_uint32) for name in EVENT_FIELDS]
 class State(C.Structure):
@@ -32,6 +34,7 @@ LIB.research_telemetry_size.restype = C.c_int
 LIB.research_num_atns.restype = C.c_int
 LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
 LIB.research_check.argtypes = [C.c_void_p]; LIB.research_check.restype = C.c_int
+LIB.research_overflow.argtypes = [C.c_void_p]; LIB.research_overflow.restype = C.c_ulong
 if LIB.research_telemetry_size()!=len(FIELDS): raise RuntimeError('Rebuild the research telemetry binding')
 # The compiled layout (bopl_layout.h) must match the Python mirror (layout.py) field for field.
 _fields = (C.c_int*len(layout.LAYOUT_FIELDS))()
@@ -121,7 +124,11 @@ class Environment:
         except BaseException:
             self.close();raise
     def check(self):
-        if LIB.research_check(self.handle): raise RuntimeError('Game error or observation overflow during evaluation')
+        if LIB.research_check(self.handle): raise RuntimeError('Game error during evaluation')
+    @property
+    def observation_overflow(self):
+        """Cumulative sampled states truncated by the policy layout; non-fatal."""
+        return int(LIB.research_overflow(self.handle))
     @property
     def state(self): return LIB.research_state(self.handle).contents
     @property

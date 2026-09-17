@@ -22,31 +22,34 @@ Earlier trainer implementations and removed reports remain in Git history.
   The reset observation fills the delay buffer until history exists.
 - The previous action is provided immediately: a player knows what they pressed.
 - All players' loadouts and cooldowns are public, including during invisibility.
-- Other invisible players' coordinates are omitted from player, body and entity
-  features before distance sorting and counting. The current filter conservatively
-  omits all their owned physics entities. This requires further visibility review
-  before an experiment including invisibility or smoke.
+- An invisible opponent's coordinates and body hierarchy are omitted only while
+  its effective sprite alpha is below 0.2. Independently owned grenades, smoke,
+  spark nodes and pickups remain visible, including disabled-but-alive colliders.
 - Features describe players, collider geometry and motion, slime movement states,
   public cooldowns, arena-relative positions, round time and previous input. Exact
   structured state is more precise than human vision; reaction delay alone does
   not establish human-equivalent play.
-- The policy has space for 96 nearby visible entities and 12 visible slimes. The
-  raw C state is unbounded by these policy capacities. Overflow is counted and
-  stops the research runner rather than silently producing a successful run.
+- The policy has space for 64 nearby visible entities, 32 visible slimes and 24
+  body-associated ability slots. The raw C state is unbounded by these policy
+  capacities. Overflow truncates deterministically and is counted in both
+  training and evaluation metrics.
 
-The observation vector currently has 3,257 floats. Player order starts with self;
-entity and slime observations use nearest-first ordering. Positions scale by 64,
-velocities by 256, and extreme values clip. No Unity instance IDs enter the policy.
+The layout-v3 observation vector has 3,690 floats. Player order starts with self;
+entity and slime observations use nearest-first ordering, except pickups are
+force-inserted and ropes collapse to at most three rows. Runtime ability ids gather
+from the shared `E[40,64]` table and never enter a projection as ordinal scalars.
+Positions scale by 64, velocities by 256, and extreme values clip. Wire object ids
+remain exact integers but do not enter the policy.
 
 ## Native trainer
 
 `puffer/train.py` drives native recurrent PPO. Rollout collection, the minGRU
 policy, loss, backward pass and optimizer run in native code. Python configures
 the run, publishes checkpoints and metrics, and invokes evaluation between
-updates. The linear encoder and entity/slime set encoder share the native minGRU
+updates. The linear encoder and layout-v3 set encoder share the native minGRU
 and action/value heads. `--encoder linear|set` selects the encoder explicitly.
-The set encoder pools visible entity and slime features with shared weights;
-it does not depend on their slot order.
+The set encoder independently max-pools player, ability-slot, entity and slime
+rows, then fuses those four 64-wide pools with the flat prefix/self/action path.
 
 Half the games use current-policy self-play. The other half pair a learner with
 a frozen opponent from PufferLib's Elo-rated self-play pool
@@ -156,15 +159,13 @@ training command.
 native/artifacts/rl/venv/bin/python native/rl/research/serve.py \
   --host 127.0.0.1 --port 8876 \
   --root native/artifacts/rl \
-  --pool native/artifacts/rl/sweeps/anchors/pool-v5/pool.json \
-  --run-root-glob 'overnight-3=native/artifacts/rl/sweeps/overnight-3/[0-9]*'
+  --pool native/artifacts/rl/sweeps/anchors/pool-v6/pool.json \
+  --human native/artifacts/rl/human/mac
 native/artifacts/rl/venv/bin/python native/rl/research/watch_videos.py \
   --run native/artifacts/rl/native-smoke
 ```
 
-Kept: `--root`, `--host`, `--port`, `--run-root NAME=PATH`, `--run-root-glob NAME=GLOB`.
-Added: `--pool` (default pool-v5), `--human` (default `human/mac`).
-Removed: `--ladder`, `--study-root`. Views: `/` ladder, `/run/<name>`, `/sweep/<name>`.
+`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/run/<name>`, `/sweep/<name>`. Copy `research/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
 
 A short smoke verifies execution and artifact compatibility. It does not establish
 learning strength or whole-game competence. Report measured learner decisions,
@@ -182,9 +183,10 @@ rate. Trials are ordinary run directories
 under `native/artifacts/rl/sweeps/<name>/`, launched in their own systemd
 scopes with a memory cap and a wall cap; the driver's `sweep.json` makes the
 whole sweep kill-and-resume safe, and `summary.md`/`launch-best.sh` are
-regenerated after every trial. The dashboard lists trials via
-`serve.py --run-root-glob 'name=native/artifacts/rl/sweeps/name/[0-9]*'`
-on the pool-v5 Elo scale. See `sweep/README.md`.
+regenerated after every trial. The dashboard discovers those trial directories
+under `--root` and shows each trial's labelled frozen-pool IQM plus its joint
+Elo; the sweep page's score column stays the objective written in `sweep.json`.
+See `sweep/README.md`.
 
 ```sh
 native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \

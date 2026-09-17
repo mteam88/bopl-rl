@@ -1215,7 +1215,9 @@ impl RolloutWorld {
                     id: rope.segment_ids[segment],
                     kind: 3,
                     owner: rope.owner as u32 + 1,
-                    flags: E_ACTIVE | E_ENABLED | if rope.physics.detached { 32 } else { 0 },
+                    flags: E_ACTIVE
+                        | E_ENABLED
+                        | if rope.physics.detached { E_DETACHED } else { 0 },
                     hierarchy: segment as u32,
                     x: start.x.raw(),
                     y: start.y.raw(),

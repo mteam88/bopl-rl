@@ -17,7 +17,8 @@
       <span>Bopl <i>/</i> Quality</span>
     </a>
     <nav>
-      <a href="/" data-nav="ladder">Ladder</a>
+      <a href="/" data-nav="index">Runs</a>
+      <a href="/ladder" data-nav="ladder">Ladder</a>
       <a href="/sweep/" data-nav="sweep" id="sweepNav" hidden>Sweep</a>
     </nav>
     <div class="connection" id="connectionBox"><span></span><span id="connection">Connecting</span></div>
@@ -25,12 +26,75 @@
   <main>
     <p id="notice" role="status"></p>
 
-    <section id="ladderView">
+    <section id="indexView">
       <div class="intro">
         <div>
-          <p class="eyebrow">POOL V5 · RANDOM = 0</p>
-          <h1>One number.</h1>
-          <p class="lede" id="ladderLede">Fixed-pool Bradley-Terry Elo. Members stay put. IQM of the last three rated checkpoints.</p>
+          <p class="eyebrow">EVERY RUN UNDER --ROOT</p>
+          <h1>The board.</h1>
+          <p class="lede" id="indexLede">Auto-discovered families and sweeps. Joint Elo is one scale; frozen-pool IQM stays labelled and never shares an axis.</p>
+        </div>
+        <div class="identity" id="indexIdentity"></div>
+      </div>
+      <div id="families" class="families" aria-label="Run families"></div>
+      <div class="toolbar">
+        <label class="grow">Search
+          <input id="runSearch" type="search" placeholder="name, family, flag…" />
+        </label>
+        <label>Family
+          <select id="filterFamily"><option value="">All</option></select>
+        </label>
+        <label>Status
+          <select id="filterStatus">
+            <option value="">All</option>
+            <option value="running">Running</option>
+            <option value="complete">Complete</option>
+            <option value="interrupted">Interrupted</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Rating
+          <select id="filterRating">
+            <option value="">All</option>
+            <option value="joint">Has joint Elo</option>
+            <option value="none">Unrated</option>
+          </select>
+        </label>
+        <label>Sort
+          <select id="runSort">
+            <option value="joint">Joint Elo</option>
+            <option value="steps">Steps</option>
+            <option value="updated">Updated</option>
+            <option value="name">Name</option>
+          </select>
+        </label>
+        <span id="indexTag" class="tag">Loading</span>
+      </div>
+      <div class="table-wrap">
+        <table class="ladder board" aria-label="All runs">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="wide">Family</th>
+              <th>Status</th>
+              <th class="num">Steps</th>
+              <th class="num">Joint</th>
+              <th id="poolHead" hidden></th>
+              <th class="wide">Banks / share</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody id="runRows"></tbody>
+        </table>
+      </div>
+      <p class="caption" id="indexNote"></p>
+    </section>
+
+    <section id="ladderView" hidden>
+      <div class="intro">
+        <div>
+          <p class="eyebrow">JOINT FIT · RANDOM = 0</p>
+          <h1>One scale.</h1>
+          <p class="lede" id="ladderLede">Bradley-Terry over every pool round-robin, cached candidate record, and human game. Frozen-pool IQM is a different number and lives on run/sweep pages.</p>
         </div>
         <div class="identity" id="poolIdentity"></div>
       </div>
@@ -38,28 +102,41 @@
         <label>Sort
           <select id="sort">
             <option value="rating">Elo</option>
+            <option value="games">Games</option>
             <option value="name">Name</option>
             <option value="kind">Kind</option>
           </select>
         </label>
-        <label class="check"><input type="checkbox" id="hidePool" /> Hide pool members</label>
+        <label class="check"><input type="checkbox" id="hideBots" /> Hide bots</label>
+        <label class="check"><input type="checkbox" id="allCheckpoints" /> All checkpoints</label>
         <span id="ladderTag" class="tag">Loading</span>
       </div>
       <div class="table-wrap">
         <table class="ladder board" aria-label="Quality ladder">
           <thead>
             <tr>
+              <th>Rank</th>
               <th>Name</th>
-              <th>Kind</th>
+              <th class="wide">Kind</th>
               <th class="num">Elo</th>
-              <th class="num">95% CI</th>
-              <th>Spark</th>
-              <th>Flags</th>
+              <th class="num wide">95% CI</th>
+              <th class="num">W-L-D</th>
+              <th class="num wide">Games</th>
             </tr>
           </thead>
           <tbody id="ladderRows"></tbody>
         </table>
       </div>
+      <section class="panel" id="humanPanel" hidden>
+        <div class="section-top"><p class="eyebrow">MATTHEW</p><h2>Record vs each opponent.</h2></div>
+        <p class="lede" id="humanLede"></p>
+        <div class="table-wrap">
+          <table class="ladder" aria-label="Human per-opponent record">
+            <thead><tr><th>Opponent</th><th class="num">W-L-D</th><th class="num">Games</th></tr></thead>
+            <tbody id="humanRows"></tbody>
+          </table>
+        </div>
+      </section>
       <p class="caption" id="ladderNote"></p>
     </section>
 
@@ -70,16 +147,37 @@
           <h1 id="runTitle">—</h1>
           <p class="lede" id="runLede"></p>
         </div>
-        <div class="hero-elo">
-          <strong id="runElo">—</strong>
-          <small id="runInterval">IQM3</small>
-          <span id="runFlags" class="flags"></span>
+        <div class="hero-stack">
+          <div class="hero-elo">
+            <strong id="runElo">—</strong>
+            <small id="runInterval">joint</small>
+            <span id="runFlags" class="flags"></span>
+          </div>
+          <div class="hero-side" id="runHero"></div>
         </div>
       </div>
       <div class="stats" id="runStats"></div>
+      <section class="panel" id="humanRunPanel" hidden>
+        <div class="section-top"><p class="eyebrow">MATTHEW</p><h2>He played this agent.</h2></div>
+        <p class="lede" id="humanRunLede"></p>
+        <div class="table-wrap">
+          <table class="ladder" aria-label="Human record vs this run">
+            <thead><tr><th>Checkpoint</th><th class="num">W-L-D</th><th class="num">Games</th></tr></thead>
+            <tbody id="humanRunRows"></tbody>
+          </table>
+        </div>
+      </section>
       <section class="panel">
-        <div class="section-top"><p class="eyebrow">ELO</p><h2>Vs the pool, over steps.</h2></div>
-        <canvas id="eloChart" class="chart" aria-label="Elo over learner steps"></canvas>
+        <div class="section-top"><p class="eyebrow">JOINT ELO</p><h2>One scale, over steps.</h2></div>
+        <canvas id="jointChart" class="chart" aria-label="Joint Elo over learner steps"></canvas>
+        <p class="caption" id="jointCaption"></p>
+      </section>
+      <section class="panel">
+        <div class="section-top">
+          <div><p class="eyebrow" id="poolChartEyebrow">FROZEN POOL</p><h2>IQM vs that pool only.</h2></div>
+          <label>Pool <select id="poolPick"></select></label>
+        </div>
+        <canvas id="eloChart" class="chart" aria-label="Frozen-pool Elo over learner steps"></canvas>
         <p class="caption" id="eloCaption"></p>
         <p class="cmd" id="rateCommand" hidden></p>
         <div class="table-wrap">
@@ -147,9 +245,10 @@
           <h1 id="sweepTitle">—</h1>
           <p class="lede" id="sweepLede"></p>
         </div>
+        <div class="identity" id="sweepIdentity"></div>
       </div>
       <section class="panel">
-        <div class="section-top"><p class="eyebrow">SCORE OVER TRIALS</p><h2>Each trial's Elo, and the best so far.</h2></div>
+        <div class="section-top"><p class="eyebrow">SCORE OVER TRIALS</p><h2>Each trial's objective Elo, and the best so far.</h2></div>
         <canvas id="scoreChart" class="chart" aria-label="Score per trial in launch order"></canvas>
       </section>
       <div class="table-wrap">

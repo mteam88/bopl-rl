@@ -11,7 +11,7 @@ using UnityEngine.SceneManagement;
 public static class RlBridge
 {
     public const uint Magic = 0x314c5242; // BRL1, little endian
-    public const uint Version = 2;
+    public const uint Version = 3;
     private static readonly string endpoint = Environment.GetEnvironmentVariable("BOPL_RL_SOCKET");
     public static bool Enabled => !string.IsNullOrEmpty(endpoint);
     private static Socket socket;
