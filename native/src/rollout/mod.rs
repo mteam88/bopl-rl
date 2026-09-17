@@ -20954,10 +20954,7 @@ impl RolloutWorld {
             self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
         });
 
-        if !already_hit_water
-            && origin.y
-                <= data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y
-        {
+        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
             self.begin_scale_change(caster, 0, growth, ray.changer_updatable_count);
             return;
         }
@@ -21273,10 +21270,7 @@ impl RolloutWorld {
 
         // Casting below the water plane deliberately feeds the gun's own
         // Player-layer body to BlinkObject after drawing the reflected ray.
-        if !already_hit_water
-            && origin.y
-                <= data.maps[self.map].water_position.y + data.maps[self.map].water_extents.y
-        {
+        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
             self.begin_blink_tunnel(caster, caster, data);
             return;
         }
@@ -31113,6 +31107,24 @@ mod tests {
         );
 
         assert_eq!(world.players[0].base.grounded_speed, expected);
+    }
+
+    #[test]
+    fn ray_guns_self_hit_at_scene_water_height() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let origin = Vec2::new(Fix::ZERO, Fix::from_f32(-11.5));
+
+        world.shoot_scale_ray(origin, Vec2::RIGHT, 0, true, data::get());
+        assert!(
+            world
+                .scale_changers
+                .iter()
+                .any(|effect| effect.active && effect.target_kind == 0 && effect.victim == 0)
+        );
+
+        world.shoot_blink_ray(origin, Vec2::RIGHT, 1, data::get());
+        assert!(world.players[1].blink_tunnel_active);
     }
 
     #[test]

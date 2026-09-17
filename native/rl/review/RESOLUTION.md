@@ -43,6 +43,12 @@ fixed entry is committed separately with its finding id in the subject.
   grounded speed with the magnitude of the form's total `PlayerBody.Velocity`
   (self-imposed plus external), matching the `AbilityExitInfo` populated by
   C# instead of retaining pre-entry motion.
+- **#2 — fixed (report heading reversed the two values).** Growth/Shrink and
+  Blink now self-hit when the initial muzzle is at or below C#
+  `SceneBounds.WaterHeight` (`-11.3f`). Rust previously used the exported
+  water collider top (`-11.95`), so muzzles in the intervening band fired an
+  ordinary ray. The report's described gameplay consequence and cited C#
+  lines were correct; only its opening value attribution was backwards.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
