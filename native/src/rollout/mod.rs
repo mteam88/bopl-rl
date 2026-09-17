@@ -4560,7 +4560,7 @@ impl RolloutWorld {
             }
         }
         if has(ABILITY_GUST) {
-            self.gust_waves_update(data, updater_dt);
+            self.gust_waves_update(data, DT);
         }
         if has(ABILITY_METEOR) {
             self.meteor_waves_update(data);
@@ -15988,8 +15988,8 @@ impl RolloutWorld {
     fn gust_waves_update(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for wave_index in 0..self.gust_waves.len() {
             if self.gust_waves[wave_index].active && self.gust_waves[wave_index].registered {
-                // Shockwave still calls UpdateHitObjects while stopped; only
-                // its curve clock receives GameTime.FixedDeltaTime == zero.
+                // Shockwave uses Updater's raw simDeltaTime for its curve
+                // clock; it never opts into GameTime.FixedDeltaTime.
                 self.gust_wave_apply(wave_index, updater_dt, true, data);
             }
         }

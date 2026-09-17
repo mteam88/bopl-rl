@@ -19,6 +19,10 @@ fixed entry is committed separately with its finding id in the subject.
 - **#7 — fixed.** Grounded Time Stop now checks button release during the
   initial `idleToFall` animation, matching `CastSpell.UpdateSim`'s release
   check on every pass rather than forcing the first twenty animation ticks.
+- **#22 — fixed.** Gust shockwave curves now advance with raw `DT`, including
+  during Time Stop. `Shockwave.UpdateSim` receives `simDeltaTime` directly and
+  never calls `GameTime.FixedDeltaTime`; only the affected physics integration
+  is frozen.
 
 ## Cross-cutting
 
