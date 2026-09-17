@@ -22088,11 +22088,7 @@ impl RolloutWorld {
             self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
         });
 
-        if !already_hit_water
-            && data.maps[self.map]
-                .water_height()
-                .is_some_and(|height| origin.y <= height)
-        {
+        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
             self.begin_scale_change(caster, 0, growth, ray.changer_updatable_count);
             return;
         }
@@ -22462,11 +22458,7 @@ impl RolloutWorld {
 
         // Casting below the water plane deliberately feeds the gun's own
         // Player-layer body to BlinkObject after drawing the reflected ray.
-        if !already_hit_water
-            && data.maps[self.map]
-                .water_height()
-                .is_some_and(|height| origin.y <= height)
-        {
+        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
             self.begin_blink_tunnel(caster, caster, data);
             return;
         }
@@ -29930,7 +29922,7 @@ impl RolloutWorld {
                     .iter()
                     .flatten()
                     .copied()
-                    .find(|&marker| self.revival_marker_pool[marker].active)
+                    .next()
             })
             .flatten();
         let slot = &mut self.players[index];
