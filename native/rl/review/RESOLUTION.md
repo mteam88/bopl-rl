@@ -41,6 +41,9 @@ fixed entry is committed separately with its finding id in the subject.
 - **#28 — fixed.** Teleport marker collider radius now remains at its authored
   value when the owner is scaled. The separate teleport-area radius continues
   to use the marker's logical particle scale, matching `TeleportIndicator`.
+- **#29 — fixed.** Freeze animation exits and shared gun landing exits now
+  restore the ordinary slime's scaled radius/body geometry, matching the
+  already-correct scale-ray animation exit.
 
 ## Projectiles
 

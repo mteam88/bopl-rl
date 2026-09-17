@@ -22380,6 +22380,9 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
         slot.base.ground = None;
         slot.base.collision_rays(terrain);
+        slot.physics_scale = slot.ability_origin_scale;
+        slot.base.radius = data::get().player.radius * slot.ability_origin_scale;
+        slot.set_ordinary_body_scale(slot.player_scale);
     }
 
     fn exit_scale_ray_animation(&mut self, index: usize) {
@@ -30882,6 +30885,9 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
         slot.base.ground = None;
         slot.base.collision_rays(terrain);
     }
+    slot.physics_scale = slot.ability_origin_scale;
+    slot.base.radius = data::get().player.radius * slot.ability_origin_scale;
+    slot.set_ordinary_body_scale(slot.player_scale);
 }
 
 #[cfg(test)]
@@ -31163,6 +31169,24 @@ mod tests {
         assert_eq!(
             world.entities[entity].radius,
             data::get().teleport.marker_radius.raw()
+        );
+    }
+
+    #[test]
+    fn freeze_exit_restores_scaled_slime_radius() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active = ActiveAbility::Freeze;
+        world.players[0].player_scale = Fix::from_int(2);
+        world.players[0].ability_origin_scale = Fix::from_int(2);
+        world.players[0].base.grounded = false;
+        world.players[0].base.ground = None;
+
+        world.exit_freeze_animation(0);
+
+        assert_eq!(
+            world.players[0].base.radius,
+            data::get().player.radius * Fix::from_int(2)
         );
     }
 
