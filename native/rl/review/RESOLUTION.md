@@ -254,6 +254,10 @@ fixed entry is committed separately with its finding id in the subject.
   reference, while Duplicator copies explicitly have none. Every destruction
   route clears the slot only when it still points at that pooled entry, so a
   later reuse cannot make the original caster remove another player's Spike.
+- **S4 — fixed.** Grounded Spike entry now performs the material part of
+  `PlayerPhysics.SyncPhysicsTo`: it clears self-imposed velocity while keeping
+  the captured external velocity and grounded speed. A same-pass shove can no
+  longer leak into the Spike form's grounded body channel.
 
 ## Cross-cutting
 

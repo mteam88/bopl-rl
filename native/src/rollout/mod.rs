@@ -6965,6 +6965,11 @@ impl RolloutWorld {
                     }
                     ABILITY_SPIKE => {
                         let slot = &mut self.players[index];
+                        if slot.base.grounded {
+                            // PlayerPhysics.SyncPhysicsTo clears grounded
+                            // self-imposed velocity but retains external force.
+                            slot.base.velocity = Vec2::ZERO;
+                        }
                         slot.timers[s] = Fix::ZERO;
                         slot.active = ActiveAbility::Spike;
                         slot.active_slot = s;
@@ -32108,6 +32113,32 @@ mod tests {
             world.players[0].base.grounded_speed,
             Fix::from_int(12) * world.players[0].base.constants.friction
         );
+    }
+
+    #[test]
+    fn grounded_spike_entry_clears_self_imposed_velocity() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        config.player[0].abilities[0] = ABILITY_SPIKE;
+        world.reset(&config).unwrap();
+        world.players[0].base.velocity = Vec2::RIGHT * Fix::from_int(7);
+        world.players[0].base.external_velocity = Vec2::UP * Fix::from_int(3);
+        world.players[0].timers[0] = world.players[0].cooldowns[0] + Fix::ONE;
+
+        world.player_tick(
+            0,
+            Action {
+                angle: 0,
+                buttons: 2,
+            },
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+
+        assert!(world.players[0].active == ActiveAbility::Spike);
+        assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
+        assert_ne!(world.players[0].base.external_velocity, Vec2::ZERO);
     }
 
     #[test]
