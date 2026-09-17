@@ -14058,7 +14058,7 @@ impl RolloutWorld {
                     + data.teleport.marker_collider_hierarchy,
                 x: (marker.position + data.teleport.marker_offset).x.raw(),
                 y: (marker.position + data.teleport.marker_offset).y.raw(),
-                radius: (data.teleport.marker_radius * marker.scale).raw(),
+                radius: data.teleport.marker_radius.raw(),
                 inverse_mass: data.teleport.marker_body.inverse_mass.raw(),
                 ..CEntity::default()
             });
@@ -31142,6 +31142,27 @@ mod tests {
         assert_eq!(
             world.entities[entity].right_x,
             (data::get().meteor.smear_extents.x * Fix::from_int(2)).raw()
+        );
+    }
+
+    #[test]
+    fn teleport_marker_hurtbox_does_not_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.tick = 1;
+        world.teleport_marker_pool.push(TeleportMarker {
+            active: true,
+            born_tick: 0,
+            scale: Fix::from_int(3),
+            ..TeleportMarker::default()
+        });
+
+        world.register_pending_teleport_markers(data::get());
+
+        let entity = world.teleport_marker_pool[0].entity.unwrap();
+        assert_eq!(
+            world.entities[entity].radius,
+            data::get().teleport.marker_radius.raw()
         );
     }
 

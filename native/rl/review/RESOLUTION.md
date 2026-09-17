@@ -38,6 +38,9 @@ fixed entry is committed separately with its finding id in the subject.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
+- **#28 — fixed.** Teleport marker collider radius now remains at its authored
+  value when the owner is scaled. The separate teleport-area radius continues
+  to use the marker's logical particle scale, matching `TeleportIndicator`.
 
 ## Projectiles
 
