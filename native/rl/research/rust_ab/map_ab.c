@@ -409,6 +409,13 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
                             b->entities[e].id, b->entities[e].flags,
                             b->entities[e].x, b->entities[e].y,
                             b->entities[e].vx, b->entities[e].vy);
+            for (unsigned s = 0; s < a->header.slime_count && s < b->header.slime_count; s++)
+                fprintf(stderr,
+                        "  slime_timer owner=%u/%u third=%" PRId64 "/%" PRId64 " pos=(%" PRId64 ",%" PRId64 ")/(%" PRId64 ",%" PRId64 ")\n",
+                        a->slimes[s].owner, b->slimes[s].owner,
+                        a->slimes[s].timers[2], b->slimes[s].timers[2],
+                        a->slimes[s].x, a->slimes[s].y,
+                        b->slimes[s].x, b->slimes[s].y);
         }
         if (!bytes_equal(&as, &bs, sizeof as, "slimes", map, players, tick))
             return 0;

@@ -4132,6 +4132,20 @@ impl RolloutWorld {
                 axis(self.ability_pickups[b].position + data.pickup.offset) - data.pickup.radius;
             a_min.cmp(&b_min).then(a.cmp(&b))
         });
+        let mut player_order = [0usize; MAX_PLAYERS];
+        for (index, value) in player_order[..self.players.len()].iter_mut().enumerate() {
+            *value = index;
+        }
+        player_order[..self.players.len()].sort_unstable_by(|&a, &b| {
+            let bound_min = |player_index: usize| {
+                let row = self.entities[self.players[player_index].body_entity];
+                let center = if sweep_x { row.x } else { row.y };
+                let right = if sweep_x { row.right_x } else { row.right_y };
+                let up = if sweep_x { row.up_x } else { row.up_y };
+                center - right.abs() - up.abs()
+            };
+            bound_min(a).cmp(&bound_min(b)).then(a.cmp(&b))
+        });
         for &pickup_index in &order {
             let pickup = self.ability_pickups[pickup_index];
             if !pickup.active || !pickup.enabled {
@@ -4142,8 +4156,8 @@ impl RolloutWorld {
                 radius: data.pickup.radius * pickup.scale,
             };
             let mut collectors = [usize::MAX; MAX_PLAYERS];
-            let mut collector_count = 0;
-            for player_index in 0..self.players.len() {
+            let mut collector_count = 0usize;
+            for &player_index in &player_order[..self.players.len()] {
                 let slot = &self.players[player_index];
                 if !self.playable(player_index)
                     || slot.active != ActiveAbility::None
@@ -4169,13 +4183,15 @@ impl RolloutWorld {
                 continue;
             }
 
-            // AddAdditionalAbility replaces the third reference, changes the
-            // loadout used by future clones, and makes the new slot ready far
-            // beyond every authored cooldown. The old inactive ability object
-            // is not destroyed and its registered collider row stays behind.
+            // PrepareCollisionCallBacks queues every overlapping Circle/Box
+            // callback before any of them run. DestroyFix in the first pickup
+            // callback therefore does not prevent the same pickup from being
+            // granted to another overlapping slime later in that queue.
             let ability = pickup.ability;
             self.active_subsystems |= ability_bit(ability);
             for &player_index in &collectors[..collector_count] {
+                // AddAdditionalAbility replaces the third reference, changes
+                // the future-clone loadout, and makes the slot ready.
                 let slot = &mut self.players[player_index];
                 slot.abilities[2] = ability;
                 slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
