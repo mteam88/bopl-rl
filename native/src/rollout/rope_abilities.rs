@@ -820,9 +820,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let hole = self.black_holes[hole_index];
-                let scale =
-                    hole.radius / (data::get().black_hole.start_radius * Fix::from_f32(0.01));
-                let anchor = hole.position + self.ropes[index].black_hole_local * scale;
+                let anchor = hole.position + self.ropes[index].black_hole_local;
                 if self.ropes[index].physics.time_since_hook_arrived > Fix::ZERO
                     && !self.ropes[index].physics.detached
                     && !stopped
@@ -1021,18 +1019,16 @@ impl RolloutWorld {
             }
             if let Some(hole_index) = attached_hole {
                 let hole = self.black_holes[hole_index];
-                let scale =
-                    hole.radius / (data::get().black_hole.start_radius * Fix::from_f32(0.01));
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
                 rope.physics
-                    .set_mass(data::get().ropes.non_platform_mass, true, scale);
+                    .set_mass(data::get().ropes.non_platform_mass, true, Fix::ONE);
                 rope.time_air_start = Fix::ONE;
                 rope.platform = None;
                 rope.black_hole = Some(hole_index);
-                rope.black_hole_local = (position - hole.position) / scale;
+                rope.black_hole_local = position - hole.position;
                 rope.black_hole_reel_frames = 0;
                 rope.reel_in = true;
                 rope.hook_active = false;
@@ -1182,9 +1178,7 @@ impl RolloutWorld {
                 && self.black_holes[hole_index].active
             {
                 let hole = self.black_holes[hole_index];
-                let scale =
-                    hole.radius / (data::get().black_hole.start_radius * Fix::from_f32(0.01));
-                rope.physics.segment[0] = hole.position + rope.black_hole_local * scale;
+                rope.physics.segment[0] = hole.position + rope.black_hole_local;
             }
             if rope.hook_active {
                 rope.physics.segment[0] = rope.hook_position;

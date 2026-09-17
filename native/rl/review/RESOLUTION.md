@@ -17,6 +17,11 @@ fixed entry is committed separately with its finding id in the subject.
   inactive in a Blink tunnel, but the separate SpriteAnimator on the ability
   form keeps running. Rust now lets that animator's completion callback move
   Rotation to Size even while the wall is inactive, matching C#.
+- **S3 — fixed.** A rope attached to BlackHole now stores and reapplies its
+  offset at `FixTransform.Scale == 1`, and initializes rope mass with that
+  same scale. BlackHole growth changes the Unity visual scale and DPhysics
+  circle radius directly; it never changes the authoritative FixTransform
+  scale used by `RopeAttachment`.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the
