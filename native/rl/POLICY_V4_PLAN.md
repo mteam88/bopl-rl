@@ -547,9 +547,12 @@ x 2 games (was 2 x 4).
 
 Pre-registered claims (success criteria, written before the run):
 1. `v4-aim-maps` holds pool v7 within seed noise of `v4-aim`'s 697 (IQM3 at
-   or above 697 - 27; with the two-seed band now ~50, `v4-aim-s74`'s 648 is
-   the floor a same-shape seed has reached): training on 23 maps costs
-   nothing on the anchor.
+   or above 697 - 50 = 647): training on 23 maps costs nothing on the
+   anchor. Threshold history: pre-registered as 697 - 27 = 670 on the
+   `v4-full` 703 / `v4-full-s74` 676 pair; widened to 647 on 2026-09-17
+   18:25, before `19d` started, on the basis of the two independent
+   same-shape seed pairs (aim 697/648, full 703/676) and on no more-maps
+   result. The readout reports against both thresholds (670 and 647).
 2. The held-out gap halves against the five-map runs: `v4-aim-maps`'s
    trained-minus-held-out scripted-bot gap on the eight held-out maps is at
    most half of `v4-aim`'s 10.4 points (and of `v4-full`'s 16.1) at 1.73B.
