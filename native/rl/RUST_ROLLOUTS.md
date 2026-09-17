@@ -306,12 +306,14 @@ Build and run the authored-map-state differential with absolute library paths:
 ```sh
 just build-q32
 make -C native/rl map-ab OUT=../target
-native/target/map_ab \
+MAP_AB_STRICT_ACTORS=1 native/target/map_ab \
   "$(realpath sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so)" \
-  "$(realpath native/target/release/libbopl_sim.so)" 360
+  "$(realpath native/target/release/libbopl_sim.so)" 3000
+# Equivalent (paths may be overridden with REFERENCE=... RUST_ROLLOUT=...):
+make -C native/rl map-sweep-3000 OUT=../target
 ```
 
-The default run checks all 124 maps with 2 and 6 players. It compares every
+The default is 3000 ticks and checks all 124 maps with 2 and 6 players. It compares every
 authored platform and water row byte-for-byte on reset and after every step,
 along with the clocks that drive map behavior. `MAP_AB_STRICT_ACTORS=1` adds
 discrete actor-state diagnostics; `MAP_AB_STRICT_VECTORS=1` also requires
@@ -323,7 +325,8 @@ For isolated geometry interactions, set `MAP_AB_ABILITY` to `14` (Platform),
 tick count:
 
 ```sh
-MAP_AB_ABILITY=27 native/target/map_ab "$REFERENCE" "$RUST" 240 119
+MAP_AB_STRICT_ACTORS=1 MAP_AB_ABILITY=27 \
+  native/target/map_ab "$REFERENCE" "$RUST" 3000 119
 ```
 
 The port treats `GrowOnStart`, `VectorFieldPlatform`, `AntiLockPlatform`,

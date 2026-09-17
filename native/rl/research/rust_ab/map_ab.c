@@ -102,6 +102,65 @@ static const BoplRlEntity *find_map_entity(const BoplRlState *state,
 
 static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
                    unsigned players, unsigned tick) {
+    if (getenv("MAP_AB_TRACE_PICKUP")) {
+        unsigned trace_id = (unsigned)strtoul(getenv("MAP_AB_TRACE_PICKUP"), NULL, 10);
+        const BoplRlEntity *ap = NULL, *bp = NULL;
+        for (unsigned i = 0; i < a->header.entity_count; i++)
+            if (a->entities[i].id == trace_id) ap = &a->entities[i];
+        for (unsigned i = 0; i < b->header.entity_count; i++)
+            if (b->entities[i].id == trace_id) bp = &b->entities[i];
+        if (ap || bp)
+            fprintf(stderr,
+                    "PICKUP_TRACE tick=%u flags=%u/%u ability=%u/%u pos=(%" PRId64 ",%" PRId64
+                    ")/(%" PRId64 ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64
+                    ")/(%" PRId64 ",%" PRId64 ")\n",
+                    tick, ap ? ap->flags : 0, bp ? bp->flags : 0,
+                    ap ? ap->reserved[0] : 0, bp ? bp->reserved[0] : 0,
+                    ap ? ap->x : 0, ap ? ap->y : 0, bp ? bp->x : 0,
+                    bp ? bp->y : 0, ap ? ap->vx : 0, ap ? ap->vy : 0,
+                    bp ? bp->vx : 0, bp ? bp->vy : 0);
+    }
+    if (getenv("MAP_AB_TRACE_SLIME")) {
+        unsigned owner = (unsigned)strtoul(getenv("MAP_AB_TRACE_SLIME"), NULL, 10);
+        const BoplRlSlime *as = NULL, *bs = NULL;
+        for (unsigned i = 0; i < a->header.slime_count; i++)
+            if (a->slimes[i].owner == owner) as = &a->slimes[i];
+        for (unsigned i = 0; i < b->header.slime_count; i++)
+            if (b->slimes[i].owner == owner) bs = &b->slimes[i];
+        if (as || bs)
+            fprintf(stderr,
+                    "SLIME_TRACE tick=%u state=%u/%u pos=(%" PRId64 ",%" PRId64
+                    ")/(%" PRId64 ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64
+                    ")/(%" PRId64 ",%" PRId64 ") rot=%" PRId64 "/%" PRId64 "\n",
+                    tick, as ? as->state : 0, bs ? bs->state : 0,
+                    as ? as->x : 0, as ? as->y : 0, bs ? bs->x : 0,
+                    bs ? bs->y : 0, as ? as->vx : 0, as ? as->vy : 0,
+                    bs ? bs->vx : 0, bs ? bs->vy : 0,
+                    as ? as->rotation : 0, bs ? bs->rotation : 0);
+    }
+    if (getenv("MAP_AB_TRACE_ENTITY")) {
+        unsigned hierarchy = (unsigned)strtoul(getenv("MAP_AB_TRACE_ENTITY"), NULL, 10);
+        const BoplRlEntity *ae = NULL, *be = NULL;
+        for (unsigned i = 0; i < a->header.entity_count; i++)
+            if (a->entities[i].hierarchy == hierarchy) ae = &a->entities[i];
+        for (unsigned i = 0; i < b->header.entity_count; i++)
+            if (b->entities[i].hierarchy == hierarchy) be = &b->entities[i];
+        if (ae || be)
+            fprintf(stderr,
+                    "ENTITY_TRACE tick=%u pos=(%" PRId64 ",%" PRId64 ")/(%" PRId64
+                    ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64 ")/(%" PRId64
+                    ",%" PRId64 ") radius=%" PRId64 "/%" PRId64
+                    " basis=(%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64
+                    ")/(%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ")\n",
+                    tick, ae ? ae->x : 0, ae ? ae->y : 0, be ? be->x : 0,
+                    be ? be->y : 0, ae ? ae->vx : 0, ae ? ae->vy : 0,
+                    be ? be->vx : 0, be ? be->vy : 0,
+                    ae ? ae->radius : 0, be ? be->radius : 0,
+                    ae ? ae->right_x : 0, ae ? ae->right_y : 0,
+                    ae ? ae->up_x : 0, ae ? ae->up_y : 0,
+                    be ? be->right_x : 0, be ? be->right_y : 0,
+                    be ? be->up_x : 0, be ? be->up_y : 0);
+    }
     BoplRlHeader ah = a->header, bh = b->header;
     /* The Rust backend's fixed ability-entity table deliberately retains
      * removed rows, whereas NativeAOT compacts them. Map rows are compared
@@ -111,17 +170,36 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
         ah.slime_count = bh.slime_count = 0;
         ah.flags = bh.flags = 0;
     }
-    if (!bytes_equal(&ah, &bh, sizeof ah, "header", map, players, tick))
+    if (!bytes_equal(&ah, &bh, sizeof ah, "header", map, players, tick)) {
+        for (unsigned p = 0; p < players; p++)
+            fprintf(stderr,
+                    "  player[%u] flags=%u/%u alive=%u/%u deaths=%u/%u cause=%u/%u "
+                    "pos=(%" PRId64 ",%" PRId64 ")/(%" PRId64 ",%" PRId64 ")\n",
+                    p, a->players[p].flags, b->players[p].flags,
+                    a->players[p].alive_bodies, b->players[p].alive_bodies,
+                    a->players[p].deaths, b->players[p].deaths,
+                    a->players[p].cause_of_death, b->players[p].cause_of_death,
+                    a->players[p].x, a->players[p].y,
+                    b->players[p].x, b->players[p].y);
         return 0;
+    }
     if (getenv("MAP_AB_STRICT_ACTORS"))
     for (unsigned i = 0; i < 6; i++) {
         BoplRlPlayer ap = a->players[i], bp = b->players[i];
-        if (getenv("MAP_AB_STRICT_VECTORS") &&
+        if ((getenv("MAP_AB_STRICT_VECTORS") ||
+             getenv("MAP_AB_STRICT_PLAYER_VECTORS")) &&
             (distance_i64(ap.x, bp.x) > 0 || distance_i64(ap.y, bp.y) > 0)) {
             fprintf(stderr,
                     "  player=%u pos=(%" PRId64 ",%" PRId64 ")/(%" PRId64
                     ",%" PRId64 ")\n",
                     i, ap.x, ap.y, bp.x, bp.y);
+            for (unsigned p = 0; p < players; p++)
+                fprintf(stderr,
+                        "  player[%u] pos=(%" PRId64 ",%" PRId64 ")/(%" PRId64
+                        ",%" PRId64 ") flags=%u/%u\n",
+                        p, a->players[p].x, a->players[p].y,
+                        b->players[p].x, b->players[p].y,
+                        a->players[p].flags, b->players[p].flags);
             for (unsigned e = 0; e < a->header.entity_count; e++) {
                 if (a->entities[e].kind == 2 &&
                     !entity_equal(&a->entities[e], &b->entities[e]))
@@ -223,11 +301,42 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
                 map, players, tick, a_map_count, b_map_count);
         return 0;
     }
+    if (getenv("MAP_AB_STRICT_PICKUPS")) {
+        for (unsigned i = 0; i < a->header.entity_count; i++) {
+            const BoplRlEntity *ap = &a->entities[i];
+            if (!(ap->flags & BOPL_ENTITY_PICKUP)) continue;
+            const BoplRlEntity *bp = NULL;
+            for (unsigned j = 0; j < b->header.entity_count; j++)
+                if (b->entities[j].id == ap->id &&
+                    (b->entities[j].flags & BOPL_ENTITY_PICKUP)) {
+                    bp = &b->entities[j];
+                    break;
+                }
+            if (!bp || memcmp(ap, bp, sizeof *ap)) {
+                fprintf(stderr,
+                        "MAP_DIFFERENCE map=%u players=%u tick=%u field=pickup id=%u "
+                        "flags=%u/%u pos=(%" PRId64 ",%" PRId64 ")/(%" PRId64
+                        ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64 ")/(%" PRId64
+                        ",%" PRId64 ")\n",
+                        map, players, tick, ap->id, ap->flags,
+                        bp ? bp->flags : 0, ap->x, ap->y, bp ? bp->x : 0,
+                        bp ? bp->y : 0, ap->vx, ap->vy, bp ? bp->vx : 0,
+                        bp ? bp->vy : 0);
+                fprintf(stderr,
+                        "  ability=%u/%u timer=%u/%u time_scale=%" PRId64 "/%" PRId64 "\n",
+                        ap->reserved[0], bp ? bp->reserved[0] : 0,
+                        ap->reserved[1], bp ? bp->reserved[1] : 0,
+                        a->header.player_time_scale, b->header.player_time_scale);
+                return 0;
+            }
+        }
+    }
     if (!getenv("MAP_AB_STRICT_ACTORS")) return 1;
     if (a->header.slime_count != b->header.slime_count) return 0;
     for (unsigned i = 0; i < a->header.slime_count; i++) {
         BoplRlSlime as = a->slimes[i], bs = b->slimes[i];
-        if (getenv("MAP_AB_STRICT_VECTORS") &&
+        if ((getenv("MAP_AB_STRICT_VECTORS") ||
+             getenv("MAP_AB_STRICT_SLIME_VECTORS")) &&
             (distance_i64(as.x, bs.x) > 0 || distance_i64(as.y, bs.y) > 0 ||
                   distance_i64(as.vx, bs.vx) > 0 || distance_i64(as.vy, bs.vy) > 0))
         {
@@ -236,15 +345,35 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
                     ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64 ")/(%" PRId64
                     ",%" PRId64 ")\n",
                     i, as.x, as.y, bs.x, bs.y, as.vx, as.vy, bs.vx, bs.vy);
+            for (unsigned e = 0; e < a->header.entity_count; e++) {
+                const BoplRlEntity *ae = &a->entities[e];
+                if (!is_map_entity(ae)) continue;
+                const BoplRlEntity *be = find_map_entity(b, ae);
+                if (be && memcmp(ae, be, sizeof *ae))
+                    fprintf(stderr,
+                            "  map_entity hierarchy=%u pos=(%" PRId64 ",%" PRId64
+                            ")/(%" PRId64 ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64
+                            ")/(%" PRId64 ",%" PRId64 ") radius=%" PRId64 "/%" PRId64
+                            " basis=(%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64
+                            ")/(%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ")\n",
+                            ae->hierarchy, ae->x, ae->y, be->x, be->y,
+                            ae->vx, ae->vy, be->vx, be->vy, ae->radius, be->radius,
+                            ae->right_x, ae->right_y, ae->up_x, ae->up_y,
+                            be->right_x, be->right_y, be->up_x, be->up_y);
+            }
             return bytes_equal(&as, &bs, sizeof as, "slime_vector", map,
                                players, tick);
         }
         as.x = as.y = as.vx = as.vy = 0;
         bs.x = bs.y = bs.vx = bs.vy = 0;
-        as.state = 0;
-        bs.state = 0;
-        as.rotation = 0;
-        bs.rotation = 0;
+        if (!getenv("MAP_AB_STRICT_STATE")) {
+            as.state = 0;
+            bs.state = 0;
+        }
+        if (!getenv("MAP_AB_STRICT_ROTATION")) {
+            as.rotation = 0;
+            bs.rotation = 0;
+        }
         /* The Rust backend advertises its fixed replacement slot in the
          * ABI-v3 metadata bits even before a pickup exists; map fidelity is
          * independent of those advisory bits. */
@@ -253,13 +382,33 @@ static int compare(const BoplRlState *a, const BoplRlState *b, unsigned map,
         if (memcmp(&as, &bs, sizeof as)) {
             fprintf(stderr,
                     "  slime=%u id=%u/%u owner=%u/%u flags=%u/%u state=%u/%u "
-                    "abilities=%u,%u,%u/%u,%u,%u ability_flags=%u,%u,%u/%u,%u,%u\n",
+                    "abilities=%u,%u,%u/%u,%u,%u ability_flags=%u,%u,%u/%u,%u,%u "
+                    "timers=(%" PRId64 ",%" PRId64 ",%" PRId64 ")/(%" PRId64
+                    ",%" PRId64 ",%" PRId64 ")\n",
                     i, as.id, bs.id, as.owner, bs.owner, as.flags, bs.flags,
                     as.state, bs.state, as.abilities[0], as.abilities[1],
                     as.abilities[2], bs.abilities[0], bs.abilities[1],
                     bs.abilities[2], as.ability_flags[0], as.ability_flags[1],
                     as.ability_flags[2], bs.ability_flags[0],
-                    bs.ability_flags[1], bs.ability_flags[2]);
+                    bs.ability_flags[1], bs.ability_flags[2], as.timers[0],
+                    as.timers[1], as.timers[2], bs.timers[0], bs.timers[1],
+                    bs.timers[2]);
+            for (unsigned e = 0; e < a->header.entity_count; e++)
+                if (a->entities[e].flags & BOPL_ENTITY_PICKUP)
+                    fprintf(stderr,
+                            "  reference pickup id=%u flags=%u pos=(%" PRId64
+                            ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64 ")\n",
+                            a->entities[e].id, a->entities[e].flags,
+                            a->entities[e].x, a->entities[e].y,
+                            a->entities[e].vx, a->entities[e].vy);
+            for (unsigned e = 0; e < b->header.entity_count; e++)
+                if (b->entities[e].flags & BOPL_ENTITY_PICKUP)
+                    fprintf(stderr,
+                            "  rust pickup id=%u flags=%u pos=(%" PRId64
+                            ",%" PRId64 ") vel=(%" PRId64 ",%" PRId64 ")\n",
+                            b->entities[e].id, b->entities[e].flags,
+                            b->entities[e].x, b->entities[e].y,
+                            b->entities[e].vx, b->entities[e].vy);
         }
         if (!bytes_equal(&as, &bs, sizeof as, "slimes", map, players, tick))
             return 0;
@@ -292,7 +441,7 @@ int main(int argc, char **argv) {
                 argv[0]);
         return 2;
     }
-    unsigned ticks = argc >= 4 ? (unsigned)strtoul(argv[3], NULL, 10) : 360;
+    unsigned ticks = argc >= 4 ? (unsigned)strtoul(argv[3], NULL, 10) : 3000;
     unsigned only_map = argc >= 5 ? (unsigned)strtoul(argv[4], NULL, 10) : UINT32_MAX;
     unsigned warmup = argc >= 6 ? (unsigned)strtoul(argv[5], NULL, 10) : 240;
     char error[2][512] = {{0}};
@@ -317,6 +466,9 @@ int main(int argc, char **argv) {
     unsigned comparisons = 0;
     for (unsigned player_case = 0; player_case < 2; player_case++) {
         unsigned players = player_case ? 6 : 2;
+        if (getenv("MAP_AB_PLAYERS") &&
+            players != (unsigned)strtoul(getenv("MAP_AB_PLAYERS"), NULL, 10))
+            continue;
         for (unsigned map = 0; map < maps; map++) {
             if (only_map != UINT32_MAX && map != only_map) continue;
             BoplRlConfig config;
@@ -342,6 +494,28 @@ int main(int argc, char **argv) {
                             map, players, backend, bopl_rl_error(world[backend]));
                     return 1;
                 }
+            }
+            if (getenv("MAP_AB_DUMP_ACTORS")) {
+                const BoplRlState *reference = bopl_rl_state(world[0]);
+                const BoplRlState *rust = bopl_rl_state(world[1]);
+                for (unsigned s = 0; s < reference->header.slime_count; s++)
+                    fprintf(stderr,
+                            "MAP_ACTOR map=%u players=%u reference slime=%u owner=%u "
+                            "state=%u pos=(%" PRId64 ",%" PRId64 ") vel=(%" PRId64
+                            ",%" PRId64 ")\n",
+                            map, players, s, reference->slimes[s].owner,
+                            reference->slimes[s].state, reference->slimes[s].x,
+                            reference->slimes[s].y, reference->slimes[s].vx,
+                            reference->slimes[s].vy);
+                for (unsigned s = 0; s < rust->header.slime_count; s++)
+                    fprintf(stderr,
+                            "MAP_ACTOR map=%u players=%u rust slime=%u owner=%u "
+                            "state=%u pos=(%" PRId64 ",%" PRId64 ") vel=(%" PRId64
+                            ",%" PRId64 ")\n",
+                            map, players, s, rust->slimes[s].owner,
+                            rust->slimes[s].state, rust->slimes[s].x,
+                            rust->slimes[s].y, rust->slimes[s].vx,
+                            rust->slimes[s].vy);
             }
             if (getenv("MAP_AB_DUMP_PLATFORMS")) {
                 const BoplRlState *reference = bopl_rl_state(world[0]);

@@ -9,6 +9,14 @@ research: $(OUT)/libbopl_research.so
 
 map-ab: $(OUT)/map_ab
 
+REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/native/BoplSimNative.so
+RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
+
+# Exhaustive authored-map gate: all 124 maps, both 2- and 6-player layouts,
+# 3000 ticks per live case, with discrete player/slime state required exact.
+map-sweep-3000: $(OUT)/map_ab
+	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT)) 3000
+
 $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/map_ab.c bopl_rl.c -ldl -lm -o $@
