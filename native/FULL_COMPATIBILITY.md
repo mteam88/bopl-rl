@@ -3005,31 +3005,41 @@ is exact.
 
 Ground motion preserves `Roll.Move`'s unusual collision discretization. It
 computes `n = floor(abs(speed) * dt * density / hurtboxRadius) + 1`, advances
-exactly `n` times by `speed/(n+1)`, and retains all intermediate circle centres
-in a fixed 30-entry state array for `CollideExtraHurtBoxes`. This has no tick
-allocation. The charged release instantiates a cosmetic particle trail, but its
+exactly `n` times by `speed/(n+1)`, and retains the preceding `n - 1`
+intermediate circle centres in a fixed 30-entry state array while the live
+collider covers the final position. This has no tick allocation. The charged
+release instantiates a cosmetic particle trail, but its
 particle system and `FollowTransform` are ordinary Unity components rather than
 `MonoUpdatable`s. It therefore consumes zero updater hierarchy entries. The
 previous extracted count of two shifted every entity created after a release;
 the corrected count makes later stock clones match NativeAOT.
 
-`roll_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks from charge through
-release, repeated curved-platform circuits, jump cancel, high-speed airborne
-motion, boundary death, and stock replacement. All state and entity metadata
-match, including the reconstructed hierarchy after a charged release.
-`dash_roll_ab.c` additionally covers the released form's lethal callback against
-another transformed player. `time_stop_roll_ab.c` covers the charging form
-through frozen clocks, restored release and motion up to the first platform-hop
-boundary. `gust_roll_ab.c` adds 300 exact ticks through Gust's one-shot
-PlayerPhysics force on an airborne charging form, subsequent flight and the
-correctly phased lower-boundary death. Repeated surface local-to-world transforms
-accumulate at most 2,048 raw Q32 units (less than 0.0000005 world units) in the
-comparator; velocity is exact through the measured jump and fall. The
-difference comes from reconstructing the curved surface position in Rust
-instead of retaining Unity's separately rounded transform fields and does not
-cross a zone, contact, or state boundary in the golden. Cross-platform hopping,
-an isolated early airborne release, moving-platform turns, wall squish and
-other transformed-form contacts remain open, so coverage is partial.
+The completed source pass also ports `MoveAlongCurrentPlatFormSwapIfBlocked`
+and `PlatformHopMove`: a fixed five-entry exclusion buffer survives every
+substep in the tick, each blocking rounded platform receives the player at the
+old surface endpoint, and the already-delta-scaled remainder is intentionally
+multiplied by `dt` again on recursive hops. `CollideExtraHurtBoxes` collects at
+most ten active colliders in circle/box hierarchy order, dispatches every
+target callback before the reciprocal Roll callback, and handles ordinary and
+transformed players, abilityless clones, Arrow, guided Missile, Grenade and
+Mine. Charging Roll remains wall-squishable; `ReleaseDash` disables that flag
+for the lethal form. Freeze, death and landing exits all restore the ordinary
+body through the same source handoff.
+
+`roll_broad_ab.sh` runs `roll_ability_ab.c`, `roll_air_release_ab.c`,
+`dash_roll_ab.c`, `gust_roll_ab.c` and `time_stop_roll_ab.c` as one broad
+optimized-Q32 gate. All 3,000 NativeAOT/Rust ticks pass through grounded charge
+and release, repeated curved-platform circuits, airborne ShortJump, lethal
+Dash contact, Gust force, boundary death, stock replacement and all 690 frozen
+Time Stop passes. Repeated surface local-to-world transforms accumulate at most
+2,048 raw Q32 units (less than 0.0000005 world units) in the comparator;
+velocity and all interaction boundaries are exact in the measured scenarios.
+The bounded pose difference comes from reconstructing the curved surface
+position in Rust instead of retaining Unity's separately rounded transform
+fields and does not cross a zone, contact, or state boundary. Newly translated
+cross-platform hops, moving-platform turns, wall squish, dynamic-item/clone
+contacts, Freeze/death cleanup and post-exit pickup use do not yet have separate
+focused public differentials.
 
 ### Executable Blink gun and player QuantumTunnel (2026-09-15)
 

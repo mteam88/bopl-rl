@@ -393,17 +393,17 @@ directly in place of `BoplSimNative.so` — the in-process loader in
   two-tick lethal smear. The 3,040-tick broad gate is exact within the existing
   sub-0.000012-unit FixTransform/vector bound; newly translated callback and
   ejection branches remain without separate focused differentials.
-  Roll executes its separate PlayerPhysics form, charged ground release,
-  serialized Hermite speed curve, source `n/(n+1)` surface substeps, fixed-size
-  swept lethal hurtboxes, jump cancel, airborne gravity/control and exit body
-  handoff. Its circle and movement radii remain distinct as authored. A Dash
-  composition exactly covers the released Roll's contact-kill callback and
-  stock reconstruction, and a Time Stop composition covers frozen charge plus
-  restored release and motion. Gust's PlayerPhysics force on an airborne
-  charging Roll, subsequent flight and lower-boundary death are also exact. An
-  immediate airborne release is exact through its world-up `ShortJump`,
-  descending form exit and ordinary landing. Platform hopping, moving-platform turns, wall squish
-  and other transformed-form contacts still need dedicated differential scenarios.
+  Roll executes its complete source PlayerPhysics form: grounded and airborne
+  charge/release, jump cancels and `ShortJump`, the serialized Hermite speed
+  curve, source `n/(n+1)` surface substeps, five-entry platform-hop exclusion
+  buffer with recursive residual motion, moving-platform alignment, thirty
+  swept hurtboxes plus the live collider, ten-entry hierarchy-ordered player,
+  clone and dynamic-item callbacks, wall squish eligibility and lethal-form
+  immunity, Time Stop, death/Freeze exits and ordinary-body handoff. The five
+  existing scenarios now run as one 3,000-tick optimized-Q32 broad gate and all
+  pass. Cross-platform hops, moving-platform turns, wall squish, item/clone
+  contacts and post-exit pickup use are source-ported but remain without
+  separate focused public differentials.
   Black Hole executes its grounded and airborne form animations, persistent
   layer-23 circle, Hermite growth, all-wall gravity, controlled-platform
   multiplier, player attraction, center-only wall consumption, hole merging,

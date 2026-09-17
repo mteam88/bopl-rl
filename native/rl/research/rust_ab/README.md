@@ -27,6 +27,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `dash_roll_ab.c`: a Dash ray crosses a released lethal Roll circle, kills the
   dasher at the ray near point, credits the roller and reconstructs the stock
   clone with the source's zero-entry cosmetic-trail hierarchy behavior.
+- `roll_broad_ab.sh`: one broad gate over five optimized-Q32 Roll scenarios:
+  grounded charge/release and stock reconstruction, immediate airborne
+  ShortJump exit, lethal Dash contact, Gust force and a complete charging-form
+  Time Stop freeze/restoration; all 3,000 differential ticks pass.
 - `dash_player_ab.c`: an ordinary target overlaps the Dash ray origin, receives
   its one-sided `SlimeController.OnCollide` push, and survives the pass-through
   before the Dash completes its normal endpoint and exit.

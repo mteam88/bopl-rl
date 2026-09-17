@@ -2039,8 +2039,8 @@ struct PlatformScratch {
     /// Arrow Circle/RoundedRectangle manifolds. Retained because arrows can
     /// overlap several composite platforms in one DetPhysics pass.
     arrow_platform_contacts: Vec<(usize, Contact)>,
-    /// Sorted raycast output shared by Dash and Meteor, retained across casts so
-    /// the hot rollout never allocates for either source collider list.
+    /// Sorted collider query output shared by Dash, Meteor and Roll, retained
+    /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
 }
 
@@ -2048,7 +2048,7 @@ struct PlatformScratch {
 struct SortedRayHit {
     distance: Fix,
     hierarchy: u32,
-    /// 0 wall, 1 player slot, 2 non-player entity row, 3 water.
+    /// Query-specific collider class used as the primary stable sort key.
     kind: u8,
     index: usize,
 }
@@ -7522,25 +7522,109 @@ impl RolloutWorld {
             .max(0) as usize
             + 1;
         let step_speed = speed / Fix::from_int((count + 1) as i64);
-        let Some(platform_index) = self.players[index]
-            .base
-            .ground
-            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
-        else {
-            return;
-        };
-        let surface = &self.platforms[platform_index].surface;
-        let slot = &mut self.players[index];
+        let mut visited = [u32::MAX; 5];
         for substep in 0..count {
-            slot.base.local =
-                surface.move_unblocked(slot.base.local, data.roll.physics_radius, step_speed, DT);
-            slot.base.position = surface.position(slot.base.local, data.roll.physics_radius);
-            if substep < slot.roll.swept.len() {
-                slot.roll.swept[substep] = slot.base.position;
+            self.roll_hop_step(index, step_speed, &mut visited, data);
+            let position = self.players[index].base.position;
+            let slot = &mut self.players[index];
+            // The normal hurtbox covers the final move. Roll records only the
+            // preceding substeps in its thirty extra hurtboxes.
+            if substep + 1 < count && substep < slot.roll.swept.len() {
+                slot.roll.swept[substep] = position;
                 slot.roll.swept_len = (substep + 1) as u8;
             }
         }
-        slot.base.align(&self.platforms[platform_index]);
+        if let Some(platform_index) = self.players[index]
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
+        {
+            self.players[index]
+                .base
+                .align(&self.platforms[platform_index]);
+        }
+    }
+
+    /// PlayerPhysics.MoveAlongCurrentPlatFormSwapIfBlocked. The source passes
+    /// the already-delta-scaled remainder back as a speed, so each recursive
+    /// platform hop multiplies the remainder by `dt` once more.
+    fn roll_hop_step(
+        &mut self,
+        index: usize,
+        mut speed: Fix,
+        visited: &mut [u32; 5],
+        data: &data::RolloutData,
+    ) {
+        // The source recurses until a hop has no blocker. The five entries
+        // limit only which prior platforms are excluded, not recursion depth;
+        // the residual movement is multiplied by dt on every hop.
+        for _ in 0..64 {
+            let Some(platform_index) = self.players[index]
+                .base
+                .ground
+                .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
+            else {
+                return;
+            };
+            let platform_id = self.platforms[platform_index].id;
+            if let Some(slot) = visited.iter_mut().find(|id| **id == u32::MAX) {
+                *slot = platform_id;
+            }
+
+            let movement = speed * DT;
+            let sign = movement.sign();
+            let origin = self.platforms[platform_index]
+                .surface
+                .position(self.players[index].base.local, data.roll.physics_radius);
+            let direction =
+                self.platforms[platform_index].surface.forward(origin) * Fix::from_int(sign);
+            let mut nearest = Fix::from_int(1_000_000_000);
+            let mut blocking = None;
+            if direction != Vec2::ZERO {
+                for (candidate, platform) in self.platforms.iter().enumerate() {
+                    if !platform.active || visited.contains(&platform.id) {
+                        continue;
+                    }
+                    if let Some(hit) = platform.collider.raycast_within(
+                        origin,
+                        direction,
+                        Fix::from_int(1_000_000_000),
+                    ) && hit.near < nearest
+                    {
+                        nearest = hit.near;
+                        blocking = Some(candidate);
+                    }
+                }
+            }
+            if movement.abs() < nearest {
+                blocking = None;
+            }
+            let allowed = movement.abs().min(nearest) * Fix::from_int(sign);
+            let next_local = self.platforms[platform_index].surface.move_unblocked(
+                self.players[index].base.local,
+                data.roll.physics_radius,
+                allowed,
+                Fix::ONE,
+            );
+            let next_position = self.platforms[platform_index]
+                .surface
+                .position(next_local, data.roll.physics_radius);
+            self.players[index].base.local = next_local;
+            self.players[index].base.position = next_position;
+            let Some(blocking) = blocking else {
+                return;
+            };
+            let Ok(local) = self.platforms[blocking]
+                .surface
+                .local_position(next_position, data.roll.physics_radius)
+            else {
+                return;
+            };
+            self.players[index].base.ground = Some(self.platforms[blocking].id);
+            self.players[index].base.local = local;
+            self.players[index].base.align(&self.platforms[blocking]);
+            speed = (movement.abs() - allowed.abs()) * Fix::from_int(sign);
+        }
     }
 
     fn exit_roll(&mut self, index: usize, just_landed: bool, data: &data::RolloutData) {
@@ -7864,7 +7948,7 @@ impl RolloutWorld {
                 2 => {
                     let entity = hit.index;
                     self.players[index].base.position = near;
-                    self.meteor_target_callback(entity, near, index, data);
+                    self.player_form_target_callback(entity, near, index, data);
                     let row = self.entities[entity];
                     if row.flags & E_DESTROYED == 0
                         && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
@@ -7968,7 +8052,7 @@ impl RolloutWorld {
         (ENVIRONMENT, true, CAUSE_OTHER)
     }
 
-    fn meteor_target_callback(
+    fn player_form_target_callback(
         &mut self,
         entity: usize,
         near: Vec2,
@@ -26034,101 +26118,119 @@ impl RolloutWorld {
     /// The source dispatches every swept centre, but PlayerCollision accepts
     /// only the first kill in a frame; a fixed victim bitset has that result.
     fn roll_contacts(&mut self, data: &data::RolloutData) {
-        let mut victims = [false; MAX_PLAYERS];
-        let mut killers = [0u32; MAX_PLAYERS];
+        // Roll.UpdateSim dispatches each active player's swept callbacks in
+        // prefab hierarchy order. Apply deaths immediately so two lethal Rolls
+        // do not both survive long enough to kill each other in a deferred
+        // batch.
         for roller in 0..self.players.len() {
-            let slot = &self.players[roller];
-            if slot.active != ActiveAbility::Roll || !slot.roll.lethal || !self.playable(roller) {
+            if self.players[roller].active != ActiveAbility::Roll
+                || !self.players[roller].roll.lethal
+                || !self.playable(roller)
+            {
                 continue;
             }
             let mut centers = [Vec2::ZERO; 31];
-            let swept_len = usize::from(slot.roll.swept_len);
-            centers[..swept_len].copy_from_slice(&slot.roll.swept[..swept_len]);
-            centers[swept_len] = slot.base.position;
-            for victim in 0..self.players.len() {
-                if victim == roller || victims[victim] || !self.playable(victim) {
-                    continue;
-                }
-                let other = &self.players[victim];
-                let entity = match other.active {
-                    ActiveAbility::None => other.body_entity,
-                    ActiveAbility::Dash => other.dash_entity,
-                    ActiveAbility::Bow => other.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => other.throw_entity,
-                    ActiveAbility::Mine => other.mine_entity,
-                    ActiveAbility::Rock => other.rock_entity,
-                    ActiveAbility::Roll => other.roll_entity,
-                    ActiveAbility::Meteor => other.meteor_entity,
-                    ActiveAbility::Push => other.push_entity,
-                    ActiveAbility::Freeze => other.freeze_entity,
-                    ActiveAbility::Blink => other.blink_entity,
-                    ActiveAbility::GrowthRay => other.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => other.shrink_ray_entity,
-                    ActiveAbility::Duplicator => other.duplicator_entity,
-                    ActiveAbility::Magnet => other.magnet_entity,
-                    ActiveAbility::Spike => other.spike_entity,
-                    ActiveAbility::Engine => other.engine_entity,
-                    ActiveAbility::Tesla => other.tesla_entity,
-                    ActiveAbility::TimeStop => other.time_stop_entity,
-                    ActiveAbility::Gust => other.gust_entity,
-                    ActiveAbility::Revival => other.revival_entity,
-                    ActiveAbility::BlackHole => other.black_hole_entity,
-                    ActiveAbility::Throw => other.macho_throw_entity,
-                    ActiveAbility::Drill => other.drill_entity,
-                    ActiveAbility::Beam => other.beam_entity,
-                    ActiveAbility::Platform => other.circle_entity,
+            let swept_len = usize::from(self.players[roller].roll.swept_len);
+            centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
+            centers[swept_len] = self.players[roller].base.position;
+            let roller_entity = self.players[roller].roll_entity;
+            let roller_id = self.players[roller].base.id;
+
+            for &center in &centers[..=swept_len] {
+                self.scratch.ray_hits.clear();
+                let query = Circle {
+                    center,
+                    radius: data.roll.radius,
                 };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let hit = centers[..=swept_len].iter().any(|&center| {
-                    let roll = Circle {
-                        center,
-                        radius: data.roll.radius,
-                    };
-                    if row.kind == 0 {
-                        crate::physics::contact::circle_circle(
-                            roll,
-                            Circle {
-                                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                                radius: Fix::from_raw(row.radius),
-                            },
-                        )
-                        .is_some()
-                    } else {
-                        let right =
-                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                        crate::physics::contact::circle_box(
-                            roll,
-                            OrientedBox {
-                                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                                right,
-                                up,
-                                inverse_extents: Vec2::new(
-                                    Fix::ONE / right.length(),
-                                    Fix::ONE / up.length(),
-                                ),
-                            },
-                        )
-                        .is_some()
+                for (entity, row) in self.entities.iter().copied().enumerate() {
+                    if entity == roller_entity
+                        || row.kind > 1
+                        || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                        || data.roll.collision_mask & (1u32 << row.layer) == 0
+                        || !self.circle_overlaps_entity(query, entity)
+                    {
+                        continue;
                     }
-                });
-                if hit {
-                    victims[victim] = true;
-                    killers[victim] = slot.base.id;
+                    self.scratch.ray_hits.push(SortedRayHit {
+                        distance: Fix::ZERO,
+                        hierarchy: row.id,
+                        kind: row.kind as u8,
+                        index: entity,
+                    });
                 }
-            }
-        }
-        for victim in 0..self.players.len() {
-            if victims[victim] && self.playable(victim) {
-                self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
+                // CircleCastAll writes circles before boxes in collider
+                // registration order and truncates Roll's retained buffer at
+                // ten PhysicsParents.
+                self.scratch
+                    .ray_hits
+                    .sort_unstable_by_key(|hit| (hit.kind, hit.hierarchy));
+                let hit_count = self.scratch.ray_hits.len().min(10);
+
+                // CollideExtraHurtBoxes invokes every target callback before
+                // it begins the reciprocal Roll hurtbox callback walk.
+                for hit_offset in 0..hit_count {
+                    let entity = self.scratch.ray_hits[hit_offset].index;
+                    if let Some(target) = self.players.iter().position(|slot| {
+                        self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
+                    }) {
+                        self.kill(target, roller_id, CAUSE_OTHER, true, true);
+                        continue;
+                    }
+                    if let Some(clone) = self
+                        .abilityless_clones
+                        .iter()
+                        .position(|clone| clone.active && clone.entity == Some(entity))
+                    {
+                        self.kill_abilityless_clone(clone, roller_id);
+                        continue;
+                    }
+                    self.player_form_target_callback(entity, center, roller, data);
+                }
+
+                for hit_offset in 0..hit_count {
+                    if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll
+                    {
+                        break;
+                    }
+                    let entity = self.scratch.ray_hits[hit_offset].index;
+                    if let Some(target) = self.players.iter().position(|slot| {
+                        self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
+                    }) {
+                        if self.players[target].active == ActiveAbility::Rock
+                            || (self.players[target].active == ActiveAbility::Roll
+                                && self.players[target].roll.lethal)
+                        {
+                            let killer = self.players[target].base.id;
+                            self.kill(roller, killer, CAUSE_OTHER, true, true);
+                            break;
+                        }
+                        continue;
+                    }
+                    let row = self.entities[entity];
+                    if row.flags & E_DESTROYED != 0
+                        || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
+                    {
+                        continue;
+                    }
+                    let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
+                    if killer != roller_id || can_hurt_owner {
+                        self.kill(
+                            roller,
+                            killer,
+                            if killer == roller_id {
+                                CAUSE_ACCIDENT
+                            } else {
+                                cause
+                            },
+                            true,
+                            true,
+                        );
+                        break;
+                    }
+                }
+                if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
+                    break;
+                }
             }
         }
     }
@@ -26551,6 +26653,9 @@ impl RolloutWorld {
                 .iter()
                 .enumerate()
                 .filter(|(_, slot)| self.playable_slot(slot) && slot.base.grounded)
+                // Roll enables PlayerCollision.isSquishable on entry, then
+                // ReleaseDash disables it for the lethal rolling form.
+                .filter(|(_, slot)| slot.active != ActiveAbility::Roll || !slot.roll.lethal)
                 .filter(|(_, slot)| {
                     callback_colliders.iter().enumerate().any(|(i, &collider)| {
                         Some(self.platforms[i].id) != slot.base.ground
