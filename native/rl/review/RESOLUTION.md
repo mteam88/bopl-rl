@@ -40,6 +40,8 @@ fixed entry is committed separately with its finding id in the subject.
   (with the source's `Max(scale, 1)` rule).
 - **#2 — fixed.** Mine's instantiated payload offset now scales both authored
   local axes by the caster's live scale, matching `ThrowItem.Fire`.
+- **#3 — fixed.** Guided missiles now inherit the caster's scale for both the
+  spawn offset and live projectile collider/visual scale.
 
 ## Cross-cutting
 

@@ -16681,10 +16681,11 @@ impl RolloutWorld {
             hierarchy_base,
             owner: index,
             position: self.players[index].base.position
-                + data.missile.projectile_offset.complex_mul(right),
+                + (data.missile.projectile_offset * self.players[index].player_scale)
+                    .complex_mul(right),
             body,
             up,
-            scale: Fix::ONE,
+            scale: self.players[index].player_scale,
             ..GuidedMissile::default()
         };
         if let Some(free) = self
@@ -31103,6 +31104,23 @@ mod tests {
             data::get().mine.throw_position.y,
         ) * Fix::from_int(2);
         assert_eq!(item.position, start + offset);
+    }
+
+    #[test]
+    fn guided_missile_spawn_uses_caster_scale() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let start = world.players[0].base.position;
+        world.players[0].player_scale = Fix::from_int(2);
+        world.players[0].base.rotation = Fix::ZERO;
+
+        let missile = world.spawn_guided_missile(0, data::get());
+
+        assert_eq!(world.guided_missiles[missile].scale, Fix::from_int(2));
+        assert_eq!(
+            world.guided_missiles[missile].position,
+            start + data::get().missile.projectile_offset * Fix::from_int(2)
+        );
     }
 
     #[test]
