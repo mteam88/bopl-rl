@@ -306,6 +306,15 @@ fixed entry is committed separately with its finding id in the subject.
   moment of inertia from the live extents and bevel radius. This follows
   `ResizablePlatform.UpdateSim` calling `ResizePlatform` every pass rather
   than applying `BoplBody`'s ordinary linear scale adjustment.
+- **#36 — deferred: the rollout needs multiple actors per Player.** C# loops
+  every retained Revival marker and creates one full `SlimeController` actor
+  per position, all sharing the same `Player` input, abilities, stocks, and
+  telemetry. Rust's `PlayerSlot` owns exactly one controller/body and a single
+  `revival_target_marker`, so adding another marker index would still collapse
+  the clones' independent transforms, collisions, and deaths. The faithful
+  fix is an actor collection keyed to one player record, with per-actor body,
+  form, collider, and revival state; scheduler and collision dispatch must
+  then iterate those actors in spawn hierarchy order.
 
 ## Projectiles
 
