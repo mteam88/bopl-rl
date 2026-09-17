@@ -263,6 +263,14 @@ fixed entry is committed separately with its finding id in the subject.
   not the composite center. Child-collider positional correction can move the
   latter independently during DetPhysics, exactly the case where the two
   source positions differ.
+- **S6 — not a divergence.** The authored `drillables` mask is exactly layer
+  11. Every gameplay physics collider on that layer (map terrain, Boulder,
+  and ResizablePlatform) is a `DPhysicsRoundedRect`; the layer-11 water-effect
+  objects have no DetPhysics collider. `CollideBox` therefore reaches only its
+  rounded-rectangle loop, whose registration order is the same insertion and
+  stable-removal order as Rust's `platforms` vector. Its first hit is always a
+  `StickyRoundedRectangle`, so the source's conditional assignment does not
+  retain a different previous platform.
 
 ## Cross-cutting
 
