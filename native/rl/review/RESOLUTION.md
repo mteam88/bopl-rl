@@ -99,6 +99,11 @@ fixed entry is committed separately with its finding id in the subject.
   `previous_target_size = 100`, matching the `BlackHole.Init` call made by
   Unity instantiation before Duplicator assigns its copied mass. Its first
   growth interpolation therefore has the source radius and pull/eat reach.
+- **#11 — fixed.** Grounded Engine and Tesla exits now reproduce
+  `PlantObjectOnPlatform.ExitAbility`'s `enterTurn` packet: forward input at
+  or beyond the ground-alignment deadzone enters the slime's stop animation,
+  while reverse or neutral input enters idle. This preserves the source state
+  transition before the next directional cast.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.

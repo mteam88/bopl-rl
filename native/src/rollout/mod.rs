@@ -9201,8 +9201,14 @@ impl RolloutWorld {
         {
             slot.base.up = up;
             slot.base.rotation = up.perp_cw().normalized_angle();
-            slot.obs_state = STATE_IDLE;
-            slot.state_ticks = 0;
+            let alignment = slot
+                .last_movement_input
+                .normalized_safe()
+                .dot(up.perp_cw());
+            let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
+                && (alignment >= Fix::ZERO) == slot.facing_right;
+            slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
+            slot.state_ticks = if enter_stop { STOP_TICKS } else { 0 };
         } else {
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
@@ -31607,6 +31613,25 @@ mod tests {
             world.players[0].base.position,
             start + data::get().time_stop.exit_offset * Fix::from_int(2)
         );
+    }
+
+    #[test]
+    fn planted_object_exit_enters_stop_for_forward_ground_input() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.players[0].active = ActiveAbility::Engine;
+        world.players[0].facing_right = true;
+        world.players[0].last_movement_input = Vec2::RIGHT;
+
+        world.exit_engine_cast(0);
+
+        assert_eq!(world.players[0].obs_state, STATE_STOP);
+        assert_eq!(world.players[0].state_ticks, STOP_TICKS);
+
+        world.players[0].active = ActiveAbility::Tesla;
+        world.players[0].last_movement_input = -Vec2::RIGHT;
+        world.exit_engine_cast(0);
+        assert_eq!(world.players[0].obs_state, STATE_IDLE);
     }
 
     #[test]
