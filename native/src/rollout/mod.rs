@@ -22063,7 +22063,7 @@ impl RolloutWorld {
                 };
                 let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
                     .clamp(Fix::from_f32(0.1), Fix::from_int(5));
-                let ratio = scale / effect.current_scale;
+                let ratio = (Fix::ONE / effect.current_scale) * scale;
                 if !self.scale_attached_entity(effect.victim, scale, data) {
                     let row = &mut self.entities[effect.victim];
                     row.radius = (Fix::from_raw(row.radius) * ratio).raw();
@@ -22158,9 +22158,9 @@ impl RolloutWorld {
                 cloud.scale = (cloud.scale + ray.scale_curve.evaluate(time) * multiplier)
                     .clamp(Fix::from_f32(0.1), Fix::from_int(5));
                 if let Some(entity) = cloud.entity {
+                    let ratio = (Fix::ONE / previous) * cloud.scale;
                     self.entities[entity].radius =
-                        (Fix::from_raw(self.entities[entity].radius) / previous * cloud.scale)
-                            .raw();
+                        (Fix::from_raw(self.entities[entity].radius) * ratio).raw();
                 }
                 self.scale_changers[index].time = time;
                 continue;
@@ -31245,6 +31245,20 @@ mod tests {
             world.scale_changers[0].current_scale,
             world.scale_changers[1].current_scale
         );
+    }
+
+    #[test]
+    #[cfg(feature = "q32")]
+    fn circle_scale_ratio_preserves_source_fix_grouping() {
+        let radius = Fix::from_raw(5_302_428_003);
+        let previous = Fix::from_raw(1_000_000_000);
+        let scale = Fix::from_raw(2_000_000_000);
+
+        assert_eq!(
+            (radius * ((Fix::ONE / previous) * scale)).raw(),
+            10_604_856_006
+        );
+        assert_eq!(((radius / previous) * scale).raw(), 10_604_856_005);
     }
 
     #[test]

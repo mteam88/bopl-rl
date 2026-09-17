@@ -62,6 +62,11 @@ fixed entry is committed separately with its finding id in the subject.
   hits therefore start from the victim's live `FixTransform.Scale`, while
   simultaneous Growth/Shrink effects compose additively in updater order as
   C# does instead of advancing independent accumulators from one.
+- **#17 — fixed.** Generic circles/boxes and Smoke clouds now reproduce
+  `DPhysicsCircle.Scale`'s Q32 grouping exactly: compute
+  `(Fix.One / oldScale) * newScale` first, then multiply each collider
+  dimension. The algebraically equivalent `new / old` and
+  `(radius / old) * new` forms round differently in fixed point.
 - **#18 — fixed.** Duplicated Engine and Tesla attachments now scale their
   authored surface offsets by the cloned object's scale before rebuilding
   composite-relative geometry.
