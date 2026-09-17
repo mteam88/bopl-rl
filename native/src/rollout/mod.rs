@@ -27147,18 +27147,6 @@ impl RolloutWorld {
                 }
             }
             if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
-                let hit_igniting_projectile = self.arrows.iter().any(|arrow| {
-                    arrow.active
-                        && arrow.registered
-                        && crate::physics::contact::circle_circle(
-                            circle,
-                            Circle {
-                                center: arrow.position,
-                                radius: data.arrow.radius * arrow.scale,
-                            },
-                        )
-                        .is_some()
-                });
                 let hit_grenade_explosion = self.grenade_explosions.iter().any(|explosion| {
                     explosion.active
                         && explosion.registered
@@ -27187,7 +27175,7 @@ impl RolloutWorld {
                         )
                         .is_some()
                 });
-                if hit_igniting_projectile || hit_grenade_explosion || hit_missile_explosion {
+                if hit_grenade_explosion || hit_missile_explosion {
                     if item.ability == ABILITY_GRENADE {
                         self.detonate_grenade(item_index, true, data);
                         continue;
@@ -32908,6 +32896,40 @@ mod tests {
             newer * amplitude
         );
         assert_eq!(world.arrows[0].duplicate_shake_offset, older * amplitude);
+    }
+
+    #[test]
+    fn arrow_contact_does_not_ignite_grenade() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.tick = 2;
+        let entity = world.entities.len();
+        world.entities.push(CEntity {
+            flags: E_ACTIVE | E_ENABLED,
+            ..CEntity::default()
+        });
+        world.thrown_items.push(ThrownItem {
+            active: true,
+            owner: 0,
+            ability: ABILITY_GRENADE,
+            entity: Some(entity),
+            position: Vec2::ZERO,
+            scale: Fix::ONE,
+            collider_radius: data::get().grenade.item_radius,
+            ..ThrownItem::default()
+        });
+        world.arrows.push(Arrow {
+            active: true,
+            registered: true,
+            position: Vec2::ZERO,
+            scale: Fix::ONE,
+            ..Arrow::default()
+        });
+
+        world.thrown_items_contacts(data::get());
+
+        assert!(world.thrown_items[0].active);
+        assert!(world.grenade_explosions.is_empty());
     }
 
     #[test]

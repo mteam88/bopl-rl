@@ -271,6 +271,10 @@ fixed entry is committed separately with its finding id in the subject.
   stable-removal order as Rust's `platforms` vector. Its first hit is always a
   `StickyRoundedRectangle`, so the source's conditional assignment does not
   retain a different previous platform.
+- **S7 — fixed.** Arrow overlap is no longer treated as an explosive igniter.
+  The Arrow prefab's `Projectile.IgnitesExplosives` is false, so C# never
+  detonates Grenade or Smoke from that callback even if an active registered
+  arrow survives until the later item-contact pass.
 
 ## Cross-cutting
 
