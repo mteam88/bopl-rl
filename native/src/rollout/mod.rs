@@ -4689,7 +4689,8 @@ impl RolloutWorld {
             || has(ABILITY_SMOKE)
             || has(ABILITY_TACK)
             || has(ABILITY_MJOLNIR)
-            || has(ABILITY_POKE_BALL);
+            || has(ABILITY_POKE_BALL)
+            || has(ABILITY_MINE);
         // DestroyFix from a BlackHole wall callback leaves the rounded body
         // visible as destroyed for that contact pass. DetPhysics removes it
         // at the beginning of the following simulation pass.
