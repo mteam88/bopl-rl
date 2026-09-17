@@ -28766,52 +28766,52 @@ impl RolloutWorld {
             }
         }
         for spike in &self.spike_attacks {
-            if let Some(entity) = spike.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = spike.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
         for orb in &self.beam_orbs {
-            if let Some(entity) = orb.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = orb.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
         for beam in &self.beam_pool {
-            if let Some(entity) = beam.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = beam.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
         for rock in &self.duplicated_rocks {
-            if let Some(entity) = rock.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = rock.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
         for explosion in &self.grenade_explosions {
-            if let Some(entity) = explosion.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = explosion.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
         for explosion in &self.missile_explosions {
-            if let Some(entity) = explosion.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = explosion.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
         for explosion in &self.smoke_explosions {
-            if let Some(entity) = explosion.entity {
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags |= E_EXPLOSIVE;
-                }
+            if let Some(entity) = explosion.entity
+                && self.entities[entity].flags & E_DESTROYED == 0
+            {
+                self.entities[entity].flags |= E_EXPLOSIVE;
             }
         }
     }
