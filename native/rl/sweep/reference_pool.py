@@ -84,7 +84,7 @@ def game_library(game=None):
 def configure_games(workspace, game):
     """Point the research C environment at the sim (environment.configure)."""
     game = Path(game)
-    if game.resolve() == RUST_SIM.resolve():
+    if game.name == RUST_SIM.name:   # the tree's build or a staged one
         # As train.py: the Rust sim needs no spare world and hosts every world in one runtime.
         os.environ.setdefault('BOPL_RL_INPROC_SPARE', '0')
         os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', str(1 << 20))

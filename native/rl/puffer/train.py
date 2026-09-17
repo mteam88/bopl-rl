@@ -362,8 +362,11 @@ def main():
     # built by `cargo build --release`); anything else keeps the .NET/Unity
     # game resolution. The Rust backend needs no spare world (resets are
     # microseconds) and hosts every world in one runtime.
+    # An explicit --game names a staged build of the sim (a map-catalogue
+    # round the live queue's library does not carry yet); the default is the
+    # tree's own build.
     if os.environ.get('BOPL_RL_BACKEND', '').lower() == 'rust':
-        game = (ROOT/'native/target/release/libbopl_sim.so').resolve()
+        game = (a.game or ROOT/'native/target/release/libbopl_sim.so').resolve()
         if not game.exists():
             raise SystemExit(f'BOPL_RL_BACKEND=rust: {game} is missing; run cargo build --release in native/')
         os.environ.setdefault('BOPL_RL_INPROC_SPARE', '0')
