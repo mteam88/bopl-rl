@@ -9934,6 +9934,9 @@ impl RolloutWorld {
             }
             match engine.phase {
                 0 => {
+                    if updater_dt == Fix::ZERO {
+                        continue;
+                    }
                     engine.ticks += 1;
                     if engine.ticks > data.engine.start_ticks {
                         engine.phase = 1;
@@ -10005,6 +10008,9 @@ impl RolloutWorld {
                     platforms_changed = true;
                 }
                 2 => {
+                    if updater_dt == Fix::ZERO {
+                        continue;
+                    }
                     engine.ticks += 1;
                     if engine.ticks > data.engine.end_ticks {
                         engine.phase = 3;
@@ -31005,6 +31011,25 @@ mod tests {
 
         assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
         assert_eq!(world.players[0].base.external_velocity, Vec2::ZERO);
+    }
+
+    #[test]
+    fn frozen_engine_animations_do_not_advance() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.tick = 1;
+        world.engines.push(SpawnedEngine {
+            active: true,
+            phase: 0,
+            ticks: 3,
+            ..SpawnedEngine::default()
+        });
+
+        world.engines_tick(data::get(), Fix::ZERO);
+        assert_eq!(world.engines[0].ticks, 3);
+        world.engines[0].phase = 2;
+        world.engines_tick(data::get(), Fix::ZERO);
+        assert_eq!(world.engines[0].ticks, 3);
     }
 
     #[test]

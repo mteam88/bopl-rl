@@ -27,6 +27,9 @@ fixed entry is committed separately with its finding id in the subject.
   forms now return before gravity, aerial steering, and velocity damping, as
   `QuickSpell` and `CastSpell` do. Other active forms retain their authored
   per-component frozen behavior rather than applying this exception globally.
+- **#41 — fixed.** Rocket Engine start and end SpriteAnimator counters now
+  stop when global time is stopped. The firing phase was already gated; all
+  three phases now match the environment-owned C# components.
 
 ## Cross-cutting
 
