@@ -22332,9 +22332,19 @@ impl RolloutWorld {
             }
             if !self.playable(effect.victim) {
                 self.frozen_solids[effect_index].active = false;
-                self.players[effect.victim].frozen_solid_count = self.players[effect.victim]
-                    .frozen_solid_count
-                    .saturating_sub(1);
+                let slot = &mut self.players[effect.victim];
+                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+                slot.ragdoll = RagdollState {
+                    active: true,
+                    skip_physics: false,
+                    hold_on_ground: slot.base.grounded,
+                    time: Fix::ZERO,
+                    duration: Fix::from_f32(0.35),
+                };
+                slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+                slot.base.rotation = Vec2::UP.normalized_angle();
+                slot.base.up = Vec2::UP.perp();
+                slot.timers.fill(Fix::ZERO);
                 continue;
             }
             let slot = &mut self.players[effect.victim];
@@ -32194,6 +32204,25 @@ mod tests {
 
         assert_eq!(world.players[0].base.position, expected.position);
         assert_eq!(world.players[0].base.local, expected.local);
+    }
+
+    #[test]
+    fn frozen_solid_shatters_when_victim_leaves_play() {
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        world.begin_freeze(0, Fix::from_int(10), false);
+        world.players[0].timers.fill(Fix::from_int(3));
+        world.players[0].base.alive = false;
+        world.tick += 1;
+
+        world.frozen_solids_tick(DT);
+
+        assert!(!world.frozen_solids[0].active);
+        assert_eq!(world.players[0].frozen_solid_count, 0);
+        assert!(world.players[0].ragdoll.active);
+        assert_eq!(world.players[0].ragdoll.duration, Fix::from_f32(0.35));
+        assert_eq!(world.players[0].base.velocity, Vec2::new(Fix::ZERO, Fix::from_int(4)));
+        assert_eq!(world.players[0].timers, [Fix::ZERO; 3]);
     }
 
     #[test]

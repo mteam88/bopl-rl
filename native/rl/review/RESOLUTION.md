@@ -160,6 +160,11 @@ fixed entry is committed separately with its finding id in the subject.
   blocked by every registered rounded rectangle, including inactive ones.
   This mirrors the source's intentionally unfiltered inner overlap loop and
   preserves both fallback placement and its two RNG draws per attempt.
+- **#46 — fixed.** A FrozenSolid whose victim leaves playable state now runs
+  the same gameplay portion of `Shatter` as an ordinary thaw: it decrements
+  the live block count, applies the 0.35-second upward ragdoll packet, and
+  resets all three ability cooldown timers. Death no longer merely discards
+  the effect state.
 - **#47 — fixed.** Pending platform-duplicate effects now use a growable pool,
   and completed-spawn requests use a growable queue. The 33rd concurrent
   effect is instantiated instead of being silently dropped, and more than 32
