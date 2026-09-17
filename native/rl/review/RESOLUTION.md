@@ -108,6 +108,10 @@ fixed entry is committed separately with its finding id in the subject.
   modeled updater, and gate/integrate each component in hierarchy order from
   its prefab's behavior. Gust and Time Stop's confirmed no-gravity symptoms
   are fixed locally; the un-audited forms remain explicitly non-exact.
+- **S21 — fixed.** Time Stop exit now preserves the cast body's current
+  self-imposed velocity while clearing only external velocity. This mirrors
+  `CastSpell.ExitAbility`, which copies `body.selfImposedVelocity` into the
+  exit packet instead of replacing it with zero.
 
 - **#1 — fixed.** C# keys permanent duplicated platforms by the casting
   Duplicator hierarchy. Each new platform from that gun now schedules the

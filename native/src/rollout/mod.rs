@@ -10019,7 +10019,6 @@ impl RolloutWorld {
         slot.cast_spell.collider_right = Vec2::RIGHT;
         slot.cast_spell.collider_rotation = Fix::ZERO;
         slot.base.position += data.time_stop.exit_offset * slot.player_scale;
-        slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = false;
         slot.base.grounded_speed = Fix::ZERO;
@@ -33556,6 +33555,9 @@ mod tests {
         let start = world.players[0].base.position;
         world.players[0].active = ActiveAbility::TimeStop;
         world.players[0].player_scale = Fix::from_int(2);
+        let self_imposed = Vec2::new(Fix::from_int(3), Fix::from_int(-2));
+        world.players[0].base.velocity = self_imposed;
+        world.players[0].base.external_velocity = Vec2::new(Fix::ONE, Fix::ONE);
 
         world.exit_time_stop_cast(0, data::get());
 
@@ -33563,6 +33565,8 @@ mod tests {
             world.players[0].base.position,
             start + data::get().time_stop.exit_offset * Fix::from_int(2)
         );
+        assert_eq!(world.players[0].base.velocity, self_imposed);
+        assert_eq!(world.players[0].base.external_velocity, Vec2::ZERO);
     }
 
     #[test]
