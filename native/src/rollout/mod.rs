@@ -30488,6 +30488,34 @@ impl RolloutWorld {
         // through the stable shape partitions in that case. Rope rows are an
         // independent pool inserted between rounded rectangles and metadata.
         let rope_mask = ability_bit(ABILITY_GRAPPLING_HOOK) | ability_bit(ABILITY_WEB_SWING);
+        if self.active_subsystems & rope_mask == 0 && !self.ability_pickups.is_empty() {
+            // Dynamic pickups are circles appended after the authored boxes
+            // and rounded rectangles. Once one has existed, the optimistic
+            // ordered copy above would fail on every later observation and
+            // the old fallback copied all rows again in four filtered passes.
+            // Count without copying, then write each live row directly into
+            // its final stable shape partition.
+            let mut counts = [0usize; 5];
+            for entity in &self.entities {
+                if entity.flags & E_REMOVED == 0 {
+                    counts[entity.kind as usize] += 1;
+                }
+            }
+            let mut next = [0usize; 5];
+            for kind in 1..5 {
+                next[kind] = next[kind - 1] + counts[kind - 1];
+            }
+            out.resize(counts.iter().sum(), CEntity::default());
+            for &entity in &self.entities {
+                if entity.flags & E_REMOVED != 0 {
+                    continue;
+                }
+                let kind = entity.kind as usize;
+                out[next[kind]] = entity;
+                next[kind] += 1;
+            }
+            return;
+        }
         if self.active_subsystems & rope_mask == 0 {
             let mut last_kind = 0;
             let mut ordered = true;
