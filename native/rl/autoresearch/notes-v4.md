@@ -357,7 +357,7 @@ the same trade as the priority experiments (fewer, longer rollout blocks
 leave SMs to the train pass while the rollout takes longer). Knob kept,
 default 1; decide after the chain's own work shrinks (L11 next).
 
-### L11: the rollout chain's critic on learner rows only (commit below), keep
+### L11: the rollout chain's critic on learner rows only (commit 8cb488c6), keep
 
 The v4 chain ran its critic (3 GEMMs at N = 512: cin over K = W + 12,
 b1, b2 over K = 512, plus 2 row kernels) over all 64 rows of a buffer:
