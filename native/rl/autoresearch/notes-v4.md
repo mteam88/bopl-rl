@@ -323,3 +323,18 @@ GPU work, and priority / partition only choose which side the contention
 shows up in. The rollout's chain (~19 kernels per 64-row buffer step, each
 tiny and latency-bound, 512 steps per update) is ~40% of the GPU's time,
 the train pass ~60%. From here only less GPU work counts, on either side.
+
+## Merge of main 46fb0382 (commit 556e7a7b)
+
+Merged (not rebased: the branch carries the maps-round2 merge). Conflicts:
+the two comment blocks (`Tools/play-vs-agent-mac.sh`,
+`native/tools/extract_rollout_data.py`) took main's side; `native/rl/Makefile`
+kept the campaign's `writer-bench` target next to main's rules;
+`research/elo_ladder.py`'s `on_result` is present (tournament.py and
+tournament_cross.py call it). Rebuilt the sim (`cargo build --release`, nice
+19), the CUDA extension, writer_bench; `check_v4.py --build` pass_all,
+`check_dump.py --only v4` ok. New incumbent `v4-base-m46fb-1/2`: 223918 /
+224117 (train_s 0.1086 / 0.1085, rollout_s 0.0858 / 0.0841; the merged
+sim's env step is cheaper, eval_env 0.24 vs 0.28 ms per buffer step, which
+the train-bound wall does not see). Candidates from here compare against
+~224k.
