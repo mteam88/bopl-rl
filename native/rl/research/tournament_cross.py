@@ -131,14 +131,24 @@ def run(args):
     smoke(roster, pool, game, args.out)
     existing = base.load_games(args.out / 'games.jsonl')
     pairs, tasks = cross_tasks(roster, pool['maps'], args.games_per_pair, existing)
-    cross_roster = [member for member in roster if base.writer_ablation(member) is not None]
     print(f'cross_pairs={pairs} games_existing={len(existing)} cross_games_missing={len(tasks)}', flush=True)
     started = time.monotonic()
     context = multiprocessing.get_context('spawn')
+    by_name = {member['name']: member for member in roster}
+    grouped = {}
+    for task in tasks:
+        key = tuple(sorted((base.writer_ablation(by_name[task['a']]),
+                            base.writer_ablation(by_name[task['b']]))))
+        grouped.setdefault(key, []).append(task)
+    shards = [[] for _ in range(args.workers)]
+    for index, key in enumerate(sorted(grouped)):
+        shards[index % args.workers].extend(grouped[key])
     processes = []
-    for worker in range(args.workers):
+    for worker, shard in enumerate(shards):
+        used = {task[name] for task in shard for name in ('a', 'b')}
+        shard_roster = [member for member in roster if member['name'] in used]
         process = context.Process(target=play_shard,
-                                  args=(cross_roster, pool, args, game, tasks[worker::args.workers], worker))
+                                  args=(shard_roster, pool, args, game, shard, worker))
         process.start()
         processes.append(process)
     for process in processes:
